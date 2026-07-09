@@ -16,7 +16,7 @@ Twelve judges, eleven prompts (the consolidator reuses the grouper's).
 Usage and error logs attribute one name per prompt (2026-07-08; rows
 before that date carry the family names). The timeline band keeps five
 family rows and folds the fine names onto them (`_JUDGE_FAMILY`,
-`bin/romp-kernel`): gister onto captioner, prompt-planner and placer onto
+`bin/romp-kernel`): gister onto captioner, opener and placer onto
 planner, briefer onto distiller, consolidator onto grouper.
 
 | Judge | Tier | Prompt | Fires when |
@@ -24,7 +24,7 @@ planner, briefer onto distiller, consolidator onto grouper.
 | captioner | index (Haiku) | `CAPTION_SYS` | a segment or turn's work ends |
 | gister | index (Haiku) | `GIST_SYS` | a user message lands |
 | archiver | index (Haiku) | `ARCHIVE_SYS` | a session gains a turn |
-| prompt-planner | triage (Sonnet) | `PLAN_PROMPT_SYS` | a message lands, work still running |
+| opener | triage (Sonnet) | `OPENER_SYS` | a message lands, work still running |
 | planner | triage | `PLAN_SYS` | a segment's work ends |
 | placer | triage | `PLACE_SYS` | the planner filed under a card with open sub-goals |
 | grouper | triage | `GROUP_SYS` | the set of open cards changed |
@@ -62,7 +62,7 @@ exactly two lines, `HEADLINE:` and `ABSTRACT:`. Written to
 
 ## The planners
 
-**prompt-planner.** Fires the moment your message lands on a still-open
+**opener.** Fires the moment your message lands on a still-open
 segment, so the board shows the ask before the work exists. Exactly one op,
 and it must place: mint a new card or file under an open one, card level
 only, never done/block. A reply that never parses is logged and the ask is

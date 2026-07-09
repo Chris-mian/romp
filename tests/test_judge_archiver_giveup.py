@@ -67,8 +67,16 @@ class ArchiverGiveUp(unittest.TestCase):
          jd.caption_llm, jd.archive_llm, jd.gist_llm) = self.saved
         self.td.cleanup()
 
+    def _giveups(self):
+        try:
+            rows = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
+        except OSError:
+            return []
+        return [r for r in rows if r.get("err") == "give-up" and r.get("judge") == "archiver"]
+
     def test_fail_cap_quiets_until_a_new_turn_rearms(self):
         now = T0 + 120
+        g0 = len(self._giveups())
         for i in range(1, jd.ARCH_FAIL_CAP + 1):
             jd.run_index(now=now)
             self.assertEqual(len(self.calls), i, "one archive attempt per pass while failing")
@@ -79,6 +87,9 @@ class ArchiverGiveUp(unittest.TestCase):
         jd.run_index(now=now)
         jd.run_index(now=now)
         self.assertEqual(len(self.calls), jd.ARCH_FAIL_CAP, "given up on this turn set")
+        rows = self._giveups()[g0:]
+        self.assertEqual(len(rows), 1, "the give-up transition logs exactly ONE row, not one per quiet pass")
+        self.assertIn("until the session gains a turn", rows[0]["note"], "the note names the re-arm event")
         # the session gains a TURN → the count changes → re-armed (event-based, no timer)
         self.records += [uline(T0 + 200, "now add a toggle", "u2", "a1"),
                          aline(T0 + 230, "Added the toggle.", "a2", "u2")]
@@ -102,23 +113,26 @@ class ArchiverGiveUp(unittest.TestCase):
 
 
 class CallVsParseLogging(unittest.TestCase):
-    def test_archive_llm_logs_call_and_parse_distinctly(self):
+    def test_archive_llm_logs_only_genuine_parse_rejects(self):
+        # Since 2026-07-09 _judge_run owns ALL call-level logging (subprocess errors, error envelopes,
+        # the rate gate), so an empty reply logs NOTHING here — the archiver's own "parse" row is only
+        # for text the model actually wrote, with the tail as evidence.
         with tempfile.TemporaryDirectory() as td:
             jd._rebind_state(Path(td))
             jd._judge_ctx.fsid = SID
             saved = jd._judge_run
             try:
-                jd._judge_run = lambda *a, **k: None                   # no output at all → "call"
+                jd._judge_run = lambda *a, **k: None                   # call failed → logged by _judge_run itself
                 self.assertIsNone(jd.archive_llm("- did a thing"))
                 jd._judge_run = lambda *a, **k: "no labeled lines"     # output the parser rejects → "parse"
                 self.assertIsNone(jd.archive_llm("- did a thing"))
             finally:
                 jd._judge_run = saved
-            errs = [json.loads(l) for l in (Path(td) / "romp" / "judge-errors.jsonl").read_text().splitlines()] \
-                if (Path(td) / "romp" / "judge-errors.jsonl").exists() else \
-                [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
-            kinds = [e["err"] for e in errs]
-            self.assertEqual(kinds, ["call", "parse"])
+            errs = ([json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
+                    if jd.ERRORS.exists() else [])
+            self.assertEqual([e["err"] for e in errs], ["parse"],
+                             "no duplicate 'call' row from the caller; one parse row for rejected text")
+            self.assertIn("no labeled lines", errs[0]["note"], "the reply tail is the evidence")
 
 
 if __name__ == "__main__":

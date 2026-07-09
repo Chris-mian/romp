@@ -58,7 +58,7 @@ moments of the turn; the rest follow board-change events, never the clock.
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
     M -.-> GI["gister:<br/>topic phrase for the<br/>placeholder card"]:::llm
-    M -.-> PP["prompt-planner:<br/>put the ask on the<br/>board right now"]:::llm
+    M -.-> PP["opener:<br/>put the ask on the<br/>board right now"]:::llm
     E -.-> PL["planner:<br/>file what the work did<br/>(placer picks the depth)"]:::llm
     E -.-> CA["captioner:<br/>one line, what<br/>got done"]:::llm
     X -.-> CL["closer:<br/>done/blocked audit of<br/>the goals it touched"]:::llm
@@ -72,7 +72,7 @@ The board judges, with what each one reads and the ops it may emit:
 
 | Judge | Fires when | Reads | May do |
 |---|---|---|---|
-| prompt-planner | your message lands, work still running | the message + the open-card tree | exactly one op: mint or file under a card |
+| opener | your message lands, work still running | the message + the open-card tree | exactly one op: mint or file under a card |
 | planner | a segment's work ends | the work + the tree | mint, sub, done, block, retitle, skip |
 | placer | the planner filed under a card that has open sub-goals | that card's subtree only | pick the level inside the card |
 | closer | the turn ends | the goals this turn touched | done, blocked, omit (when in doubt, omit) |
@@ -113,7 +113,7 @@ flowchart TD
 Timing details that matter when auditing: a user message is placed twice.
 The prompt-run files it the moment it lands (card level only, so the board
 updates instantly); the work-run refines at turn end and may add, complete,
-block, or retitle. A placer or prompt-planner failure files at the card,
+block, or retitle. A placer or opener failure files at the card,
 never nowhere, and logs to judge-errors.jsonl. The same-title guard is exact
 string equality, and a completed sibling never matches, so repeated steps
 still get their own nodes.

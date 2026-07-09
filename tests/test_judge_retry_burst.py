@@ -47,16 +47,16 @@ class RetryBurstPlansOnce(unittest.TestCase):
             td = Path(td)
             tpath = td / (SID + ".jsonl")
             tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.plan_llm = jd.plan_prompt_llm = lambda *a, **k: (calls.append(1), llm())[1]
+            jd.plan_llm = jd.opener_llm = lambda *a, **k: (calls.append(1), llm())[1]
             jd._group_store = lambda *a, **k: None    # don't fire the real grouper model after a placement
             try:
                 jd._PARSE_CACHE.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
             return calls, store
 
     def test_same_second_identical_turns_plan_once(self):

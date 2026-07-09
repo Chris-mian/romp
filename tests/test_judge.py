@@ -646,9 +646,9 @@ class TwoRunPlanner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             tpath = td / (SID + ".jsonl")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.plan_llm, jd.plan_prompt_llm = work, prompt
+            jd.plan_llm, jd.opener_llm = work, prompt
             jd._group_store = lambda *a, **k: None         # don't fire the real grouper model after a placement
             try:
                 tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
@@ -660,7 +660,7 @@ class TwoRunPlanner(unittest.TestCase):
                     jd._plan_session(SID, str(tpath), NOW + 100)
                 store = jd.load_goals(SID)
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
             return store
 
     def test_plan_units_ended_work_precedes_open_prompt(self):
@@ -964,9 +964,9 @@ class SegKeyDrift(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             tpath = td / (SID + ".jsonl")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.plan_prompt_llm = lambda *a, **k: ""
+            jd.opener_llm = lambda *a, **k: ""
             jd._group_store = lambda *a, **k: None
             try:
                 tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
@@ -991,7 +991,7 @@ class SegKeyDrift(unittest.TestCase):
                 self.assertEqual(calls, [], "a drift-shifted placement still dedups — the planner is not re-run")
                 self.assertEqual(len(jd.load_goals(SID)["nodes"]), 1, "no duplicate goal was minted")
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
 
     def test_goal_work_text_reads_a_drift_shifted_trail(self):
         records = [uline(T0, "please add caching", "u1", ps="typed"),
@@ -2082,10 +2082,10 @@ class PostalDelegation(unittest.TestCase):
             td = Path(td)
             tpath = td / (SID + ".jsonl")
             tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store, jd._view_cleared)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.opener_llm, jd._group_store, jd._view_cleared)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
             jd.MESSAGES = td / "messages.jsonl"           # hermetic: empty postal index (no live data, peer=None)
-            jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
+            jd.plan_llm, jd.opener_llm = work, (lambda *a, **k: "")
             jd._group_store = lambda *a, **k: None
             try:
                 session = jd.parsed_session(SID, [str(tpath)], NOW)
@@ -2109,7 +2109,7 @@ class PostalDelegation(unittest.TestCase):
                     jd._plan_session(SID, str(tpath), NOW)
                 return jd.load_goals(SID), seg_id, gid
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store, jd._view_cleared) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.opener_llm, jd._group_store, jd._view_cleared) = saved
 
     def test_delegation_files_work_under_G_with_full_expressivity(self):
         recs = [self._peer_msg(T0, "DELEGATE: build the export feature", "p1", "m1.1"),
@@ -2172,11 +2172,11 @@ class PostalDelegation(unittest.TestCase):
             td = Path(td)
             tpath = td / (SID + ".jsonl")
             tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
             jd.MESSAGES = td / "messages.jsonl"
             jd.plan_llm = lambda *a, **k: '{"ops":[{"why":"the feature","do":"mint","text":"ship the real feature"}]}'
-            jd.plan_prompt_llm = lambda *a, **k: ""
+            jd.opener_llm = lambda *a, **k: ""
             jd._group_store = lambda *a, **k: None
             try:
                 session = jd.parsed_session(SID, [str(tpath)], NOW)
@@ -2195,7 +2195,7 @@ class PostalDelegation(unittest.TestCase):
                 for s in peers:                            # every fyi #d unit retired (won't re-clog)
                     self.assertIsNone(store["placements"].get(s["id"] + "#d"), "each fyi #d retired")
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
 
     def test_delegation_skipped_until_courier_plants(self):
         recs = [self._peer_msg(T0, "DELEGATE: future task", "p1", "m3.1"),
@@ -2239,9 +2239,9 @@ class NudgeMustResolve(unittest.TestCase):
             td = Path(td)
             tpath = td / (SID + ".jsonl")
             tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
+            jd.plan_llm, jd.opener_llm = work, (lambda *a, **k: "")
             jd._group_store = lambda *a, **k: None
             try:
                 store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {},
@@ -2253,7 +2253,7 @@ class NudgeMustResolve(unittest.TestCase):
                 jd._plan_session(SID, str(tpath), NOW)
                 return jd.load_goals(SID), gid
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
 
     def test_seg_nudge_detects_marker_and_target(self):
         gid = "%s:g1" % SID
@@ -2317,9 +2317,9 @@ class NudgeMustResolve(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             tpath = td / (SID + ".jsonl"); tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
+            jd.plan_llm, jd.opener_llm = work, (lambda *a, **k: "")
             jd._group_store = lambda *a, **k: None
             try:
                 jd.GOALDIR.mkdir(parents=True)
@@ -2339,7 +2339,7 @@ class NudgeMustResolve(unittest.TestCase):
                 self.assertEqual(len(subs), 1, "exactly one real sub — the planner's")
                 self.assertEqual(subs[0]["text"], "added tests")
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
 
 
 class OptimisticFollowupHold(unittest.TestCase):
@@ -2743,11 +2743,11 @@ class PlanTuning(unittest.TestCase):
         # advances that goal's own outcome. Both planner prompts carry the rule.
         self.assertIn("**distinct deliverable**", jd.PLAN_SYS)
         self.assertIn("whose **outcome** this work advances", jd.PLAN_SYS)
-        self.assertIn("**own** finish line", jd.PLAN_PROMPT_SYS)
+        self.assertIn("**own** finish line", jd.OPENER_SYS)
         # the mint-vs-sub tiebreak is SYMMETRIC (the user 2026-07-08, over-minting): decide by the finish
         # line, no standing thumb on the mint side — "prefer mint" caused follow-up-shaped messages to
         # mint their own tops ("Get alternate shorter version of last paragraph").
-        self.assertIn("decide by the finish line, never by topic overlap", jd.PLAN_PROMPT_SYS)
+        self.assertIn("decide by the finish line, never by topic overlap", jd.OPENER_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
     def test_user_message_must_be_placed_never_skipped(self):
@@ -3953,9 +3953,9 @@ class KnownTargetContext(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             tpath = td / (SID + ".jsonl")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.plan_prompt_llm = lambda *a, **k: ""
+            jd.opener_llm = lambda *a, **k: ""
             jd._group_store = lambda *a, **k: None
             try:
                 tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
@@ -3968,7 +3968,7 @@ class KnownTargetContext(unittest.TestCase):
                 jd._plan_session(SID, str(tpath), NOW + 200)
                 return jd.load_goals(SID)
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
 
     def test_followup_gets_the_targets_own_history_and_may_retitle_it(self):
         records1 = [uline(T0, "please add caching", "u1", ps="typed"),
@@ -5295,17 +5295,17 @@ class LiveReplan(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
         self.saved = (jd.GOALDIR, jd.GOALARCHDIR, jd.PCACHE, jd.STATE,
-                      jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+                      jd.plan_llm, jd.opener_llm, jd._group_store)
         jd.GOALDIR, jd.GOALARCHDIR = td / "goals", td / "goals-archive"
         jd.PCACHE, jd.STATE = td / "pcache", td
         jd.GOALDIR.mkdir()
         jd._group_store = lambda *a, **k: None           # never fire the real grouper model
-        jd.plan_prompt_llm = self._boom                  # the deduped prompt-run must never re-fire
+        jd.opener_llm = self._boom                  # the deduped prompt-run must never re-fire
         jd._PARSE_CACHE.clear()
 
     def tearDown(self):
         (jd.GOALDIR, jd.GOALARCHDIR, jd.PCACHE, jd.STATE,
-         jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = self.saved
+         jd.plan_llm, jd.opener_llm, jd._group_store) = self.saved
         self.td.cleanup()
 
     @staticmethod
@@ -5562,7 +5562,7 @@ class OneNamePerPrompt(unittest.TestCase):
         jd._judge_run = lambda *a, **k: seen.append(k.get("judge")) or ""
         try:
             jd.gist_llm("x")
-            jd.plan_prompt_llm("x", "menu")
+            jd.opener_llm("x", "menu")
             jd.brief_llm("g", "w", "o")
             jd.group_llm("menu")
             jd.group_llm("menu", judge="consolidator")
@@ -5570,19 +5570,221 @@ class OneNamePerPrompt(unittest.TestCase):
             jd.distill_llm("g", "w")
         finally:
             jd._judge_run = orig
-        self.assertEqual(seen, ["gister", "prompt-planner", "briefer",
+        self.assertEqual(seen, ["gister", "opener", "briefer",
                                 "grouper", "consolidator", "planner", "distiller"])
 
     def test_placer_label_and_error_paths_pinned_in_source(self):
         # place_llm is conftest-stubbed suite-wide (no test may reach a real subprocess), so its label —
-        # and the two newly-loud fallback paths — are pinned at the source level instead.
+        # and the two newly-loud fallback paths — are pinned at the source level instead. The error rows
+        # carry the reply tail since 2026-07-09 (the consistent-log contract).
         import inspect
         src = inspect.getsource(jd)
         self.assertIn('judge="placer"', src)
-        self.assertIn('_log_judge_error("placer", store.get("rompUuid"), "parse")', src,
-                      "a placer reply that names no usable spot is logged, not silently card-filed")
-        self.assertIn('_log_judge_error("prompt-planner", fsid, "parse")', src,
+        self.assertIn('_log_judge_error("placer", store.get("rompUuid"), "parse", note=', src,
+                      "a placer reply that names no usable spot is logged with its tail, not silently card-filed")
+        self.assertIn('_log_judge_error("opener", fsid, "parse", note=', src,
                       "a prompt-run reply that never parsed is logged before the hard coerce")
+
+
+class FailureContract(unittest.TestCase):
+    """The consistent failure contract (the user 2026-07-09). Every judge-errors.jsonl row carries
+    judge / fsid / err / note-with-evidence; an API error ENVELOPE from the CLI is a call failure with
+    the API's own message, never fed to a parser; an EMPTY reply (rate-gate skip, dead subprocess,
+    error envelope) never logs "parse" and never burns a retry cap; the closer and the grouper /
+    consolidator give up loudly after JUDGE_FAIL_CAP genuine parse rejects and re-arm on their own
+    event (the turn gaining atoms / the top set changing)."""
+
+    def setUp(self):
+        self._td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self._td))
+
+    def tearDown(self):
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _errors(self):
+        try:
+            return [json.loads(l) for l in Path(jd.ERRORS).read_text().splitlines()]
+        except OSError:
+            return []
+
+    # ── the row contract ──
+    def test_every_row_names_the_judge_and_carries_evidence(self):
+        jd._log_judge_error("planner", "sid-x", "parse", note="reply tail: 'zzz'")
+        row = self._errors()[-1]
+        self.assertEqual((row["judge"], row["tier"], row["fsid"], row["err"], row["note"]),
+                         ("planner", "planner", "sid-x", "parse", "reply tail: 'zzz'"),
+                         "judge names the failing prompt; tier is its legacy twin; note is the evidence")
+
+    # ── error envelopes ──
+    def test_error_envelope_is_a_call_failure_with_the_apis_message(self):
+        import types
+        env = json.dumps({"type": "result", "is_error": True,
+                          "result": "API Error: 529 overloaded", "usage": {}})
+        saved_sub, saved_fsid = jd.subprocess, getattr(jd._judge_ctx, "fsid", None)
+        jd.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(stdout=env, stderr=""))
+        jd._judge_ctx.fsid = "sid-env"
+        try:
+            out = jd._judge_run("model-x", "sys", "user", judge="closer")
+        finally:
+            jd.subprocess = saved_sub
+            jd._judge_ctx.fsid = saved_fsid
+        self.assertEqual(out, "", "an error envelope reads as an empty reply to every caller")
+        row = self._errors()[-1]
+        self.assertEqual((row["judge"], row["err"], row["fsid"]), ("closer", "call", "sid-env"))
+        self.assertIn("API Error: 529 overloaded", row["note"], "the API's own message is the evidence")
+        self.assertFalse(Path(jd.USAGE).exists(), "a zero-cost error envelope logs no usage row")
+
+    # ── empty replies never count as parse rejects ──
+    def test_empty_planner_reply_never_burns_retries_or_logs_parse(self):
+        records = [uline(T0, "please fix the flaky test", "u1", ps="typed"),
+                   aline(T0 + 30, "On it.", "a1", "u1", stop="end_turn")]
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm = lambda *a, **k: ""              # the CALL failed; there is nothing to parse
+            jd._group_store = lambda *a, **k: None
+            try:
+                placed = [jd._plan_session(SID, str(tpath), NOW)
+                          for _ in range(jd.PLAN_PARSE_RETRIES + 2)]
+                store = jd.load_goals(SID)
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd._group_store) = saved
+        self.assertEqual(placed, [0] * (jd.PLAN_PARSE_RETRIES + 2),
+                         "an empty reply retries next pass forever — it is not a parse reject")
+        self.assertEqual(store.get("parseFails", {}), {},
+                         "a rate-limit window must not burn PLAN_PARSE_RETRIES and drop the segment")
+        self.assertEqual([r for r in self._errors() if r["err"] == "parse"], [],
+                         "no phantom parse rows for empty replies (the 06-30 storm shape)")
+
+    # ── the closer's cap ──
+    def _closable(self):
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 20, "all done", "a1", "u1", stop="end_turn")]
+        session = build_session(records)
+        turn = session["turns"][0]
+        s = _store()
+        g = _mknode(s, "The thing", t=T0)
+        s["placements"] = {em.segments(turn)[0]["id"]: g["id"]}   # the turn touched g
+        return s, turn
+
+    def test_closer_gives_up_after_cap_and_the_turn_is_done_with(self):
+        s, turn = self._closable()
+        saved = jd.closer_llm
+        jd.closer_llm = lambda *a: "utter garbage, never json"
+        try:
+            res = [jd._close_turn(s, turn) for _ in range(jd.JUDGE_FAIL_CAP)]
+        finally:
+            jd.closer_llm = saved
+        self.assertEqual(res, [None] * (jd.JUDGE_FAIL_CAP - 1) + [[]],
+                         "retry (None) below the cap; at the cap give up with no verdicts ([])")
+        rows = self._errors()
+        self.assertEqual([r["err"] for r in rows if r["judge"] == "closer"],
+                         ["parse"] * jd.JUDGE_FAIL_CAP + ["give-up"])
+        self.assertIn("reply tail:", rows[0]["note"])
+        self.assertIn("until the turn gains atoms", rows[-1]["note"], "the note names the re-arm event")
+        self.assertEqual(s.get("closeFails"), {}, "the strike counter clears at give-up")
+
+    def test_closer_empty_reply_is_not_a_strike(self):
+        s, turn = self._closable()
+        saved = jd.closer_llm
+        jd.closer_llm = lambda *a: ""
+        try:
+            res = [jd._close_turn(s, turn) for _ in range(jd.JUDGE_FAIL_CAP + 1)]
+        finally:
+            jd.closer_llm = saved
+        self.assertEqual(res, [None] * (jd.JUDGE_FAIL_CAP + 1), "call-level failures retry forever")
+        self.assertEqual([r for r in self._errors() if r["judge"] == "closer"], [],
+                         "no closer rows: the call failure was already logged inside _judge_run")
+        self.assertFalse(s.get("closeFails"), "no strikes for empty replies")
+
+    def test_closer_clean_reply_clears_the_strikes(self):
+        s, turn = self._closable()
+        saved = jd.closer_llm
+        try:
+            jd.closer_llm = lambda *a: "garbage"
+            jd._close_turn(s, turn)
+            self.assertTrue(s["closeFails"], "one strike recorded")
+            jd.closer_llm = lambda *a: '{"done": [], "block": []}'
+            jd._close_turn(s, turn)
+        finally:
+            jd.closer_llm = saved
+        self.assertEqual(s.get("closeFails"), {}, "a clean reply wipes the turn's strike count")
+
+    # ── the grouper's / consolidator's cap (shared _sig_fail) ──
+    def _two_tops(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "mint", "why": "x", "text": "Goal B"}], jd.open_menu(s))
+        return s
+
+    def test_grouper_gives_up_adopting_the_set_and_rearms_on_change(self):
+        s = self._two_tops()
+        saved = jd.group_llm
+        jd.group_llm = lambda menu, **k: "garbage"
+        try:
+            for _ in range(jd.JUDGE_FAIL_CAP):
+                jd._group_store(s, SID, NOW)
+        finally:
+            jd.group_llm = saved
+        sig = sorted(nd["id"] for nd in jd._group_tops(s))
+        self.assertEqual(s.get("groupedSig"), sig,
+                         "give-up adopts the failing set — the gate closes, no more retries on it")
+        rows = [r for r in self._errors() if r["judge"] == "grouper"]
+        self.assertEqual([r["err"] for r in rows], ["parse"] * jd.JUDGE_FAIL_CAP + ["give-up"])
+        self.assertNotIn("groupFails", s, "the strike counter clears at give-up")
+        # the re-arm: a third top changes the set, so the grouper is asked again
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "mint", "why": "x", "text": "Goal C"}], jd.open_menu(s))
+        calls = []
+        saved = jd.group_llm
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'
+        try:
+            jd._group_store(s, SID, NOW + 30)
+        finally:
+            jd.group_llm = saved
+        self.assertEqual(len(calls), 1, "a changed top set re-arms the grouper (event-based)")
+
+    def test_grouper_empty_reply_is_not_a_strike(self):
+        s = self._two_tops()
+        saved = jd.group_llm
+        jd.group_llm = lambda menu, **k: ""
+        try:
+            for _ in range(jd.JUDGE_FAIL_CAP + 1):
+                jd._group_store(s, SID, NOW)
+        finally:
+            jd.group_llm = saved
+        self.assertNotEqual(s.get("groupedSig"), sorted(nd["id"] for nd in jd._group_tops(s)),
+                            "the sig stays stale — retry when calls succeed again")
+        self.assertEqual([r for r in self._errors() if r["judge"] == "grouper"], [])
+
+    def test_consolidator_gives_up_under_its_own_name(self):
+        s = _store()
+        a = _mknode(s, "Done A", complete=True)
+        b = _mknode(s, "Done B", complete=True)
+        s["status"] = {a["id"]: "completed", b["id"]: "completed"}   # _consolidate_tops reads the rollup
+        saved = jd.group_llm
+        jd.group_llm = lambda menu, **k: "garbage"
+        try:
+            for _ in range(jd.JUDGE_FAIL_CAP):
+                jd._consolidate_store(s, SID, NOW)
+        finally:
+            jd.group_llm = saved
+        rows = [r for r in self._errors() if r["judge"] == "consolidator"]
+        self.assertEqual([r["err"] for r in rows], ["parse"] * jd.JUDGE_FAIL_CAP + ["give-up"])
+        self.assertEqual(s.get("consolidatedSig"), sorted(nd["id"] for nd in jd._consolidate_tops(s)),
+                         "give-up adopts the completed set until it changes")
+
+    # ── the courier's cap resolves from the declared kind (source pin: run_courier is a fleet scan) ──
+    def test_courier_cap_pinned_in_source(self):
+        import inspect
+        src = inspect.getsource(jd)
+        self.assertIn('fails[seg_id] < JUDGE_FAIL_CAP', src)
+        self.assertIn('"delegating": declared == "delegate"', src,
+                      "at the cap the courier resolves from the sender's schema-declared kind")
+        self.assertIn('_log_judge_error("courier", fsid, "give-up"', src)
 
 
 if __name__ == "__main__":

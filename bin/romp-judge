@@ -105,7 +105,20 @@ ARCH_BUDGET = None                       # per-pass session-archive cap — REMO
 ARCH_FAIL_CAP = 3                        # archiver give-up (the user 2026-07-06): after this many failures on the
 #                                          SAME turn set, stop retrying until the session gains a turn (the count
 #                                          changes). The 2026-07-06 rate-limit window otherwise retried every pass.
-PLACEMENTS_V = 1                         # placements-identity schema version (plan P2, the user 2026-07-06).
+JUDGE_FAIL_CAP = 3                       # the same rule for every other retrying judge (the user 2026-07-09):
+#                                          3 genuine parse rejects on the SAME work item → a loud "give-up" row,
+#                                          then quiet until the item's own event re-arms it (a turn gaining atoms,
+#                                          a top set changing). Call-level failures never count — only replies the
+#                                          model actually wrote. Closer / grouper / consolidator / courier; the
+#                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
+#                                          already had their own.
+PLACEMENTS_V = 2                         # placements-identity schema version (plan P2, the user 2026-07-06).
+#                                          v2 (2026-07-09): a 07-07/07-08 change to segment-text derivation
+#                                          stepped the text hash without this bump — dormant segments' old-hash
+#                                          placements stopped matching, and every restart/touch replayed them as
+#                                          junk cards (the cleared-cards-reappear regression, delegated by ui).
+#                                          The bump makes every v1 store seal its ready-unplaced history at the
+#                                          next pass. tests/test_placements_canary.py now pins the derivation.
 #                                          THE DEPLOY RULE: any change to seg-id DERIVATION (the t component or
 #                                          the text hash — em.segments, _seg_key, _unit_key) MUST bump this. A
 #                                          store recorded under another version gets its currently-ready unplaced
@@ -273,20 +286,47 @@ def _judge_cmd(model, sys_prompt, effort=None):
     return cmd
 
 
-def _log_judge_error(tier, fsid, err, note=None):
-    """Append a swallowed judge-call failure to ERRORS (judge-errors.jsonl) so `romp -j` can surface it.
-    These are otherwise invisible: a judge call that times out, raises, or returns un-parseable output is
-    silently dropped and retried next pass. `note` carries the developer audit detail (e.g. a cite-miss's
-    offending label + reply tail) here, out of the user-facing card warn. Best-effort, NEVER raises — it
+def _log_judge_error(judge, fsid, err, note=None):
+    """Append one failure row to ERRORS (judge-errors.jsonl) so `romp -j` can surface it. The row contract
+    (the user 2026-07-09) — every row answers who/where/what/why on its own:
+      judge  who failed — the judge's own one-per-prompt name, never a tier
+      fsid   where — the session it was judging ("" only for fleet-level rows like the rate gate)
+      err    what kind — "call" (no usable reply: subprocess error, timeout, API error envelope),
+             "parse" (the model's own text, rejected by the parser), "give-up" (fail cap hit, quiet
+             until the event named in the note re-arms it), "cite-miss", "rate-limited",
+             "unmigrated-node"
+      note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
+             event. Callers must pass it; an empty note means the caller has nothing at all to show.
+    `tier` is written as a legacy twin of `judge` for pre-07-09 readers. Best-effort, NEVER raises — it
     runs inside the very failure paths it records."""
     try:
-        rec = {"t": int(time.time()), "tier": tier, "fsid": fsid or "", "err": err}
-        if note:
-            rec["note"] = note
+        rec = {"t": int(time.time()), "judge": judge, "tier": judge, "fsid": fsid or "",
+               "err": err, "note": note or ""}
         with open(ERRORS, "a") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:
         pass
+
+
+def _sig_fail(store, key, sig, judge, fsid, quiet_msg):
+    """Strike counter for a signature-gated judge (grouper / consolidator): a genuine parse reject on the
+    SAME item set bumps <key>Fails; a different set restarts the count (the old set resolved itself). At
+    JUDGE_FAIL_CAP: clear the counter, log the give-up, return True — the caller adopts the sig, closing
+    its event gate until the set changes (the re-arm). Below the cap: return False, sig stays stale, the
+    next pass retries."""
+    fails = store.get(key + "Fails", 0) + 1 if store.get(key + "FailSig") == sig else 1
+    if fails >= JUDGE_FAIL_CAP:
+        _sig_fail_clear(store, key)
+        _log_judge_error(judge, fsid, "give-up",
+                         note="%d parse rejects on the same set; %s" % (JUDGE_FAIL_CAP, quiet_msg))
+        return True
+    store[key + "Fails"], store[key + "FailSig"] = fails, sig
+    return False
+
+
+def _sig_fail_clear(store, key):
+    store.pop(key + "Fails", None)
+    store.pop(key + "FailSig", None)
 
 
 _judge_ctx = threading.local()                       # per-thread: the fsid being judged (set by the session fns)
@@ -407,13 +447,26 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
         try:
             p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
                                capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
-        except Exception:
-            _log_judge_error(tier, None, "call")
+        except Exception as e:
+            # _judge_run owns ALL call-level logging (this, the error envelope below, the rate gate above)
+            # so callers never double-log: to a caller every failed call is just "", and "call" rows always
+            # carry the judge's own name + fsid (pre-07-09 rows said "index"/"triage" with no session).
+            _log_judge_error(judge or tier, fsid, "call", note=type(e).__name__)
             return ""
         recv = time.time()                            # literal wall-clock: the response is back
         out = p.stdout or ""
         try:
             wrap = json.loads(out)
+            if isinstance(wrap, dict) and wrap.get("is_error"):
+                # ERROR ENVELOPE: the CLI answered, but with an error (account limit, API overload, auth),
+                # not a model reply. Its "result" is the error message — letting it through to the parsers
+                # is how one incident became 2,352 phantom "parse" errors in an hour (06-30) and 1,163 more
+                # on 07-06: every parser rejected the error text, every caller retried. Log the truth (a
+                # CALL failure, message attached) and return "" so callers treat it like any failed call.
+                # No usage row: a zero-cost error envelope is not a model call the cost rollup should count.
+                _log_judge_error(judge or tier, fsid, "call",
+                                 note="error envelope: %r" % str(wrap.get("result") or wrap.get("subtype") or "")[:160])
+                return ""
             if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
                 _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
                 return wrap["result"]
@@ -824,17 +877,16 @@ def _parse_archive(out):
 
 def archive_llm(session_log):
     """One {headline, abstract} from the INDEX-tier model (Haiku) over a session's turn-caption log.
-    None on failure — logging CALL failures (subprocess/rate-limit/timeout, no output at all) distinctly
-    from PARSE failures (output that _parse_archive rejected). Before 2026-07-06 both were logged
-    "parse", which turned an account rate-limit window into 1163 phantom "parse" errors and hid the
-    real (call) cause."""
+    None on failure. An empty reply is a CALL failure (subprocess/rate-limit/timeout/error envelope) —
+    _judge_run logs those; "parse" here means the model's own text was rejected, with the tail attached
+    so the log says why. Before 2026-07-06 every failure was logged "parse", which turned an account
+    rate-limit window into 1163 phantom "parse" errors and hid the real (call) cause."""
     out = _judge_run(_index_model(), ARCHIVE_SYS, "<session>\n%s\n</session>" % session_log, judge="archiver", tier="index")
     if not out:
-        _log_judge_error("archiver", getattr(_judge_ctx, "fsid", None), "call")
         return None
     rec = _parse_archive(out)
     if not rec:
-        _log_judge_error("archiver", getattr(_judge_ctx, "fsid", None), "parse")
+        _log_judge_error("archiver", getattr(_judge_ctx, "fsid", None), "parse", note="reply tail: %r" % out[-160:])
     return rec
 
 
@@ -963,12 +1015,13 @@ PLAN_SYS = (
     "the JSON object: nothing before it, and nothing after the closing brace. No notes, no markdown fences.")
 
 
-# The PROMPT-run prompt (the user 2026-06-21, via link_audit): the planner's FIRST of two runs per
-# segment — it places the user's opening MESSAGE on the tree the instant it lands, before the work, so the
-# board shows the real goal immediately (not just the provisional placeholder). mint-or-amend only: no
-# done/block/skip, since no work has happened yet to finish, block, or judge empty. The WORK-run (PLAN_SYS,
-# at segment end) then amends/completes/blocks as the work warrants.
-PLAN_PROMPT_SYS = (
+# The opener (the user 2026-06-21, via link_audit; named 2026-07-09): the closer's mirror. It places the
+# user's opening MESSAGE on the tree the instant it lands, before the work, so the board shows the real
+# goal immediately (not just the provisional placeholder). mint-or-amend only: no done/block/skip, since
+# no work has happened yet to finish, block, or judge empty — the opener may only open, as the closer may
+# only close. The planner's WORK-run (PLAN_SYS, at segment end) then amends/completes/blocks as the work
+# warrants.
+OPENER_SYS = (
     "You are a planner in a logging pipeline, not a chat partner. You get the user's opening **message** "
     "for a segment inside <prompt> tags — just what the user asked; the work has not happened yet — and "
     "<open-goals>, this session's currently open goals as a numbered tree: flush-left lines are top-level "
@@ -1979,13 +2032,14 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     return _judge_run(model or _triage_model(), PLAN_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
 
 
-def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
-    """The PROMPT-run (the user 2026-06-21, via link_audit): place a segment's opening user MESSAGE on the
-    goal tree the instant it lands, before the work — so the inbox shows the real placed goal immediately,
-    not just the _provisional_card placeholder. mint OR sub only (never skip/done/block; no work yet). ''
-    on failure. Input is the raw prompt gist (PLAN_PROMPT_SYS), not the captioner's framed unit text."""
+def opener_llm(prompt_text, menu_text, model=None, effort=None):
+    """The opener (the user 2026-06-21, via link_audit; "prompt-planner" until 2026-07-09): place a
+    segment's opening user MESSAGE on the goal tree the instant it lands, before the work — so the inbox
+    shows the real placed goal immediately, not just the _provisional_card placeholder. mint OR sub only
+    (never skip/done/block; no work yet — it only opens, mirroring the closer, which only closes). '' on
+    failure. Input is the raw prompt gist (OPENER_SYS), not the captioner's framed unit text."""
     user = "<prompt>\n%s\n</prompt>\n<open-goals>\n%s\n</open-goals>" % (prompt_text, menu_text)
-    return _judge_run(model or _triage_model(), PLAN_PROMPT_SYS, user, effort=effort, judge="prompt-planner").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(model or _triage_model(), OPENER_SYS, user, effort=effort, judge="opener").strip()[:JUDGE_JSON_CAP]
 
 
 def place_llm(step_text, why, card_menu_text, model=None, effort=None):
@@ -2247,6 +2301,10 @@ def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENC
                 prev["fails"] = prev.get("fails", 0) + 1 if prev.get("failTurns") == nturns else 1
                 prev["failTurns"] = nturns
                 write_archive(fsid, prev)
+                if prev["fails"] == ARCH_FAIL_CAP:     # the transition, exactly once per capped turn set
+                    _log_judge_error("archiver", fsid, "give-up",
+                                     note="%d failures on the same %d-turn set; quiet until the session gains a turn"
+                                          % (ARCH_FAIL_CAP, nturns))
                 continue
             rec["turns"] = nturns
             rec["t"] = int(time.time())
@@ -2458,16 +2516,18 @@ def _card_route_subs(store, ops, menu, placer=True):
         if not kids or not placer:
             continue
         scoped = [menu[pos[top] - 1]] + kids           # menu is DFS-ordered, so the filter preserves it
-        got = _json_obj(place_llm(o.get("text"), o.get("why"), _menu_text(store, scoped))) or {}
+        raw = place_llm(o.get("text"), o.get("why"), _menu_text(store, scoped))
+        got = _json_obj(raw) or {}
         try:
             n = int(got.get("under"))
         except (TypeError, ValueError):
             n = None
         if n and 1 <= n <= len(scoped):
             o["under"] = pos[scoped[n - 1]["id"]]
-        else:
-            _log_judge_error("placer", store.get("rompUuid"), "parse")   # the fallback (attach at the
-            #                                    card) is silent on the board — make it loud in the log
+        elif raw:                                      # the fallback (attach at the card) is silent on the
+            #                                            board — make it loud in the log. Empty = call-level,
+            #                                            already logged upstream
+            _log_judge_error("placer", store.get("rompUuid"), "parse", note="reply tail: %r" % raw[-160:])
     return ops
 
 
@@ -3261,12 +3321,15 @@ def _plan_session(fsid, path, now):
         #                                               collection loop checked at pass START (2026-07-06)
         menu = open_menu(store)
         if phase == "prompt":                         # PROMPT-run: place the ask NOW (mint-or-amend), before the work
-            ops = _parse_plan(plan_prompt_llm(text, _menu_text(store, menu)), len(menu)) or []
+            raw = opener_llm(text, _menu_text(store, menu))
+            ops = _parse_plan(raw, len(menu)) or []
             ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
             if not ops:
-                _log_judge_error("prompt-planner", fsid, "parse")   # the coerce below hard-places, so this
+                if raw:                               # empty = the call itself failed (gate/error envelope),
+                    #                                   already logged upstream — "parse" means the model's
+                    #                                   own text was rejected, and the tail says why
+                    _log_judge_error("opener", fsid, "parse", note="reply tail: %r" % raw[-160:])
                 ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
-                #                                       failure is otherwise invisible
             ops = _card_route_subs(store, ops, menu, placer=False)   # card-level only: placing the ask is
             #                                           latency-sensitive; the work-run refines depth later
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p", prompt_uuid=trig, quote=vq)
@@ -3281,10 +3344,13 @@ def _plan_session(fsid, path, now):
             # this placement as its retitle target and finds the live goal on its menu, so it files under it
             # instead of re-minting. <recently-cleared> keeps the fresh look honest: a continuation of a
             # dismissed card says so instead of re-creating it as if new (the user 2026-07-05).
-            ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human, live=True,
-                                       cleared_context=_cleared_context(fsid, store)), len(menu)) or []
+            raw = plan_llm(text, _menu_text(store, menu), human=human, live=True,
+                           cleared_context=_cleared_context(fsid, store))
+            ops = _parse_plan(raw, len(menu)) or []
             ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
             if not ops:
+                if raw:                               # a real reply the parser rejected (empty = call-level,
+                    _log_judge_error("planner", fsid, "parse", note="reply tail: %r" % raw[-160:])   # logged upstream)
                 ops = _coerce_place(menu, text)       # invariant: a WORKING session always shows a card
             ops = _card_route_subs(store, ops, menu, placer=False)   # card-level only, like the prompt-run
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#live", prompt_uuid=trig, quote=vq)
@@ -3459,9 +3525,15 @@ def _plan_session(fsid, path, now):
         p_target = store["placements"].get(seg_id + "#live") or store["placements"].get(seg_id + "#p")
         pgi = (next((i for i, nd in enumerate(menu, 1) if nd["id"] == p_target), None)
                if isinstance(p_target, str) else None)
-        ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human, goal_num=pgi), len(menu))
+        raw = plan_llm(text, _menu_text(store, menu), human=human, goal_num=pgi)
+        ops = _parse_plan(raw, len(menu))
+        if not ops and not raw:
+            continue                                   # the CALL failed (gate skip / error envelope / timeout),
+            #                                            already logged upstream — retry next pass. It must not
+            #                                            burn a PLAN_PARSE_RETRIES try: a rate-limit window
+            #                                            could exhaust all 3 and drop the segment for good
         if not ops:
-            _log_judge_error("planner", fsid, "parse")
+            _log_judge_error("planner", fsid, "parse", note="reply tail: %r" % raw[-160:])
             fails = store.setdefault("parseFails", {})
             fails[seg_id] = fails.get(seg_id, 0) + 1
             if fails[seg_id] < PLAN_PARSE_RETRIES:     # the model is non-deterministic → give it a few tries
@@ -3817,10 +3889,16 @@ def _group_store(store, fsid, now):
     if len(tops) < 2 or sig == store.get("groupedSig"):
         store["groupedSig"] = sig                      # <2 tops / unchanged → record the set so we don't re-ask
         return 0
-    ops = _parse_group(group_llm(_group_menu_text(store, tops)), len(tops))
+    raw = group_llm(_group_menu_text(store, tops))
+    ops = _parse_group(raw, len(tops))
     if ops is None:
-        _log_judge_error("grouper", fsid, "parse")
-        return 0                                       # leave groupedSig stale → retry next call
+        if raw:                                        # a real reply the parser rejected (empty = call-level,
+            _log_judge_error("grouper", fsid, "parse", note="reply tail: %r" % raw[-160:])   # logged upstream)
+            if _sig_fail(store, "group", sig, "grouper", fsid,
+                         "grouping this open-top set skipped until the set changes"):
+                store["groupedSig"] = sig              # give-up: adopt the set so the gate closes
+        return 0                                       # under the cap the sig stays stale → retry next call
+    _sig_fail_clear(store, "group")
     relinks = apply_group(store, tops, ops, now)
     store["groupedSig"] = sorted(nd["id"] for nd in _group_tops(store))   # snapshot the NEW open-top set
     return relinks
@@ -3832,9 +3910,10 @@ def _group_session(fsid, path, now):
     own placements). Event-gated via _group_store; a status re-roll follows a structural change."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     store = load_goals(fsid)
-    before = store.get("groupedSig")
+    before = (store.get("groupedSig"), store.get("groupFails"), store.get("groupFailSig"))
     relinks = _group_store(store, fsid, now)
-    if relinks or store.get("groupedSig") != before:   # persist only on a real change (relink or a new sig)
+    after = (store.get("groupedSig"), store.get("groupFails"), store.get("groupFailSig"))
+    if relinks or after != before:                     # persist a relink, a new sig, or a strike-counter change
         if relinks:                                    # a structural change needs a status re-roll
             rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
         save_goals(fsid, store)
@@ -3918,10 +3997,16 @@ def _consolidate_store(store, fsid, now):
     if len(comp) < 2 or sig == store.get("consolidatedSig"):
         store["consolidatedSig"] = sig                 # <2 / unchanged → record the set so we don't re-ask
         return changed
-    ops = _parse_group(group_llm(_group_menu_text(store, comp), judge="consolidator"), len(comp))
+    raw = group_llm(_group_menu_text(store, comp), judge="consolidator")
+    ops = _parse_group(raw, len(comp))
     if ops is None:
-        _log_judge_error("consolidator", fsid, "parse")
-        return changed                                 # leave consolidatedSig stale → retry next pass
+        if raw:                                        # a real reply the parser rejected (empty = call-level,
+            _log_judge_error("consolidator", fsid, "parse", note="reply tail: %r" % raw[-160:])   # logged upstream)
+            if _sig_fail(store, "consolidate", sig, "consolidator", fsid,
+                         "consolidating this completed-top set skipped until the set changes"):
+                store["consolidatedSig"] = sig         # give-up: adopt the set so the gate closes
+        return changed                                 # under the cap the sig stays stale → retry next pass
+    _sig_fail_clear(store, "consolidate")
     relinks = apply_group(store, comp, ops, now)
     store["consolidatedSig"] = sorted(nd["id"] for nd in _consolidate_tops(store))   # snapshot the NEW set
     return changed or relinks > 0
@@ -3933,9 +4018,10 @@ def _consolidate_session(fsid, path, now):
     drop off the top-level status map (they become its sub-nodes)."""
     _judge_ctx.fsid = fsid
     store = load_goals(fsid)
-    before = store.get("consolidatedSig")
+    before = (store.get("consolidatedSig"), store.get("consolidateFails"), store.get("consolidateFailSig"))
     changed = _consolidate_store(store, fsid, now)
-    if changed or store.get("consolidatedSig") != before:
+    after = (store.get("consolidatedSig"), store.get("consolidateFails"), store.get("consolidateFailSig"))
+    if changed or after != before:                     # persist a change, a new sig, or a strike-counter change
         if changed:
             rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
         save_goals(fsid, store)
@@ -4150,10 +4236,25 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     if not menu:
         return []
     hist = _menu_history_text(store, seg_by_id, menu, CLOSE_HISTORY_CHARS) if seg_by_id is not None else ""
-    out = _parse_close(closer_llm(_unit_text(turn["atoms"]), _menu_text(store, menu), hist), len(menu))
+    raw = closer_llm(_unit_text(turn["atoms"]), _menu_text(store, menu), hist)
+    out = _parse_close(raw, len(menu))
     if out is None:
-        _log_judge_error("closer", store.get("rompUuid"), "parse")
-        return None
+        if not raw:
+            return None                                # the CALL failed (logged by _judge_run) → retry next
+            #                                            pass; never counts toward the give-up cap
+        _log_judge_error("closer", store.get("rompUuid"), "parse", note="reply tail: %r" % raw[-160:])
+        fails = store.setdefault("closeFails", {})
+        fails[turn["id"]] = fails.get(turn["id"], 0) + 1
+        if fails[turn["id"]] >= JUDGE_FAIL_CAP:
+            fails.pop(turn["id"], None)
+            _log_judge_error("closer", store.get("rompUuid"), "give-up",
+                             note="%d parse rejects on turn %s; skipping it until the turn gains atoms"
+                                  % (JUDGE_FAIL_CAP, str(turn["id"])[:12]))
+            return []                                  # give up on THIS turn: no verdicts, and the caller
+            #                                            marks it closed at its current size — a new atom
+            #                                            changes the size signature and re-judges (event re-arm)
+        return None                                    # under the cap → leave unswept, retry next pass
+    store.get("closeFails", {}).pop(turn["id"], None)  # a clean reply clears the turn's strike count
     newly = apply_close(store, menu, out, t=turn.get("t"))
     segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
     if segs:                                           # anchor each resolved (done/blocked) top to the recap
@@ -4639,13 +4740,13 @@ def _distill_session(fsid, path, now):
                     # a retry-pause (esp. one that flaps on/off mid-pass) permanently blanks the card's brief to
                     # the "" sentinel though the API was never actually asked (the user 2026-07-03). Leave
                     # blockSummary null → re-enters next pass; retry once the pause clears.
-                _log_judge_error("briefer", fsid, "call")
-                fails = nodes[top].get("briefFails", 0) + 1
+                fails = nodes[top].get("briefFails", 0) + 1   # the failed call itself was logged by _judge_run
                 if fails >= DISTILL_FAIL_CAP:          # gave up after K tries → SELF-HEAL: settle to the ""
                     if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
                     nodes[top]["briefedMt"] = due; nodes[top]["briefFails"] = 0
-                    _log_judge_error("briefer", fsid, "give-up")   # distinct from the retryable "call"
+                    _log_judge_error("briefer", fsid, "give-up",   # distinct from the retryable "call"
+                                     note="%d failed calls on this card; brief blanked, card warns; a fresh block re-arms" % fails)
                     _warn_summary_failed(nodes[top], "brief", now)   # fail LOUDLY: card warn + modal, no silent blank
                 else:
                     nodes[top]["briefFails"] = fails    # keep counting; retry next pass (leave blockSummary null)
@@ -4680,13 +4781,13 @@ def _distill_session(fsid, path, now):
         if not out:
             if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure — don't count it toward
                 continue                               # give-up (leave summary null → re-enters once unpaused)
-            _log_judge_error("distiller", fsid, "call")
-            fails = nodes[top].get("distillFails", 0) + 1
+            fails = nodes[top].get("distillFails", 0) + 1   # the failed call itself was logged by _judge_run
             if fails >= DISTILL_FAIL_CAP:              # gave up after K tries → SELF-HEAL to the "" sentinel
                 if nodes[top].get("summary") is None:  # so the card stops showing "(generating…)" forever
                     nodes[top]["summary"] = ""
                 nodes[top]["distilledMt"] = due; nodes[top]["distillFails"] = 0
-                _log_judge_error("distiller", fsid, "give-up")
+                _log_judge_error("distiller", fsid, "give-up",
+                                 note="%d failed calls on this card; summary blanked, card warns; a re-completion re-arms" % fails)
                 _warn_summary_failed(nodes[top], "distiller", now)   # fail LOUDLY: card warn + modal, no silent blank
             else:
                 nodes[top]["distillFails"] = fails     # keep counting; retry next pass (leave summary null)
@@ -5064,10 +5165,26 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         sender_store = load_goals(sender)
         menu = open_menu(sender_store)
         _judge_ctx.fsid = fsid                        # usage logging: attribute to the recipient session
-        edit = _parse_courier(courier_llm(text, _menu_text(sender_store, menu), declared=declared), len(menu))
+        raw = courier_llm(text, _menu_text(sender_store, menu), declared=declared)
+        edit = _parse_courier(raw, len(menu))
+        if not edit and not raw:
+            continue                                  # the CALL failed (logged by _judge_run) → retry next
+            #                                           pass; never counts toward the give-up cap
         if not edit:
-            _log_judge_error("courier", fsid, "parse")
-            continue                                  # failed parse → retry next pass (never orphan)
+            _log_judge_error("courier", fsid, "parse", note="reply tail: %r" % raw[-160:])
+            fails = store.setdefault("courierFails", {})
+            fails[seg_id] = fails.get(seg_id, 0) + 1
+            if fails[seg_id] < JUDGE_FAIL_CAP:
+                save_goals(fsid, store)               # remember the strike; retry next pass (never orphan)
+                continue
+            fails.pop(seg_id, None)                   # give up judging: resolve from the sender's DECLARED
+            edit = {"delegating": declared == "delegate",   # kind (schema-required at send time) — a delegate
+                    "n": None, "text": _seg_label(text)}    # plants verbatim, the rest files as fyi
+            _log_judge_error("courier", fsid, "give-up",
+                             note="%d parse rejects on a peer message; resolved from its declared kind (%s)"
+                                  % (JUDGE_FAIL_CAP, declared or "none"))
+        else:
+            store.get("courierFails", {}).pop(seg_id, None)   # a clean reply clears the strike count
         if edit["delegating"]:
             link_id = menu[edit["n"] - 1]["id"] if edit["n"] else None   # sender's related open goal (or None)
             # Mint the sender's precise '↪ delegated to <recipient>' tracking node (the user 2026-06-22) and

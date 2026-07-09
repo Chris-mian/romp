@@ -164,7 +164,7 @@ class PlacePromptPins(unittest.TestCase):
                       "the depth budget is embedded in the placer prompt, kept in sync with MAX_DEPTH")
 
     def test_plan_prompts_describe_the_tree_menu(self):
-        for sys_prompt in (jd.PLAN_SYS, jd.PLAN_PROMPT_SYS):
+        for sys_prompt in (jd.PLAN_SYS, jd.OPENER_SYS):
             self.assertIn("top-level **card", sys_prompt,
                           "both planner runs file subs against top-level cards")
 
