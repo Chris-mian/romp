@@ -1305,6 +1305,56 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(cards[g1]["nudgeFailed"], "the failed stamp still drives the chip itself")
         self.assertIsNone(cards[g2]["nudged"], "a never-nudged goal ships null")
 
+    def test_debug_mode_joins_warn_rows_onto_the_card(self):
+        # the user 2026-07-09: with `romp --debug on`, every judge failure touching a card rides it to the
+        # modal's Warnings section — goal-linked rows land on that card only, other sessions' rows never.
+        g1, g2 = SID + ":g1", SID + ":g2"
+        self._goal_store(
+            {g1: {"id": g1, "text": "build the exporter", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0},
+             g2: {"id": g2, "text": "an unrelated card", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            {g1: "working", g2: "working"}, last=g1)
+        saved_errors = jd.ERRORS
+        jd.ERRORS = Path(self.td.name) / "judge-errors.jsonl"
+        try:
+            rows = [{"t": NOW - 60, "judge": "distiller", "fsid": SID, "err": "cite-miss", "note": "n1", "goal": g1},
+                    {"t": NOW - 50, "judge": "closer", "fsid": SID, "err": "parse", "note": "n2", "goal": [g1],
+                     "debug": {"input": "in", "reply": "out"}},
+                    {"t": NOW - 40, "judge": "closer", "fsid": "99999999-0000-0000-0000-000000000000",
+                     "err": "parse", "note": "other session", "goal": [g1]}]
+            jd.ERRORS.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            (jd.STATE / "debug-mode.json").write_text('{"on": true}')
+            km._jerr_cache.clear()
+            cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+            got = cards[g1]["warnRows"]
+            self.assertEqual([r["note"] for r in got], ["n1", "n2"], "this card's rows only, newest last")
+            self.assertEqual(got[1]["debug"], {"input": "in", "reply": "out"}, "the capture rides through")
+            self.assertIsNone(cards[g2]["warnRows"], "no rows → no section")
+            (jd.STATE / "debug-mode.json").write_text('{"on": false}')
+            cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+            self.assertIsNone(cards[g1]["warnRows"], "debug off → nothing read, nothing emitted")
+        finally:
+            jd.ERRORS = saved_errors
+
+    def test_card_warn_rows_join_shapes(self):
+        # the pure join: goal as one id, goal as the closer's id list, seg resolved through placements
+        # (any filing phase suffix); other sessions and unrelated goals never land; capped newest-last.
+        sub = {"S:g1", "S:g1a"}
+        pl = {"S:9:aa": "S:g1a", "S:9:bb#p": "S:g1"}
+        rows = [{"fsid": "S", "goal": "S:g1", "note": "a"},
+                {"fsid": "S", "goal": ["S:g9", "S:g1a"], "note": "b"},
+                {"fsid": "S", "seg": "S:9:aa", "note": "c"},
+                {"fsid": "S", "seg": "S:9:bb", "note": "d"},
+                {"fsid": "S", "goal": "S:g9", "note": "nope"},
+                {"fsid": "T", "goal": "S:g1", "note": "nope"}]
+        got = km._card_warn_rows(rows, "S", sub, pl)
+        self.assertEqual([r["note"] for r in got], ["a", "b", "c", "d"])
+        many = [{"fsid": "S", "goal": "S:g1", "note": str(i)} for i in range(30)]
+        self.assertEqual(len(km._card_warn_rows(many, "S", sub, {}, cap=20)), 20)
+        self.assertEqual(km._card_warn_rows(many, "S", sub, {}, cap=20)[-1]["note"], "29",
+                         "the cap keeps the newest rows")
+
     def test_provisional_card_surfaces_for_a_seam_tail(self):
         # design/segment-regrowth.md: a top settles while its placed segment keeps growing with real
         # work → the tail splits into a fresh unplaced segment, and the feed shows a Working placeholder

@@ -6695,6 +6695,63 @@ def _wait_for_graph(now, alive_sids):
 
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
+_jerr_cache = {}   # str(path) -> ((mtime_ns, size), rows)
+
+
+def _judge_error_rows(now, horizon=3 * 86400, tail_bytes=262144):
+    """The recent judge-failure rows (judge-errors.jsonl tail), for the debug-mode card join. Reads the
+    last ~256KB only (the log is append-only and old rows are stale history for a live modal), keeps rows
+    inside `horizon`, newest last. mtime-cached: one stat per push while the file is quiet."""
+    p = jd.ERRORS
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return []
+    hit = _jerr_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    rows = []
+    try:
+        with open(p, "rb") as f:
+            if st.st_size > tail_bytes:
+                f.seek(-tail_bytes, 2)
+                f.readline()                          # drop the partial first line
+            for line in f.read().decode("utf-8", "replace").splitlines():
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(r, dict) and (r.get("t") or 0) >= now - horizon:
+                    rows.append(r)
+    except OSError:
+        rows = []
+    _jerr_cache[str(p)] = (key, rows)
+    return rows
+
+
+def _card_warn_rows(rows, fsid, subtree, placements, cap=20):
+    """Debug-mode join: the failure rows that belong on ONE card. A row lands here when its `goal` names
+    a node in the card's subtree (a single id, or the closer's list of menu ids), or when its `seg`
+    resolves into the subtree through the store's placements (any filing phase: bare, '#p', '#live',
+    '#d'). Newest last, capped so one storm can't bloat the push."""
+    out = []
+    for r in rows:
+        if r.get("fsid") != fsid:
+            continue
+        g = r.get("goal")
+        hit = (g in subtree if isinstance(g, str)
+               else bool(subtree.intersection(g)) if isinstance(g, list) else False)
+        if not hit and r.get("seg"):
+            for suf in ("", "#p", "#live", "#d"):
+                v = placements.get(r["seg"] + suf)
+                if isinstance(v, str) and v in subtree:
+                    hit = True
+                    break
+        if hit:
+            out.append(r)
+    return out[-cap:]
+
+
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -6704,6 +6761,10 @@ def build_feed(now, tmux=None):
     if tmux is None:
         tmux = _tmux_sessions()
     cleared = _cleared_ids()
+    # Debug mode (the user 2026-07-09): join judge-failure rows onto each card so a rejection is
+    # inspectable from the card modal (judge, kind, evidence, and in-debug capture: input + reply).
+    # Zero cost when off: no rows read, no key emitted.
+    dbg_rows = _judge_error_rows(now) if jd._debug_mode() else None
     asks, working = [], []
     alive = _alive_sessions(now, tmux)               # hard filter: living sessions only
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
@@ -7087,6 +7148,9 @@ def build_feed(now, tmux=None):
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
+                "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
+                                             store.get("placements") or {}) or None)
+                            if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section
                 "tree": flatten(nid, [])})
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing

@@ -63,6 +63,7 @@ interface AskItem {
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
+  warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp --debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
   awaiting?: { why?: string | null } | null;       // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why".
@@ -1382,6 +1383,47 @@ function applyModalArtifacts(host: HTMLElement, it: AskItem): void {
   host.appendChild(strip);
 }
 
+// Debug-mode judge warnings (the user 2026-07-09): every judge failure touching this card, appended
+// below the tree/artifacts. The kernel only emits warnRows while `romp --debug on`, so the section
+// simply never exists in normal mode. One line per failure (time · judge · kind — evidence); a row
+// captured in debug mode expands (native <details>) to the failing call's full input + reply, so a
+// rejection is inspectable the moment it happens, without reproducing it.
+function applyModalWarnings(host: HTMLElement, it: AskItem): void {
+  const rows = it.warnRows || [];
+  let sec = host.querySelector(":scope > .fmodal-warns") as HTMLElement | null;
+  if (!rows.length) { sec?.remove(); return; }
+  const sig = rows.map((r) => r.t + r.judge + r.err).join("|");
+  if (sec && (sec as any)._sig === sig) return;   // unchanged → keep the DOM (an open <details> survives the push)
+  sec?.remove();
+  sec = el("div", "fmodal-warns");
+  (sec as any)._sig = sig;
+  const head = el("div", "fmodal-warns-head");
+  head.textContent = `Warnings — ${rows.length} judge failure${rows.length === 1 ? "" : "s"} (debug mode)`;
+  sec.appendChild(head);
+  for (const r of rows.slice().reverse()) {       // newest first: the live story on top
+    const row = el("div", "fmodal-warn-row");
+    const line = el("div", "fmodal-warn-line");
+    line.textContent = `${clockHM(r.t)} · ${r.judge} · ${r.err}${r.note ? " — " + r.note : ""}`;
+    row.appendChild(line);
+    if (r.debug && (r.debug.input || r.debug.reply)) {
+      const det = document.createElement("details");
+      det.className = "fmodal-warn-det";
+      const sum = document.createElement("summary");
+      sum.textContent = "input + reply";
+      det.appendChild(sum);
+      for (const [cap, txt] of [["input", r.debug.input], ["reply", r.debug.reply]] as const) {
+        if (!txt) continue;
+        const capEl = el("div", "fmodal-warn-cap"); capEl.textContent = cap;
+        const pre = document.createElement("pre"); pre.className = "fmodal-warn-pre"; pre.textContent = txt;
+        det.append(capEl, pre);
+      }
+      row.appendChild(det);
+    }
+    sec.appendChild(row);
+  }
+  host.appendChild(sec);
+}
+
 // Hierarchy is shown by INDENTATION alone (no ASCII tree connectors — the
 // disclosure triangles + indent levels already carry the structure; the user's
 // de-clutter ruling 2026-06-10).
@@ -1815,6 +1857,7 @@ function renderModal() {
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
     applyModalArtifacts(body, it);     // produced-file previews below the tree (the user 2026-07-08)
+    applyModalWarnings(body, it);      // debug mode: this card's judge failures, input+reply expandable (the user 2026-07-09)
   }
   // The bottom bar always shows (every modal has an age + Clear); the Follow-up button inside it hides
   // itself for standalone deliverables (no follow-up), and the composer stays collapsed until toggled.

@@ -5786,6 +5786,51 @@ class FailureContract(unittest.TestCase):
                       "at the cap the courier resolves from the sender's schema-declared kind")
         self.assertIn('_log_judge_error("courier", fsid, "give-up"', src)
 
+    # ── debug mode (the user 2026-07-09): rows carry the failing call's input + reply ──
+    def test_debug_mode_attaches_the_failing_calls_input_and_reply(self):
+        (jd.STATE / "debug-mode.json").write_text('{"on": true}')
+        jd._judge_ctx.last = {"judge": "closer", "input": "<work>the work</work>", "reply": "not json at all"}
+        jd._log_judge_error("closer", "sid-d", "parse", note="reply tail: 'not json at all'")
+        row = self._errors()[-1]
+        self.assertEqual(row["debug"], {"input": "<work>the work</work>", "reply": "not json at all"},
+                         "the row alone shows what the judge saw and what it answered")
+        # a stale stash from a DIFFERENT judge never attaches to this row
+        jd._judge_ctx.last = {"judge": "planner", "input": "x", "reply": "y"}
+        jd._log_judge_error("closer", "sid-d", "parse", note="n")
+        self.assertNotIn("debug", self._errors()[-1])
+
+    def test_debug_off_keeps_rows_lean(self):
+        jd._judge_ctx.last = {"judge": "closer", "input": "i", "reply": "r"}
+        jd._log_judge_error("closer", "sid-d", "parse", note="n")
+        self.assertNotIn("debug", self._errors()[-1], "no capture unless romp --debug on")
+
+    def test_linkage_fields_ride_the_row(self):
+        jd._log_judge_error("placer", "sid-l", "parse", note="n", goal="sid-l:g7")
+        self.assertEqual(self._errors()[-1]["goal"], "sid-l:g7")
+        jd._log_judge_error("opener", "sid-l", "parse", note="n", seg="sid-l:123:abcd1234")
+        self.assertEqual(self._errors()[-1]["seg"], "sid-l:123:abcd1234")
+
+    def test_closer_rows_name_the_goals_on_the_menu(self):
+        s, turn = self._closable()
+        gid = next(iter(s["nodes"]))
+        saved = jd.closer_llm
+        jd.closer_llm = lambda *a: "garbage"
+        try:
+            jd._close_turn(s, turn)
+        finally:
+            jd.closer_llm = saved
+        row = [r for r in self._errors() if r["judge"] == "closer"][-1]
+        self.assertEqual(row["goal"], [gid], "the debug view joins closer failures onto cards by these ids")
+
+    def test_mid_elide_keeps_both_ends(self):
+        s = "HEAD" + "x" * 10000 + "TAIL"
+        out = jd._mid_elide(s, 400)
+        self.assertLess(len(out), 500)
+        self.assertTrue(out.startswith("HEAD"), "the work text at the front survives")
+        self.assertTrue(out.endswith("TAIL"), "the goal menu at the back survives")
+        self.assertIn("chars elided", out)
+        self.assertEqual(jd._mid_elide("short", 400), "short")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
