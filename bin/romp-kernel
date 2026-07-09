@@ -1555,11 +1555,22 @@ def _auto_nudge_tick(now, tmux):
                 #                                          or nothing genuine to arm off at all
                 # NUDGE FAILED (design/stalled-open-todos-nudge.md): we already nudged, the agent's response
                 # turn has ENDED (the session-level gates above passed: not working, genuine stop, closer
-                # settled — and the closer runs LAST among the judge tiers, so the planner has processed the
-                # response too), yet the goal is STILL 'working' (the per-goal status gate above). The one
-                # ask didn't resolve it and we never re-ask — surface it to the human instead: stamp the
-                # record so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
+                # settled), yet the goal is STILL 'working' (the per-goal status gate above). The one ask
+                # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
+                # so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
                 if rec and not rec.get("failed"):
+                    # PLACEMENT GATE (the user 2026-07-09, the g143 phantom stall): closer-settled does NOT
+                    # imply the planner processed the nudge RESPONSE — the closer and planner gate on
+                    # different work, and on g143 this stamped 'failed' at 16:06 while the planner's
+                    # resolve landed at 16:10: a four-minute phantom "stalled". The planner's own
+                    # "processed" event is the response segment's PLACEMENT: while the parsed turns show
+                    # this goal's nudge segment still unplaced, the response is still in the judge's queue —
+                    # skip and re-check next tick (event-based, no timer). No visible nudge segment
+                    # (parse lag, pre-marker history) keeps the stamp-now behavior.
+                    resp = next((s2 for tn2 in reversed(turns[-4:]) for s2 in jd._segs(tn2, store)
+                                 if jd._seg_nudge(s2) and jd._seg_followup(s2) == gid), None)
+                    if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
+                        continue                           # the planner hasn't ruled on the response yet
                     _mark_nudge_failed(gid)
                     nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
                     fired = True                           # push so the chip/floor reaches the feed now
