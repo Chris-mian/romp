@@ -545,6 +545,15 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
   color: #e5484d; border: 1px solid #e5484d; border-radius: 5px; padding: 1px 6px;
 }
+/* ⚠ retrying since HH:MM — the open turn is inside an api-retry storm (kernel `retrying`): the same red
+   api-trouble family as .fask-apierror (same size — same information type), but FADED like the working
+   treatments: the session is still in motion, not stopped, and no Retry button — auto-retry is already
+   doing that (the user 2026-07-09). */
+.fask-retrying {
+  flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
+  color: #e5484d; border: 1px solid rgba(229, 72, 77, 0.6); border-radius: 5px; padding: 1px 6px;
+  opacity: 0.85;
+}
 .fdismiss.fretry { color: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:disabled { opacity: 0.55; cursor: default; }

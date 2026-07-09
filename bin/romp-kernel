@@ -3994,6 +3994,47 @@ def _states_awaiting_overlay(sid):
     return last
 
 
+def _session_retrying(sid, tm):
+    """The session is inside an api-retry storm RIGHT NOW — its live backend state reads "retrying" (the
+    SDK snapshot, written by the api_retry backoff) → {"since": <storm start>, "count": <attempt>} for the
+    feed card's "retrying since" chip, else None. Without this a storm renders as plain healthy Working:
+    the API-error badge (_api_error) is gated on the session being IDLE, and a retry storm keeps the turn
+    open — nimbus sat retrying for ~80 minutes with nothing on the card and auto-nudge correctly silent
+    (the user 2026-07-09: "working" with zero progress is exactly what's worth surfacing).
+
+    `since` = the start of the CURRENT contiguous retrying stretch in the states log (event-based: the
+    first retrying row after the last non-retrying state row — a recovery in between ends the stretch, so
+    a re-entered storm dates from its own start, not the morning's). None when no retrying row has landed
+    yet (the snapshot can lead the log by a beat) → the chip renders without a time. SDK-only: a tmux
+    row's state is never "retrying", so this is None there and the transcript-based _api_error path is
+    unchanged."""
+    if not tm or tm.get("state") != "retrying":
+        return None
+    since = None
+    try:
+        with open(jd.STATE / "states" / ("%s.jsonl" % sid), errors="replace") as f:
+            for line in f:
+                if '"state"' not in line:
+                    continue                               # overlay/recovery rows don't bound a stretch
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                st = o.get("state") if isinstance(o, dict) else None
+                if st == "retrying":
+                    if since is None:
+                        since = o.get("t")                 # first row of the current stretch
+                elif st:
+                    since = None                           # any real state transition ends the stretch
+    except OSError:
+        pass
+    try:
+        count = int(tm.get("retryCount") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    return {"since": since, "count": count}
+
+
 def _retry_recoveries(sid):
     """Durable recovery markers from states/<sid>.jsonl — {"t":…,"retriesRecovered":N} lines the SDK backend
     writes when a stalled api_retry turn resumes real output (append_retry_recovered). Returns
@@ -6817,6 +6858,11 @@ def build_feed(now, tmux=None):
         # settle (the user 2026-07-07). Same derivation as the chat chip + timeline lane (_interrupting):
         # SDK's own in-flight flag for SDK sessions, the stop record for tmux. Safe to call again in this push.
         sess_interrupting = _interrupting(fsid, ps or {}, now, tm)
+        # An api-retry storm INSIDE an open turn (the user 2026-07-09): the live backend state says
+        # "retrying" → the working card wears a "retrying since HH:MM" chip. The API-error badge below
+        # (aerr) only fires once the session is idle-stalled, so without this a storm reads as plain
+        # healthy Working for its whole life — nimbus's card said Working through an ~80-minute storm.
+        sess_retrying = _session_retrying(fsid, tm)
         store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
                                                  # status never shows a half-applied intermediate (atomic visibility)
         nodes, status = store.get("nodes", {}), store.get("status", {})
@@ -7166,6 +7212,7 @@ def build_feed(now, tmux=None):
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
+                "retrying": (sess_retrying if column == "working" else None),   # api-retry storm in the OPEN turn → "retrying since HH:MM" chip on the working card; chip only, no column move (the user 2026-07-09)
                 "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
                 "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
                 "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
