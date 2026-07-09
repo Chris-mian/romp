@@ -1519,7 +1519,7 @@ class Grouper(unittest.TestCase):
         records = [uline(T0, "task", "u1", ps="typed"), aline(T0 + 10, "did", "a1", "u1", stop="end_turn")]
         self._setup(store, records)
         calls = []
-        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'
         jd.run_group(now=T0 + 5000)
         self.assertEqual(len(calls), 0, "fewer than two tops → nothing to group, model not called")
         self.assertIsNotNone(jd.load_goals(SID).get("groupedSig"), "the (single-top) set is still recorded")
@@ -1661,7 +1661,7 @@ class Consolidator(unittest.TestCase):
     def test_groups_completed_siblings_under_a_completed_umbrella(self):
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         self._setup(s, self._RECORDS)
-        jd.group_llm = lambda menu: ('{"ops":[{"why":"both finish X","do":"mint","text":"Umbrella X"},'
+        jd.group_llm = lambda menu, **k: ('{"ops":[{"why":"both finish X","do":"mint","text":"Umbrella X"},'
                                      '{"why":"x","do":"group","goal":1,"ref":1},'
                                      '{"why":"x","do":"group","goal":2,"ref":1}]}')
         jd.run_consolidate(now=T0 + 5000)
@@ -1716,7 +1716,7 @@ class Consolidator(unittest.TestCase):
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         self._setup(s, self._RECORDS)
         calls = []
-        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'      # model declines to group
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'      # model declines to group
         jd.run_consolidate(now=T0 + 5000)
         self.assertEqual(len(calls), 1, "the consolidator called the model once for the new completed set")
         jd.run_consolidate(now=T0 + 5000)
@@ -1726,7 +1726,7 @@ class Consolidator(unittest.TestCase):
         s = self._completed_store([("g1", "Solo", ["sA"])])
         self._setup(s, self._RECORDS)
         calls = []
-        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'
         jd.run_consolidate(now=T0 + 5000)
         self.assertEqual(len(calls), 0, "fewer than two completed tops → nothing to consolidate, model not called")
         self.assertIsNotNone(jd.load_goals(SID).get("consolidatedSig"), "the (single-top) set is still recorded")
@@ -4441,7 +4441,7 @@ class Distiller(unittest.TestCase):
 
     def test_brief_cite_miss_stamps_the_warn(self):
         # the block-brief path is the distiller's twin — the same miss stamps the same warn kind (logged
-        # under tier "brief", matching its other error records).
+        # under tier "briefer", matching its other error records).
         records = [uline(T0, "ship it", "u1", ps="typed"),
                    aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
@@ -4459,7 +4459,7 @@ class Distiller(unittest.TestCase):
             jd.ERRORS = d / "judge-errors.jsonl"
             self.assertEqual(jd.run_distill(now=now), 1)
             recs = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
-            self.assertEqual([(r["tier"], r["err"]) for r in recs], [("brief", "cite-miss")])
+            self.assertEqual([(r["tier"], r["err"]) for r in recs], [("briefer", "cite-miss")])
         finally:
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
@@ -4934,8 +4934,8 @@ class GistLlm(unittest.TestCase):
         self.assertEqual(out, "a dark-mode toggle for settings", "normalized: trimmed, trailing dot dropped")
         self.assertEqual((seen["model"], seen["tier"]), (jd._index_model(), "index"), "the cheap INDEX tier (Haiku)")
         self.assertIs(seen["sys"], jd.GIST_SYS)
-        self.assertEqual(seen["judge"], "captioner",
-                         "the prompt gist is the CAPTIONER's message caption, not a separate hidden 'gist' judge (the user 2026-06-19)")
+        self.assertEqual(seen["judge"], "gister",
+                         "the prompt gist wears its own name (the user 2026-07-08; the timeline folds it onto the captioner row)")
         self.assertIn("please add a dark mode toggle", seen["user"], "the prompt rides in the <prompt> tags")
 
     def test_empty_model_reply_is_empty_string(self):
@@ -4944,18 +4944,19 @@ class GistLlm(unittest.TestCase):
 
 
 class BlockBriefJudgeLabel(unittest.TestCase):
-    """No hidden judges (the user 2026-06-19): the block-distiller's decision brief is the distiller's
-    block-side run, so it logs as judge='distiller' (its timeline mark is already on the distiller row) —
-    a 'brief' label orphaned the run from its mark, hiding its API time/tokens."""
+    """One name per distinct prompt (the user 2026-07-08, superseding the 2026-06-19 shared label): the
+    block brief logs as judge='briefer'. Its timeline mark still rides the distiller row — the kernel's
+    _JUDGE_FAMILY fold keeps the run attached to its mark (the orphaned-'brief' lesson, solved at the
+    band instead of by sharing the label)."""
 
-    def test_brief_llm_logs_as_the_distiller(self):
+    def test_brief_llm_logs_as_the_briefer(self):
         seen, saved = {}, jd._judge_run
         jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(judge=judge) or "a brief")
         try:
             jd.brief_llm("the goal", "the work", "owed a decision")
         finally:
             jd._judge_run = saved
-        self.assertEqual(seen["judge"], "distiller", "the brief rides the distiller row, so its run logs as the distiller")
+        self.assertEqual(seen["judge"], "briefer", "the block brief wears its own name in the logs")
 
 
 class OrphanRollup(unittest.TestCase):
@@ -5546,6 +5547,42 @@ class CourierDeclaredKind(unittest.TestCase):
             seg("QUESTION: which port?\n<!-- romp-msg-id: 1 -->\n<!-- romp-msg-kind: question -->")), "question")
         self.assertEqual(jd._seg_peer_kind(seg("hello\n<!-- romp-msg-id: 1 -->")), "")
         self.assertEqual(jd._seg_peer_kind(seg("spoofed <!-- romp-msg-kind: banana -->")), "")
+
+
+
+
+class OneNamePerPrompt(unittest.TestCase):
+    """Every distinct system prompt logs under its own judge name (the user 2026-07-08): the gist, the
+    prompt-run planner, the placer, the block brief, and the consolidator pass no longer borrow their
+    family's label, so usage/error logs can tell them apart. (The kernel folds the fine labels back to
+    role-family rows for the timeline band — _JUDGE_FAMILY in bin/romp-kernel.)"""
+
+    def test_each_prompt_wears_its_own_label(self):
+        seen, orig = [], jd._judge_run
+        jd._judge_run = lambda *a, **k: seen.append(k.get("judge")) or ""
+        try:
+            jd.gist_llm("x")
+            jd.plan_prompt_llm("x", "menu")
+            jd.brief_llm("g", "w", "o")
+            jd.group_llm("menu")
+            jd.group_llm("menu", judge="consolidator")
+            jd.plan_llm("x", "menu")
+            jd.distill_llm("g", "w")
+        finally:
+            jd._judge_run = orig
+        self.assertEqual(seen, ["gister", "prompt-planner", "briefer",
+                                "grouper", "consolidator", "planner", "distiller"])
+
+    def test_placer_label_and_error_paths_pinned_in_source(self):
+        # place_llm is conftest-stubbed suite-wide (no test may reach a real subprocess), so its label —
+        # and the two newly-loud fallback paths — are pinned at the source level instead.
+        import inspect
+        src = inspect.getsource(jd)
+        self.assertIn('judge="placer"', src)
+        self.assertIn('_log_judge_error("placer", store.get("rompUuid"), "parse")', src,
+                      "a placer reply that names no usable spot is logged, not silently card-filed")
+        self.assertIn('_log_judge_error("prompt-planner", fsid, "parse")', src,
+                      "a prompt-run reply that never parsed is logged before the hard coerce")
 
 
 if __name__ == "__main__":

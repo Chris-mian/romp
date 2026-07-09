@@ -475,12 +475,13 @@ GIST_SYS = (
     "the phrase.")
 
 
-def gist_llm(prompt_text, judge="captioner"):
+def gist_llm(prompt_text, judge="gister"):
     """One short TOPIC phrase for a user request (INDEX tier, Haiku, thinking off) — what the ask is ABOUT,
-    present-focused (vs caption_llm's past-tense 'what got done'). The captioner's per-segment MESSAGE
-    caption (the timeline dot + the provisional card's 'Analyzing: …', which reads the same persisted
-    caption). Attributed to the CAPTIONER, never a separate 'gist' judge (the user 2026-06-19). Same
-    BARE-phrase contract as the captioner, so _clean_caption normalizes + guards it. '' on failure."""
+    present-focused (vs caption_llm's past-tense 'what got done'). The captioner's sibling: the per-segment
+    MESSAGE caption (the timeline dot + the provisional card's 'Analyzing: …', which reads the same persisted
+    caption). Logged as its own judge 'gister' — every distinct prompt wears its own name (the user
+    2026-07-08; supersedes the 2026-06-19 captioner attribution). Same BARE-phrase contract as the
+    captioner, so _clean_caption normalizes + guards it. '' on failure."""
     return _clean_caption(_judge_run(_index_model(), GIST_SYS, "<prompt>\n%s\n</prompt>" % prompt_text, judge=judge, tier="index"))
 
 
@@ -1985,7 +1986,7 @@ def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
     not just the _provisional_card placeholder. mint OR sub only (never skip/done/block; no work yet). ''
     on failure. Input is the raw prompt gist (PLAN_PROMPT_SYS), not the captioner's framed unit text."""
     user = "<prompt>\n%s\n</prompt>\n<open-goals>\n%s\n</open-goals>" % (prompt_text, menu_text)
-    return _judge_run(model or _triage_model(), PLAN_PROMPT_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(model or _triage_model(), PLAN_PROMPT_SYS, user, effort=effort, judge="prompt-planner").strip()[:JUDGE_JSON_CAP]
 
 
 def place_llm(step_text, why, card_menu_text, model=None, effort=None):
@@ -2151,7 +2152,7 @@ def _caption_call(task):
     is the past-tense 'what got done' (caption_llm)."""
     _judge_ctx.fsid = task.get("fsid")
     if task.get("kind") == "prompt":
-        return gist_llm(task["text"], judge="captioner")
+        return gist_llm(task["text"])
     return caption_llm(task["text"])
 
 
@@ -2465,6 +2466,9 @@ def _card_route_subs(store, ops, menu, placer=True):
             n = None
         if n and 1 <= n <= len(scoped):
             o["under"] = pos[scoped[n - 1]["id"]]
+        else:
+            _log_judge_error("placer", store.get("rompUuid"), "parse")   # the fallback (attach at the
+            #                                    card) is silent on the board — make it loud in the log
     return ops
 
 
@@ -3261,7 +3265,9 @@ def _plan_session(fsid, path, now):
             ops = _parse_plan(plan_prompt_llm(text, _menu_text(store, menu)), len(menu)) or []
             ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
             if not ops:
+                _log_judge_error("prompt-planner", fsid, "parse")   # the coerce below hard-places, so this
                 ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
+                #                                       failure is otherwise invisible
             ops = _card_route_subs(store, ops, menu, placer=False)   # card-level only: placing the ask is
             #                                           latency-sensitive; the work-run refines depth later
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p", prompt_uuid=trig, quote=vq)
@@ -3727,11 +3733,12 @@ def _parse_group(raw, menu_len):
     return ops
 
 
-def group_llm(menu_text):
+def group_llm(menu_text, judge="grouper"):
     """The grouper's {"ops":[...]} reply from the TRIAGE-tier model (Sonnet) over a session's open top
-    goals. '' on failure."""
+    goals. '' on failure. One prompt, two passes: the working-column grouper (default label) and the
+    completed-column consolidator, which logs under its own name (the user 2026-07-08)."""
     user = "<open-goals>\n%s\n</open-goals>" % menu_text
-    return _judge_run(_triage_model(), GROUP_SYS, user, judge="grouper").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(_triage_model(), GROUP_SYS, user, judge=judge).strip()[:JUDGE_JSON_CAP]
 
 
 def apply_group(store, tops, ops, t):
@@ -3912,7 +3919,7 @@ def _consolidate_store(store, fsid, now):
     if len(comp) < 2 or sig == store.get("consolidatedSig"):
         store["consolidatedSig"] = sig                 # <2 / unchanged → record the set so we don't re-ask
         return changed
-    ops = _parse_group(group_llm(_group_menu_text(store, comp)), len(comp))
+    ops = _parse_group(group_llm(_group_menu_text(store, comp), judge="consolidator"), len(comp))
     if ops is None:
         _log_judge_error("consolidator", fsid, "parse")
         return changed                                 # leave consolidatedSig stale → retry next pass
@@ -4486,12 +4493,12 @@ BLOCK_BRIEF_SYS = (
 
 
 def brief_llm(goal_text, work_text, block_why):
-    """The block-distiller's decision brief for one blocked goal from the TRIAGE-tier model (Sonnet). ''
-    on failure. Logged as judge='distiller' (NOT 'brief'): it IS the distiller's block-side run, and its
-    timeline mark is emitted on the distiller row (kind 'brief') — a 'brief' usage label orphaned the run
-    from its mark, so its API time/tokens never showed in the hover (the user 2026-06-19)."""
+    """The briefer's decision brief for one blocked goal from the TRIAGE-tier model (Sonnet). '' on
+    failure. Logged as judge='briefer' — its own name, its own prompt (the user 2026-07-08). Its timeline
+    mark still rides the distiller row: the kernel folds fine labels to role-family rows (_JUDGE_FAMILY),
+    which is what keeps the hover's API time/tokens attached (the 2026-06-19 orphaned-'brief' lesson)."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, block_why)
-    return _judge_run(_triage_model(), BLOCK_BRIEF_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
+    return _judge_run(_triage_model(), BLOCK_BRIEF_SYS, user, judge="briefer").strip()   # caller splits SOURCE, then caps
 
 
 def _last_state_value(fsid):
@@ -4633,13 +4640,13 @@ def _distill_session(fsid, path, now):
                     # a retry-pause (esp. one that flaps on/off mid-pass) permanently blanks the card's brief to
                     # the "" sentinel though the API was never actually asked (the user 2026-07-03). Leave
                     # blockSummary null → re-enters next pass; retry once the pause clears.
-                _log_judge_error("brief", fsid, "call")
+                _log_judge_error("briefer", fsid, "call")
                 fails = nodes[top].get("briefFails", 0) + 1
                 if fails >= DISTILL_FAIL_CAP:          # gave up after K tries → SELF-HEAL: settle to the ""
                     if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
                     nodes[top]["briefedMt"] = due; nodes[top]["briefFails"] = 0
-                    _log_judge_error("brief", fsid, "give-up")   # distinct from the retryable "call"
+                    _log_judge_error("briefer", fsid, "give-up")   # distinct from the retryable "call"
                     _warn_summary_failed(nodes[top], "brief", now)   # fail LOUDLY: card warn + modal, no silent blank
                 else:
                     nodes[top]["briefFails"] = fails    # keep counting; retry next pass (leave blockSummary null)
@@ -4653,7 +4660,7 @@ def _distill_session(fsid, path, now):
             nodes[top]["summaryAnchor"] = marks.map.get(src)   # the brief's cited source (None → kernel's deterministic fallback)
             if marks.map and marks.map.get(src) is None:   # labels offered, no usable citation → card warn + log
                 _warn_cite_miss(nodes[top], "brief", now)
-                _log_judge_error("brief", fsid, "cite-miss", note="%s; %d labels offered; reply tail: %r" % (
+                _log_judge_error("briefer", fsid, "cite-miss", note="%s; %d labels offered; reply tail: %r" % (
                     ("cited unoffered label %s" % src) if src else "no SOURCE line", len(marks.map), (raw or "")[-160:]))
             else:
                 _node_warn_clear(nodes[top], "cite-miss")  # cited (or nothing to cite) → the anomaly is over

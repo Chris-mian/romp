@@ -7858,6 +7858,14 @@ def _token_analytics(now, window):
     return {"window": window, "now": now, "sessions": s, "judges": _judge_usage(t0)}
 
 
+# Usage/error logs carry one name per distinct prompt (the user 2026-07-08): gister, prompt-planner,
+# placer, briefer, consolidator. The timeline band keeps ROLE-FAMILY rows, so fold fine labels to their
+# family wherever usage rows meet band marks — this is what keeps a briefer call's time/tokens attached
+# to its mark on the distiller row (the 2026-06-19 orphaned-'brief' lesson).
+_JUDGE_FAMILY = {"gister": "captioner", "prompt-planner": "planner", "placer": "planner",
+                 "briefer": "distiller", "consolidator": "grouper"}
+
+
 def _attach_run_usage(judging, t0, alive_sids):
     """Attach each judging mark's REAL API call to it by greedy nearest-time matching it to the judge's
     actual calls in judge-usage.jsonl (same fsid + judge): cost (ms / in / out tokens) AND the literal
@@ -7880,7 +7888,7 @@ def _attach_run_usage(judging, t0, alive_sids):
         t, sid = o.get("t"), o.get("fsid")
         if not isinstance(t, (int, float)) or t < t0 or sid not in alive_sids:
             continue
-        runs.setdefault((sid, o.get("judge")), []).append(
+        runs.setdefault((sid, _JUDGE_FAMILY.get(o.get("judge"), o.get("judge"))), []).append(
             {"t": t, "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
              "sent": o.get("sent"), "recv": o.get("recv")})
     for v in runs.values():
@@ -7932,6 +7940,7 @@ def _run_judging(t0, alive_sids, semantic):
         except Exception:
             continue
         sid, judge = o.get("fsid"), o.get("judge")
+        judge = _JUDGE_FAMILY.get(judge, judge)
         if sid not in alive_sids:
             continue
         sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
@@ -7955,6 +7964,7 @@ def _run_judging(t0, alive_sids, semantic):
     now = time.time()
     for run in jd.active_runs():
         sid, judge, sent = run.get("fsid"), run.get("judge"), run.get("sent")
+        judge = _JUDGE_FAMILY.get(judge, judge)
         if sid not in alive_sids or not isinstance(sent, (int, float)):
             continue
         if sent < t0 or (sid, judge, sent) in done:
