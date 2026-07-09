@@ -4431,7 +4431,7 @@ DISTILL_SYS = (
     "message reflects how it actually ended. This line is parsed off and never shown.")
 
 
-def distill_llm(goal_text, work_text, done_why=""):
+def distill_llm(goal_text, work_text, done_why="", prior_summary=""):
     """The distiller's key-takeaway for one completed goal from the TRIAGE-tier model (Sonnet). '' on
     failure. done_why = the closer's completion verdict (the node's doneWhy), fed as <completed> ground
     truth so the summary reflects what was ACCOMPLISHED even when the work history is thin or mostly the
@@ -4439,6 +4439,13 @@ def distill_llm(goal_text, work_text, done_why=""):
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>" % (goal_text, work_text)
     if done_why:
         user += "\n<completed>\n%s\n</completed>" % done_why
+    if prior_summary:
+        user += ("\n<prior-summary>\n%s\n</prior-summary>"
+                 "\n<note>The user has already read <prior-summary>; it covers everything before their "
+                 "follow-up, and <work> holds only what happened after it. Write the takeaway as the "
+                 "**update**: what the follow-up stretch delivered or answered, never a recap of "
+                 "<prior-summary>. Rebuild the background from <prior-summary> and <goal> so a fresh "
+                 "reader is still oriented.</note>" % prior_summary)
     return _judge_run(_triage_model(), DISTILL_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
 
 
@@ -4504,6 +4511,33 @@ def _last_state_value(fsid):
     return val
 
 
+def _distill_due_t(store, nid, blocked):
+    """The authoritative "this goal (re)resolved" time the distiller/brief gate compares against —
+    never `mt` (the user 2026-07-08, the Proton-card regression): since the diary flip an event-only
+    reopen→settle cycle bumps no cache stamp, so an mt-keyed gate slept through re-completions and the
+    card kept its stale pre-follow-up summary. Completed side = the settle event (settledAt); blocked
+    side = the newest block event anywhere in the subtree (the block that owes the brief can sit on a
+    descendant). Falls back to mt only when the store predates those events entirely."""
+    nodes = store["nodes"]
+    nd = nodes.get(nid) or {}
+    if not blocked:
+        return nd.get("settledAt") or nd.get("mt")
+    kids = {}
+    for x, d in nodes.items():
+        kids.setdefault(d.get("parentId"), []).append(x)
+    best = None
+    stack = [nid]
+    while stack:
+        x = stack.pop()
+        for e in (nodes.get(x, {}).get("log") or []):
+            if e.get("kind") == "block":
+                t = e.get("ev_t") or e.get("at") or 0
+                if best is None or t > best:
+                    best = t
+        stack.extend(kids.get(x, []))
+    return best or nd.get("mt")
+
+
 def _distill_session(fsid, path, now):
     """Distill each newly-(re)resolved TOP goal of ONE session, COMPLETED and BLOCKED alike (the user
     2026-06-18). Gather the goal's full WORK history — the text of every segment in its trail and its whole
@@ -4525,9 +4559,9 @@ def _distill_session(fsid, path, now):
     # settled goal never re-enters — this self-heals existing stuck cards without a migration. Same for
     # blocked/blockSummary.
     todo = [nid for nid, st in status.items() if nodes.get(nid) and (
-            (st == "completed" and (nodes[nid].get("distilledMt") != nodes[nid].get("mt")
+            (st == "completed" and (nodes[nid].get("distilledMt") != _distill_due_t(store, nid, False)
                                     or nodes[nid].get("summary") is None)) or
-            (st == "blocked" and (nodes[nid].get("briefedMt") != nodes[nid].get("mt")
+            (st == "blocked" and (nodes[nid].get("briefedMt") != _distill_due_t(store, nid, True)
                                   or nodes[nid].get("blockSummary") is None)))]
     # LIVE picker/permission floor (the user 2026-06-29): a session parked RIGHT NOW on a live prompt is
     # blocked-on-you, but the planner hasn't classified its focus goal — its stored status is still 'working',
@@ -4540,7 +4574,8 @@ def _distill_session(fsid, path, now):
         while f and nodes.get(f, {}).get("parentId") is not None:
             f = nodes[f].get("parentId")
         if (f in nodes and status.get(f) not in ("completed", "cleared")
-                and (nodes[f].get("briefedMt") != nodes[f].get("mt") or nodes[f].get("blockSummary") is None)):
+                and (nodes[f].get("briefedMt") != _distill_due_t(store, f, True)
+                     or nodes[f].get("blockSummary") is None)):
             live_brief.add(f)
             if f not in todo:
                 todo.append(f)
@@ -4554,6 +4589,7 @@ def _distill_session(fsid, path, now):
     n, changed = 0, False
     for top in todo:
         blocked = status.get(top) == "blocked" or top in live_brief   # live-picker focus → brief it like a block
+        due = _distill_due_t(store, top, blocked)      # the event time this (re)resolution stamps back
         stack, sub = [top], []                         # the top + all descendants (its whole subtree) — still
         while stack:                                   # needed below for blkd, so kept alongside _goal_work_text
             x = stack.pop(); sub.append(x); stack.extend(children.get(x, []))
@@ -4566,6 +4602,14 @@ def _distill_session(fsid, path, now):
         # already leads with the recent owed question, and BLOCK_BRIEF_SYS isn't taught to read the marker.
         boundary_t = None if blocked else nodes[top].get("deltaSince")
         work = _goal_work_text(store, seg_by_id, top, DISTILL_WORK_CHARS, marks=marks, boundary_t=boundary_t)
+        prior = "" if blocked else (nodes[top].get("summary") or "")
+        if prior and FOLLOWUP_DIVIDER in work:
+            # Structural delta scoping (the user 2026-07-08): on a re-completion the model gets the prior
+            # summary plus only the post-follow-up stretch, so a whole-goal recap is impossible rather
+            # than discouraged. First-ever distills (summary null/'') keep the full history + divider.
+            work = work.split(FOLLOWUP_DIVIDER, 1)[1].strip() or work
+        else:
+            prior = ""
         if blocked:
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
             owed = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"] if blkd else ""
@@ -4574,7 +4618,7 @@ def _distill_session(fsid, path, now):
                 # forever. Stamp briefedMt so we don't retry; don't clobber a real brief from an earlier block.
                 if nodes[top].get("blockSummary") is None:
                     nodes[top]["blockSummary"] = ""
-                nodes[top]["briefedMt"] = nodes[top].get("mt"); changed = True
+                nodes[top]["briefedMt"] = due; changed = True
                 continue
             out = brief_llm(nodes[top].get("text", ""), work, owed)
             if not out:
@@ -4588,7 +4632,7 @@ def _distill_session(fsid, path, now):
                 if fails >= DISTILL_FAIL_CAP:          # gave up after K tries → SELF-HEAL: settle to the ""
                     if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
-                    nodes[top]["briefedMt"] = nodes[top].get("mt"); nodes[top]["briefFails"] = 0
+                    nodes[top]["briefedMt"] = due; nodes[top]["briefFails"] = 0
                     _log_judge_error("brief", fsid, "give-up")   # distinct from the retryable "call"
                     _warn_summary_failed(nodes[top], "brief", now)   # fail LOUDLY: card warn + modal, no silent blank
                 else:
@@ -4607,7 +4651,7 @@ def _distill_session(fsid, path, now):
                     ("cited unoffered label %s" % src) if src else "no SOURCE line", len(marks.map), (raw or "")[-160:]))
             else:
                 _node_warn_clear(nodes[top], "cite-miss")  # cited (or nothing to cite) → the anomaly is over
-            nodes[top]["briefedMt"] = nodes[top].get("mt")
+            nodes[top]["briefedMt"] = due
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             _node_warn_clear(nodes[top], "brief-failed")   # a brief landed → drop any earlier give-up warn
             n += 1; changed = True
@@ -4618,9 +4662,9 @@ def _distill_session(fsid, path, now):
             # distilledMt so we don't retry; don't clobber a real summary from an earlier completion.
             if nodes[top].get("summary") is None:
                 nodes[top]["summary"] = ""
-            nodes[top]["distilledMt"] = nodes[top].get("mt"); changed = True
+            nodes[top]["distilledMt"] = due; changed = True
             continue
-        out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "")
+        out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "", prior_summary=prior)
         if not out:
             if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure — don't count it toward
                 continue                               # give-up (leave summary null → re-enters once unpaused)
@@ -4629,7 +4673,7 @@ def _distill_session(fsid, path, now):
             if fails >= DISTILL_FAIL_CAP:              # gave up after K tries → SELF-HEAL to the "" sentinel
                 if nodes[top].get("summary") is None:  # so the card stops showing "(generating…)" forever
                     nodes[top]["summary"] = ""
-                nodes[top]["distilledMt"] = nodes[top].get("mt"); nodes[top]["distillFails"] = 0
+                nodes[top]["distilledMt"] = due; nodes[top]["distillFails"] = 0
                 _log_judge_error("distiller", fsid, "give-up")
                 _warn_summary_failed(nodes[top], "distiller", now)   # fail LOUDLY: card warn + modal, no silent blank
             else:
@@ -4650,7 +4694,7 @@ def _distill_session(fsid, path, now):
                 ("cited unoffered label %s" % src) if src else "no SOURCE line", len(marks.map), (raw or "")[-160:]))
         else:
             _node_warn_clear(nodes[top], "cite-miss")      # cited (or nothing to cite) → the anomaly is over
-        nodes[top]["distilledMt"] = nodes[top].get("mt")
+        nodes[top]["distilledMt"] = due
         nodes[top]["distillFails"] = 0                 # success → reset the counter
         _node_warn_clear(nodes[top], "summary-failed") # a summary landed → drop any earlier give-up warn
         n += 1; changed = True

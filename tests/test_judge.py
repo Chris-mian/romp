@@ -3813,8 +3813,8 @@ class DeltaScopedDistill(unittest.TestCase):
             store["nodes"][g]["deltaSince"] = deltaSince
         jd.save_goals(SID, store)
         captured = {}
-        jd.distill_llm = lambda goal_text, work_text, done_why="": (
-            captured.__setitem__("work", work_text) or "BACKGROUND: b.\nTAKEAWAY: t.\nSOURCE: m2")
+        jd.distill_llm = lambda goal_text, work_text, done_why="", prior_summary="": (
+            captured.update(work=work_text, prior=prior_summary) or "BACKGROUND: b.\nTAKEAWAY: t.\nSOURCE: m2")
         jd._distill_session(SID, str(path), NOW)
         return captured.get("work", ""), jd.load_goals(SID)["nodes"][g]
 
@@ -3830,6 +3830,70 @@ class DeltaScopedDistill(unittest.TestCase):
         self.assertNotIn(jd.FOLLOWUP_DIVIDER, work, "no boundary → the pre-fix whole-history input")
         self.assertIn("did the first thing", work)
         self.assertIn("did the follow-up thing", work)
+
+    def _run_recompleted(self, distilledMt_offset=120):
+        # the Proton-card regression shape (the user 2026-07-08): a REAL prior summary, mt frozen at the
+        # original completion (== distilledMt), but the diary's settle (settledAt) is newer — only an
+        # event-time gate re-enters. deltaSince marks the follow-up boundary.
+        records = [uline(T0, "first ask", "u1", ps="typed"),
+                   aline(T0 + 10, "did the first thing", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "follow-up ask", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "did the follow-up thing", "a2", "u2", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        g = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "lastNode": g, "placements": {},
+                 "status": {g: "completed"},
+                 "nodes": {g: {"id": g, "text": "the goal", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "settledDone": True,
+                               "trail": [sg["id"] for sg in segs], "t": T0, "mt": T0 + 120,
+                               "summary": "the old whole-goal summary",
+                               "distilledMt": T0 + distilledMt_offset,
+                               "settledAt": T0 + 200, "deltaSince": T0 + 50, "doneWhy": "finished it"}}}
+        jd.save_goals(SID, store)
+        captured = {}
+        jd.distill_llm = lambda goal_text, work_text, done_why="", prior_summary="": (
+            captured.update(work=work_text, prior=prior_summary) or "BACKGROUND: b.\nTAKEAWAY: t2.\nSOURCE: m1")
+        jd._distill_session(SID, str(path), NOW)
+        return captured, jd.load_goals(SID)["nodes"][g]
+
+    def test_recompletion_regates_on_the_settle_event_not_mt(self):
+        captured, node = self._run_recompleted()
+        self.assertIn("work", captured, "the distiller re-ran though mt never moved (event-time gate)")
+        self.assertNotIn("did the first thing", captured["work"],
+                         "pre-follow-up history is structurally absent, not merely discouraged")
+        self.assertIn("did the follow-up thing", captured["work"])
+        self.assertNotIn(jd.FOLLOWUP_DIVIDER, captured["work"], "no divider needed — only the tail is sent")
+        self.assertEqual(captured["prior"], "the old whole-goal summary")
+        self.assertEqual(node["summary"], "t2.", "the update replaced the stale takeaway")
+        self.assertEqual(node["distilledMt"], T0 + 200, "the stamp is the settle event time, not mt")
+
+    def test_already_distilled_at_the_settle_time_stays_quiet(self):
+        captured, node = self._run_recompleted(distilledMt_offset=200)   # distilledMt == settledAt
+        self.assertNotIn("work", captured, "gate is idempotent at the event time — no re-distill loop")
+        self.assertEqual(node["summary"], "the old whole-goal summary")
+
+    def test_distill_llm_prior_summary_note(self):
+        from unittest import mock
+        with mock.patch.object(jd, "_judge_run", return_value="x") as m:
+            jd.distill_llm("g", "w", "dw", prior_summary="old take")
+            user = m.call_args.args[2]
+        self.assertIn("<prior-summary>\nold take\n</prior-summary>", user)
+        self.assertIn("never a recap", user)
+        with mock.patch.object(jd, "_judge_run", return_value="x") as m:
+            jd.distill_llm("g", "w", "dw")
+            self.assertNotIn("prior-summary", m.call_args.args[2])
+
+    def test_blocked_due_time_is_the_newest_subtree_block_event(self):
+        g, c = SID + ":g1", SID + ":g2"
+        store = {"rompUuid": SID, "seq": 2, "placements": {}, "status": {},
+                 "nodes": {g: {"id": g, "text": "top", "parentId": None, "mt": T0, "log": []},
+                           c: {"id": c, "text": "sub", "parentId": g, "mt": T0,
+                               "log": [{"src": "planner", "kind": "block", "ev_t": T0 + 300, "at": T0 + 301}]}}}
+        self.assertEqual(jd._distill_due_t(store, g, True), T0 + 300,
+                         "the brief gate keys on the block event, wherever in the subtree it sits")
+        self.assertEqual(jd._distill_due_t(store, g, False), T0, "completed side falls back to mt without a settle")
 
 
 class KnownTargetContext(unittest.TestCase):
@@ -4022,7 +4086,7 @@ class DistillSections(unittest.TestCase):
                                 "nodes": {gid: {"id": gid, "text": "Faster export", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="": ("BACKGROUND: You asked for a faster export.\n"
+            jd.distill_llm = lambda g, w, dw="", prior_summary="": ("BACKGROUND: You asked for a faster export.\n"
                                                   "TAKEAWAY: It ships gzip now.\nSOURCE: m1")
             self.assertEqual(jd.run_distill(now=now), 1)
             nd = jd.load_goals(SID)["nodes"][gid]
@@ -4066,7 +4130,7 @@ class DistillSections(unittest.TestCase):
                                 "nodes": {gid: {"id": gid, "text": "Do it", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="": "Delivered."       # an older-style reply
+            jd.distill_llm = lambda g, w, dw="", prior_summary="": "Delivered."       # an older-style reply
             self.assertEqual(jd.run_distill(now=now), 1)
             nd = jd.load_goals(SID)["nodes"][gid]
             self.assertEqual(nd["summary"], "Delivered.")
@@ -4173,7 +4237,7 @@ class Distiller(unittest.TestCase):
                                             "doneWhy": "Both parts shipped and verified"}}})
         captured = {}
 
-        def fake_distill(goal_text, work_text, done_why=""):
+        def fake_distill(goal_text, work_text, done_why="", prior_summary=""):
             captured["goal"], captured["work"], captured["done"] = goal_text, work_text, done_why
             return "Part one and part two delivered."
         jd.distill_llm = fake_distill
@@ -4187,7 +4251,7 @@ class Distiller(unittest.TestCase):
         self.assertEqual(captured["done"], "Both parts shipped and verified",
                          "the closer's doneWhy is fed to the distiller as <completed> ground truth")
         calls = []                                          # event-gated: re-running distills nothing
-        jd.distill_llm = lambda g, w, dw="": (calls.append(1), "x")[1]
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": (calls.append(1), "x")[1]
         self.assertEqual(jd.run_distill(now=now), 0)
         self.assertEqual(calls, [], "a goal already distilled at this mt is not re-distilled")
 
@@ -4209,7 +4273,7 @@ class Distiller(unittest.TestCase):
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": trail, "t": T0, "mt": T0 + 210}}})
         seen = {}
-        def fake_distill(goal_text, work_text, done_why=""):
+        def fake_distill(goal_text, work_text, done_why="", prior_summary=""):
             seen["work"] = work_text
             return "Both parts delivered.\nSOURCE: m2"
         jd.distill_llm = fake_distill
@@ -4233,7 +4297,7 @@ class Distiller(unittest.TestCase):
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
-        jd.distill_llm = lambda g, w, dw="": "Delivered without a citation."
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "Delivered without a citation."
         self.assertEqual(jd.run_distill(now=now), 1)
         nd = jd.load_goals(SID)["nodes"][gid]
         self.assertEqual(nd["summary"], "Delivered without a citation.")
@@ -4255,7 +4319,7 @@ class Distiller(unittest.TestCase):
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
-        jd.distill_llm = lambda g, w, dw="": "Delivered, but no citation line."
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "Delivered, but no citation line."
         d = Path(tempfile.mkdtemp()); saved_errors = jd.ERRORS
         try:
             jd.ERRORS = d / "judge-errors.jsonl"
@@ -4291,7 +4355,7 @@ class Distiller(unittest.TestCase):
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
-        jd.distill_llm = lambda g, w, dw="": "Delivered.\nSOURCE: m99"
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "Delivered.\nSOURCE: m99"
         d = Path(tempfile.mkdtemp()); saved_errors = jd.ERRORS
         try:
             jd.ERRORS = d / "judge-errors.jsonl"
@@ -4321,7 +4385,7 @@ class Distiller(unittest.TestCase):
                                             "trail": [s1], "t": T0, "mt": T0 + 10,
                                             "warns": [{"kind": "cite-miss", "t": T0, "msg": "m",
                                                        "detail": "d"}]}}})
-        jd.distill_llm = lambda g, w, dw="": "Delivered.\nSOURCE: m1"
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "Delivered.\nSOURCE: m1"
         self.assertEqual(jd.run_distill(now=now), 1)
         nd = jd.load_goals(SID)["nodes"][gid]
         self.assertEqual(nd["summaryAnchor"], "a1")
@@ -4424,7 +4488,7 @@ class Distiller(unittest.TestCase):
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
-        jd.distill_llm = lambda g, w, dw="": ""             # the call always fails (empty)
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": ""             # the call always fails (empty)
         for i in range(1, jd.DISTILL_FAIL_CAP):             # the pre-cap passes: keep retrying, count climbs
             jd.run_distill(now=now)
             nd = jd.load_goals(SID)["nodes"][gid]
@@ -4437,7 +4501,7 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd.get("distilledMt"), T0 + 10, "distilledMt stamped → never re-enters")
         self.assertEqual(nd.get("distillFails"), 0, "counter reset for a future re-open")
         ran = []                                            # the sentinel is non-null → no more distills
-        jd.distill_llm = lambda g, w, dw="": (ran.append(1), "late")[1]
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": (ran.append(1), "late")[1]
         jd.run_distill(now=now)
         self.assertEqual(ran, [], "a settled card is not re-distilled — the loop is broken")
 
@@ -4592,7 +4656,7 @@ class Distiller(unittest.TestCase):
                             "nodes": {gid: {"id": gid, "text": "G", "parentId": None, "nodeComplete": True,
                                             "blocked": False, "cleared": False, "trail": [s1], "t": T0,
                                             "mt": T0 + 10, "distilledMt": T0 + 10, "summary": "old"}}})
-        jd.distill_llm = lambda g, w, dw="": "fresh"
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "fresh"
         self.assertEqual(jd.run_distill(now=now), 0, "already distilled at this mt -> no-op")
         st = jd.load_goals(SID); st["nodes"][gid]["mt"] = T0 + 999; jd.save_goals(SID, st)   # reopened + re-completed
         self.assertEqual(jd.run_distill(now=now), 1, "mt advanced (re-completed) -> re-distill")
@@ -4611,7 +4675,7 @@ class Distiller(unittest.TestCase):
                             "nodes": {gid: {"id": gid, "text": "Build and verify the feature", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [], "t": T0, "mt": T0 + 10}}})   # empty trail → no work
-        jd.distill_llm = lambda g, w, dw="": (_ for _ in ()).throw(AssertionError("no work → distill_llm must not run"))
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": (_ for _ in ()).throw(AssertionError("no work → distill_llm must not run"))
         jd.run_distill(now=now)
         nd = jd.load_goals(SID)["nodes"][gid]
         self.assertEqual(nd["summary"], "", "no-work top settles to the \"\" sentinel, not a null/'(generating…)'")
@@ -4630,11 +4694,11 @@ class Distiller(unittest.TestCase):
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [], "t": T0, "mt": T0 + 10,
                                             "distilledMt": T0 + 10, "summary": None}}})   # stamped but null
-        jd.distill_llm = lambda g, w, dw="": "should-not-run"
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "should-not-run"
         jd.run_distill(now=now)
         self.assertEqual(jd.load_goals(SID)["nodes"][gid]["summary"], "", "stuck null summary heals to \"\"")
         calls = []
-        jd.distill_llm = lambda g, w, dw="": (calls.append(1), "x")[1]
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": (calls.append(1), "x")[1]
         jd.run_distill(now=now)
         self.assertEqual(calls, [], "once settled to \"\" (non-null), the goal is not reprocessed")
 
@@ -4671,7 +4735,7 @@ class Distiller(unittest.TestCase):
             captured["goal"], captured["work"], captured["owed"] = goal_text, work_text, owed
             return "Decide: Redis or Postgres for the session store."
         jd.brief_llm = fake_brief
-        jd.distill_llm = lambda g, w, dw="": "should-not-run"
+        jd.distill_llm = lambda g, w, dw="", prior_summary="": "should-not-run"
         self.assertEqual(jd.run_distill(now=now), 1, "the blocked top is briefed")
         nd = jd.load_goals(SID)["nodes"][gid]
         self.assertEqual(nd["blockSummary"], "Decide: Redis or Postgres for the session store.")
