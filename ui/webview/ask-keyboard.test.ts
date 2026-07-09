@@ -48,6 +48,37 @@ test("multi-select keyboard: ↑/↓ walk checkboxes + Submit/Cancel; Enter TOGG
   assert.match(CSS, /\.ask-btn\.focus \{ outline: 2px solid var\(--accent\)/);
 });
 
-test("a custom-answer field stops its keys from reaching the card's arrow/Space nav", () => {
-  assert.match(RENDER, /inp\.addEventListener\("keydown", \(e\) => \{ e\.stopPropagation\(\);/);
+// The picker no longer TAKES OVER the message box (the user 2026-07-09): the footer (working chip /
+// interrupt / model selector + composer) stays visible, the inline "add your own" field is gone, and the
+// NORMAL composer doubles as that field.
+test("a live picker keeps the footer/controls visible — it no longer hides the message box", () => {
+  // renderLiveAsk always shows the footer now (no `footer.style.display = "none"`)
+  assert.match(RENDER, /if \(footer\) footer\.style\.display = "";/);
+  assert.doesNotMatch(RENDER, /footer\.style\.display = "none"/);
+});
+
+test("the inline custom-answer INPUT is gone — a static hint points at the message box instead", () => {
+  // no more inline <input class="ask-custom-input"> built in the cards
+  assert.doesNotMatch(RENDER, /className = "ask-custom-input"/);
+  // both single + multi cards append the hint row when a Type-something slot exists
+  assert.match(RENDER, /if \(ask\.options\.some\(\(o\) => isTypeSomething\(o\.label\)\)\) card\.appendChild\(customHintRow\(\)\);/);
+  assert.match(RENDER, /function customHintRow\(\): HTMLElement/);
+  assert.match(RENDER, /type it in the message box below/);
+});
+
+test("a typed composer message routes to the active picker (custom fills Type-something, text answers a raw prompt)", () => {
+  assert.match(RENDER, /function composerAnswersAsk\(\): "custom" \| "text" \| null/);
+  // AskUserQuestion with a Type-something slot → "custom"; a raw unknown prompt → "text"; else null (normal send)
+  assert.match(RENDER, /ask\.options\.some\(\(o\) => isTypeSomething\(o\.label\)\)\) return "custom";/);
+  // sendComposer consults it FIRST and routes instead of sending a normal message
+  assert.match(RENDER, /const askRoute = composerAnswersAsk\(\);\s*\n\s*if \(askRoute\) \{\s*\n\s*if \(askRoute === "custom"\) addCustomLiveAsk\(text\); else sendTextLiveAsk\(text\);/);
+});
+
+test("the composer shows it's in answer mode + the card never steals focus from a typing composer", () => {
+  // placeholder + tint while a free-text picker is up
+  assert.match(RENDER, /ta\.placeholder = "add your own answer…  \(⏎ submit\)";\s*\n\s*ta\.classList\.add\("answering"\);/);
+  assert.match(CSS, /#composer-input\.answering \{ border-color: var\(--accent\)/);
+  // the card only takes focus when the user is NOT typing in an input/textarea (never yanks the caret mid-word)
+  assert.match(RENDER, /function focusCardUnlessTyping\(card: HTMLElement\) \{\s*\n\s*if \(!isTypingTarget\(document\.activeElement\)\) card\.focus/);
+  assert.match(RENDER, /card\.addEventListener\("keydown", onSingleKey\);\s*\n\s*focusCardUnlessTyping\(card\);/);
 });

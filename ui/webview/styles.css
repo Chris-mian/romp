@@ -524,6 +524,11 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    marks the focused panel (the user 2026-06-26). It only fills in the existing 1px border (no glow, no layout
    shift), so the chat's two focus spots read clearly: the tabs, or the message box. */
 #composer-input:focus { border-color: var(--accent); }
+/* A live picker with a free-text path is up → the message box IS that picker's "add your own answer" field
+   now (the user 2026-07-09). Tint it so it's discoverable that typing here answers the prompt (the placeholder
+   also reads "add your own answer…"); the picker's controls stay visible above. */
+#composer-input.answering { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--vscode-input-background, rgba(255, 255, 255, 0.05))); }
+#composer-input.answering::placeholder { color: color-mix(in srgb, var(--accent) 65%, var(--dim)); }
 /* brief amber flash when Ctrl+C fires an interrupt — visible confirmation that the
    stop was sent (the restored prompt is the other half of the feedback) */
 #composer-input.interrupted-flash {
@@ -1065,16 +1070,13 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .ask-preview-diff .diff-ctx { color: var(--vscode-foreground, #ddd); opacity: 0.75; }
 #live-ask.sending { opacity: 0.5; pointer-events: none; }
 /* multi-select checkboxes */
-/* inline "add your own answer" field (drives the TUI Type-something slot) */
+/* the "+ add your own" row — a static hint pointing at the message box below (the inline input moved into
+   the normal composer, the user 2026-07-09); the composer doubles as the free-text answer field now */
 .ask-custom { display: flex; gap: 8px; align-items: center; padding: 5px 9px 2px; }
 .ask-custom-plus { flex: 0 0 auto; color: var(--st-awaiting-bg); font-weight: 700; font-size: 1.05em; }
-.ask-custom-input {
-  flex: 1 1 auto; box-sizing: border-box; min-width: 0;
-  background: var(--vscode-input-background, rgba(255, 255, 255, 0.05));
-  color: var(--vscode-input-foreground, var(--fg));
-  border: 1px solid var(--vscode-input-border, var(--box-border));
-  border-radius: 6px; padding: 5px 9px; font: inherit; outline: none;
-}
+/* dim, matching an option description's weight */
+.ask-custom-hint-text { flex: 1 1 auto; min-width: 0; color: var(--dim); font-size: 0.92em; }
+.ask-live-unknown .ask-custom-hint-text { padding: 4px 9px 2px; }
 .ask-check { display: flex; gap: 9px; align-items: baseline; padding: 4px 9px; border-radius: 5px; cursor: pointer; }
 .ask-check:hover { background: rgba(255, 255, 255, 0.06); }
 /* keyboard focus highlight — same treatment as the single card's .ask-live-opt.focus (the user 2026-06-22) */
@@ -1099,14 +1101,6 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .ask-btn.focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ask-btn-primary { background: var(--st-awaiting-bg); border-color: var(--st-awaiting-bg); color: var(--st-awaiting-fg); font-weight: 600; }
 .ask-btn-primary:hover { filter: brightness(1.1); }
-/* free-text answer input */
-.ask-text-input {
-  width: 100%; box-sizing: border-box; margin-top: 2px;
-  background: var(--vscode-input-background, rgba(255, 255, 255, 0.05));
-  color: var(--vscode-input-foreground, var(--fg));
-  border: 1px solid var(--vscode-input-border, var(--box-border));
-  border-radius: 6px; padding: 7px 10px; font: inherit; outline: none;
-}
 /* safeguard: awaiting screen the panel can't read → warn to check the terminal */
 .ask-live-unknown { border-color: var(--st-awaiting-bg); box-shadow: inset 3px 0 0 var(--st-awaiting-bg); }
 .ask-warn { color: var(--st-awaiting-bg); font-weight: 700; margin-bottom: 9px; line-height: 1.4; }
