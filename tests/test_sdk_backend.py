@@ -1863,5 +1863,89 @@ class RateLimitUsageStaleness(unittest.TestCase):
         self.assertEqual(self._usage()["five_hour"]["pct"], 42, "the event landed in usage.json")
 
 
+class TurnStateIsEventNotCount(unittest.TestCase):
+    """The working signal is an EVENT (the CLI's ResultMessage), never a feed-vs-result COUNT. A
+    ResultMessage settles the session to idle in ONE step, no matter how many messages were forwarded
+    into the turn — the phantom-working fix (the user 2026-07-09): a mid-turn forward did inflight += 1
+    but the CLI emits ONE Result for the merged turn, so the old `inflight -= 1; if 0:` guard never ran
+    the settle and the session read 'working' forever."""
+
+    def _sess(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        return be, s
+
+    def _tail(self, be, s):
+        return sb.last_state_value(Path(be.state_dir), s.sid)
+
+    def _result(self, s):
+        import asyncio
+
+        async def run():
+            s._on_message(_ResultMessage(), _AssistantMessage, _ResultMessage, type("S", (), {}))
+            await asyncio.sleep(0)
+        asyncio.run(run())
+
+    def test_a_single_result_settles_waiting_from_any_inflight(self):
+        # inflight 2 = a message forwarded MID-TURN (each feed += 1); the CLI folds both into one turn and
+        # emits ONE Result. The old guard left inflight at 1 → no 'waiting', phantom-working forever.
+        for n in (1, 2, 3):
+            be, s = self._sess()
+            sb.append_state(Path(be.state_dir), s.sid, "working")
+            s.inflight = n
+            s._cli_working = True
+            self._result(s)
+            self.assertEqual(self._tail(be, s), "waiting",
+                             f"one Result settles idle from inflight={n} — never gated on a count")
+            self.assertEqual(s.inflight, 0, "a Result drains the CLI in one step, not a decrement")
+            self.assertFalse(s._cli_working, "the settle clears the busy flag")
+
+    def test_result_retires_unlanded_work_atoms_from_high_inflight(self):
+        # the retire that the phantom-working session never got: a forwarded-then-merged turn (inflight 2)
+        # whose stream atom never landed on disk must still drop at the Result.
+        be, s = self._sess()
+        be._live[s.sid] = {"w1": {"uuid": "w1", "t": 5},
+                           "echo:hi": {"uuid": "echo:hi", "t": 1, "_echo_text": "hi"}}
+        s.inflight = 2
+        self._result(s)
+        self.assertEqual(set(be._live.get(s.sid, {})), {"echo:hi"},
+                         "unlanded WORK atom drops even from inflight>1; the echo survives")
+
+    def test_stream_work_atom_reasserts_working_after_a_premature_settle(self):
+        # If a state write ever settles ahead of real output (a separate turn queued in the CLI that
+        # streams after the previous Result), the live stream is the truth: a genuine work atom re-stamps
+        # 'working'. This is what makes the signal self-heal without a counter.
+        be, s = self._sess()
+        s._mark("waiting")
+        self.assertFalse(s._cli_working)
+        be._forward(s, _AssistantMessage([_TextBlock("more work")], uuid="w9"))
+        self.assertEqual(self._tail(be, s), "working", "a streamed work atom re-asserts working")
+        self.assertTrue(s._cli_working)
+
+    def test_stream_reassert_is_transition_only_and_skips_echo_and_command(self):
+        be, s = self._sess()
+        statef = Path(be.state_dir) / "states" / (s.sid + ".jsonl")
+        s._mark("working")                                   # already working
+        before = statef.read_text().count("\n")
+        be._forward(s, _AssistantMessage([_TextBlock("x")], uuid="w1"))   # already working → no new stamp
+        after = statef.read_text().count("\n")
+        self.assertEqual(before, after, "no redundant 'working' stamp while already working")
+        # A command line (e.g. a streamed /model confirmation) is NOT active work → never re-asserts.
+        s._mark("waiting")
+        cmd = _UserMessage([_TextBlock("<command-name>/model</command-name>\n"
+                                       "<command-message>model</command-message>\n"
+                                       "<command-args>sonnet</command-args>")], uuid="c1")
+        be._forward(s, cmd)
+        self.assertEqual(self._tail(be, s), "waiting", "a command atom must not re-assert working")
+        self.assertFalse(s._cli_working)
+
+    def test_mark_tracks_the_busy_flag(self):
+        be, s = self._sess()
+        s._mark("working");    self.assertTrue(s._cli_working)
+        s._mark("permission"); self.assertFalse(s._cli_working, "a non-working state clears the flag")
+        s._mark("working");    self.assertTrue(s._cli_working)
+        s._mark("waiting");    self.assertFalse(s._cli_working)
+
+
 if __name__ == "__main__":
     unittest.main()

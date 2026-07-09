@@ -631,6 +631,13 @@ class SdkSession:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
         self.inflight = 0
+        # BUSY is an EVENT, not a count. The CLI is "working" from the moment we hand it input (or it
+        # streams output) until it emits a ResultMessage; a ResultMessage means the CLI has drained
+        # EVERYTHING we sent — however many messages were forwarded mid-turn — and is idle again. We
+        # therefore never DECREMENT toward idle: the Result settles it in one step (see _on_message).
+        # _cli_working mirrors the last lifecycle state we persisted so the live stream can re-assert
+        # 'working' if a stamp ever falls behind actual output, with no reliance on feed-vs-result counting.
+        self._cli_working = False
         self.since = 0
         self.model = reg.get("liveModel") or ""   # seed from the last-known model so the badge/picker show on
         #                                           OPEN (even once eager-connected, before init/a turn reports)
@@ -953,7 +960,7 @@ class SdkSession:
                     self.since = int(time.time())    # a new turn starts now (mid-turn forwards keep the turn's clock)
                     self._interrupted = False        # a fresh turn → clear any stale interrupt flag
                 self.inflight += 1
-                append_state(self.backend.state_dir, self.sid, "working")
+                self._mark("working")
                 self.backend._poke()
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
@@ -989,7 +996,7 @@ class SdkSession:
             if self.inflight:
                 self.inflight = 0
                 self._interrupted = False
-                append_state(self.backend.state_dir, self.sid, "waiting")
+                self._mark("waiting")
                 self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
             opts = self.backend._options(self, ClaudeAgentOptions)
@@ -1075,6 +1082,15 @@ class SdkSession:
         None until the first refresh lands."""
         return self._ctx
 
+    def _mark(self, state: str) -> None:
+        """Persist a lifecycle STATE to states/<sid>.jsonl AND track whether the CLI is producing.
+        Every session-lifecycle state write goes through here so `_cli_working` stays truthful: the live
+        stream (_forward) re-asserts 'working' off this flag if a write ever falls behind real output —
+        the event-based replacement for the feed-vs-result COUNTER that could strand the signal 'working'
+        forever when the two diverged (mid-turn forwards, a dropped result)."""
+        self._cli_working = (state == "working")
+        append_state(self.backend.state_dir, self.sid, state)
+
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             d = msg.data if isinstance(msg.data, dict) else {}
@@ -1104,7 +1120,7 @@ class SdkSession:
             # user 2026-06-23). Cleared the moment real output flows again (assistant text / result).
             self.retrying = True
             self.retry_count += 1                      # one backoff attempt → the live 'attempt N' count
-            append_state(self.backend.state_dir, self.sid, "retrying")
+            self._mark("retrying")
             self.backend._poke()
         elif isinstance(msg, AssistantMessage):
             if self.retrying and self.retry_count:     # first real output after a storm → durable recovery marker
@@ -1122,21 +1138,28 @@ class SdkSession:
             self.retrying = False
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
-            self.inflight = max(0, self.inflight - 1)
+            # A ResultMessage is the AUTHORITATIVE turn-end: the CLI has processed everything we handed it
+            # — one message or a stream of mid-turn forwards that folded into this turn — and is now idle.
+            # So settle to idle in ONE step and UNCONDITIONALLY, never gated on a feed-vs-result count.
+            # (The old `inflight -= 1; if inflight == 0:` guard stranded the session 'working' forever
+            # whenever the two diverged: each mid-turn forward did inflight += 1 but the CLI emits ONE
+            # Result for the merged turn, so inflight never returned to 0 and the settle never ran — the
+            # phantom-working bug, the user 2026-07-09.) If a genuinely separate turn is still queued in
+            # the CLI, its next streamed atom re-asserts 'working' via _forward — the stream is the truth.
+            self.inflight = 0
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
-            if self.inflight == 0:
-                append_state(self.backend.state_dir, self.sid, "waiting")
-                self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
-                asyncio.ensure_future(self._do_refresh_context())   # refresh ctx % + model from the SDK and
-                #   persist them, so the bar reflects the turn that just landed and survives idle/restart.
-                asyncio.ensure_future(self._do_refresh_usage())     # + the exact /usage snapshot (rail bars)
-                self.backend._poke()
-                if self._input_wake is not None:   # turn done → release the next queued turn, if any
-                    self._input_wake.set()
-                if self._reconnect_when_idle and not self.ended:   # an effort change waited for this turn to end
-                    self._reconnect_when_idle = False
-                    self._reconnect = True
-                    self._wake_set()
+            self._mark("waiting")
+            self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
+            asyncio.ensure_future(self._do_refresh_context())   # refresh ctx % + model from the SDK and
+            #   persist them, so the bar reflects the turn that just landed and survives idle/restart.
+            asyncio.ensure_future(self._do_refresh_usage())     # + the exact /usage snapshot (rail bars)
+            self.backend._poke()
+            if self._input_wake is not None:   # turn done → release the next queued turn, if any
+                self._input_wake.set()
+            if self._reconnect_when_idle and not self.ended:   # an effort change waited for this turn to end
+                self._reconnect_when_idle = False
+                self._reconnect = True
+                self._wake_set()
         elif getattr(msg, "rate_limit_info", None) is not None:
             # A RateLimitEvent: the account-wide /usage limits (5h + weekly) the CLI streams when the limit state
             # changes — the SDK's designed source for the rail usage bars. Duck-typed (no SDK-type import needed).
@@ -1167,7 +1190,7 @@ class SdkSession:
         # ordinal so we map it back to the action here.
         ask = permission_to_live(tool_name, tool_input, context)
         remember_n = 2 if getattr(context, "suggestions", None) else None
-        append_state(self.backend.state_dir, self.sid, "permission")
+        self._mark("permission")
         self.backend._emit_ask(self, ask)
         decision = "deny"
         try:
@@ -1183,7 +1206,7 @@ class SdkSession:
         finally:
             self.backend._clear_ask(self)
             if self.inflight:
-                append_state(self.backend.state_dir, self.sid, "working")
+                self._mark("working")
         if decision == "remember":
             return PermissionResultAllow(behavior="allow", updated_permissions=list(context.suggestions))
         if decision == "allow":
@@ -1210,7 +1233,7 @@ class SdkSession:
         }
         if pv:
             ask["previewKind"], ask["preview"] = pv[0], pv[1]
-        append_state(self.backend.state_dir, self.sid, "permission")
+        self._mark("permission")
         self.backend._emit_ask(self, ask)
         choice = "3"
         try:
@@ -1223,7 +1246,7 @@ class SdkSession:
         finally:
             self.backend._clear_ask(self)
             if self.inflight:
-                append_state(self.backend.state_dir, self.sid, "working")
+                self._mark("working")
         if choice == "1":
             return PermissionResultAllow(behavior="allow")
         if choice == "2":
@@ -1236,14 +1259,14 @@ class SdkSession:
         returning the AskUserQuestion `answers` mapping."""
         questions = tool_input.get("questions") or []
         picks: dict[int, object] = {}
-        append_state(self.backend.state_dir, self.sid, "picker")
+        self._mark("picker")
         try:
             for qi, q in enumerate(questions):
                 picks[qi] = await self._ask_one(q, qi, len(questions))
         finally:
             self.backend._clear_ask(self)
             if self.inflight:
-                append_state(self.backend.state_dir, self.sid, "working")
+                self._mark("working")
         return build_answers(questions, picks)
 
     async def _ask_one(self, question: dict, qi: int, total: int):
@@ -2064,6 +2087,13 @@ class SdkBackend:
         d[atom["uuid"]] = atom
         while len(d) > 100:                      # safety cap if no client ever drains/prunes
             del d[next(iter(d))]
+        # The stream is the AUTHORITATIVE busy signal: a genuine WORK atom (streamed assistant/tool
+        # output — not an input echo, not a /model-style command line) means the CLI is producing RIGHT
+        # NOW, so re-assert 'working' if a prior state write settled ahead of it (e.g. a separate turn
+        # queued in the CLI that started streaming after the previous turn's Result). Only on the
+        # transition, so it never spams the log. This is what makes the signal self-heal without a count.
+        if not atom.get("_echo_text") and not atom.get("command") and not sess._cli_working:
+            sess._mark("working")
         self._wake_push()
 
     def _wake_push(self):
