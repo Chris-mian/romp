@@ -3,7 +3,7 @@
 message — reopen/unblock the goal; the reopen event derives the followupAt evidence floor and HOLDS the
 top open when the subtree is all-done (stub nodes retired 2026-07-07) — plus the _done_is_stale guard (a
 done verdict from evidence at/before the move must not snap the card back to Completed) and the grouper's
-everDone guard REMOVAL (a reopened once-done top is groupable again). All fixtures SYNTHETIC."""
+once-done-guard REMOVAL (a reopened once-done top is groupable again). All fixtures SYNTHETIC."""
 import json
 import shutil
 import tempfile
@@ -65,7 +65,7 @@ class UserMoveBlocked(unittest.TestCase):
         # user reopen EVENT must hold the top at working against bottom-up is_complete (2026-07-07).
         store = {"rompUuid": SID, "seq": 2, "placements": {}, "status": {},
                  "nodes": {G1: node(G1, "Build the exporter", done=True, settledDone=True,
-                                    settledAt=NOW - 100, everDone=True),
+                                    settledAt=NOW - 100),
                            G2: node(G2, "Write the writer", parent=G1, done=True)}}
         jd.migrate_store(store)                        # legacy-flag fixture → the boot sweep adopts it
         jd.rollup_status(store, True)
@@ -79,8 +79,10 @@ class UserMoveBlocked(unittest.TestCase):
                          "no stub node is minted — the reopen event alone holds the top open")
         self.assertFalse(st["nodes"][G1].get("followupPending"),
                          "a move is a follow-up WITHOUT a message: held open, but no chip")
-        # _reopen effects rode along: everDone provenance, settledAt → deltaSince for the delta re-distill
-        self.assertTrue(st["nodes"][G1]["everDone"])
+        # _reopen effects rode along: settledAt → deltaSince for the delta re-distill; once-done
+        # history lives in the diary now (everDone retired 2026-07-08)
+        self.assertTrue(any(e["kind"] == "done" for e in st["nodes"][G1]["log"]))
+        self.assertNotIn("everDone", st["nodes"][G1])
         self.assertNotIn("settledAt", st["nodes"][G1])
         self.assertEqual(st["nodes"][G1]["deltaSince"], NOW - 100)
         # a SECOND move is idempotent: still working, still exactly the same two nodes
@@ -156,9 +158,10 @@ class StaleDoneGuard(unittest.TestCase):
         self.assertFalse(store["nodes"][G1]["blocked"])
 
 
-class GrouperMovesEverDone(unittest.TestCase):
-    """The never-move-an-everDone-node guard is REMOVED (the user 2026-07-06): a reopened once-done top
-    is live work again, so the grouper may nest it — an erroneous split pushed back to Working re-merges."""
+class GrouperMovesOnceDone(unittest.TestCase):
+    """The never-move-a-once-done-node guard is REMOVED (the user 2026-07-06): a reopened once-done top
+    is live work again, so the grouper may nest it — an erroneous split pushed back to Working re-merges.
+    (The everDone flag itself was retired 2026-07-08; once-done history lives in the diary.)"""
 
     def setUp(self):
         self.td = tempfile.mkdtemp()
@@ -169,7 +172,9 @@ class GrouperMovesEverDone(unittest.TestCase):
 
     def test_group_relinks_everdone_top(self):
         store = {"rompUuid": SID, "seq": 3, "placements": {}, "status": {},
-                 "nodes": {G1: node(G1, "Fix the parser", everDone=True),   # reopened once-done top
+                 "nodes": {G1: node(G1, "Fix the parser",                   # reopened once-done top —
+                                    log=[{"ev_t": NOW - 400, "src": "closer", "kind": "done", "at": NOW - 400},
+                                         {"ev_t": NOW - 200, "src": "user", "kind": "reopen", "at": NOW - 200}]),
                            G2: node(G2, "Parser rewrite umbrella"),
                            G3: node(G3, "Add parser tests")}}
         tops = [store["nodes"][G1], store["nodes"][G2], store["nodes"][G3]]

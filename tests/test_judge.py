@@ -1603,7 +1603,7 @@ class Consolidator(unittest.TestCase):
         for i, (suf, text, trail) in enumerate(specs):
             gid = SID + ":" + suf
             s["nodes"][gid] = {"id": gid, "text": text, "parentId": None, "nodeComplete": True,
-                               "blocked": False, "cleared": False, "everDone": True, "settledDone": True,
+                               "blocked": False, "cleared": False, "settledDone": True,
                                "trail": trail, "t": T0 + i, "mt": T0 + 10 + i}
         jd.rollup_status(s, True)
         return s
@@ -1632,7 +1632,7 @@ class Consolidator(unittest.TestCase):
                                    "nodeComplete": False, "blocked": False, "cleared": False, "trail": ["sC"],
                                    "t": T0 + 5, "mt": T0 + 5}
         s["nodes"][SID + ":g4"] = {"id": SID + ":g4", "text": "Umb", "parentId": None, "nodeComplete": True,
-                                   "blocked": False, "cleared": False, "everDone": True, "settledDone": True,
+                                   "blocked": False, "cleared": False, "settledDone": True,
                                    "umbrella": True, "trail": [], "t": T0 + 6, "mt": T0 + 6}
         jd.rollup_status(s, True)
         ids = {nd["id"] for nd in jd._consolidate_tops(s)}
@@ -1646,15 +1646,15 @@ class Consolidator(unittest.TestCase):
         self.assertEqual(ids, {SID + ":g2"}, "a top the user crossed off the feed is never re-grouped")
 
     # ── apply-level: done nodes relink unconditionally (the allow_done lift is gone with its guard) ──
-    def test_apply_group_moves_an_everdone_node(self):
-        # 2026-07-06 (the user): apply_group no longer carries the everDone guard or the allow_done
+    def test_apply_group_moves_a_once_done_node(self):
+        # 2026-07-06 (the user): apply_group no longer carries the once-done guard or the allow_done
         # parameter — the consolidator (all-done candidates) and the working grouper (open candidates,
         # possibly reopened-once-done) both relink through the same unconditional path.
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         tops = jd._consolidate_tops(s)
         ops = [{"do": "group", "why": "both done parts of X", "goal": 2, "under": 1}]
         self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20), 1,
-                         "a completed (everDone) node relinks with no special lift")
+                         "a completed node relinks with no special lift")
         self.assertEqual(s["nodes"][SID + ":g2"]["parentId"], SID + ":g1")
 
     # ── the session pass ──
@@ -1697,10 +1697,10 @@ class Consolidator(unittest.TestCase):
     def test_empty_umbrella_is_cleared_but_a_populated_one_is_not(self):
         s = _store()
         s["nodes"][SID + ":g1"] = {"id": SID + ":g1", "text": "Empty header", "parentId": None,
-                                   "nodeComplete": True, "blocked": False, "cleared": False, "everDone": True,
+                                   "nodeComplete": True, "blocked": False, "cleared": False,
                                    "umbrella": True, "trail": [], "t": T0, "mt": T0}        # adopts nothing
         s["nodes"][SID + ":g2"] = {"id": SID + ":g2", "text": "Real header", "parentId": None,
-                                   "nodeComplete": True, "blocked": False, "cleared": False, "everDone": True,
+                                   "nodeComplete": True, "blocked": False, "cleared": False,
                                    "umbrella": True, "trail": [], "t": T0, "mt": T0}
         s["nodes"][SID + ":g3"] = {"id": SID + ":g3", "text": "child", "parentId": SID + ":g2",
                                    "nodeComplete": True, "blocked": False, "cleared": False, "trail": ["s"],

@@ -2879,8 +2879,9 @@ def migrate_store(store):
 
 def _migrate_node(nd):
     changed = nd.pop("logBorn", None) is not None
+    changed = nd.pop("everDone", None) is not None or changed   # retired 2026-07-08: once-done now lives in
     if not nd.get("log") and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")
-                              or nd.get("everDone") or nd.get("followupAt")):
+                              or nd.get("followupAt")):         #   the diary (done events), nowhere reads the flag
         _synth_log(nd)
         changed = True
     if "log" not in nd:
@@ -2904,14 +2905,9 @@ def _synth_log(nd):
     if nd.get("deltaSince"):
         ev("settle", nd["deltaSince"], src="romp")    # the PRIOR episode's settle, ended by the reopen below
     if fa:
-        if nd.get("everDone"):
-            ev("done", fa - 1)                        # preserves the once-done history the reopen implies
         ev("reopen", fa, src="user")
         if nd.get("followupPending"):
             log[-1]["msg"] = True                     # the chip's flag ↦ the msg-marked reopen it derives from
-    elif nd.get("everDone") and not nd.get("nodeComplete"):
-        ev("done", mt - 1)
-        ev("reopen", mt)
     if nd.get("nodeComplete"):                        # the legacy rationale rides the synth event, so the
         ev("done", max(mt, fa or 0), src="agent" if nd.get("agentDone") else "judge",
            why=nd.get("doneWhy"))                     # derived doneWhy/blockWhy reproduce the old text
