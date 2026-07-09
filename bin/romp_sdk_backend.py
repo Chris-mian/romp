@@ -1809,12 +1809,15 @@ class SdkBackend:
         # romp-injected nudge/auto-nudge sent through send() echoed as a BLUE HUMAN bubble (a "Follow-up"),
         # not the GRAY "from romp" auto-nudge it is, until the transcript atom replaced it (the user
         # 2026-06-28). romp-injected → author 'romp'; romp-auto → the romp-logo (rompAuto) marker.
-        injected = "romp-injected" in text
+        # COMMENT FORM only (the user 2026-07-08, mirroring the event model's ROMP_INJECT_RE): a bare
+        # substring also matched CONTENT that merely mentions the marker — a typed follow-up quoting a
+        # card summary about romp-injected echoed as a GRAY romp card.
+        injected = "<!-- romp-injected -->" in text
         echo = {
             "type": "user", "uuid": key, "session_id": sid, "t": int(time.time()), "parentUuid": None,
             "author": "romp" if injected else "human", "_echo_text": text,
             "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
-        if injected and "romp-auto" in text:
+        if injected and "<!-- romp-auto -->" in text:
             echo["rompAuto"] = True                          # auto-nudge → romp-logo on the chat/timeline
         self._live.setdefault(sid, {})[key] = echo
         self._wake_push()

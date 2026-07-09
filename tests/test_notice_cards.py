@@ -35,7 +35,9 @@ class MarkersCarryRompSystem(unittest.TestCase):
         self.assertIn("romp-injected", sdk.BOOT_RESUME_NUDGE, "still romp-injected → author 'romp'")
         with open(os.path.join(BIN, "romp-kernel")) as f:
             src = f.read()
-        self.assertIn('if "romp-system" in text:', src, "build_session flags a romp-system message")
+        self.assertIn('if "<!-- romp-system -->" in text:', src,
+                      "build_session flags a romp-system message — COMMENT FORM only (the user "
+                      "2026-07-08: content merely mentioning romp-system must not flip the card kind)")
         self.assertIn('"retry\\n\\n<!-- romp-injected -->"', src, "Retry stays a plain nudge bubble (no marker)")
 
 

@@ -50,12 +50,18 @@ POSTAL_KIND_RE = re.compile(r"romp-msg-kind:\s*(delegate|coordinate|question)")
 # romp: romp-goal-id is orthogonal "which goal" metadata that rides EVERY feed follow-up, INCLUDING ones
 # you type yourself — those are yours (blue human bubble), so a goal-id alone must NOT author romp; the
 # kernel adds romp-injected for nudges only (the user 2026-06-20).
-ROMP_INJECT_RE = re.compile(r"romp-injected\b")
+# COMMENT FORM ONLY (the user 2026-07-08): every real emitter writes the literal `<!-- romp-injected -->`
+# (kernel _followup_body / RETRY_MSG, the sdk backend's restart notices; romp-judge's NUDGE_MARKER_RE
+# already matches this way). A bare word-match also fired on message CONTENT that merely *mentions* the
+# marker — the user's typed follow-up quoted a card summary discussing romp-injected and rendered as a
+# GRAY ROMP CARD. \s* so the absorbed-atom path's historical whitespace-collapse still matches.
+ROMP_INJECT_RE = re.compile(r"<!--\s*romp-injected\s*-->")
 # romp-AUTO: an AUTO-nudge (the kernel's background _auto_nudge_tick), distinct from a Nudge BUTTON click or a
 # typed follow-up — both of which are romp-injected too. Only auto-nudges (+ postal) are "from romp" for the
 # romp-logo marker; the user's own button/follow-ups are not (the user 2026-06-23). Rides alongside
 # romp-injected; an atom carrying it gets atom["rompAuto"]=True for the timeline/chat to mark.
-ROMP_AUTO_RE = re.compile(r"romp-auto\b")
+# Comment form only, same reason as ROMP_INJECT_RE (content mentioning the marker must not match).
+ROMP_AUTO_RE = re.compile(r"<!--\s*romp-auto\s*-->")
 # Harness-injected SYSTEM wrappers that are NOT the user: a background-task completion (`<task-notification>`,
 # fired when a backgrounded Agent/Task finishes) and `<system-reminder>` blocks. In an SDK session these arrive
 # over the stream as promptSource "sdk", so sdk_human would author them 'human' → _is_opener opens a turn →
@@ -439,7 +445,7 @@ class FileAdapter:
         enqueues, fifo = [], []
         for ts, op, content, seq in self.queue_ops:
             if op == "enqueue":
-                e = {"ts": ts, "text": " ".join((content or "").split()),
+                e = {"ts": ts, "text": " ".join((content or "").split()), "raw": content or "",
                      "proc": None, "restype": None, "seq": seq}
                 enqueues.append(e)
                 fifo.append(e)
@@ -472,7 +478,12 @@ class FileAdapter:
                     text = " ".join(self.qattach_text.get(auid, "").split())
             if auid is not None and auid not in kept:
                 continue   # the fold happened on a rewound branch
-            blocks = [{"type": "text", "text": text}]
+            # The atom carries the FULL text — the whitespace-collapsed form is for MATCHING only (the
+            # user 2026-07-08: collapsing ate the blank line between a follow-up's quoted context and the
+            # typed reply, so markdown folded the reply INTO the blockquote; and the kernel's optimistic
+            # echo could never text-prune against the collapsed copy, so the message rendered TWICE).
+            full = (self.qattach_text.get(auid) if auid is not None else None) or e["raw"] or text
+            blocks = [{"type": "text", "text": full}]
             atom = {
                 "type": "user", "uuid": auid, "session_id": rompuuid,
                 "t": e["proc"], "fsid": self.fsid_of.get(auid),
@@ -481,7 +492,7 @@ class FileAdapter:
                 "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
                 "_seq": e["seq"],
             }
-            if ROMP_AUTO_RE.search(text):   # an AUTO-nudge → flag it, mirroring the native user-record path
+            if ROMP_AUTO_RE.search(full):   # an AUTO-nudge → flag it, mirroring the native user-record path
                 atom["rompAuto"] = True
             atoms.append(atom)
         return atoms

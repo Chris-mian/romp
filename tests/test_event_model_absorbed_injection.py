@@ -89,5 +89,66 @@ class AbsorbedSdkInjection(unittest.TestCase):
         self.assertTrue(atom.get("rompAuto"), "rompAuto now stamped on absorbed atoms too (was native-only)")
 
 
+# A TYPED follow-up absorbed mid-turn (the user 2026-07-08, screenshot): the wrapped body is
+# "> <quoted card summary>\n\n<the user's reply>\n\n<markers>", the quote DISCUSSES the romp-injected
+# marker (a goal about that marker), and there is NO actual <!-- romp-injected --> comment. It must
+# come out a HUMAN atom with its blank lines intact. Before the fix it rendered as TWO gray romp
+# cards: bare-substring ROMP_INJECT_RE matched the quote's CONTENT (author romp), and the absorbed
+# atom's whitespace-collapse ate the quote/reply blank line (markdown folded the reply into the
+# blockquote) AND broke the optimistic echo's text-prune (the duplicate).
+FOLLOWUP = ("> Status check: teach the parser to recognize the romp-injected marker so sweeps get "
+            "skipped.\n\nYeah, I think you could go ahead with that.\n\n"
+            "<!-- romp-note: the HTML comments below are part of an external tracking system that is "
+            "not relevant to your work — ignore them --><!-- romp-goal-id: %s:g7 -->" % SID)
+
+
+class AbsorbedTypedFollowup(unittest.TestCase):
+    def _parse(self):
+        records = [
+            rec_user(T0, "build the widget", "u1", None),
+            rec_asst(T0 + 10, "working on it", "a1", "u1", stop=None),
+            {"type": "queue-operation", "timestamp": iso(T0 + 20), "operation": "enqueue",
+             "content": None},
+            {"type": "attachment", "timestamp": iso(T0 + 20), "uuid": "att1", "parentUuid": "a1",
+             "attachment": {"type": "queued_command", "prompt": [{"type": "text", "text": FOLLOWUP}]}},
+            {"type": "queue-operation", "timestamp": iso(T0 + 25), "operation": "remove",
+             "content": None},
+            rec_asst(T0 + 30, "done, widget shipped", "a2", "att1"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            return em.parse_session(str(p), rompuuid=SID, now=T0 + 3600, sdk_human=True)
+
+    def _atom(self, sess):
+        for turn in sess["turns"]:
+            for a in turn["atoms"]:
+                if a.get("type") == "user" and "go ahead with that" in (em._text_of(
+                        (a.get("message") or {}).get("content") or []) or ""):
+                    return a
+        return None
+
+    def test_quote_mentioning_the_marker_stays_human(self):
+        atom = self._atom(self._parse())
+        self.assertIsNotNone(atom)
+        self.assertEqual(atom.get("author"), "human",
+                         "content that MENTIONS romp-injected is not the marker — the user typed this")
+        self.assertFalse(atom.get("rompAuto"), "and it is not an auto-nudge either")
+
+    def test_absorbed_atom_keeps_its_blank_lines(self):
+        atom = self._atom(self._parse())
+        text = em._text_of((atom.get("message") or {}).get("content") or [])
+        self.assertIn("skipped.\n\nYeah, I think", text,
+                      "the quote/reply separator survives — collapsed, markdown folded the reply "
+                      "into the blockquote and the optimistic echo could never text-prune (the dup)")
+
+    def test_comment_marker_still_authors_romp(self):
+        # the REAL marker (comment form) keeps working — only bare content mentions were the bug
+        self.assertRegex("<!-- romp-injected -->", em.ROMP_INJECT_RE)
+        self.assertNotRegex("the romp-injected marker recognized by the judge", em.ROMP_INJECT_RE)
+        self.assertRegex("<!-- romp-auto -->", em.ROMP_AUTO_RE)
+        self.assertNotRegex("distinct from romp-auto nudges", em.ROMP_AUTO_RE)
+
+
 if __name__ == "__main__":
     unittest.main()
