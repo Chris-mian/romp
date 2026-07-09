@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""romp-judge — the summarizer layer's engine + judges (design/judge.md), INCREMENT 1.
+"""romp-judge — the summarizer layer's engine + judges (docs/judges.md).
 
-Increment 1 is the CAPTIONER only: one `claude -p` call per unit (zero tools, MCP off,
-timeout) producing a caption — ≤8 words, past tense, leads with the result, never names a
-tool. Captions BOTH every segment AND every turn (both first-class). Built on
-bin/romp-event-model. No planner / courier / goals / status / links / writers yet.
+Each judge is a small `claude -p` call (zero tools, MCP off, timeout) over event-model
+units. The roster, tiers, and per-judge detail live in docs/judges.md; the card state
+model in docs/goal-state.md. Built on bin/romp-event-model.
 
-The engine's five jobs (design/judge.md §The engine): discover (via names/), select (units
+The engine's five jobs: discover (via names/), select (units
 whose end is known), run (concurrent, timeout, per-pass budget + per-session fairness),
 write (records keyed by segment/turn id, deduped), stay correct (idempotent, single-pass).
 

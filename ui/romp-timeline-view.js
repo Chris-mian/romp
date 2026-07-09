@@ -2,8 +2,7 @@
 
 // romp-timeline-view — the Timeline tab's panel: a reversed-log window slider +
 // an SVG timeline (lanes per session, activity bars, prompt dots, message
-// connectors, Obsidian-style status chips). A native DOM port of the standalone
-// prototypes/romp-timeline.html render, fed by romp-timeline-data.buildTimelineData().
+// connectors, Obsidian-style status chips).
 //
 // TimelinePanel owns the DOM under a host element: build it once, then call
 // update(data) each poll to redraw the SVG (the slider persists across redraws).
@@ -48,7 +47,7 @@ const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8
                 retrying: { bg: '#e67e22', fg: '#2a1500' } };   // amber: soft-blocked on an API rate-limit/overload auto-retry (api 2026-06-23)
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
-// summarizer judge (design/judge.md). Each mark is FILLED with the colour of the SESSION it acted on and
+// summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and
 // OUTLINED in the judge's OWN colour (so a bar reads as "judge X on session Y"). Fed by
 // data.judging = [{judge, sid, t, kind, text}]. Each judge's colour is a distinct hue from the romp palette.
 // Each judge belongs to a SET (the user 2026-06-29): 'index' = the captioner + archiver (caption/archive
@@ -2656,7 +2655,7 @@ class TimelinePanel {
 
     // ── judging band: the summarizer judges on the same axis, under the lanes. Each mark is coloured
     // by the SESSION it acted on; adjacent same-session marks merge into a stretch of attention. A mark
-    // within ~8s of the live edge is "running now" (white-outlined). (design/judge.md; data.judging.)
+    // within ~8s of the live edge is "running now" (white-outlined). (docs/judges.md; data.judging.)
     if (jShow) {
       const jb0 = M.top + vis.length * LANE_GAP + laneOffTotal + JB_TOPGAP;     // top of the first judge row (below the host-group gaps)
       const jY = (i) => jb0 + i * JROW + JROW * 0.5;

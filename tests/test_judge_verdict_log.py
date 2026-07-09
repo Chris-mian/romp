@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P3.1 dual-write + P3.2 shadow fold (the user 2026-07-06, design/judge-simplification-plan.md).
+"""The verdict log: record_verdict + the fold (docs/goal-state.md).
 
 record_verdict = the gate AND the recorder fused: a verdict that passes may_apply appends an event to
 the node's append-only log before the caller writes the flags (flags stay authoritative until the P3.3

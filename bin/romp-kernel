@@ -9,10 +9,7 @@ Transport is the SAME WebSocket postMessage protocol the bundles already speak (
 `shimJs` bridge is reused verbatim), so the VS Code extension repoints to this kernel with
 zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no dependency).
 
-Sits beside the untouched chat-view Node kernel during the minimal phase (extension stays on
-old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
-
-Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
+Run:  bin/romp-kernel   → opens http://127.0.0.1:7433
 """
 import json, os, re, signal, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
@@ -1725,9 +1722,8 @@ def _timeline_sessions(now, tmux, live_only=False):
 
 
 # ─── new-session / picker / close lifecycle (the + button and × tab control) ───────────────────
-# The TS kernel (chat-view/src/kernel/server.ts) handled createSession / requestSessions / pickResult /
-# closeTab / endSession; the Python rewrite dropped them, so the webview's + picker stayed blank and
-# "New session" spun on its 30s "Opening…" modal forever. Ported here (the user 2026-06-15).
+# createSession / requestSessions / pickResult / closeTab / endSession — without these the webview's
+# + picker stays blank and "New session" spins on its 30s "Opening…" modal forever.
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -3692,8 +3688,8 @@ def _cycle_mode(name, sid, target):
 # ───────────────── live AskUserQuestion picker: tmux pane → webview → keystrokes ─────────────────
 # The interactive picker exists only in the live TUI pane (until answered). _ask_poll scrapes it
 # (ap.parse_ask_pane) and pushes it to the chat webview, which already renders it + posts answer clicks;
-# the driver below translates those clicks back into tmux keystrokes — a Python port of the old TS
-# AskDriver (chat-view/src/kernel/chat.ts). Navigation sends ONE arrow at a time, re-reading the pane
+# the driver below translates those clicks back into tmux keystrokes.
+# Navigation sends ONE arrow at a time, re-reading the pane
 # between presses (the TUI drops rapidly-batched arrows). Each action runs in a daemon thread so the WS
 # recv loop never blocks on the ~110ms gaps. NOTE: end-to-end behavior needs live tmux verification — a
 # real picker — since a static-pane unit test can't model the cursor moving in response to the keys.
@@ -4324,8 +4320,7 @@ def _split_reminders(text):
 
 _IMG_PATH_RE = re.compile(r"(?:^|[\s'\"`(])((?:~/|/)[^\s'\"`()]+\.(?:png|jpe?g|gif|webp|bmp|svg))\b", re.I)
 def _user_images(blocks, text, human):
-    """A user turn's images (ported from chat-view transcript.ts; the Python rebuild had dropped this, so
-    path-pasted images stopped rendering — the user 2026-06-17). Inline base64 → a data: URL; an image
+    """A user turn's images. Inline base64 → a data: URL; an image
     source path → "path:<abs>" (the webview hydrates it via imgRequest); and — the common case — a bare
     image PATH typed or dragged into the composer arrives as PLAIN TEXT, so scan a human turn's text for
     absolute / ~ paths with a known image extension. Capped at 4."""
@@ -4354,7 +4349,7 @@ def _injected_img_paths(text):
     return [m.group(1) for m in _IMG_PATH_RE.finditer(text or "")]
 
 
-# ───────────────────────── postal hydration (parity with chat-view/src/postal-spec.ts) ─────────────────────────
+# ───────────────────────── postal hydration ─────────────────────────
 # Postal traffic lands INSIDE the transcript: a received message as user text carrying the
 # `romp-msg-id` marker; a sent message as a send_message tool call (or a `romp --mail send` Bash). We
 # swap both for clean identity-coloured cards — and read the message BODY from the timeline log (not
@@ -4414,7 +4409,7 @@ def _shell_unquote(s):
 
 def _postal_out_card(ev):
     """A send_message tool event → an outgoing postal card ({to, body} from the tool input). None if
-    the input doesn't parse. Mirrors postal-spec.ts postalOut."""
+    the input doesn't parse."""
     try:
         args = json.loads(ev.get("input") or "")
     except Exception:
@@ -4429,7 +4424,7 @@ def _postal_out_card(ev):
 
 def _cli_send_card(ev):
     """A Bash `romp --mail send <to> <body>` tool event → an outgoing card, only once the CLI confirmed
-    delivery (else it stays a Bash row so a failure is visible). Mirrors postal-spec.ts cliSendOut."""
+    delivery (else it stays a Bash row so a failure is visible)."""
     m = _CLI_SEND_RE.search(ev.get("input") or "")
     if not m:
         return None
@@ -7621,7 +7616,7 @@ JUDGE_CAP_LIMIT = 80   # most-recent caption marks kept per session (the view me
 
 def _derive_judging(sid, caps, goals, t0, out, seg_ends=None):
     """Append this session's JUDGE-activity marks to `out` — the second-timeline (data.judging) feed,
-    read from the real artifacts the summarizer judges write (design/judge.md):
+    read from the real artifacts the summarizer judges write (docs/judges.md):
       captioner ← captions/<sid>.jsonl   (one mark per segment/turn unit)
       planner   ← goal nodes             (a mint/sub at the node's t; a done/block at its mt)
       grouper   ← nodes flagged umbrella  · courier ← nodes carrying origin (a peer handoff)
@@ -9286,7 +9281,7 @@ _LOADER_CSS = (
     "@font-face{font-family:'RompAnta';src:url(/media/Anta-Regular.ttf) format('truetype');font-display:swap}"
     ".rl-in{display:flex;flex-direction:column;align-items:center;gap:18px}"
     # INLINE text (not flex) so vertical-align:middle works — that's what lands the swirl on the o-slot
-    # (baseline + x-height/2). Geometry from prototypes/romp-icon/make_wordmark.py: the swirl-o glyph is the
+    # (baseline + x-height/2). Geometry from assets/make_wordmark.py: the swirl-o glyph is the
     # CENTERED 102..820 crop, sized SWIRL_EM=0.65em, with side margins -(0.65-0.583)/2 = -0.0335em so its
     # advance equals Anta's 'o' (0.583em) and m/p land where a real "o" puts them.
     ".rl-word{font-family:'RompAnta',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:38px;"
@@ -9820,7 +9815,7 @@ box-shadow:0 8px 24px #00000066;opacity:0;transform:translateY(4px);transition:o
 .romp-tl-tip .b{margin-top:4px;color:#cdd9e5;}"""
 
 
-# The timeline page bootstrap (adapted from chat-view/src/kernel/timeline.ts): shim the 3 Obsidian
+# The timeline page bootstrap: shim the 3 Obsidian
 # DOM helpers TimelinePanel uses, then ADAPT the panel to the shared WS shim + federation manager —
 # the SAME transport every other pane uses. (The timeline used to hand-roll its own WebSocket here —
 # a copy of _shim's connect/queue/watchdog with panel dispatch bolted on — which bypassed the
@@ -11055,8 +11050,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The web Restart button (↻ in the timeline controls). Ack FIRST, then ask the
                 # romp-manager to restart-all — it SIGTERMs this kernel and its exit handler spawns a
                 # fresh one, so new Python code loads (the button then polls /healthz and reloads).
-                # Standalone (no manager) → nothing to restart; the ack still returns. Restores the
-                # endpoint the TS kernel had (chat-view/src/kernel/server.ts), dropped in the rewrite.
+                # Standalone (no manager) → nothing to restart; the ack still returns.
                 self._send(200, json.dumps({"ok": True, "restarting": True}), "application/json")
                 mport = os.environ.get("ROMP_MANAGER_PORT")
                 if mport:
@@ -11590,8 +11584,7 @@ def _pid_alive(pid):
 
 def _parent_watch():
     """Exit if the manager that spawned us (ROMP_MANAGER_PID) dies, so a supervisor crash doesn't
-    orphan the kernel — the python analogue of chat-view/src/kernel/parent-watch, for simplify's
-    romp-manager integration. No-op when launched standalone (no ROMP_MANAGER_PID)."""
+    orphan the kernel. No-op when launched standalone (no ROMP_MANAGER_PID)."""
     pid = os.environ.get("ROMP_MANAGER_PID")
     if not (pid and pid.isdigit()):
         return

@@ -3374,7 +3374,7 @@ class JudgeOutputFormat(unittest.TestCase):
 
 
 class ModelTiers(unittest.TestCase):
-    """The Haiku cost lever (judge.md §Two run tiers): captioner + archiver run on the cheap INDEX
+    """The Haiku cost lever (docs/judges.md tiers): captioner + archiver run on the cheap INDEX
     model (Haiku); planner + courier + closer on the TRIAGE model (Sonnet)."""
 
     def setUp(self):

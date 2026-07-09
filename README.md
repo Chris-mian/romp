@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="prototypes/romp-icon/romp-wordmark.png" alt="romp" width="440">
+  <img src="assets/romp-wordmark.png" alt="romp" width="440">
 </p>
 
 # romp
@@ -20,16 +20,20 @@ conversation.
 
 ## Components
 
-- **`bin/romp`** — launch/resume/attach managed sessions (tmux sessions tagged
-  `@romp`), with identity colors; terminal views (`-d` dashboard, `-f` feed).
+- **`bin/romp`** — launch/resume/attach managed sessions, with identity colors;
+  terminal views (`-d` dashboard, `-f` feed). Sessions run on one of two
+  backends: the Agent SDK (default; the kernel drives the Claude Agent SDK) or
+  tmux (terminal sessions tagged `@romp`). A `bin/README.md` maps every bin
+  command.
 - **Romp Postal Service** (`bin/romp-postal-service`) — inter-session mail: send,
   inbox, working-notes, parked mail for dead sessions, session search, revive.
   Exposed to Claude sessions as an MCP server (`romp-postal-service mcp`) and on the
   shell as `romp --mail …`.
 - **Kernel** (`bin/romp-kernel`) — THE always-on core: one Python process,
   single writer. It parses each session's transcript into an event tree
-  (`bin/romp-event-model`), runs the **judges** (`bin/romp-judge` — a captioner
-  + archiver always on, a planner + courier while a client is watching) that
+  (`bin/romp-event-model`), runs the **judges** (`bin/romp-judge` — an index
+  tier always on, the planners and board keepers while a client is watching;
+  the roster lives in `docs/judges.md`) that
   write the durable records, and serves the chat / feed / timeline UI over
   HTTP + WebSocket. Its lifecycle is owned by **`bin/romp-manager`** (start with
   `romp --on`; `bin/romp-service` auto-starts it at login). Open
@@ -41,8 +45,6 @@ conversation.
 - **chat-view/** — the VS Code/Cursor extension: a thin WebSocket client of the
   same kernel. The editor panel and a browser tab share one kernel — same tabs,
   per-client focus.
-- **obsidian/** — the timeline view module, also consumable by an Obsidian
-  plugin via a thin wrapper.
 - **hooks/** — Claude Code hooks: tmux status-line state, the live one-line
   activity phrase (`hooks/romp-summarize.sh`), Romp Postal Service inbox
   drain/ensure/revive.
@@ -98,8 +100,10 @@ python3 -m pytest tests/
 
 ## Docs
 
-Architecture + schemas live in `design/`: `event-model.md` (the bottom-layer
-event tree), `judge.md` (the captioner / archiver / planner / courier),
-`read-side.md` (the kernel + the three panes), `ui-parity.md` (the UI port), and
-`backlog.md` (spec-vs-built). `docs/simplification-inventory.md` maps the
-codebase.
+The published site sources live in `docs/`: `getting-started.md`,
+`guide/postal-service.md`, `architecture.md`, and the judge layer —
+`judges.md` (the roster), `judge-pipeline.md` (the diagram map), and
+`goal-state.md` (the card state model). Architecture + schemas live in
+`design/`: `event-model.md` (the bottom-layer event tree), `read-side.md`
+(the kernel + the three panes), `sdk-backend.md` (the Agent SDK backend),
+`segment-regrowth.md`, and `stalled-open-todos-nudge.md`.

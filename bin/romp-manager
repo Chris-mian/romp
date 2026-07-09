@@ -75,7 +75,7 @@ const STORM_COOLDOWN_MS = 30000;      // during a storm, hold to 1 restart per t
 
 function spawnKernel(spec) {
   const prev = kernels.get(spec.id);
-  // ROMP_MANAGER_PID lets the kernel run a parent-death watchdog (see chat-view/src/kernel/parent-watch):
+  // ROMP_MANAGER_PID lets the kernel run a parent-death watchdog (_parent_watch in bin/romp-kernel):
   // if we die uncleanly (SIGKILL / crash / closed terminal) and never SIGTERM it, it sees us vanish and
   // exits itself instead of orphaning. ROMP_SERVE_PORT is the kernel's listen port.
   const env = Object.assign({}, process.env, {

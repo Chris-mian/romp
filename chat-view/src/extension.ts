@@ -1,7 +1,7 @@
 // The romp VS Code extension — a THIN CLIENT of the romp web kernel.
 //
 // All host logic (transcript parsing, session mirroring, the feed fold, tmux
-// driving, record-file IO) lives in the kernel (src/kernel/, run by
+// driving, record-file IO) lives in the kernel (bin/romp-kernel, spawned via
 // bin/romp-serve). This extension only:
 //   1. ensures a kernel is running (spawn-or-attach on the default port,
 //      restarting a stale one once after a VSIX update),
@@ -11,7 +11,7 @@
 //      the editor, the OS file picker, the clipboard, external links, and
 //      panel reveal/focus orchestration.
 //
-// The browser pages romp-serve serves are this same pipe minus VS Code — both
+// The browser pages the kernel serves are this same pipe minus VS Code — both
 // front ends are clients of one kernel, sharing tabs with per-client focus.
 import * as vscode from "vscode";
 import * as http from "http";

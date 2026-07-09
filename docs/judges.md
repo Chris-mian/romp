@@ -7,9 +7,8 @@
 Current as of **2026-07-08**. One judge per distinct system prompt, one name
 per judge: what each one is, when it fires, what it reads and writes. The
 state model (the diary, the fold, every chip) lives in
-[goal-state.md](goal-state.md); the original design rationale in
-`design/judge.md`. Prompts are named by their constant in `bin/romp-judge`
-(grep the constant; line numbers drift).
+[goal-state.md](goal-state.md). Prompts are named by their constant in
+`bin/romp-judge` (grep the constant; line numbers drift).
 
 ## The roster
 

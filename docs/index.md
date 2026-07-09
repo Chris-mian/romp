@@ -1,14 +1,9 @@
 # romp
 
-A multi-agent session manager for **Claude Code** on tmux. romp turns a fleet of
-terminal Claude sessions into a coordinated, observable system: named, colored,
-persistent sessions; inter-session mail; automatic per-turn captions; and a live
-activity feed, goal inbox, and timeline.
-
-!!! note "This site is a scaffold"
-    The pages here are stubs to show the shape and styling. Start writing — they
-    publish automatically to GitHub Pages once the repo is public and Pages is
-    enabled. See [Getting started](getting-started.md) to set up locally.
+A multi-agent session manager for **Claude Code**. romp turns a fleet of Claude
+sessions into a coordinated, observable system: named, colored, persistent
+sessions; inter-session mail; automatic per-turn captions; and a live activity
+feed, goal inbox, and timeline.
 
 ## Why romp
 
@@ -24,7 +19,7 @@ focus and flow that good work needs while running many agents at once.
 
     ---
 
-    Named, colored, persistent tmux sessions tagged `@romp` — launch, resume, attach.
+    Named, colored, persistent sessions (SDK or tmux) — launch, resume, attach.
 
     [:octicons-arrow-right-24: Getting started](getting-started.md)
 

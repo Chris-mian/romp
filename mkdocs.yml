@@ -1,16 +1,11 @@
 site_name: romp
-site_description: A multi-agent session manager for Claude Code on tmux.
+site_description: A multi-agent session manager for Claude Code.
 
 # Set these when you go public (a project site is served at
 # https://<your-user>.github.io/romp/, or point a custom domain at it):
 # site_url: https://OWNER.github.io/romp/
 # repo_url: https://github.com/OWNER/romp
 # repo_name: OWNER/romp
-
-# The published docs live under docs/. The internal codebase map is kept in the
-# repo (and renders on GitHub) but stays OUT of the published site.
-exclude_docs: |
-  simplification-inventory.md
 
 theme:
   name: material
@@ -68,3 +63,7 @@ nav:
   - Guide:
       - The postal service: guide/postal-service.md
   - Architecture: architecture.md
+  - Internals:
+      - Judges: judges.md
+      - The judge pipeline: judge-pipeline.md
+      - How a card gets its state: goal-state.md

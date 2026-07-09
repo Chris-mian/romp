@@ -9,7 +9,7 @@ feed, and timeline — over HTTP + WebSocket.
 transcripts (~/.claude/projects/)
         │  read in place, never copied
         ▼
-   event model  ──►  judges (captioner · archiver · planner · courier)
+   event model  ──►  judges (captioner, archiver, planner, … — see Judges)
         │                     │
         │                     ▼
         │              durable records (captions · archive · goal tree)
@@ -22,15 +22,16 @@ transcripts (~/.claude/projects/)
 
 ## Deep dives
 
-The design documents live in the repository's `design/` directory:
+The judge layer is documented on this site:
+
+- [Judges](judges.md) — the full roster: who each judge is and when it runs.
+- [The judge pipeline](judge-pipeline.md) — the one-page diagram map.
+- [How a card gets its state](goal-state.md) — the state model, chip by chip.
+
+The remaining design documents live in the repository's `design/` directory:
 
 - **`event-model.md`** — the bottom-layer event tree built from each transcript.
-- **`judge.md`** — the captioner, archiver, planner, and courier.
 - **`read-side.md`** — the kernel and the three panes.
-- **`ui-parity.md`** — the UI port.
-- **`backlog.md`** — spec-vs-built.
-
-!!! note "Publishing the design docs"
-    These are currently developer-facing notes kept in the repo. To publish them
-    on this site, move (or symlink) them under `docs/` and add them to `nav` in
-    `mkdocs.yml`.
+- **`sdk-backend.md`** — the Agent SDK (non-tmux) session backend.
+- **`segment-regrowth.md`** — the settle-time segment seam.
+- **`stalled-open-todos-nudge.md`** — the stalled-with-open-to-dos nudge.

@@ -2,7 +2,7 @@
 
 Internal design doc (not user-facing). Layer 3 of the rebuilt romp: it turns the
 records written by the event model (`design/event-model.md`) and the summarizer
-layer (`design/judge.md`) into the three web-UI panes the user actually looks at:
+layer (`docs/judges.md`) into the three web-UI panes the user actually looks at:
 the **feed**, the **chat**, and the **timeline**. Built fresh beside the existing
 `chat-view/` kernel + `obsidian/` timeline + `bin/romp-feed`, which stay until the
 new one is proven. Started 2026-06-15.
@@ -18,7 +18,7 @@ projections of it.
 
 A direct consequence: the completion **rollup + "settled" gate** moves *down* into
 Layer 2. The producer publishes each goal's rolled-up status (working / blocked /
-completed); the feed just paints columns. (Reflected back into `design/judge.md`.)
+completed); the feed just paints columns. (Reflected back into `docs/judges.md`.)
 
 ## Decisions locked
 
@@ -66,7 +66,7 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
   feed, and timeline are already current the instant a client connects. A pass is
   cheap when nothing changed (cached parses; each judge makes an LLM call only on
   real new work), so always-on costs filesystem stats, not model calls, when idle.
-  The tiers are a cost/value GROUPING (see `design/judge.md`), not a runtime gate.
+  The tiers are a cost/value GROUPING (see `docs/judges.md`), not a runtime gate.
   Single process means single writer for free, no matter how many tabs are open.
 - **Views are URL-hash tag selections.** `localhost:PORT/#work,personal` is one
   view; `#work` is another. Each browser tab is an independent view over the same
@@ -123,7 +123,7 @@ single-writer.
 
 ## The two inputs
 
-1. **Durable judge records** (`design/judge.md` writes these):
+1. **Durable judge records** (`docs/judges.md` writes these):
    - **captions** — per segment and per turn, keyed by id. The activity log.
    - **the goal tree** — nodes + edges + per-node and rolled-up status. The inbox.
    - **courier records** — handoff (propagating / FYI) + which sender goal, keyed by
@@ -131,7 +131,7 @@ single-writer.
    - **archive** — per session, keyed by rompUuid: a sub-sentence **headline** + a
      2-3 sentence **abstract**, summarized from the session's captions (cheap
      input), continuously refreshed as the session gains turns. The index + the
-     TOC header. Replaces the old `romp-digest` pass entirely.
+     TOC header.
 2. **A thin real-time live-state read**: `states/<sid>.jsonl` (working / permission /
    compacting / idle / closed transitions) + the event tree's open turn. Drives the
    chip, the timeline stripes, the hard-block floor, and the mid-turn pulse.
@@ -171,14 +171,10 @@ its own Completed card. No read-time DAG rebuild, no status derivation, no hando
 
 - A card's modal shows the goal's trail (its filed segments + sub-goal tree, interleaved).
 - **No caption stream.** Turn/segment captions are NOT feed cards — they live in the
-  card's trail, the ledger, and the timeline. (Superseded the earlier "Inbox + caption
-  Stream" split: emitting captions as standalone DETAILS cards piled finished
-  deliverables into the columns, which the original FEED-ASKS-SPEC.md — "details turns
-  never appear at all" — already forbade. Reverts kernel commit 05505fa "show stream
-  cards"; the fix is in `build_feed` only, the tuned `feed.ts` stays unedited.)
-- **Card detail (TBD)**: the old expand-paragraph card detail (`romp-feed-detail`,
-  the deferred expand writer) is to be **remade entirely** and is parked until the
-  inbox is in. Until then a card shows its caption trail.
+  card's trail, the ledger, and the timeline. Emitting captions as standalone cards
+  piles finished deliverables into the columns; details turns never appear at all.
+  The rule lives in `build_feed` only; the tuned `feed.ts` stays unedited.
+- **Card detail**: a card shows its caption trail; a richer expand view is parked.
 - **Clear-all + undo**: a button retires every currently-open top-level card at
   once (batch `cleared`); an **undo** restores that batch if invoked right after.
   For sweeping away a stale backlog you know you don't care about.
@@ -321,6 +317,6 @@ The new Python kernel (`bin/romp-kernel`) must close it from the start.
 - **Read-federation** (one local view spanning multiple machines' records) — design
   when the SSH-forward-a-second-view stopgap proves insufficient.
 - **The "settled" gate's exact definition** now that it lives in Layer 2 (see
-  `design/judge.md`).
+  `docs/judges.md`).
 - **Where the comms-approval prompt surfaces** (the UI, the requesting session, or
   both) and how the approved-edge + alive-gating state is stored in postal.

@@ -4,7 +4,8 @@ The state model, the "constitution": what moves a card, every chip it can
 wear, and the edge-case rules. Current as of **2026-07-08**. Companions:
 [judge-pipeline.md](judge-pipeline.md) (the diagram map) and
 [judges.md](judges.md) (who the judges are); design history in
-`design/judge-simplification-plan.md`.
+`design/judge-simplification-plan.md` (git history — the plan shipped and the
+doc was removed).
 
 ## The five layers
 

@@ -25,8 +25,9 @@ future stream substrate is a near passthrough.
 - **trigger** = the user atom that opened a turn, or null (autonomous /
   continuation). Its provenance is the atom's `author`, not a separate flavor.
 - **`kind` lives on the atom**, and equals the streaming message `type`/`subtype`
-  (`assistant`, `user`, `system:init`, `system:compact_boundary`, `result`),
-  plus one synthetic kind, `idle`.
+  (`assistant`, `user`, `system:compact_boundary`, `result`),
+  plus one synthetic kind, `idle`. (Transcripts have no `system:init` record —
+  model/cwd/branch ride on every record instead.)
 - **compaction is an atom** (`system:compact_boundary`), not a turn. It has no
   trigger and is a streaming message.
 - **idle is an atom** (`idle`), not a turn. It has no trigger, is one contiguous
@@ -127,12 +128,11 @@ interface Trigger {
 interface Atom {
   // Parity with the streaming API:
   type: "assistant" | "user" | "system" | "result" | "idle";   // "idle" is ours
-  subtype?: "init" | "compact_boundary" | "status" | "task_notification"; // when type==="system"
+  subtype?: "compact_boundary" | "status" | "task_notification"; // when type==="system"
   uuid: string;             // message id (same value in stream and transcript)
   session_id: string;       // = rompUuid
   message?: ApiMessage;     // assistant/user: the Anthropic message object (below)
   compact_metadata?: { trigger: "auto" | "manual"; pre_tokens: number }; // system:compact_boundary
-  init?: { tools: string[]; model: string; cwd: string; permission_mode: string }; // system:init
   result?: {                // type==="result"
     subtype: "success" | "error_during_execution" | "error_max_turns" | string;
     num_turns: number; stop_reason: string | null;
@@ -350,9 +350,8 @@ Three separate concerns, kept separate:
 
 - **Identity** binds to `rompUuid` (stable). Nothing downstream sees an unstable
   id. This removes the need to reassemble identity at all.
-- **The walk** starts at `leafFsid`, a pointer that updates on each resume (the
-  same role headless-backend's `lastSid` already plays). It is an index, not an
-  identity, so its changing is harmless.
+- **The walk** starts at `leafFsid`, a pointer that updates on each resume. It
+  is an index, not an identity, so its changing is harmless.
 - **Click-to-open** uses the per-atom `fsid` to know which physical file to open.
   It may vary per atom; that is fine, it is provenance.
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """romp-askparse — parse the Claude Code selection picker out of a captured tmux pane.
 
-A faithful Python port of chat-view/src/askparse.ts (the TypeScript parser used
-by the webview). A pending AskUserQuestion (and tool-permission) prompt lives
+A pending AskUserQuestion (and tool-permission) prompt lives
 ONLY in the TUI's on-screen state — Claude Code does not write it to the
 transcript JSONL until it's answered. So the chat view, which mirrors the
 transcript, is structurally blind to it; we capture the pane
