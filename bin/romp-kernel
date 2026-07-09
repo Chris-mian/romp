@@ -5767,8 +5767,10 @@ def build_session(sid, now, tmux=None):
                                 ev["romp"] = True
                                 if a.get("rompAuto"):    # an AUTO-nudge (not the Nudge button) → the chat draws the romp swirl
                                     ev["rompAuto"] = True
-                                if "romp-system" in text:   # a kernel STATUS notice (restart/resume, Retry) marked
-                                    ev["rompSystem"] = True  #   distinctly → its OWN notice card, not a nudge bubble
+                                if "<!-- romp-system -->" in text:   # a kernel STATUS notice (restart/resume) marked
+                                    ev["rompSystem"] = True  #   distinctly → its OWN notice card, not a nudge bubble.
+                                    #   Comment form only (the user 2026-07-08): content merely MENTIONING
+                                    #   romp-system must not flip the card kind (same class as ROMP_INJECT_RE).
                             if imgs:
                                 ev["images"] = imgs
                             events.append(ev)
