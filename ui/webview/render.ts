@@ -74,6 +74,9 @@ type ChatEvent = (
       // attaches them here (the user 2026-06-16). Empty `chosen` while pending; filled once answered →
       // renderAsk flips the turn to the blue "you answered Claude's question" box.
       askAnswer?: AskAnswerBlock[];
+      // Skill only: the skill's full instructions markdown (the isMeta content record / its live-stream
+      // twin, joined by the kernel) → the tool's collapsed-by-default fold body (the user 2026-07-08).
+      skillMd?: string;
     }
   | {
       kind: "postal-service";
@@ -1785,6 +1788,21 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
   } else if (ev.name === "Read") {
     if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output), fkey);
+  } else if (ev.name === "Skill") {
+    // A Skill invocation (the user 2026-07-08): the head names the skill, and the skill's INSTRUCTIONS
+    // (ev.skillMd, kernel-joined) are the fold body — DEFAULT COLLAPSED like every tool body. They used
+    // to render as a separate fully-expanded note box for the whole live turn, then vanish on landing
+    // (the fold only ever showed the one-line "Launching skill: X" result).
+    let skillName = "";
+    try { const o = JSON.parse(ev.input); if (o && typeof o.skill === "string") skillName = o.skill + (o.args ? " " + o.args : ""); } catch { /* truncated JSON → head stays bare */ }
+    if (skillName && !ev.desc) { const c = el("span", "tool-desc"); c.textContent = skillName; head.appendChild(c); }
+    if (ev.skillMd) {
+      const box = el("div", "agent-report md"); box.innerHTML = md(ev.skillMd); highlight(box);
+      inlineFold(head, turn, `skill · ${countLines(ev.skillMd)} lines`, box, fkey);
+    } else if (ev.output) {
+      // an older record with no joined content — keep the result reachable as before
+      inlineFold(head, turn, `${countLines(ev.output)} line${countLines(ev.output) === 1 ? "" : "s"}`, preEl(ev.output), fkey);
+    }
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
     if (signal) {

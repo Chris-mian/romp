@@ -85,6 +85,14 @@ CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-
 COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")           # the slash command itself, e.g. "/usage"
 COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")            # its arguments (often empty)
 LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")   # the command's output
+# The Skill tool's INSTRUCTIONS record (the user 2026-07-08): after a `Skill` tool_use + its "Launching
+# skill: X" tool_result, the CLI writes the skill's full markdown as an isMeta user record opening with
+# this line. It's the ONE isMeta payload worth keeping — surfaced as a flagged, content-EMPTY atom (the
+# text rides atom["skillMd"], so no assistant-text reader — judge work text, captions, summary anchors —
+# ever mistakes the skill's instructions for something the agent wrote). The kernel folds it into the
+# invoking Skill tool event, collapsed by default.
+SKILL_CONTENT_RE = re.compile(r"^\s*Base directory for this skill:")
+SKILL_MD_CAP = 16000              # transport cap for the joined skill markdown (skills run ~2-15k chars)
 SUMMARY_CAP = 8000                # cap the compaction-summary text attached to a compact_boundary atom (a raw
 #   summary runs ~16k chars; the head carries the key sections, and it re-ships with the tail — keep it bounded)
 
@@ -575,6 +583,18 @@ class FileAdapter:
                                 "message": {"role": "assistant",
                                             "content": [{"type": "text", "text": mout.group(1).strip()}],
                                             "stop_reason": "end_turn"}})
+                    continue
+                if SKILL_CONTENT_RE.match(btext) and u not in replay_uuids:
+                    # a Skill invocation's INSTRUCTIONS payload (see SKILL_CONTENT_RE) — kept, but flagged
+                    # and content-EMPTY: assistant-flavored with no stop so it can neither open nor close
+                    # the running turn, and the markdown rides skillMd where generic text readers never
+                    # look. BEFORE the isMeta skip (the CLI marks the record isMeta), like the command
+                    # paths above (the user 2026-07-08).
+                    out.append({"type": "assistant", "uuid": u, "session_id": rompuuid, "t": ts,
+                                "fsid": fsid, "parentUuid": r.get("parentUuid"), "_seq": seq,
+                                "skillMd": btext[:SKILL_MD_CAP] + ("\n\n…(skill content truncated)"
+                                                                   if len(btext) > SKILL_MD_CAP else ""),
+                                "message": {"role": "assistant", "content": [], "stop_reason": None}})
                     continue
                 if r.get("isMeta") is True:
                     continue   # `<command-…>` echoes / caveats — harness noise, not a message

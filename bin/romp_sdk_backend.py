@@ -139,6 +139,13 @@ _COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")
 _COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")
 _LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")
 _CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-command-(?:stdout|caveat))>")
+# The Skill tool's INSTRUCTIONS payload — twin of the event model's SKILL_CONTENT_RE/SKILL_MD_CAP (the
+# user 2026-07-08). On the STREAM it arrives as a plain UserMessage (the isMeta flag exists only on the
+# transcript record), so as a raw user atom it rendered as a fully-expanded note box for the whole live
+# turn. The live atom gets the file adapter's classification instead: flagged, content-EMPTY, markdown
+# in skillMd — the kernel folds it into the invoking Skill tool event, collapsed by default.
+_SKILL_CONTENT_RE = re.compile(r"^\s*Base directory for this skill:")
+_SKILL_MD_CAP = 16000
 
 
 def msg_to_atom(msg, sid, fsid, t):
@@ -191,6 +198,11 @@ def msg_to_atom(msg, sid, fsid, t):
                                 "stop_reason": "end_turn"}}
         if _CMD_WRAP_RE.match(text):                 # the remaining wrappers (message/args/contents/caveat) — noise
             return None
+        if _SKILL_CONTENT_RE.match(text):            # a Skill invocation's instructions → the flagged join atom
+            return {"type": "assistant", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+                    "skillMd": text[:_SKILL_MD_CAP] + ("\n\n…(skill content truncated)"
+                                                       if len(text) > _SKILL_MD_CAP else ""),
+                    "message": {"role": "assistant", "content": [], "stop_reason": None}}
         return {"type": "user", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
                 "message": {"role": "user", "content": content}}
     return None

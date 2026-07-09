@@ -5775,6 +5775,18 @@ def build_session(sid, now, tmux=None):
                                 ev["images"] = imgs
                             events.append(ev)
             elif a["type"] == "assistant":
+                if a.get("skillMd"):
+                    # a Skill invocation's INSTRUCTIONS (event model SKILL_CONTENT_RE / the live twin) —
+                    # no event of its own: fold it into the INVOKING Skill tool event, where the client
+                    # renders it as the tool's collapsed-by-default body (the user 2026-07-08: it used to
+                    # show as a fully-expanded note box while the turn ran, then vanish on landing).
+                    # Newest unfilled Skill event wins (invocation order); content with no Skill event to
+                    # join (shouldn't happen) is dropped — exactly what the old isMeta skip did.
+                    for _ev in reversed(events):
+                        if _ev.get("kind") == "tool" and _ev.get("name") == "Skill" and not _ev.get("skillMd"):
+                            _ev["skillMd"] = a["skillMd"]
+                            break
+                    continue
                 for b in blocks:
                     if not isinstance(b, dict):
                         continue
