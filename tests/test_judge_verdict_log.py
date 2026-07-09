@@ -126,7 +126,7 @@ class TheFlip(unittest.TestCase):
             SID + ":g1": dict(node(), id=SID + ":g1", nodeComplete=True),                       # done
             SID + ":g2": dict(node(), id=SID + ":g2", blocked=True, followupAt=T - 100),        # blocked past a follow-up
             SID + ":g3": dict(node(), id=SID + ":g3", cleared=True),                            # user-cleared
-            SID + ":g4": dict(node(), id=SID + ":g4", everDone=True),                           # reopened once-done, open
+            SID + ":g4": dict(node(), id=SID + ":g4", everDone=True),                           # legacy retired flag — popped, plain open
         }
         store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": legacy}
         self.assertTrue(jd.migrate_store(store))
@@ -134,6 +134,8 @@ class TheFlip(unittest.TestCase):
         st = store["status"]
         self.assertEqual((st[SID + ":g1"], st[SID + ":g2"], st[SID + ":g3"], st[SID + ":g4"]),
                          ("completed", "blocked", "cleared", "working"))
+        self.assertNotIn("everDone", store["nodes"][SID + ":g4"],
+                         "the retired everDone flag is popped by the boot sweep")
         for nd in store["nodes"].values():
             self.assertIn("log", nd, "every node leaves migration with a diary")
             self.assertNotIn("logBorn", nd, "the logBorn marker is retired — the diary key IS the marker")
@@ -203,7 +205,7 @@ class DualWriteThroughTheSites(unittest.TestCase):
 
     def test_user_move_records_a_user_reopen(self):
         store = {"rompUuid": SID, "placements": {}, "status": {},
-                 "nodes": {G1: node(nodeComplete=True, everDone=True)}}
+                 "nodes": {G1: node(nodeComplete=True)}}
         jd.rollup_status(store, True)
         jd.save_goals(SID, store)
         jd.user_move(SID, G1, now=T + 500)

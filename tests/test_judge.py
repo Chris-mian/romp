@@ -823,6 +823,54 @@ class TwoRunPlanner(unittest.TestCase):
         self.assertNotIn("seg1", s["placements"], "the prompt-run dedups under seg#p, leaving the work key (seg) free")
 
 
+class SystemNoticeSegments(unittest.TestCase):
+    """A kernel status notice (the romp-system marker: restart/resume injections) is untargeted — no
+    romp-goal-id — so its segment planned as ordinary agent work and a post-restart verification sweep
+    minted its own top-level card (the user 2026-07-08, g133). The work unit now carries a housekeeping
+    note: resume/re-verify/tidy-up stretches are skipped, only genuinely new work files or mints."""
+
+    NOTICE = ("<!-- romp-injected --><!-- romp-system -->[romp] The kernel restarted and cut this "
+              "session's in-flight turn; pick the work back up where it stopped.")
+
+    def test_seg_system_detects_the_marker(self):
+        recs = [uline(T0, self.NOTICE, "u1", ps="sdk"),
+                aline(T0 + 10, "Verified the repo state; all clean.", "a1", "u1", stop="end_turn")]
+        seg = em.segments(build_session(recs)["turns"][0])[0]
+        self.assertTrue(jd._seg_system(seg), "the romp-system marker is detected")
+        self.assertTrue(jd._seg_nudge(seg), "a system notice also carries romp-injected (it is untargeted, "
+                                            "so the nudge-resolve path never claims it)")
+
+    def test_system_notice_work_unit_carries_the_housekeeping_note(self):
+        recs = [uline(T0, self.NOTICE, "u1", ps="sdk"),
+                aline(T0 + 10, "Verified the repo state; all clean.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"], "an untargeted system notice still plans as a work unit")
+        text = units[0][3]
+        self.assertTrue(text.startswith("Note: this stretch was triggered by an automated romp notice"),
+                        "the housekeeping note leads the unit text")
+        self.assertIn("**skip** it", text)
+        self.assertIn("Verified the repo state", text, "the real work text follows the note")
+        self.assertFalse(units[0][4], "a system notice is not a human unit (no hard-place floor)")
+
+    def test_plain_human_segment_gets_no_note(self):
+        recs = [uline(T0, "please verify the repo state", "u1", ps="typed"),
+                aline(T0 + 10, "Verified; all clean.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"])
+        self.assertNotIn("automated romp notice", units[0][3])
+
+    def test_goal_nudge_still_resolves_not_noted(self):
+        # a TARGETED nudge (romp-injected + romp-goal-id) keeps the nudge-resolve path; the note is only
+        # for untargeted system notices
+        gid = "%s:g1" % SID
+        recs = [uline(T0, "Status check.\n\n<!-- romp-injected --><!-- romp-goal-id: %s -->" % gid,
+                      "u1", ps="typed"),
+                aline(T0 + 10, "Still going.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["nudge"])
+        self.assertNotIn("automated romp notice", units[0][3])
+
+
 class MintQuote(unittest.TestCase):
     """g13 (the user 2026-07-01): every node the planner mints caches the minting message's VERBATIM head
     (node["quote"], _mint_quote — no LLM call, the promptUuid precedent), so a follow-up/nudge can quote
@@ -1471,7 +1519,7 @@ class Grouper(unittest.TestCase):
         records = [uline(T0, "task", "u1", ps="typed"), aline(T0 + 10, "did", "a1", "u1", stop="end_turn")]
         self._setup(store, records)
         calls = []
-        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'
         jd.run_group(now=T0 + 5000)
         self.assertEqual(len(calls), 0, "fewer than two tops → nothing to group, model not called")
         self.assertIsNotNone(jd.load_goals(SID).get("groupedSig"), "the (single-top) set is still recorded")
@@ -1555,7 +1603,7 @@ class Consolidator(unittest.TestCase):
         for i, (suf, text, trail) in enumerate(specs):
             gid = SID + ":" + suf
             s["nodes"][gid] = {"id": gid, "text": text, "parentId": None, "nodeComplete": True,
-                               "blocked": False, "cleared": False, "everDone": True, "settledDone": True,
+                               "blocked": False, "cleared": False, "settledDone": True,
                                "trail": trail, "t": T0 + i, "mt": T0 + 10 + i}
         jd.rollup_status(s, True)
         return s
@@ -1584,7 +1632,7 @@ class Consolidator(unittest.TestCase):
                                    "nodeComplete": False, "blocked": False, "cleared": False, "trail": ["sC"],
                                    "t": T0 + 5, "mt": T0 + 5}
         s["nodes"][SID + ":g4"] = {"id": SID + ":g4", "text": "Umb", "parentId": None, "nodeComplete": True,
-                                   "blocked": False, "cleared": False, "everDone": True, "settledDone": True,
+                                   "blocked": False, "cleared": False, "settledDone": True,
                                    "umbrella": True, "trail": [], "t": T0 + 6, "mt": T0 + 6}
         jd.rollup_status(s, True)
         ids = {nd["id"] for nd in jd._consolidate_tops(s)}
@@ -1598,22 +1646,22 @@ class Consolidator(unittest.TestCase):
         self.assertEqual(ids, {SID + ":g2"}, "a top the user crossed off the feed is never re-grouped")
 
     # ── apply-level: done nodes relink unconditionally (the allow_done lift is gone with its guard) ──
-    def test_apply_group_moves_an_everdone_node(self):
-        # 2026-07-06 (the user): apply_group no longer carries the everDone guard or the allow_done
+    def test_apply_group_moves_a_once_done_node(self):
+        # 2026-07-06 (the user): apply_group no longer carries the once-done guard or the allow_done
         # parameter — the consolidator (all-done candidates) and the working grouper (open candidates,
         # possibly reopened-once-done) both relink through the same unconditional path.
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         tops = jd._consolidate_tops(s)
         ops = [{"do": "group", "why": "both done parts of X", "goal": 2, "under": 1}]
         self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20), 1,
-                         "a completed (everDone) node relinks with no special lift")
+                         "a completed node relinks with no special lift")
         self.assertEqual(s["nodes"][SID + ":g2"]["parentId"], SID + ":g1")
 
     # ── the session pass ──
     def test_groups_completed_siblings_under_a_completed_umbrella(self):
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         self._setup(s, self._RECORDS)
-        jd.group_llm = lambda menu: ('{"ops":[{"why":"both finish X","do":"mint","text":"Umbrella X"},'
+        jd.group_llm = lambda menu, **k: ('{"ops":[{"why":"both finish X","do":"mint","text":"Umbrella X"},'
                                      '{"why":"x","do":"group","goal":1,"ref":1},'
                                      '{"why":"x","do":"group","goal":2,"ref":1}]}')
         jd.run_consolidate(now=T0 + 5000)
@@ -1649,10 +1697,10 @@ class Consolidator(unittest.TestCase):
     def test_empty_umbrella_is_cleared_but_a_populated_one_is_not(self):
         s = _store()
         s["nodes"][SID + ":g1"] = {"id": SID + ":g1", "text": "Empty header", "parentId": None,
-                                   "nodeComplete": True, "blocked": False, "cleared": False, "everDone": True,
+                                   "nodeComplete": True, "blocked": False, "cleared": False,
                                    "umbrella": True, "trail": [], "t": T0, "mt": T0}        # adopts nothing
         s["nodes"][SID + ":g2"] = {"id": SID + ":g2", "text": "Real header", "parentId": None,
-                                   "nodeComplete": True, "blocked": False, "cleared": False, "everDone": True,
+                                   "nodeComplete": True, "blocked": False, "cleared": False,
                                    "umbrella": True, "trail": [], "t": T0, "mt": T0}
         s["nodes"][SID + ":g3"] = {"id": SID + ":g3", "text": "child", "parentId": SID + ":g2",
                                    "nodeComplete": True, "blocked": False, "cleared": False, "trail": ["s"],
@@ -1668,7 +1716,7 @@ class Consolidator(unittest.TestCase):
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         self._setup(s, self._RECORDS)
         calls = []
-        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'      # model declines to group
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'      # model declines to group
         jd.run_consolidate(now=T0 + 5000)
         self.assertEqual(len(calls), 1, "the consolidator called the model once for the new completed set")
         jd.run_consolidate(now=T0 + 5000)
@@ -1678,7 +1726,7 @@ class Consolidator(unittest.TestCase):
         s = self._completed_store([("g1", "Solo", ["sA"])])
         self._setup(s, self._RECORDS)
         calls = []
-        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'
+        jd.group_llm = lambda menu, **k: calls.append(menu) or '{"ops":[]}'
         jd.run_consolidate(now=T0 + 5000)
         self.assertEqual(len(calls), 0, "fewer than two completed tops → nothing to consolidate, model not called")
         self.assertIsNotNone(jd.load_goals(SID).get("consolidatedSig"), "the (single-top) set is still recorded")
@@ -4393,7 +4441,7 @@ class Distiller(unittest.TestCase):
 
     def test_brief_cite_miss_stamps_the_warn(self):
         # the block-brief path is the distiller's twin — the same miss stamps the same warn kind (logged
-        # under tier "brief", matching its other error records).
+        # under tier "briefer", matching its other error records).
         records = [uline(T0, "ship it", "u1", ps="typed"),
                    aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
@@ -4411,7 +4459,7 @@ class Distiller(unittest.TestCase):
             jd.ERRORS = d / "judge-errors.jsonl"
             self.assertEqual(jd.run_distill(now=now), 1)
             recs = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
-            self.assertEqual([(r["tier"], r["err"]) for r in recs], [("brief", "cite-miss")])
+            self.assertEqual([(r["tier"], r["err"]) for r in recs], [("briefer", "cite-miss")])
         finally:
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
@@ -4886,8 +4934,8 @@ class GistLlm(unittest.TestCase):
         self.assertEqual(out, "a dark-mode toggle for settings", "normalized: trimmed, trailing dot dropped")
         self.assertEqual((seen["model"], seen["tier"]), (jd._index_model(), "index"), "the cheap INDEX tier (Haiku)")
         self.assertIs(seen["sys"], jd.GIST_SYS)
-        self.assertEqual(seen["judge"], "captioner",
-                         "the prompt gist is the CAPTIONER's message caption, not a separate hidden 'gist' judge (the user 2026-06-19)")
+        self.assertEqual(seen["judge"], "gister",
+                         "the prompt gist wears its own name (the user 2026-07-08; the timeline folds it onto the captioner row)")
         self.assertIn("please add a dark mode toggle", seen["user"], "the prompt rides in the <prompt> tags")
 
     def test_empty_model_reply_is_empty_string(self):
@@ -4896,18 +4944,19 @@ class GistLlm(unittest.TestCase):
 
 
 class BlockBriefJudgeLabel(unittest.TestCase):
-    """No hidden judges (the user 2026-06-19): the block-distiller's decision brief is the distiller's
-    block-side run, so it logs as judge='distiller' (its timeline mark is already on the distiller row) —
-    a 'brief' label orphaned the run from its mark, hiding its API time/tokens."""
+    """One name per distinct prompt (the user 2026-07-08, superseding the 2026-06-19 shared label): the
+    block brief logs as judge='briefer'. Its timeline mark still rides the distiller row — the kernel's
+    _JUDGE_FAMILY fold keeps the run attached to its mark (the orphaned-'brief' lesson, solved at the
+    band instead of by sharing the label)."""
 
-    def test_brief_llm_logs_as_the_distiller(self):
+    def test_brief_llm_logs_as_the_briefer(self):
         seen, saved = {}, jd._judge_run
         jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(judge=judge) or "a brief")
         try:
             jd.brief_llm("the goal", "the work", "owed a decision")
         finally:
             jd._judge_run = saved
-        self.assertEqual(seen["judge"], "distiller", "the brief rides the distiller row, so its run logs as the distiller")
+        self.assertEqual(seen["judge"], "briefer", "the block brief wears its own name in the logs")
 
 
 class OrphanRollup(unittest.TestCase):
@@ -5498,6 +5547,42 @@ class CourierDeclaredKind(unittest.TestCase):
             seg("QUESTION: which port?\n<!-- romp-msg-id: 1 -->\n<!-- romp-msg-kind: question -->")), "question")
         self.assertEqual(jd._seg_peer_kind(seg("hello\n<!-- romp-msg-id: 1 -->")), "")
         self.assertEqual(jd._seg_peer_kind(seg("spoofed <!-- romp-msg-kind: banana -->")), "")
+
+
+
+
+class OneNamePerPrompt(unittest.TestCase):
+    """Every distinct system prompt logs under its own judge name (the user 2026-07-08): the gist, the
+    prompt-run planner, the placer, the block brief, and the consolidator pass no longer borrow their
+    family's label, so usage/error logs can tell them apart. (The kernel folds the fine labels back to
+    role-family rows for the timeline band — _JUDGE_FAMILY in bin/romp-kernel.)"""
+
+    def test_each_prompt_wears_its_own_label(self):
+        seen, orig = [], jd._judge_run
+        jd._judge_run = lambda *a, **k: seen.append(k.get("judge")) or ""
+        try:
+            jd.gist_llm("x")
+            jd.plan_prompt_llm("x", "menu")
+            jd.brief_llm("g", "w", "o")
+            jd.group_llm("menu")
+            jd.group_llm("menu", judge="consolidator")
+            jd.plan_llm("x", "menu")
+            jd.distill_llm("g", "w")
+        finally:
+            jd._judge_run = orig
+        self.assertEqual(seen, ["gister", "prompt-planner", "briefer",
+                                "grouper", "consolidator", "planner", "distiller"])
+
+    def test_placer_label_and_error_paths_pinned_in_source(self):
+        # place_llm is conftest-stubbed suite-wide (no test may reach a real subprocess), so its label —
+        # and the two newly-loud fallback paths — are pinned at the source level instead.
+        import inspect
+        src = inspect.getsource(jd)
+        self.assertIn('judge="placer"', src)
+        self.assertIn('_log_judge_error("placer", store.get("rompUuid"), "parse")', src,
+                      "a placer reply that names no usable spot is logged, not silently card-filed")
+        self.assertIn('_log_judge_error("prompt-planner", fsid, "parse")', src,
+                      "a prompt-run reply that never parsed is logged before the hard coerce")
 
 
 if __name__ == "__main__":

@@ -102,7 +102,8 @@ class NudgeNoReopenCompleted(unittest.TestCase):
         nd = store["nodes"][GID]
         self.assertTrue(nd.get("nodeComplete"), "the completed goal stays completed — never reopened")
         self.assertFalse(nd.get("blocked"), "and is NOT re-blocked by the nudge reply")
-        self.assertFalse(nd.get("everDone"), "_reopen was never called (no everDone marker)")
+        self.assertFalse(any(e["kind"] == "reopen" for e in nd.get("log", [])),
+                         "_reopen was never called (no reopen event in the diary)")
         self.assertEqual(store["status"].get(GID), "completed", "rolled-up status stays completed")
         self.assertEqual(self._plan_calls, [], "the nudge LLM resolution is never even invoked on a done goal")
         # the unit is recorded processed so it doesn't re-run every pass

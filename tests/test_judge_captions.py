@@ -72,11 +72,11 @@ class SplitCaptions(unittest.TestCase):
     def test_prompt_text_is_the_raw_ask(self):
         self.assertEqual(jd._prompt_text(self.open_seg["atoms"]), "now add a regression test")
 
-    def test_caption_call_routes_prompt_to_gist_logged_as_captioner(self):
+    def test_caption_call_routes_prompt_to_the_gister(self):
         with mock.patch.object(jd, "gist_llm", return_value="G") as g, \
              mock.patch.object(jd, "caption_llm", return_value="W") as c:
             self.assertEqual(jd._caption_call({"kind": "prompt", "text": "x"}), "G")
-            g.assert_called_once_with("x", judge="captioner")            # message caption → gist prompt, attributed to the captioner
+            g.assert_called_once_with("x")                                # message caption → the gister (its own label, 2026-07-08)
             self.assertEqual(jd._caption_call({"kind": "work", "text": "y"}), "W")
             c.assert_called_once_with("y")                                # work caption → the past-tense captioner
 
