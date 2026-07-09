@@ -1305,6 +1305,27 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(cards[g1]["nudgeFailed"], "the failed stamp still drives the chip itself")
         self.assertIsNone(cards[g2]["nudged"], "a never-nudged goal ships null")
 
+    def test_stalled_chip_yields_once_the_story_moved_on(self):
+        # the user 2026-07-09 (g143): a failed nudge blocked the card, the user replied, the CLOSER ruled
+        # it done, and a later user follow-up put it back to working — yet the chip resurfaced, because
+        # `failed` only resets on the next nudge fire and the working arm never asked whether the stall
+        # was already answered. Any real actor's diary event AFTER the nudge's own block retires the chip.
+        g1 = SID + ":g1"
+        self._goal_store(
+            {g1: {"id": g1, "text": "audit the pipeline", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0,
+                  "log": [{"ev_t": NOW - 500, "src": "nudge", "kind": "block", "at": NOW - 500},
+                          {"ev_t": NOW - 400, "src": "user", "kind": "reopen", "at": NOW - 400},
+                          {"ev_t": NOW - 390, "src": "closer", "kind": "done", "at": NOW - 390},
+                          {"ev_t": NOW - 100, "src": "user", "kind": "reopen", "at": NOW - 100}]}},
+            {g1: "working"}, last=g1)
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "nudged": {g1: {"count": 1, "lastTurnId": SID + ":1:aa", "failed": True}}}))
+        km._autonudge_cache.clear()
+        cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+        self.assertFalse(cards[g1]["nudgeFailed"],
+                         "a closer verdict + user reopen after the failed nudge is the story moving on")
+
     def test_debug_mode_joins_warn_rows_onto_the_card(self):
         # the user 2026-07-09: with `romp --debug on`, every judge failure touching a card rides it to the
         # modal's Warnings section — goal-linked rows land on that card only, other sessions' rows never.

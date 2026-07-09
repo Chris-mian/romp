@@ -7072,8 +7072,20 @@ def build_feed(now, tmux=None):
             # (planner/closer block, or completion) takes the story over and the chip yields.
             _lastblk = next((e.get("src") for e in reversed(nodes[nid].get("log") or [])
                              if e.get("kind") == "block"), None)
-            nudge_failed = bool(nrec.get("failed")) and (col == "working"
-                                                         or (col == "blocked" and _lastblk == "nudge"))
+            # ...and "takes the story over" must survive the card going BACK to working (the user 2026-07-09:
+            # g143 wore "stalled" although the closer had ruled it done after the failed nudge and a later
+            # user follow-up reopened it). The `failed` flag only resets on the NEXT nudge fire, so the
+            # working arm alone would resurrect the chip forever. Event-based retire: any diary event from a
+            # real actor (planner/closer/courier/user/agent) AFTER the nudge's own block means the stall was
+            # answered — the chip yields for good, whatever column the card is in now.
+            _nlog = nodes[nid].get("log") or []
+            _nblk_at = next(((e.get("at") or e.get("ev_t") or 0) for e in reversed(_nlog)
+                             if e.get("kind") == "block" and e.get("src") == "nudge"), None)
+            _story_moved = _nblk_at is not None and any(
+                (e.get("at") or e.get("ev_t") or 0) > _nblk_at
+                and e.get("src") in ("planner", "closer", "courier", "user", "agent") for e in _nlog)
+            nudge_failed = (bool(nrec.get("failed")) and not _story_moved
+                            and (col == "working" or (col == "blocked" and _lastblk == "nudge")))
             # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as
             # needs_input — NOT "working" with the client re-routing it by it.blocked (which was crafty + split
             # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
