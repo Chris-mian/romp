@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""A SLASH-COMMAND turn must NOT spawn a provisional placeholder card (the user 2026-06-29). The planner
-SKIPS command segments (they never become goals), so they never get a `placement` — meaning a command-triggered
-placeholder would hang forever (the JLD `/usage` case: a /usage with no output left an "analyzing usage" card
-that never resolved). _provisional_card now drops command segments. Synthetic transcript only — placeholder
-UUIDs, hostname TESTHOST, no real data.
+"""Which triggers get a provisional 'Analyzing…' placeholder — the "a WORKING session always shows a card"
+invariant, and its two boundaries.
+
+A SLASH-COMMAND turn must NOT spawn one (the user 2026-06-29): the planner SKIPS command segments (they never
+become goals), so they never get a `placement` — a command-triggered placeholder would hang forever (the JLD
+`/usage` case). But a kernel RESUME turn MUST get one (the user 2026-07-09): a romp-system restart/resume
+notice reopens the session's OWN work after a `romp --refresh` or a crash heal, and leaving that actively-
+working session cardless is the bug that prompted this — it read WORKING with nothing to click. Safe because,
+unlike a command, a system segment IS placed when it ends (plan_units' housekeeping 'work' unit, placed even
+on a skip → the placeholder drops). Synthetic transcript only — placeholder UUIDs, hostname TESTHOST, no real
+data.
 """
 import json
 import os
@@ -48,6 +54,21 @@ class ProvisionalCommand(unittest.TestCase):
                             "message": {"role": "user", "content": "Please refactor the auth module"}}])
         card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
         self.assertIsNotNone(card, "a real unplaced human prompt still surfaces a placeholder")
+
+    def test_kernel_resume_turn_gets_a_placeholder(self):
+        # A romp-system RESUME notice (a `romp --refresh` restart or a crash heal) reopens the session's own
+        # in-flight work. Its trigger authors 'romp' (not 'human') and carries no romp-goal-id, so the old gate
+        # dropped it → the resumed, actively-working session showed WORKING with no card (nimbus, 2026-07-09).
+        # Now _seg_system lets it through; it's safe because the segment gets PLACED when it ends.
+        now = int(time.time())
+        body = ("<!-- romp-injected --><!-- romp-system -->[romp] The kernel restarted and resumed this "
+                "session; re-read the tail and pick the work back up where it stopped.")
+        s = self._session([{"type": "user", "timestamp": _iso(now - 5), "uuid": "r1", "parentUuid": None,
+                            "message": {"role": "user", "content": body}}])
+        card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
+        self.assertIsNotNone(card, "a kernel-resume turn is continued user work → it warrants a placeholder")
+        self.assertEqual(card["column"], "working")
+        self.assertTrue(card["provisional"])
 
     def test_a_followup_gets_no_provisional_placeholder(self):
         # a follow-up (carries the romp-goal-id marker) files UNDER its already-reopened target goal, so a
