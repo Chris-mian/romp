@@ -1488,6 +1488,22 @@ def _warn_summary_failed(nd, judge, t):
                "lost — this is only the summary line. %s" % (line, cause, retry))
 
 
+def _warn_history_unreadable(nd, judge, t):
+    """Stamp this card's HISTORY-UNREADABLE warning (the user 2026-07-10): the goal has recorded work
+    (trail/placements) but none of it resolved against the transcript, so the summarizer had nothing to
+    read and the card would otherwise blank SILENTLY — the summaryless g596 card. Concise + user-facing;
+    the developer audit (which keys, the drift) goes to judge-errors.jsonl via _log_judge_error."""
+    line = ("summary" if judge == "distiller" else "decision brief")
+    kind = ("summary-unreadable" if judge == "distiller" else "brief-unreadable")
+    _node_warn(nd, kind, t,
+               "This card's %s is missing because its history couldn't be read back." % line,
+               "This goal's work was recorded, but the notes no longer match the conversation they came "
+               "from (their ids shifted — typically a message that sat queued across a restart landing "
+               "in a different form). No work was lost: only this card's %s line is affected. It heals "
+               "itself the next time new work is filed on this goal; if the chip keeps appearing on new "
+               "cards, that's a bug worth reporting." % line)
+
+
 def _split_artifacts(text):
     """(body, paths) — split a distill reply's optional trailing `ARTIFACTS: p1, p2` line (the user
     2026-07-08: a completed goal that PRODUCED files — a plot, a PDF report — lists them so the feed
@@ -1540,7 +1556,25 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None, b
         for sid in nodes.get(n, {}).get("trail", []):
             if sid not in seen:
                 seen.add(sid); seg_ids.append(sid)
+    # PLACEMENT FALLBACK (the user 2026-07-10, the summaryless g596 card): a trail key can orphan for
+    # good — the prompt-run stamps it from the OPTIMISTIC queued echo, and a queued follow-up lands with
+    # different text (the wrapper), so the key's text-hash never matches any parsed segment again (a
+    # restart holding the queue makes the divergence certain). Placements are re-derived against the
+    # LANDED parse every pass, so any placement into this gather's nodes is a second, drift-proof route
+    # to the same history. Always added (dedup below folds the overlap), so an already-orphaned store
+    # heals at read time with no data surgery.
+    idset = set(ids)
+    for k, v in (store.get("placements") or {}).items():
+        if isinstance(v, str) and v in idset and isinstance(k, str):
+            kb = k[:-2] if k.endswith("#p") or k.endswith("#d") else k
+            if kb not in seen:
+                seen.add(kb); seg_ids.append(kb)
     segs = sorted(_segs_for(seg_by_id, seg_ids), key=lambda sg: sg.get("t", 0))   # drift-safe trail resolution
+    dedup, uniq = set(), []
+    for sg in segs:                                    # a trail key and a placement key can resolve to the SAME
+        if sg["id"] not in dedup:                      # live segment — the history must not repeat it
+            dedup.add(sg["id"]); uniq.append(sg)
+    segs = uniq
     parts = [_unit_text(sg["atoms"], marker=marks) for sg in segs]   # marks label in sorted order — keep it
     if boundary_t is not None:
         # Insert the divider AFTER the last segment at/under the boundary. `segs` is sorted, so the split index
@@ -1553,6 +1587,26 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None, b
     if len(work) > char_cap:                            # keep the most recent tail (matches the distiller's bound)
         work = "…\n\n" + work[-char_cap:]
     return work
+
+
+def _goal_has_recorded_work(store, nid, subtree=True):
+    """True when goal `nid` (plus its subtree) has ANY recorded work keys — trail entries or placements
+    into its nodes — regardless of whether they still resolve against a parse. Distinguishes 'this goal
+    never had own work' (an umbrella — an empty summary is CORRECT) from 'its history went unreadable'
+    (every key orphaned — breakage to surface, the user 2026-07-10). Mirrors _goal_work_text's gather."""
+    nodes = store["nodes"]
+    ids = [nid]
+    if subtree:
+        children = {}
+        for _nid, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(_nid)
+        stack, ids = [nid], []
+        while stack:
+            x = stack.pop(); ids.append(x); stack.extend(children.get(x, []))
+    if any(nodes.get(n, {}).get("trail") for n in ids):
+        return True
+    idset = set(ids)
+    return any(isinstance(v, str) and v in idset for v in (store.get("placements") or {}).values())
 
 
 def _restrict_retitle(ops, allowed):
@@ -1717,12 +1771,19 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             t = _target(o)
             if t and record_verdict(store, nodes[t], "planner", "done", seg_t, why=o["why"], seg=seg_id):
                 _complete(t, o["why"]); touched = t
+                if seg_id and seg_id not in (nodes[t].get("trail") or []):
+                    # the discharging segment IS this goal's history — ride the trail so the distiller can
+                    # read it. Keyed from the LANDED parse (work-runs fire on ended segments), so unlike a
+                    # prompt-run's optimistic-echo key it can never orphan (the user 2026-07-10: a goal
+                    # whose only trail entry drifted distilled to '' — real work, no summary).
+                    nodes[t].setdefault("trail", []).append(seg_id)
                 _eager_done_sample(store, t, seg_t)   # E6: was this eager done on the FOCUS top? (gates P4)
         elif do == "block":
             t = _target(o)
             if t and record_verdict(store, nodes[t], "planner", "block", seg_t, why=o["why"], seg=seg_id):
-                pass                               # the event materialized the flags (blockWhy = why)
-                nodes[t]["mt"] = seg_t; touched = t
+                nodes[t]["mt"] = seg_t; touched = t   # the event materialized the flags (blockWhy = why)
+                if seg_id and seg_id not in (nodes[t].get("trail") or []):
+                    nodes[t].setdefault("trail", []).append(seg_id)   # same: the blocking segment is history
         elif do == "retitle":
             t = _target(o)                              # the caller has already restricted `goal` to the
             if t:                                        # one goal # this call's <note> named eligible
@@ -4853,6 +4914,10 @@ def _distill_session(fsid, path, now):
             if not work and not owed:                  # nothing to brief → settle: the "" sentinel means
                 # "distilled, no brief" so the card drops its auto-line instead of showing "(generating…)"
                 # forever. Stamp briefedMt so we don't retry; don't clobber a real brief from an earlier block.
+                if _goal_has_recorded_work(store, top):   # recorded keys, none resolved → orphaned history:
+                    _warn_history_unreadable(nodes[top], "briefer", now)   # fail LOUDLY, never a silent blank
+                    _log_judge_error("briefer", fsid, "history-unreadable", goal=top,
+                                     note="recorded trail/placements resolved to no live segment; brief blanked")
                 if nodes[top].get("blockSummary") is None:
                     nodes[top]["blockSummary"] = ""
                 nodes[top]["briefedMt"] = due; changed = True
@@ -4891,12 +4956,21 @@ def _distill_session(fsid, path, now):
             nodes[top]["briefedMt"] = due
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             _node_warn_clear(nodes[top], "brief-failed")   # a brief landed → drop any earlier give-up warn
+            _node_warn_clear(nodes[top], "brief-unreadable")   # …and any earlier orphaned-history warn
             n += 1; changed = True
             continue
         if not work:                                   # completed but no resolvable work (e.g. an umbrella /
             # verify top whose work lives on sibling goals) → settle: the "" sentinel means "distilled, no
             # takeaway" so the card drops its auto-line instead of showing "(generating…)" forever. Stamp
             # distilledMt so we don't retry; don't clobber a real summary from an earlier completion.
+            # Two very different cases share this branch (the user 2026-07-10): an umbrella with genuinely
+            # no own work (silent '' is CORRECT) vs a goal whose recorded keys ALL went unreadable (drifted
+            # trail + no resolving placement — the summaryless g596 card). The second is breakage: warn on
+            # the card + log, never blank silently.
+            if _goal_has_recorded_work(store, top):
+                _warn_history_unreadable(nodes[top], "distiller", now)
+                _log_judge_error("distiller", fsid, "history-unreadable", goal=top,
+                                 note="recorded trail/placements resolved to no live segment; summary blanked")
             if nodes[top].get("summary") is None:
                 nodes[top]["summary"] = ""
             nodes[top]["distilledMt"] = due; changed = True
@@ -4934,6 +5008,7 @@ def _distill_session(fsid, path, now):
         nodes[top]["distilledMt"] = due
         nodes[top]["distillFails"] = 0                 # success → reset the counter
         _node_warn_clear(nodes[top], "summary-failed") # a summary landed → drop any earlier give-up warn
+        _node_warn_clear(nodes[top], "summary-unreadable")   # …and any earlier orphaned-history warn
         n += 1; changed = True
     if changed:
         save_goals(fsid, store)
