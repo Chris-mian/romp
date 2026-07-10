@@ -56,48 +56,64 @@ timeline captions; it never touches goals.
 
 A turn is your message, the work it causes, and the stop at the end. A
 segment is one input and its work; a turn can hold several (your message,
-then a peer's message, each with its own work). Every judge is a node below.
-The entry judges hang off the turn's three fixed moments (and peer mail);
-the board-change judges on the right follow whichever judge or action
-changed the card set, never the clock. Solid = always follows; dashed =
-only when the condition on the edge or node holds.
+then a peer's message, each with its own work). The two tiers are separate
+systems, so each gets its own figure.
+
+**The caption tier** (green) writes the words you read — chat, timeline,
+search — and never touches a card. Every arrow is unconditional.
+
+```mermaid
+flowchart LR
+    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
+    M --> GI["gister:<br/>topic phrase: placeholder card,<br/>timeline dot, chat gloss"]:::idx
+    E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
+    CA -->|"the turn's captions,<br/>oldest first"| AR["archiver:<br/>session headline<br/>+ abstract"]:::idx
+    linkStyle default stroke-width:2.5px
+    classDef idx fill:#d1fae5,stroke:#059669,color:#111827
+    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
+    classDef user fill:#fce7f3,stroke:#db2777,color:#111827
+```
+
+**The board tier** (blue) files and rules. A solid arrow always follows; a
+dashed arrow fires only when the gray gate on its path holds — the gates
+are deterministic checks, not model calls, and they are why nothing here
+follows the clock.
 
 ```mermaid
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
     E ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
-    M --> GI["gister:<br/>topic phrase: placeholder card,<br/>timeline dot, chat gloss"]:::idx
-    E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
-    CA --> AR["archiver:<br/>headline + abstract from<br/>the turn captions"]:::idx
     M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board<br/>right now (mint or sub only)"]:::llm
     E --> PL["planner:<br/>file what the work did<br/>(mint, sub, done, block, retitle, skip)"]:::llm
     PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
     X --> CL["closer:<br/>done/blocked audit of the<br/>goals the turn touched"]:::llm
     X ~~~ SYNC["plan-sync:<br/>mirror the agent's<br/>own to-do list"]:::det
-    CL ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
-    PP & PL & CL & CO & SYNC & YOU -.-> GR["grouper:<br/>nest related open cards<br/>(the open-top set changed)"]:::llm
-    PL & CL & YOU -.-> CN["consolidator:<br/>the same for the completed<br/>column (its set changed)"]:::llm
-    PL & CL & YOU -.-> DI["distiller:<br/>background + takeaway (a card<br/>completed and settled)"]:::llm
-    PL & CL -.-> BR["briefer:<br/>decision brief<br/>(a card blocked)"]:::llm
+    CO ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
+    PP & PL & CL & CO & SYNC & YOU --> OG{"the open-top<br/>set changed?"}:::det
+    OG -.-> GR["grouper:<br/>nest related<br/>open cards"]:::llm
+    PL & CL & YOU --> CG{"the completed<br/>set changed?"}:::det
+    CG -.-> CN["consolidator:<br/>the same,<br/>done column"]:::llm
+    PL & CL & YOU --> DG{"a card completed<br/>and settled?"}:::det
+    DG -.-> DI["distiller:<br/>background<br/>+ takeaway"]:::llm
+    PL & CL --> BG{"a card<br/>blocked?"}:::det
+    BG -.-> BR["briefer:<br/>the decision<br/>brief"]:::llm
     subgraph LEGEND["legend"]
         direction LR
-        LB["board judge:<br/>writes goal state"]:::llm
-        LG["caption judge:<br/>writes text only"]:::idx
         LS1["·"]:::det -->|"always follows"| LS2["·"]:::det
-        LD1["·"]:::det -.->|"only when its<br/>condition holds"| LD2["·"]:::det
+        LD1["·"]:::det -.->|"only if the<br/>gate holds"| LD2["·"]:::det
     end
+    linkStyle default stroke-width:2.5px
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
-    classDef idx fill:#d1fae5,stroke:#059669,color:#111827
     classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
     classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
     classDef user fill:#fce7f3,stroke:#db2777,color:#111827
 ```
 
-The dashed fan-in on the right is the event gating: the grouper keys on the
-open-top id set and the consolidator on the completed-top set, so they run
-after any source that changes those sets — the filing judges, the courier's
-planted goals, the plan-sync mirrors, or your own clear/resolve/undo — and
-stay silent when a pass changes nothing. The distiller and briefer key on a
+The diamond gates are the event gating: the grouper keys on the open-top id
+set and the consolidator on the completed-top set, so they run after any
+source that changes those sets — the filing judges, the courier's planted
+goals, the plan-sync mirrors, or your own clear/resolve/undo — and stay
+silent when a pass changes nothing. The distiller and briefer key on a
 single card's state (completed-and-settled, blocked) regardless of which
 judge put it there. The placer is the planner's second, scoped call only:
 the opener and the live re-plan always hard-place at card level.
@@ -222,6 +238,6 @@ flowchart TD
 | why is this card in this state? | the node's `log` in `goals/<sid>.json`: every event has source, kind, reason, time |
 | why was this work filed here? | `placements` in the store, plus the node's `why` and `trail` |
 | why did this mint at top level? | the node's `why`: "declared in the agent's own to-do list" means the plan-sync mirror, and nesting it is the grouper's job; anything else is the planner |
-| did a judge fail or get skipped? | `judge-errors.jsonl`: every row carries judge, session, kind (parse, call, give-up, cite-miss, rate-limited, task-store), and the evidence (reply tail, API message, re-arm event); rows before 2026-07-08 use the family names |
+| did a judge fail or get skipped? | `judge-errors.jsonl`: every row carries judge, session, kind (parse, call, give-up, cite-miss, rate-limited, task-store, history-unreadable), and the evidence (reply tail, API message, re-arm event); rows before 2026-07-08 use the family names |
 | what did a judge call cost, and when? | `judge-usage.jsonl`, per judge and session |
 | what happened to a peer message? | `timeline/messages.jsonl` by message id, plus the delivered markers in the transcript |

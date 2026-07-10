@@ -269,6 +269,6 @@ toward nothing.
   Models: `STATE/judge-model` (triage), `STATE/index-model`.
 - Logs: `STATE/judge-usage.jsonl` (per-call cost, one name per prompt),
   `STATE/judge-errors.jsonl` (the row contract above; kinds are parse,
-  call, give-up, cite-miss, rate-limited, task-store).
+  call, give-up, cite-miss, rate-limited, task-store, history-unreadable).
 - Debugging: run the judge's own code against the live store
   (`SourceFileLoader` on `bin/romp-judge`) rather than inferring from logs.
