@@ -2,21 +2,41 @@
   <img src="assets/romp-wordmark.png" alt="romp" width="440">
 </p>
 
-# romp
+AI coding agents can work in parallel and unattended for hours, but run enough
+of them and the managing consumes the attention you meant to spend directing
+them. Managing means keeping track of which agent is on which task, pulling up
+the background a decision needs, noticing which agents are stuck or need you,
+and coordinating handoffs between them. For all of this, the tools you get are
+one long serial transcript per agent, copy and paste to move context, and a row
+of terminals to check in turn.
 
-The bottleneck in AI coding is human attention. You can run many agents in
-parallel, but each one you add competes for the same limited attention. romp lets
-you direct a whole fleet by putting your attention where it counts and surfacing
-only what is worth acting on.
+Romp gives you better tools:
 
-You watch and direct the fleet through three views. The chat view is the
-conversation you already know from any AI tool, just laid out so you can tell at a
-glance what each agent is doing. The timeline shows the work over time and how the
-agents interact. The feed matters most: it splits each agent's transcript into
-separate tasks, flags which ones need you, which are working, and which are done,
-and distills each to a short summary you can act on. Together they let you work at
-whatever level of detail you need, from the feed's summary down to the raw
-conversation.
+- **The whole fleet at a glance.** One dashboard shows every agent: who is
+  working, who is stuck, who has been waiting on you, and for how long.
+- **Tasks, not transcripts.** Romp infers what tasks the agents are working on
+  and organizes the work by task rather than by session: several tasks can
+  interleave in one session, and one task can span several. Each task shows who
+  has it, what got handed off, what is done, what needs you, plus a short
+  summary and the background you need to decide, so picking a thread back up
+  after a week costs a glance.
+- **Coordination across agents and machines.** The Romp Postal Service is mail
+  between agents: they delegate, hand off, and ask each other questions
+  directly, and romp tracks every exchange. It runs over SSH, so one fleet can
+  span machines.
+- **Transcripts built for humans.** Timestamps, live status, and collapsible
+  detail; read at any level, from a one-line summary down to the raw exchange.
+- **No thread is lost.** Every session is indexed and searchable, and a closed
+  session revives with its history intact.
+- **On your machine, from any screen.** Romp is a kernel you run on your own
+  machine serving a web dashboard, with no hosted service in the middle. Open
+  the dashboard in a browser tab, in the editor, or over SSH from any device.
+
+## The three views
+
+The feed splits the work into task cards, the timeline lays the sessions out
+over time and shows where they interact, and the chat is the conversation you
+already know, laid out for scanning.
 
 ## Components
 
