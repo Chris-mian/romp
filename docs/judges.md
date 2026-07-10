@@ -236,6 +236,12 @@ toward nothing.
   pins the card in Working over any judge verdict.
 - **plan-sync**: pure code. Mirrors the agent's own to-do list as flat top
   cards ("declared in the agent's own to-do list"); the grouper nests them.
+  It reads the live task store (`~/.claude/tasks/<fsid>/`, the same source
+  the chat TO-DO card reads) — never the transcript, whose record of a
+  TaskUpdate can fall off the live chain when an api-error retry forks the
+  graph. A missing store falls back to the transcript fold; an unreadable
+  one logs a `task-store` row and skips the pass rather than silently
+  degrading.
 - **auto-nudge**: a kernel trigger, not an LLM. Detects a genuinely stalled
   session and injects one nudge prompt; the planner's nudge phase does the
   judging, and a failed nudge records the block.
@@ -263,6 +269,6 @@ toward nothing.
   Models: `STATE/judge-model` (triage), `STATE/index-model`.
 - Logs: `STATE/judge-usage.jsonl` (per-call cost, one name per prompt),
   `STATE/judge-errors.jsonl` (the row contract above; kinds are parse,
-  call, give-up, cite-miss, rate-limited).
+  call, give-up, cite-miss, rate-limited, task-store).
 - Debugging: run the judge's own code against the live store
   (`SourceFileLoader` on `bin/romp-judge`) rather than inferring from logs.

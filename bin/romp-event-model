@@ -941,11 +941,49 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
             "color": color, "leafFsid": leaf_path.stem, "turns": turns}
 
 
+def task_store_plan(fsid):
+    """The agent's to-do list read from Claude Code's LIVE task store (<config>/tasks/<fsid>/<N>.json,
+    honoring $CLAUDE_CONFIG_DIR) — the AUTHORITATIVE state TaskList/TaskGet read, updated by EVERY
+    writer including subagents. The transcript fold (declared_plan below) is a lossy reconstruction:
+    it misses a completion whose record fell off the transcript's live chain — an api-error retry
+    forks the parent graph and the abandoned branch keeps the TaskUpdate that actually RAN (store
+    updated, transcript forgot), leaving a mirror card phantom-open that re-mints itself after every
+    clear (the 2026-07-09 g204 loop). Same item shape as declared_plan: [{key, text, activeForm,
+    status}], ordered by numeric id. Returns None when the fsid has no store dir — a session that
+    never declared a plan there (the caller may fall back to the fold). Raises OSError when the dir
+    EXISTS but can't be listed: that is the authoritative source failing, and the caller must surface
+    it loudly, never silently fold (repo policy). A single corrupt item file is skipped."""
+    if not fsid:
+        return None
+    d = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(HOME / ".claude")) / "tasks" / fsid
+    if not d.is_dir():
+        return None
+    items = []
+    for n in os.listdir(d):                                # raises OSError → the caller surfaces it
+        if not n.endswith(".json"):
+            continue
+        try:
+            t = json.loads((d / n).read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(t, dict):
+            continue
+        key = str(t.get("id") or n.rsplit(".", 1)[0])
+        af = t.get("activeForm")
+        items.append({"key": key, "text": str(t.get("subject") or ""),
+                      "activeForm": str(af) if af else None,
+                      "status": str(t.get("status") or "pending")})
+    items.sort(key=lambda t: (0, int(t["key"])) if t["key"].isdigit() else (1, t["key"]))
+    return items
+
+
 def declared_plan(session):
-    """The agent's OWN live to-do list (Claude Code's Task tool) folded into ordered items
-    [{key, text, activeForm, status}] — the SINGLE home for Task-tool folding, so downstream
-    (the judge's plan-sync) sees a generic 'declared plan' shape instead of raw tool calls.
-    Mirrors the kernel's _fold_tasks. `key` is the stable `Task #N` id lifted from TaskCreate's
+    """The agent's OWN to-do list (Claude Code's Task tool) folded into ordered items
+    [{key, text, activeForm, status}] — the FALLBACK behind task_store_plan for a session with no
+    live task store, so downstream (the judge's plan-sync) sees a generic 'declared plan' shape
+    instead of raw tool calls. Mirrors the kernel's _fold_tasks, with the same blind spots: only the
+    MAIN agent's TaskCreate/TaskUpdate calls, and only those on the transcript's live chain.
+    `key` is the stable `Task #N` id lifted from TaskCreate's
     result text (a creation-order `cN` fallback if the result is unreadable); `status` rides each
     TaskUpdate. Only TaskCreate/TaskUpdate are folded — plain TodoWrite (no durable ids) is not
     used by romp. Empty list if the session declared no plan."""

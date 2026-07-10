@@ -325,7 +325,8 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
       err    what kind — "call" (no usable reply: subprocess error, timeout, API error envelope),
              "parse" (the model's own text, rejected by the parser), "give-up" (fail cap hit, quiet
              until the event named in the note re-arms it), "cite-miss", "rate-limited",
-             "unmigrated-node"
+             "unmigrated-node", "task-store" (the live task store exists but can't be read —
+             plan-sync skipped for the pass rather than silently folding the transcript)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.
       goal   the node id (or list of node ids) the judge was ruling on, when one exists — the feed's
@@ -1947,8 +1948,24 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
     (`agentBornOpen`) that later completes flips to authoritative-done and is KEPT (a live completion is a
     signal, not backlog). A done agentTask node that was never watched-open — a pre-fix backlog mint,
     marker absent — SELF-HEALS away (deleted if childless). Idempotent; runs every pass before rollup.
-    Returns True if it mutated the store (caller regroups)."""
-    items = {it["key"]: it for it in em.declared_plan(session)}
+    Returns True if it mutated the store (caller regroups).
+
+    The plan comes from the LIVE task store (em.task_store_plan — what TaskList/TaskGet read, written
+    by every writer including subagents), NOT the transcript fold: the fold loses any TaskUpdate whose
+    record fell off the transcript's live chain (an api-error retry fork orphaned the completing update
+    for a mirror that then stayed phantom-open and re-minted after every clear — g204, 2026-07-09).
+    The fold remains only for a session with NO store dir; a store that exists but can't be read skips
+    the sync loudly (judge-errors row) instead of silently degrading to the lossy fold (repo policy)."""
+    try:
+        plan = em.task_store_plan(session.get("leafFsid") or "")
+    except OSError as e:
+        _log_judge_error("planner", store.get("rompUuid") or "", "task-store",
+                         note="task store unreadable: %s — plan-sync skipped, no silent fold; "
+                              "re-arms when the store reads again" % e)
+        return False
+    if plan is None:
+        plan = em.declared_plan(session)                    # no store dir → legacy transcript fold
+    items = {it["key"]: it for it in plan}
     nodes = store["nodes"]
     has_child, by_key = set(), {}
     for nid, nd in nodes.items():
@@ -1961,7 +1978,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
         return False
 
     def _is_open(it):
-        return bool(it) and it["status"] not in ("completed", "cancelled")
+        return bool(it) and it["status"] not in ("completed", "cancelled", "deleted")
 
     changed = False
     # 1) reconcile the agentTask nodes we already track against the current declared plan

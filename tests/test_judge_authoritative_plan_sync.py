@@ -5,7 +5,9 @@ agent-declared-OPEN item is authoritative — its open state trumps a judge/roll
 
 Covers:
 - em.declared_plan   — folding TaskCreate/TaskUpdate (+ results) into ordered {key,text,status}.
-- jd._sync_declared_plan — find-or-create by stable Task id; idempotent; status refresh; reopen.
+- em.task_store_plan — the AUTHORITATIVE live task store read the sync prefers over the fold.
+- jd._sync_declared_plan — find-or-create by stable Task id; idempotent; status refresh; reopen;
+                       store-first sourcing (fold only when no store dir; unreadable store = loud skip).
 - jd.rollup_status   — an agentTask-open descendant holds its top WORKING even when the umbrella
                        was flat-marked complete; a crossed-off item lets normal roll-up proceed.
 
@@ -27,6 +29,26 @@ jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
 T0 = NOW - 3600
+
+# Hermetic task-store root: em.task_store_plan reads $CLAUDE_CONFIG_DIR/tasks/<fsid> at call time, so
+# pin it to an empty tmpdir for the whole module — every legacy test below exercises the FOLD branch
+# deterministically instead of depending on the developer's real ~/.claude/tasks not knowing SID.
+_ENV_TMP = tempfile.TemporaryDirectory()
+_ENV_PREV = None
+
+
+def setUpModule():
+    global _ENV_PREV
+    _ENV_PREV = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = _ENV_TMP.name
+
+
+def tearDownModule():
+    if _ENV_PREV is None:
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+    else:
+        os.environ["CLAUDE_CONFIG_DIR"] = _ENV_PREV
+    _ENV_TMP.cleanup()
 
 
 def iso(t):
@@ -296,6 +318,146 @@ class BlockedAuthority(unittest.TestCase):
         self.assertEqual(store["status"]["T"], "completed")
         self.assertFalse(store["nodes"]["C"]["blocked"], "a complete node can't stay blocked")
         self.assertNotIn("blockWhy", store["nodes"]["C"])
+
+
+def forked_plan_session():
+    """The 2026-07-09 g204 shape: the completing TaskUpdate RAN (its tool_result is in the file) but an
+    api-error retry forked the transcript graph and the leaf's live chain bypasses it, so the fold's
+    last word on task #1 is 'in_progress'. Records: create + in_progress on the live chain; the
+    completed update + result on a DEAD branch (aend, the leaf, parents past them onto ru0)."""
+    recs = [uline(T0, "ship the docs rewrite", "u1"),
+            tcreate(T0 + 1, "ac1", "u1", "Ship the docs rewrite", "Shipping the docs", "tc1"),
+            tres(T0 + 2, "rc1", "ac1", "tc1", "Task #1 created successfully. Use TaskUpdate to update it."),
+            tupdate(T0 + 3, "au0", "rc1", "1", "in_progress", "tu0"),
+            tres(T0 + 4, "ru0", "au0", "tu0", "Task #1 updated."),
+            # the orphan branch: executed, recorded, then abandoned by the retry
+            tupdate(T0 + 5, "aux", "ru0", "1", "completed", "tux"),
+            tres(T0 + 6, "rux", "aux", "tux", "Task #1 updated."),
+            # the surviving chain: the retry's settle parents past the orphan onto ru0
+            aline(T0 + 20, "Done here.", "aend", "ru0", stop="end_turn")]
+    return build_session(recs)
+
+
+class StoreAuthoritativeSourcing(unittest.TestCase):
+    """The plan-sync reads the LIVE task store, not the transcript fold (the 2026-07-09 phantom-open
+    mirror): an api-error retry orphaned the completing TaskUpdate onto a dead transcript branch, the
+    fold re-reported the item open forever, and the mirror card re-minted itself after every clear."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = self._td.name
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = self._prev
+        self._td.cleanup()
+
+    def _store_dir(self):
+        d = Path(self._td.name) / "tasks" / SID
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _write_item(self, key, subject, status):
+        (self._store_dir() / ("%s.json" % key)).write_text(json.dumps(
+            {"id": key, "subject": subject, "activeForm": None, "status": status}))
+
+    def test_the_fold_loses_the_orphaned_completion(self):
+        """Pin the failure mechanism itself: the completing update is IN the file but off the live
+        chain, so the fold still says in_progress — this is why the fold cannot be the source."""
+        self.assertEqual(em.declared_plan(forked_plan_session())[0]["status"], "in_progress")
+
+    def test_store_completion_beats_the_fold(self):
+        """The bug end-to-end: a mirror watched-open flips to authoritative-done from the STORE even
+        though the transcript fold (orphaned completion) still claims the item is open."""
+        store = fresh_store()
+        s = forked_plan_session()
+        jd._sync_declared_plan(store, s, "s0", T0 + 4)     # no store dir yet → fold mints it open
+        nd = agent_nodes(store)["1"]
+        self.assertEqual(nd["agentTask"]["status"], "open")
+        self._write_item("1", "Ship the docs rewrite", "completed")
+        self.assertTrue(jd._sync_declared_plan(store, s, "s1", T0 + 30))
+        self.assertEqual(nd["agentTask"]["status"], "done")
+        self.assertTrue(nd["nodeComplete"])
+
+    def test_store_prevents_the_phantom_remint_after_a_clear(self):
+        """The g204 loop: the phantom card was cleared (its node archived away), the stale fold still
+        says open — with the store saying completed, the sync must NOT re-mint the mirror."""
+        store = fresh_store()                              # the cleared node is gone entirely
+        self._write_item("1", "Ship the docs rewrite", "completed")
+        self.assertFalse(jd._sync_declared_plan(store, forked_plan_session(), "s1", T0 + 30))
+        self.assertEqual(agent_nodes(store), {}, "a completed item is never minted retroactively")
+
+    def test_no_store_dir_falls_back_to_the_fold(self):
+        """A session with no live task store (legacy transcript, replay) keeps the fold path."""
+        store = fresh_store()
+        self.assertTrue(jd._sync_declared_plan(store, plan_session([("Phase A", "Doing A", [])]),
+                                               "s0", T0 + 5))
+        self.assertEqual(agent_nodes(store)["1"]["agentTask"]["status"], "open")
+
+    def test_deleted_status_is_not_open(self):
+        """A TaskUpdate-deleted item must not hold a goal open or mint a mirror."""
+        store = fresh_store()
+        self._write_item("1", "Ship the docs rewrite", "deleted")
+        self.assertFalse(jd._sync_declared_plan(store, forked_plan_session(), "s1", T0 + 30))
+        self.assertEqual(agent_nodes(store), {})
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "chmod can't block root")
+    def test_unreadable_store_skips_the_sync_loudly(self):
+        """The store EXISTS but can't be read → the sync logs a task-store row and skips the pass —
+        it must never silently degrade to the lossy fold (repo policy: fail loudly)."""
+        store = fresh_store()
+        d = self._store_dir()
+        self._write_item("1", "Ship the docs rewrite", "completed")
+        prev_errors = jd.ERRORS
+        errlog = Path(self._td.name) / "judge-errors.jsonl"
+        jd.ERRORS = errlog
+        os.chmod(d, 0o000)
+        try:
+            self.assertFalse(jd._sync_declared_plan(store, forked_plan_session(), "s1", T0 + 30))
+        finally:
+            os.chmod(d, 0o755)
+            jd.ERRORS = prev_errors
+        self.assertEqual(agent_nodes(store), {}, "no fold fallback: the pass is skipped")
+        rows = [json.loads(l) for l in errlog.read_text().splitlines()]
+        self.assertEqual([r["err"] for r in rows], ["task-store"])
+        self.assertEqual(rows[0]["judge"], "planner")
+        self.assertEqual(rows[0]["fsid"], SID)
+        self.assertIn("no silent fold", rows[0]["note"])
+
+
+class TaskStorePlanReader(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = self._td.name
+        self.d = Path(self._td.name) / "tasks" / SID
+        self.d.mkdir(parents=True)
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = self._prev
+        self._td.cleanup()
+
+    def test_reads_items_in_numeric_order(self):
+        for k, st in (("2", "pending"), ("10", "completed"), ("1", "in_progress")):
+            (self.d / (k + ".json")).write_text(json.dumps({"id": k, "subject": "step " + k, "status": st}))
+        items = em.task_store_plan(SID)
+        self.assertEqual([it["key"] for it in items], ["1", "2", "10"])
+        self.assertEqual(items[2]["status"], "completed")
+
+    def test_missing_dir_is_none_and_empty_dir_is_authoritative(self):
+        self.assertIsNone(em.task_store_plan("99999999-8888-7777-6666-555555555555"))
+        self.assertEqual(em.task_store_plan(SID), [], "a readable empty dir IS the answer: no plan")
+
+    def test_a_corrupt_item_file_is_skipped(self):
+        (self.d / "1.json").write_text(json.dumps({"id": "1", "subject": "good", "status": "pending"}))
+        (self.d / "2.json").write_text("{not json")
+        self.assertEqual([it["key"] for it in em.task_store_plan(SID)], ["1"])
 
 
 if __name__ == "__main__":
