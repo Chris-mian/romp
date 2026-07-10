@@ -7,8 +7,10 @@ in which order, and where each record lives. Companion detail:
 [judges.md](judges.md) (per-judge prompts and triggers) and
 [goal-state.md](goal-state.md) (the event model). Current as of 2026-07-09.
 
-Reading the diagrams: blue = an LLM judge, gray = deterministic code,
-yellow = data at rest, pink = you.
+Reading the diagrams: blue = an LLM board judge (writes goal state), green =
+an LLM caption judge (writes only text), gray = deterministic code, yellow =
+data at rest, pink = you. A solid arrow always follows; a dashed arrow fires
+only when its condition holds.
 
 ## The whole system
 
@@ -54,22 +56,44 @@ timeline captions; it never touches goals.
 
 A turn is your message, the work it causes, and the stop at the end. A
 segment is one input and its work; a turn can hold several (your message,
-then a peer's message, each with its own work). Judges fire at three fixed
-moments of the turn; the rest follow board-change events, never the clock.
+then a peer's message, each with its own work). Every judge is a node below.
+The entry judges hang off the turn's three fixed moments (and peer mail);
+the board-change judges on the right follow whichever judge or action
+changed the card set, never the clock. Solid = always follows; dashed =
+only when the condition on the edge or node holds.
 
 ```mermaid
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
-    M -.-> GI["gister:<br/>topic phrase for the<br/>placeholder card"]:::llm
-    M -.-> PP["opener:<br/>put the ask on the<br/>board right now"]:::llm
-    E -.-> PL["planner:<br/>file what the work did<br/>(placer picks the depth)"]:::llm
-    E -.-> CA["captioner:<br/>one line, what<br/>got done"]:::llm
-    X -.-> CL["closer:<br/>done/blocked audit of<br/>the goals it touched"]:::llm
-    X -.-> AR["archiver:<br/>session headline<br/>+ abstract"]:::llm
+    MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
+    M --> GI["gister:<br/>topic phrase: placeholder card,<br/>timeline dot, chat gloss"]:::idx
+    E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
+    CA --> AR["archiver:<br/>headline + abstract from<br/>the turn captions"]:::idx
+    M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board<br/>right now (mint or sub only)"]:::llm
+    E --> PL["planner:<br/>file what the work did<br/>(mint, sub, done, block, retitle, skip)"]:::llm
+    PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
+    X --> CL["closer:<br/>done/blocked audit of the<br/>goals the turn touched"]:::llm
+    SYNC["plan-sync:<br/>mirror the agent's<br/>own to-do list"]:::det
+    YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
+    PP & PL & CL & CO & SYNC & YOU -.-> GR["grouper:<br/>nest related open cards<br/>(the open-top set changed)"]:::llm
+    PL & CL & YOU -.-> CN["consolidator:<br/>the same for the completed<br/>column (its set changed)"]:::llm
+    PL & CL & YOU -.-> DI["distiller:<br/>background + takeaway (a card<br/>completed and settled)"]:::llm
+    PL & CL -.-> BR["briefer:<br/>decision brief<br/>(a card blocked)"]:::llm
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
+    classDef idx fill:#d1fae5,stroke:#059669,color:#111827
     classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
+    classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
     classDef user fill:#fce7f3,stroke:#db2777,color:#111827
 ```
+
+The dashed fan-in on the right is the event gating: the grouper keys on the
+open-top id set and the consolidator on the completed-top set, so they run
+after any source that changes those sets — the filing judges, the courier's
+planted goals, the plan-sync mirrors, or your own clear/resolve/undo — and
+stay silent when a pass changes nothing. The distiller and briefer key on a
+single card's state (completed-and-settled, blocked) regardless of which
+judge put it there. The placer is the planner's second, scoped call only:
+the opener and the live re-plan always hard-place at card level.
 
 The board judges, with what each one reads and the ops it may emit:
 
