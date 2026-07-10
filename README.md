@@ -4,13 +4,12 @@
 
 AI coding agents can work in parallel and unattended for hours, but run enough
 of them and the managing consumes the attention you meant to spend directing
-them. Managing means keeping track of which agent is on which task, pulling up
-the background a decision needs, noticing which agents are stuck or need you,
-and coordinating handoffs between them. For all of this, the tools you get are
-one long serial transcript per agent, copy and paste to move context, and a row
-of terminals to check in turn.
+them. This requires you to keep track of which agent is working on which task,
+scroll through transcripts for the background a decision needs, check each
+terminal in turn to see which agents are stuck or need you, and hand off work
+between agents by copy and paste.
 
-Romp gives you better tools:
+Romp gives you the tools to direct the fleet:
 
 - **The whole fleet at a glance.** One dashboard shows every agent: who is
   working, who is stuck, who has been waiting on you, and for how long.
