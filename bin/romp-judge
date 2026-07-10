@@ -45,6 +45,7 @@ PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's 
 MESSAGES = STATE / "timeline" / "messages.jsonl"
 ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp -j`
 USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
+SDKDIR   = STATE / "sdk"                 # the SDK backend's per-session registry — lastSid tracks the CURRENT transcript fsid
 
 
 def _rebind_state(path):
@@ -53,12 +54,14 @@ def _rebind_state(path):
     save_goals wrote synthetic fixtures into the live goals/ and the triage pass then stormed
     judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
     instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
-    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE
+    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE, SDKDIR
     STATE = path
     NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
     GOALARCHDIR = STATE / "goals-archive"
     STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
+    SDKDIR = STATE / "sdk"
+    _lastsid_memo.clear()   # sdk-registry reads are mtime-memoized per sid — a rebind must not serve the old root's values
     # (the override journal needs no rebinding: _overrides_dir() derives from GOALDIR at call time, so
     #  ANY isolation style — _rebind_state OR a bare GOALDIR reassignment — scopes it automatically)
 
@@ -792,6 +795,14 @@ def parsed_session(fsid, files, now):
     user's bug 2026-06-17). The states file's (mtime,size) is folded into the cache key so an idle-only
     transition (which doesn't touch the transcript) still busts the cache and re-rolls status."""
     states = STATESDIR / (fsid + ".jsonl")
+    # A FORKED leaf (SDK /clear: discover hands the lastSid file under the stable romp sid) parses with
+    # the session's anchor transcript among the candidates, so a fork whose chain back-links across files
+    # (a resume-style fork) keeps its history — the FileAdapter walk crosses files by design, and a /clear
+    # fork (parentUuid null at the head) still drops pre-clear history naturally.
+    leaf = Path(files[0])
+    anchor = leaf.with_name(fsid + ".jsonl")
+    if anchor.name != leaf.name and anchor.exists():
+        files = list(files) + [str(anchor)]
     key_files = list(files) + ([str(states)] if states.exists() else [])
     try:
         key = _fileset_key(key_files)
@@ -2313,6 +2324,34 @@ def _custom_title(p):
     return None
 
 
+_lastsid_memo = {}   # sid -> (sdk-registry mtime, diverged lastSid or None) — the registry is rewritten
+                     # constantly while a session works (ctx%, queue mirror), but lastSid flips only on a
+                     # /clear-style fork, so an mtime memo keeps the fingerprint's per-push reads cheap
+
+
+def _sdk_last_sid(sid):
+    """The CURRENT transcript fsid of an SDK session when it has FORKED away from its anchor (`/clear`
+    mints a new fsid under the same romp sid), else None. Read from the SDK backend's own registry —
+    the designed, authoritative record (SdkSession updates lastSid from the CLI's init message), the
+    SDK twin of the tmux fork's custom-title association (an SDK transcript never carries a title)."""
+    p = SDKDIR / (sid + ".json")
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        _lastsid_memo.pop(sid, None)
+        return None
+    hit = _lastsid_memo.get(sid)
+    if hit is not None and hit[0] == mt:
+        return hit[1]
+    try:
+        ls = json.loads(p.read_text()).get("lastSid")
+    except (OSError, ValueError):
+        ls = None
+    ls = ls if (isinstance(ls, str) and ls and ls != sid) else None
+    _lastsid_memo[sid] = (mt, ls)
+    return ls
+
+
 _discover_lock = threading.Lock()
 _discover_cache = {"fp": None, "result": None}        # fingerprint → cached discover() result (see _discover_fingerprint)
 
@@ -2323,7 +2362,10 @@ def _discover_fingerprint():
     .jsonl added to a project dir bumps that dir's mtime). A plain transcript APPEND adds no directory entry,
     so it leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on an append, so
     we must not re-walk ~80 project dirs + read every fork's head 2-4× per push for nothing. Same (mtime)
-    change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover."""
+    change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover.
+    The signature also carries each session's diverged SDK lastSid (mtime-memoized, see _sdk_last_sid): an
+    SDK /clear fork changes the ANCHOR entry's path without necessarily adding a dir entry the walk would
+    see in time (the registry write races the new transcript's creation), so the VALUE itself is signed."""
     try:
         entries = sorted(NAMES.iterdir())
     except OSError:
@@ -2345,7 +2387,7 @@ def _discover_fingerprint():
                 pm = os.stat(_proj_dir(cdir)).st_mtime          # a new fork in this project bumps the DIR mtime
             except OSError:
                 pm = 0
-        fp.append((f.name, mt, pm))
+        fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or ""))
     return tuple(fp)
 
 
@@ -2417,11 +2459,23 @@ def _discover_impl(now):
             continue
         proj = _proj_dir(cdir)
         listing = _list_jsonl(proj)
-        for stem, path_str, mt in listing:               # anchor (<sid>.jsonl) first — mirrors the old exists()/stat() block
-            if stem == sid:
-                if mt >= cutoff and path_str not in seen:
-                    seen.add(path_str); out.append((sid, Path(path_str), sid, name))
-                break
+        # An SDK session that FORKED (/clear mints a new fsid under the same romp sid) reads its CURRENT
+        # transcript: the entry keeps the stable romp sid (goals/captions/chat all key on it) but its path
+        # follows the registry's lastSid. Without this every surface stayed pinned to the dead anchor file —
+        # the chat showed pre-clear history forever and the timeline drew its unsettled tail as an
+        # ever-growing work bar (the user 2026-07-10).
+        last = _sdk_last_sid(sid)
+        fork = next(((p, m) for st, p, m in listing if st == last), None) if last else None
+        if fork is not None:
+            path_str, mt = fork
+            if mt >= cutoff and path_str not in seen:
+                seen.add(path_str); out.append((sid, Path(path_str), sid, name))
+        else:
+            for stem, path_str, mt in listing:           # anchor (<sid>.jsonl) first — mirrors the old exists()/stat() block
+                if stem == sid:
+                    if mt >= cutoff and path_str not in seen:
+                        seen.add(path_str); out.append((sid, Path(path_str), sid, name))
+                    break
         if not name:
             continue
         for stem, path_str, mt in listing:               # same-customTitle forks (each its own lane)

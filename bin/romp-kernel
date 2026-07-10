@@ -4779,7 +4779,15 @@ def _parse(path, sid, now):
     if hit is not None and key is not None and hit[0] == key:
         return hit[1]
     _be = _sdk()
-    session = em.parse_session(path, rompuuid=sid, candidate_files=[path],
+    # A FORKED leaf (SDK /clear: discover hands the lastSid file under the stable romp sid) parses with
+    # the session's anchor transcript among the candidates — a resume-style fork's cross-file chain keeps
+    # its history via the FileAdapter walk; a /clear fork (parentUuid null) still starts fresh. Mirrors
+    # jd.parsed_session. Cache stays keyed on the LEAF alone: the anchor file is dead once forked.
+    cands = [path]
+    anchor = os.path.join(os.path.dirname(path), sid + ".jsonl")
+    if os.path.basename(path) != sid + ".jsonl" and os.path.exists(anchor):
+        cands.append(anchor)
+    session = em.parse_session(path, rompuuid=sid, candidate_files=cands,
                                postal_log=str(jd.MESSAGES), now=now,
                                sdk_human=bool(_be and _be.owns(sid)))   # SDK session: composer input is promptSource "sdk"
     if key is not None:
