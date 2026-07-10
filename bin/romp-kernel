@@ -5673,6 +5673,45 @@ def _agent_open_set(nodes, children):
     return openset
 
 
+def _interrupt_settle(events, txt):
+    """True when an assistant text is the CLI's null settle-reply — "No response requested." — directly
+    closing an interrupted turn. An interrupt record needs SOME assistant text to settle the turn, and the
+    model's filler carries no content, so the chat renders it as part of the interrupt SEAM (a slim rail
+    marker) instead of a full assistant bubble that reads like the agent speaking (the user 2026-07-09:
+    every kernel-restart cut minted one per session). Tight by design: the exact filler string only, and
+    only when the nearest prior non-thinking event is the interrupt marker — a substantive reply after an
+    interrupt ("stopped; the partial edit is reverted") stays a normal bubble."""
+    if txt.strip() != "No response requested.":
+        return False
+    for prev in reversed(events):
+        if prev.get("kind") == "thinking":
+            continue
+        return bool(prev.get("interruptMarker"))
+    return False
+
+
+def _stamp_interrupt_causes(events):
+    """Label each interrupt marker with WHY the turn was cut, when the transcript itself says: after a
+    kernel-restart cut (BOOT_RESUME_NUDGE) or a mid-turn process death (CRASH_RESUME_NUDGE) the resume
+    notice romp injects is the next user-role event, so the seam reads "interrupted — kernel restart"
+    instead of implying the user pressed stop (the user 2026-07-09). Event-based: keyed on the notice
+    record romp itself wrote, never a time window. No notice → a genuine user stop → unlabeled."""
+    for i, ev in enumerate(events):
+        if not ev.get("interruptMarker"):
+            continue
+        for nxt in events[i + 1:]:
+            if nxt.get("kind") != "user":
+                continue                                  # the settle-reply / thinking between marker and notice
+            if nxt.get("rompSystem"):
+                body = nxt.get("md") or ""
+                if "kernel restarted and cut" in body:
+                    ev["interruptCause"] = "restart"
+                elif "died mid-turn" in body:
+                    ev["interruptCause"] = "crash"
+            break                                         # first user-role event decides; a typed prompt = user stop
+    return events
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -5857,7 +5896,10 @@ def build_session(sid, now, tmux=None):
                                 continue                     # plumbing; if nothing meaningful remains (e.g. /compact's
                                                              # output was ONLY notices + the "Compacted" confirmation),
                                                              # drop the atom — the compaction divider below covers it.
-                        events.append({"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts})
+                        ev = {"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts}
+                        if _interrupt_settle(events, txt):   # the null settle-reply closing an interrupted
+                            ev["interruptSettle"] = True     # turn → rendered as seam marker, not a bubble
+                        events.append(ev)
                     elif b.get("type") == "tool_use":
                         if b.get("name") in ("TaskCreate", "TaskUpdate"):
                             continue                     # folded into the one todo checklist (see _fold_tasks)
@@ -5897,6 +5939,7 @@ def build_session(sid, now, tmux=None):
                                "postTokens": cmeta.get("post_tokens"), "summary": a.get("summary")})
     _flush_recoveries(None)                             # a recovery on the still-open tail turn (t past the last atom) → bottom of the flow
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
+    _stamp_interrupt_causes(events)                     # a restart/crash resume notice names the seam's cause
     for ev in events:
         # tlId = the timeline atom a chat hover lights: a message/prompt → the DOT (segment promptId),
         # work (assistant/tool/sent message) → the BAR (segment workId). Falls back to the segment id.

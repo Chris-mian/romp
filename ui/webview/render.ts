@@ -1051,8 +1051,20 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       turn.appendChild(dot("ring"));
       const line = el("div", "interrupt-line");
       line.appendChild(el("span", "interrupt-square"));   // the stop button's own glyph, tying cause to effect
-      line.appendChild(document.createTextNode("interrupted"));
-      line.title = "you stopped this turn here (the stop button / Ctrl+C)";
+      // The seam says WHY when the transcript does (kernel interruptCause, from the resume notice romp
+      // itself injected): a kernel-restart/crash cut is not the user pressing stop, and the old blanket
+      // "you stopped this turn" title blamed them for every deploy (the user 2026-07-09).
+      const cause = (ev as any).interruptCause;
+      if (cause === "restart") {
+        line.appendChild(document.createTextNode("interrupted — kernel restart"));
+        line.title = "a romp kernel restart cut this turn; the session was resumed automatically";
+      } else if (cause === "crash") {
+        line.appendChild(document.createTextNode("interrupted — process died"));
+        line.title = "this session's claude process died mid-turn; the session was resumed automatically";
+      } else {
+        line.appendChild(document.createTextNode("interrupted"));
+        line.title = "you stopped this turn here (the stop button / Ctrl+C)";
+      }
       turn.appendChild(line);
       return turn;
     }
@@ -1138,6 +1150,19 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     return turn;
   }
   if (ev.kind === "assistant") {
+    // The null settle-reply closing an interrupted turn (kernel interruptSettle: "No response requested."
+    // right after the interrupt record) is part of the SEAM, not the agent speaking — render it in the
+    // interrupt marker's own language instead of a full assistant bubble (the user 2026-07-09: every
+    // kernel-restart cut minted one of these bubbles per session).
+    if ((ev as any).interruptSettle) {
+      const turn = el("div", "turn turn-interrupt");
+      turn.appendChild(dot("ring"));
+      const line = el("div", "interrupt-line");
+      line.appendChild(document.createTextNode("no response — turn settled"));
+      line.title = "the model closed the interrupted turn with nothing to add; the real work resumes below";
+      turn.appendChild(line);
+      return turn;
+    }
     const turn = el("div", "turn turn-assistant");
     turn.appendChild(dot("ring"));
     const body = el("div", "assistant md");
