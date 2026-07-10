@@ -2,12 +2,12 @@
   <img src="assets/romp-wordmark.png" alt="romp" width="440">
 </p>
 
-AI coding agents can work in parallel and unattended for hours, but run enough
-of them and the managing consumes the attention you meant to spend directing
-them. This requires you to keep track of which agent is working on which task,
-scroll through transcripts for the background a decision needs, check each
-terminal in turn to see which agents are stuck or need you, and hand off work
-between agents by copy and paste.
+AI coding agents can work in parallel and unattended for hours, but once you
+run more than a few, managing them consumes the attention you meant to spend
+directing them. This requires you to keep track of which agent is working on
+which task, scroll through transcripts for the relevant background a decision
+needs, check in on the agents to see which ones are stuck or need you, and
+coordinate work between multiple agents by copy and paste.
 
 Romp gives you the tools to direct the fleet:
 
