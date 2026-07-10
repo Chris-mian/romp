@@ -65,7 +65,7 @@ only when the condition on the edge or node holds.
 ```mermaid
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
-    MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
+    E ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
     M --> GI["gister:<br/>topic phrase: placeholder card,<br/>timeline dot, chat gloss"]:::idx
     E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
     CA --> AR["archiver:<br/>headline + abstract from<br/>the turn captions"]:::idx
@@ -73,12 +73,19 @@ flowchart LR
     E --> PL["planner:<br/>file what the work did<br/>(mint, sub, done, block, retitle, skip)"]:::llm
     PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
     X --> CL["closer:<br/>done/blocked audit of the<br/>goals the turn touched"]:::llm
-    SYNC["plan-sync:<br/>mirror the agent's<br/>own to-do list"]:::det
-    YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
+    X ~~~ SYNC["plan-sync:<br/>mirror the agent's<br/>own to-do list"]:::det
+    CL ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
     PP & PL & CL & CO & SYNC & YOU -.-> GR["grouper:<br/>nest related open cards<br/>(the open-top set changed)"]:::llm
     PL & CL & YOU -.-> CN["consolidator:<br/>the same for the completed<br/>column (its set changed)"]:::llm
     PL & CL & YOU -.-> DI["distiller:<br/>background + takeaway (a card<br/>completed and settled)"]:::llm
     PL & CL -.-> BR["briefer:<br/>decision brief<br/>(a card blocked)"]:::llm
+    subgraph LEGEND["legend"]
+        direction LR
+        LB["board judge:<br/>writes goal state"]:::llm
+        LG["caption judge:<br/>writes text only"]:::idx
+        LS1["·"]:::det -->|"always follows"| LS2["·"]:::det
+        LD1["·"]:::det -.->|"only when its<br/>condition holds"| LD2["·"]:::det
+    end
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
     classDef idx fill:#d1fae5,stroke:#059669,color:#111827
     classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
