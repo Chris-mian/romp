@@ -1567,8 +1567,11 @@ def _auto_nudge_tick(now, tmux):
                     # this goal's nudge segment still unplaced, the response is still in the judge's queue —
                     # skip and re-check next tick (event-based, no timer). No visible nudge segment
                     # (parse lag, pre-marker history) keeps the stamp-now behavior.
-                    resp = next((s2 for tn2 in reversed(turns[-4:]) for s2 in jd._segs(tn2, store)
-                                 if jd._seg_nudge(s2) and jd._seg_followup(s2) == gid), None)
+                    try:
+                        resp = next((s2 for tn2 in reversed(turns[-4:]) for s2 in jd._segs(tn2, store)
+                                     if jd._seg_nudge(s2) and jd._seg_followup(s2) == gid), None)
+                    except Exception:
+                        resp = None                        # minimal/legacy turn shapes → stamp-now, as before
                     if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
                         continue                           # the planner hasn't ruled on the response yet
                     _mark_nudge_failed(gid)
