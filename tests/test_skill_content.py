@@ -29,6 +29,9 @@ NOW = 1781100000
 T0 = NOW - 3600
 SKILL_MD = ("Base directory for this skill: /tmp/TESTHOST/skills/cleanplots\n\n"
             "# cleanplots\n\nMake plots with cp.fig() and finish with ax.clean().")
+# The NEWER payload shape (2026-07-10): no "Base directory…" preamble — the record instead links to the
+# invoking Skill tool_use via sourceToolUseID (stream: parent_tool_use_id). Raw markdown head.
+SKILL_MD_V2 = "# cleanplots\n\nMake plots with cp.fig() and finish with ax.clean()."
 
 
 def iso(t):
@@ -93,6 +96,47 @@ class EventModelSkillAtom(unittest.TestCase):
         self.assertLessEqual(len(sk["skillMd"]), em.SKILL_MD_CAP + 40)
         self.assertIn("…(skill content truncated)", sk["skillMd"])
 
+    def test_v2_shape_classifies_by_source_tool_use_id(self):
+        # the newer CLI payload: raw markdown (no preamble), linked by sourceToolUseID → still a
+        # flagged, content-EMPTY skillMd atom, not an isMeta drop (whose un-superseded LIVE twin
+        # rendered as the giant expanded note box, the user 2026-07-10)
+        recs = _records()
+        recs[3] = {"type": "user", "timestamp": iso(T0 + 12), "uuid": "u3", "parentUuid": "u2",
+                   "isMeta": True, "sourceToolUseID": "t1",
+                   "message": {"role": "user", "content": SKILL_MD_V2}}
+        sess = self._parse(recs)
+        atoms = [a for turn in sess["turns"] for a in turn["atoms"]]
+        sk = next((a for a in atoms if a.get("skillMd")), None)
+        self.assertIsNotNone(sk, "the sourceToolUseID-linked payload survives as a flagged atom")
+        self.assertIn("# cleanplots", sk["skillMd"])
+        self.assertEqual(sk["message"]["content"], [])
+        self.assertTrue(sess["turns"][-1]["ended"], "the real reply still ends the turn")
+
+    def test_v2_link_to_a_non_skill_tool_stays_dropped(self):
+        # a sourceToolUseID that names a NON-Skill tool_use is some other injection — the generic
+        # isMeta skip keeps eating it
+        recs = _records()
+        recs[1]["message"]["content"] = [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]
+        recs[3] = {"type": "user", "timestamp": iso(T0 + 12), "uuid": "u3", "parentUuid": "u2",
+                   "isMeta": True, "sourceToolUseID": "t1",
+                   "message": {"role": "user", "content": SKILL_MD_V2}}
+        sess = self._parse(recs)
+        atoms = [a for turn in sess["turns"] for a in turn["atoms"]]
+        self.assertIsNone(next((a for a in atoms if a.get("skillMd")), None))
+        self.assertNotIn("u3", [a.get("uuid") for a in atoms])
+
+    def test_v2_tool_result_with_the_link_is_not_skill_md(self):
+        # adversarial: if the Skill tool's own result record ever carries the link, it must stay a
+        # normal tool result (the fold body is the instructions, never the "Launching skill" echo)
+        recs = _records()
+        recs[2]["sourceToolUseID"] = "t1"
+        sess = self._parse(recs)
+        atoms = [a for turn in sess["turns"] for a in turn["atoms"]]
+        sk = [a for a in atoms if a.get("skillMd")]
+        self.assertEqual(len(sk), 1, "only the instructions record classifies")
+        self.assertIn("# cleanplots", sk[0]["skillMd"])
+
 
 class LiveTwin(unittest.TestCase):
     """romp_sdk_backend.msg_to_atom classifies the STREAM copy identically — it was the expanded live box."""
@@ -115,6 +159,38 @@ class LiveTwin(unittest.TestCase):
         self.assertIn("# cleanplots", a["skillMd"])
         self.assertEqual(a["message"]["content"], [])
         self.assertIsNone(a["message"]["stop_reason"])
+
+    def test_stream_v2_shape_classifies_by_parent_tool_use_id(self):
+        sb = SourceFileLoader("romp_sdk_backend_skill2", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+
+        class TextBlock:
+            def __init__(self, text):
+                self.text = text
+
+        class UserMessage:
+            uuid = "u3"
+            parent_tool_use_id = "t1"
+
+            def __init__(self, content):
+                self.content = content
+
+        # linked to a KNOWN Skill tool_use → the flagged join atom, no preamble needed
+        a = sb.msg_to_atom(UserMessage([TextBlock(SKILL_MD_V2)]), "s", "f", 5, skill_tool_ids={"t1"})
+        self.assertEqual(a["type"], "assistant")
+        self.assertIn("# cleanplots", a["skillMd"])
+        self.assertEqual(a["message"]["content"], [])
+        # same message with the id NOT in the session's Skill set → an ordinary user atom
+        b = sb.msg_to_atom(UserMessage([TextBlock(SKILL_MD_V2)]), "s", "f", 5, skill_tool_ids={"other"})
+        self.assertEqual(b["type"], "user")
+        self.assertNotIn("skillMd", b)
+
+    def test_note_skill_tool_ids_collects_from_the_stream(self):
+        sb = SourceFileLoader("romp_sdk_backend_skill3", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+        ids = set()
+        sb._note_skill_tool_ids({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Skill", "input": {}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}]}}, ids)
+        self.assertEqual(ids, {"t1"}, "only Skill tool_use ids arm the payload classification")
 
 
 class BuildSessionJoin(unittest.TestCase):
@@ -154,6 +230,18 @@ class BuildSessionJoin(unittest.TestCase):
         self.assertIn("# cleanplots", tool.get("skillMd") or "", "the instructions ride the tool event")
         others = [e for e in events if e is not tool and "# cleanplots" in json.dumps(e)]
         self.assertEqual(others, [], "and NOWHERE else — no separate expanded note box")
+
+    def test_v2_shape_joins_the_tool_event_too(self):
+        recs = _records()
+        recs[3] = {"type": "user", "timestamp": iso(T0 + 12), "uuid": "u3", "parentUuid": "u2",
+                   "isMeta": True, "sourceToolUseID": "t1",
+                   "message": {"role": "user", "content": SKILL_MD_V2}}
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        events = km.build_session(SID, NOW)["events"]
+        tool = next(e for e in events if e.get("kind") == "tool" and e.get("name") == "Skill")
+        self.assertIn("# cleanplots", tool.get("skillMd") or "", "the v2 payload rides the tool event")
+        others = [e for e in events if e is not tool and "# cleanplots" in json.dumps(e)]
+        self.assertEqual(others, [], "and NOWHERE else")
 
 
 if __name__ == "__main__":
