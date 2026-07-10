@@ -6557,6 +6557,12 @@ def _restore_goal_archive(item_ids):
         store = jd.load_goals(sid)
         nodes = store.setdefault("nodes", {})
         status = store.setdefault("status", {})
+        # Journal the payload FIRST (the user 2026-07-10): once the archive save below lands, these nodes
+        # exist only in the live store's save — a stale triage-pass save racing it would drop them from
+        # BOTH files, permanently. The journal carries the node payloads; jd.load_goals re-inserts any
+        # that end up in neither file (and defers to the archive if the user re-clears later).
+        jd.append_restore(sid, {nid: a_nodes[nid] for nid in move},
+                          {nid: a_status[nid] for nid in move if nid in a_status}, int(time.time()))
         for nid in move:
             nodes[nid] = a_nodes.pop(nid)
             if nid in a_status:

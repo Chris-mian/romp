@@ -23,6 +23,12 @@ Covers:
   must NOT re-complete a card the user deliberately reopened
 - a journal line naming a node the store lacks is skipped without error
 - a corrupt journal line is skipped, later lines still replay
+- restore (task #27): an undo-clear whose nodes end up in NEITHER the live
+  store nor the archive re-inserts from the journaled payload; a node alive
+  in either file is left alone (a later re-clear parks it in the archive,
+  and replay defers to that)
+- followup/move (task #27): a clobbered optimistic reopen re-applies on the
+  next load; a survived one is never doubled
 """
 import json
 import shutil
@@ -110,13 +116,106 @@ class ResolveOverrideReplay(unittest.TestCase):
 
     def test_corrupt_line_is_skipped_later_lines_replay(self):
         jd.save_goals(SID, _open_store())
-        jd.OVERRIDES.mkdir(parents=True, exist_ok=True)
-        with (jd.OVERRIDES / (SID + ".jsonl")).open("a") as f:
+        jd._overrides_dir().mkdir(parents=True, exist_ok=True)
+        with (jd._overrides_dir() / (SID + ".jsonl")).open("a") as f:
             f.write("{not json\n")
         jd.append_override(SID, NID, "resolve", T0 + 100)
         store = jd.load_goals(SID)
         self.assertTrue(store["nodes"][NID].get("nodeComplete"))
         self.assertEqual(len(self._user_events(store)), 1)
+
+
+class RestoreOverrideReplay(unittest.TestCase):
+    """The undo-clear payload journal: replay re-inserts only truly-lost nodes."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = Path(tempfile.mkdtemp())
+        jd._rebind_state(self._td)
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    PAYLOAD = {NID: {"id": NID, "parentId": None, "t": T0, "mt": T0,
+                     "text": "wire the widget", "nodeComplete": True, "log": []}}
+
+    def test_lost_restore_reinserts_from_the_journal(self):
+        # the clobber end-state: the node is in NEITHER the live store NOR the archive
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {}})
+        jd.append_restore(SID, self.PAYLOAD, {NID: "completed"}, T0 + 100)
+        healed = jd.load_goals(SID)
+        self.assertIn(NID, healed["nodes"])
+        self.assertEqual(healed["nodes"][NID]["text"], "wire the widget")
+        self.assertEqual(healed["status"].get(NID), "completed")
+
+    def test_restore_defers_to_the_archive(self):
+        # the user re-cleared after the undo: the archive owns the node again — replay must not revive it
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {}})
+        jd.save_goal_archive(SID, {"rompUuid": SID, "nodes": dict(self.PAYLOAD), "status": {}})
+        jd.append_restore(SID, self.PAYLOAD, {}, T0 + 100)
+        store = jd.load_goals(SID)
+        self.assertNotIn(NID, store["nodes"])
+
+    def test_restore_leaves_a_live_node_alone(self):
+        live = _open_store()
+        live["nodes"][NID]["text"] = "wire the widget, renamed since"
+        jd.save_goals(SID, live)
+        jd.append_restore(SID, self.PAYLOAD, {}, T0 + 100)
+        store = jd.load_goals(SID)
+        self.assertEqual(store["nodes"][NID]["text"], "wire the widget, renamed since")
+
+
+class FollowupMoveReplay(unittest.TestCase):
+    """The optimistic follow-up / Move-to-Working journal ops."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = Path(tempfile.mkdtemp())
+        jd._rebind_state(self._td)
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _done_store(self):
+        s = _open_store()
+        s["nodes"][NID]["nodeComplete"] = True
+        s["nodes"][NID]["log"] = [{"ev_t": T0 + 50, "src": "planner", "kind": "done", "at": T0 + 50}]
+        s["status"][NID] = "completed"
+        return s
+
+    def _reopens(self, store):
+        return [e for e in store["nodes"][NID].get("log", [])
+                if e.get("src") == "user" and e.get("kind") == "reopen"]
+
+    def test_clobbered_followup_reopen_reapplies(self):
+        jd.save_goals(SID, self._done_store())
+        judge_copy = jd.load_goals(SID)               # the pass holds the pre-reply store
+        self.assertTrue(jd.optimistic_followup(SID, NID, now=T0 + 100))   # journals + applies + saves
+        jd.save_goals(SID, judge_copy)                # stale save erases the reopen event
+        raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        self.assertTrue(raw["nodes"][NID].get("nodeComplete"),
+                        "precondition: the stale save really erased the reopen")
+        healed = jd.load_goals(SID)
+        self.assertFalse(healed["nodes"][NID].get("nodeComplete"))
+        self.assertEqual(len(self._reopens(healed)), 1)
+
+    def test_survived_followup_is_never_doubled(self):
+        jd.save_goals(SID, self._done_store())
+        self.assertTrue(jd.optimistic_followup(SID, NID, now=T0 + 100))
+        for _ in range(3):
+            store = jd.load_goals(SID)
+            self.assertEqual(len(self._reopens(store)), 1)
+
+    def test_clobbered_move_reapplies(self):
+        jd.save_goals(SID, self._done_store())
+        judge_copy = jd.load_goals(SID)
+        self.assertTrue(jd.user_move(SID, NID, now=T0 + 100))
+        jd.save_goals(SID, judge_copy)                # stale save erases the move
+        healed = jd.load_goals(SID)
+        self.assertFalse(healed["nodes"][NID].get("nodeComplete"))
+        self.assertEqual(len(self._reopens(healed)), 1)
 
 
 if __name__ == "__main__":

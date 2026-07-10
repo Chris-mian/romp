@@ -82,13 +82,13 @@ follows the clock.
 ```mermaid
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det
-    E ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
     M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board right now<br/>(<code>mint</code> or <code>sub</code> only)"]:::llm
     E --> PL["planner:<br/>file what the work did<br/>(<code>mint</code>, <code>sub</code>, <code>done</code>, <code>block</code>, <code>retitle</code>, <code>skip</code>)"]:::planner
     E --> X["turn<br/>ends"]:::det
     X --> CL["closer:<br/>end-of-turn audit of the goals the<br/>turn touched (<code>done</code>, <code>block</code>, or omit)"]:::closer
     PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
-    X ~~~ TODO[("the agent's<br/>to-do list")]:::data --> SYNC["plan-sync:<br/>mirror it: an open item<br/>holds its card in Working"]:::det
+    X ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
+    X ~~~ TODO[("the agent's<br/>to-do list")]:::data --> SYNC["plan-sync:<br/>mirror each item as a card;<br/>open items pin theirs to Working"]:::det
     CO ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
     PP & PL & CL & CO & SYNC & YOU --> OG{"the set of open<br/>cards changed?"}:::det
     OG -.-> GR["grouper:<br/>nest related<br/>open cards"]:::llm
@@ -104,7 +104,7 @@ flowchart LR
         LD1["·"]:::det -.->|"only if the<br/>gate holds"| LD2["·"]:::det
     end
     linkStyle default stroke-width:2.5px
-    linkStyle 8,13,19,23,27 stroke:#60a5fa
+    linkStyle 6,13,19,23,27 stroke:#60a5fa
     linkStyle 14,20,24,28 stroke:#1e40af
     linkStyle 17,21,25 stroke:#db2777
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
