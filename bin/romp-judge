@@ -2717,12 +2717,41 @@ def _heal_quote_titles(store):
     return n
 
 
-def _coerce_place(menu, text):
+def _prompt_gist(fsid, seg_id):
+    """The persisted INDEX-tier gist of this segment's user message (captions/<fsid>.jsonl, id
+    '<seg_id>#p', last-wins) — the same phrase the timeline dot and the Analyzing card show. '' when
+    the index pass hasn't captioned the message yet, or the file is unreadable."""
+    out = ""
+    try:
+        for line in (CAPDIR / (fsid + ".jsonl")).read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("id") == seg_id + "#p" and (o.get("caption") or "").strip():
+                out = o["caption"].strip()
+    except OSError:
+        pass
+    return out
+
+
+def _followup_title(fsid, seg_id, text):
+    """Title for a user-message step the planner gave no description for (its ops only touched existing
+    goals — reopen/unblock/done carry no text). A reply is a MESSAGE, so it wears the indexing tier's
+    gist like any other message (the user 2026-07-10): the persisted prompt caption when the index pass
+    has landed it, else one live gister call. The verbatim head (_seg_label) is only the LLM-outage
+    floor — a reply lands on the board titled or not, never vanishes."""
+    return _prompt_gist(fsid, seg_id) or gist_llm(text) or _seg_label(text)
+
+
+def _coerce_place(menu, text, title=None):
     """Hard-guard floor: the planner returned skip for a segment carrying a real user message, which
     must never silently vanish. Place it deterministically — a step under the most recent open CARD
     (card-first, the user 2026-07-08), or a new top when the board is empty. Backstop for a model that
-    ignores the never-skip <note>; the normal path is the model placing the message itself."""
-    label = _seg_label(text)
+    ignores the never-skip <note>; the normal path is the model placing the message itself. `title` is
+    the caller's already-known gist for the message (_prompt_gist) — the verbatim _seg_label head is
+    the fallback, not the default (the user 2026-07-10)."""
+    label = title or _seg_label(text)
     why = "kept on the board: a user message the planner tried to skip"
     if menu:
         ids = {nd["id"] for nd in menu}
@@ -3600,7 +3629,8 @@ def _plan_session(fsid, path, now):
                     #                                   already logged upstream — "parse" means the model's
                     #                                   own text was rejected, and the tail says why
                     _log_judge_error("opener", fsid, "parse", note="reply tail: %r" % raw[-160:], seg=seg_id)
-                ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
+                ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # MUST place: a
+                #                                       prompted goal never stays unplaced
             ops = _card_route_subs(store, ops, menu, placer=False)   # card-level only: placing the ask is
             #                                           latency-sensitive; the work-run refines depth later
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p", prompt_uuid=trig, quote=vq)
@@ -3622,7 +3652,8 @@ def _plan_session(fsid, path, now):
             if not ops:
                 if raw:                               # a real reply the parser rejected (empty = call-level,
                     _log_judge_error("planner", fsid, "parse", note="reply tail: %r" % raw[-160:], seg=seg_id)   # logged upstream)
-                ops = _coerce_place(menu, text)       # invariant: a WORKING session always shows a card
+                ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # invariant: a
+                #                                       WORKING session always shows a card
             ops = _card_route_subs(store, ops, menu, placer=False)   # card-level only, like the prompt-run
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#live", prompt_uuid=trig, quote=vq)
             placed += 1
@@ -3780,7 +3811,7 @@ def _plan_session(fsid, path, now):
                     retitle = next((o for o in ops if o["do"] == "retitle" and o.get("goal") == gi), None)
                     desc = next((o for o in ops if o.get("text") and o["do"] != "retitle"), None)   # reuse the
                     # planner's description, force the parent — exclude retitle, whose "text" is a new TITLE, not a step
-                    step = (desc or {}).get("text") or _seg_label(text)
+                    step = (desc or {}).get("text") or _followup_title(fsid, seg_id, text)
                     why = (desc or {}).get("why") or "followed up on this goal"
                     forced = [{"do": "sub", "under": gi2, "text": step, "why": why}]
                     if retitle:
@@ -3824,13 +3855,15 @@ def _plan_session(fsid, path, now):
                 continue
             _log_judge_error("planner", fsid, "give-up", seg=seg_id,
                              note="%d parse rejects; the user message was hard-placed deterministically" % PLAN_PARSE_RETRIES)
-            ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
+            ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # HARD GUARD: a user
+            #                                           message never silently vanishes
         if len(ops) == 1 and ops[0]["do"] == "skip":
             if not human or p_target:                 # no-work segment, or a message its prompt/live run already
                 store["placements"][seg_id] = None    #  placed (re-placing it was the duplicate, 2026-07-08) →
                 save_goals(fsid, store)               #  record processed, place nothing (idempotent)
                 continue
-            ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
+            ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # HARD GUARD: a user
+            #                                           message never silently vanishes
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
         ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
         ops = _card_route_subs(store, ops, menu)       # card-first: route subs to the card, then the placer
