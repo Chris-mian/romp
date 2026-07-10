@@ -5896,6 +5896,98 @@ class FailureContract(unittest.TestCase):
         self.assertEqual(jd._mid_elide("short", 400), "short")
 
 
+class OrphanedHistory(unittest.TestCase):
+    """The summaryless-done-card fix (the user 2026-07-10): a goal's trail key can orphan for good — the
+    prompt-run stamps it from the OPTIMISTIC queued echo, and a queued follow-up lands with different text
+    (its wrapper), so the key's text-hash never matches a parsed segment again (a kernel restart holding
+    the queue makes the divergence certain). The distiller then read '' work and SILENTLY settled the ''
+    sentinel: real work, done card, no summary, no trace. Three fixes: _goal_work_text falls back to the
+    goal's PLACEMENTS (re-derived against the landed parse each pass, so drift-proof); apply_plan's
+    done/block ops append the acting LANDED segment to the target's trail; and when every recorded key
+    resolves to nothing the card warns loudly instead of blanking silently."""
+
+    ORPHAN = SID + ":%d:deadbeef" % (T0 + 1)          # a trail key whose text-hash matches no segment
+
+    def setUp(self):
+        self._saved_state, self._saved_errors = jd.STATE, jd.ERRORS
+        self._saved_distill = jd.distill_llm
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)
+        jd.ERRORS = jd.STATE / "judge-errors.jsonl"   # module-level twin of STATE — captured at import
+
+    def tearDown(self):
+        jd.STATE, jd.ERRORS = self._saved_state, self._saved_errors
+        jd.distill_llm = self._saved_distill
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _distill(self, trail, placements):
+        records = [uline(T0, "enhance the retry element", "u1", ps="typed"),
+                   aline(T0 + 10, "built the retry countdown and error line", "a1", "u1", stop="end_turn")]
+        seg = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)][0]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        g = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "lastNode": g,
+                 "placements": {k.format(seg=seg["id"]): g for k in placements},
+                 "status": {g: "completed"},
+                 "nodes": {g: {"id": g, "text": "the goal", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "settledDone": True,
+                               "trail": [t.format(seg=seg["id"]) for t in trail], "t": T0, "mt": T0 + 20,
+                               "summary": None, "doneWhy": "finished it"}}}
+        jd.save_goals(SID, store)
+        captured = {}
+        jd.distill_llm = lambda goal_text, work_text, done_why="", prior_summary="": (
+            captured.update(work=work_text) or "TAKEAWAY: t.\nSOURCE: m1")
+        jd._distill_session(SID, str(path), NOW)
+        return captured, jd.load_goals(SID)["nodes"][g]
+
+    def test_placement_fallback_heals_an_orphaned_trail(self):
+        captured, node = self._distill(trail=[self.ORPHAN], placements=["{seg}"])
+        self.assertIn("built the retry countdown", captured.get("work", ""),
+                      "the placement route recovered the history the orphaned trail lost")
+        self.assertEqual(node["summary"], "t.", "the takeaway lands — no silent '' settle")
+        self.assertFalse(node.get("warns"), "healed reads are not anomalies")
+
+    def test_trail_and_placement_to_the_same_segment_dedup(self):
+        captured, _ = self._distill(trail=["{seg}"], placements=["{seg}#p"])
+        self.assertEqual(captured.get("work", "").count("built the retry countdown"), 1,
+                         "two routes to one segment must not repeat its text")
+
+    def test_all_keys_orphaned_warns_loudly(self):
+        captured, node = self._distill(trail=[self.ORPHAN], placements=[])
+        self.assertNotIn("work", captured, "nothing resolvable → no LLM call")
+        self.assertEqual(node["summary"], "", "the settle still stops the forever-(generating…) card")
+        warns = [w.get("kind") for w in node.get("warns") or []]
+        self.assertIn("summary-unreadable", warns, "the card warns instead of blanking silently")
+        errs = (Path(self._td) / "judge-errors.jsonl").read_text()
+        self.assertIn("history-unreadable", errs, "the developer audit rides judge-errors.jsonl")
+
+    def test_a_true_umbrella_stays_silent(self):
+        captured, node = self._distill(trail=[], placements=[])
+        self.assertEqual(node["summary"], "", "an umbrella with no own work settles '' as designed")
+        self.assertFalse(node.get("warns"), "…and that is not an anomaly")
+
+    def test_done_and_block_ops_ride_the_trail(self):
+        g = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "lastNode": None, "placements": {},
+                 "nodes": {g: jd.GuardedNode({"id": g, "text": "the goal", "parentId": None,
+                                              "nodeComplete": False, "blocked": False, "cleared": False,
+                                              "trail": [self.ORPHAN], "t": T0, "mt": T0, "log": []})}}
+        menu = [{"id": g, "text": "the goal"}]
+        landed = SID + ":%d:f4b084b1" % (T0 + 100)
+        jd.apply_plan(store, landed, T0 + 100, [{"do": "done", "goal": 1, "why": "finished"}], menu)
+        self.assertIn(landed, store["nodes"][g]["trail"],
+                      "the discharging LANDED segment rides the trail — the distiller can always read it")
+        g2 = SID + ":g2"
+        store["nodes"][g2] = jd.GuardedNode({"id": g2, "text": "another", "parentId": None,
+                                             "nodeComplete": False, "blocked": False, "cleared": False,
+                                             "trail": [], "t": T0, "mt": T0, "log": []})
+        menu2 = [{"id": g2, "text": "another"}]
+        blocked_seg = SID + ":%d:ab12cd34" % (T0 + 200)
+        jd.apply_plan(store, blocked_seg, T0 + 200, [{"do": "block", "goal": 1, "why": "needs a key"}], menu2)
+        self.assertIn(blocked_seg, store["nodes"][g2]["trail"], "the blocking segment is history too")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
