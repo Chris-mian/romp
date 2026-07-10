@@ -83,15 +83,15 @@ follows the clock.
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
     E ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
-    M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board<br/>right now (mint or sub only)"]:::llm
-    E --> PL["planner:<br/>file what the work did<br/>(mint, sub, done, block, retitle, skip)"]:::llm
+    M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board right now<br/>(<code>mint</code> or <code>sub</code> only)"]:::llm
+    E --> PL["planner:<br/>file what the work did<br/>(<code>mint</code>, <code>sub</code>, <code>done</code>, <code>block</code>, <code>retitle</code>, <code>skip</code>)"]:::llm
     PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
-    X --> CL["closer:<br/>done/blocked audit of the<br/>goals the turn touched"]:::llm
+    X --> CL["closer:<br/>end-of-turn audit of the goals the<br/>turn touched (<code>done</code>, <code>block</code>, or omit)"]:::llm
     X ~~~ SYNC["plan-sync:<br/>mirror the agent's<br/>own to-do list"]:::det
     CO ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
-    PP & PL & CL & CO & SYNC & YOU --> OG{"the open-top<br/>set changed?"}:::det
+    PP & PL & CL & CO & SYNC & YOU --> OG{"the set of open<br/>cards changed?"}:::det
     OG -.-> GR["grouper:<br/>nest related<br/>open cards"]:::llm
-    PL & CL & YOU --> CG{"the completed<br/>set changed?"}:::det
+    PL & CL & YOU --> CG{"the set of completed<br/>cards changed?"}:::det
     CG -.-> CN["consolidator:<br/>the same,<br/>done column"]:::llm
     PL & CL & YOU --> DG{"a card completed<br/>and settled?"}:::det
     DG -.-> DI["distiller:<br/>background<br/>+ takeaway"]:::llm
@@ -103,29 +103,43 @@ flowchart LR
         LD1["·"]:::det -.->|"only if the<br/>gate holds"| LD2["·"]:::det
     end
     linkStyle default stroke-width:2.5px
+    linkStyle 11 stroke:#2563eb
+    linkStyle 7,12,18,22,26 stroke:#7c3aed
+    linkStyle 13,19,23,27 stroke:#0d9488
+    linkStyle 14 stroke:#b45309
+    linkStyle 15 stroke:#64748b
+    linkStyle 16,20,24 stroke:#db2777
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
     classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
     classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
     classDef user fill:#fce7f3,stroke:#db2777,color:#111827
 ```
 
-The diamond gates are the event gating: the grouper keys on the open-top id
-set and the consolidator on the completed-top set, so they run after any
-source that changes those sets — the filing judges, the courier's planted
-goals, the plan-sync mirrors, or your own clear/resolve/undo — and stay
-silent when a pass changes nothing. The distiller and briefer key on a
-single card's state (completed-and-settled, blocked) regardless of which
-judge put it there. The placer is the planner's second, scoped call only:
-the opener and the live re-plan always hard-place at card level.
+Edge colors carry no meaning beyond tracing which node an arrow leaves:
+purple = planner, teal = closer, pink = you, blue = opener, amber =
+courier, slate = plan-sync. The planner and closer are not alternatives:
+every segment's work is filed by the planner, including the turn's last,
+and the closer then runs once more at turn end to audit the goals the whole
+turn touched (within a pass, always planner first, then closer).
+
+The diamond gates are the event gating: the grouper keys on the set of open
+cards (top-level ids) and the consolidator on the set of completed cards,
+so they run after any source that changes those sets — the filing judges,
+the courier's planted goals, the plan-sync mirrors, or your own
+clear/resolve/undo — and stay silent when a pass changes nothing. The
+distiller and briefer key on a single card's state (completed-and-settled,
+blocked) regardless of which judge put it there. The placer is the
+planner's second, scoped call only: the opener and the live re-plan always
+hard-place at card level.
 
 The board judges, with what each one reads and the ops it may emit:
 
 | Judge | Fires when | Reads | May do |
 |---|---|---|---|
-| opener | your message lands, work still running | the message + the open-card tree | exactly one op: mint or file under a card |
-| planner | a segment's work ends | the work + the tree | mint, sub, done, block, retitle, skip |
+| opener | your message lands, work still running | the message + the open-card tree | exactly one op: `mint`, or `sub` under an open card |
+| planner | a segment's work ends | the work + the tree | `mint`, `sub`, `done`, `block`, `retitle`, `skip` |
 | placer | the planner filed under a card that has open sub-goals | that card's subtree only | pick the level inside the card |
-| closer | the turn ends | the goals this turn touched | done, blocked, omit (when in doubt, omit) |
+| closer | the turn ends | the goals this turn touched | `done`, `block`, omit (when in doubt, omit) |
 | courier | a peer message arrives | the message + both sessions' trees | plant a goal + tracking node, or nothing |
 | grouper | the set of open cards changed | open top cards | nest a card, mint an umbrella, nothing |
 | consolidator | the set of completed cards changed | completed top cards | the same ops, done column |
