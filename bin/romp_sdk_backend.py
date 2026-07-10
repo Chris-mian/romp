@@ -148,7 +148,20 @@ _SKILL_CONTENT_RE = re.compile(r"^\s*Base directory for this skill:")
 _SKILL_MD_CAP = 16000
 
 
-def msg_to_atom(msg, sid, fsid, t):
+def _note_skill_tool_ids(atom, ids):
+    """Collect Skill tool_use block ids from a streamed ASSISTANT atom into `ids` — the live twin's
+    anchor set for the newer skill-instructions shape (2026-07-10): the payload UserMessage carries
+    parent_tool_use_id naming the invoking Skill tool_use (the transcript record's sourceToolUseID),
+    and its text no longer starts with the "Base directory…" preamble. The tool_use always streams
+    before its payload, so noting ids as atoms flow keeps the set ahead of every lookup."""
+    if atom and atom.get("type") == "assistant":
+        for b in (atom.get("message") or {}).get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use" and \
+                    b.get("name") == "Skill" and b.get("id"):
+                ids.add(b["id"])
+
+
+def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
     """An SDK stream message → an event-model atom (the SAME shape the file adapter emits from a
     transcript line), so the chat renders a LIVE atom identically and it dedups against the transcript
     by uuid (verified: the SDK message uuid == the transcript atom uuid). Returns None for messages
@@ -198,7 +211,14 @@ def msg_to_atom(msg, sid, fsid, t):
                                 "stop_reason": "end_turn"}}
         if _CMD_WRAP_RE.match(text):                 # the remaining wrappers (message/args/contents/caveat) — noise
             return None
-        if _SKILL_CONTENT_RE.match(text):            # a Skill invocation's instructions → the flagged join atom
+        has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        if text and not has_tool_result and \
+                (_SKILL_CONTENT_RE.match(text) or
+                 getattr(msg, "parent_tool_use_id", None) in (skill_tool_ids or ())):
+            # a Skill invocation's instructions → the flagged join atom. Two shapes, like the file
+            # adapter: the legacy "Base directory…" preamble, and the newer parent_tool_use_id link to
+            # the invoking Skill tool_use (the caller's per-session id set; the user 2026-07-10). The
+            # tool_result guard keeps the Skill tool's own "Launching skill: X" result a normal atom.
             return {"type": "assistant", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
                     "skillMd": text[:_SKILL_MD_CAP] + ("\n\n…(skill content truncated)"
                                                        if len(text) > _SKILL_MD_CAP else ""),
@@ -638,6 +658,8 @@ class SdkSession:
         # _cli_working mirrors the last lifecycle state we persisted so the live stream can re-assert
         # 'working' if a stamp ever falls behind actual output, with no reliance on feed-vs-result counting.
         self._cli_working = False
+        self._skill_tool_ids = set()   # Skill tool_use ids seen on THIS stream → classify their injected
+        #                                instructions payload (parent_tool_use_id link) as a skillMd atom
         self.since = 0
         self.model = reg.get("liveModel") or ""   # seed from the last-known model so the badge/picker show on
         #                                           OPEN (even once eager-connected, before init/a turn reports)
@@ -2080,9 +2102,11 @@ class SdkBackend:
         # LIVE TAIL: translate the streamed message to an atom and stash it in memory, AHEAD of the
         # transcript on disk (the SDK stream leads the disk write), then wake the kernel's pusher for an
         # immediate chat push. build_session merges these and the transcript supersedes them by uuid.
-        atom = msg_to_atom(msg, sess.sid, sess.resume_sid, int(time.time()))
+        atom = msg_to_atom(msg, sess.sid, sess.resume_sid, int(time.time()),
+                           skill_tool_ids=sess._skill_tool_ids)
         if not (atom and atom.get("uuid")):
             return
+        _note_skill_tool_ids(atom, sess._skill_tool_ids)   # a Skill tool_use arms its payload's classification
         d = self._live.setdefault(sess.sid, {})
         d[atom["uuid"]] = atom
         while len(d) > 100:                      # safety cap if no client ever drains/prunes

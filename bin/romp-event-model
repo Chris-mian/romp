@@ -536,6 +536,18 @@ class FileAdapter:
                 txt = _text_of(_content(r.get("message")))
                 if txt:
                     replay_uuids.add(u) if (_compacted and txt in _seen_text) else _seen_text.add(txt)
+        # Skill tool_use block ids: the anchor for the NEW skill-instructions shape (2026-07-10). Newer
+        # CLIs inject the payload as an isMeta user record whose sourceToolUseID names the invoking Skill
+        # tool_use — the text no longer starts with the "Base directory for this skill:" preamble
+        # SKILL_CONTENT_RE keys on, so the designed link is the id, not a prefix.
+        skill_tool_ids = set()
+        for u in kept:
+            r = self.by_uuid.get(u) or {}
+            if r.get("type") == "assistant":
+                for b in _content(r.get("message")) or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and \
+                            b.get("name") == "Skill" and b.get("id"):
+                        skill_tool_ids.add(b["id"])
         out = []
         for u in kept:
             r = self.by_uuid.get(u)
@@ -584,12 +596,20 @@ class FileAdapter:
                                             "content": [{"type": "text", "text": mout.group(1).strip()}],
                                             "stop_reason": "end_turn"}})
                     continue
-                if SKILL_CONTENT_RE.match(btext) and u not in replay_uuids:
-                    # a Skill invocation's INSTRUCTIONS payload (see SKILL_CONTENT_RE) — kept, but flagged
-                    # and content-EMPTY: assistant-flavored with no stop so it can neither open nor close
-                    # the running turn, and the markdown rides skillMd where generic text readers never
-                    # look. BEFORE the isMeta skip (the CLI marks the record isMeta), like the command
-                    # paths above (the user 2026-07-08).
+                has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                      for b in (blocks or []))
+                if btext and not has_tool_result and u not in replay_uuids and \
+                        (SKILL_CONTENT_RE.match(btext) or r.get("sourceToolUseID") in skill_tool_ids):
+                    # a Skill invocation's INSTRUCTIONS payload — kept, but flagged and content-EMPTY:
+                    # assistant-flavored with no stop so it can neither open nor close the running turn,
+                    # and the markdown rides skillMd where generic text readers never look. BEFORE the
+                    # isMeta skip (the CLI marks the record isMeta), like the command paths above (the
+                    # user 2026-07-08). TWO shapes: the legacy "Base directory for this skill:" preamble
+                    # (SKILL_CONTENT_RE) and the newer sourceToolUseID link to the invoking Skill
+                    # tool_use (the user 2026-07-10 — a 151KB skill md rendered as a giant note box
+                    # because the prefix missed, the isMeta skip ate the record, and the un-superseded
+                    # LIVE atom stuck around forever). The tool_result guard keeps the Skill tool's own
+                    # "Launching skill: X" result out of this branch if it ever carries the same link.
                     out.append({"type": "assistant", "uuid": u, "session_id": rompuuid, "t": ts,
                                 "fsid": fsid, "parentUuid": r.get("parentUuid"), "_seq": seq,
                                 "skillMd": btext[:SKILL_MD_CAP] + ("\n\n…(skill content truncated)"
