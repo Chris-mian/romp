@@ -81,13 +81,14 @@ follows the clock.
 
 ```mermaid
 flowchart LR
-    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
+    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det
     E ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
     M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board right now<br/>(<code>mint</code> or <code>sub</code> only)"]:::llm
-    E --> PL["planner:<br/>file what the work did<br/>(<code>mint</code>, <code>sub</code>, <code>done</code>, <code>block</code>, <code>retitle</code>, <code>skip</code>)"]:::llm
+    E --> PL["planner:<br/>file what the work did<br/>(<code>mint</code>, <code>sub</code>, <code>done</code>, <code>block</code>, <code>retitle</code>, <code>skip</code>)"]:::planner
+    E --> X["turn<br/>ends"]:::det
+    X --> CL["closer:<br/>end-of-turn audit of the goals the<br/>turn touched (<code>done</code>, <code>block</code>, or omit)"]:::closer
     PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
-    X --> CL["closer:<br/>end-of-turn audit of the goals the<br/>turn touched (<code>done</code>, <code>block</code>, or omit)"]:::llm
-    X ~~~ SYNC["plan-sync:<br/>mirror the agent's<br/>own to-do list"]:::det
+    X ~~~ TODO[("the agent's<br/>to-do list")]:::data --> SYNC["plan-sync:<br/>mirror it: an open item<br/>holds its card in Working"]:::det
     CO ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
     PP & PL & CL & CO & SYNC & YOU --> OG{"the set of open<br/>cards changed?"}:::det
     OG -.-> GR["grouper:<br/>nest related<br/>open cards"]:::llm
@@ -103,24 +104,34 @@ flowchart LR
         LD1["·"]:::det -.->|"only if the<br/>gate holds"| LD2["·"]:::det
     end
     linkStyle default stroke-width:2.5px
-    linkStyle 11 stroke:#2563eb
-    linkStyle 7,12,18,22,26 stroke:#7c3aed
-    linkStyle 13,19,23,27 stroke:#0d9488
-    linkStyle 14 stroke:#b45309
-    linkStyle 15 stroke:#64748b
-    linkStyle 16,20,24 stroke:#db2777
+    linkStyle 8,13,19,23,27 stroke:#60a5fa
+    linkStyle 14,20,24,28 stroke:#1e40af
+    linkStyle 17,21,25 stroke:#db2777
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
+    classDef planner fill:#dbeafe,stroke:#60a5fa,stroke-width:3px,color:#111827
+    classDef closer fill:#dbeafe,stroke:#1e40af,stroke-width:3px,color:#111827
     classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
     classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
     classDef user fill:#fce7f3,stroke:#db2777,color:#111827
 ```
 
-Edge colors carry no meaning beyond tracing which node an arrow leaves:
-purple = planner, teal = closer, pink = you, blue = opener, amber =
-courier, slate = plan-sync. The planner and closer are not alternatives:
-every segment's work is filed by the planner, including the turn's last,
-and the closer then runs once more at turn end to audit the goals the whole
-turn touched (within a pass, always planner first, then closer).
+Edge colors trace sources, nothing more: the planner's arrows wear the
+light blue of its border, the closer's the dark blue of its border, yours
+are pink; everything else (opener, courier, plan-sync) leaves from an
+adjacent box and needs no tint. The planner and closer are not
+alternatives: every segment's work is filed by the planner, including the
+turn's last, and the closer then runs once more at turn end to audit the
+goals the whole turn touched.
+
+There is no clock and no concurrency between these judges: one triage pass
+runs them in strict order — planner, closer, courier, propagate, grouper,
+consolidator, then distiller + briefer — so an umbrella the consolidator
+mints is distilled by the same pass, never left half-made across passes.
+The feed renders from a snapshot taken at pass start, so mid-pass
+intermediate states never flicker through. Your own actions are the one
+write the pass cannot order: they land the moment you click, journaled as
+events (cleared.jsonl, overrides/) and replayed at load, so a pass racing
+your resolve cannot lose it.
 
 The diamond gates are the event gating: the grouper keys on the set of open
 cards (top-level ids) and the consolidator on the set of completed cards,

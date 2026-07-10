@@ -6581,6 +6581,12 @@ def _resolve_node(sid, node_id):
     if not nd or nd.get("nodeComplete"):
         return False
     now = int(time.time())
+    # Journal FIRST (the user 2026-07-10): this handler races a triage pass that may hold this same
+    # store in memory across a model call — whichever save lands last wins the whole file, so the
+    # pass's stale save could erase the resolve, flag and diary event alike. The journal is the
+    # durable copy: jd.load_goals replays it idempotently, so a clobbered resolve re-applies on the
+    # very next load instead of silently reverting (same pattern as cleared.jsonl).
+    jd.append_override(sid, node_id, "resolve", now)
     # The event is the write (found 2026-07-07): without it the rollup two lines down re-derives the
     # flags from the diary and REVERTS the user's own resolve — the flip made eventless writes no-ops.
     jd.record_verdict(store, nd, "user", "done", now,

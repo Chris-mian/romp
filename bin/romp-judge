@@ -37,6 +37,8 @@ PROJECTS = HOME / ".claude" / "projects"
 CAPDIR   = STATE / "captions"            # the new summaries/ — one .jsonl per transcript, keyed by unit id
 ARCHDIR  = STATE / "archive"             # per-session {headline, abstract} (replaces digest/), keyed by rompUuid
 GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), keyed by rompUuid
+OVERRIDES = STATE / "overrides"          # append-only user-override events (resolve), replayed by load_goals —
+                                         #   the durable copy of a user action a racing pass save could clobber
 GOALARCHDIR = STATE / "goals-archive"    # CLEARED (dismissed) goal subtrees moved out of the live tree, keyed by rompUuid:
                                          #   keeps the live store flat so build_feed stops re-deriving dismissed cards every push
 STATESDIR = STATE / "states"             # per-session real idle/compacting transitions → idle atoms (settled gate)
@@ -1255,9 +1257,55 @@ def _guard_nodes(store):
 
 def load_goals(fsid):
     try:
-        return _guard_nodes(json.loads((GOALDIR / (fsid + ".json")).read_text()))
+        store = _guard_nodes(json.loads((GOALDIR / (fsid + ".json")).read_text()))
     except Exception:
         return {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+    _replay_overrides(fsid, store)
+    return store
+
+
+def append_override(fsid, node_id, op, t):
+    """Journal a user override as an append-only event (overrides/<fsid>.jsonl), written BEFORE the
+    caller's store save. That save is last-writer-wins against a triage pass holding this session's
+    store in memory across a model call — a stale pass save erases the flag write AND its diary event,
+    leaving nothing to re-derive the action from. The journal is the durable truth: load_goals replays
+    it idempotently, so a clobbered override re-applies on the very next load (the cleared.jsonl
+    pattern — the event is the write)."""
+    OVERRIDES.mkdir(parents=True, exist_ok=True)
+    with (OVERRIDES / (fsid + ".jsonl")).open("a") as f:
+        f.write(json.dumps({"node": node_id, "op": op, "t": int(t)}) + "\n")
+
+
+def _replay_overrides(fsid, store):
+    """Re-apply journaled user overrides to a freshly loaded store. Idempotent: a resolve whose node is
+    already complete (the normal case — the kernel's own save survived) is a no-op, so the node's log
+    gains exactly one user event no matter how many loads replay the journal. A journaled node the
+    store lacks (cleared and compacted to the archive) is skipped: the archive kept its flags. An
+    unreadable journal logs a loud judge-errors row instead of silently skipping (a resolve could show
+    undone until the file reads again); the store is still returned. Entries are rare (one manual
+    click each), so the journal is never pruned — replay is a few dict lookups."""
+    fp = OVERRIDES / (fsid + ".jsonl")
+    if not fp.is_file():
+        return
+    try:
+        lines = fp.read_text().splitlines()
+    except OSError as e:
+        _log_judge_error("romp", fsid, "history-unreadable",
+                         note="override journal unreadable: %s — a user resolve may show undone until it reads" % e)
+        return
+    for ln in lines:
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        if ev.get("op") != "resolve":
+            continue
+        nd = store.get("nodes", {}).get(ev.get("node"))
+        if nd is None or nd.get("nodeComplete"):
+            continue
+        if record_verdict(store, nd, "user", "done", int(ev.get("t") or 0),
+                          why=nd.get("doneWhy") or "Resolved by the user."):
+            nd["mt"] = int(ev.get("t") or 0)
 
 
 def save_goals(fsid, store):
