@@ -54,12 +54,15 @@ def _rebind_state(path):
     save_goals wrote synthetic fixtures into the live goals/ and the triage pass then stormed
     judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
     instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
-    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE
+    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE, OVERRIDES
     STATE = path
     NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
     GOALARCHDIR = STATE / "goals-archive"
     STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
+    OVERRIDES = STATE / "overrides"        # the user-override journal replays into loaded stores — an
+    #                                        un-rebound journal leaks one test's resolves into the next
+    #                                        test's freshly rebuilt store (same synthetic ids)
 
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet. Defaults are `claude --model` ALIASES (fable/opus/
@@ -1303,9 +1306,17 @@ def _replay_overrides(fsid, store):
         nd = store.get("nodes", {}).get(ev.get("node"))
         if nd is None or nd.get("nodeComplete"):
             continue
-        if record_verdict(store, nd, "user", "done", int(ev.get("t") or 0),
+        t = int(ev.get("t") or 0)
+        # SUPERSEDE guard: a USER event at-or-after the entry means the entry is already history — either
+        # the original write survived (its own user/done twin carries this exact ev_t) or a later user
+        # action (a follow-up's reopen, an undo) outranks it; replaying past THAT would re-complete a card
+        # the user deliberately reopened. Judge events do not cancel the replay: the user action outranks
+        # them in the fold, so the event is appended and the fold arbitrates.
+        if any(e.get("src") == "user" and int(e.get("ev_t") or 0) >= t for e in (nd.get("log") or [])):
+            continue
+        if record_verdict(store, nd, "user", "done", t,
                           why=nd.get("doneWhy") or "Resolved by the user."):
-            nd["mt"] = int(ev.get("t") or 0)
+            nd["mt"] = t
 
 
 def save_goals(fsid, store):

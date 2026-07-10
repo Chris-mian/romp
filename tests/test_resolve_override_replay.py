@@ -19,6 +19,8 @@ Covers:
   user/done event in the node's log
 - idempotence: when the resolve's own save survived, later loads add no
   second event
+- the supersede guard: a later user reopen outranks the journal — replay
+  must NOT re-complete a card the user deliberately reopened
 - a journal line naming a node the store lacks is skipped without error
 - a corrupt journal line is skipped, later lines still replay
 """
@@ -48,15 +50,12 @@ def _open_store():
 
 class ResolveOverrideReplay(unittest.TestCase):
     def setUp(self):
-        self._saved = (jd.STATE, jd.GOALDIR, jd.OVERRIDES, jd.ERRORS)
+        self._saved_state = jd.STATE
         self._td = Path(tempfile.mkdtemp())
-        jd.STATE = self._td
-        jd.GOALDIR = self._td / "goals"
-        jd.OVERRIDES = self._td / "overrides"
-        jd.ERRORS = self._td / "judge-errors.jsonl"
+        jd._rebind_state(self._td)             # STATE + every derived dir, incl. the overrides journal
 
     def tearDown(self):
-        (jd.STATE, jd.GOALDIR, jd.OVERRIDES, jd.ERRORS) = self._saved
+        jd._rebind_state(self._saved_state)
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _user_events(self, store):
@@ -88,6 +87,19 @@ class ResolveOverrideReplay(unittest.TestCase):
             store = jd.load_goals(SID)
             self.assertTrue(store["nodes"][NID].get("nodeComplete"))
             self.assertEqual(len(self._user_events(store)), 1)
+
+    def test_later_user_reopen_outranks_the_journal(self):
+        jd.save_goals(SID, _open_store())
+        jd.append_override(SID, NID, "resolve", T0 + 100)
+        store = jd.load_goals(SID)                    # resolve applies and survives
+        jd.save_goals(SID, store)
+        store = jd.load_goals(SID)                    # the user later reopens (follow-up / undo)
+        self.assertTrue(jd.record_verdict(store, store["nodes"][NID], "user", "reopen", T0 + 200,
+                                          why="Follow-up: not actually finished."))
+        jd.save_goals(SID, store)
+        healed = jd.load_goals(SID)                   # replay must NOT re-complete past the reopen
+        self.assertFalse(healed["nodes"][NID].get("nodeComplete"))
+        self.assertEqual(len(self._user_events(healed)), 1)
 
     def test_unknown_node_is_skipped(self):
         jd.save_goals(SID, _open_store())
