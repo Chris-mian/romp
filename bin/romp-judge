@@ -37,8 +37,7 @@ PROJECTS = HOME / ".claude" / "projects"
 CAPDIR   = STATE / "captions"            # the new summaries/ — one .jsonl per transcript, keyed by unit id
 ARCHDIR  = STATE / "archive"             # per-session {headline, abstract} (replaces digest/), keyed by rompUuid
 GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), keyed by rompUuid
-OVERRIDES = STATE / "overrides"          # append-only user-override events (resolve), replayed by load_goals —
-                                         #   the durable copy of a user action a racing pass save could clobber
+                                         # (the user-override journal lives beside it — _overrides_dir())
 GOALARCHDIR = STATE / "goals-archive"    # CLEARED (dismissed) goal subtrees moved out of the live tree, keyed by rompUuid:
                                          #   keeps the live store flat so build_feed stops re-deriving dismissed cards every push
 STATESDIR = STATE / "states"             # per-session real idle/compacting transitions → idle atoms (settled gate)
@@ -54,15 +53,14 @@ def _rebind_state(path):
     save_goals wrote synthetic fixtures into the live goals/ and the triage pass then stormed
     judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
     instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
-    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE, OVERRIDES
+    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE
     STATE = path
     NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
     GOALARCHDIR = STATE / "goals-archive"
     STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
-    OVERRIDES = STATE / "overrides"        # the user-override journal replays into loaded stores — an
-    #                                        un-rebound journal leaks one test's resolves into the next
-    #                                        test's freshly rebuilt store (same synthetic ids)
+    # (the override journal needs no rebinding: _overrides_dir() derives from GOALDIR at call time, so
+    #  ANY isolation style — _rebind_state OR a bare GOALDIR reassignment — scopes it automatically)
 
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet. Defaults are `claude --model` ALIASES (fable/opus/
@@ -1267,56 +1265,107 @@ def load_goals(fsid):
     return store
 
 
+def _overrides_dir():
+    """The user-override journal's home, derived from GOALDIR at CALL time (not import time): the
+    journal must live and die with the store tree it protects. A test that repoints GOALDIR at a
+    tempdir — by _rebind_state or by bare reassignment — gets a matching private journal for free;
+    the session-wide conftest XDG floor alone left ONE journal shared across every class in a run,
+    and entries leaked into later tests' freshly rebuilt stores (same synthetic ids). In production
+    GOALDIR is STATE/goals, so this is STATE/overrides."""
+    return GOALDIR.parent / "overrides"
+
+
 def append_override(fsid, node_id, op, t):
     """Journal a user override as an append-only event (overrides/<fsid>.jsonl), written BEFORE the
     caller's store save. That save is last-writer-wins against a triage pass holding this session's
     store in memory across a model call — a stale pass save erases the flag write AND its diary event,
     leaving nothing to re-derive the action from. The journal is the durable truth: load_goals replays
     it idempotently, so a clobbered override re-applies on the very next load (the cleared.jsonl
-    pattern — the event is the write)."""
-    OVERRIDES.mkdir(parents=True, exist_ok=True)
-    with (OVERRIDES / (fsid + ".jsonl")).open("a") as f:
+    pattern — the event is the write). Ops: resolve, followup, move; an undo-clear restore rides
+    append_restore below (it must carry node payloads)."""
+    d = _overrides_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / (fsid + ".jsonl")).open("a") as f:
         f.write(json.dumps({"node": node_id, "op": op, "t": int(t)}) + "\n")
 
 
+def append_restore(fsid, nodes, status, t):
+    """Journal an undo-clear RESTORE with its full node payloads. Restore is the riskiest clobber of
+    the family: by the time the live-store save lands, the archive has already given the nodes up, so
+    a stale pass save that drops them loses them from BOTH files — permanently, with cleared.jsonl's
+    undo row pointing at nothing left to restore. The journal keeps the payload itself; replay
+    re-inserts a node only when NEITHER the store NOR the archive has it (a later re-clear parks it
+    back in the archive, and replay defers to that)."""
+    d = _overrides_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / (fsid + ".jsonl")).open("a") as f:
+        f.write(json.dumps({"op": "restore", "t": int(t),
+                            "nodes": {k: dict(v) for k, v in nodes.items()},
+                            "status": dict(status)}) + "\n")
+
+
 def _replay_overrides(fsid, store):
-    """Re-apply journaled user overrides to a freshly loaded store. Idempotent: a resolve whose node is
-    already complete (the normal case — the kernel's own save survived) is a no-op, so the node's log
-    gains exactly one user event no matter how many loads replay the journal. A journaled node the
-    store lacks (cleared and compacted to the archive) is skipped: the archive kept its flags. An
-    unreadable journal logs a loud judge-errors row instead of silently skipping (a resolve could show
-    undone until the file reads again); the store is still returned. Entries are rare (one manual
-    click each), so the journal is never pruned — replay is a few dict lookups."""
-    fp = OVERRIDES / (fsid + ".jsonl")
+    """Re-apply journaled user overrides to a freshly loaded store. Idempotent: an entry whose effect
+    is already in the store (the normal case — the kernel's own save survived) is a no-op, so a node's
+    log gains exactly one user event no matter how many loads replay the journal. A journaled node the
+    store lacks is skipped (resolve/followup/move: it was cleared and compacted to the archive, which
+    kept its flags). An unreadable journal logs a loud judge-errors row instead of silently skipping;
+    the store is still returned. Entries are rare (one manual click each), so the journal is never
+    pruned — replay is a few dict lookups.
+
+    The SUPERSEDE guard on the event ops: a USER event at-or-after the entry means the entry is
+    already history — either the original write survived (its own user twin carries this exact ev_t)
+    or a later user action outranks it; replaying past THAT would undo the user's newer gesture (e.g.
+    re-complete a card they deliberately reopened). Judge events do not cancel a replay: the user
+    event is appended anyway and the fold's authority rules arbitrate."""
+    fp = _overrides_dir() / (fsid + ".jsonl")
     if not fp.is_file():
         return
     try:
         lines = fp.read_text().splitlines()
     except OSError as e:
         _log_judge_error("romp", fsid, "history-unreadable",
-                         note="override journal unreadable: %s — a user resolve may show undone until it reads" % e)
+                         note="override journal unreadable: %s — user actions may show undone until it reads" % e)
         return
+    arch_nodes = None                                  # the archive is read once, only if a restore entry needs it
     for ln in lines:
         try:
             ev = json.loads(ln)
         except ValueError:
             continue
-        if ev.get("op") != "resolve":
+        op, t = ev.get("op"), int(ev.get("t") or 0)
+        if op == "restore":
+            if arch_nodes is None:
+                arch_nodes = (load_goal_archive(fsid) or {}).get("nodes", {})
+            for nid, nddata in (ev.get("nodes") or {}).items():
+                if nid in store.get("nodes", {}) or nid in arch_nodes:
+                    continue                           # alive, or re-cleared into the archive → nothing lost
+                store.setdefault("nodes", {})[nid] = GuardedNode(dict(nddata))
+                st = (ev.get("status") or {}).get(nid)
+                if st is not None:
+                    store.setdefault("status", {})[nid] = st
             continue
         nd = store.get("nodes", {}).get(ev.get("node"))
-        if nd is None or nd.get("nodeComplete"):
+        if nd is None:
             continue
-        t = int(ev.get("t") or 0)
-        # SUPERSEDE guard: a USER event at-or-after the entry means the entry is already history — either
-        # the original write survived (its own user/done twin carries this exact ev_t) or a later user
-        # action (a follow-up's reopen, an undo) outranks it; replaying past THAT would re-complete a card
-        # the user deliberately reopened. Judge events do not cancel the replay: the user action outranks
-        # them in the fold, so the event is appended and the fold arbitrates.
-        if any(e.get("src") == "user" and int(e.get("ev_t") or 0) >= t for e in (nd.get("log") or [])):
-            continue
-        if record_verdict(store, nd, "user", "done", t,
-                          why=nd.get("doneWhy") or "Resolved by the user."):
-            nd["mt"] = t
+        superseded = any(e.get("src") == "user" and int(e.get("ev_t") or 0) >= t
+                         for e in (nd.get("log") or []))
+        if op == "resolve":
+            if nd.get("nodeComplete") or superseded:
+                continue
+            if record_verdict(store, nd, "user", "done", t,
+                              why=nd.get("doneWhy") or "Resolved by the user."):
+                nd["mt"] = t
+        elif op in ("followup", "move"):
+            if superseded:
+                continue
+            if op == "move" and not may_apply(store, nd, "user", "reopen"):
+                continue                               # view-cleared stays sealed, exactly like user_move
+            _reopen(store, ev["node"], by=("optimistic" if op == "followup" else "user-move"),
+                    now=t, msg=(op == "followup"))
+            _unblock_subtree(store, ev["node"], t,
+                             "answered by the user's reply to the card" if op == "followup"
+                             else "moved to Working by the user")
 
 
 def save_goals(fsid, store):
@@ -2882,8 +2931,24 @@ def optimistic_followup(fsid, gid, text="", now=None):
     # the fold's evidence-time replay keeps any catch-up block older than this unblock from winning.
     _unblock_subtree(store, gid, now, "answered by the user's reply to the card")
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
+    _journal_reopen(fsid, gid, store, "followup")      # journal before the save it protects (clobber race)
     save_goals(fsid, store)
     return True
+
+
+def _journal_reopen(fsid, gid, store, op):
+    """Journal the user reopen that _reopen just recorded, keyed by the event's OWN ev_t — which may be
+    a derived floor (the store's latest moment when the caller passed no time), not wall clock — so the
+    replay's supersede guard matches the survived twin exactly. Runs on a kernel handler thread that
+    races a triage pass holding this store across a model call: a stale pass save would erase the
+    reopen event and its derived followupAt evidence floor. Written BEFORE the save it protects — the
+    racing save is the hazard, not the in-memory apply. No event appended (a gate refused) → nothing
+    to protect, nothing journaled."""
+    nd = store.get("nodes", {}).get(gid) or {}
+    for e in reversed(nd.get("log") or []):
+        if e.get("src") == "user" and e.get("kind") == "reopen":
+            append_override(fsid, gid, op, int(e.get("ev_t") or 0))
+            return
 
 
 def user_move(fsid, gid, now=None):
@@ -2906,6 +2971,7 @@ def user_move(fsid, gid, now=None):
     _reopen(store, gid, by="user-move", now=now)
     _unblock_subtree(store, gid, now, "moved to Working by the user")
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
+    _journal_reopen(fsid, gid, store, "move")          # journal before the save it protects (clobber race)
     save_goals(fsid, store)
     return True
 
