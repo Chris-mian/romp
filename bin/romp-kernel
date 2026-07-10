@@ -2783,6 +2783,7 @@ class Sessions:
                                 "modelPending": bool(st.get("modelPending")),   # a /model switch resolving → badge shows switching-dots
                                 "effortPending": bool(st.get("effortPending")),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                                 "retryCount": int(st.get("retryCount") or 0),   # api_retry backoff attempts → the chat's "API retrying — attempt N…" element
+                                "retryInfo": st.get("retryInfo") or None,   # the attempt's detail (attempt/max, error, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
                                 "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
@@ -5993,7 +5994,8 @@ def build_session(sid, now, tmux=None):
     # recovery then lands as the persistent "Recovered after N retries" note above. SDK-only (tmux has no
     # api_retry signal). Appended before the queued bubble so a mid-retry message stacks below it.
     if (tm0 or {}).get("state") == "retrying":
-        events.append({"kind": "retrying", "retries": int((tm0 or {}).get("retryCount") or 0)})
+        events.append({"kind": "retrying", "retries": int((tm0 or {}).get("retryCount") or 0),
+                       "info": (tm0 or {}).get("retryInfo") or None})   # attempt/max, the error, next-attempt epoch (the user 2026-07-10)
     pending_ops = _pending_ops.get(sid) or []
     if queued or pending_ops:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the

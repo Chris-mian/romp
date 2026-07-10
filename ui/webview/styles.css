@@ -775,6 +775,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .turn-retrying .dot { background: #e67e22; border: none; }
 .turn-retrying .meta-dots i { background: #e67e22; }   /* tint the loader dots amber to match the state (default is accent blue) */
 .retrying-line { display: inline-flex; align-items: center; gap: 8px; color: #e67e22; font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+/* the error behind the backoff (kernel retryInfo, the user 2026-07-10) — same 0.9em as the retrying line
+   (one size per information type), muted so the amber headline stays the signal */
+.retrying-err { margin-top: 2px; color: color-mix(in srgb, #e67e22 55%, var(--dim)); font-size: 0.9em; overflow-wrap: anywhere; }
 /* the persistent "Recovered after N retries" marker left where output resumed — muted, static, one line */
 .turn-retried { padding-top: 4px; padding-bottom: 4px; }
 .turn-retried .dot, .turn-retried .time-marker { top: 10px; }

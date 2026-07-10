@@ -25,7 +25,9 @@ class RetryingEmit(unittest.TestCase):
     def test_build_session_emits_a_retrying_element_while_state_is_retrying(self):
         src = inspect.getsource(km.build_session)
         self.assertIn('if (tm0 or {}).get("state") == "retrying":', src)
-        self.assertIn('events.append({"kind": "retrying", "retries": int((tm0 or {}).get("retryCount") or 0)})', src)
+        self.assertIn('events.append({"kind": "retrying", "retries": int((tm0 or {}).get("retryCount") or 0),', src)
+        self.assertIn('"info": (tm0 or {}).get("retryInfo") or None', src,
+                      "the attempt's detail (attempt/max, error, next-attempt epoch) rides the event (the user 2026-07-10)")
 
     def test_the_retrying_notice_precedes_the_queued_bubble(self):
         # like the compacting / reconnecting elements, it sits ABOVE any queued/provisional message
