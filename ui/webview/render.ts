@@ -648,7 +648,10 @@ function looksLikeFilePath(tok: string): boolean {
 // routinely wrap a path in backticks; only FENCED <pre> blocks and text already inside a link are skipped.
 // Trailing sentence punctuation is left out, not swallowed.
 const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]/gi;
-function linkifyFileUris(root: HTMLElement): void {
+// `skipThumbs`: paths this turn ALREADY renders as full in-bubble images (a pasted screenshot's
+// ev.images) — they stay clickable links but are excluded from the mentioned-path thumbnail strip,
+// otherwise the same picture renders twice (the user 2026-07-10).
+function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
   let n: Node | null;
@@ -671,7 +674,7 @@ function linkifyFileUris(root: HTMLElement): void {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, tok, true));
       const open = isUri ? fileUriToPath(tok) : tok;
-      if (previewKind(open) && !previewable.includes(open)) previewable.push(open);
+      if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) previewable.push(open);
       last = m.index + tok.length;
       re.lastIndex = last;
       any = true;
@@ -1119,11 +1122,16 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
       // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
       // "/cmd" token as a monospace chip. Genuine human bubbles only (a romp/injected note is never a command).
+      // paths this turn already renders as full in-bubble images (both the caption path and a
+      // "path:"-sourced src) — the linkifier must not ALSO thumb them, or the picture shows twice
+      const imgPaths = (ev.images || [])
+        .flatMap((im) => [im.path, im.src.startsWith("path:") ? im.src.slice(5) : ""])
+        .filter((p): p is string => !!p);
       if (!romp && !injected && ev.md && renderSlashCmd(bubble, ev.md)) {
         /* rendered as a command chip */
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
-        linkifyFileUris(bubble);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths);   // bare file:// URLs in a message → clickable (open in the host's default app)
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.

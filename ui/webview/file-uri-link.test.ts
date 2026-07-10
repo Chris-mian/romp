@@ -12,7 +12,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a bare file:// URL becomes a clickable .file-uri-link that opens the file in the host app", () => {
-  assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement\): void/);
+  assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement, skipThumbs\?: string\[\]\): void/);
   assert.match(RENDER, /el\("span", "file-uri-link"\)/);
   // clicking routes to the host opener (kernel `open <path>`), NOT a blocked window.open(file://) — a file://
   // URI is absolute, so it goes through the shared openPathLink's no-session-id branch
@@ -24,8 +24,8 @@ test("a bare file:// URL becomes a clickable .file-uri-link that opens the file 
 });
 
 test("linkify runs on BOTH chat message bodies (assistant reply + user bubble) and nowhere else — never tool summaries", () => {
-  assert.match(RENDER, /linkifyFileUris\(body\)/);     // the assistant reply
-  assert.match(RENDER, /linkifyFileUris\(bubble\)/);   // your own / a romp-injected bubble
+  assert.match(RENDER, /linkifyFileUris\(body\)/);             // the assistant reply
+  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths\)/); // your own / a romp-injected bubble (in-bubble images don't re-thumb)
   // exactly the definition + those two applications — so tool-use reports/summaries stay untouched
   const uses = RENDER.match(/linkifyFileUris\(/g) || [];
   assert.equal(uses.length, 3, "linkifyFileUris is defined once and applied to exactly the two chat bodies");

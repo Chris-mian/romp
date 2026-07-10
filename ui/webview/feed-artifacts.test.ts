@@ -40,7 +40,7 @@ test("preview.ts: lightbox is a singleton overlay — img or native-viewer ifram
 
 test("chat: a mentioned image/PDF grows a thumbnail strip under the message, deduped and capped", () => {
   assert.match(RENDER, /import \{ previewKind, previewThumb, canPreview \} from "\.\/preview";/);
-  assert.match(RENDER, /if \(previewKind\(open\) && !previewable\.includes\(open\)\) previewable\.push\(open\);/, "collected while linkifying — same detection, no second regex pass");
+  assert.match(RENDER, /if \(previewKind\(open\) && !previewable\.includes\(open\) && !\(skipThumbs && skipThumbs\.includes\(open\)\)\) previewable\.push\(open\);/, "collected while linkifying — same detection, no second regex pass; an in-bubble image never re-thumbs");
   assert.match(RENDER, /if \(previewable\.length && canPreview\(\)\) \{/, "web dashboard only; VS Code keeps the plain link");
   assert.match(RENDER, /previewable\.slice\(0, 4\)/, "capped so a directory listing doesn't wallpaper the chat");
   assert.match(RENDER, /previewThumb\(p, activeId\)/, "relative paths resolve against the ACTIVE session's cwd, as openPathLink");
