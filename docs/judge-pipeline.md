@@ -65,7 +65,7 @@ search — and never touches a card. Every arrow is unconditional.
 ```mermaid
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
-    M --> GI["gister:<br/>topic phrase: placeholder card,<br/>timeline dot, chat gloss"]:::idx
+    M --> GI["gister:<br/>topic phrase: the Analyzing<br/>card + the timeline dot"]:::idx
     E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
     CA -->|"the turn's captions,<br/>oldest first"| AR["archiver:<br/>session headline<br/>+ abstract"]:::idx
     linkStyle default stroke-width:2.5px
