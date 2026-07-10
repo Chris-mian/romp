@@ -116,7 +116,11 @@ type ChatEvent = (
   // retrying…" element (the amber retrying status color) with the live attempt count; clears the instant
   // output resumes. No ts → off the rail (transient). Was visible ONLY as the amber tab border (the user
   // 2026-07-08: "the border says retrying but the chat shows no sign").
-  | { kind: "retrying"; retries?: number; ts?: string; uuid?: string }
+  // info (the user 2026-07-10): the latest attempt's own detail — attempt/max from the api_retry payload,
+  // the error status+message behind the backoff, and the next-attempt moment (epoch s) — so the element
+  // says WHAT is failing and when it retries, not just that a storm exists. Every field optional (only
+  // status has been seen on the wire so far).
+  | { kind: "retrying"; retries?: number; info?: { attempt?: number | null; max?: number | null; status?: number | string | null; error?: string | null; retryAt?: number | null } | null; ts?: string; uuid?: string }
   // A stalled api_retry turn RECOVERED — a persistent, rail-anchored "Recovered after N retries" note left
   // where output resumed, the historical counterpart of the transient element above (the user 2026-07-08).
   | { kind: "retried"; retries: number; ts?: string; uuid?: string }
@@ -1508,11 +1512,28 @@ function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLEleme
   const line = el("div", "retrying-line");
   line.appendChild(metaDots());
   const txt = el("span", "retrying-text");
-  const n = ev.retries || 0;
-  txt.textContent = n > 1 ? `API retrying — attempt ${n}…` : "API retrying…";
+  const info = ev.info || {};
+  const n = info.attempt || ev.retries || 0;
+  // "attempt 3 of 10 · next try in ~4s" — the payload's own numbers when present (the user 2026-07-10);
+  // the countdown re-derives from the epoch each re-render (pushes are frequent), so it stays honest
+  // without a client timer.
+  let head = n > 1 ? `API retrying — attempt ${n}` : "API retrying";
+  if (n > 1 && info.max) head += ` of ${info.max}`;
+  const waitS = info.retryAt ? Math.ceil(info.retryAt - Date.now() / 1000) : 0;
+  txt.textContent = head + (waitS > 0 ? ` — next try in ~${waitS}s…` : "…");
   line.appendChild(txt);
   line.title = "the API returned a retryable error (rate-limit / overload); the CLI is backing off and retrying — any message you send lands once it recovers";
   turn.appendChild(line);
+  // The error behind the backoff, when the payload names it — status code and/or message on its own muted
+  // line (same size as the retrying text: one size per information type), full message in the tooltip.
+  if (info.status || info.error) {
+    const err = el("div", "retrying-err");
+    const status = info.status ? `HTTP ${info.status}` : "";
+    const msg = (info.error || "").trim();
+    err.textContent = [status, msg].filter(Boolean).join(" — ");
+    if (msg) err.title = msg;
+    turn.appendChild(err);
+  }
   return turn;
 }
 

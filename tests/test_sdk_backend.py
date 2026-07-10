@@ -1317,6 +1317,49 @@ class ApiRetryState(unittest.TestCase):
         self.assertFalse(sess.retrying)
         self.assertEqual(sess.snapshot()["state"], "working", "real output clears 'retrying'")
 
+    def test_api_retry_detail_is_captured_and_cleared(self):
+        # the payload's own numbers + the error behind the backoff ride snapshot["retryInfo"] so the
+        # chat's retrying element can say WHAT is failing and when the next try fires (the user 2026-07-10)
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sess = sb.SdkSession(be, {"sid": "r2", "name": "n", "cwd": d, "mode": "acceptEdits"})
+        sess.inflight = 1
+        t0 = time.time()
+        sess._on_message(_sdk.SystemMessage("api_retry", {"number": 3, "max_retries": 10,
+                                                          "retry_delay_ms": 5000, "error_status": 529,
+                                                          "error": "overloaded_error: overloaded"}),
+                         _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        info = sess.snapshot()["retryInfo"]
+        self.assertEqual(info["attempt"], 3)
+        self.assertEqual(info["max"], 10)
+        self.assertEqual(info["status"], 529)
+        self.assertIn("overloaded", info["error"])
+        self.assertAlmostEqual(info["retryAt"], t0 + 5, delta=2)
+        sess._on_message(_sdk.AssistantMessage(content=[_sdk.TextBlock("hi")], model="m"),
+                         _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        self.assertIsNone(sess.snapshot()["retryInfo"], "recovery clears the detail with the flag")
+
+    def test_api_retry_with_a_bare_payload_still_counts(self):
+        # only error_status has been SEEN on the wire — every other field must degrade to None / the
+        # local attempt count, never crash or invent numbers
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sess = sb.SdkSession(be, {"sid": "r3", "name": "n", "cwd": d, "mode": "acceptEdits"})
+        sess.inflight = 1
+        for want in (1, 2):
+            sess._on_message(_sdk.SystemMessage("api_retry", {}), _sdk.AssistantMessage,
+                             _sdk.ResultMessage, _sdk.SystemMessage)
+            info = sess.snapshot()["retryInfo"]
+            self.assertEqual(info["attempt"], want, "falls back to the local storm count")
+        self.assertIsNone(info["max"])
+        self.assertIsNone(info["status"])
+        self.assertIsNone(info["error"])
+        self.assertIsNone(info["retryAt"])
+        # a turn-end Result clears the detail too (an unrecovered storm leaves no stale info)
+        sess._on_message(_sdk.ResultMessage("success", 1, 1, False, 1, "fsid"),
+                         _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        self.assertIsNone(sess.snapshot()["retryInfo"])
+
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class InterruptSettlesStall(unittest.TestCase):

@@ -13,7 +13,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("the transient retrying + persistent retried events each have their own ChatEvent kind + dispatch", () => {
-  assert.match(RENDER, /kind: "retrying"; retries\?: number; ts\?: string; uuid\?: string/);
+  assert.match(RENDER, /kind: "retrying"; retries\?: number; info\?: /);
   assert.match(RENDER, /kind: "retried"; retries: number; ts\?: string; uuid\?: string/);
   assert.match(RENDER, /ev\.kind === "retrying"\) return renderRetrying\(ev\)/);
   assert.match(RENDER, /ev\.kind === "retried"\) return renderRetried\(ev\)/);
@@ -23,8 +23,26 @@ test("renderRetrying is an animated element (loader dots) with the live attempt 
   const body = RENDER.slice(RENDER.indexOf("function renderRetrying("), RENDER.indexOf("function renderRetried("));
   assert.match(body, /el\("div", "turn turn-retrying"\)/);
   assert.match(body, /line\.appendChild\(metaDots\(\)\)/);                         // the loader dots (mid-operation)
-  // singular "API retrying…" until attempt 2+, then the live count "API retrying — attempt N…"
-  assert.match(body, /n > 1 \? `API retrying — attempt \$\{n\}…` : "API retrying…"/);
+  // singular "API retrying" until attempt 2+, then the live count "API retrying — attempt N"
+  assert.match(body, /n > 1 \? `API retrying — attempt \$\{n\}` : "API retrying"/);
+});
+
+test("renderRetrying surfaces the api_retry payload's own detail (the user 2026-07-10)", () => {
+  const body = RENDER.slice(RENDER.indexOf("function renderRetrying("), RENDER.indexOf("function renderRetried("));
+  assert.match(body, /info\.attempt \|\| ev\.retries/, "payload attempt number outranks the local count");
+  assert.match(body, /` of \$\{info\.max\}`/, "the retry budget shows when the payload names it");
+  // next-try countdown re-derives from the epoch each re-render — no client timer to drift
+  assert.match(body, /Math\.ceil\(info\.retryAt - Date\.now\(\) \/ 1000\)/);
+  assert.match(body, /next try in ~\$\{waitS\}s/);
+  // the error behind the backoff on its own muted line, full message in the tooltip
+  assert.match(body, /el\("div", "retrying-err"\)/);
+  assert.match(body, /`HTTP \$\{info\.status\}`/);
+  assert.match(body, /err\.title = msg/);
+});
+
+test("the error line wears the SAME 0.9em as the retrying line (one size per information type), muted", () => {
+  assert.match(CSS, /\.retrying-err \{[^}]*font-size: 0\.9em/);
+  assert.match(CSS, /\.retrying-err \{[^}]*color: color-mix\(in srgb, #e67e22 55%, var\(--dim\)\)/);
 });
 
 test("renderRetried is a static, muted 'Recovered after N retries' note (pluralized)", () => {

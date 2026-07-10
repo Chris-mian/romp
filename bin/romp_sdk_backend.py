@@ -670,6 +670,7 @@ class SdkSession:
         self._usage_refreshing = False           # one get_usage control request in flight at a time
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self.retry_count = 0                          # api_retry backoff attempts in the CURRENT storm; → the live 'attempt N' + the 'Recovered after N retries' note, reset each turn
+        self.retry_info = None                        # the CURRENT storm's latest api_retry detail (attempt/max, error status+message, next-attempt epoch) → the chat retrying element's extra context (the user 2026-07-10); lives and dies with `retrying`
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self._subagents: dict[str, dict] = {}        # LIVE Task-spawned subagents: agent_id -> {"type","since"}. Fed
         #   by the SubagentStart/SubagentStop hooks — the exact, event-based "what's running right now" signal the
@@ -1142,6 +1143,26 @@ class SdkSession:
             # user 2026-06-23). Cleared the moment real output flows again (assistant text / result).
             self.retrying = True
             self.retry_count += 1                      # one backoff attempt → the live 'attempt N' count
+            # The event's own detail — attempt number/budget, the error behind the backoff, and when the
+            # next attempt fires — so the chat's retrying element can say WHAT is failing and what happens
+            # next, not just that a storm exists (the user 2026-07-10). Field names are the CLI's api_retry
+            # payload (number / max_retries / retry_delay_ms / error_status / retryAt); every read is
+            # defensive since only status has been seen on the wire so far.
+            d = msg.data if isinstance(msg.data, dict) else {}
+            _now = time.time()
+            _ra = d.get("retryAt")
+            retry_at = (_ra / 1000.0 if isinstance(_ra, (int, float)) and _ra > 1e12 else
+                        _ra if isinstance(_ra, (int, float)) and _ra > 1e9 else
+                        _now + d["retry_delay_ms"] / 1000.0
+                        if isinstance(d.get("retry_delay_ms"), (int, float)) else None)
+            _err = d.get("error") or d.get("message")
+            self.retry_info = {
+                "attempt": d.get("number") if isinstance(d.get("number"), int) else self.retry_count,
+                "max": d.get("max_retries") if isinstance(d.get("max_retries"), int) else None,
+                "status": d.get("error_status") if isinstance(d.get("error_status"), (int, str)) else None,
+                "error": _err[:300] if isinstance(_err, str) else None,
+                "retryAt": retry_at,
+            }
             self._mark("retrying")
             self.backend._poke()
         elif isinstance(msg, AssistantMessage):
@@ -1149,6 +1170,7 @@ class SdkSession:
                 append_retry_recovered(self.backend.state_dir, self.sid, self.retry_count)
             self.retrying = False                      # real output is flowing → the API recovered
             self.retry_count = 0
+            self.retry_info = None
             m = getattr(msg, "model", None)
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
@@ -1159,6 +1181,7 @@ class SdkSession:
         elif isinstance(msg, ResultMessage):
             self.retrying = False
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
+            self.retry_info = None
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
             # A ResultMessage is the AUTHORITATIVE turn-end: the CLI has processed everything we handed it
             # — one message or a stream of mid-turn forwards that folded into this turn — and is now idle.
@@ -1400,6 +1423,7 @@ class SdkSession:
                 "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
                 "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element
+                "retryInfo": self.retry_info,     # the latest attempt's detail (attempt/max, error status+message, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
                 "interrupting": bool(self._interrupted),   # a user interrupt is IN FLIGHT: set at dispatch,
                 #   cleared EXACTLY when the aborted turn's ResultMessage settles → the kernel holds the chip +
                 #   feed badge on 'interrupting' across that whole window, no dependence on the flickering tail
