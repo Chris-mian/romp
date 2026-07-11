@@ -4152,7 +4152,7 @@ def _scan_bg_tasks(path):
                         if isinstance(b, dict) and b.get("type") == "tool_use" and (b.get("input") or {}).get("run_in_background"):
                             tid, inp = b.get("id"), (b.get("input") or {})
                             if tid and tid not in tasks:
-                                tasks[tid] = {"id": tid, "status": "running",
+                                tasks[tid] = {"id": tid, "status": "running", "t": _msg_epoch(o),
                                               "summary": (inp.get("description") or b.get("name") or "Background task"),
                                               "command": inp.get("command") or "", "outputFile": ""}
                                 order.append(tid)
@@ -4171,11 +4171,27 @@ def _scan_bg_tasks(path):
     return keep[:60]
 
 
-def _bg_tasks(path):
+def _sdk_spawned_at(sid):
+    """When this SDK session's CURRENT CLI spawned (reg spawnedAt, stamped by SdkSession._run), or None
+    for tmux/never-spawned sessions. The bg-tasks ghost gate: a task launched before the live CLI died
+    with its old one — its <task-notification> can never arrive."""
+    try:
+        with open(jd.STATE / "sdk" / (sid + ".json")) as f:
+            v = json.load(f).get("spawnedAt")
+        return v if isinstance(v, (int, float)) else None
+    except Exception:
+        return None
+
+
+def _bg_tasks(path, spawned_at=None):
     """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
     'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
     (read fresh). The cached transcript scan (mtime+size, like _background_why) holds the meta; the output is
-    read live since a running task's log grows independently. {"count":0,"tasks":[]} when there are none."""
+    read live since a running task's log grows independently. {"count":0,"tasks":[]} when there are none.
+    `spawned_at` (the SDK session's current CLI spawn time) drops still-'running' tasks launched BEFORE it:
+    they died with the previous CLI and their completions can never land, so they'd count as running forever —
+    the ghost '25 background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Filtered
+    here, after the cache, since spawned_at changes without the transcript changing."""
     try:
         st = os.stat(path)
         key = (st.st_mtime, st.st_size)
@@ -4190,6 +4206,8 @@ def _bg_tasks(path):
             if len(_bgtasks_cache) > 256:
                 _bgtasks_cache.clear()
             _bgtasks_cache[path] = (key, scan)
+    if spawned_at:
+        scan = [tk for tk in scan if not (tk.get("t") and tk["t"] < spawned_at)]
     out = []
     for tk in scan[:30]:    # show up to 30 lines (the flat list scrolls); count below reports the true total
         out.append({"id": tk["id"], "status": tk["status"], "summary": tk["summary"], "command": tk["command"],
@@ -6270,7 +6288,8 @@ def build_session(sid, now, tmux=None):
             # system event (and its branch) fell off the wire and the branch vanished (the user 2026-06-30). A
             # top-level field is never windowed, so the branch is always resident.
             "gitBranch": sysinfo["gitBranch"],
-            "events": events, "status": status, "ledger": ledger, "bgTasks": _bg_tasks(sess["path"]),
+            "events": events, "status": status, "ledger": ledger,
+            "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid)),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),

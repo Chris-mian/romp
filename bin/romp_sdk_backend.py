@@ -578,6 +578,40 @@ def find_orphan_clis(ps_lines: list[str], lastsids: list[str]) -> list[int]:
     return out
 
 
+def find_session_cli(ps_lines: list[str], sids: list[str], parent_pid: int) -> int | None:
+    """The LIVE CLI pid resuming one of `sids` as a child of `parent_pid` (this kernel), or None.
+    The interrupt escalation's target: same signature match as find_orphan_clis (--resume + the
+    stream-json mark) but the OPPOSITE parent check — it may only signal our own child, never a tmux
+    CLI (no mark), never another kernel's, never an orphan (ppid 1, the reaper's territory). Pure
+    (takes `ps -axo pid=,ppid=,command=` lines) so tests need no live processes."""
+    for ln in ps_lines:
+        parts = ln.strip().split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        pid, ppid, cmd = int(parts[0]), int(parts[1]), parts[2]
+        if ppid != parent_pid or _SDK_CLI_MARK not in cmd:
+            continue
+        if any(s and ("--resume " + s) in cmd for s in sids):
+            return pid
+    return None
+
+
+def interrupt_action(level: int, channel_up: bool) -> tuple[str, int]:
+    """The interrupt escalation ladder (terminal parity, the user 2026-07-10): what a stop press does,
+    given how far the current episode has climbed. In a terminal ctrl+c is a SIGNAL the process cannot
+    silently drop; the SDK interrupt is a control-channel REQUEST a wedged CLI simply ignores — so a
+    press never repeats a rung that already failed to produce the settle event. Level 0 with a live
+    channel → the polite control request; a press with no channel, or after an unsettled request →
+    SIGINT the CLI; beyond that → SIGKILL (its stream death runs the existing crash-heal + resume).
+    The episode resets to 0 when a turn settles (ResultMessage) or a fresh turn starts. Pure for tests;
+    returns (action, new_level)."""
+    if channel_up and level == 0:
+        return ("control", 1)
+    if level <= 1:
+        return ("sigint", 2)
+    return ("sigkill", 3)
+
+
 def list_regs(state_dir: Path) -> list[dict]:
     d = Path(state_dir) / "sdk"
     out = []
@@ -672,6 +706,7 @@ class SdkSession:
         self.retry_count = 0                          # api_retry backoff attempts in the CURRENT storm; → the live 'attempt N' + the 'Recovered after N retries' note, reset each turn
         self.retry_info = None                        # the CURRENT storm's latest api_retry detail (attempt/max, error status+message, next-attempt epoch) → the chat retrying element's extra context (the user 2026-07-10); lives and dies with `retrying`
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
+        self._intr_level = 0                         # interrupt escalation rung this episode (interrupt_action); reset on settle / fresh turn
         self._subagents: dict[str, dict] = {}        # LIVE Task-spawned subagents: agent_id -> {"type","since"}. Fed
         #   by the SubagentStart/SubagentStop hooks — the exact, event-based "what's running right now" signal the
         #   tmux backend never had. Keeps the session 'working' while any run and surfaces a live count on the lane.
@@ -757,7 +792,17 @@ class SdkSession:
             self.backend._log("persist queue (%s): %s" % (self.name, traceback.format_exc()))
 
     def interrupt(self):
-        if self.loop and self.client:
+        """Escalating stop (the user 2026-07-10, terminal parity). The old body was `if self.loop and
+        self.client: <control request>` — a wedged CLI ignored the request ('no current client', 14
+        deep in manager.log while nimbus sat unresponsive) and a missing client made the press a
+        SILENT no-op, so the stop button had no path to the kill that the design itself named as the
+        recovery. Now every press climbs interrupt_action's ladder — control request, SIGINT the CLI,
+        SIGKILL (its stream death runs the existing crash-heal + resume) — and every rung logs what it
+        did. The episode resets when a turn settles or a fresh turn starts, so a later stop is polite
+        again."""
+        with self._lock:
+            action, self._intr_level = interrupt_action(self._intr_level, bool(self.loop and self.client))
+        if action == "control":
             # Flip the in-flight flag SYNCHRONOUSLY, here on the kernel thread, before scheduling the async
             # _do_interrupt. The kernel stamps _interrupt_clicked and pushes the instant it returns from this
             # call, and the very next snapshot() must already read 'interrupting' — otherwise the chip/feed
@@ -766,6 +811,24 @@ class SdkSession:
             self._interrupted = True
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._do_interrupt()))
+            return
+        self._signal_cli(signal.SIGINT if action == "sigint" else signal.SIGKILL, action)
+
+    def _signal_cli(self, sig, action):
+        """Deliver an escalated interrupt as a real signal to this session's own CLI (the child of THIS
+        kernel resuming our sid — find_session_cli can't match anything else). Loud on every outcome:
+        the whole bug was a stop that vanished without a trace."""
+        pid = self.backend._session_cli_pid(self)
+        if pid is None:
+            self.backend._log("interrupt (%s): %s escalation found no CLI process — nothing to signal" % (self.name, action))
+            return
+        self._interrupted = True
+        try:
+            os.kill(pid, sig)
+            self.backend._log("interrupt (%s): escalated to %s pid %d" % (self.name, action, pid))
+        except ProcessLookupError:
+            self.backend._log("interrupt (%s): CLI pid %d already gone" % (self.name, pid))
+        self.backend._poke()
 
     def set_model_live(self, model):
         """Change the model on a CONNECTED session via the SDK control channel. No-op if not yet
@@ -838,8 +901,19 @@ class SdkSession:
         self.backend._poke()
         try:
             await self.client.interrupt()
-        except Exception:
-            pass
+        except Exception as e:
+            # NEVER swallow a failed stop (the nimbus wedge, the user 2026-07-10): the request failing
+            # IS an event. Log it, and when the CLI provably owes us a turn (inflight > 0) escalate to
+            # SIGINT on this same press — the polite channel just demonstrated it can't stop that turn.
+            # An idle-session refusal ('no current client') only logs: there may be nothing to stop, and
+            # the next press escalates via the ladder anyway. The signal runs on a plain thread so this
+            # loop thread never blocks on `ps`.
+            self.backend._log("interrupt (%s): control request failed: %s" % (self.name, e))
+            if self.inflight > 0:
+                threading.Thread(target=self._signal_cli, args=(signal.SIGINT, "sigint-auto"),
+                                 name=f"sdk-intr:{self.name}", daemon=True).start()
+                with self._lock:
+                    self._intr_level = max(self._intr_level, 2)
 
     async def _do_set_model(self, model):
         try:
@@ -940,6 +1014,14 @@ class SdkSession:
 
     def _run(self):
         try:
+            # A FRESH CLI is about to spawn for this sid: stamp when (the kernel's bg-tasks box drops
+            # unfinished tasks that predate the live CLI — they died with the old one, their completion
+            # notifications can never arrive) and clear any stale awaiting overlay the old CLI's death
+            # stranded (the Stop hook that clears it died too). Both previously healed only at KERNEL
+            # boot, so a session restart inside a live kernel kept ghost '25 background tasks' /
+            # waiting displays that read as a wedged session (nimbus, the user 2026-07-10).
+            self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
+            self.backend._heal_stale_awaiting(self.sid)
             asyncio.run(self._amain())
         except Exception as e:                       # surfaced for debugging; never crash kernel
             self.backend._log(f"sdk session {self.name} crashed: {type(e).__name__}: {e}")
@@ -982,6 +1064,7 @@ class SdkSession:
                 if fresh:
                     self.since = int(time.time())    # a new turn starts now (mid-turn forwards keep the turn's clock)
                     self._interrupted = False        # a fresh turn → clear any stale interrupt flag
+                    self._intr_level = 0             #   ...and its escalation episode (a new stop starts polite)
                 self.inflight += 1
                 self._mark("working")
                 self.backend._poke()
@@ -1019,6 +1102,7 @@ class SdkSession:
             if self.inflight:
                 self.inflight = 0
                 self._interrupted = False
+                self._intr_level = 0
                 self._mark("waiting")
                 self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
@@ -1183,6 +1267,7 @@ class SdkSession:
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self.retry_info = None
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
+            self._intr_level = 0                   # settle ends the escalation episode — the next stop starts polite
             # A ResultMessage is the AUTHORITATIVE turn-end: the CLI has processed everything we handed it
             # — one message or a stream of mid-turn forwards that folded into this turn — and is now idle.
             # So settle to idle in ONE step and UNCONDITIONALLY, never gated on a feed-vs-result count.
@@ -1491,6 +1576,21 @@ class SdkBackend:
                 append_awaiting(self.state_dir, sid, False)
         except Exception:
             pass
+
+    def _session_cli_pid(self, session) -> int | None:
+        """The live CLI pid for `session` — a child of THIS kernel resuming its sid (or lastSid, the
+        fork-tracking twin) — for the interrupt escalation's signal. ps-scan through the pure
+        find_session_cli matcher, so the signal can only ever land on our own child. None (logged by
+        the caller) when no such process exists."""
+        try:
+            ps = subprocess.run(["ps", "-axo", "pid=,ppid=,command="],
+                                capture_output=True, text=True, timeout=10)
+            reg = read_reg(self.state_dir, session.sid) or {}
+            sids = [session.sid, str(reg.get("lastSid") or "")]
+            return find_session_cli(ps.stdout.splitlines(), sids, os.getpid())
+        except Exception as e:
+            self._log("session cli pid (%s): %s" % (session.name, e))
+            return None
 
     def _boot_reconcile(self, regs: list[dict]) -> None:
         """The kernel just booted — reconcile what the previous kernel's death left behind. Event-keyed
