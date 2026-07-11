@@ -550,6 +550,22 @@ CRASH_RESUME_NUDGE = (
     "(killed or crashed); the session has been resumed with its history intact. Re-read the tail of "
     "the conversation and pick the work back up where it stopped.")
 
+
+def task_death_notice(tasks: list) -> str:
+    """The visible romp notice for BACKGROUND TASKS that died with their claude process. Bg tasks are
+    the CLI's children, so a kernel restart or CLI crash silently kills a session's timers/watchers —
+    and a session idle-waiting on one would wait FOREVER for a completion notification that can never
+    arrive (nimbus's dead campaign watcher, the user 2026-07-11). The notice names what was lost (the
+    task descriptions from the lifecycle stream) so the session can relaunch exactly what still
+    matters. Enqueued by _on_session_gone (CLI died, kernel alive) or the boot reconcile (kernel died;
+    read from the reg's bgTasks mirror)."""
+    n = len(tasks)
+    descs = "; ".join(d for d in ((t.get("desc") or "").strip() for t in tasks[:4]) if d)
+    return ("<!-- romp-injected --><!-- romp-system -->[romp] %d background task%s this session had "
+            "running died with its claude process (a restart or crash)%s. Their completion "
+            "notifications will never arrive — relaunch any that are still needed, or carry on if "
+            "they aren't." % (n, "" if n == 1 else "s", (": " + descs) if descs else ""))
+
 # The marker only SDK-driven claude CLIs carry (the kernel drives them over stdin); a tmux session's
 # interactive `claude --resume` never has it, so the orphan reap can never touch a tmux CLI.
 _SDK_CLI_MARK = "--input-format stream-json"
@@ -681,6 +697,15 @@ class SdkSession:
         self.cwd = reg.get("cwd") or os.path.expanduser("~")
         self.mode = reg.get("mode") or "acceptEdits"
         self.resume_sid = reg.get("lastSid") or None  # resume target after a restart/crash
+        # Heal STRANDED pending-switch flags (the user 2026-07-11: "the three dots sitting there
+        # forever"): a /model or /effort switch that was mid-flight when the previous kernel/process
+        # died can never be cleared by its in-memory switch path — but the persisted flags keep the
+        # badge's switching-dots alive whenever the session is served from the reg (the dormant path
+        # in live_sessions). A FRESH construction makes them moot by definition: effort is a
+        # connect-time flag this session's next _options applies, and the chosen model alias
+        # (reg['model']) rides the same connect — the switch is effectively applied, so pending is over.
+        if reg.get("effortPending") or reg.get("modelPending"):
+            backend._update_reg(self.sid, effortPending=False, modelPending=False)
         # protocol/runtime state
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
@@ -1522,6 +1547,16 @@ class SdkSession:
                 if subtype == "task_notification" or (isinstance(status, str) and status in self._TERMINAL_TASK):
                     changed = self._bg_tasks.pop(tid, None) is not None
         if changed:
+            # MIRROR the live set to the reg: bg tasks die with the CLI, and the in-memory set dies with
+            # the backend — the persisted mirror is what lets a later boot's reconcile tell the session
+            # its tasks were killed (task_death_notice) instead of leaving it waiting forever on a
+            # notification that can never arrive (nimbus's dead campaign watcher, the user 2026-07-11).
+            # Cleared when the deaths are reported (reconcile / _on_session_gone); tasks that END
+            # normally clear here, so the mirror never false-alarms.
+            try:
+                self.backend._update_reg(self.sid, bgTasks=self._live_bg_tasks())
+            except Exception:
+                pass
             self.backend._poke()
 
     def _live_bg_tasks(self) -> list:
@@ -1680,7 +1715,7 @@ class SdkBackend:
                             pass
                 except Exception:
                     self._log("boot reconcile: orphan reap failed: %s" % traceback.format_exc())
-            resumed, restored = 0, 0
+            resumed, restored, notified = 0, 0, 0
             for r in alive:
                 # Per-session isolation: one session's hiccup (a reg-write race with the outgoing
                 # kernel, a corrupt state file) must not abort the sweep and strand the REST —
@@ -1688,27 +1723,45 @@ class SdkBackend:
                 # session killed two whole reconcile passes.
                 try:
                     sid = str(r["sid"])
+                    # A /model / /effort switch mid-flight at the kernel's death can never clear its
+                    # pending flags (the in-memory switch died) — and the dormant path serves them
+                    # verbatim, so the badge's switching-dots sat there forever (the user 2026-07-11).
+                    # The switch is moot at the next connect (effort + chosen alias both ride
+                    # _options), so heal here for sessions that stay DORMANT; SdkSession.__init__
+                    # heals the same way for ones that respawn.
+                    if r.get("effortPending") or r.get("modelPending"):
+                        self._update_reg(sid, effortPending=False, modelPending=False)
                     queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
                     cut = last_state_value(self.state_dir, sid) == "working"
-                    if not (cut or queued):
-                        continue                   # idle and empty-queued → stays lazy, exactly as before
-                    if cut:
-                        # Prepend the nudge to the PERSISTED queue (not enqueue()) so it is fed FIRST,
-                        # before the restored backlog, and survives even a death mid-reconcile.
+                    # bg tasks the dead kernel's CLI took with it (the reg mirror, _on_task_event):
+                    # the session must HEAR about them or it waits forever on a dead timer/watcher.
+                    dead_tasks = [t for t in (r.get("bgTasks") or []) if isinstance(t, dict)]
+                    if not (cut or queued or dead_tasks):
+                        continue                   # idle, empty-queued, nothing died → stays lazy
+                    # Prepend to the PERSISTED queue (not enqueue()) so it is fed FIRST, before the
+                    # restored backlog, and survives even a death mid-reconcile. Order: the resume
+                    # nudge (continuation context), then the task-death notice.
+                    prepend = ([BOOT_RESUME_NUDGE] if cut else []) \
+                            + ([task_death_notice(dead_tasks)] if dead_tasks else [])
+                    if prepend or dead_tasks:
                         with self._reg_lock:
                             reg = read_reg(self.state_dir, sid) or dict(r)
-                            reg["queue"] = [BOOT_RESUME_NUDGE] + [t for t in (reg.get("queue") or [])
-                                                                  if isinstance(t, str) and t and t != BOOT_RESUME_NUDGE]
+                            reg["queue"] = prepend + [t for t in (reg.get("queue") or [])
+                                                      if isinstance(t, str) and t and t not in prepend]
+                            if dead_tasks:
+                                reg["bgTasks"] = []   # reported — never re-notify for the same deaths
                             write_reg(self.state_dir, sid, reg)
-                        resumed += 1
+                    resumed += 1 if cut else 0
+                    notified += 1 if dead_tasks else 0
                     restored += len(queued)
                     self._ensure(sid)
                 except Exception:
                     self._log("boot reconcile: session %s failed (sweep continues): %s"
                               % (r.get("sid"), traceback.format_exc()))
-            if reaped or resumed or restored:
+            if reaped or resumed or restored or notified:
                 self._log("boot reconcile: resumed %d cut turn(s), restored %d queued message(s), "
-                          "reaped %d orphaned CLI(s)" % (resumed, restored, reaped))
+                          "notified %d session(s) of dead background tasks, reaped %d orphaned CLI(s)"
+                          % (resumed, restored, notified, reaped))
                 self._poke()
         except Exception:
             self._log("boot reconcile failed: %s" % traceback.format_exc())
@@ -2397,6 +2450,25 @@ class SdkBackend:
                 self._update_reg(sess.sid, effortPending=False)
             except Exception:
                 pass
+        # Background tasks are the CLI's children, so they just died too. A session idle-waiting on a
+        # timer/watcher would wait FOREVER for a completion that can never arrive — tell it, visibly,
+        # and wake it so it can relaunch what still matters (the user 2026-07-11: nimbus's campaign
+        # watcher died with a kernel restart and the session never knew). Skipped when `ended` (our own
+        # drain/shutdown): the reg's bgTasks mirror survives for the NEXT kernel's boot reconcile to
+        # deliver the same notice.
+        died = sess._live_bg_tasks()
+        if died and not sess.ended:
+            try:
+                note = task_death_notice(died)
+                with self._reg_lock:
+                    reg = read_reg(self.state_dir, sess.sid) or {"sid": sess.sid}
+                    reg["queue"] = [t for t in (reg.get("queue") or [])
+                                    if isinstance(t, str) and t and t != note] + [note]
+                    reg["bgTasks"] = []           # reported — never re-notify for the same deaths
+                    write_reg(self.state_dir, sess.sid, reg)
+                self._ensure(sess.sid)            # wake it to hear the notice (no-op if the heal respawned)
+            except Exception:
+                self._log("bg-task death notice (%s): %s" % (sess.name, traceback.format_exc()))
         self._poke()
 
     def _heal_cut_session(self, sess: SdkSession):

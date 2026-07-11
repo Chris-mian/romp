@@ -2280,7 +2280,20 @@ class TimelinePanel {
       // fade via F(), consistent across hues + with the chat tabs), instead of a flat opacity.
       const lblA = { x: PADL, y: y + 3.5, 'text-anchor': 'start', 'font-weight': 650, 'font-size': 12, fill: F(s.color), 'pointer-events': 'none' };
       if (!s.live) lblA['text-decoration'] = 'line-through';   // dead lane → strike the name (mirrors the feed)
-      const lbl = el('text', lblA); lbl.textContent = s.name; svg.appendChild(lbl);
+      const lbl = el('text', lblA);
+      // A FEDERATED session's "host:" prefix is metadata, not part of the name (the user 2026-07-11):
+      // render it quiet — gray, not bold, italic, a step smaller — like every other surface's
+      // .host-prefix. The marker is the sid's own prefix (federation prefixes id AND name; a local sid
+      // never contains a colon), the same rule as ui/webview/host-prefix.ts.
+      const hci = String(s.id || '').indexOf(':');
+      const hpre = hci > 0 ? String(s.id).slice(0, hci + 1) : null;
+      if (hpre && s.name && s.name.startsWith(hpre) && s.name.length > hpre.length) {
+        const tp = el('tspan', { fill: '#9aa0a6', 'font-weight': 400, 'font-style': 'italic', 'font-size': 10.5 });
+        tp.textContent = hpre;
+        const tn = el('tspan', {}); tn.textContent = s.name.slice(hpre.length);
+        lbl.appendChild(tp); lbl.appendChild(tn);
+      } else { lbl.textContent = s.name; }
+      svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
       // Clicking the NAME JUMPS you into that session in the chat — focus and all (the user 2026-07-03).
       // The empty row (rowHit) only PREVIEWS it (preserveFocus=true, no focus steal); the name is the

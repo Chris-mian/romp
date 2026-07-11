@@ -7,6 +7,7 @@
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
 import { distillText, applyDistillLine, distillPending } from "./distiller-line";
+import { hostNameNodes } from "./host-prefix";
 import { previewThumb, previewKind } from "./preview";
 
 // (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
@@ -857,7 +858,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
   if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
   a._title.textContent = it.text;
-  a._name.textContent = it.name;
+  a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
   if (it.color) a._name.style.color = it.color.bg;
   setWorkDot(a._name, workingSet.has(it.name));   // working dot before the session name
   // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
@@ -1271,7 +1272,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   card.style.background = `rgba(${r}, ${gg}, ${b}, ${TINT_ALPHA})`;
   card.style.borderColor = `rgba(${r}, ${gg}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
   a._title.textContent = g.title;
-  a._name.textContent = g.name;
+  a._name.replaceChildren(...hostNameNodes(g.name, g.sid));
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, workingSet.has(g.name));   // working dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
@@ -1853,7 +1854,7 @@ function renderModal() {
     const gm0 = grp.members[0];   // prompt-intent title → the first member's MINTING message (resolves by id, kernel 92e23ff)
     const gm0Prompt = gm0.tree?.find((n) => n.id === gm0.itemId)?.promptAnchorUuid ?? null;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
-    agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
+    agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
     ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
@@ -1869,7 +1870,7 @@ function renderModal() {
     // tree is only the session name + a recency-tinted age; Follow up moved to the footer below the tree.
     ttlEl.style.display = "none";
     titleHoverId = it.turnId;
-    agent.textContent = it.name; if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name)); agent.classList.toggle("dead", !it.live);
+    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)

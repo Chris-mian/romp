@@ -1736,3 +1736,9 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   padding: 2px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--fg);
   border: 1px solid rgba(255, 255, 255, 0.18); }
 .romp-lightbox-close:hover { border-color: var(--accent); }
+
+/* The "host:" prefix on a FEDERATED session's name (host-prefix.ts): metadata, not part of the name
+   (the user 2026-07-11) — quiet gray, never bold, italic, a step smaller than the name it precedes.
+   Inherits nothing from the session's identity color (the parent sets color; this overrides). Defined
+   in feed.css too — the feed page loads only that sheet (the .romp-acted precedent). */
+.host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.88em; }

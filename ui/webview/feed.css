@@ -833,3 +833,6 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   padding: 2px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--fg);
   border: 1px solid rgba(255, 255, 255, 0.18); }
 .romp-lightbox-close:hover { border-color: var(--accent); }
+
+/* the "host:" prefix on a federated session's name — see styles.css (one treatment, two sheets) */
+.host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.88em; }

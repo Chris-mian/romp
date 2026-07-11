@@ -156,6 +156,53 @@ class BootReconcile(unittest.TestCase):
                          "the visible continuation nudge is fed FIRST, then the restored backlog")
         self.assertEqual(be._ensured, [cut])
 
+    def test_dead_bg_tasks_wake_the_session_with_a_named_notice(self):
+        # bg tasks die with their CLI (the user 2026-07-11: nimbus's campaign watcher died with a
+        # kernel restart and the session waited forever on a notification that could never arrive).
+        # The reg's bgTasks mirror survives the death; the reconcile must tell the session what it
+        # lost — by DESCRIPTION — and clear the mirror so the same deaths never re-notify.
+        d, be = self._setup()
+        sid = "11111111-aaaa-0000-0000-00000000000c"
+        _reg(d, sid, bgTasks=[{"desc": "20-minute timer for campaign-start check", "type": "local_bash",
+                               "since": 1, "toolUseId": "tu1", "lastTool": ""}])
+        sb.append_state(Path(d), sid, "waiting")           # idle — NOT cut; the notice alone wakes it
+        with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout="")):
+            be._boot_reconcile([sb.read_reg(Path(d), sid)])
+        self.assertEqual(be._ensured, [sid], "an idle session with dead tasks is woken to hear it")
+        reg = sb.read_reg(Path(d), sid)
+        self.assertEqual(len(reg["queue"]), 1)
+        self.assertIn("20-minute timer for campaign-start check", reg["queue"][0])
+        self.assertIn("romp-system", reg["queue"][0], "a visible romp system notice, not silent")
+        self.assertEqual(reg["bgTasks"], [], "reported — the same deaths never re-notify")
+
+    def test_cut_turn_with_dead_tasks_orders_resume_nudge_then_notice(self):
+        d, be = self._setup()
+        sid = "11111111-aaaa-0000-0000-00000000000d"
+        _reg(d, sid, queue=["backlog msg"], bgTasks=[{"desc": "power watcher", "since": 1}])
+        sb.append_state(Path(d), sid, "working")           # cut by the kernel death
+        with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout="")):
+            be._boot_reconcile([sb.read_reg(Path(d), sid)])
+        q = sb.read_reg(Path(d), sid)["queue"]
+        self.assertEqual(q[0], sb.BOOT_RESUME_NUDGE, "continuation context first")
+        self.assertIn("power watcher", q[1])
+        self.assertEqual(q[2], "backlog msg", "the restored backlog follows the notices")
+
+    def test_stranded_pending_switch_flags_heal_at_boot_without_waking_the_session(self):
+        # a /model or /effort switch mid-flight at the kernel's death strands its pending flags; the
+        # dormant serving path shows them as switching-dots FOREVER (the user 2026-07-11: "the three
+        # dots sitting there forever"). The boot sweep heals the flags; an otherwise-idle session
+        # stays lazy (no wake just for the heal).
+        d, be = self._setup()
+        sid = "11111111-aaaa-0000-0000-00000000000e"
+        _reg(d, sid, effortPending=True, modelPending=True)
+        sb.append_state(Path(d), sid, "waiting")
+        with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout="")):
+            be._boot_reconcile([sb.read_reg(Path(d), sid)])
+        reg = sb.read_reg(Path(d), sid)
+        self.assertFalse(reg.get("effortPending"))
+        self.assertFalse(reg.get("modelPending"))
+        self.assertEqual(be._ensured, [], "the heal alone never wakes a session")
+
     def test_reaps_orphans_but_never_tmux(self):
         d, be = self._setup()
         sid = "11111111-aaaa-0000-0000-00000000000b"

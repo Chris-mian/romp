@@ -6,6 +6,7 @@
 // so the colours are IDENTICAL to the ledger box.
 import { delegate } from "./actions";
 import { fleetVisibleRoots } from "./fleet-roots";
+import { hostPrefix } from "./host-prefix";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -290,6 +291,19 @@ function highlightInto(elm: HTMLElement, text: string, q: string): void {
   if (i < text.length) elm.appendChild(document.createTextNode(text.slice(i)));
 }
 
+// A session NAME with search highlighting, the remote "host:" prefix rendered as quiet metadata
+// (.host-prefix — gray, italic, smaller; the user 2026-07-11). The search highlight applies to the
+// NAME part; the prefix is metadata and never highlights.
+function nameInto(elm: HTMLElement, name: string, sid: string, q: string): void {
+  const p = hostPrefix(name, sid);
+  if (!p) { highlightInto(elm, name, q); return; }
+  elm.replaceChildren();
+  const h = el("span", "host-prefix"); h.textContent = p.host;
+  const rest = el("span", "");
+  highlightInto(rest, p.rest, q);
+  elm.append(h, rest);
+}
+
 // Render node `n` (and its open children) into `container`. Hoisted out of render() so the FLAT (ungrouped)
 // view can merge nodes from many sessions into one list. `flat` adds the session-name tag on the RIGHT of a
 // depth-0 row (the ungrouped view's "which session is this" marker).
@@ -369,7 +383,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   if (flat && depth === 0) {
     const tag = el("span", "fl-sesslabel");
     if (s.status?.state === "working") tag.appendChild(el("span", "fl-workdot"));
-    const tnm = el("span", "fl-sesslabel-name"); highlightInto(tnm, s.name, curSearch);
+    const tnm = el("span", "fl-sesslabel-name"); nameInto(tnm, s.name, s.sid, curSearch);
     if (s.color?.bg) tnm.style.color = s.color.bg;
     tag.appendChild(tnm);
     tag.title = "this goal belongs to “" + s.name + "” — click to open it";
@@ -527,7 +541,7 @@ function render() {
       head.appendChild(caret);
       if (s.status?.state === "working") head.appendChild(el("span", "fl-workdot"));
       const nm = el("span", "fl-name");
-      highlightInto(nm, s.name, curSearch);   // highlight a name match
+      nameInto(nm, s.name, s.sid, curSearch);   // highlight a name match (remote "host:" stays quiet metadata)
       if (s.color?.bg) nm.style.color = s.color.bg;
       head.appendChild(nm);
       head.title = "Open this session";

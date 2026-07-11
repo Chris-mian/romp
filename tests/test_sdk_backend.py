@@ -2010,6 +2010,58 @@ class BgTaskLifecycle(unittest.TestCase):
     def _feed(self, s, subtype, data):
         s._on_message(self._Sys(subtype, data), _AssistantMessage, _ResultMessage, self._Sys)
 
+    def test_task_events_mirror_the_live_set_to_the_reg(self):
+        # the in-memory set dies with the backend; the reg mirror is what lets the NEXT boot's
+        # reconcile tell the session its tasks were killed (the user 2026-07-11). A normal task end
+        # clears the mirror too, so it never false-alarms.
+        s = self._sess()
+        self._feed(s, "task_started", {"task_id": "b1", "description": "watcher"})
+        reg = sb.read_reg(s.backend.state_dir, s.sid)
+        self.assertEqual([t["desc"] for t in reg["bgTasks"]], ["watcher"])
+        self._feed(s, "task_notification", {"task_id": "b1", "status": "completed",
+                                            "output_file": "/tmp/x.output", "summary": "done"})
+        self.assertEqual(sb.read_reg(s.backend.state_dir, s.sid)["bgTasks"], [])
+
+    def test_session_gone_with_live_tasks_enqueues_the_death_notice_and_wakes(self):
+        # the CLI died while the kernel lives: its bg tasks died with it — the session must HEAR that
+        # (else it waits forever on a dead timer) and get woken to act on it. Our own drain (`ended`)
+        # skips: the mirror survives for the next boot's reconcile instead.
+        s = self._sess()
+        be = s.backend
+        self._feed(s, "task_started", {"task_id": "b1", "description": "power watcher"})
+        be._ensured = []
+        be._ensure = lambda sid: be._ensured.append(sid)
+        be._on_session_gone(s)
+        reg = sb.read_reg(be.state_dir, s.sid)
+        self.assertEqual(len(reg["queue"]), 1)
+        self.assertIn("power watcher", reg["queue"][0])
+        self.assertIn("romp-system", reg["queue"][0])
+        self.assertEqual(reg["bgTasks"], [], "reported — never re-notify for the same deaths")
+        self.assertEqual(be._ensured, [s.sid], "the session is woken to hear it")
+        # drain/shutdown (`ended`): no notice now — the mirror stays for the next boot's reconcile
+        s2 = self._sess()
+        self._feed(s2, "task_started", {"task_id": "b2", "description": "timer"})
+        s2.ended = True
+        be2 = s2.backend
+        be2._ensured = []
+        be2._ensure = lambda sid: be2._ensured.append(sid)
+        be2._on_session_gone(s2)
+        self.assertEqual(be2._ensured, [])
+        self.assertEqual([t["desc"] for t in sb.read_reg(be2.state_dir, s2.sid)["bgTasks"]], ["timer"])
+
+    def test_construction_heals_stranded_pending_switch_flags(self):
+        # a pending /model / /effort switch that died with the previous process must not strand the
+        # switching-dots (the user 2026-07-11): a fresh construction applies both at its next connect,
+        # so pending is over — heal the reg at __init__.
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-555555555555"
+        sb.write_reg(be.state_dir, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True,
+                                         "effortPending": True, "modelPending": True})
+        sb.SdkSession(be, sb.read_reg(be.state_dir, sid))
+        reg = sb.read_reg(be.state_dir, sid)
+        self.assertFalse(reg.get("effortPending"))
+        self.assertFalse(reg.get("modelPending"))
+
     def test_started_tracks_the_task_and_the_snapshot_carries_it(self):
         s = self._sess()
         self._feed(s, "task_started", {"task_id": "b1", "description": "20-minute timer for campaign-start check",

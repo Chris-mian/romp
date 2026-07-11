@@ -22,6 +22,7 @@ import { reconcileTabOrder } from "./tab-order";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewThumb, canPreview } from "./preview";
+import { hostNameNodes } from "./host-prefix";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -2327,7 +2328,8 @@ function makePlaceholderTab(id: string): HTMLElement {
   swirl.src = "/media/romp-swirl-glyph.svg"; swirl.alt = ""; swirl.onerror = () => swirl.remove();
   tab.appendChild(swirl);
   const label = el("span", "tab-label");
-  label.textContent = meta?.name || "…";
+  if (meta?.name) label.replaceChildren(...hostNameNodes(meta.name, id));
+  else label.textContent = "…";
   tab.appendChild(label);
   return tab;
 }
@@ -2413,7 +2415,7 @@ function renderTabs() {
       tab.appendChild(ci);
     }
     const label = el("span", "tab-label");
-    label.textContent = s.name;
+    label.replaceChildren(...hostNameNodes(s.name, id));   // remote "host:" prefix renders as quiet metadata
     if (s.status.faded && id !== activeId && s.color) {
       const full = s.color.bg;
       label.style.color = fadedColor(full);
@@ -3090,7 +3092,7 @@ function renderPicker(items: any[]) {
     row.dataset.search = (it.name + " " + (it.summary || "")).toLowerCase();
     const top = el("div", "picker-row-top");
     const name = el("span", "picker-name");
-    name.textContent = it.name;
+    name.replaceChildren(...hostNameNodes(it.name, it.id));
     if (it.color && it.color.bg) name.style.color = it.color.bg;
     const time = el("span", "picker-time");
     time.textContent = it.running ? "running" : it.time;
