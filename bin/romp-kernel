@@ -1163,6 +1163,16 @@ def _mark_nudge_failed(gid):
     moves to Needs-you through the NORMAL ladder (decision brief and all) instead of sitting in Working
     wearing a chip; the user's reply then unblocks it exactly like any other block. (Previously only the
     FORK flavor floored to needs-you read-side; the common case idled in Working — the user's complaint.)"""
+    # An AWAITING session isn't stalled — its nudge reply ("waiting on the experiment/watcher") DID
+    # explain itself, so converting the nudge into a needs-you block manufactures a false interrupt
+    # (nimbus, the user 2026-07-11). Normally unreachable (the tick's awaiting gate skips the whole
+    # session first), but the gate and this writer read different moments — re-check at the write.
+    try:
+        _sid = gid.rsplit(":", 1)[0]
+        if _session_awaiting(_sid, _path_of(_sid) or "", True):
+            return
+    except Exception:
+        pass
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     rec = nudged.get(gid)
@@ -2786,7 +2796,14 @@ class Sessions:
                                 "retryInfo": st.get("retryInfo") or None,   # the attempt's detail (attempt/max, error, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
-                                "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
+                                "subagents": st.get("subagents") or [],   # live Task subagents (SDK only) → lane pill
+                                # live BACKGROUND TASKS (the CLI's task lifecycle stream) — the awaiting
+                                # source 0.5, the #bg-tasks live gate, and the nudge gate all read this off
+                                # the merged map. Omitting it here was the 2026-07-11 nimbus bug: the
+                                # snapshot carried the watcher but every consumer saw None, so the session
+                                # never read awaiting, the auto-nudge fired on a genuinely-waiting session,
+                                # and the failed nudge hard-blocked its card.
+                                "bgTasks": st.get("bgTasks") or []}
             except Exception:
                 sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
         _unify_model_labels(out)
