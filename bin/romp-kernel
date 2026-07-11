@@ -5726,6 +5726,12 @@ def _fleet_archived_tops(sid, cap=20):
                     "t": nd.get("t", 0), "mt": nd.get("mt", nd.get("t", 0)),
                     "current": False, "recent": False, "onpath": False,
                     "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
+                    # deep-link anchors (the user 2026-07-11: an archived row's text was a dead click —
+                    # the projection carried no anchors, so fleetNavTo had nothing to post). The exact
+                    # uuids stamped ON the node ride along (mint prompt, distiller citation); when null
+                    # the client still posts t/mt and the kernel's time-based nav lands nearest — the
+                    # same graceful fallback every live zone has. Parse-free, as this whole path must be.
+                    "promptAnchorUuid": nd.get("promptUuid"), "anchorUuid": nd.get("summaryAnchor"),
                     "children": ch, "archived": True})
         for c in ch:
             _proj(c, depth + 1, done)

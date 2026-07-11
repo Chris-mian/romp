@@ -262,3 +262,11 @@ test("genuinely-empty fleet fades in the romp WORDMARK (like the feed), once per
   assert.match(CSS, /\.fl-wordmark\.no-anim \{ animation: none; \}/);
   assert.match(CSS, /@keyframes fl-wordmark-in \{ from \{ opacity: 0; \} to \{ opacity: 0\.75; \} \}/);
 });
+
+test("an ARCHIVED node's zones deep-link too: fleetNode searches archivedTops, not just the live tree (the user 2026-07-11)", () => {
+  // the miss made an archived row's text a dead click: fleetNode returned null → bare openSession, no jump
+  assert.match(SRC, /\(s\?\.ledger\?\.tree \|\| \[\]\)\.find\(\(n\) => n\.id === nid\)\s*\n?\s*\|\| \(s\?\.ledger\?\.archivedTops \|\| \[\]\)\.find\(\(n\) => n\.id === nid\) \|\| null/);
+  // the kernel's archived projection now carries the anchors this nav reads (null → time fallback)
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
+  assert.match(KERNEL, /"promptAnchorUuid": nd\.get\("promptUuid"\), "anchorUuid": nd\.get\("summaryAnchor"\),/);
+});

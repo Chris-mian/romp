@@ -159,7 +159,10 @@ function openSession(sid: string) { vscodeApi?.postMessage({ type: "openSession"
 // falls back to time-based nav kernel-side, exactly as the modal does.
 function fleetNode(sid: string, nid: string): LedgerNode | null {
   const s = sessions.find((x) => x.sid === sid);
-  return (s?.ledger?.tree || []).find((n) => n.id === nid) || null;
+  // archived-completed nodes live in ledger.archivedTops, NOT ledger.tree — missing them here made an
+  // archived row's text a dead click (fell back to a bare openSession, no deep link; the user 2026-07-11)
+  return (s?.ledger?.tree || []).find((n) => n.id === nid)
+      || (s?.ledger?.archivedTops || []).find((n) => n.id === nid) || null;
 }
 function fleetNavTo(el: HTMLElement, kind: "prompt" | "work") {
   const sid = el.dataset.sid, nid = el.dataset.nid;

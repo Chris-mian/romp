@@ -170,6 +170,36 @@ class Unblocker(UnblockerBase):
         store = jd.load_goals(SID)
         self.assertFalse(store["nodes"][sub].get("blockCheckT"), "no watermark advance on a failed call")
 
+    def test_a_mid_call_store_change_is_never_clobbered_and_the_drift_is_logged(self):
+        # The model call takes seconds and save_goals is last-writer-wins: verdicts must apply to a
+        # FRESH load, never the pre-call snapshot. Simulate a user acting mid-call: the stub (running
+        # where the model call would) rewrites the store — resolves the blocked sub AND adds a new
+        # node — then returns a lift. The lift must be SKIPPED (drift-skip row logged), the user's
+        # resolution must stand, and the concurrently-added node must survive the pass's save.
+        top, sub = self._store(block_t=T0 + 100)
+        path = self._transcript([(T0 + 200, "it is a 10,000mAh pack", "noted")])
+        other = SID + ":g9"
+
+        def fake(blocks_text, since_text):
+            self.calls.append((blocks_text, since_text))
+            st = jd.load_goals(SID)
+            jd.record_verdict(st, st["nodes"][sub], "user", "done", T0 + 500,
+                              why="crossed off by the user mid-call")
+            st["nodes"][other] = {"id": other, "text": "typed while the model ran", "parentId": None,
+                                  "nodeComplete": False, "blocked": False, "cleared": False,
+                                  "trail": [], "t": T0 + 500, "mt": T0 + 500, "log": []}
+            jd.save_goals(SID, st)
+            return '{"verdicts": [{"n": 1, "do": "lift", "why": "the user said 10,000mAh"}]}'
+        jd.unblock_llm = fake
+
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [], "no lift lands on a node that moved on")
+        store = jd.load_goals(SID)
+        self.assertTrue(store["nodes"][sub].get("nodeComplete"), "the user's mid-call resolution stands")
+        self.assertIn(other, store["nodes"], "a node added mid-call survives the pass's save (fresh-load apply)")
+        rows = [json.loads(line) for line in jd.ERRORS.read_text().splitlines()] if jd.ERRORS.exists() else []
+        self.assertTrue(any(r.get("err") == "drift-skip" for r in rows),
+                        "the race is observable: a drift-skip row lands in judge-errors")
+
 
 if __name__ == "__main__":
     unittest.main()

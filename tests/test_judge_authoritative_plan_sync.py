@@ -148,7 +148,7 @@ class SyncFindOrCreate(unittest.TestCase):
     def test_mints_one_node_per_item_idempotently(self):
         store = fresh_store()
         s = plan_session([("Phase A", "Doing A", []), ("Phase B", "Doing B", [])])
-        self.assertTrue(jd._sync_declared_plan(store, s, "seg1", T0 + 50))
+        self.assertTrue(jd._sync_declared_plan(store, s, "seg1", T0 + 50, prompt_uuid="u-trigger-1"))
         self.assertEqual(len(agent_nodes(store)), 2)
         # re-sync of the SAME session mutates nothing (no duplicate nodes, returns False)
         self.assertFalse(jd._sync_declared_plan(store, s, "seg1", T0 + 60))
@@ -157,6 +157,9 @@ class SyncFindOrCreate(unittest.TestCase):
             self.assertIsNone(nd["parentId"])
             self.assertEqual(nd["agentTask"]["status"], "open")
             self.assertFalse(nd["nodeComplete"])
+            # the syncing segment's trigger is the mirror's deep-link anchor (the user 2026-07-11: mirror
+            # mints carried None, so once archived — parse-free projection — their text was a dead click)
+            self.assertEqual(nd["promptUuid"], "u-trigger-1")
 
     def test_status_refresh_stamps_authoritative_done(self):
         store = fresh_store()

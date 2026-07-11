@@ -6,7 +6,7 @@
 > failure contract. The state model itself (the diary, the fold, every chip)
 > lives in [goal-state.md](goal-state.md).
 
-Current as of **2026-07-09**.
+Current as of **2026-07-11**.
 
 romp keeps two live artifacts per session without you curating either: a
 readable text record (chat captions, the session TOC, the timeline) and the
@@ -17,7 +17,7 @@ append-only record, and plain code does the rest. No judge owns state: a
 wrong verdict is one bad event in a log, outvoted by later evidence, never a
 corrupted fact.
 
-The twelve judges run in two tiers. The index tier (Haiku, cheap) writes
+The thirteen judges run in two tiers. The index tier (Haiku, cheap) writes
 text only and never touches goals. The triage tier (Sonnet) maintains the
 board. Both run continuously from the kernel producer and are event-gated,
 so an idle fleet costs file stats, not model calls.
@@ -33,14 +33,15 @@ so an idle fleet costs file stats, not model calls.
 | planner | triage | `PLAN_SYS` | a segment's work ends |
 | placer | triage | `PLACE_SYS` | the planner filed under a card with open sub-goals |
 | closer | triage | `CLOSER_SYS` | a turn ends |
+| unblocker | triage | `UNBLOCK_SYS` | an open blocked sub has ended turns newer than its block (or its last check) |
 | distiller | triage | `DISTILL_SYS` | a card completed and settled |
 | briefer | triage | `BLOCK_BRIEF_SYS` | a card blocked |
 | grouper | triage | `GROUP_SYS` | the set of open cards changed |
 | consolidator | triage | `GROUP_SYS` (shared) | the set of completed cards changed |
 | courier | triage | `COURIER_SYS` | a peer message arrives |
 
-Eleven prompts back the twelve names: the consolidator reuses the grouper's
-prompt over a different column, under its own name. Usage and error logs
+Twelve prompts back the thirteen names: the consolidator reuses the
+grouper's prompt over a different column, under its own name. Usage and error logs
 carry one name per prompt; the timeline band keeps five family rows and
 folds the fine names onto them (`_JUDGE_FAMILY` in `bin/romp-kernel`).
 Naming history: log rows before 2026-07-08 use the family names, and the
@@ -61,10 +62,12 @@ needs picking. When the turn ends, the closer audits the goals the turn
 touched for quiet completions and the archiver refreshes the session's
 headline. From there the board keeps itself: a completed card settles and
 gets the distiller's takeaway, a blocked card gets the briefer's decision
-brief, a changed set of top cards may get nested by the grouper (open
-column) or the consolidator (done column), and a peer message goes to the
-courier instead of the planners. Every section below is one of those
-moments in detail.
+brief, a blocked sub with new conversation since its block gets the
+unblocker's re-examination (was its question answered in passing?), a
+changed set of top cards may get nested by the grouper (open column) or
+the consolidator (done column), and a peer message goes to the courier
+instead of the planners. Every section below is one of those moments in
+detail.
 
 ## The index tier: the text record
 
@@ -129,11 +132,11 @@ placements always stay card level.
 None of the three reorganizes the board; that is the grouper's job, and the
 prompts say so.
 
-## Status and summaries: the closer, the distiller, the briefer
+## Status and summaries: the closer, the unblocker, the distiller, the briefer
 
 A card should say so when it is finished or stuck, without the agent having
-to narrate it. The closer supplies the missing verdicts; the distiller and
-the briefer write what you read on the resolved card.
+to narrate it. The closer supplies the missing verdicts; the unblocker retires the stale
+ones; the distiller and the briefer write what you read on the resolved card.
 
 **closer.** The turn-end completion backstop; it exists because agents
 rarely say "done". It audits only the goals the turn actually touched;
@@ -141,6 +144,25 @@ verdict done, blocked, or omit, with "when in doubt, omit". Idempotent per
 turn. Its diary events carry src `closer`, so planner and closer verdicts
 stay distinguishable, and both defer to the user floor: a verdict computed
 from evidence at or before your last reply loses.
+
+**unblocker.** The stale-block backstop; it exists because answers arrive
+in passing. A sub-goal blocked on a question is only ever unblocked by
+work filed on that exact node — but the answer usually files wherever the
+planner judges the segment to serve, so a dormant blocked sub never hears
+it and holds its whole card in Needs you (the 2026-07-11 case: a card
+stuck for hours on a buried sub whose question the very next stretch of
+conversation had answered). Given each open blocked sub's question plus
+the conversation since its block, it verdicts lift or hold, "when unsure,
+hold"; a lift lands as a normal `unblock` diary event, why-prefixed
+"answered in passing". Subs only — a blocked top is the card's Needs you,
+with its own heal paths (your reply re-judges it; a placement under it
+unblocks the chain). Event-gated per node: `blockCheckT` remembers the
+newest ended turn examined, so a stable session costs zero calls and a
+give-up re-arms on the next new turn. Its model call spans seconds, so it
+holds no store copy across the call: verdicts apply to a fresh load, and a
+node that moved on mid-call (you resolved or cleared it) is skipped with a
+`drift-skip` error row rather than overwritten. `ROMP_UNBLOCKER=0`
+disables.
 
 **distiller.** When a top card completes and settles: `BACKGROUND:`
 (re-orientation for a reader who lost the thread) plus `TAKEAWAY:` (the one

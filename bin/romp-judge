@@ -2136,9 +2136,12 @@ def rollup_status(store, session_closed, now=None):
     store["status"] = status
 
 
-def _sync_declared_plan(store, session, seg_id, seg_t):
+def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
     """DETERMINISTIC (no LLM): mirror the agent's live to-do list (Claude Code's Task tool) into the goal
     graph as `agentTask:{key,status}` nodes — the authoritative tier rollup_status honors.
+    `prompt_uuid` (the user 2026-07-11): the syncing segment's trigger uuid, stamped on every node
+    MINTED here as its exact deep-link anchor — mirror mints carried None before, so once archived
+    (the parse-free fleet projection can't resolve a trail) their text was a dead click.
 
     A node exists ONLY for an item that was OPEN under watch (the user 2026-07-01): an OPEN item is
     find-or-created and minted as its own top for the grouper to place/merge; a done/cancelled item is
@@ -2214,7 +2217,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = GuardedNode({"id": nid, "text": it["text"] or it.get("activeForm") or "(declared step)",
                       "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
-                      "trail": [seg_id] if seg_id else [], "promptUuid": None, "t": seg_t, "mt": seg_t,
+                      "trail": [seg_id] if seg_id else [], "promptUuid": prompt_uuid, "t": seg_t, "mt": seg_t,
                       "why": "declared in the agent's own to-do list",
                       "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "log": []})
         by_key[key] = nid
@@ -3956,7 +3959,8 @@ def _plan_session(fsid, path, now):
     # one reads authoritative-done. Deterministic (no LLM); regroup if it minted/changed anything so a
     # freshly-minted to-do top gets placed/merged this pass instead of lingering as a bare top.
     latest_seg = max(seg_by_id.values(), key=lambda s: s.get("t") or 0, default=None)
-    if _sync_declared_plan(store, session, (latest_seg or {}).get("id"), (latest_seg or {}).get("t") or now):
+    if _sync_declared_plan(store, session, (latest_seg or {}).get("id"), (latest_seg or {}).get("t") or now,
+                           prompt_uuid=(latest_seg or {}).get("trigger")):
         _group_store(store, fsid, now)
         save_goals(fsid, store)
     rollup_status(store, _session_closed(session))
@@ -4852,10 +4856,18 @@ def _unblock_session(fsid, path, now):
     """Re-examine ONE session's stale blocked subs. Event-gated per node: a sub is (re-)examined only
     when an ENDED turn newer than max(its block, its last check) exists — blockCheckT is the watermark,
     advanced after every examine (and on the parse give-up) so a stable session costs zero calls.
-    Returns the node ids lifted."""
+    Returns the node ids lifted.
+
+    Write discipline (the user 2026-07-11): the model call takes seconds and save_goals is a
+    last-writer-wins atomic publish, so NO store copy is held across the call — the scan's load is
+    read-only and discarded; verdicts apply to a FRESH load afterwards, and a node whose state moved
+    on meanwhile (the user clicked Done/Clear, a planner placement unblocked its branch, a re-plan
+    dropped it) is skipped and the skip is logged (judge-errors 'drift-skip' — the race monitor). That
+    shrinks the clobber window from the model call's seconds to this apply block, the same exposure
+    every fast judge write has; a user action clobbered inside even that window self-heals via the
+    override journal replay on the next pass."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
-    store = load_goals(fsid)
-    cands = _blocked_sub_candidates(store)
+    cands = _blocked_sub_candidates(load_goals(fsid))  # read-only scan; this copy is NOT saved
     if not cands:
         return []
     session = parsed_session(fsid, [path], now)
@@ -4875,10 +4887,12 @@ def _unblock_session(fsid, path, now):
     blocks_text = "\n".join("%d. %s\n   blocked on: %s" % (i, nd.get("text") or "(sub-goal)",
                                                            nd.get("blockWhy") or "(no recorded question)")
                             for i, (_nid, nd, _bt) in enumerate(due, 1))
-    raw = unblock_llm(blocks_text, since)
+    raw = unblock_llm(blocks_text, since)              # ← seconds; no store copy held across this
     if not raw:
         return []                                      # call failed / paused (logged) → retry next pass
     lifts = _parse_unblock(raw, len(due))
+    store = load_goals(fsid)                           # FRESH load: apply onto the current store, never the
+    nodes = store["nodes"]                             #   pre-call snapshot (a stale save clobbers writers)
     if lifts is None:
         _log_judge_error("unblocker", fsid, "parse", note="reply tail: %r" % raw[-160:],
                          goal=[nid for nid, _nd, _bt in due])
@@ -4886,20 +4900,28 @@ def _unblock_session(fsid, path, now):
         store["unblockFails"] = fails
         if fails >= JUDGE_FAIL_CAP:                    # give up on THIS evidence: advance the watermarks —
             store["unblockFails"] = 0                  # a NEWER ended turn re-arms every node (event re-arm)
-            for _nid, nd, _bt in due:
-                nd["blockCheckT"] = newest
-            save_goals(fsid, store)
-        else:
-            save_goals(fsid, store)
+            for nid, _nd, _bt in due:
+                if nid in nodes:
+                    nodes[nid]["blockCheckT"] = newest
+        save_goals(fsid, store)
         return []
     store["unblockFails"] = 0
     lifted = []
-    for i, (nid, nd, _bt) in enumerate(due, 1):
-        nd["blockCheckT"] = newest                     # examined up to here — re-ask only on newer evidence
+    for i, (nid, _stale, _bt) in enumerate(due, 1):
+        nd = nodes.get(nid)
         why = lifts.get(i)
+        if nd is None or not nd.get("blocked") or nd.get("cleared"):
+            # the node moved on during the model call — resolved, cleared, or re-planned away. Never
+            # apply a verdict formed against the pre-call state; surface the race so it's observable
+            # (`romp -j` / the debug feed) instead of silently dropping the lift.
+            if why is not None:
+                _log_judge_error("unblocker", fsid, "drift-skip", goal=nid,
+                                 note="node changed during the model call (resolved/cleared/re-planned) — lift skipped")
+            continue
+        nd["blockCheckT"] = newest                     # examined up to here — re-ask only on newer evidence
         if why is None:
             continue
-        if record_verdict(store, nd, "planner", "unblock", newest,
+        if record_verdict(store, nd, "unblocker", "unblock", newest,
                           why=("answered in passing: " + why) if why else "answered in passing"):
             nd["mt"] = now
             lifted.append(nid)

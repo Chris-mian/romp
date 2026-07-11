@@ -19,8 +19,9 @@ doc was removed).
    piece of moving state, the goal store.
 4. **The goal store**: a tree of goal nodes per session. Each node's state
    lives in its **diary** (`log`), an append-only list of events
-   `{ev_t, src, kind, why, seg, at}`. src is planner / closer / courier /
-   nudge / interrupt / romp / user / agent (the grouper never judges);
+   `{ev_t, src, kind, why, seg, at}`. src is planner / closer / unblocker /
+   courier / nudge / interrupt / romp / user / agent (the grouper never
+   judges);
    kind is done / block / reopen / unblock / clear / settle / dismiss.
    Markers: `msg` (a user message rides this reopen), `undo` (an
    undo-clear restore), `synth` (reconstructed by migration, never

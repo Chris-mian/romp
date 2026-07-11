@@ -58,6 +58,21 @@ class FleetArchivedTops(unittest.TestCase):
         self.assertEqual(by["c2"]["depth"], 2)
         self.assertTrue(all(n["done"] and n["archived"] for n in out), "every archived node is done + tagged archived")
 
+    def test_archived_nodes_carry_their_deep_link_anchors(self):
+        # the user 2026-07-11: an archived row's text was a DEAD click — the projection carried no
+        # anchors, so the fleet's nav had nothing to post. The exact uuids stamped on the node ride
+        # along (mint prompt, distiller citation); null stays null (the client's time fallback covers it).
+        self._write(SID, {"nodes": {
+            "t1": {"text": "Ship feature", "parentId": None, "nodeComplete": True, "t": 100, "mt": 200,
+                   "promptUuid": "u-mint-1", "summaryAnchor": "a-cite-1"},
+            "c1": {"text": "a child", "parentId": "t1", "nodeComplete": True, "t": 130, "mt": 140},
+        }, "status": {}})
+        by = {n["id"]: n for n in km._fleet_archived_tops(SID)}
+        self.assertEqual(by["t1"]["promptAnchorUuid"], "u-mint-1")
+        self.assertEqual(by["t1"]["anchorUuid"], "a-cite-1")
+        self.assertIsNone(by["c1"]["promptAnchorUuid"], "no stamp → null; the client falls back to t/mt time nav")
+        self.assertIsNone(by["c1"]["anchorUuid"])
+
     def test_status_completed_counts_as_done(self):
         self._write(SID, {"nodes": {"t1": {"text": "x", "parentId": None, "t": 1, "mt": 2}},
                           "status": {"t1": "completed"}})

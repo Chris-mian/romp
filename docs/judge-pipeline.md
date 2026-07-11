@@ -5,7 +5,7 @@ actions append, and nothing edits state in place, so any behavior can be
 walked back to the events that produced it. This page shows who appends what,
 in which order, and where each record lives. Companion detail:
 [judges.md](judges.md) (per-judge prompts and triggers) and
-[goal-state.md](goal-state.md) (the event model). Current as of 2026-07-09.
+[goal-state.md](goal-state.md) (the event model). Current as of 2026-07-11.
 
 Reading the diagrams: blue = an LLM board judge (writes goal state), green =
 an LLM caption judge (writes only text), gray = deterministic code, yellow =
@@ -25,10 +25,12 @@ flowchart LR
     MAIL[("peer mail")]:::data --> PARSE
     PARSE --> PLAN["planners + placer (LLM):<br/>place every segment"]:::llm
     PARSE --> CLOSE["closer (LLM):<br/>audit each ended turn"]:::llm
+    PARSE --> UNB["unblocker (LLM):<br/>lift blocks answered in passing"]:::llm
     PARSE --> COUR["courier (LLM):<br/>review peer mail"]:::llm
     TODO[("agent's to-do list")]:::data --> SYNC["plan-sync:<br/>mirror to-dos"]:::det
     PLAN --> LOG[("goal stores:<br/>an event log per node")]:::data
     CLOSE --> LOG
+    UNB --> LOG
     COUR --> LOG
     SYNC --> LOG
     YOU["you: clear, reply,<br/>resolve, move"]:::user --> LOG
@@ -42,8 +44,9 @@ flowchart LR
     classDef user fill:#fce7f3,stroke:#db2777,color:#111827
 ```
 
-Order within one pass: planner, closer, courier, propagate (deterministic
-check-off of delegated work), grouper, consolidator, distiller + briefer.
+Order within one pass: planner, closer, unblocker, courier, propagate
+(deterministic check-off of delegated work), grouper, consolidator,
+distiller + briefer.
 Every LLM call goes through one door that skips calls while an account usage
 window is exhausted, turns an API error reply into a logged call failure
 (never parser input), and logs cost per judge, one name per distinct prompt.
@@ -98,6 +101,8 @@ flowchart LR
     DG -.-> DI["distiller:<br/>background<br/>+ takeaway"]:::llm
     PL & CL --> BG{"a card<br/>blocked?"}:::det
     BG -.-> BR["briefer:<br/>the decision<br/>brief"]:::llm
+    X --> UG{"an open blocked sub, and<br/>ended turns newer than<br/>its block or last check?"}:::det
+    UG -.-> UN["unblocker:<br/>lift a sub-block the conversation<br/>answered in passing (<code>lift</code>, <code>hold</code>)"]:::llm
     subgraph LEGEND["legend"]
         direction LR
         LS1["·"]:::det -->|"always follows"| LS2["·"]:::det
@@ -124,14 +129,18 @@ turn's last, and the closer then runs once more at turn end to audit the
 goals the whole turn touched.
 
 There is no clock and no concurrency between these judges: one triage pass
-runs them in strict order — planner, closer, courier, propagate, grouper,
-consolidator, then distiller + briefer — so an umbrella the consolidator
-mints is distilled by the same pass, never left half-made across passes.
-The feed renders from a snapshot taken at pass start, so mid-pass
-intermediate states never flicker through. Your own actions are the one
-write the pass cannot order: they land the moment you click, journaled as
-events (cleared.jsonl, overrides/) and replayed at load, so a pass racing
-your resolve cannot lose it.
+runs them in strict order — planner, closer, unblocker, courier, propagate,
+grouper, consolidator, then distiller + briefer — so an umbrella the
+consolidator mints is distilled by the same pass, never left half-made
+across passes. The feed renders from a snapshot taken at pass start, so
+mid-pass intermediate states never flicker through. Your own actions are
+the one write the pass cannot order: they land the moment you click,
+journaled as events (cleared.jsonl, overrides/) and replayed at load, so a
+pass racing your resolve cannot lose it. Judges whose model call spans
+seconds (the unblocker) hold no store copy across the call: verdicts apply
+to a fresh load afterwards, and a node whose state moved on mid-call is
+skipped with a `drift-skip` row in judge-errors.jsonl — the race is
+observable, never silently absorbed.
 
 The diamond gates are the event gating: the grouper keys on the set of open
 cards (top-level ids) and the consolidator on the set of completed cards,
@@ -151,6 +160,7 @@ The board judges, with what each one reads and the ops it may emit:
 | planner | a segment's work ends | the work + the tree | `mint`, `sub`, `done`, `block`, `retitle`, `skip` |
 | placer | the planner filed under a card that has open sub-goals | that card's subtree only | pick the level inside the card |
 | closer | the turn ends | the goals this turn touched | `done`, `block`, omit (when in doubt, omit) |
+| unblocker | an open blocked sub has ended turns newer than its block (or its last check) | the sub's question + the conversation since | `lift`, `hold` (when unsure, hold) |
 | courier | a peer message arrives | the message + both sessions' trees | plant a goal + tracking node, or nothing |
 | grouper | the set of open cards changed | open top cards | nest a card, mint an umbrella, nothing |
 | consolidator | the set of completed cards changed | completed top cards | the same ops, done column |
@@ -197,7 +207,7 @@ still get their own nodes.
 
 Nothing stores "blocked" or "done" as a fact. Each node carries an
 append-only log of events, each stamped with its source (planner, closer,
-courier, nudge, interrupt, romp, user, agent) and reason; the visible state
+unblocker, courier, nudge, interrupt, romp, user, agent) and reason; the visible state
 is a fold over that log. A direct state write raises at the write site. The
 grouper and consolidator never appear as sources: they move whole subtrees,
 they never judge.
@@ -263,6 +273,6 @@ flowchart TD
 | why is this card in this state? | the node's `log` in `goals/<sid>.json`: every event has source, kind, reason, time |
 | why was this work filed here? | `placements` in the store, plus the node's `why` and `trail` |
 | why did this mint at top level? | the node's `why`: "declared in the agent's own to-do list" means the plan-sync mirror, and nesting it is the grouper's job; anything else is the planner |
-| did a judge fail or get skipped? | `judge-errors.jsonl`: every row carries judge, session, kind (parse, call, give-up, cite-miss, rate-limited, task-store, history-unreadable), and the evidence (reply tail, API message, re-arm event); rows before 2026-07-08 use the family names |
+| did a judge fail or get skipped? | `judge-errors.jsonl`: every row carries judge, session, kind (parse, call, give-up, cite-miss, rate-limited, task-store, history-unreadable, drift-skip), and the evidence (reply tail, API message, re-arm event); rows before 2026-07-08 use the family names |
 | what did a judge call cost, and when? | `judge-usage.jsonl`, per judge and session |
 | what happened to a peer message? | `timeline/messages.jsonl` by message id, plus the delivered markers in the transcript |
