@@ -469,7 +469,13 @@ class FileAdapter:
         the NEWEST message in the chat, hours out of place, while never-delivered
         task-notifications rendered as absorbed prompts at junk times (the user 2026-07-10,
         the nimbus session). The witness is universal: 0 of the live corpus's 104
-        remove-bearing transcripts lack attachments, so dropping the ledger loses nothing."""
+        remove-bearing transcripts lack attachments, so dropping the ledger loses nothing.
+
+        DEPLOY RULE: changing WHICH atoms this class emits from an existing transcript (here
+        or in atoms()) changes placement identity just like an id drift — previously-invisible
+        atoms become fresh plannable segments and dormant sessions replay them as new goals
+        (2026-07-10). Bump jd.PLACEMENTS_V in the same commit; tests/test_placements_canary.py
+        pins both dimensions."""
         atoms, emitted = [], set()
         for q in self.qatts:
             if q["ts"] is None:
