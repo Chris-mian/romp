@@ -84,12 +84,25 @@ class LintNoScatteredGuards(unittest.TestCase):
 
 
 class PlacementsMigration(unittest.TestCase):
-    def test_pre_versioning_store_adopts_without_sealing(self):
+    def test_pre_versioning_store_seals_too(self):
+        # Originally grandfathered (adopted without sealing) — no longer safe once the atom set grew
+        # (2026-07-10): an unversioned store predates versioning itself, so a revive would replay every
+        # newly-visible atom in its history as fresh goals. Sealed like any other version mismatch.
         store = {"rompUuid": SID, "nodes": {}, "placements": {SID + ":100:aa": SID + ":g1"}, "status": {}}
         changed = jd._migrate_placements(store, [SID + ":200:bb"], live={SID + ":200:bb"})
         self.assertTrue(changed)
         self.assertEqual(store["placementsV"], jd.PLACEMENTS_V)
-        self.assertNotIn(SID + ":200:bb", store["placements"], "grandfathered: ready units NOT sealed")
+        self.assertIsNone(store["placements"][SID + ":200:bb"], "sealed: revived history cannot replay")
+        self.assertEqual(store["placements"][SID + ":100:aa"], SID + ":g1", "existing keys untouched")
+
+    def test_fresh_empty_store_adopts_without_sealing(self):
+        # an unversioned store with NOTHING recorded is a brand-new session, not a pre-versioning
+        # dormant one — its first asks must plan, not seal (load_goals stamps new stores at birth)
+        store = {"rompUuid": SID, "nodes": {}, "placements": {}, "status": {}}
+        changed = jd._migrate_placements(store, [SID + ":200:bb"], live={SID + ":200:bb"})
+        self.assertTrue(changed)
+        self.assertEqual(store["placementsV"], jd.PLACEMENTS_V)
+        self.assertNotIn(SID + ":200:bb", store["placements"], "a fresh session's first ask still plans")
 
     def test_version_mismatch_seals_ready_unplaced_units(self):
         store = {"rompUuid": SID, "placementsV": jd.PLACEMENTS_V - 1, "nodes": {},

@@ -1020,7 +1020,8 @@ class SegKeyDrift(unittest.TestCase):
 
 
 def _store():
-    return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+    return {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {},
+            "placements": {}, "status": {}}
 
 
 def _mknode(s, text, parent=None, t=T0, complete=False):
@@ -2100,7 +2101,7 @@ class PostalDelegation(unittest.TestCase):
                 session = jd.parsed_session(SID, [str(tpath)], NOW)
                 peer = next(s for turn in session["turns"] for s in em.segments(turn) if jd._seg_peer(s))
                 seg_id = peer["id"]
-                store = {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+                store = {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {}, "placements": {}, "status": {}}
                 gid = None
                 if courier == "fyi":
                     store["placements"][seg_id] = "fyi"
@@ -2191,7 +2192,7 @@ class PostalDelegation(unittest.TestCase):
                 session = jd.parsed_session(SID, [str(tpath)], NOW)
                 peers = [s for turn in session["turns"] for s in em.segments(turn) if jd._seg_peer(s)]
                 self.assertGreaterEqual(len(peers), 10, "a large fyi backlog (the starvation setup)")
-                store = {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+                store = {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {}, "placements": {}, "status": {}}
                 for s in peers:                            # the courier marked every one coordination
                     store["placements"][s["id"]] = "fyi"
                 jd.save_goals(SID, store)
@@ -2253,7 +2254,7 @@ class NudgeMustResolve(unittest.TestCase):
             jd.plan_llm, jd.opener_llm = work, (lambda *a, **k: "")
             jd._group_store = lambda *a, **k: None
             try:
-                store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {},
+                store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {},
                          "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                          "nodeComplete": False, "blocked": False, "cleared": False,
                                          "trail": ["seed"], "t": T0, "mt": T0}}}
@@ -2332,7 +2333,7 @@ class NudgeMustResolve(unittest.TestCase):
             jd._group_store = lambda *a, **k: None
             try:
                 jd.GOALDIR.mkdir(parents=True)
-                jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {gid: "completed"},
+                jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {gid: "completed"},
                                     "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                                     "nodeComplete": True, "blocked": False, "cleared": False,
                                                     "trail": ["seed"], "t": T0, "mt": T0}}})
@@ -2376,7 +2377,7 @@ class OptimisticFollowupHold(unittest.TestCase):
             nodes[kid] = {"id": kid, "text": "the step", "parentId": gid,
                           "nodeComplete": True, "blocked": False, "cleared": False,
                           "trail": [], "t": T0, "mt": T0 + 5}
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "placements": {}, "status": {gid: "completed"},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {gid: "completed"},
                             "nodes": nodes})
         return gid
 
@@ -2417,7 +2418,7 @@ class OptimisticFollowupHold(unittest.TestCase):
         # sit in its subtree, exactly like Move to Working (the g593 case: the closer's block sat on a
         # grandchild, the user's reply reopened only the cited node, and the card stayed in Needs-You).
         gid, mid, leaf = SID + ":g1", SID + ":g2", SID + ":g3"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 3, "placements": {}, "status": {gid: "blocked"},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 3, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {gid: "blocked"},
                             "nodes": {gid: {"id": gid, "text": "Explain the placeholder", "parentId": None,
                                             "nodeComplete": False, "blocked": False, "cleared": False,
                                             "trail": [], "t": T0, "mt": T0},
@@ -2441,7 +2442,7 @@ class OptimisticFollowupHold(unittest.TestCase):
         # a BLOCKED goal whose last activity (mt) is OLD, so build_feed would otherwise sort its card by that
         # stale time and float it to the top of Working when a follow-up reopens it.
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {gid: "blocked"},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {gid: "blocked"},
                             "nodes": {gid: {"id": gid, "text": "Ship it", "parentId": None,
                                             "nodeComplete": False, "blocked": True, "cleared": False,
                                             "trail": [], "t": T0, "mt": T0 + 10}}})
@@ -2551,7 +2552,7 @@ class DelegationPropagation(unittest.TestCase):
 
     def _store(self, sid, nodes, seq):
         return {"rompUuid": sid, "seq": seq, "nodes": {n["id"]: n for n in nodes},
-                "placements": {}, "status": {}}
+                "placements": {}, "status": {}, "placementsV": jd.PLACEMENTS_V}
 
     def _run_propagate(self, a_store, b_store):
         """Save both stores, mock discover→[B] (only the recipient need be discovered; the sender is loaded
@@ -3587,7 +3588,7 @@ class FollowUp(unittest.TestCase):
             jd._PARSE_CACHE.clear()
 
     def _completed_top(self, gid, blocked=False):
-        return {"rompUuid": SID, "seq": 1, "status": {gid: "blocked" if blocked else "completed"},
+        return {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked" if blocked else "completed"},
                 "placements": {"s0": gid},
                 "nodes": {gid: {"id": gid, "text": "Ship the release", "parentId": None,
                                 "nodeComplete": not blocked, "blocked": blocked, "cleared": False,
@@ -3710,7 +3711,7 @@ class FollowUp(unittest.TestCase):
     def test_followup_to_missing_goal_falls_back_to_normal_placement(self):
         records = [uline(T0, "brand new thing <!-- romp-goal-id: %s:g99 -->" % SID, "u1", ps="typed"),
                    aline(T0 + 10, "did it", "a1", "u1", stop="end_turn")]
-        self._setup(records, {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}})
+        self._setup(records, {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V, "nodes": {}, "placements": {}, "status": {}})
         jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"new ask","do":"mint","text":"New thing"}]}'
         jd.run_plan(now=T0 + 5000)
         tops = [nd for nd in jd.load_goals(SID)["nodes"].values() if nd["parentId"] is None]
@@ -3721,7 +3722,7 @@ class FollowUp(unittest.TestCase):
         gid = SID + ":g1"
         td = Path(tempfile.mkdtemp()); saved = jd.GOALDIR; jd.GOALDIR = td / "goals"
         try:
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                                 "nodes": {gid: {"id": gid, "text": "Ship it", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": ["s0"], "t": T0, "mt": T0, "doneWhy": "shipped"}}})
@@ -3745,7 +3746,7 @@ class FollowUp(unittest.TestCase):
         top, kid = SID + ":g1", SID + ":g2"
         td = Path(tempfile.mkdtemp()); saved = jd.GOALDIR; jd.GOALDIR = td / "goals"
         try:
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "status": {top: "completed"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "status": {top: "completed"}, "placements": {},
                 "nodes": {
                     top: {"id": top, "text": "Ship the thing", "parentId": None, "nodeComplete": False,
                           "blocked": False, "cleared": False, "settledDone": True, "trail": ["s0"], "t": T0, "mt": T0},
@@ -3767,7 +3768,7 @@ class FollowUp(unittest.TestCase):
         top, sub = SID + ":g1", SID + ":g2"
         td = Path(tempfile.mkdtemp()); saved = jd.GOALDIR; jd.GOALDIR = td / "goals"
         try:
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "status": {top: "blocked"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "status": {top: "blocked"}, "placements": {},
                 "nodes": {
                     top: {"id": top, "text": "Build it", "parentId": None, "nodeComplete": False,
                           "blocked": True, "cleared": False, "trail": ["s0"], "t": T0, "mt": T0},
@@ -3915,7 +3916,7 @@ class DeltaScopedDistill(unittest.TestCase):
         path = Path(self._td) / (SID + ".jsonl")
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         g = SID + ":g1"
-        store = {"rompUuid": SID, "seq": 1, "lastNode": g, "placements": {},
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": g, "placements": {},
                  "status": {g: "completed"},
                  "nodes": {g: {"id": g, "text": "the goal", "parentId": None, "nodeComplete": True,
                                "blocked": False, "cleared": False, "settledDone": True,
@@ -3955,7 +3956,7 @@ class DeltaScopedDistill(unittest.TestCase):
         path = Path(self._td) / (SID + ".jsonl")
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         g = SID + ":g1"
-        store = {"rompUuid": SID, "seq": 1, "lastNode": g, "placements": {},
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": g, "placements": {},
                  "status": {g: "completed"},
                  "nodes": {g: {"id": g, "text": "the goal", "parentId": None, "nodeComplete": True,
                                "blocked": False, "cleared": False, "settledDone": True,
@@ -3999,7 +4000,7 @@ class DeltaScopedDistill(unittest.TestCase):
 
     def test_blocked_due_time_is_the_newest_subtree_block_event(self):
         g, c = SID + ":g1", SID + ":g2"
-        store = {"rompUuid": SID, "seq": 2, "placements": {}, "status": {},
+        store = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {},
                  "nodes": {g: {"id": g, "text": "top", "parentId": None, "mt": T0, "log": []},
                            c: {"id": c, "text": "sub", "parentId": g, "mt": T0,
                                "log": [{"src": "planner", "kind": "block", "ev_t": T0 + 300, "at": T0 + 301}]}}}
@@ -4114,7 +4115,7 @@ class DistillArtifacts(unittest.TestCase):
             now = T0 + 5000
             s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
             gid = SID + ":g1"
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                                 "nodes": {gid: {"id": gid, "text": "Plot the results", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4138,7 +4139,7 @@ class DistillArtifacts(unittest.TestCase):
             now = T0 + 5000
             s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
             gid = SID + ":g1"
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                                 "nodes": {gid: {"id": gid, "text": "Do it", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4194,7 +4195,7 @@ class DistillSections(unittest.TestCase):
             now = T0 + 5000
             s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
             gid = SID + ":g1"
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                                 "nodes": {gid: {"id": gid, "text": "Faster export", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4217,7 +4218,7 @@ class DistillSections(unittest.TestCase):
             now = T0 + 5000
             s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
             gid = SID + ":g1"
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                                 "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                                 "nodeComplete": False, "blocked": True, "cleared": False,
                                                 "blockWhy": "A or B?", "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4238,7 +4239,7 @@ class DistillSections(unittest.TestCase):
             now = T0 + 5000
             s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
             gid = SID + ":g1"
-            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                                 "nodes": {gid: {"id": gid, "text": "Do it", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4342,7 +4343,7 @@ class Distiller(unittest.TestCase):
         s1 = em.segments(session["turns"][0])[0]["id"]      # part one
         s3 = em.segments(session["turns"][2])[0]["id"]      # part two (turn 2 = unrelated work, NOT in the trail)
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1, s3], "t": T0, "mt": T0 + 210,
@@ -4380,7 +4381,7 @@ class Distiller(unittest.TestCase):
         session = jd.parsed_session(SID, [path], now)
         trail = [em.segments(t)[0]["id"] for t in session["turns"]]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": trail, "t": T0, "mt": T0 + 210}}})
@@ -4405,7 +4406,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4427,7 +4428,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4463,7 +4464,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4491,7 +4492,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10,
@@ -4512,7 +4513,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                             "nodeComplete": False, "blocked": True, "cleared": False,
                                             "blockWhy": "Which approach?", "trail": [s1],
@@ -4541,7 +4542,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                             "nodeComplete": False, "blocked": True, "cleared": False,
                                             "blockWhy": "Which approach — A or B?", "trail": [s1],
@@ -4564,7 +4565,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid, cid = SID + ":g1", SID + ":g2"
-        store = {"rompUuid": SID, "seq": 2, "placements": {}, "status": {}, "lastNode": gid,
+        store = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {}, "lastNode": gid,
                  "nodes": {gid: {"id": gid, "text": "Migrate the schema", "parentId": None,
                                  "nodeComplete": False, "blocked": False, "cleared": False,
                                  "trail": [s1], "t": T0, "mt": T0 + 10},
@@ -4596,7 +4597,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4626,7 +4627,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                             "nodeComplete": False, "blocked": True, "cleared": False,
                                             "blockWhy": "Which approach — A or B?", "trail": [s1],
@@ -4655,7 +4656,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                             "nodeComplete": False, "blocked": True, "cleared": False,
                                             "blockWhy": "Which approach — A or B?", "trail": [s1],
@@ -4680,7 +4681,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":" + gid_suffix
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": text, "parentId": None, "nodeComplete": False,
                                             "blocked": True, "cleared": False, "blockWhy": blockwhy,
                                             "trail": [s1], "t": T0, "mt": T0 + 10}}})
@@ -4764,7 +4765,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "G", "parentId": None, "nodeComplete": True,
                                             "blocked": False, "cleared": False, "trail": [s1], "t": T0,
                                             "mt": T0 + 10, "distilledMt": T0 + 10, "summary": "old"}}})
@@ -4783,7 +4784,7 @@ class Distiller(unittest.TestCase):
         path = self._setup(records)
         now = T0 + 5000
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Build and verify the feature", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [], "t": T0, "mt": T0 + 10}}})   # empty trail → no work
@@ -4801,7 +4802,7 @@ class Distiller(unittest.TestCase):
         path = self._setup(records)
         now = T0 + 5000
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "completed"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Umbrella goal", "parentId": None,
                                             "nodeComplete": True, "blocked": False, "cleared": False,
                                             "trail": [], "t": T0, "mt": T0 + 10,
@@ -4833,7 +4834,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid, sub = SID + ":g1", SID + ":g2"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "Ship auth", "parentId": None,
                                             "nodeComplete": False, "blocked": True, "cleared": False,
                                             "trail": [s1], "t": T0, "mt": T0 + 20},
@@ -4868,7 +4869,7 @@ class Distiller(unittest.TestCase):
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
         gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "status": {gid: "blocked"}, "placements": {},
                             "nodes": {gid: {"id": gid, "text": "G", "parentId": None, "nodeComplete": False,
                                             "blocked": True, "cleared": False, "trail": [s1], "t": T0,
                                             "mt": T0 + 10, "blockWhy": "which way?"}}})
@@ -5112,7 +5113,7 @@ class LivePickerBrief(unittest.TestCase):
         (jd.STATESDIR / (SID + ".jsonl")).write_text(json.dumps({"t": NOW - 20, "state": last_state}) + "\n")
         seg = em.segments(jd.parsed_session(SID, [str(path)], NOW)["turns"][0])[0]["id"]   # same parse _distill sees
         g = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "lastNode": g,
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": g,
                             "nodes": {g: {"id": g, "text": "Wire the picker", "parentId": None,
                                           "nodeComplete": False, "blocked": False, "cleared": False,
                                           "trail": [seg], "t": T0, "mt": T0 + 30}},
@@ -5209,7 +5210,7 @@ class SeamRegrowth(unittest.TestCase):
         return recs
 
     def _store(self, seg_id, seam_t=T0 + 100, top_text="fix A, B and C"):
-        return {"rompUuid": SID, "seq": 2, "lastNode": self.G1,
+        return {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "lastNode": self.G1, "placementsV": jd.PLACEMENTS_V,
                 "nodes": {self.G1: {"id": self.G1, "text": top_text, "parentId": None,
                                     "nodeComplete": True, "blocked": False, "cleared": False,
                                     "settledDone": True, "trail": [seg_id], "t": T0, "mt": T0 + 40}},
@@ -5282,7 +5283,7 @@ class SeamRegrowth(unittest.TestCase):
         # ownership is captured at STAMP time: the top's own trail, its children's trails, and any
         # placement filed under the subtree — all as timestamp-invariant keys.
         g1, kid = self.G1, SID + ":g2"
-        store = {"rompUuid": SID, "seq": 2, "lastNode": None,
+        store = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "lastNode": None,
                  "nodes": {g1: {"id": g1, "text": "fix A, B and C", "parentId": None, "nodeComplete": True,
                                 "blocked": False, "cleared": False, "trail": [SID + ":100:aaaa1111"], "t": T0},
                            kid: {"id": kid, "text": "a step", "parentId": g1, "nodeComplete": True,
@@ -5299,7 +5300,7 @@ class SeamRegrowth(unittest.TestCase):
 
     def test_rollup_stamps_the_seam_once_at_the_settle_transition(self):
         g = self.G1
-        store = {"rompUuid": SID, "seq": 1, "lastNode": None,
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": None,
                  "nodes": {g: {"id": g, "text": "the ask", "parentId": None, "nodeComplete": True,
                                "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 40}},
                  "placements": {}, "status": {}}
@@ -5312,7 +5313,7 @@ class SeamRegrowth(unittest.TestCase):
 
     def test_a_user_clear_never_stamps_a_seam(self):
         g = self.G1
-        store = {"rompUuid": SID, "seq": 1, "lastNode": None,
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": None,
                  "nodes": {g: {"id": g, "text": "the ask", "parentId": None, "nodeComplete": False,
                                "blocked": False, "cleared": True, "trail": [], "t": T0}},
                  "placements": {}, "status": {}}
@@ -5389,7 +5390,7 @@ class LiveReplan(unittest.TestCase):
         """A goal store whose held open segment was prompt-run-placed onto g1, with g1 optionally cleared
         out from under it (the trigger condition)."""
         g1 = SID + ":" + anchor
-        st = {"rompUuid": SID, "seq": 1, "lastNode": g1,
+        st = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": g1, "placementsV": jd.PLACEMENTS_V,
               "nodes": {g1: {"id": g1, "text": "Polish the settings page", "parentId": None,
                              "nodeComplete": False, "blocked": False, "cleared": cleared,
                              "blockWhy": "which spacing scale?", "trail": [seg], "t": T0}},
@@ -5927,7 +5928,7 @@ class OrphanedHistory(unittest.TestCase):
         path = Path(self._td) / (SID + ".jsonl")
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         g = SID + ":g1"
-        store = {"rompUuid": SID, "seq": 1, "lastNode": g,
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": g,
                  "placements": {k.format(seg=seg["id"]): g for k in placements},
                  "status": {g: "completed"},
                  "nodes": {g: {"id": g, "text": "the goal", "parentId": None, "nodeComplete": True,
@@ -5969,7 +5970,7 @@ class OrphanedHistory(unittest.TestCase):
 
     def test_done_and_block_ops_ride_the_trail(self):
         g = SID + ":g1"
-        store = {"rompUuid": SID, "seq": 1, "lastNode": None, "placements": {},
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": None, "placements": {},
                  "nodes": {g: jd.GuardedNode({"id": g, "text": "the goal", "parentId": None,
                                               "nodeComplete": False, "blocked": False, "cleared": False,
                                               "trail": [self.ORPHAN], "t": T0, "mt": T0, "log": []})}}
