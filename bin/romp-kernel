@@ -3385,6 +3385,57 @@ def _update_remote(host):
     return False, (a.stderr or aout or "remote apply failed").strip()[:180]
 
 
+def _start_remote(host):
+    """Start a downed remote kernel, THROUGH the update mechanism first (the user 2026-07-10: an
+    ssh-reachable host with no kernel answering gets an explicit ASK — the popover's Start button —
+    and accepting it must also bring the remote to the latest code, never boot stale code). Two legs:
+      1. _update_remote — on a sync it already restarts/boots the kernel via the manager; on
+         "already up to date" it touches nothing. A refusal (dirty/diverged/no clone) fails LOUDLY
+         here: resolving that beats silently booting old code.
+      2. If the kernel still isn't answering (the up-to-date path), _start_remote_kernel + the same
+         port wait attach's bootstrap uses.
+    Refreshes the stored token after boot (a first-ever kernel just wrote its serve-token).
+    Returns (ok, detail); mirrors _update_remote's contract."""
+    host = str(host or "").strip()
+    if not host:
+        return False, "no host"
+    with _remotes_lock:
+        r = _remotes.get(host)
+        kport = int((r or {}).get("kernel_port") or _REMOTE_KERNEL_PORT)
+        if r:
+            # `booting` holds the row's phase against the supervisor's tick — the poll still sees
+            # no-kernel until the boot lands and would flicker the row back to red mid-Start
+            r["status"], r["detail"], r["booting"] = "starting", "updating + starting the kernel", True
+    def _fail(detail):
+        with _remotes_lock:
+            rr = _remotes.get(host)
+            if rr:
+                rr["status"], rr["detail"], rr["booting"] = "no-kernel", detail, False
+        return False, detail
+    ok, detail = _update_remote(host)
+    if not ok:
+        return _fail(detail)
+    if not _remote_kernel_up(host, kport):
+        # the already-up-to-date path: nothing synced, so _update_remote (re)started nothing
+        started, d2 = _start_remote_kernel(host)
+        if not started:
+            return _fail(d2)
+        detail = detail + " + started the kernel"
+    deadline = time.time() + _BOOT_WAIT_S
+    while time.time() < deadline and not _remote_kernel_up(host, kport):
+        time.sleep(1.0)
+    if not _remote_kernel_up(host, kport):
+        return _fail("started romp on %s but its kernel port never answered — check its kernel.log" % host)
+    token = _fetch_remote_token(host)
+    with _remotes_lock:
+        rr = _remotes.get(host)
+        if rr and token:
+            rr["token"] = token
+        if rr:
+            rr["detail"], rr["booting"] = "", False   # healthy — the supervisor's next poll flips it to 'up'
+    return True, detail
+
+
 def _tunnel_supervisor():
     """Keep attached tunnels alive (re-spawn a dead ssh), refresh status, and learn which session ids live on
     each host by polling its kernel's /sessions THROUGH the -L tunnel — the host↔sid map the wake-router uses
@@ -3423,15 +3474,16 @@ def _tunnel_supervisor():
                     if r["host"] not in _remotes:
                         continue
                     st = _tunnel_status(_tunnel_proc_alive(r), up, sids is not None)
-                    if not (st == "down" and r.get("status") == "error"):
-                        r["status"] = st                   # keep a richer spawn-error label over plain 'down'
+                    if not (st == "down" and r.get("status") == "error") and not r.get("booting"):
+                        r["status"] = st                   # keep a richer spawn-error label over plain 'down';
+                        #                                    a Start in flight (`booting`) owns the row's phase
                     if st == "up":
                         r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff
                         if (r.get("detail") or "").startswith("no kernel answering"):
                             r["detail"] = ""               # the no-kernel note heals the moment it answers
-                    elif st == "no-kernel":
-                        r["detail"] = ("no kernel answering through the tunnel — start romp on %s "
-                                       "(or re-attach to bootstrap it)") % r["host"]
+                    elif st == "no-kernel" and not r.get("booting"):
+                        r["detail"] = ("no kernel answering through the tunnel — Start pushes this "
+                                       "machine's romp to %s and boots it") % r["host"]
                     if sids is not None:
                         r["sids"] = sids
                     if rsha is not None:
@@ -10526,7 +10578,7 @@ if(mru&&hs.indexOf(mru)>=0){hs=[mru].concat(hs.filter(function(h){return h!==mru
 hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+(h===mru?' \\u00b7 recent':'')+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
 var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
-function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error';}   // mid-attach (authorizing/connecting)
+function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (its Start button fast-polls on click)
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];icon.classList.toggle('on',ts.some(function(t){return t.status==='up';}));   // glow accent-blue while a remote is connected
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count
@@ -10546,12 +10598,22 @@ var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status
 // pushes THIS machine's committed build to it + restarts it, peer-to-peer (the user 2026-07-04). Else its sha.
 var ver=t.outOfDate?' \\u00b7 <span class=rnet-old>behind</span>':(t.kernelSha?' \\u00b7 <span class=rnet-sha>'+t.kernelSha+'</span>':'');
 var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s romp to '+t.host+' + restart it\">Push</button>':'';
+// ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
+// pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
+// a stopped kernel may be stopped on purpose; the click is the consent.
+var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"Update '+t.host+' to this machine\\u2019s romp, then start its kernel\">Start</button>':'';
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-upd+'<button data-h=\"'+t.host+'\">Detach</button>';
+upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
 list.appendChild(row);});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
 b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
+list.querySelectorAll('button[data-s]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-s');
+b.disabled=true;b.textContent='Starting\\u2026';schedule(600);   // fast poll so the 'starting' phase shows live
+fetch('/tunnels/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.ok){b.textContent='Started';schedule(1000);}   // the supervisor's next poll flips the row to connected
+else{b.disabled=false;b.textContent='Retry';alert('Start on '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Start on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-u]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-u');
 b.disabled=true;b.textContent='Pushing\\u2026';
 fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
@@ -11518,6 +11580,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 ok, detail = _update_remote(host)
+                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
+            if u.path == "/tunnels/start":
+                # START a downed remote kernel — the popover's explicit ASK for an ssh-reachable host
+                # whose kernel isn't answering (status no-kernel). Updates it to this machine's committed
+                # code first, then boots (see _start_remote). Body: {"host": <ssh alias>}. Blocking ssh is
+                # fine on the threaded server; the row shows 'starting' (held by `booting`) meanwhile.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                ok, detail = _start_remote(host)
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):

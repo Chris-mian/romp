@@ -1,0 +1,143 @@
+"""Start a downed remote kernel from the popover (the user 2026-07-10): an ssh-reachable host whose
+kernel isn't answering ('no-kernel') gets an explicit ASK — a Start button — and accepting it updates
+the remote to this machine's committed code FIRST (the p2p push, which itself reboots the kernel on a
+sync), then boots the kernel plainly when the code was already current. Never auto-starts: a stopped
+kernel may be stopped on purpose, so the click is the consent. SYNTHETIC hosts; every ssh seam stubbed."""
+import inspect
+import os
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel_start", os.path.join(BIN, "romp-kernel")).load_module()
+
+HOST = "TESTHOST"
+
+
+class StartRemote(unittest.TestCase):
+    def setUp(self):
+        self._saved = (km._update_remote, km._remote_kernel_up, km._start_remote_kernel,
+                       km._fetch_remote_token, km._BOOT_WAIT_S, km._remotes)
+        km._remotes = {HOST: {"host": HOST, "kernel_port": 7433, "local_port": 8801,
+                              "token": "", "proc": None, "status": "no-kernel", "detail": "", "sids": []}}
+        km._BOOT_WAIT_S = 2
+        self.kernel_up = {"v": False}
+        self.started = []
+        km._remote_kernel_up = lambda h, p: self.kernel_up["v"]
+        km._start_remote_kernel = lambda h: (self.started.append(h) or self._start_result())
+        km._fetch_remote_token = lambda h: "tok-fresh"
+
+    def tearDown(self):
+        (km._update_remote, km._remote_kernel_up, km._start_remote_kernel,
+         km._fetch_remote_token, km._BOOT_WAIT_S, km._remotes) = self._saved
+
+    def _start_result(self):
+        self.kernel_up["v"] = True
+        return True, "STARTED"
+
+    def test_no_host_is_a_no_op(self):
+        self.assertEqual(km._start_remote(""), (False, "no host"))
+
+    def test_up_to_date_host_gets_a_plain_boot_and_a_fresh_token(self):
+        km._update_remote = lambda h: (True, "already up to date (abc1234)")
+        ok, detail = km._start_remote(HOST)
+        self.assertTrue(ok)
+        self.assertEqual(self.started, [HOST], "nothing synced -> nothing rebooted -> plain start needed")
+        self.assertIn("started the kernel", detail)
+        r = km._remotes[HOST]
+        self.assertEqual(r["token"], "tok-fresh", "a first-ever kernel just wrote its serve-token")
+        self.assertFalse(r["booting"], "the in-flight flag clears so the supervisor owns the row again")
+        self.assertEqual(r["detail"], "")
+
+    def test_a_synced_host_reboots_via_the_update_itself(self):
+        km._update_remote = lambda h: (True, "synced to abc1234 + restarting")
+        self.kernel_up["v"] = True                        # the update's manager-ensure brought it back
+        ok, detail = km._start_remote(HOST)
+        self.assertTrue(ok)
+        self.assertEqual(self.started, [], "the sync already restarted the kernel — no second boot")
+        self.assertIn("synced", detail)
+
+    def test_a_refused_update_fails_loudly_and_never_boots_stale_code(self):
+        km._update_remote = lambda h: (False, "remote %s has uncommitted changes" % HOST)
+        ok, detail = km._start_remote(HOST)
+        self.assertFalse(ok)
+        self.assertIn("uncommitted changes", detail)
+        self.assertEqual(self.started, [], "a refused update must not fall through to booting old code")
+        r = km._remotes[HOST]
+        self.assertEqual(r["status"], "no-kernel")
+        self.assertIn("uncommitted changes", r["detail"], "the popover row carries the refusal")
+        self.assertFalse(r["booting"])
+
+    def test_a_failed_boot_surfaces_its_detail(self):
+        km._update_remote = lambda h: (True, "already up to date (abc1234)")
+        km._start_remote_kernel = lambda h: (False, "romp not installed on %s" % HOST)
+        ok, detail = km._start_remote(HOST)
+        self.assertFalse(ok)
+        self.assertIn("not installed", detail)
+
+    def test_a_port_that_never_answers_fails_after_the_wait(self):
+        km._update_remote = lambda h: (True, "already up to date (abc1234)")
+        km._start_remote_kernel = lambda h: (True, "STARTED")   # claims started, port stays dead
+        km._BOOT_WAIT_S = 0
+        ok, detail = km._start_remote(HOST)
+        self.assertFalse(ok)
+        self.assertIn("never answered", detail)
+        self.assertFalse(km._remotes[HOST]["booting"])
+
+    def test_start_marks_the_row_starting_while_in_flight(self):
+        seen = {}
+        def upd(h):
+            seen["status"], seen["booting"] = km._remotes[HOST]["status"], km._remotes[HOST]["booting"]
+            return True, "synced to abc1234 + restarting"
+        km._update_remote = upd
+        self.kernel_up["v"] = True
+        km._start_remote(HOST)
+        self.assertEqual(seen["status"], "starting", "the popover shows the boot phase, not stale no-kernel")
+        self.assertTrue(seen["booting"])
+
+
+class SupervisorRespectsBoot(unittest.TestCase):
+    def test_supervisor_defers_to_an_in_flight_start(self):
+        # the poll still sees no-kernel until the boot lands; without the `booting` guard the row
+        # flickered red mid-Start and the detail was overwritten
+        src = inspect.getsource(km._tunnel_supervisor)
+        self.assertIn('not r.get("booting")', src)
+        self.assertIn('elif st == "no-kernel" and not r.get("booting"):', src)
+
+    def test_no_kernel_detail_names_the_start_button(self):
+        src = inspect.getsource(km._tunnel_supervisor)
+        self.assertIn("Start pushes this", src, "the detail points at the popover's Start ask")
+
+
+class StartEndpoint(unittest.TestCase):
+    def test_post_tunnels_start_calls_start_remote_and_reports(self):
+        src = inspect.getsource(km)
+        self.assertIn('if u.path == "/tunnels/start":', src)
+        self.assertIn("ok, detail = _start_remote(host)", src)
+        self.assertIn("200 if ok else 502", src)
+
+
+class StartUI(unittest.TestCase):
+    def test_popover_offers_start_only_for_no_kernel_rows(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn(">Start</button>", js)
+        self.assertIn("data-s=", js)
+        self.assertIn("/tunnels/start", js)
+        self.assertIn("t.status==='no-kernel'", js, "the ask appears exactly when ssh is up but no kernel answers")
+
+    def test_start_button_acknowledges_and_fails_loudly(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("Starting\\u2026", js, "immediate acknowledgement on click")
+        self.assertIn("Start on '+h+' failed", js, "a specific, loud failure")
+
+    def test_no_kernel_is_a_settled_state_not_a_busy_phase(self):
+        # busyStatus drives the 600ms fast poll for mid-attach phases; no-kernel is settled and
+        # would otherwise fast-poll forever while a downed remote stays attached
+        self.assertIn("s!=='no-kernel'", km._LANDING_REMOTES_JS)
+
+
+if __name__ == "__main__":
+    unittest.main()
