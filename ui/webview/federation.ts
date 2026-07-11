@@ -429,6 +429,7 @@ export class FederationManager {
     if (m && m.type === "undoClear" && this.lastClearHost !== LOCAL) {
       const c = this.conns.get(this.lastClearHost);
       if (c && c.ws && c.ws.readyState === 1) c.ws.send(JSON.stringify(m));
+      else this.dropWarn(this.lastClearHost, m);
       this.lastClearHost = LOCAL;
       return;
     }
@@ -441,8 +442,17 @@ export class FederationManager {
       } else {
         const c = this.conns.get(r.host);
         if (c && c.ws && c.ws.readyState === 1) c.ws.send(JSON.stringify(r.msg));
+        else this.dropWarn(r.host, r.msg);
       }
     }
+  }
+
+  // A route to a host whose socket isn't open would otherwise VANISH — creating a session on an
+  // unreachable remote gave no feedback at all (the user 2026-07-10). Surface the drop as a local
+  // `warn` (render.ts toasts it), naming the host and the action so the user knows what didn't land.
+  private dropWarn(host: string, msg: any): void {
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "warn",
+      text: `${host} is unreachable (its kernel isn't answering) — “${(msg && msg.type) || "action"}” was not delivered` } }));
   }
 
   private ensureHost(h: string): void {

@@ -3039,6 +3039,22 @@ def _tunnel_proc_alive(r):
     return bool(p) and p.poll() is None
 
 
+def _tunnel_status(proc_alive, port_up, remote_answered):
+    """The tunnel row's TRUE status. `port_up` (the local -L listener accepting) said 'up' on its own
+    for a dead far end — ssh accepts the local connect, then resets when the remote side refuses — so a
+    downed remote kernel read as a healthy tunnel while every poll through it failed and every action
+    sent to it vanished (jetty, the user 2026-07-10). End-to-end truth is the /sessions poll itself:
+    only a remote kernel that ANSWERED this tick is 'up'; an alive tunnel with nobody answering is
+    'no-kernel' (the popover says to start romp there). Pure for tests."""
+    if not proc_alive:
+        return "down"
+    if port_up and remote_answered:
+        return "up"
+    if port_up:
+        return "no-kernel"
+    return "starting"
+
+
 def _remote_public(r):
     """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen.
     kernelSha/localSha/outOfDate let the dashboard flag a remote running older code + offer to update it."""
@@ -3406,12 +3422,16 @@ def _tunnel_supervisor():
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
-                    if _tunnel_proc_alive(r):
-                        r["status"] = "up" if up else "starting"
-                        if up:
-                            r["fails"], r["next_try"] = 0, 0   # healthy → clear the backoff
-                    elif r.get("status") != "error":
-                        r["status"] = "down"
+                    st = _tunnel_status(_tunnel_proc_alive(r), up, sids is not None)
+                    if not (st == "down" and r.get("status") == "error"):
+                        r["status"] = st                   # keep a richer spawn-error label over plain 'down'
+                    if st == "up":
+                        r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff
+                        if (r.get("detail") or "").startswith("no kernel answering"):
+                            r["detail"] = ""               # the no-kernel note heals the moment it answers
+                    elif st == "no-kernel":
+                        r["detail"] = ("no kernel answering through the tunnel — start romp on %s "
+                                       "(or re-attach to bootstrap it)") % r["host"]
                     if sids is not None:
                         r["sids"] = sids
                     if rsha is not None:
@@ -10504,7 +10524,7 @@ function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){ret
 var hs=(d&&d.hosts)||[];var mru=mruHost();
 if(mru&&hs.indexOf(mru)>=0){hs=[mru].concat(hs.filter(function(h){return h!==mru;}));}   // most-recently-connected first, not just ssh-config order
 hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+(h===mru?' \\u00b7 recent':'')+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
-var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026',down:'disconnected',error:'error'};
+var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
 function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error';}   // mid-attach (authorizing/connecting)
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
@@ -10521,7 +10541,7 @@ if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.te
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
-var dot=t.status==='up'?'background:var(--accent)':t.status==='error'?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
+var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
 // version drift: an up remote running a DIFFERENT commit than this kernel shows "behind" + a Push button that
 // pushes THIS machine's committed build to it + restarts it, peer-to-peer (the user 2026-07-04). Else its sha.
 var ver=t.outOfDate?' \\u00b7 <span class=rnet-old>behind</span>':(t.kernelSha?' \\u00b7 <span class=rnet-sha>'+t.kernelSha+'</span>':'');
@@ -11345,7 +11365,11 @@ class Handler(BaseHTTPRequestHandler):
                         "route; the refusal is final (the user can toggle its mailbox back on)"}), "application/json")
                 r = _host_for_sid(sid)
                 if r is not None:                                   # remote session → forward over its -L tunnel
-                    _remote_forward(r, "/send", {"id": sid, "text": body["text"]})
+                    res = _remote_forward(r, "/send", {"id": sid, "text": body["text"]})
+                    if res is None:                                 # the far kernel didn't answer — say so, never
+                        return self._send(200, json.dumps({"ok": False, "error":   # pretend it was delivered
+                            "the remote kernel for this session (%s) isn't answering — message not delivered"
+                            % r.get("host", "?")}), "application/json")
                     return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
                 return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble

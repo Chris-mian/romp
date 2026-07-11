@@ -3271,6 +3271,27 @@ function landToast(msg: string) {
   setTimeout(() => t.remove(), 6000);
 }
 
+// Right-side warning toast: kernel `warn` messages and federation delivery failures
+// land here, so a failed action never dies silently (the user 2026-07-10: creating a
+// session on an unreachable remote host gave no feedback at all — the kernel's warn
+// had no handler and the dropped route had no witness). Click to dismiss; fades on
+// its own otherwise. Toasts stack in #warn-toasts so bursts stay readable.
+function warnToast(msg: string) {
+  let box = document.getElementById("warn-toasts");
+  if (!box) {
+    box = el("div", "");
+    box.id = "warn-toasts";
+    document.body.appendChild(box);
+  }
+  const t = el("div", "warn-toast");
+  t.textContent = msg;
+  t.title = "click to dismiss";
+  t.addEventListener("click", () => t.remove());
+  box.appendChild(t);
+  setTimeout(() => t.classList.add("fade"), 11000);
+  setTimeout(() => t.remove(), 12000);
+}
+
 // Trailing events to re-render on each sync, in case they mutated in place
 // (e.g. a tool's output arriving after its tool_use was first shown). Earlier
 // events are immutable in an append-only transcript, so they stay cached.
@@ -5489,6 +5510,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
+  else if (m.type === "warn" && typeof m.text === "string" && m.text) warnToast(m.text);
   else if (m.type === "sessionList") { if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir; renderPicker(m.items || []); }
   else if (m.type === "browseResult" && typeof m.path === "string") {   // native Browse dialog returned a folder
     if (m.target === "gear") {                                          // the gear's "Default directory" Browse

@@ -1587,6 +1587,22 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 }
 .locate-toast.fade { opacity: 0; }
 
+/* right-side warning toasts (render.ts warnToast): kernel `warn` messages and federation
+   delivery failures — a failed action never dies silently (the user 2026-07-10: creating a
+   session on an unreachable remote gave no feedback at all). Click to dismiss. */
+#warn-toasts {
+  position: fixed; top: 44px; right: 14px; z-index: 70;
+  display: flex; flex-direction: column; gap: 8px; max-width: 340px;
+}
+.warn-toast {
+  padding: 8px 12px; border-radius: 8px; cursor: pointer;
+  background: rgba(28, 28, 28, 0.96);
+  border: 1px solid var(--vscode-errorForeground, #f48771);
+  color: var(--fg); font-size: 0.85em;
+  transition: opacity 0.7s ease;
+}
+.warn-toast.fade { opacity: 0; }
+
 /* INTERRUPTING… chip (the user 2026-07-02): the stop is in flight — busy-yellow like working (it still
    is, briefly) but dimmed and static (no pulse, no timer); clears to READY on its own when the stop lands. */
 .chip-interrupting { background: var(--st-working-bg); color: var(--st-working-fg, #332600); opacity: 0.75; }
