@@ -21,8 +21,9 @@ test("a blocked/done node's mark+time deep-link to where it RESOLVED (node.mt), 
   // user's message." The mark + the time zones send node.mt (the block/done segment) with anchor:"work",
   // so the chat lands on the ASSISTANT turn. (Only the TEXT zone, goMsg, lands on the user's message.)
   // auth !== "open" rider (plan-sync authoritative tier): an agent's own OPEN to-do item is never
-  // "resolved" even if a judge flat-DONE'd its umbrella — the agent's list is authoritative.
-  assert.match(FEED, /const resolved = \(node\.status === "done" \|\| node\.status === "question"\) && node\.auth !== "open"/);
+  // "resolved" even if a judge flat-DONE'd its umbrella — the agent's list is authoritative. And a
+  // rolled-up qderived question ancestor is not resolved either: the block landed on a descendant.
+  assert.match(FEED, /const resolved = \(node\.status === "done" \|\| \(node\.status === "question" && !node\.qderived\)\) && node\.auth !== "open"/);
   assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
   assert.match(FEED, /goWork = .*showOnTimeline".*t: resolveT, anchor: "work"/, "the mark/time zones land on the assistant action");
   assert.doesNotMatch(FEED, /goWork = .*anchor: "prompt"/, "the work zones must NOT land on the user's message");

@@ -919,6 +919,39 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._session_awaiting(SID, str(self.tpath), True),
                          "Waiting on 2 background jobs it launched.", "the genuine awaiting badge still shows")
 
+    def test_blocked_rolls_up_the_card_tree_so_a_buried_block_is_visible(self):
+        # nimbus (the user 2026-07-11): the card sat in Needs-you off a block BURIED two levels down,
+        # invisible under a collapsed row. The tree now mirrors the judge's any_blocked: every non-done
+        # ancestor of an open block reads "question" — the actual ask keeps qderived=False, its rolled-up
+        # ancestors carry qderived=True (tooltips point down; no action buttons there) — and a block inside
+        # a COMPLETED subtree stays moot (no rollup out of it), exactly like rollup_status.
+        top, mid, leaf = SID + ":top", SID + ":mid", SID + ":leaf"
+        dtop, dleaf = SID + ":dtop", SID + ":dleaf"
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 5, "lastNode": top,
+            "nodes": {
+                top: gn(top, "enable the autonomous run", None),
+                mid: gn(mid, "design the power setup", top),
+                leaf: gn(leaf, "what is the pack's mAh rating?", mid, blocked=True,
+                         blockWhy="what is the pack's mAh rating?", mt=T0 + 9),
+                dtop: gn(dtop, "a finished branch", top, nodeComplete=True),
+                dleaf: gn(dleaf, "a moot question inside it", dtop, blocked=True),
+            },
+            "placements": {}, "status": {top: "blocked"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        by = {n["id"]: n for n in card["tree"]}
+        self.assertEqual((by[leaf]["status"], by[leaf].get("qderived")), ("question", False),
+                         "the actual ask is a question in its OWN right")
+        self.assertEqual((by[mid]["status"], by[mid].get("qderived")), ("question", True),
+                         "its ancestor wears the rolled-up ⏸ so a collapsed row still shows the block")
+        self.assertEqual((by[top]["status"], by[top].get("qderived")), ("question", True))
+        self.assertEqual(by[dtop]["status"], "done",
+                         "a completed subtree short-circuits: its inner block is moot (any_blocked mirror)")
+
     def test_feed_postal_floor_overrides_a_stale_block(self):
         # A session with an unanswered outbound to a LIVE peer is awaiting a delegation, not stalled — so a
         # STALE soft block on its top yields to that postal wait-for signal → awaiting (working column), and
@@ -949,12 +982,12 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNotNone(card["waitingOn"], "the 'Awaiting <peer>' chip is restored (no longer suppressed by the block)")
         self.assertEqual(card["waitingOn"]["peerSid"], "peerY")
 
-    def test_leftover_bg_shell_task_is_not_awaiting_but_a_subagent_is(self):
-        # A leftover run_in_background SHELL task must NOT pin an idle session to a working flavor (the
-        # user 2026-07-07: "these background tasks are just leftover things that maybe never finish").
-        # Only real SUBAGENTS leave an idle session 'awaiting'. This transcript holds an unresolved
-        # run_in_background Bash launch; with no awaiting overlay and no live subagents the session reads
-        # NOT awaiting. Add a live subagent (source 0) and it flips to awaiting.
+    def test_transcript_only_bg_task_is_not_awaiting_but_live_sources_are(self):
+        # A run_in_background launch visible ONLY in the transcript must NOT pin an idle session to a
+        # working flavor (the user 2026-07-07: a leftover scrape ghost "maybe never finishes"). The LIVE
+        # sources do: a real subagent (source 0), and — since the user reversed the shell-task exclusion
+        # on 2026-07-11 (nimbus's 20-minute campaign timer) — the backend's live bg-task set fed by the
+        # CLI's task lifecycle stream (source 0.5), whose why carries the task's own description.
         recs = [{"type": "user", "uuid": "u1", "timestamp": iso(T0),
                  "message": {"role": "user", "content": [{"type": "text", "text": "kick off a long job"}]}},
                 {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": iso(T0 + 5),
@@ -963,14 +996,28 @@ class ViewBuilder(unittest.TestCase):
                       "input": {"command": "tail -f server.log", "run_in_background": True}}]}}]
         p = Path(self.td.name) / "bgshell.jsonl"
         p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        timer = {"desc": "20-minute timer for campaign-start check", "type": "local_bash",
+                 "since": T0 + 9, "toolUseId": "tu_bg", "lastTool": ""}
         saved = km._tmux_sessions
         try:
-            km._tmux_sessions = lambda: {}                         # no live subagents
+            km._tmux_sessions = lambda: {}                         # no live sources at all
             self.assertIsNone(km._session_awaiting(SID, str(p), True),
-                              "a leftover run_in_background shell task alone is NOT awaiting")
-            km._tmux_sessions = lambda: {SID: {"subagents": 2}}    # source 0: real subagents in flight
+                              "a transcript-scrape bg launch alone is NOT awaiting (no live signal)")
+            # source 0: real subagents in flight — the snapshot carries the live LIST (a {"type","since"}
+            # per agent); the why counts via len() (the pre-fix code %d-formatted the list itself)
+            km._tmux_sessions = lambda: {SID: {"subagents": [{"type": "", "since": T0}, {"type": "", "since": T0}]}}
             self.assertEqual(km._session_awaiting(SID, str(p), True), "2 background agents still working",
                              "a live subagent DOES leave an idle session awaiting (a working flavor)")
+            # source 0.5: the live bg-task set — one task shows its description verbatim
+            km._tmux_sessions = lambda: {SID: {"bgTasks": [timer]}}
+            self.assertEqual(km._session_awaiting(SID, str(p), True),
+                             "waiting on a background task: 20-minute timer for campaign-start check")
+            km._tmux_sessions = lambda: {SID: {"bgTasks": [timer, dict(timer, desc="power watcher")]}}
+            self.assertEqual(km._session_awaiting(SID, str(p), True),
+                             "waiting on 2 background tasks — 20-minute timer for campaign-start check, …")
+            # subagents outrank bg tasks when both run (they're the bigger dispatch)
+            km._tmux_sessions = lambda: {SID: {"subagents": [{"type": "", "since": T0}], "bgTasks": [timer]}}
+            self.assertEqual(km._session_awaiting(SID, str(p), True), "1 background agent still working")
         finally:
             km._tmux_sessions = saved
 
@@ -1250,7 +1297,7 @@ class ViewBuilder(unittest.TestCase):
         # the LIVE SubagentStart/Stop count rides the backend snapshot (the designed signal) — 2 agents running
         km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None,
-                                           "subagents": 2}}
+                                           "subagents": [{"type": "", "since": 1}, {"type": "", "since": 2}]}}
         c = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g1]
         self.assertIn("2 background agents", (c.get("awaiting") or {}).get("why") or "",
                       "the card says the agents are still working — the session is in motion")
@@ -1277,7 +1324,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(ov and ov.get("awaiting"), "the overlay alone still reads superseded (the hole)")
         km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None,
-                                           "subagents": 2}}
+                                           "subagents": [{"type": "", "since": 1}, {"type": "", "since": 2}]}}
         self.assertIn("2 background agents", km._session_awaiting(SID, str(self.tpath), True) or "",
                       "the live SubagentStart/Stop count restores the truth over the superseded overlay")
 

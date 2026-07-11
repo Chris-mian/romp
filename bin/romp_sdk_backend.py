@@ -710,7 +710,13 @@ class SdkSession:
         self._subagents: dict[str, dict] = {}        # LIVE Task-spawned subagents: agent_id -> {"type","since"}. Fed
         #   by the SubagentStart/SubagentStop hooks — the exact, event-based "what's running right now" signal the
         #   tmux backend never had. Keeps the session 'working' while any run and surfaces a live count on the lane.
+        self._bg_tasks: dict[str, dict] = {}         # LIVE background tasks (a run_in_background Bash, a bg agent):
+        #   task_id -> {"desc","type","since","toolUseId","lastTool"}. Fed by the CLI's DESIGNED task lifecycle
+        #   stream (system/task_started..task_updated — see _on_message), terminal statuses clear — so an idle
+        #   session waiting on a timer/watcher it launched reads AWAITING instead of plain idle (the user
+        #   2026-07-11: nimbus's 20-minute campaign timer). Replaces transcript-scrape liveness for SDK sessions.
         self._sub_lock = threading.Lock()            #   hooks mutate on the loop thread; snapshot() reads from the kernel thread
+        #                                                (guards _subagents AND _bg_tasks)
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
         self._model_pending = ""                     # target ALIAS while a /model switch is resolving: the badge shows
         #   animated dots until the LIVE model actually reflects the pick (the user 2026-07-03: a switch stamped the
@@ -1249,6 +1255,14 @@ class SdkSession:
             }
             self._mark("retrying")
             self.backend._poke()
+        elif isinstance(msg, SystemMessage) and msg.subtype in (
+                "task_started", "task_progress", "task_updated", "task_notification"):
+            # The CLI's DESIGNED background-task lifecycle (task_started → task_progress* →
+            # task_updated/task_notification): the authoritative live set of what this session has running
+            # in the background — a run_in_background Bash timer/watcher, a backgrounded agent. Duck-typed
+            # off subtype+data (the typed subclasses need a newer SDK; the raw payload is identical).
+            # Terminal statuses clear from EITHER message kind — a TaskStop can suppress the notification.
+            self._on_task_event(msg.subtype, msg.data if isinstance(msg.data, dict) else {})
         elif isinstance(msg, AssistantMessage):
             if self.retrying and self.retry_count:     # first real output after a storm → durable recovery marker
                 append_retry_recovered(self.backend.state_dir, self.sid, self.retry_count)
@@ -1435,13 +1449,14 @@ class SdkSession:
     # ---- the awaiting overlay (bugz's event-model overlay) ----
 
     async def _stop_hook(self, inp, tool_use_id, context):
-        """At turn-end, CLEAR the awaiting overlay (awaiting:false). A leftover `run_in_background`
-        SHELL task — a dev server, a `tail -f`, a hung command the agent backgrounded and never reaped —
-        is NOT awaiting-worthy work (the user 2026-07-07): it must not pin an idle, available session to
-        a working flavor. Those tasks are surfaced in the #bg-tasks box for transparency but never drive
-        status; only real SUBAGENTS (SubagentStart/Stop → live snapshot) leave an idle session 'working'.
-        So we ignore inp['background_tasks'] here and just clear any stale awaiting:true — keeping the
-        overlay channel available should a genuine idle-awaiting signal ever want it."""
+        """At turn-end, CLEAR the awaiting overlay (awaiting:false). Background SHELL tasks don't ride
+        this overlay: they were excluded from awaiting entirely on 2026-07-07 (a leftover dev server /
+        `tail -f` pinned an idle session to a working flavor off a lossy transcript scrape), and when the
+        user reversed that on 2026-07-11 (nimbus's 20-minute campaign timer deserved an 'awaiting' read)
+        the signal came from the CLI's DESIGNED task lifecycle stream instead — the live _bg_tasks set
+        (see _on_task_event), terminal-status-cleared, no overlay records needed. So this hook still
+        ignores inp['background_tasks'] and just clears any stale awaiting:true — keeping the overlay
+        channel available for signals that need durability across a backend restart."""
         append_awaiting(self.backend.state_dir, self.sid, False)
         self.backend._poke()
         return {}
@@ -1475,6 +1490,45 @@ class SdkSession:
         mutate on the loop thread; snapshot() reads on the kernel thread)."""
         with self._sub_lock:
             return sorted((dict(v) for v in self._subagents.values()), key=lambda d: d.get("since") or 0)
+
+    # ---- background-task tracking (the CLI's task lifecycle stream) ----
+
+    _TERMINAL_TASK = frozenset(("killed", "failed", "stopped", "completed"))
+
+    def _on_task_event(self, subtype: str, d: dict):
+        """One system/task_* lifecycle message → the live _bg_tasks set. task_started adds; task_progress
+        refreshes (and SELF-HEALS an unknown id — a backend that attached mid-task still converges);
+        task_notification always ends its task; task_updated ends it only on a terminal patch.status.
+        Pokes a push only when the set actually changed, so progress chatter stays cheap."""
+        tid = str(d.get("task_id") or "")
+        if not tid:
+            return
+        changed = False
+        with self._sub_lock:
+            if subtype in ("task_started", "task_progress"):
+                entry = self._bg_tasks.get(tid)
+                if entry is None:
+                    self._bg_tasks[tid] = entry = {"desc": "", "type": d.get("task_type") or "",
+                                                   "since": int(time.time()),
+                                                   "toolUseId": d.get("tool_use_id") or "", "lastTool": ""}
+                    changed = True
+                if d.get("description"):
+                    entry["desc"] = str(d.get("description"))
+                if d.get("last_tool_name"):
+                    entry["lastTool"] = str(d.get("last_tool_name"))
+            else:
+                status = (d.get("status") if subtype == "task_notification"
+                          else (d.get("patch") or {}).get("status") if isinstance(d.get("patch"), dict) else None)
+                if subtype == "task_notification" or (isinstance(status, str) and status in self._TERMINAL_TASK):
+                    changed = self._bg_tasks.pop(tid, None) is not None
+        if changed:
+            self.backend._poke()
+
+    def _live_bg_tasks(self) -> list:
+        """The background tasks running RIGHT NOW: [{"desc","type","since","toolUseId","lastTool"}], oldest
+        first. Copied under the lock, like _live_subagents."""
+        with self._sub_lock:
+            return sorted((dict(v) for v in self._bg_tasks.values()), key=lambda d: d.get("since") or 0)
 
     # ---- snapshot for live_sessions() ----
 
@@ -1512,7 +1566,9 @@ class SdkSession:
                 "interrupting": bool(self._interrupted),   # a user interrupt is IN FLIGHT: set at dispatch,
                 #   cleared EXACTLY when the aborted turn's ResultMessage settles → the kernel holds the chip +
                 #   feed badge on 'interrupting' across that whole window, no dependence on the flickering tail
-                "subagents": subs}   # live Task subagents (count + types) → lane affordance; [] when none
+                "subagents": subs,   # live Task subagents (count + types) → lane affordance; [] when none
+                "bgTasks": self._live_bg_tasks()}   # live background tasks (task lifecycle stream) → an idle
+                #   session waiting on a timer/watcher reads AWAITING, why = the task's description; [] when none
 
 
 # ---------------------------------------------------------------------------

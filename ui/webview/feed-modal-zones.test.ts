@@ -81,7 +81,8 @@ test("an OPEN node no longer shows a creation 'why' line (removed 2026-06-27 —
 });
 
 test("modal BLOCKED node: white-on-red 'Blocked' chip + red '?' in a red ring; tooltip says 'marked blocked' (the user 2026-06-17)", () => {
-  assert.match(FEED, /meta\.textContent = node\.status === "question" \? "Blocked"/);
+  // rolled-up ancestors (qderived) say "Blocked inside"; the actual ask says "Blocked" (the user 2026-07-11)
+  assert.match(FEED, /meta\.textContent = node\.status === "question" \? \(node\.qderived \? "Blocked inside" : "Blocked"\)/);
   assert.doesNotMatch(FEED, /"needs you" :/);                                  // the old amber label is gone
   // the BLOCKED label is a white-on-red chip (same red as the feed's Blocked column header)
   assert.match(CSS, /\.st-question \.ftree-meta \{[^}]*background: #c0392b;[^}]*color: #ffffff/);
@@ -89,6 +90,6 @@ test("modal BLOCKED node: white-on-red 'Blocked' chip + red '?' in a red ring; t
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*width: 13px/);
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*border: 1\.5px solid var\(--err\)/);
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*color: var\(--err\)/);
-  // the mark/time tooltip on a blocked node says "marked blocked", not "checked off"
-  assert.match(FEED, /node\.status === "question" \? "jump to where this got marked blocked"/);
+  // the mark/time tooltip on a node blocked in its OWN right says "marked blocked", not "checked off"
+  assert.match(FEED, /node\.status === "question" && !node\.qderived \? "jump to where this got marked blocked"/);
 });

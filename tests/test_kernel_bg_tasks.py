@@ -116,6 +116,25 @@ class BgTasks(unittest.TestCase):
         self.assertEqual(note["summary"], "done")
         self.assertIsNone(km._parse_task_notification("just some text"), "non-notification text → None")
 
+    def test_live_lifecycle_set_gates_the_box_for_sdk_sessions(self):
+        # the CLI's task lifecycle stream is the AUTHORITATIVE liveness source (the user 2026-07-11): a
+        # scan row survives only while its tool_use id is in the live set, so a killed/finished task drops
+        # the instant its terminal event lands — and live=[] (no tasks) empties the box even if the
+        # transcript still reads 'running'. live=None (tmux / backend mid-restart) keeps the scan verdict.
+        path = _write([_launch(), _launch(tid="tu_watch", desc="power watcher")])
+        try:
+            live_one = [{"desc": "Restart server after test", "type": "local_bash",
+                         "since": 1, "toolUseId": TUSE, "lastTool": ""}]
+            res = km._bg_tasks(path, live=live_one)
+            self.assertEqual([t["id"] for t in res["tasks"]], [TUSE], "only the live task survives")
+            self.assertEqual(res["count"], 1)
+            self.assertEqual(km._bg_tasks(path, live=[])["count"], 0,
+                             "an EMPTY live set is authoritative: nothing is running")
+            self.assertEqual(km._bg_tasks(path, live=None)["count"], 2,
+                             "no live info (tmux / no snapshot) → the transcript scan stands")
+        finally:
+            os.unlink(path)
+
     def test_chat_body_hosts_the_box_between_the_transcript_and_the_composer(self):
         body = km._chat_body()
         self.assertIn('id="bg-tasks"', body)

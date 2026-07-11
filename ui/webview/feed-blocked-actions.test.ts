@@ -13,8 +13,9 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 test("(A) a blocked sub's 'Done' button crosses it off — posts nodeOverride op:resolve (immediate-apply, no draft)", () => {
-  // gated on a REAL blocked sub: not a dim repeat, status question, not a handoff (those resolve in another store)
-  assert.match(FEED, /if \(!repeat && node\.status === "question" && node\.kind !== "handoff"\) \{/);
+  // gated on a REAL blocked sub: not a dim repeat, blocked in its OWN right (never a rolled-up qderived
+  // ancestor — Done there would resolve the whole subtree), not a handoff (those resolve in another store)
+  assert.match(FEED, /if \(!repeat && node\.status === "question" && !node\.qderived && node\.kind !== "handoff"\) \{/);
   assert.match(FEED, /type: "nodeOverride", sid: it\.sid, nodeId: node\.id, op: "resolve"/);
   // a "Done" button (not the mark) carries the resolve override now
   assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-done"\)/);

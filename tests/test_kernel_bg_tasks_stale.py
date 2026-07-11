@@ -76,8 +76,11 @@ class BgTasksStale(unittest.TestCase):
         self.assertIsNone(km._sdk_spawned_at(SID))
 
     def test_build_session_wires_spawned_at(self):
+        # spawned_at stays the tmux/no-snapshot fallback; an SDK session's box is gated by the backend's
+        # LIVE task-lifecycle set (the user 2026-07-11) — both ride the same call.
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn('_bg_tasks(sess["path"], _sdk_spawned_at(sid))', src)
+        self.assertIn('_bg_tasks(sess["path"], _sdk_spawned_at(sid),', src)
+        self.assertIn('live=(_tmux_sessions().get(str(sid)) or {}).get("bgTasks")', src)
 
 
 if __name__ == "__main__":
