@@ -30,6 +30,7 @@ interface AskTreeNode {
   anchorUuid?: string | null;                                    // EXACT turn uuid for this node's WORK target (where it resolved — an assistant turn); mark/time zones jump here. null when unresolvable
   promptAnchorUuid?: string | null;                              // EXACT turn uuid for this node's PROMPT target = the user's minting message (a user turn) → prompt-intent jumps (title, text) resolve BY ID (kernel 92e23ff)
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
+  qderived?: boolean;                                            // "question" by roll-UP (the block lives in a descendant) → tooltip says so; the actual ask carries its own ⏸ below (kernel flatten, the user 2026-07-11)
   auth?: "open" | "done";                                        // AUTHORITATIVE tier: mirrors an item on the agent's OWN to-do list → solidity=authority disc (open = bold accent ring; done = heaviest check). Absent = plain judge-inferred node.
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
@@ -803,8 +804,11 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       // ✓ blue disc (done) / ⏸ red pause (question = blocked) / empty ring (not done) — the SAME notation as the
       // ledger checklist + Fleet (the user 2026-06-24). The OPEN mark is an empty element the CSS draws as a
       // 13px hollow circle matching the done disc's size (the user 2026-07-08: the ○ glyph read too small);
-      // AUTHORITATIVE keeps the glyph, .auth-* only rings it.
+      // AUTHORITATIVE keeps the glyph, .auth-* only rings it. Blocked ROLLS UP (kernel flatten, the user
+      // 2026-07-11): an ancestor of a blocked sub wears the ⏸ too, so the block is visible even while the
+      // branch is collapsed — its tooltip points DOWN to the real ask.
       mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
+      if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";
       const txt = el("span", "fcheck-text"); txt.textContent = s.text;
       row.append(tri, mark, txt);
       // clicks match the modal tree node exactly (text → the message, checkbox → where it resolved) via the
@@ -964,9 +968,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
   if (aw && !it.waitingOn) {
     awaitingBg = true;
-    spinCaption = "Awaiting background agents";
-    spinTip = aw.why
-      ? aw.why + ". Not on you; paused until the background work lands."
+    // A background-TASK why carries the task's own description (the CLI's task lifecycle stream) — show it
+    // verbatim so the box says WHAT it's waiting on ("Waiting on a background task: 20-minute timer…", the
+    // user 2026-07-11); a subagent why keeps the classic label. The caption wraps to two lines if long.
+    const why = aw.why || "";
+    spinCaption = /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
+                                           : "Awaiting background agents";
+    spinTip = why
+      ? why + ". Not on you; paused until the background work lands."
       : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.";
   } else if (it.provisional && it.column === "working") {
     spinCaption = "Working…";
@@ -1465,7 +1474,9 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // An agentTask-OPEN node is authoritatively unchecked — never "resolved", so the mark hover can't read
   // "jump to where this got checked off" on an item the agent hasn't crossed off (the user 2026-07-01).
   // Defense-in-depth for the kernel's _agent_open_set fix: correct even if a stale build serves status:"done".
-  const resolved = (node.status === "done" || node.status === "question") && node.auth !== "open";
+  // ...and a rolled-UP question ancestor (qderived) is not itself resolved: the block landed on a
+  // descendant, so its own anchor is its mint, and the hover must not claim "marked blocked" here.
+  const resolved = (node.status === "done" || (node.status === "question" && !node.qderived)) && node.auth !== "open";
   const resolveT = (resolved && node.mt) ? node.mt : node.t;
   const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
   // prompt-intent: jump to the minting user message. But a node with no opener (an autonomous note, or an
@@ -1477,7 +1488,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   };
   if (!wire) return goWork;
   // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
-  const workTitle = node.status === "question" ? "jump to where this got marked blocked"
+  const workTitle = node.status === "question" && !node.qderived ? "jump to where this got marked blocked"
                   : resolved ? "jump to where this got checked off" : "jump to this work";
   txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
   const linkHover = (group: HTMLElement[]) => {
@@ -1524,6 +1535,8 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   if (expandable) tri.onclick = (ev) => { ev.stopPropagation(); if (collapsedNodes.has(nodeKey)) collapsedNodes.delete(nodeKey); else collapsedNodes.add(nodeKey); render(); };
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
+  // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
+  if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
   // (The node's why/blocked/done rationale hover tooltip was removed 2026-06-27 — just the goal text now.)
   if (node.who && node.who !== parentWho) {
@@ -1540,7 +1553,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   const meta = el("span", "ftree-meta");
   // a node needing the user reads as "Blocked" (red) — the marker + this label are the block
   // signal, distinct from a recency-tinted age (the user 2026-06-17). Other states show "(Xm ago)".
-  meta.textContent = node.status === "question" ? "Blocked" : "(" + relAge(hostNow - node.last) + ")";
+  meta.textContent = node.status === "question" ? (node.qderived ? "Blocked inside" : "Blocked") : "(" + relAge(hostNow - node.last) + ")";
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
@@ -1558,8 +1571,10 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // BLOCKED-node surgical actions in the MODAL tree (the user 2026-06-17): resolve or follow up on a
   // SPECIFIC blocked sub-goal, not just the whole card. Wired AROUND the shared wireNodeZones (which the
   // card checklist also uses) so only the modal flips — the card checklist + ledger marks stay pure-nav.
-  // Skips repeats (dim back-links) and handoff nodes (those resolve in another session's store).
-  if (!repeat && node.status === "question" && node.kind !== "handoff") {
+  // Skips repeats (dim back-links) and handoff nodes (those resolve in another session's store). A rolled-UP
+  // question ancestor (qderived — the block lives in a descendant) gets NO action buttons: "Done" there would
+  // resolve the whole subtree and "Follow up" would file the answer off-target; the actual ask below has them.
+  if (!repeat && node.status === "question" && !node.qderived && node.kind !== "handoff") {
     // The MARK stays pure NAV here (it keeps wireNodeZones → jump to where it got blocked), EXACTLY like the
     // main card — clicking a node in the modal no longer silently crosses it off, which was confusing (the
     // user 2026-06-29). Instead two explicit BUTTONS sit on the line: "Done" crosses it off, "Follow up"

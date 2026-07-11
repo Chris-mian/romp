@@ -3981,19 +3981,20 @@ _api_err_cache = {}           # path -> ((mtime, size), err|None)
 
 
 def _session_awaiting(sid, path, idle):
-    """A session AWAITING dispatched/delegated AGENT work (a WORKING flavor, the user 2026-06-22) → a
+    """A session AWAITING dispatched/delegated background work (a WORKING flavor, the user 2026-06-22) → a
     one-line 'why' for the ⏳ awaiting badge, else None. Only when IDLE — an actively producing turn is
-    just 'working'. Two EVENT-BASED sources, in order:
+    just 'working'. Three EVENT-BASED sources, in order:
       0. the backend snapshot's LIVE subagent count (SubagentStart/Stop) — genuine delegated Claude
          AGENTS in flight, held in memory, independent of any turn.
+      0.5 the backend snapshot's LIVE bg-task set — the CLI's DESIGNED task lifecycle stream
+         (task_started..task_updated/notification, terminal-status-cleared). An idle session waiting on a
+         timer/watcher it launched is in motion, not on you (the user 2026-07-11: nimbus set a 20-minute
+         campaign timer and read as plain idle + a stale Needs-you). This REVERSES the 2026-07-07
+         exclusion, which guarded against the old transcript scrape's ghosts ("things that maybe never
+         finish") — the lifecycle set can't ghost (its tasks die with the CLI, terminals clear it), though
+         a genuinely long-lived server the agent leaves running WILL hold awaiting until it's stopped;
+         accepted, refinement noted (gate on tasks launched as the turn's closing act if it misfires).
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
-
-    NOT a source (the user 2026-07-07): a leftover `run_in_background` SHELL task — a dev server, a
-    `tail -f`, a hung command the agent backgrounded and never reaped. Those are the "things that maybe
-    never finish"; pinning an idle, available session to a working flavor off one is a false signal
-    (interrupt only when the human is the bottleneck). They're surfaced in the #bg-tasks box for
-    transparency but never drive status — so the producers write awaiting:false for them, and the old
-    transcript STOPGAP (_inflight_bg_tool) is gone. Only real subagents leave an idle session 'working'.
     Postal peer-waits are handled separately in build_feed."""
     if not idle:
         return None
@@ -4004,9 +4005,20 @@ def _session_awaiting(sid, path, idle):
     # agents are still running, falsely clearing the verdict; the API-error floor then painted a red
     # "API error" + "stalled" card over a session with two agents mid-flight. Tmux sessions carry no
     # subagents field → None → fall through unchanged.
-    n = (_tmux_sessions().get(str(sid)) or {}).get("subagents")
-    if n:
+    tm = _tmux_sessions().get(str(sid)) or {}
+    subs = tm.get("subagents")
+    if subs:
+        # `subagents` is the snapshot's LIST of live agents ({"type","since"}); the original source-0 code
+        # formatted the list itself with %d (latent TypeError since 3325771, masked because a subagent
+        # normally runs inside an open turn → idle=False → this branch never ran) — count via len().
+        n = len(subs)
         return "%d background agent%s still working" % (n, "" if n == 1 else "s")
+    bg = tm.get("bgTasks")
+    if bg:
+        d0 = str((bg[0] or {}).get("desc") or "").strip()
+        if len(bg) == 1:
+            return "waiting on a background task%s" % ((": " + d0) if d0 else "")
+        return "waiting on %d background tasks%s" % (len(bg), (" — " + d0 + ", …") if d0 else "")
     ov = _states_awaiting_overlay(sid)
     if ov is not None:                                # a producer is writing overlay records → trust it
         return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
@@ -4220,15 +4232,19 @@ def _sdk_spawned_at(sid):
         return None
 
 
-def _bg_tasks(path, spawned_at=None):
+def _bg_tasks(path, spawned_at=None, live=None):
     """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
     'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
     (read fresh). The cached transcript scan (mtime+size, like _background_why) holds the meta; the output is
     read live since a running task's log grows independently. {"count":0,"tasks":[]} when there are none.
-    `spawned_at` (the SDK session's current CLI spawn time) drops still-'running' tasks launched BEFORE it:
-    they died with the previous CLI and their completions can never land, so they'd count as running forever —
-    the ghost '25 background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Filtered
-    here, after the cache, since spawned_at changes without the transcript changing."""
+    `live` (an SDK session's backend bg-task set — the CLI's task lifecycle stream, terminal-status-cleared)
+    is the AUTHORITATIVE liveness gate when present: a scan row survives only while its tool_use id is in the
+    live set, so a finished/killed task drops the instant its terminal event lands — no transcript write
+    needed. `spawned_at` is the pre-lifecycle fallback gate (tmux sessions, a backend mid-restart with no
+    snapshot): it drops still-'running' tasks launched BEFORE the current CLI spawned — they died with the
+    previous CLI and their completions can never land, so they'd count as running forever — the ghost '25
+    background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Both filters run after
+    the cache, since they change without the transcript changing."""
     try:
         st = os.stat(path)
         key = (st.st_mtime, st.st_size)
@@ -4243,7 +4259,10 @@ def _bg_tasks(path, spawned_at=None):
             if len(_bgtasks_cache) > 256:
                 _bgtasks_cache.clear()
             _bgtasks_cache[path] = (key, scan)
-    if spawned_at:
+    if live is not None:
+        live_ids = {t.get("toolUseId") for t in live if t.get("toolUseId")}
+        scan = [tk for tk in scan if tk["id"] in live_ids]
+    elif spawned_at:
         scan = [tk for tk in scan if not (tk.get("t") and tk["t"] < spawned_at)]
     out = []
     for tk in scan[:30]:    # show up to 30 lines (the flat list scrolls); count below reports the true total
@@ -6326,7 +6345,10 @@ def build_session(sid, now, tmux=None):
             # top-level field is never windowed, so the branch is always resident.
             "gitBranch": sysinfo["gitBranch"],
             "events": events, "status": status, "ledger": ledger,
-            "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid)),
+            # SDK sessions gate the box on the backend's LIVE task set (the CLI's task lifecycle stream —
+            # authoritative, terminal-cleared); the spawned_at heuristic remains the tmux/no-snapshot fallback.
+            "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid),
+                                 live=(_tmux_sessions().get(str(sid)) or {}).get("bgTasks")),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
@@ -7071,6 +7093,24 @@ def build_feed(now, tmux=None):
             _fsmemo[cid] = m
             return m
 
+        # BLOCKED rolls UP the tree (the user 2026-07-11: nimbus's Needs-you traced to a block buried
+        # under a collapsed row — "shouldn't the block propagate up so I see it?"). Mirror of the judge's
+        # any_blocked: a node reads "question" when it — or any descendant chain not inside a completed
+        # subtree — holds an open block (a done subtree's block is moot, same short-circuit). This is
+        # also what the CLIENT was designed for: hasQuestionDescendant exists to find the LOWEST ? (the
+        # actual ask) beneath rolled-up ancestors.
+        _qmemo = {}
+        def _closure_blocked(nid):
+            if nid in _qmemo:
+                return _qmemo[nid]
+            nd = nodes.get(nid)
+            if not nd or nd.get("cleared") or (_closure_done(nid) and nid not in agent_open):
+                _qmemo[nid] = False
+                return False
+            res = bool(nd.get("blocked")) or any(_closure_blocked(c) for c in children.get(nid, []))
+            _qmemo[nid] = res
+            return res
+
         def flatten(nid, out, ancestor_done=False):  # AskTreeNode flat list, root first; nest via children ids
             nd = nodes[nid]
             kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
@@ -7080,12 +7120,16 @@ def build_feed(now, tmux=None):
             # Mirrors the judge's rollup_status; without it the open item read 'done' → the "checked off" hover.
             done = (explicit or _closure_done(nid) or ancestor_done) and nid not in agent_open
             derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one
-            st = "done" if done else ("question" if nd.get("blocked") else "open")
+            st = "done" if done else ("question" if _closure_blocked(nid) else "open")
             # The node's deep-link target SEGMENT: where it RESOLVED (done/blocked → its last trail seg,
             # matching the mt convention below) else where it was MINTED (open → its first trail seg).
-            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid, st in ("done", "question"))
+            # A rolled-up question ancestor is NOT itself resolved — anchor on the node's OWN state.
+            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid, done or bool(nd.get("blocked")))
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
+                        # a rolled-UP question (the block lives in a descendant, not here) — the client's
+                        # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below
+                        "qderived": st == "question" and not nd.get("blocked"),
                         # AUTHORITATIVE tier: this node mirrors an item on the agent's OWN to-do list, so its
                         # open/done is agent-asserted (solidity = authority in the disc render). None = a plain
                         # judge-inferred node. (the user 2026-07-01)

@@ -178,6 +178,15 @@ CONCURRENCY = 6                          # concurrent claude -p calls
 # toggleable for a cheap revert: set ROMP_CLOSER=0 to disable (the old ROMP_NEG_SWEEP still works). The
 # kernel runs the LIVE closer (run_close) whenever this is on.
 CLOSER_ON = os.environ.get("ROMP_CLOSER", os.environ.get("ROMP_NEG_SWEEP", "1")) != "0"
+# The UNBLOCKER: a triage-tier judge that re-examines open blocked SUB-goals against the conversation
+# that happened AFTER the block landed, and lifts a block whose question got answered in passing or made
+# moot (the user 2026-07-11: nimbus's card sat in Needs-you for hours on a buried sub asking a question
+# — pack mAh, logging preference — the very next stretch of conversation had answered; nothing ever files
+# on a dormant sub, so no _unblock_branch walk could reach it). Subs only: a blocked TOP is the card's
+# Needs-you with its own designed heal paths (a reply on the thread re-judges it; a placement under it
+# unblocks the ancestor chain). Event-gated per node (blockCheckT vs the newest ended turn), so a stable
+# session is never re-asked. Toggleable: set ROMP_UNBLOCKER=0 to disable.
+UNBLOCK_ON = os.environ.get("ROMP_UNBLOCKER", "1") != "0"
 # The GROUPER: a separate triage-tier judge that runs after the planner and reorganizes each session's
 # OPEN top goals into a few coherent trees — nesting related tops under one another or under a fresh
 # umbrella goal it mints. The planner itself no longer groups (it only places each segment's work); this
@@ -4755,6 +4764,170 @@ def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
     return n
 
 
+# ───────────────────────── the unblocker (triage tier; stale sub-blocks) ─────────────────────────
+# A sub-goal blocked on a question stays blocked until work files ON that node (or an ancestor placement
+# walks its chain) — but an answer given in passing files under whichever node the planner judges the
+# segment to serve, so a dormant blocked sub never hears it. This pass closes that gap: for each open
+# blocked sub with NEW conversation since its block (event-gated), ask whether the conversation answered
+# its question or made it moot, and lift via the same record_verdict("unblock") every other lift uses.
+UNBLOCK_HISTORY_CHARS = 9000             # the after-conversation tail shown to the unblocker (newest kept)
+
+UNBLOCK_SYS = (
+    "You review sub-goals a work session earlier marked blocked, each waiting on an answer or decision "
+    "from the user, against the conversation that happened after the block. You are a reviewer, not a "
+    "chat partner: don't act on anything, answer anything, or ask anything.\n\n"
+    "Each numbered block in <blocked-subs> is one sub-goal's open question. <conversation-since> is what "
+    "the session and the user said and did afterwards. Decide for each block whether it is still "
+    "genuinely waiting on the user, or whether the conversation has since answered its question or made "
+    "it moot (the answer was given in passing, the decision got made another way, or the work visibly "
+    "moved past it). Reply with only a JSON object (no prose, no markdown fences):\n"
+    '{"verdicts": [{"n": <block number>, "do": "lift" | "hold", "why": "..."}]}\n'
+    "- \"lift\": answered or moot. why = where the answer came from, one short plain sentence.\n"
+    "- \"hold\": still genuinely waiting on the user. why may be an empty string.\n"
+    "Judge conservatively: lift only when the conversation clearly answers the question or shows the "
+    "work proceeding past it; when unsure, hold. Output only the JSON object.")
+
+
+def unblock_llm(blocks_text, since_text):
+    """The unblocker's {"verdicts":[...]} reply from the triage-tier model over the numbered open
+    blocked subs + the conversation since the oldest of them. '' on failure (logged by _judge_run)."""
+    user = ("<blocked-subs>\n%s\n</blocked-subs>\n<conversation-since>\n%s\n</conversation-since>"
+            % (blocks_text, since_text))
+    return _judge_run(_triage_model(), UNBLOCK_SYS, user, judge="unblocker").strip()[:JUDGE_JSON_CAP]
+
+
+def _parse_unblock(raw, n):
+    """{"verdicts":[{"n","do","why"}]} → {1-based idx: why} for the LIFTS, or None if unusable.
+    Tolerant of fences/prose around the object; anything malformed or out-of-range holds (conservative)."""
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+    except Exception:
+        return None
+    verdicts = obj.get("verdicts")
+    if not isinstance(verdicts, list):
+        return None
+    out = {}
+    for v in verdicts:
+        if not isinstance(v, dict) or v.get("do") != "lift":
+            continue
+        i = v.get("n")
+        if isinstance(i, int) and 1 <= i <= n:
+            out[i] = str(v.get("why") or "").strip()
+    return out
+
+
+def _blocked_sub_candidates(store):
+    """The open blocked SUBS eligible for re-examination: blocked, not cleared, not a top (a blocked top
+    is the card's Needs-you — it has its own heal paths), and not sealed under a completed/cleared
+    ancestor (any_blocked already ignores those as moot). Each with its block-event time (the diary is
+    the authority; mt gets bumped by other touches)."""
+    nodes = store["nodes"]
+
+    def _sealed(nid):
+        x, seen = nodes.get(nid, {}).get("parentId"), set()
+        while x is not None and x not in seen:
+            seen.add(x)
+            nd = nodes.get(x)
+            if not nd:
+                return False
+            if nd.get("nodeComplete") or nd.get("cleared"):
+                return True
+            x = nd.get("parentId")
+        return False
+
+    out = []
+    for nid, nd in nodes.items():
+        if not nd.get("blocked") or nd.get("cleared") or nd.get("parentId") is None or _sealed(nid):
+            continue
+        block_t = max((e.get("ev_t") or 0 for e in (nd.get("log") or []) if e.get("kind") == "block"),
+                      default=nd.get("mt", nd.get("t", 0)))
+        out.append((nid, nd, block_t))
+    return out
+
+
+def _unblock_session(fsid, path, now):
+    """Re-examine ONE session's stale blocked subs. Event-gated per node: a sub is (re-)examined only
+    when an ENDED turn newer than max(its block, its last check) exists — blockCheckT is the watermark,
+    advanced after every examine (and on the parse give-up) so a stable session costs zero calls.
+    Returns the node ids lifted."""
+    _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
+    store = load_goals(fsid)
+    cands = _blocked_sub_candidates(store)
+    if not cands:
+        return []
+    session = parsed_session(fsid, [path], now)
+    turns = session["turns"]
+    ended_ts = [turn.get("t") or 0 for turn in turns if not _turn_open(turn, turns)]
+    newest = max(ended_ts, default=0)
+    due = [(nid, nd, bt) for nid, nd, bt in cands
+           if newest > max(bt, nd.get("blockCheckT") or 0)]
+    if not due:
+        return []
+    oldest_block = min(bt for _nid, _nd, bt in due)
+    since = "\n\n".join(_unit_text(turn["atoms"]) for turn in turns
+                        if (turn.get("t") or 0) > oldest_block and not _turn_open(turn, turns))
+    since = since[-UNBLOCK_HISTORY_CHARS:]
+    if not since.strip():
+        return []
+    blocks_text = "\n".join("%d. %s\n   blocked on: %s" % (i, nd.get("text") or "(sub-goal)",
+                                                           nd.get("blockWhy") or "(no recorded question)")
+                            for i, (_nid, nd, _bt) in enumerate(due, 1))
+    raw = unblock_llm(blocks_text, since)
+    if not raw:
+        return []                                      # call failed / paused (logged) → retry next pass
+    lifts = _parse_unblock(raw, len(due))
+    if lifts is None:
+        _log_judge_error("unblocker", fsid, "parse", note="reply tail: %r" % raw[-160:],
+                         goal=[nid for nid, _nd, _bt in due])
+        fails = store.setdefault("unblockFails", 0) + 1
+        store["unblockFails"] = fails
+        if fails >= JUDGE_FAIL_CAP:                    # give up on THIS evidence: advance the watermarks —
+            store["unblockFails"] = 0                  # a NEWER ended turn re-arms every node (event re-arm)
+            for _nid, nd, _bt in due:
+                nd["blockCheckT"] = newest
+            save_goals(fsid, store)
+        else:
+            save_goals(fsid, store)
+        return []
+    store["unblockFails"] = 0
+    lifted = []
+    for i, (nid, nd, _bt) in enumerate(due, 1):
+        nd["blockCheckT"] = newest                     # examined up to here — re-ask only on newer evidence
+        why = lifts.get(i)
+        if why is None:
+            continue
+        if record_verdict(store, nd, "planner", "unblock", newest,
+                          why=("answered in passing: " + why) if why else "answered in passing"):
+            nd["mt"] = now
+            lifted.append(nid)
+    rollup_status(store, _session_closed(session))
+    save_goals(fsid, store)
+    return lifted
+
+
+def run_unblock(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
+    """One UNBLOCKER pass (stale sub-block re-examination), triage tier, run after run_close.
+    Per-session sequential (one call covers all its due blocks), sessions concurrent."""
+    if now is None:
+        now = int(time.time())
+    fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]
+    n = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futs = {ex.submit(_unblock_session, fsid, str(path), now): fsid
+                for fsid, path, anchor, name in fleet}
+        for fut in as_completed(futs):
+            try:
+                n += len(fut.result())
+            except Exception:
+                pass
+    if verbose:
+        sys.stderr.write("romp-judge: unblocker lifted %d stale sub-blocks\n" % n)
+    return n
+
+
 def _ab_close_session(fsid, path, now):
     """Measure positive-only (a) vs positive+closer (b) completed-top-goal counts for ONE
     session WITHOUT mutating live state (sweeps a deep copy). Sweeps EVERY end-known turn (no cap, so a
@@ -5334,6 +5507,10 @@ def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ve
     placed = run_plan(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     if CLOSER_ON:
         run_close(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+    if UNBLOCK_ON:
+        # after the closer (a just-completed top's blocks are already moot) and before the distiller
+        # (a lifted block's card re-rolls to working in this same pass)
+        run_unblock(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     run_courier(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     run_propagate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)   # delegated goal done on B → check off the sender's tracking node
     if GROUPER_ON:

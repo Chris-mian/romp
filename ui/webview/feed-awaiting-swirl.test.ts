@@ -24,8 +24,10 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
   // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (moved to Working while in flight) →
   // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
-  // AWAITING: the boxed "Awaiting background agents" label, with a SPINNING swirl (the user 2026-07-04)
-  assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;\s*\n\s*spinCaption = "Awaiting background agents";/);
+  // AWAITING: a bg-TASK why shows the task's description verbatim ("Waiting on a background task: …",
+  // the user 2026-07-11); a subagent why keeps the boxed "Awaiting background agents" label (2026-07-04).
+  assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;/);
+  assert.match(FEED, /spinCaption = \/\^waiting on\/i\.test\(why\) \? why\.charAt\(0\)\.toUpperCase\(\) \+ why\.slice\(1\)\s*\n\s*: "Awaiting background agents";/);
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
   assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Analyzing…";/);

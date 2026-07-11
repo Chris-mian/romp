@@ -1990,5 +1990,66 @@ class TurnStateIsEventNotCount(unittest.TestCase):
         s._mark("waiting");    self.assertFalse(s._cli_working)
 
 
+class BgTaskLifecycle(unittest.TestCase):
+    """The CLI's DESIGNED background-task lifecycle stream (system/task_started → task_progress* →
+    task_updated/task_notification) feeds SdkSession._bg_tasks — the live 'what's running in the
+    background' set that lets an idle session waiting on a timer/watcher read AWAITING instead of plain
+    idle (the user 2026-07-11: nimbus's 20-minute campaign timer). Terminal statuses clear from EITHER
+    terminal message kind (a TaskStop can suppress the notification); a progress event self-heals an
+    unknown id, so a backend that attached mid-task still converges."""
+
+    class _Sys:                                   # stand-in for SystemMessage (isinstance + subtype + data)
+        def __init__(self, subtype, data):
+            self.subtype = subtype
+            self.data = data
+
+    def _sess(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        return sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+
+    def _feed(self, s, subtype, data):
+        s._on_message(self._Sys(subtype, data), _AssistantMessage, _ResultMessage, self._Sys)
+
+    def test_started_tracks_the_task_and_the_snapshot_carries_it(self):
+        s = self._sess()
+        self._feed(s, "task_started", {"task_id": "b1", "description": "20-minute timer for campaign-start check",
+                                       "task_type": "local_bash", "tool_use_id": "tu_1"})
+        snap = s.snapshot()["bgTasks"]
+        self.assertEqual(len(snap), 1)
+        self.assertEqual(snap[0]["desc"], "20-minute timer for campaign-start check")
+        self.assertEqual(snap[0]["toolUseId"], "tu_1", "carries the tool_use id — the join to the box's scan rows")
+
+    def test_notification_always_ends_its_task(self):
+        s = self._sess()
+        self._feed(s, "task_started", {"task_id": "b1", "description": "watcher"})
+        self._feed(s, "task_notification", {"task_id": "b1", "status": "completed",
+                                            "output_file": "/tmp/x.output", "summary": "done"})
+        self.assertEqual(s.snapshot()["bgTasks"], [])
+
+    def test_updated_ends_only_on_a_terminal_patch_status(self):
+        s = self._sess()
+        self._feed(s, "task_started", {"task_id": "b1", "description": "watcher"})
+        self._feed(s, "task_updated", {"task_id": "b1", "patch": {"end_time": 123}})   # no status → NOT terminal
+        self.assertEqual(len(s.snapshot()["bgTasks"]), 1, "a status-less patch is not a terminal event")
+        for status in ("killed", "failed", "stopped", "completed"):
+            self._feed(s, "task_started", {"task_id": "t_" + status, "description": "x"})
+            self._feed(s, "task_updated", {"task_id": "t_" + status, "patch": {"status": status}})
+        self.assertEqual([t["desc"] for t in s.snapshot()["bgTasks"]], ["watcher"],
+                         "every terminal status clears its task; the untouched one survives")
+
+    def test_progress_self_heals_an_unknown_task_and_refreshes_fields(self):
+        s = self._sess()
+        self._feed(s, "task_progress", {"task_id": "b9", "description": "long build",
+                                        "usage": {}, "last_tool_name": "Bash"})
+        snap = s.snapshot()["bgTasks"]
+        self.assertEqual((snap[0]["desc"], snap[0]["lastTool"]), ("long build", "Bash"),
+                         "a progress event for an id we never saw ADDS it (mid-task attach converges)")
+
+    def test_a_task_id_less_event_is_ignored(self):
+        s = self._sess()
+        self._feed(s, "task_started", {"description": "no id"})
+        self.assertEqual(s.snapshot()["bgTasks"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
