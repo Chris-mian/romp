@@ -333,10 +333,9 @@ class FileAdapter:
         self.fsid_of = {}        # uuid -> transcript file stem (provenance / click-to-open)
         self.seq_of = {}         # uuid -> global read order (tie-break for equal timestamps)
         self.parent_of = {}      # uuid -> parentUuid (or logicalParentUuid, for the compaction stitch)
-        self.queue_ops = []      # (ts, op, content, seq) — no uuid on disk; for absorb derivation
-        self.qattach = {}        # normalized queued_command text -> [attachment uuids] (FIFO)
-        self.qattach_text = {}   # attachment uuid -> full prompt text (markers intact, for absorbed atoms)
-        self.qattach_ts = {}     # enqueue timestamp -> [attachment uuids] (the null-content SDK join)
+        self.qatts = []          # queued_command attachment records IN FILE ORDER — the CLI's own splice
+                                 #   witnesses: {uuid, ts (the ENQUEUE timestamp the record carries),
+                                 #   text (full prompt, markers intact), seq}
         self.leaf_uuid = None
         leaf_stem = Path(leaf_path).stem
         seq = 0
@@ -360,23 +359,15 @@ class FileAdapter:
                     self.parent_of[u] = r.get("parentUuid") or r.get("logicalParentUuid")
                     if is_leaf:
                         self.leaf_uuid = u
-                if t == "queue-operation":
-                    self.queue_ops.append((parse_z(r.get("timestamp")), r.get("operation"),
-                                           r.get("content"), seq))
-                elif t == "attachment":
+                if t == "attachment":
                     a = r.get("attachment") or {}
                     if a.get("type") == "queued_command" and a.get("prompt"):
                         # the prompt can be a plain string OR a content-block LIST (the SDK injection
                         # path) — extract the TEXT either way; str() of a list keyed the Python repr,
                         # which no enqueue content ever matches (the user 2026-07-06)
                         ptext = a["prompt"] if isinstance(a["prompt"], str) else _text_of(a["prompt"])
-                        key = " ".join(ptext.split())
-                        self.qattach.setdefault(key, []).append(u)
-                        self.qattach_text[u] = ptext
-                        # ts-index too: an SDK-queued injection's enqueue op carries NO content (null),
-                        # so text-pairing can't find it — the attachment written at the SAME enqueue
-                        # timestamp is the designed join (verified on the live corpus, the user 2026-07-06)
-                        self.qattach_ts.setdefault(parse_z(r.get("timestamp")), []).append(u)
+                        self.qatts.append({"uuid": u, "ts": parse_z(r.get("timestamp")),
+                                           "text": ptext, "seq": seq})
         self._repair_compaction_stitches()
 
     def _repair_compaction_stitches(self):
@@ -444,65 +435,55 @@ class FileAdapter:
                 kept.add(u)
         return kept
 
+    def _absorbed_atom(self, full, t, seq, auid, rompuuid, postal_index):
+        """One synthesized user atom for a mid-turn splice. The atom carries the FULL text — any
+        whitespace-collapsed form is for MATCHING only (the user 2026-07-08: collapsing ate the blank
+        line between a follow-up's quoted context and the typed reply, so markdown folded the reply
+        INTO the blockquote; and the kernel's optimistic echo could never text-prune against the
+        collapsed copy, so the message rendered TWICE)."""
+        blocks = [{"type": "text", "text": full}]
+        atom = {
+            "type": "user", "uuid": auid, "session_id": rompuuid,
+            "t": t, "fsid": self.fsid_of.get(auid),
+            "parentUuid": (self.by_uuid.get(auid) or {}).get("parentUuid"),
+            "message": {"role": "user", "content": blocks},
+            "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
+            "_seq": seq,
+        }
+        if ROMP_AUTO_RE.search(full):   # an AUTO-nudge → flag it, mirroring the native user-record path
+            atom["rompAuto"] = True
+        return atom
+
     def _absorbed(self, kept, rompuuid, postal_index):
-        """Mid-turn prompts spliced into a running turn (transcript queue-operation
-        `remove`, or `popAll` clearing the whole queue at once). These have NO native
-        user line — their only uuid-bearing record is the queued_command attachment —
-        so we synthesize a user atom, anchored on that attachment when present. FIFO-
-        pairs enqueues to their resolution, exactly the client's own bookkeeping."""
-        enqueues, fifo = [], []
-        for ts, op, content, seq in self.queue_ops:
-            if op == "enqueue":
-                e = {"ts": ts, "text": " ".join((content or "").split()), "raw": content or "",
-                     "proc": None, "restype": None, "seq": seq}
-                enqueues.append(e)
-                fifo.append(e)
-            elif op in ("dequeue", "remove") and fifo:
-                e = fifo.pop(0)
-                e["proc"], e["restype"] = ts, op
-            elif op == "popAll":
-                # clear the whole queue at once: every still-queued item is spliced into
-                # the continuation == absorbed at this ts (seen once in the real corpus).
-                while fifo:
-                    e = fifo.pop(0)
-                    e["proc"], e["restype"] = ts, "remove"
-        atoms = []
-        for e in enqueues:
-            if e["restype"] != "remove":
-                continue   # dequeue -> resurfaced as a native `queued` user line; pending -> not run yet
-            text = e["text"]
-            lst = self.qattach.get(text)
-            auid = lst.pop(0) if lst else None
-            if auid is None and not text:
-                # SDK-queued injection (the user 2026-07-06): the enqueue op carries NO content (null), so
-                # the text pairing above can't see it — but the queued_command attachment is written at the
-                # SAME enqueue timestamp with the FULL prompt (romp markers intact). Join on that event.
-                # Without this the absorbed atom synthesized EMPTY: no text, no author, no rompAuto — an
-                # auto-nudge became an anonymous blank prompt (plain timeline dot, and the judge planned
-                # its reply as ordinary work instead of resolving the nudged goal).
-                tlst = self.qattach_ts.get(e["ts"])
-                auid = tlst.pop(0) if tlst else None
-                if auid is not None:
-                    text = " ".join(self.qattach_text.get(auid, "").split())
-            if auid is not None and auid not in kept:
-                continue   # the fold happened on a rewound branch
-            # The atom carries the FULL text — the whitespace-collapsed form is for MATCHING only (the
-            # user 2026-07-08: collapsing ate the blank line between a follow-up's quoted context and the
-            # typed reply, so markdown folded the reply INTO the blockquote; and the kernel's optimistic
-            # echo could never text-prune against the collapsed copy, so the message rendered TWICE).
-            full = (self.qattach_text.get(auid) if auid is not None else None) or e["raw"] or text
-            blocks = [{"type": "text", "text": full}]
-            atom = {
-                "type": "user", "uuid": auid, "session_id": rompuuid,
-                "t": e["proc"], "fsid": self.fsid_of.get(auid),
-                "parentUuid": (self.by_uuid.get(auid) or {}).get("parentUuid"),
-                "message": {"role": "user", "content": blocks},
-                "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
-                "_seq": e["seq"],
-            }
-            if ROMP_AUTO_RE.search(full):   # an AUTO-nudge → flag it, mirroring the native user-record path
-                atom["rompAuto"] = True
-            atoms.append(atom)
+        """Mid-turn prompts spliced into a running turn. The witness is the queued_command
+        ATTACHMENT record: the CLI writes one per splice, uuid-bearing and parent-chained,
+        carrying the FULL prompt text and stamped with the ENQUEUE timestamp — and writes
+        NONE for a dequeued prompt (that resurfaces as a native user line), a still-pending
+        one, or a popAll (a recall: the queue is cleared, nothing spliced). So each
+        attachment becomes one user atom, at its own timestamp: the moment the user sent it.
+
+        The queue-operation ledger is deliberately NOT read at all: its dequeue/remove
+        records are anonymous, and a CLI killed with items queued never writes their
+        resolutions — one missing resolution shifted EVERY later FIFO pairing, so a message
+        typed at 16:56 was stamped with another message's resolution time and rendered as
+        the NEWEST message in the chat, hours out of place, while never-delivered
+        task-notifications rendered as absorbed prompts at junk times (the user 2026-07-10,
+        the nimbus session). The witness is universal: 0 of the live corpus's 104
+        remove-bearing transcripts lack attachments, so dropping the ledger loses nothing."""
+        atoms, emitted = [], set()
+        for q in self.qatts:
+            if q["ts"] is None:
+                continue   # unparseable timestamp — nowhere truthful to place it
+            key = (q["ts"], " ".join(q["text"].split()))
+            if key in emitted:
+                continue   # identical (ts, text) copies are the SAME splice written more than
+                           # once (compaction/resume replays the record verbatim — x2 is common
+                           # in the live corpus, one retry storm hit x24)
+            if q["uuid"] is not None and q["uuid"] not in kept:
+                continue   # this copy sits on a rewound branch — a kept twin may still emit
+            emitted.add(key)
+            atoms.append(self._absorbed_atom(q["text"], q["ts"], q["seq"], q["uuid"],
+                                             rompuuid, postal_index))
         return atoms
 
     def atoms(self, rompuuid, postal_index):
