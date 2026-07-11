@@ -111,6 +111,36 @@ class SupervisorRespectsBoot(unittest.TestCase):
         src = inspect.getsource(km._tunnel_supervisor)
         self.assertIn("Start pushes this", src, "the detail points at the popover's Start ask")
 
+    def test_supervisor_keeps_a_specific_parked_failure(self):
+        # a refused update / dead boot parks its specific reason on the row; the generic
+        # "no kernel answering" hint must not clobber it one tick later (the user 2026-07-11)
+        src = inspect.getsource(km._tunnel_supervisor)
+        self.assertIn('if not cur or cur.startswith("no kernel answering")', src)
+
+
+class RemotesLoadHygiene(unittest.TestCase):
+    def test_booting_never_survives_a_kernel_restart(self):
+        # `booting` is the transient in-flight Start flag; persisted mid-boot and reloaded, it would
+        # freeze the row's status against the supervisor forever (nothing would ever clear it)
+        import json
+        import tempfile
+        from pathlib import Path
+        saved_file, saved_remotes = km.REMOTES_FILE, km._remotes
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                km.REMOTES_FILE = Path(td) / "remotes.json"
+                km.REMOTES_FILE.write_text(json.dumps([{
+                    "host": HOST, "kernel_port": 7433, "local_port": 8801, "token": "t",
+                    "status": "starting", "detail": "updating + starting the kernel",
+                    "booting": True, "sids": []}]))
+                km._remotes = {}
+                km._remotes_load()
+                r = km._remotes[HOST]
+                self.assertFalse(r["booting"], "the in-flight flag resets on load")
+                self.assertEqual(r["status"], "down", "status resets — the supervisor re-derives it")
+        finally:
+            km.REMOTES_FILE, km._remotes = saved_file, saved_remotes
+
 
 class StartEndpoint(unittest.TestCase):
     def test_post_tunnels_start_calls_start_remote_and_reports(self):

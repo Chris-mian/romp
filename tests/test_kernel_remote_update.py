@@ -181,6 +181,38 @@ class UpdateRemote(unittest.TestCase):
         self.assertIn('if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve"', apply, "bare romp-serve only as a last resort")
         self.assertNotIn("--refresh", apply, "does NOT rely on `romp --refresh` (needs a manager) — the stuck bug")
 
+    def test_apply_is_detached_from_the_ssh_session(self):
+        # the user 2026-07-11 (jetty): the apply kills the running kernel before booting its
+        # replacement, so an ssh drop between the two halves left the host kernel-LESS — and every
+        # banner Retry re-killed whatever a previous attempt had booted. The apply now runs in its
+        # own session (setsid, plain-bash fallback where setsid is missing), so once started the
+        # kill+boot pair always completes on the remote even if the connection dies.
+        km._remotes = {"jetty": {"host": "jetty", "kernel_port": 7433}}
+        calls = self._wire()
+        km._update_remote("jetty")
+        wrapper = next(a[-1] for a in calls if isinstance(a[-1], str) and "merge-base" in a[-1])
+        self.assertTrue(wrapper.startswith("APPLY="), "the apply script rides a variable, quoted once")
+        self.assertIn('exec setsid bash -c "$APPLY"', wrapper)
+        self.assertIn('else exec bash -c "$APPLY"', wrapper, "hosts without setsid still work")
+
+    def test_apply_timeout_says_the_restart_keeps_running(self):
+        # the local 60s confirmation window can expire while a slow host is still mid-restart; the
+        # detached apply keeps going, so the message must say that instead of implying a dead host
+        def fake(argv, **kw):
+            if argv[0] == "git" and "rev-parse" in argv:
+                return _R(out=self.LFULL)
+            if argv[0] == "git" and "push" in argv:
+                return _R()
+            cmd = argv[-1]
+            if "for d in" in cmd:
+                return _R(out="DIR:/home/u/romp\nHEAD:%s\nDIRTY:" % self.RHEAD)
+            raise km.subprocess.TimeoutExpired(argv, 60)
+        km.subprocess.run = fake
+        ok, detail = km._update_remote("jetty")
+        self.assertFalse(ok)
+        self.assertIn("keeps", detail)
+        self.assertIn("running", detail)
+
 
 class UpdateEndpoint(unittest.TestCase):
     def test_post_tunnels_update_calls_update_remote_and_reports(self):
