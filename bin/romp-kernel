@@ -3088,6 +3088,8 @@ def _remotes_load():
                 continue
             r = dict(row)
             r["proc"], r["status"] = None, "down"
+            r["booting"] = False       # transient in-flight Start flag — persisted mid-boot it would
+            #                            freeze the row's status against the supervisor forever
             r.setdefault("sids", [])
             r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
             r.setdefault("local_port", _free_port())
@@ -3367,8 +3369,21 @@ def _update_remote(host):
         'if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null &  sleep 1; fi; '
         'echo "SYNCED:$NEW"'
     ) % (shlex.quote(rdir), _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, kport)
+    # The apply KILLS the running kernel before booting its replacement, so it must be immune to the
+    # ssh dying between the two halves — exactly what a flaky link does (jetty, the user 2026-07-11:
+    # every drop mid-apply left the host kernel-LESS, and each banner Retry re-killed whatever a
+    # previous attempt had managed to boot). `setsid` puts the apply in its own session, so an ssh
+    # disconnect (or the local 60s timeout) no longer terminates it: the kill+boot pair always
+    # completes on the remote. stdout still flows while the connection lives (the SYNCED tag); only
+    # NOROMP-class early echoes precede the kill, so a post-drop SIGPIPE can at worst end the shell
+    # AFTER the boot has been launched. Falls back to plain bash where setsid doesn't exist (macOS).
+    guarded_apply = ('APPLY=%s; if command -v setsid >/dev/null 2>&1; then exec setsid bash -c "$APPLY"; '
+                     'else exec bash -c "$APPLY"; fi' % shlex.quote(apply_cmd))
     try:
-        a = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, apply_cmd], capture_output=True, text=True, timeout=60)
+        a = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, guarded_apply], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, ("pushed, but confirming the restart timed out — the detached restart keeps "
+                       "running on %s; check the popover in a minute" % host)
     except Exception as e:
         return False, "pushed, but the remote reset/restart failed: " + str(e)[:150]
     aout = (a.stdout or "").strip()
@@ -3479,11 +3494,16 @@ def _tunnel_supervisor():
                         #                                    a Start in flight (`booting`) owns the row's phase
                     if st == "up":
                         r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff
-                        if (r.get("detail") or "").startswith("no kernel answering"):
-                            r["detail"] = ""               # the no-kernel note heals the moment it answers
+                        if r.get("detail"):
+                            r["detail"] = ""               # any parked error/hint is moot once it answers
                     elif st == "no-kernel" and not r.get("booting"):
-                        r["detail"] = ("no kernel answering through the tunnel — Start pushes this "
-                                       "machine's romp to %s and boots it") % r["host"]
+                        cur = r.get("detail") or ""
+                        if not cur or cur.startswith("no kernel answering"):
+                            r["detail"] = ("no kernel answering through the tunnel — Start pushes this "
+                                           "machine's romp to %s and boots it") % r["host"]
+                        # a SPECIFIC parked failure (a refused update, a dead boot) stays visible until
+                        # the row heals — the generic hint must not clobber it one tick after
+                        # _start_remote wrote it (the user 2026-07-11)
                     if sids is not None:
                         r["sids"] = sids
                     if rsha is not None:
