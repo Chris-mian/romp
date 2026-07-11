@@ -1278,7 +1278,10 @@ def load_goals(fsid):
     try:
         store = _guard_nodes(json.loads((GOALDIR / (fsid + ".json")).read_text()))
     except Exception:
-        return {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+        # a FRESH store is born at the current identity version — only stores with history recorded
+        # under an OLDER derivation are ever sealed (see _migrate_placements)
+        return {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {},
+                "placementsV": PLACEMENTS_V}
     _replay_overrides(fsid, store)
     return store
 
@@ -3507,16 +3510,23 @@ def _migrate_placements(store, ready_keys, live):
     they were written, so orphaned old keys no longer fuzzy-match and the whole history would re-plan
     (the 2026-07-06 replay storm, 199118f). On mismatch: SEAL every currently-ready unplaced unit
     (placements[key]=None — processed, no goal) so dormant sessions can't replay; work arriving after
-    this pass places normally. A PRE-VERSIONING store (no field at all) is ADOPTED without sealing —
-    its identity matches the current derivation by construction at introduction time. Returns True if
-    the store changed (caller persists)."""
+    this pass places normally.
+
+    A PRE-VERSIONING store (no field) WITH recorded history seals too (2026-07-10). It was
+    originally adopted without sealing — "identity matches the current derivation by construction" —
+    which was true at versioning's introduction but broke the first time the ATOM SET grew (v3, the
+    absorbed-atom witness fix): such a store belongs to a session dormant since before versioning
+    shipped, and reviving it would replay every newly-visible atom in its history as fresh goals.
+    An unversioned EMPTY store is a fresh one (nothing recorded, nothing to protect) — adopted, so a
+    new session's first asks still plan; load_goals stamps new stores at birth. Returns True if the
+    store changed (caller persists)."""
     if store.get("placementsV") == PLACEMENTS_V:
         return False
-    if "placementsV" in store:                        # genuine version MISMATCH → seal ready history
-        for k in ready_keys:
+    if "placementsV" in store or store.get("placements") or store.get("nodes"):
+        for k in ready_keys:                          # older version OR pre-versioning history → seal
             if not _placed_key(store["placements"], k, live):
                 store["placements"][k] = None
-    store["placementsV"] = PLACEMENTS_V               # adopt (pre-versioning) or stamp post-seal
+    store["placementsV"] = PLACEMENTS_V               # adopt (fresh) or stamp post-seal
     return True
 
 

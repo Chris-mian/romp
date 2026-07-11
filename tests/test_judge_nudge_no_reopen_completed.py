@@ -33,7 +33,7 @@ class NudgeNoReopenCompleted(unittest.TestCase):
         jd._rebind_state(Path(self.td))
         jd._PARSE_CACHE.clear()
         # a completed top goal (the closer finished it)
-        self.store = {"rompUuid": SID, "seq": 1,
+        self.store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V,
                       "nodes": {GID: {"id": GID, "text": "Clarify the design", "parentId": None,
                                       "nodeComplete": True, "blocked": False, "cleared": False,
                                       "trail": [], "t": 1000, "mt": 2000}},
@@ -171,7 +171,7 @@ class NudgeNoReopenCompleted(unittest.TestCase):
         # The reopen of a completed goal is attributable from the goal's own DIARY now (the nudge-diag
         # side-log was retired with the P3.4 sweep, 2026-07-07): the reopen event carries the caller in why.
         Gx = SID + ":gx"
-        st = {"rompUuid": SID, "seq": 1,
+        st = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V,
               "nodes": {Gx: {"id": Gx, "text": "x", "parentId": None, "nodeComplete": True,
                              "blocked": False, "cleared": False, "trail": [], "t": 1}},
               "placements": {}, "status": {}}
