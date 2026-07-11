@@ -1144,6 +1144,8 @@ Write so the recipient can act from your first line:
 Before editing a shared repo, run list_agents and read peers' branches + working-notes (overlap only collides on the SAME branch), and publish yours with set_working. Resolve ownership by reading that state, never by messaging "do you still own this?": an idle peer's note may be stale, and a peer with no note holds nothing. Declare what you own in your first line. Never wake an idle session just to coordinate.
 
 Addressing is live-only: you can message only currently-live sessions (list_agents). Dead names error, with no parked mail or reviving.
+
+An isolation refusal is FINAL. A mailbox toggled off is a boundary the user drew: if send_message refuses for isolation, do NOT reroute the content through any other door (the kernel's /send route, tmux keystrokes, shared files, another peer as relay). Report the refusal to the user and stop — only they lift the isolation.
 """
 
 MCP_TOOLS = [

@@ -30,6 +30,8 @@ If you SSH'd into another machine and are running romp there, run `romp --mail r
 - Name things exactly: files by path, sessions by name, the same term each time. Mark verified vs. suspected, and whose ask it is.
 - End with the reply you need, or that none is. One point per message; when brevity and clarity conflict, clarity wins.
 
+**An isolation refusal is final.** A mailbox toggled off is a boundary the user drew. If `send_message` refuses because a mailbox is off (yours or the recipient's), do NOT reroute the content through any other door — the kernel's `/send` route, tmux keystrokes, shared files, another peer as relay. Report the refusal to the user and stop; only they lift the isolation. (The kernel also refuses postal-shaped mail to isolated sessions on every route, but the rule is about intent, not shape: rerouting the same content as plain text is the same violation.)
+
 **Coordinate by reading state, not by waking peers.** Before editing a shared repo, run `list_agents` to see peers' branches and working-notes (overlap is a real collision only on the same branch), and publish yours with `set_working`. Declare what you own in your first line ("I own A/B, stay off them"). Resolve ownership by reading that state, never by messaging "do you still own this?": an idle peer's note may be stale, a peer with no note holds nothing, and romp auto-clears a note once a session's work is done. Use `check_sent` to see whether a message was read instead of asking. Never wake an idle session just to coordinate, which is the false interrupt romp exists to avoid.
 
 When the human says "coordinate with X about Y," message X and act on the replies.

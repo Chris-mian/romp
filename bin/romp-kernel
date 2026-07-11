@@ -3871,6 +3871,23 @@ def _genuine_queued(text):
     return not ("romp-msg-id" in t or t.startswith("####################") or "\U0001F4EC" in t)
 
 
+def _postal_shaped(text):
+    """True when `text` is AGENT MAIL by shape — a postal banner (romp-msg-id / the #### rule / the mailbox
+    glyph), the same recognizers _genuine_queued uses to keep agent mail out of the user's queued chip. The
+    /send isolation gate: postal-shaped content addressed to a mailbox-off session is agent-to-agent mail
+    arriving by the wrong door, and the boundary the user drew must hold on every sanctioned route, not just
+    the bus (the user 2026-07-10: a peer's probe reached an isolated session via /send). Plain text still
+    passes — /send is the HUMAN channel (composer twin), and a user must always be able to talk to their own
+    isolated session."""
+    t = (text or "").strip()
+    return "romp-msg-id" in t or t.startswith("####################") or "\U0001F4EC" in t
+
+
+def _postal_isolated(sid):
+    """The session's postal-isolation flag (the timeline lane's mailbox icon), legacy key included."""
+    return bool(_session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"))
+
+
 _FOLLOWUP_GOAL_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")
 
 
@@ -11316,6 +11333,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not body:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
                 sid = _sid_of(body["who"])
+                # POSTAL ISOLATION holds on every sanctioned route (the user 2026-07-10): postal-SHAPED
+                # content to a mailbox-off session is agent mail arriving by the wrong door — refuse it
+                # here exactly like the bus does. Plain text still passes: /send is the HUMAN channel,
+                # and the user must always reach their own isolated session. (A local agent could still
+                # impersonate plain user text — that residual is closed by policy, not this gate: the
+                # postal norms declare an isolation refusal FINAL, never to be rerouted.)
+                if _postal_shaped(body["text"]) and _postal_isolated(sid):
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        "isolation: the target session's mailbox is OFF — agent mail is refused on every "
+                        "route; the refusal is final (the user can toggle its mailbox back on)"}), "application/json")
                 r = _host_for_sid(sid)
                 if r is not None:                                   # remote session → forward over its -L tunnel
                     _remote_forward(r, "/send", {"id": sid, "text": body["text"]})
@@ -11380,6 +11407,14 @@ class Handler(BaseHTTPRequestHandler):
                 text = (body or {}).get("text") if isinstance(body, dict) else None
                 if not sid or not isinstance(text, str) or not text:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
+                # POSTAL ISOLATION gate (the user 2026-07-10): /deliver is the agent-mail wake, so a
+                # mailbox-off target refuses OUTRIGHT — the bus reads injected:false and keeps the banner
+                # parked in its maildir, so the mail delivers when (if) the user reopens the mailbox
+                # instead of leaking around the boundary. The bus's send_message refuses upstream too;
+                # this seam holds even for direct callers and the drain backstop.
+                if _postal_isolated(sid):
+                    return self._send(200, json.dumps({"ok": False, "injected": False, "error":
+                        "isolation: the target session's mailbox is OFF — parked until it reopens"}), "application/json")
                 r = _host_for_sid(sid)
                 if r is not None:                                   # remote session → forward the wake over its -L tunnel
                     res = _remote_forward(r, "/deliver", {"id": sid, "text": text})
