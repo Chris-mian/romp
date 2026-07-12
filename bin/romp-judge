@@ -1048,8 +1048,10 @@ PLAN_SYS = (
     "continuing work, since most segments are steps under an existing card. Pick the card whose "
     "**outcome** this work advances — topic or project overlap is not enough; ask: can card #n be "
     "called done without this work? If every card can, mint instead. Scan the whole list, even older "
-    "or lower-numbered cards; never default to the most recent. (\"ref\":<k> files under a node you "
-    "minted earlier in this reply instead of \"under\", e.g. a fresh umbrella goal.)\n"
+    "or lower-numbered cards; never default to the most recent. Never file a sub that merely restates "
+    "card #n's own title or ask: a sub must add a concrete step, finding, or piece of progress beyond "
+    "it, and if the segment adds nothing beyond the ask itself, add no sub. (\"ref\":<k> files under a "
+    "node you minted earlier in this reply instead of \"under\", e.g. a fresh umbrella goal.)\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>}: open goal/step #n is now finished. Mark done eagerly: '
     "the moment a segment delivers a goal's outcome (committed, shipped, tested, or answered), done it "
     "in this reply; don't leave finished work open for a later pass to notice. If the segment "
@@ -1089,6 +1091,14 @@ PLAN_SYS = (
     "one, even a bare acknowledgement: place it (file it as a step/sub or a done under the goal it "
     "touches, or mint if it opens something new). A segment that ran tools is real work, so never skip "
     "it. If you skip, \"ops\" is exactly one skip op.\n"
+    "Two rules keep the board honest. First, romp mirrors the agent's own to-do list onto the board by "
+    "itself: a goal line marked \"from the agent's own to-do list\" **is** one of the agent's tasks, so "
+    "never file a sub that records the agent creating, updating, or checking off its to-do items "
+    "(\"created a task to…\", \"updated the plan\") — that bookkeeping is already on the board; file "
+    "only real progress on the work itself, under the card whose outcome it advances. Second, a step "
+    "this same segment already **finished** — a check that passed, a cause it found, a piece it "
+    "delivered — must not sit open on the board: pair its sub with a done on it in this same reply "
+    "(a \"done\" op with \"ref\":<k>), so it lands already crossed off.\n"
     "You place each segment's work; you do not reorganize the board (a separate grouper judge nests "
     "related top goals afterward). Keep filing under the matching open goal and minting only a real new "
     "top.\n"
@@ -1153,7 +1163,7 @@ PLACE_SYS = (
     "nothing after the closing brace.")
 
 
-def _parse_plan(raw, menu_len):
+def _parse_plan(raw, menu_len, allow_extend=False):
     """Parse the planner's JSON reply into an ORDERED list of normalized ops, or None if nothing is
     usable. Expected: {"ops": [ {"why", "do": mint|sub|done|block|retitle|skip, ...}, ... ]}. Tolerant:
     isolates the outermost {...} (ignoring code fences / surrounding prose), drops malformed ops but
@@ -1161,7 +1171,11 @@ def _parse_plan(raw, menu_len):
     a bad ref on done/block/retitle drops that op. Returns [] never — None when there is no usable JSON,
     else a non-empty list (a single {"do":"skip"} signals a no-work segment). retitle is further
     restricted by the CALLER (_plan_session) to the one goal # a call's <note> named eligible — never
-    trust it against the wider menu here, since this parser has no notion of which call this was."""
+    trust it against the wider menu here, since this parser has no notion of which call this was.
+    `allow_extend` (the opener's queued-fragment path, the user 2026-07-11): accept
+    {"do":"extend","goal":<n>} — land the message on existing node #n, minting nothing; parsed only when
+    the call's <note> offered it (the caller further restricts the goal # to the one the note named),
+    dropped everywhere else so no other judge grows the op by accident."""
     obj = _json_obj(raw)                                # outermost {...}; tolerates ``` fences + prose
     if obj is None:
         return None
@@ -1210,6 +1224,10 @@ def _parse_plan(raw, menu_len):
             g = _int(o, "goal")                         # goal-only (no "ref"): retitle targets a PRE-EXISTING
             if g and 1 <= g <= menu_len and _has_alpha(text):   # node, never a same-reply mint
                 ops.append({"do": "retitle", "why": why, "goal": g, "text": text})
+        elif do == "extend" and allow_extend:
+            g = _int(o, "goal")                         # goal-only: extend lands on a PRE-EXISTING node
+            if g and 1 <= g <= menu_len:
+                ops.append({"do": "extend", "why": why, "goal": g})
     return ops or None
 
 
@@ -1518,6 +1536,8 @@ def _menu_text(store, menu):
             top = _top_ancestor(store["nodes"], nd["id"])
             ptext = store["nodes"].get(top, {}).get("text") or store["nodes"].get(nd["parentId"], {}).get("text", "?")
             line += "  (inside: %s)" % ptext
+        if nd.get("agentTask"):                        # a to-do mirror says so (the grouper's menu precedent),
+            line += "  · from the agent's own to-do list"   # so the planner can apply the no-bookkeeping rule
         out.append(line)
     return "\n".join(out) if out else "(no open goals yet)"
 
@@ -1922,6 +1942,20 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
                 nodes[t]["mt"] = seg_t; touched = t   # the event materialized the flags (blockWhy = why)
                 if seg_id and seg_id not in (nodes[t].get("trail") or []):
                     nodes[t].setdefault("trail", []).append(seg_id)   # same: the blocking segment is history
+        elif do == "extend":
+            # A queued-fragment landing (the opener's sibling <note>, the user 2026-07-11): this message
+            # is part of #goal's own ask — fresh evidence on the existing node, no new node. Trail + mt
+            # move so captions/history/dedup see the segment; a block on the branch lifts exactly as a
+            # sub would lift it (new user input on that thread). focus lands here so the phase's
+            # placement key points at the extended node — the WORK-run then picks it up as its
+            # continuation target (p_target), the same grounding a normal prompt-run placement gets.
+            tgt = menu[o["goal"] - 1]["id"] if "goal" in o else None
+            if tgt and tgt in nodes:
+                if seg_id and seg_id not in (nodes[tgt].get("trail") or []):
+                    nodes[tgt].setdefault("trail", []).append(seg_id)
+                nodes[tgt]["mt"] = seg_t
+                _unblock_branch(tgt)
+                focus = touched = tgt
         elif do == "retitle":
             t = _target(o)                              # the caller has already restricted `goal` to the
             if t:                                        # one goal # this call's <note> named eligible
@@ -2303,13 +2337,25 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     return _judge_run(model or _triage_model(), PLAN_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
 
 
-def opener_llm(prompt_text, menu_text, model=None, effort=None):
+def opener_llm(prompt_text, menu_text, model=None, effort=None, sibling_num=None):
     """The opener (the user 2026-06-21, via link_audit; "prompt-planner" until 2026-07-09): place a
     segment's opening user MESSAGE on the goal tree the instant it lands, before the work — so the inbox
     shows the real placed goal immediately, not just the _provisional_card placeholder. mint OR sub only
     (never skip/done/block; no work yet — it only opens, mirroring the closer, which only closes). '' on
-    failure. Input is the raw prompt gist (OPENER_SYS), not the captioner's framed unit text."""
+    failure. Input is the raw prompt gist (OPENER_SYS), not the captioner's framed unit text.
+    `sibling_num` (the user 2026-07-11): the menu # of the node the PREVIOUS user message placed, when
+    this message queued right behind it with no work between (_queued_sibling) — the <note> offers an
+    `extend` onto that node, so a rapid-fire fragment (\"Slightly too tall as well\") lands on the same
+    ask instead of minting a sibling sub."""
     user = "<prompt>\n%s\n</prompt>\n<open-goals>\n%s\n</open-goals>" % (prompt_text, menu_text)
+    if sibling_num:
+        user += ("\n<note>The user sent this message **immediately** after the message recorded at #%d, "
+                 "before the session did any work between them — rapid-fire messages are usually one ask "
+                 "split across sends. If this message merely adds detail, a constraint, or a correction "
+                 'to #%d\'s own ask, reply {\"ops\": [{\"why\": \"...\", \"do\": \"extend\", \"goal\": %d}]} '
+                 "— the message lands on #%d itself and nothing new is created. Only a message asking for "
+                 "something beyond #%d's own ask gets its usual sub or mint.</note>"
+                 % (sibling_num, sibling_num, sibling_num, sibling_num, sibling_num))
     return _judge_run(model or _triage_model(), OPENER_SYS, user, effort=effort, judge="opener").strip()[:JUDGE_JSON_CAP]
 
 
@@ -3640,6 +3686,35 @@ def _segs(turn, store):
     return apply_seams(em.segments(turn), store)
 
 
+def _queued_sibling(store, seg_by_id, seg_id):
+    """The node the PREVIOUS user message placed, when THIS segment's message queued right behind it —
+    the prior human segment holds no assistant work at all (_has_asst_work), so the two messages arrived
+    with nothing done between them: rapid-fire sends are usually one ask split across messages (the user
+    2026-07-11, the too-wide/too-tall sibling subs). The opener's <note> then offers that node as an
+    `extend` target instead of forcing a sibling sub. The empty prior segment IS the queue signal
+    (event-based, no time window), and it is read from the transcript after delivery — so cancelling a
+    queued message needs no special case here: a cancelled message never reaches the transcript, never
+    forms a segment, and never fires this. None when there is no prior segment, the prior one isn't a
+    plain human ask (peer/nudge/command/follow-up triggers own their own flows), it did real work, or
+    its placement is gone from the store."""
+    ids = list(seg_by_id)
+    try:
+        i = ids.index(seg_id)
+    except ValueError:
+        return None
+    if i == 0:
+        return None
+    prev = seg_by_id[ids[i - 1]]
+    if (not _seg_human(prev) or _seg_nudge(prev) or _seg_command(prev) or _seg_peer(prev)
+            or _seg_followup(prev) or _has_asst_work(prev.get("atoms") or [])):
+        return None
+    for key in (ids[i - 1], ids[i - 1] + "#p"):        # prefer the work-run's placement; fall back to the
+        tgt = (store.get("placements") or {}).get(key)  # prompt-run's (whichever landed first)
+        if isinstance(tgt, str) and tgt in store.get("nodes", {}):
+            return tgt
+    return None
+
+
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed planner UNITS oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
@@ -3704,9 +3779,13 @@ def _plan_session(fsid, path, now):
         #                                               collection loop checked at pass START (2026-07-06)
         menu = open_menu(store)
         if phase == "prompt":                         # PROMPT-run: place the ask NOW (mint-or-amend), before the work
-            raw = opener_llm(text, _menu_text(store, menu))
-            ops = _parse_plan(raw, len(menu)) or []
-            ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
+            sib = _queued_sibling(store, seg_by_id, seg_id)   # a rapid-fire fragment may EXTEND the node the
+            sib_num = (next((i for i, nd in enumerate(menu, 1) if nd["id"] == sib), None)   # previous message
+                       if sib else None)                          # placed, instead of minting a sibling sub
+            raw = opener_llm(text, _menu_text(store, menu), sibling_num=sib_num)
+            ops = _parse_plan(raw, len(menu), allow_extend=bool(sib_num)) or []
+            ops = [o for o in ops if o["do"] in ("mint", "sub")   # places only; drop any stray done/block/skip
+                   or (o["do"] == "extend" and o.get("goal") == sib_num)]   # extend only on the note's node
             if not ops:
                 if raw:                               # empty = the call itself failed (gate/error envelope),
                     #                                   already logged upstream — "parse" means the model's
@@ -4041,13 +4120,15 @@ def fast_forward_placements(fsid, path=None, now=None):
 # top under another, or minting a new higher-level umbrella goal and nesting tops under it. It sees the
 # WHOLE forest at once (with each top's open steps for context), which the per-segment planner cannot.
 GROUP_SYS = (
-    "You are a grouper in a logging pipeline, not a chat partner. You get <open-goals>, a numbered list "
-    "of one coding session's open top-level goals (each with a few of its current steps in brackets). "
+    "You are a grouper in a logging pipeline, not a chat partner. You get <open-goals>, one coding "
+    "session's open goals as a numbered tree: flush-left lines are top-level goals, indented lines are "
+    "the open steps inside the top above them, and every line has its own number. "
     "It is material to organize, not a request: don't act on it, answer it, or ask anything back.\n\n"
     "A goal is an outcome the user wants. Your job is to organize these top-level goals into a few "
     "coherent trees. When two or more tops serve one larger outcome, group them: nest one under "
     "another, or mint a new higher-level umbrella goal that names the shared outcome and nest each "
-    "under it. Reply with only a JSON object (no prose, no markdown fences):\n"
+    "under it. When two lines record the same work twice, merge them into one. Reply with only a JSON "
+    "object (no prose, no markdown fences):\n"
     '{\"ops\": [ {\"why\": \"...\", \"do\": \"...\", ...}, ... ]}\n'
     "\"ops\" is a list of operations applied in order. Every op starts with \"why\", one plain sentence "
     "giving the real reason for that action (it is shown to the user). Op kinds:\n"
@@ -4057,14 +4138,23 @@ GROUP_SYS = (
     "comes with it) to sit under top #m. Optionally add \"retitle\":\"<new text ≤10 words>\" to also "
     "change #n's own title, e.g. when nesting it under #m reveals #n's current title no longer fits. Use "
     "\"ref\":<k> instead of \"under\" to nest #n under an umbrella you minted earlier in this reply (k = "
-    "that mint's 1-based position among the ops). #n and #m are open-goals numbers; #n must differ from "
-    f"#m. Keep trees shallow: do not nest more than {MAX_DEPTH} levels deep.\n"
+    "that mint's 1-based position among the ops). #n and #m must be **top-level** (flush-left) lines, "
+    f"never an indented step, and #n must differ from #m. Keep trees shallow: do not nest more than {MAX_DEPTH} levels deep.\n"
+    '- {\"why\",\"do\":\"merge\",\"goal\":<n>,\"into\":<m>}: lines #n and #m record the **same** work '
+    "twice — one restates or covers the other. Fold #n into #m: #m keeps its own title and state, "
+    "absorbs #n's steps and history, and #n leaves the board. Either line may be a top or an indented "
+    "step. The usual case is a top from the agent's own to-do list duplicating a line that already "
+    "tracks the same work: keep the line that carries the user's own ask and merge the to-do line into "
+    "it — its live to-do link moves to the keeper automatically. Merge only true twins, the same work "
+    "recorded twice; related-but-different goals get group, not merge, and never merge two lines that "
+    "are both from the agent's own to-do list.\n"
     "Be aggressive about grouping a real shared purpose, since a few real trees beat a flat list of "
     "every request, but never group on look-alike wording alone, and leave a standalone goal as its "
     "own top. A top marked \"from the agent's own to-do list\" is a to-do mirror: it always starts "
-    "flat by design, and nesting it is your job — when it reads as a step of another open top's "
-    "outcome (wrap-up, verification, a task the agent queued for that work), group it under that "
-    "top. Reuse an existing umbrella rather than minting a duplicate. Doing nothing is a valid, "
+    "flat by design, and placing it is your job — when it records the same work as a line already "
+    "inside another top, merge it into that line; when it reads as its own distinct step of another "
+    "open top's outcome (wrap-up, verification, a task the agent queued for that work), group it under "
+    "that top. Reuse an existing umbrella rather than minting a duplicate. Doing nothing is a valid, "
     "common outcome: if no clear cluster stands out, because the tops are already well-organized or "
     'simply unrelated, return {\"ops\": []} and change nothing. Never invent a grouping just to act.\n'
     "Write each \"why\" plainly: the real reason first, concrete verbs, the words a person actually "
@@ -4131,33 +4221,44 @@ def _group_tops(store, cap=20):
     return tops[-cap:] if len(tops) > cap else tops
 
 
-def _group_menu_text(store, tops):
-    """The grouper's prompt body: each open top numbered, with a few of its OPEN steps in brackets so the
-    model knows what each tree is about (topic context for the grouping decision)."""
+def _group_menu(store, tops):
+    """The grouper's numbered candidate list: each open top followed by its open DIRECT steps (capped,
+    same filter the old bracket line used), flattened in display order — ONE index space shared by
+    _group_menu_text and apply_group, so a `merge` can name a step inside a card as its target (the
+    to-do-mirror-duplicates-a-step case, the user 2026-07-11) while `group` stays top-only
+    (apply_group enforces by parentId)."""
     nodes = store["nodes"]
     kids = {}
     for nd in nodes.values():
         kids.setdefault(nd.get("parentId"), []).append(nd)
+    menu = []
+    for nd in tops:
+        menu.append(nd)
+        steps = sorted((c for c in kids.get(nd["id"], [])
+                        if not c.get("nodeComplete") and not c.get("cleared")),
+                       key=lambda c: c.get("t", 0))
+        menu.extend(steps[-6:])                        # newest 6, chronological: a twin is usually recent
+    return menu
+
+
+def _group_menu_text(store, menu):
+    """The grouper's prompt body over a _group_menu list: a numbered indented tree — flush-left lines
+    are top-level goals, indented lines their open steps (numbered too, so merge can target them; the
+    old form showed steps in an unnumbered [steps: …] bracket). A to-do-mirror line says so."""
     out = []
-    for i, nd in enumerate(tops, 1):
-        line = "%d. %s" % (i, nd["text"])
+    for i, nd in enumerate(menu, 1):
+        line = "%s%d. %s" % ("    " if nd.get("parentId") is not None else "", i, nd["text"])
         if nd.get("agentTask"):
             line += "  · from the agent's own to-do list"
-        children = sorted((c for c in kids.get(nd["id"], [])
-                           if not c.get("nodeComplete") and not c.get("cleared")),
-                          key=lambda c: c.get("t", 0))
-        if children:
-            line += "  [steps: " + "; ".join(c["text"] for c in children[:6])
-            line += "; …]" if len(children) > 6 else "]"
         out.append(line)
     return "\n".join(out) if out else "(no open goals)"
 
 
 def _parse_group(raw, menu_len):
-    """Parse the grouper's {"ops":[{why,do:mint|group,...}]} reply into a normalized op list. Tolerant
-    like _parse_plan: isolates the outermost {...} (ignoring fences/prose), drops malformed ops, keeps the
-    good ones. Returns None on UNUSABLE JSON (retry next pass), else a list — and [] is valid, meaning the
-    model judged nothing should be grouped."""
+    """Parse the grouper's {"ops":[{why,do:mint|group|merge,...}]} reply into a normalized op list.
+    Tolerant like _parse_plan: isolates the outermost {...} (ignoring fences/prose), drops malformed ops,
+    keeps the good ones. Returns None on UNUSABLE JSON (retry next pass), else a list — and [] is valid,
+    meaning the model judged nothing should be grouped."""
     obj = _json_obj(raw)
     if obj is None:
         return None
@@ -4195,6 +4296,10 @@ def _parse_group(raw, menu_len):
                 if retitle:
                     op["retitle"] = retitle
                 ops.append(op)
+        elif do == "merge":
+            g, m = _int(o, "goal"), _int(o, "into")
+            if g and m and 1 <= g <= menu_len and 1 <= m <= menu_len and g != m:
+                ops.append({"do": "merge", "why": why, "goal": g, "into": m})
     return ops
 
 
@@ -4238,15 +4343,82 @@ def _tie_pivot(store, ytop, cited, now):
                       "why": "follow-up work stays with the card it replied to"}], now)
 
 
-def apply_group(store, tops, ops, t):
-    """Apply the grouper's ORDERED ops over the session's open top goals (the pre-snapshot `tops` list, so
-    indices are stable across the reply): mint umbrella tops and RELINK a top (its whole subtree comes
-    with it) under another top or a same-reply umbrella ("ref"). Cycle- and depth-guarded. A minted
-    umbrella inherits its earliest grouped child's anchor (trail/t) so it deep-links to where that work
-    began. Returns the number of relinks applied. There is no longer a never-move-an-everDone-node guard
-    (the user 2026-07-06, removed to try): a reopened once-done top is live work again, so an erroneous
-    split the user pushes back into Working can be re-merged; the candidate forests still keep the columns
-    apart (the working grouper sees only OPEN tops, the consolidator only ALL-COMPLETED ones)."""
+def _merge_nodes(store, dupe_id, surv_id, t, why):
+    """Fold semantic-twin node `dupe` into `surv` (the grouper's merge op, the user 2026-07-11: the
+    board's three writers — opener, planner, to-do mirror — share no dedup, so the same work landed as
+    sibling twins; the grouper is the one judge that sees the whole forest, and this gives it the power
+    to fuse, not just nest). The survivor keeps its own title, verdict state, and diary; it absorbs the
+    dupe's children, its trail (novel segments append after the survivor's own anchor), its quote/
+    promptUuid when the survivor lacks one, and — the authority hand-off — the dupe's agentTask link, so
+    the agent crossing off its to-do completes the SURVIVOR from now on (plan-sync finds the key by
+    scanning nodes). Placements and lastNode pointing at the dupe are rewritten to the survivor, so no
+    segment key dangles. The dupe's own verdict flags/diary are dropped with it: contradictory twin
+    states (one done, one blocked) were exactly the bug, and the survivor's own evidence stands.
+    Refused (returns 0) when either side is gone or both carry agentTask links — two distinct to-do
+    items are never one goal; each mirror must keep its own node for plan-sync. Provenance rides
+    surv[\"mergedFrom\"] (plain field, not diary: the fold must not treat a merge as a verdict, and a
+    non-user log event would also drop a held user reopen). Returns 1 when applied."""
+    nodes = store["nodes"]
+    if dupe_id == surv_id or dupe_id not in nodes or surv_id not in nodes:
+        return 0
+    dupe, surv = nodes[dupe_id], nodes[surv_id]
+    if dupe.get("agentTask") and surv.get("agentTask"):
+        return 0
+
+    def _is_anc(a, b):                                 # is node a AT or ABOVE node b?
+        x, seen = b, set()
+        while x and x not in seen:
+            if x == a:
+                return True
+            seen.add(x)
+            x = nodes.get(x, {}).get("parentId")
+        return False
+
+    if _is_anc(dupe_id, surv_id):                      # merging a node into its own descendant: the survivor
+        surv["parentId"] = dupe.get("parentId")        # takes the dupe's place first, so no relink can cycle
+    for nd in nodes.values():
+        if nd.get("parentId") == dupe_id and nd["id"] != surv_id:
+            nd["parentId"] = surv_id
+    tr = surv.setdefault("trail", [])
+    for s in dupe.get("trail") or []:
+        if s not in tr:
+            tr.append(s)
+    if dupe.get("agentTask"):
+        surv["agentTask"] = dict(dupe["agentTask"])
+        if dupe.get("agentBornOpen"):
+            surv["agentBornOpen"] = True
+        if dupe.get("agentDone"):
+            surv["agentDone"] = True
+    if not surv.get("quote") and dupe.get("quote"):
+        surv["quote"] = dupe["quote"]
+    if not surv.get("promptUuid") and dupe.get("promptUuid"):
+        surv["promptUuid"] = dupe["promptUuid"]
+    surv["t"] = min(surv.get("t") or t, dupe.get("t") or t)
+    surv["mt"] = t
+    surv.setdefault("mergedFrom", []).append({"id": dupe_id, "text": dupe.get("text"), "why": why, "at": t})
+    for k, v in list((store.get("placements") or {}).items()):
+        if v == dupe_id:
+            store["placements"][k] = surv_id
+    if store.get("lastNode") == dupe_id:
+        store["lastNode"] = surv_id
+    nodes.pop(dupe_id, None)
+    store.get("status", {}).pop(dupe_id, None)
+    return 1
+
+
+def apply_group(store, menu, ops, t):
+    """Apply the grouper's ORDERED ops over the session's `menu` (the pre-snapshot _group_menu list —
+    tops each followed by their open steps — so indices are stable across the reply): mint umbrella
+    tops, RELINK a top (its whole subtree comes with it) under another top or a same-reply umbrella
+    ("ref"), and MERGE a twin line into the line that already tracks the same work (_merge_nodes).
+    group stays top-only — a step child is skipped, a step parent walks up to its card — while merge
+    may target any menu line. Cycle- and depth-guarded; an op whose target a same-reply merge already
+    deleted is skipped. A minted umbrella inherits its earliest grouped child's anchor (trail/t) so it
+    deep-links to where that work began. Returns the number of relinks + merges applied. There is no
+    longer a never-move-an-everDone-node guard (the user 2026-07-06, removed to try): a reopened
+    once-done top is live work again, so an erroneous split the user pushes back into Working can be
+    re-merged; the candidate forests still keep the columns apart (the working grouper sees only OPEN
+    tops, the consolidator only ALL-COMPLETED ones)."""
     nodes = store["nodes"]
     created = []
 
@@ -4272,15 +4444,24 @@ def apply_group(store, tops, ops, t):
         if o["do"] == "mint":
             new_umbrella(o["text"], o["why"])
             continue
+        if o["do"] == "merge":                         # fold twin #goal into #into (_merge_nodes refuses
+            relinks += _merge_nodes(store, menu[o["goal"] - 1]["id"],   # gone / double-mirror targets)
+                                    menu[o["into"] - 1]["id"], t, o.get("why") or "")
+            continue
         # group: relink top #goal under #under (a menu top) or a same-reply umbrella (ref)
-        child = tops[o["goal"] - 1]["id"]
+        child = menu[o["goal"] - 1]["id"]
+        if child not in nodes or nodes[child].get("parentId") is not None:
+            continue                                   # merged away this reply, or an indented step —
+        #                                                grouping moves TOPS only; a placed step stays put
         if "under" in o:
-            parent = tops[o["under"] - 1]["id"]
+            parent = menu[o["under"] - 1]["id"]
+            if parent in nodes:                        # a step parent walks up to its card (the intent —
+                parent = _top_ancestor(nodes, parent)  # "nest under that card" — is preserved)
         else:
             r = o.get("ref")
             parent = created[r - 1] if (r and 1 <= r <= len(created)) else None
-        if not parent or parent == child or _is_ancestor(child, parent):
-            continue                                   # missing parent / self / would cycle → skip
+        if not parent or parent not in nodes or parent == child or _is_ancestor(child, parent):
+            continue                                   # missing/merged parent / self / would cycle → skip
         while _depth(nodes, parent) >= MAX_DEPTH:      # keep trees shallow; clamp the parent up
             parent = nodes[parent]["parentId"]
         nodes[child]["parentId"] = parent
@@ -4315,8 +4496,9 @@ def _group_store(store, fsid, now):
     if len(tops) < 2 or sig == store.get("groupedSig"):
         store["groupedSig"] = sig                      # <2 tops / unchanged → record the set so we don't re-ask
         return 0
-    raw = group_llm(_group_menu_text(store, tops))
-    ops = _parse_group(raw, len(tops))
+    menu = _group_menu(store, tops)
+    raw = group_llm(_group_menu_text(store, menu))
+    ops = _parse_group(raw, len(menu))
     if ops is None:
         if raw:                                        # a real reply the parser rejected (empty = call-level,
             _log_judge_error("grouper", fsid, "parse", note="reply tail: %r" % raw[-160:])   # logged upstream)
@@ -4325,7 +4507,7 @@ def _group_store(store, fsid, now):
                 store["groupedSig"] = sig              # give-up: adopt the set so the gate closes
         return 0                                       # under the cap the sig stays stale → retry next call
     _sig_fail_clear(store, "group")
-    relinks = apply_group(store, tops, ops, now)
+    relinks = apply_group(store, menu, ops, now)
     store["groupedSig"] = sorted(nd["id"] for nd in _group_tops(store))   # snapshot the NEW open-top set
     return relinks
 
@@ -4423,8 +4605,9 @@ def _consolidate_store(store, fsid, now):
     if len(comp) < 2 or sig == store.get("consolidatedSig"):
         store["consolidatedSig"] = sig                 # <2 / unchanged → record the set so we don't re-ask
         return changed
-    raw = group_llm(_group_menu_text(store, comp), judge="consolidator")
-    ops = _parse_group(raw, len(comp))
+    cmenu = _group_menu(store, comp)
+    raw = group_llm(_group_menu_text(store, cmenu), judge="consolidator")
+    ops = _parse_group(raw, len(cmenu))
     if ops is None:
         if raw:                                        # a real reply the parser rejected (empty = call-level,
             _log_judge_error("consolidator", fsid, "parse", note="reply tail: %r" % raw[-160:])   # logged upstream)
@@ -4433,7 +4616,7 @@ def _consolidate_store(store, fsid, now):
                 store["consolidatedSig"] = sig         # give-up: adopt the set so the gate closes
         return changed                                 # under the cap the sig stays stale → retry next pass
     _sig_fail_clear(store, "consolidate")
-    relinks = apply_group(store, comp, ops, now)
+    relinks = apply_group(store, cmenu, ops, now)
     store["consolidatedSig"] = sorted(nd["id"] for nd in _consolidate_tops(store))   # snapshot the NEW set
     return changed or relinks > 0
 

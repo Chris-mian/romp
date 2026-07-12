@@ -62,5 +62,6 @@ test("judge: user_move reuses the follow-up machinery — reopen + followupAt fl
 
 test("judge: the grouper's never-move-an-everDone-node guard is gone (removed to try, the user 2026-07-06)", () => {
   assert.ok(!JUDGE.includes("and not allow_done"), "the everDone relink guard was removed");
-  assert.match(JUDGE, /def apply_group\(store, tops, ops, t\):/);   // allow_done parameter dropped too
+  // (tops → menu 2026-07-11: the grouper's index space now numbers steps too, for the merge op)
+  assert.match(JUDGE, /def apply_group\(store, menu, ops, t\):/);   // allow_done parameter dropped too
 });

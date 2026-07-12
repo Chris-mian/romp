@@ -221,7 +221,10 @@ class PromptAndGrouperPins(unittest.TestCase):
 
     def test_grouper_marks_and_owns_todo_mirrors(self):
         self.assertIn("to-do mirror", jd.GROUP_SYS)
-        self.assertIn("nesting it is your job", jd.GROUP_SYS)
+        # "nesting it is your job" until 2026-07-11: the grouper now MERGES a mirror that duplicates an
+        # existing line and nests only a distinct one, so the pin follows the widened ownership
+        self.assertIn("placing it is your job", jd.GROUP_SYS)
+        self.assertIn("merge it into that line", jd.GROUP_SYS)
         st = store(node(gid(1), "Tests green, merge, push", t=100, agentTask={"key": "k1", "status": "open"}),
                    node(gid(2), "Build the widget", t=200))
         text = jd._group_menu_text(st, jd._group_tops(st))
