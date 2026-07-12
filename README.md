@@ -20,6 +20,9 @@ Romp gives you the tools to direct the fleet:
   has it, what got handed off, what is done, what needs you, plus a short
   summary and the background you need to decide, so picking a thread back up
   after a week costs a glance.
+- **Stalled agents get a nudge.** Since romp knows which tasks are still open,
+  an agent that goes idle with work left gets nudged back to it; the fleet
+  keeps moving without you watching for stalls.
 - **Coordination across agents and machines.** The Romp Postal Service is mail
   between agents: they delegate, hand off, and ask each other questions
   directly, and romp tracks every exchange. It runs over SSH, so one fleet can
