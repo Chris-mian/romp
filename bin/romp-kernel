@@ -9633,6 +9633,16 @@ _CHAT_MOBILE_CSS = (
     ".mrow .dot{flex:0 0 auto;width:10px;height:10px;border-radius:50%;background:#666666}"
     ".mrow .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dddddd}"
     ".mrow.active{background:#0d3a5c}"
+    # The page must never grow WIDER than the phone (the user 2026-07-11: "the whole chat screen takes up
+    # more space than is available... like 20 percent too wide, and the controls don't all fit"). Measured
+    # at 390px: the STATUSLINE row (model/effort/mode/branch chips + the context bar) is flex/no-wrap with
+    # a desktop 44px gutter, so its tail — the ctx bar — landed at x=402..450 and dragged the whole
+    # document to 450px, panning every surface ~15% off-screen. Wrap it on touch (the bar drops to a
+    # second line), reclaim the desktop gutter, and clamp stray horizontal overflow at the body so one
+    # oversized control can never widen the page again.
+    "body{overflow-x:hidden}"
+    ".statusline{flex-wrap:wrap;gap:6px 8px;padding:6px 10px 0 10px}"
+    "#composer{padding:8px 10px 6px}"
     "}"
 )
 
@@ -10550,14 +10560,30 @@ function barRows(d){return '<div class=ru-tip-row><span class=ru-tip-k>used</spa
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
-function showTip(){var keys=['fiveHour','sevenDay','fable'].filter(function(k){return LAST[k];});
-if(!keys.length){tip.style.display='none';return;}
-tip.innerHTML=keys.map(function(k){var d=LAST[k];
+function tipHTML(){var keys=['fiveHour','sevenDay','fable'].filter(function(k){return LAST[k];});
+if(!keys.length)return '';
+return keys.map(function(k){var d=LAST[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(d.name)+' ('+esc(d.span)+')</span>'
 +(d.reset?'<span class=ru-tip-reset>resets in '+esc(d.reset)+'</span>':'')+'</div>'+barRows(d)+'</div>';}).join('')
-+(LAST._t?'<div class=ru-tip-age>updated '+fmtAgo(LAST._t)+'</div>':'');
++(LAST._t?'<div class=ru-tip-age>updated '+fmtAgo(LAST._t)+'</div>':'');}
+function showTip(){var h=tipHTML();
+if(!h){tip.style.display='none';return;}
+tip.classList.remove('ru-modal');tip.innerHTML=h;
 var r=el.getBoundingClientRect();tip.style.display='block';
 tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-4))+'px';}
+// Mobile usage PANEL (the user 2026-07-11): the same window bars the desktop tooltip shows, opened as a
+// centered modal from the bottom bar's Usage button (the rail — and its hover — don't exist on mobile).
+// Pulls fresh first so the numbers aren't a stale boot snapshot; any tap or Escape dismisses.
+window.__rompUsagePanel=function(){
+function openIt(){var h=tipHTML();if(!h)return;
+tip.innerHTML=h;tip.classList.add('ru-modal');tip.style.left='';tip.style.top='';tip.style.display='block';
+setTimeout(function(){var off=function(){tip.style.display='none';tip.classList.remove('ru-modal');
+document.removeEventListener('click',off,true);document.removeEventListener('keydown',esc2,true);};
+var esc2=function(e){if(e.key==='Escape')off();};
+document.addEventListener('click',off,true);document.addEventListener('keydown',esc2,true);},0);}
+fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
+.then(function(u){if(u&&(u.fiveHour||u.sevenDay||u.fable))render(u);openIt();})
+.catch(function(){openIt();});};
 el.addEventListener('mouseenter',showTip);
 el.addEventListener('mouseleave',function(){tip.style.display='none';});
 // Refresh-from-source (the user 2026-06-30): GET /usage re-reads usage.json — the snapshot Claude Code's
@@ -10655,6 +10681,7 @@ list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x');
 function open(){back.hidden=false;loadHosts();refresh();}
 function close(){back.hidden=true;}
 icon.onclick=function(e){e.stopPropagation();if(back.hidden)open();else close();};
+window.__rompOpenNet=open;   // the mobile bottom bar's Net button (the rail is hidden there)
 back.onclick=function(e){if(e.target===back)close();};
 if(x)x.onclick=close;
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
@@ -10740,13 +10767,21 @@ var bar=document.getElementById('mtabs');if(!bar)return;
 function barfit(){try{document.documentElement.style.setProperty('--mtabs-h',(bar.offsetHeight||0)+'px');}catch(e){}}
 barfit();window.addEventListener('resize',barfit);window.addEventListener('orientationchange',barfit);
 if(window.visualViewport){window.visualViewport.addEventListener('resize',barfit);}
-var F={chat:document.getElementById('f-chat'),feed:document.getElementById('f-feed'),timeline:document.getElementById('f-timeline')};
+var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-fleet'),feed:document.getElementById('f-feed'),timeline:document.getElementById('f-timeline')};
 var B=bar.querySelectorAll('button'),KT='romp-mobile-tab';
 function show(p){if(!F[p])return;document.body.setAttribute('data-tab',p);for(var k in F)F[k].classList.toggle('m-on',k===p);
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}}
-for(var i=0;i<B.length;i++)(function(b){b.addEventListener('click',function(){show(b.getAttribute('data-pane'));});})(B[i]);
-window.addEventListener('message',function(e){var m=e.data;if(m&&m.romp==='reveal'&&m.pane)show(m.pane);});
+for(var i=0;i<B.length;i++)(function(b){var pk=b.getAttribute('data-pane');if(pk){b.addEventListener('click',function(){show(pk);});}})(B[i]);
+// the rail's actions on mobile: settings opens the feed iframe's modal (same path as the desktop
+// gear), net opens the shell's remotes panel, usage opens the tooltip's window bars as a modal
+var A={settings:function(){var f=F.feed;try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'openSettings'},'*');}catch(e){}},
+net:function(){try{window.__rompOpenNet&&window.__rompOpenNet();}catch(e){}},
+usage:function(){try{window.__rompUsagePanel&&window.__rompUsagePanel();}catch(e){}}};
+Array.prototype.forEach.call(bar.querySelectorAll('button[data-act]'),function(b){
+b.addEventListener('click',function(){var f=A[b.getAttribute('data-act')];if(f)f();});});
+window.addEventListener('message',function(e){var m=e.data;if(!m)return;if(m.romp==='reveal'&&m.pane)show(m.pane);// the chat header's Fleet pill / the fleet's back-to-chat post toggleFleet — on mobile that IS a tab switch
+if(m.romp==='toggleFleet')show(m.to==='chat'?'chat':'fleet');});
 function shellWS(){try{var proto=location.protocol==='https:'?'wss://':'ws://';
 var ws=new WebSocket(proto+location.host+'/ws?app=shell');
 ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
@@ -10950,14 +10985,14 @@ def _landing():
             # iframe must render + lift over the whole window EVEN WHEN the feed pane is toggled off (the user
             # 2026-06-25) — un-hide the pane and pin the iframe full-screen while the modal is open.
             "body.settings-open #feed-pane{display:block!important}"
-            "body.settings-open #f-feed{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
+            "body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
             # New-session PICKER full-screen (the user 2026-07-05): the picker lives INSIDE the /chat iframe, so
             # its position:fixed;inset:0 only covered the chat PANE — a short pane couldn't scroll the session
             # list. Same bridge as settings: render.ts posts {romp:'picker',on} and the shell lifts the chat
             # iframe over the whole window (body.picker-open) so the overlay fills the screen and the list gets
             # the full height to scroll. Restored on close.
             "body.picker-open #chat-pane{display:block!important}"
-            "body.picker-open #f-chat{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
+            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
             # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
@@ -11031,6 +11066,10 @@ def _landing():
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)
             # over an "elapsed" bar (slate) with the % + reset countdown, and nothing else (no prose).
+            # .ru-modal = the mobile Usage button's centered-panel placement (same element + content as the
+            # hover tooltip; only the positioning differs)
+            "#ru-tip.ru-modal{left:50%!important;top:44%!important;transform:translate(-50%,-50%);max-width:92vw;"
+            "box-shadow:0 12px 36px #000000aa}"
             "#ru-tip{position:fixed;z-index:300;background:#1e1e1e;border:1px solid #3a3a3a;border-radius:7px;"
             "padding:8px 10px;font:500 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfd6dd;"
             "box-shadow:0 5px 18px rgba(0,0,0,0.45);pointer-events:none;line-height:1.4}"
@@ -11094,12 +11133,13 @@ def _landing():
             # (body:not(.po-*) #x-pane{display:none}) must NOT leak in — the tab bar, not the rail's po-state,
             # governs which pane shows — so force chat/feed/timeline panes back to display:contents.
             ".pane{display:contents}"
-            "#chat-pane,#feed-pane,#tl-pane{display:contents!important}"
-            "#fleet-pane{display:none!important}"   # Fleet is desktop-only (mobile shows one pane at a time)
+            # the Outline (fleet) rides the tab bar like every other pane (the user 2026-07-11: "I can't
+            # access the outline view in the mobile UI" — it was desktop-only before)
+            "#chat-pane,#fleet-pane,#feed-pane,#tl-pane{display:contents!important}"
             # reset the desktop iframe absolute-fill (the bare `iframe` reset below re-flows them as tab panes)
             ".pane>iframe{position:static;inset:auto;width:100%;height:100%}"
             "iframe{position:static;display:none;width:100%;height:100%;border:0}"
-            "#f-chat.m-on,#f-feed.m-on{display:block}"
+            "#f-chat.m-on,#f-fleet.m-on,#f-feed.m-on{display:block}"
             "#f-timeline{flex:1 1 auto;min-height:0}#f-timeline.m-on{display:block}"
             "body[data-tab=timeline] .row{display:none}"    # timeline tab active → collapse the chat/feed row so the band fills
             # compact text-only switcher, FIXED to the visible viewport bottom so nothing can sit below it.
@@ -11114,6 +11154,9 @@ def _landing():
             "color:#9aa0a6;font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
             "padding:6px 0;display:flex;align-items:center;justify-content:center}"
             "#mtabs button.on{color:#4da4ff}"
+            # action buttons: dimmer + fixed-width so the four pane tabs keep the room; thin divider between
+            "#mtabs .mtabs-div{flex:0 0 1px;background:#303031;margin:5px 0}"
+            "#mtabs button.mact{flex:0 0 auto;padding:6px 9px;color:#7d848b}"
             "}"
             # default Chat + Feed + Timeline shown, Fleet off (the user 2026-06-25); the rail toggles + ?panes=
             # reconcile in _LANDING_COLLAPSE_JS.
@@ -11208,8 +11251,16 @@ def _landing():
             "</div>"
             "<nav id=mtabs>"
             "<button data-pane=chat class=on>Chat</button>"
+            "<button data-pane=fleet>Outline</button>"   # data-pane key stays 'fleet' (internal), label Outline
             "<button data-pane=feed>Feed</button>"
             "<button data-pane=timeline>Timeline</button>"
+            # the rail's ACTIONS, reachable on mobile too (the user 2026-07-11): settings + the network
+            # panel + a usage panel showing the desktop tooltip's window bars. data-act (not data-pane) —
+            # they fire, they don't switch the shown pane.
+            "<span class=mtabs-div></span>"
+            "<button class=mact data-act=usage>Usage</button>"
+            "<button class=mact data-act=net>Net</button>"
+            "<button class=mact data-act=settings>Gear</button>"
             "</nav>"
             # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
             "<div id=rnet-back hidden><div id=rnet-panel>"

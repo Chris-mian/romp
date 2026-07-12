@@ -4768,7 +4768,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("if(e.target===p)closeSettings()", km._GEAR_JS)   # backdrop click closes
         # shell side: the feed iframe lifts to cover the whole window (the panes show THROUGH the transparent feed)
         html = km._landing()
-        self.assertIn("body.settings-open #f-feed{position:fixed;inset:0;z-index:200", html)
+        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200", html)   # display:block beats the mobile iframe-hiding
         self.assertIn("m.romp==='settings'", html)
         self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
 
@@ -4778,7 +4778,7 @@ class ServeSecurity(unittest.TestCase):
         # render.ts posts {romp:'picker',on} and the shell lifts the chat iframe over the whole window
         # (body.picker-open), so the overlay fills the screen and the list gets the full height to scroll.
         html = km._landing()
-        self.assertIn("body.picker-open #f-chat{position:fixed;inset:0;z-index:200", html)  # lift the chat iframe full-window
+        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200", html)  # lift the chat iframe full-window (display:block beats the mobile hiding)
         self.assertIn("body.picker-open #chat-pane{display:block!important}", html)         # un-hide it even if chat is toggled off
         self.assertIn("m.romp==='picker'", html)                                            # the shell listens for the picker post
         self.assertIn("document.body.classList.toggle('picker-open',!!m.on)", html)
@@ -4821,8 +4821,8 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("else window.__rompPaneToggle('fleet')", html)                    # no `to` → toggle Fleet
         # f-fleet maps to its OWN pane in the focus map (interacting with it spotlights the fleet pane)
         self.assertIn("'f-fleet':'fleet-pane'", html)
-        # desktop-only for now: hidden on the mobile one-pane layout
-        self.assertIn("#fleet-pane{display:none!important}", html)
+        # ...and since 2026-07-11 the fleet is a mobile TAB too (Outline), not desktop-only
+        self.assertIn(">Outline</button>", html)
 
     def test_landing_pins_height_to_visual_viewport(self):
         # Regression (the user 2026-06-19): on real Android Chrome, body{height:100dvh} left a dead slab

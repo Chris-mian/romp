@@ -147,8 +147,9 @@ class PaneRailTest(unittest.TestCase):
         # mobile shows one pane at a time via the bottom tab bar, not the rail; the desktop po-* pane-hiding
         # must NOT leak in (the tab bar governs), so chat/feed/timeline panes are forced back to display:contents
         self.assertIn(".gv,.gh,.pane-rail{display:none}", self.html)
-        self.assertIn("#chat-pane,#feed-pane,#tl-pane{display:contents!important}", self.html)
-        self.assertIn("#fleet-pane{display:none!important}", self.html)   # Fleet stays desktop-only
+        self.assertIn("#chat-pane,#fleet-pane,#feed-pane,#tl-pane{display:contents!important}", self.html)
+        # the Outline (fleet) is a mobile TAB now, no longer desktop-only (the user 2026-07-11)
+        self.assertNotIn("#fleet-pane{display:none!important}", self.html)
         self.assertIn("body[data-tab=timeline] .row{display:none}", self.html)   # timeline tab → band fills
 
 
