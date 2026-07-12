@@ -34,20 +34,23 @@ from pathlib import Path
 # Pure translation logic (no SDK import — unit-tested in CI without the dep).
 # ---------------------------------------------------------------------------
 
-# Identity palette — mirrors bin/romp's `_palette`/`_fg` (the same hex SET the vault dashboard
-# uses). The tmux launcher picks the first unused colour; for an SDK session we pick deterministically
-# by a stable hash of the sid (the launcher's own fallback when all are taken), so the session gets a
-# consistent colour without cross-backend "used" bookkeeping. Keep the SET in sync with bin/romp.
-_PALETTE = ["#1EA1EB", "#54B204", "#4EA8A9", "#DD42FF", "#E87221",
-            "#98998A", "#F85B5A", "#F9D849", "#9088F0"]
-_FG = ["white", "black", "white", "white", "black", "black", "white", "black", "black"]
+# Identity palette — SELECTABLE now (the user 2026-07-12): the sets live in romp_palette (the single
+# source of truth; bin/romp reads the kernel-maintained STATE/palette-colors mirror of the same data).
+# The tmux launcher picks the first unused colour; for an SDK session we pick deterministically by a
+# stable hash of the sid (the launcher's own fallback when all are taken), so the session gets a
+# consistent colour without cross-backend "used" bookkeeping.
+from importlib.machinery import SourceFileLoader as _SFL
+_pal = _SFL("romp_palette", str(Path(__file__).resolve().parent / "romp_palette.py")).load_module()
 
 
-def pick_identity_color(sid: str) -> tuple[str, str]:
-    """A stable (bg, fg) for a session, hashed from its sid into the romp palette."""
+def pick_identity_color(sid: str, state_dir=None) -> tuple[str, str]:
+    """A stable (bg, fg) for a session, hashed from its sid into the ACTIVE identity palette
+    (STATE/palette, the gear's Session-colors pick; the default set when state_dir is unknown)."""
     import zlib
-    i = zlib.crc32(sid.encode()) % len(_PALETTE)
-    return _PALETTE[i], _FG[i]
+    name = _pal.active_name(state_dir) if state_dir else _pal.DEFAULT
+    bgs, fgs = _pal.colors(name), _pal.fgs(name)
+    i = zlib.crc32(sid.encode()) % len(bgs)
+    return bgs[i], fgs[i]
 
 
 # Reasoning effort for SDK sessions. effort is a CONNECT-TIME CLI flag (--effort) with no runtime control,
@@ -1995,7 +1998,7 @@ class SdkBackend:
         sid = sid or str(uuid.uuid4())
         cwd = os.path.realpath(cwd) if os.path.exists(cwd) else cwd
         if not bg:                                   # give the session a stable identity colour like tmux sessions get
-            bg, fg = pick_identity_color(sid)
+            bg, fg = pick_identity_color(sid, self.state_dir)
         write_name(self.state_dir, sid, name, cwd, bg, fg)
         # Seed model + effort from the REMEMBERED defaults (the user's last pick on any session), falling back
         # to the hardcoded ones (the user 2026-06-27). effort always has a value (the connect flag). A model is

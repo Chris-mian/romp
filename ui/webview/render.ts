@@ -161,6 +161,7 @@ const order: string[] = [];           // positional tab order (for cycling)
 const tabMeta = new Map<string, { name: string; color: Color | null }>();
 // The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
+// The palette is SELECTABLE now (the user 2026-07-12): a {type:"palette"} push lands the new set on switch.
 let paletteColors: string[] = [];
 fetch("/palette", { cache: "no-store" }).then((r) => r.json())
   .then((d) => { if (Array.isArray(d.colors)) paletteColors = d.colors; }).catch(() => { /* menu omits the swatch row */ });
@@ -5513,6 +5514,9 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "warn" && typeof m.text === "string" && m.text) warnToast(m.text);
+  // The identity palette changed (gear → Session colors): refresh the right-click menu's swatch set so a
+  // menu opened after the switch offers the NEW palette (the kernel remaps + repaints sessions itself).
+  else if (m.type === "palette" && Array.isArray(m.colors)) paletteColors = m.colors;
   else if (m.type === "sessionList") { if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir; renderPicker(m.items || []); }
   else if (m.type === "browseResult" && typeof m.path === "string") {   // native Browse dialog returned a folder
     if (m.target === "gear") {                                          // the gear's "Default directory" Browse

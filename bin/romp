@@ -979,14 +979,27 @@ else
     # Identity color for the status bar. On RESUME, reuse the color this
     # conversation had before (recorded in the map) so a session keeps its
     # identity across resumes. Otherwise pick the first unused color from the
-    # Vault section palette (the exact hex the Obsidian dashboard renders; see
-    # vault/styles.css --palette-N). The ghostty tab dot is separate — it tracks
-    # Claude's live status; see @romp-emoji below.
+    # Session identity color. With the default "romp" palette these are the exact hex the
+    # Obsidian dashboard renders (see vault/styles.css --palette-N; other selectable palettes
+    # diverge from the vault's fixed semantic colors). The ghostty tab dot is separate — it
+    # tracks Claude's live status; see @romp-emoji below.
     bg=""; fg=""
     if [[ -n "$sid" && -f "$ROMP_NAMES_DIR/$sid" ]]; then
         IFS=$'\t' read -r _ _ bg fg < "$ROMP_NAMES_DIR/$sid" || true
     fi
     if [[ -z "$bg" ]]; then
+        # Identity palette — SELECTABLE now (the user 2026-07-12): the ACTIVE set lives in
+        # bin/romp_palette.py (single source of truth), mirrored for shell by the kernel at
+        # STATE/palette-colors (bg<TAB>fg per line; rewritten at kernel boot + on every gear
+        # switch). Read the mirror when it exists; the hardcoded fallback below is the default
+        # "romp" set, for a machine whose kernel never booted.
+        _palette=(); _fg=()
+        _palfile="${XDG_STATE_HOME:-$HOME/.local/state}/romp/palette-colors"
+        if [[ -r "$_palfile" ]]; then
+            while IFS=$'\t' read -r _pb _pf; do
+                [[ "$_pb" == \#* ]] && { _palette+=("$_pb"); _fg+=("${_pf:-white}"); }
+            done < "$_palfile"
+        fi
         # Assignment order is colorblind-tuned (the user 2026-06-12): blue, green first
         # (favorites + reasonably distinct), then teal — the more colorblind-friendly of
         # teal/purple against blue+green under deuteran/protan (Machado 2009; teal differs
@@ -994,6 +1007,7 @@ else
         # Remaining slots are ordered most-distinct-first; purple lands last. Note this no
         # longer matches the vault/styles.css --palette-N NUMBERING (which is the same hex
         # SET, used as fixed semantic colors elsewhere) — only the set must agree, not order.
+        if (( ${#_palette[@]} == 0 )); then
         _palette=(
             "#1EA1EB"  "#54B204"  "#4EA8A9"  "#DD42FF"  "#E87221"
             "#98998A"  "#F85B5A"  "#F9D849"  "#9088F0"
@@ -1002,6 +1016,7 @@ else
             "white"    "black"    "white"    "white"    "black"
             "black"    "white"    "black"    "black"
         )
+        fi
         # Collect colors already in use by other romp sessions.
         _used=()
         while IFS= read -r _sess; do

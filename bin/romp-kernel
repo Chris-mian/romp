@@ -23,6 +23,7 @@ ROOT = HERE.parent
 em = SourceFileLoader("romp_event_model", str(HERE / "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
 cm = SourceFileLoader("romp_colormap", str(HERE / "romp_colormap.py")).load_module()  # age → recency tint
+pal = SourceFileLoader("romp_palette", str(HERE / "romp_palette.py")).load_module()  # session-identity palettes (selectable)
 ap = SourceFileLoader("romp_askparse", str(HERE / "romp-askparse")).load_module()  # tmux-pane → live AskUserQuestion picker
 sb = SourceFileLoader("romp_session_backend", str(HERE / "romp_session_backend.py")).load_module()  # the SessionBackend ABC
 CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
@@ -353,12 +354,43 @@ def _name_color(sid):
     return None
 
 
-# The romp session-identity palette — the SAME hex SET the tmux launcher (bin/romp `_palette`) and the SDK
-# backend (romp_sdk_backend `_PALETTE`) assign from. Keep these three in sync. The right-click tab menu offers
-# these as swatches; /palette serves them to the client, and setSessionColor accepts only a value from this set.
-_PALETTE = ["#1EA1EB", "#54B204", "#4EA8A9", "#DD42FF", "#E87221",
-            "#98998A", "#F85B5A", "#F9D849", "#9088F0"]
-_PALETTE_FG = ["white", "black", "white", "white", "black", "black", "white", "black", "black"]
+# The romp session-identity palette — SELECTABLE now (the user 2026-07-12): the sets live in
+# romp_palette.PALETTES (the single source of truth), the chosen name in STATE/palette (gear → Session
+# colors → setPalette). The SDK backend imports the same module; the tmux launcher (bin/romp, shell)
+# reads the STATE/palette-colors mirror _write_palette_mirror keeps current. The right-click tab menu
+# offers the ACTIVE set as swatches (/palette), and setSessionColor accepts a value from ANY known set
+# (so a click from a menu rendered just before a switch still lands — it re-slots on the next switch).
+_pal_cache = {"name": pal.DEFAULT, "mt": None}
+
+
+def _palette_name():
+    """The active identity-palette name: STATE/palette, mtime-cached (mirrors _colormap)."""
+    f = jd.STATE / "palette"
+    try:
+        mt = f.stat().st_mtime
+    except OSError:
+        mt = None
+    if _pal_cache["mt"] != mt:
+        try:
+            n = f.read_text().strip()
+        except OSError:
+            n = pal.DEFAULT
+        _pal_cache["name"] = n if n in pal.PALETTES else pal.DEFAULT
+        _pal_cache["mt"] = mt
+    return _pal_cache["name"]
+
+
+def _write_palette_mirror():
+    """STATE/palette-colors: `bg<TAB>fg` per line for the ACTIVE palette — the tmux launcher (bin/romp)
+    is shell and can't import romp_palette, so it assigns from this mirror. Rewritten at boot and on
+    every switch; bin/romp falls back to the default set when it doesn't exist (kernel never booted)."""
+    try:
+        n = _palette_name()
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        _atomic_write(jd.STATE / "palette-colors",
+                      "".join("%s\t%s\n" % bf for bf in zip(pal.colors(n), pal.fgs(n))))
+    except OSError:
+        pass
 
 # The model + effort choices offered by EVERY picker — the chat statusline, the timeline lanes, AND the
 # judge-tier settings — defined ONCE here so there's no hardcoded model list scattered across surfaces (the
@@ -375,10 +407,11 @@ _EFFORT_VALUES = {e["value"] for e in EFFORT_CHOICES}
 
 def _set_session_color(sid, bg):
     """Override a session's identity color: rewrite the names registry's bg (3rd field) + fg word (4th),
-    preserving the name + cwd. Only a value from _PALETTE is accepted. Returns True on a real write. The
-    dashboard reads color from here (_name_color) and a resume reuses it, so this is the durable store; the
-    live tmux status bar (a separate @identity-bg) refreshes on the session's next resume."""
-    if bg not in _PALETTE:
+    preserving the name + cwd. Only a value from a known palette is accepted (its own palette supplies
+    the fg). Returns True on a real write. The dashboard reads color from here (_name_color) and a resume
+    reuses it, so this is the durable store; the live tmux status bar (a separate @identity-bg) refreshes
+    on the session's next resume."""
+    if not pal.find(bg):
         return False
     try:
         parts = (NAMES / sid).read_text().rstrip("\n").split("\t")
@@ -386,8 +419,42 @@ def _set_session_color(sid, bg):
         return False
     name = parts[0] if parts else ""
     cwd = parts[1] if len(parts) > 1 else ""
-    fg = _PALETTE_FG[_PALETTE.index(bg)]
-    _atomic_write(NAMES / sid, "\t".join([name, cwd, bg, fg]) + "\n")
+    _atomic_write(NAMES / sid, "\t".join([name, cwd, bg, pal.fg_for(bg)]) + "\n")
+    return True
+
+
+def _set_palette(name):
+    """Switch the session-identity palette (gear → Session colors): persist the choice, remap every
+    stored session color to the SAME SLOT in the new set (the whole fleet recolors consistently and a
+    round-trip restores the original colors), refresh the shell launcher's mirror, and re-broadcast.
+    A color no palette owns is left alone. Unknown palette names are ignored. Live tmux status bars
+    refresh on the session's next resume (same contract as _set_session_color)."""
+    if name not in pal.PALETTES:
+        return False
+    try:
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "palette").write_text(name)
+    except OSError:
+        return False
+    new_bg, new_fg = pal.colors(name), pal.fgs(name)
+    try:
+        sids = [f.name for f in NAMES.iterdir() if f.is_file()]
+    except OSError:
+        sids = []
+    for sid in sids:
+        try:
+            parts = (NAMES / sid).read_text().rstrip("\n").split("\t")
+        except Exception:
+            continue
+        loc = pal.find(parts[2]) if len(parts) > 2 else None
+        if not loc or (parts[2], parts[3] if len(parts) > 3 else "") == (new_bg[loc[1]], new_fg[loc[1]]):
+            continue
+        parts += [""] * (4 - len(parts))
+        parts[2], parts[3] = new_bg[loc[1]], new_fg[loc[1]]
+        _atomic_write(NAMES / sid, "\t".join(parts[:4]) + "\n")
+    _write_palette_mirror()
+    _send_to_app("chat", {"type": "palette", "colors": new_bg})   # fresh swatches for open right-click menus
+    _mark_views_dirty()                                           # tabs/cards/lanes repaint in the new colors
     return True
 
 
@@ -9860,6 +9927,20 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              ".rs-cmap-opt{height:18px;border-radius:4px;border:1px solid #3a3a3a;cursor:pointer;margin:4px 0}"
              ".rs-cmap-opt:first-child{margin-top:0}.rs-cmap-opt:last-child{margin-bottom:0}"
              ".rs-cmap-opt.sel{outline:2px solid #9cd2ff;outline-offset:1px;border-color:transparent}"
+             # Session-colors picker (the user 2026-07-12): same custom-dropdown mechanics as the colormap,
+             # but each option is the palette's 9 identity DOTS + its name (discrete swatches, not a gradient).
+             "#rs-pal{position:relative;margin-top:5px}"
+             "#rs-pal-btn{width:100%;border:1px solid #3a3a3a;border-radius:5px;cursor:pointer;background:#1e1e1e;"
+             "display:flex;gap:5px;align-items:center;padding:4px 7px;min-height:20px}"
+             "#rs-pal-list{position:absolute;left:0;right:0;top:100%;margin-top:4px;z-index:20;background:#1e1e1e;"
+             "border:1px solid #3a3a3a;border-radius:6px;padding:4px;box-shadow:0 8px 24px #00000088}"
+             "#rs-pal-list[hidden]{display:none}"
+             ".rs-pal-opt{display:flex;gap:5px;align-items:center;border:1px solid #3a3a3a;border-radius:4px;"
+             "cursor:pointer;margin:4px 0;padding:4px 7px}"
+             ".rs-pal-opt:first-child{margin-top:0}.rs-pal-opt:last-child{margin-bottom:0}"
+             ".rs-pal-opt.sel{outline:2px solid #9cd2ff;outline-offset:1px;border-color:transparent}"
+             ".rs-pal-dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto}"
+             ".rs-pal-name{color:#9aa0a6;font-size:11px;margin-left:auto;padding-left:8px;white-space:nowrap}"
              "#rsettings .rs-sep{border-top:1px solid #3a3a3a;margin-top:6px;padding-top:8px}"
              # keyboard-shortcuts rows (folded into settings): key combo + description, with <kbd> chips.
              "#rsettings .rs-key{display:flex;align-items:baseline;gap:12px;padding:3px 0}"
@@ -9932,7 +10013,15 @@ def _gear_html():
               "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the recency colormap'></button>"
               "<div id=rs-cmap-list hidden></div></div></span></div>"
               "<div class=rs-sec>Sessions</div>"
-              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>"
+              # Session-colors palette picker (the user 2026-07-12): which categorical set sessions draw their
+              # identity color from. Options come from /palette (romp_palette is the single source of truth —
+              # no color literals here); picking one posts setPalette, and the kernel remaps the whole fleet
+              # slot-for-slot. Server-side pref like Auto Nudge: (re)initialized from /palette on gear open.
+              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>"
+              "<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>"
+              "<div id=rs-pal><button id=rs-pal-btn type=button title='Pick the session palette'></button>"
+              "<div id=rs-pal-list hidden></div></div></span></div>"
+              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>"
               "<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs headless via the Agent SDK. Both kinds run side by side; this only sets the default.</span>"
               "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
               "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
@@ -10060,6 +10149,24 @@ try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setCol
 if(cmBtn)cmBtn.addEventListener('click',function(e){e.stopPropagation();cmBuild();if(cmList)cmList.hidden=!cmList.hidden;});
 document.addEventListener('click',function(e){var w=document.getElementById('rs-cmap');
 if(cmList&&!cmList.hidden&&w&&!w.contains(e.target))cmList.hidden=true;});   // click outside → close the list
+// Session-colors palette picker (the user 2026-07-12): options + the active name come from /palette (the
+// kernel is authoritative — the pick is a SERVER-side pref like Auto Nudge); each option row = the set's 9
+// identity dots + its name. Picking posts setPalette; the kernel remaps the fleet + re-broadcasts.
+var plBtn=document.getElementById('rs-pal-btn'),plList=document.getElementById('rs-pal-list'),plData=null,plActive='';
+function plDots(cols){return cols.map(function(c){return '<span class=rs-pal-dot style="background:'+c+'"></span>';}).join('');}
+function plRow(p){return plDots(p.colors)+'<span class=rs-pal-name>'+p.label+'</span>';}
+function plPaint(){if(!plData)return;plData.forEach(function(p){if(p.name===plActive&&plBtn)plBtn.innerHTML=plRow(p);});
+if(plList)Array.prototype.forEach.call(plList.children,function(o){o.classList.toggle('sel',o.getAttribute('data-pal')===plActive);});}
+function plBuild(){if(!plList||!plData||plList.children.length)return;plData.forEach(function(p){
+var o=document.createElement('div');o.className='rs-pal-opt';o.setAttribute('data-pal',p.name);o.title=p.label;
+o.innerHTML=plRow(p);o.addEventListener('click',function(e){e.stopPropagation();plPick(p.name);});plList.appendChild(o);});}
+function plPick(name){plActive=name;plPaint();if(plList)plList.hidden=true;
+try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setPalette',name:name});}catch(e){}}
+function plFill(){fetch('/palette',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.palettes){plData=d.palettes;plActive=d.active||'';plBuild();plPaint();}}).catch(function(){});}
+if(plBtn)plBtn.addEventListener('click',function(e){e.stopPropagation();plBuild();if(plList)plList.hidden=!plList.hidden;});
+document.addEventListener('click',function(e){var w=document.getElementById('rs-pal');
+if(plList&&!plList.hidden&&w&&!w.contains(e.target))plList.hidden=true;});
 if(bk)bk.addEventListener('change',function(){var s=load();s.backend=bk.value;save(s);emit();});   // webview-local pref read at createSession time (render.ts); no kernel round-trip
 if(dd)dd.addEventListener('change',function(){var v=dd.value.trim();var s=load();s.defaultDir=v;save(s);   // same-tab cache for the picker prefill
 try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setDefaultDir',value:v});}catch(e){}});   // persist kernel-side: _default_create_dir reads this file FIRST
@@ -10087,7 +10194,7 @@ function setModalCls(on){var de=document.documentElement,m='rs-modal-open';
 if(on){de.classList.add(m);document.body.classList.add(m);}else{de.classList.remove(m);document.body.classList.remove(m);}}
 function closeSettings(){p.hidden=true;setModalCls(false);feedFull(false);}
 function openSettings(){if(!p.hidden){closeSettings();return;}   // the rail gear toggles the modal (the user 2026-06-25)
-p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;jix.checked=(s.showIndexJudges!==undefined?!!s.showIndexJudges:!!s.debug);jtr.checked=(s.showTriageJudges!==undefined?!!s.showTriageJudges:!!s.debug);if(gb)gb.checked=s.showBranch!==false;if(cg)cg.checked=s.collapseGaps!==false;cmBuild();cmPaint(s.colormap||'aurora');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}
+p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;jix.checked=(s.showIndexJudges!==undefined?!!s.showIndexJudges:!!s.debug);jtr.checked=(s.showTriageJudges!==undefined?!!s.showTriageJudges:!!s.debug);if(gb)gb.checked=s.showBranch!==false;if(cg)cg.checked=s.collapseGaps!==false;cmBuild();cmPaint(s.colormap||'aurora');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';plFill();fill();}
 if(g)g.onclick=function(e){e.stopPropagation();openSettings();};   // the gear is hidden now; the rail drives it via a message
 window.addEventListener('message',function(e){if(e.data&&e.data.romp==='openSettings')openSettings();});
 p.addEventListener('click',function(e){if(e.target===p)closeSettings();});   // click the dimmed backdrop (not the card) → close
@@ -11500,8 +11607,14 @@ class Handler(BaseHTTPRequestHandler):
                 cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
                 return self._send(200, json.dumps({"commands": cmds, "warming": warming}),
                                   "application/json", cache="no-cache")
-            if p == "/palette":                               # the session-identity palette for the tab right-click color picker
-                return self._send(200, json.dumps({"colors": _PALETTE}), "application/json", cache="no-cache")
+            if p == "/palette":                               # the session-identity palette: active swatches for the tab
+                # right-click color picker (`colors`), plus every choosable set + the active name for the
+                # gear's Session-colors picker — the client holds no color literals.
+                _pn = _palette_name()
+                return self._send(200, json.dumps({
+                    "colors": pal.colors(_pn), "active": _pn,
+                    "palettes": [{"name": k, "label": v["label"], "colors": v["bg"]}
+                                 for k, v in pal.PALETTES.items()]}), "application/json", cache="no-cache")
             if p == "/models":                                # the ONE model + effort choice list — chat statusline, timeline lanes, AND judge settings all read it (the user 2026-07-02: no hardcoding in multiple places)
                 return self._send(200, json.dumps({"models": MODEL_CHOICES, "efforts": EFFORT_CHOICES}), "application/json", cache="no-cache")
             if p == "/usage":                                 # the /usage rate-limit bars, re-read on demand: the rail's
@@ -12063,6 +12176,8 @@ class Handler(BaseHTTPRequestHandler):
                 client["send"](json.dumps({"type": "defaultDirSaved", "value": _tilde(_default_create_dir())}))
         elif msg and msg.get("type") == "setColormap" and msg.get("name"):
             _set_colormap(str(msg["name"]))    # recency colormap chooser → recolours the feed on next push
+        elif msg and msg.get("type") == "setPalette" and msg.get("name"):
+            _set_palette(str(msg["name"]))     # gear "Session colors" → remap the fleet onto the chosen set
         elif msg and msg.get("type") == "setJudgeModel" and msg.get("model"):
             _set_judge_model(str(msg["model"]))     # gear "Triage model" dropdown → the judge uses it next pass
         elif msg and msg.get("type") == "setIndexModel" and msg.get("model"):
@@ -12200,6 +12315,7 @@ def main():
             sys.stderr.write("romp-kernel: diary sweep migrated %d store file(s)\n" % _n)
     except Exception:
         sys.stderr.write("diary sweep: %s\n" % traceback.format_exc())
+    _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at

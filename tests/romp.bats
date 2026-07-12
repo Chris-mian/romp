@@ -361,6 +361,19 @@ run_romp() {
     grep -q 'tmux set -t myproject @identity-bg #4EA8A9' "$MOCK_LOG"
 }
 
+@test "color: a kernel-written palette-colors mirror overrides the built-in set" {
+    # The identity palette is selectable (2026-07-12): the kernel mirrors the ACTIVE set to
+    # STATE/palette-colors (bg<TAB>fg per line) and the launcher assigns from it; the hardcoded
+    # arrays are only the fallback for a machine whose kernel never booted.
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf '#AA0000\twhite\n#00BB00\tblack\n' > "$XDG_STATE_HOME/romp/palette-colors"
+
+    run run_romp
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t myproject @identity-bg #AA0000' "$MOCK_LOG"
+    grep -q 'tmux set -t myproject @identity-fg white' "$MOCK_LOG"
+}
+
 @test "color: all colors taken falls back to a hash pick" {
     local palette=("#1EA1EB" "#54B204" "#4EA8A9" "#DD42FF" "#E87221" "#98998A" "#F85B5A" "#F9D849" "#9088F0")
     > "$MOCK_TMUX_SESSIONS_FILE"

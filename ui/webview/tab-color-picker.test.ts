@@ -15,6 +15,11 @@ test("the palette is fetched once from the kernel /palette (the client doesn't o
   assert.match(RENDER, /for \(const bg of paletteColors\)/);
 });
 
+test("a palette switch (gear → Session colors) pushes the new swatch set to open tabs", () => {
+  // the kernel re-broadcasts {type:"palette"} after setPalette; the menu offers the NEW set without a reload
+  assert.match(RENDER, /m\.type === "palette" && Array\.isArray\(m\.colors\)\) paletteColors = m\.colors;/);
+});
+
 test("showTabMenu renders a swatch per palette color, ringing the session's current one", () => {
   // a swatch row, gated on the palette having loaded
   assert.match(RENDER, /if \(paletteColors\.length\) \{/);

@@ -157,9 +157,18 @@ class PureTranslation(unittest.TestCase):
 
     def test_identity_color_stable_and_in_palette(self):
         bg, fg = sb.pick_identity_color("11111111-2222-3333-4444-555555555555")
-        self.assertIn(bg, sb._PALETTE)
-        self.assertIn(fg, sb._FG)
+        self.assertIn(bg, sb._pal.PALETTES[sb._pal.DEFAULT]["bg"])   # no state_dir → the default set
+        self.assertIn(fg, ("black", "white"))
         self.assertEqual(sb.pick_identity_color("11111111-2222-3333-4444-555555555555"), (bg, fg))  # stable per sid
+
+    def test_identity_color_follows_the_active_palette(self):
+        # the gear's Session-colors pick (STATE/palette) steers what NEW sessions are assigned
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "palette").write_text("phase")
+            bg, fg = sb.pick_identity_color("11111111-2222-3333-4444-555555555555", td)
+            p = sb._pal.PALETTES["phase"]
+            self.assertIn(bg, p["bg"])
+            self.assertEqual(fg, p["fg"][p["bg"].index(bg)])
 
 
 # --- live tail (in-memory stream → atoms, ahead of disk). Pure: fakes match by type-name, no SDK. ---
