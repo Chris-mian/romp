@@ -9990,44 +9990,11 @@ def _gear_html():
   return ("<button id=rgear hidden aria-hidden=true></button>"
               "<div id=rsettings hidden><div class=rs-card>"
               "<div class=rs-h>Settings</div>"
-              "<div class='rs-sec rs-sec-first'>Chat</div>"
-              "<label class=rs-row><input type=checkbox id=rs-compact>"
-              "<span><b>Compact transcript</b>"
-              "<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>"
-              "</span></label>"
-              "<label class=rs-row><input type=checkbox id=rs-branch>"
-              "<span><b>Show git branch</b>"
-              "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>"
-              "</span></label>"
-              "<div class=rs-sec>Feed</div>"
-              # (Oldest-first toggle removed 2026-06-27 — feed cards are ALWAYS oldest-at-top now, so the newest
-              #  work sits at the bottom nearest the eye. Explanations toggle removed 2026-06-18 — cards show the
-              #  distiller summary, not the planner's why. The Sub-goals toggle moved to the feed FOOTER.)
-              # Colormap (GLOBAL now — the user 2026-06-26): one ramp colors the feed recency tint, the usage
-              # "used" bar, and the context-window % bars across every surface. The dropdown OPTIONS are the
-              # gradient BARS themselves — no map names (the user 2026-06-23). A custom widget (a native <select>
-              # can't render gradient options): the button shows the selected map's bar, the list shows one bar
-              # per map; click a bar to pick it.
-              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>"
-              "<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>"
-              "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the recency colormap'></button>"
-              "<div id=rs-cmap-list hidden></div></div></span></div>"
-              "<div class=rs-sec>Sessions</div>"
-              # Session-colors palette picker (the user 2026-07-12): which categorical set sessions draw their
-              # identity color from. Options come from /palette (romp_palette is the single source of truth —
-              # no color literals here); picking one posts setPalette, and the kernel remaps the whole fleet
-              # slot-for-slot. Server-side pref like Auto Nudge: (re)initialized from /palette on gear open.
-              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>"
-              "<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>"
-              "<div id=rs-pal><button id=rs-pal-btn type=button title='Pick the session palette'></button>"
-              "<div id=rs-pal-list hidden></div></div></span></div>"
-              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>"
-              "<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs headless via the Agent SDK. Both kinds run side by side; this only sets the default.</span>"
-              "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
-              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
-              "<option value=sdk>SDK (headless)</option><option value=tmux>tmux (terminal)</option>"
-              "</select></span></div>"
-              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>"
+              # Order re-cut 2026-07-12 (the user): the knobs that steer the fleet lead — Sessions (default
+              # directory, Auto Nudge, backend), the judge model tiers, keyboard shortcuts — while the cosmetic
+              # color pickers and the debug-only judge-visibility toggles sink to the bottom; version stays last.
+              "<div class='rs-sec rs-sec-first'>Sessions</div>"
+              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>"
               "<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>"
               "<div style='display:flex;gap:6px;margin-top:5px'>"
               "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:#1e1e1e;color:#ccc;"
@@ -10038,33 +10005,22 @@ def _gear_html():
               "<span><b>Auto Nudge</b>"
               "<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>"
               "</span></label>"
-              "<div class=rs-sec>Timeline</div>"
-              "<label class=rs-row><input type=checkbox id=rs-collapsegaps checked>"
-              "<span><b>Collapse idle gaps</b>"
-              "<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>"
-              "</span></label>"
+              # "SDK", not "SDK (headless)" (the user 2026-07-12): it drives the same full chat UI — the only
+              # difference is what runs the session (the Agent SDK vs a terminal pane).
+              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>"
+              "<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs via the Agent SDK. Both kinds run side by side; this only sets the default.</span>"
+              "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
+              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
+              "<option value=sdk>SDK</option><option value=tmux>tmux (terminal)</option>"
+              "</select></span></div>"
               "<div class=rs-sec>Judges</div>"
-              # DEBUG VISUALIZATION ONLY (the user 2026-06-30): these two toggles just SHOW each judge SET's
-              # activity on the timeline's judging band — they do NOT enable/disable the judges (which always
-              # run). Labels lead with "Show" + the sub spells out "doesn't turn them on/off" so it can't be
-              # misread as an activation switch. index = captioner + archiver; triage = planner/grouper/closer/
-              # distiller/courier. Two checkboxes on ONE row. (Replaces the old single Debug-mode toggle.)
-              "<div class=rs-judges>"
-              "<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>"
-              "<span><b>Show indexing judges</b>"
-              "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
-              "</span></label>"
-              "<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>"
-              "<span><b>Show triage judges</b>"
-              "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
-              "</span></label>"
-              "</div>"
               # Judge model + effort choosers, per tier (the user 2026-07-02). SERVER-SIDE like Auto Nudge — each
               # change posts to the kernel (STATE/{judge,index}-{model,effort}) and the judge reads it next pass
               # (no restart). Options come from the SHARED MODEL_CHOICES/EFFORT_CHOICES (same list the chat +
               # timeline pickers fetch from /models), so the model vocabulary lives in exactly one place.
               # TRIAGE = planner/grouper/closer/distiller/courier (judgment); INDEX = captioner + archiver (bulk).
-              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Triage model</b>"
+              # (The show-judges TOGGLES live in the Debug section at the bottom — they only visualize.)
+              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Triage model</b>"
               "<span class=rs-sub>The model the triage judges use — planner, grouper, closer, distiller, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart.</span>"
               "<select id=rs-judgemodel " + _jsel + ">" + _mopts + "</select></span></div>"
               "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Triage effort</b>"
@@ -10078,6 +10034,58 @@ def _gear_html():
               "<select id=rs-indexeffort " + _jsel + ">" + _eopts + "</select></span></div>"
               "<div class=rs-sec>Keyboard shortcuts</div>"
               + _shortcut_rows() +
+              "<div class=rs-sec>Chat</div>"
+              "<label class=rs-row><input type=checkbox id=rs-compact>"
+              "<span><b>Compact transcript</b>"
+              "<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>"
+              "</span></label>"
+              "<label class=rs-row><input type=checkbox id=rs-branch>"
+              "<span><b>Show git branch</b>"
+              "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>"
+              "</span></label>"
+              "<div class=rs-sec>Timeline</div>"
+              "<label class=rs-row><input type=checkbox id=rs-collapsegaps checked>"
+              "<span><b>Collapse idle gaps</b>"
+              "<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>"
+              "</span></label>"
+              "<div class=rs-sec>Colors</div>"
+              # (Oldest-first toggle removed 2026-06-27 — feed cards are ALWAYS oldest-at-top now, so the newest
+              #  work sits at the bottom nearest the eye. Explanations toggle removed 2026-06-18 — cards show the
+              #  distiller summary, not the planner's why. The Sub-goals toggle moved to the feed FOOTER.)
+              # Colormap (GLOBAL now — the user 2026-06-26): one ramp colors the feed recency tint, the usage
+              # "used" bar, and the context-window % bars across every surface. The dropdown OPTIONS are the
+              # gradient BARS themselves — no map names (the user 2026-06-23). A custom widget (a native <select>
+              # can't render gradient options): the button shows the selected map's bar, the list shows one bar
+              # per map; click a bar to pick it.
+              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>"
+              "<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>"
+              "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the recency colormap'></button>"
+              "<div id=rs-cmap-list hidden></div></div></span></div>"
+              # Session-colors palette picker (the user 2026-07-12): which categorical set sessions draw their
+              # identity color from. Options come from /palette (romp_palette is the single source of truth —
+              # no color literals here); picking one posts setPalette, and the kernel remaps the whole fleet
+              # slot-for-slot. Server-side pref like Auto Nudge: (re)initialized from /palette on gear open.
+              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>"
+              "<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>"
+              "<div id=rs-pal><button id=rs-pal-btn type=button title='Pick the session palette'></button>"
+              "<div id=rs-pal-list hidden></div></div></span></div>"
+              "<div class=rs-sec>Debug</div>"
+              # DEBUG VISUALIZATION ONLY (the user 2026-06-30): these two toggles just SHOW each judge SET's
+              # activity on the timeline's judging band — they do NOT enable/disable the judges (which always
+              # run). Labels lead with "Show" + the sub spells out "doesn't turn them on/off" so it can't be
+              # misread as an activation switch. index = captioner + archiver; triage = planner/grouper/closer/
+              # distiller/courier. Two checkboxes on ONE row. (Replaces the old single Debug-mode toggle; moved
+              # from the Judges section 2026-07-12 — "that's more of a debugging thing", the user.)
+              "<div class=rs-judges>"
+              "<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>"
+              "<span><b>Show indexing judges</b>"
+              "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
+              "</span></label>"
+              "<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>"
+              "<span><b>Show triage judges</b>"
+              "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
+              "</span></label>"
+              "</div>"
               "<div class=rs-sep style='padding-top:8px'>"
               "<button id=ra-open class=ra-openbtn>Token usage analytics</button></div>"
               "<div class='rs-h rs-sep'>romp · version</div>"

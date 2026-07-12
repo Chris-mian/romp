@@ -1,6 +1,9 @@
-"""The Settings gear groups its rows into labelled SUBSECTIONS (the user 2026-06-24): Chat / Feed /
-Sessions / Debug, in that order, so the settings read by surface instead of one flat list. (The Feed's
-'Oldest first' toggle was removed 2026-06-27 — the feed is always oldest-at-top now.)
+"""The Settings gear groups its rows into labelled SUBSECTIONS (the user 2026-06-24), re-cut
+2026-07-12 (the user): the knobs that steer the fleet lead — Sessions (default directory, Auto
+Nudge, backend), the judge model tiers, keyboard shortcuts — the day-to-day view prefs sit in the
+middle (Chat, Timeline), and the cosmetic color pickers + the debug-only judge-visibility toggles
+sink to the bottom, with the version footer last. (The Feed section is gone — its only row, the
+global Colormap, lives under Colors now.)
 """
 import os
 import unittest
@@ -16,43 +19,50 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
         h = km._gear_html()
-        self.assertIn("<div class='rs-sec rs-sec-first'>Chat</div>", h)
-        self.assertIn("<div class=rs-sec>Feed</div>", h)
-        self.assertIn("<div class=rs-sec>Sessions</div>", h)
-        self.assertIn("<div class=rs-sec>Timeline</div>", h)
-        # the old "Debug" section is now "Judges" (the user 2026-06-29): two judge-set toggles, not one Debug toggle
-        self.assertIn("<div class=rs-sec>Judges</div>", h)
-        # in order: Chat < Feed < Sessions < Timeline < Judges
-        self.assertLess(h.index(">Chat<"), h.index(">Feed<"))
-        self.assertLess(h.index(">Feed<"), h.index(">Sessions<"))
-        self.assertLess(h.index(">Sessions<"), h.index(">Timeline<"))
-        self.assertLess(h.index(">Timeline<"), h.index(">Judges<"))
+        self.assertIn("<div class='rs-sec rs-sec-first'>Sessions</div>", h)
+        for sec in ("Judges", "Keyboard shortcuts", "Chat", "Timeline", "Colors", "Debug"):
+            self.assertIn("<div class=rs-sec>%s</div>" % sec, h)
+        self.assertNotIn(">Feed<", h, "the Feed section dissolved into Colors (its colormap is global)")
+        order = [">Sessions<", ">Judges<", ">Keyboard shortcuts<", ">Chat<",
+                 ">Timeline<", ">Colors<", ">Debug<", ">romp · version<"]
+        idx = [h.index(t) for t in order]
+        self.assertEqual(idx, sorted(idx), "sections in the 2026-07-12 order, version last")
 
     def test_each_setting_sits_under_the_right_section(self):
         h = km._gear_html()
-        # Chat: compact + branch come before the Feed header
-        self.assertLess(h.index("id=rs-compact"), h.index(">Feed<"))
-        self.assertLess(h.index("id=rs-branch"), h.index(">Feed<"))
-        # Feed: colormap between Feed and Sessions (the Oldest-first toggle was removed 2026-06-27)
-        self.assertTrue(h.index(">Feed<") < h.index("id=rs-cmap") < h.index(">Sessions<"))
+        # Sessions (top): default dir + auto nudge + backend before the Judges header
+        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-defaultdir") < h.index(">Judges<"))
+        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-autonudge") < h.index(">Judges<"))
+        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-backend") < h.index(">Judges<"))
+        # Judges (top): the four model/effort dropdowns — the SHOW toggles are NOT here anymore
+        self.assertTrue(h.index(">Judges<") < h.index("id=rs-judgemodel") < h.index(">Keyboard shortcuts<"))
+        self.assertTrue(h.index(">Judges<") < h.index("id=rs-indexeffort") < h.index(">Keyboard shortcuts<"))
+        # Chat (middle): compact + branch between Chat and Timeline
+        self.assertTrue(h.index(">Chat<") < h.index("id=rs-compact") < h.index(">Timeline<"))
+        self.assertTrue(h.index(">Chat<") < h.index("id=rs-branch") < h.index(">Timeline<"))
+        # Timeline (middle towards the bottom): collapse idle gaps before the Colors header
+        self.assertTrue(h.index(">Timeline<") < h.index("id=rs-collapsegaps") < h.index(">Colors<"))
+        # Colors (bottom): the global colormap + the session palette between Colors and Debug
+        self.assertTrue(h.index(">Colors<") < h.index("id=rs-cmap") < h.index(">Debug<"))
+        self.assertTrue(h.index(">Colors<") < h.index("id=rs-pal") < h.index(">Debug<"))
         self.assertNotIn("rs-oldest", h)
-        # Sessions: backend, default dir, auto-nudge between Sessions and Timeline
-        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-backend") < h.index(">Timeline<"))
-        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-defaultdir") < h.index(">Timeline<"))
-        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-autonudge") < h.index(">Timeline<"))
-        # Timeline: collapse idle gaps between Timeline and Judges (the user 2026-06-25, moved from the toolbar)
-        self.assertTrue(h.index(">Timeline<") < h.index("id=rs-collapsegaps") < h.index(">Judges<"))
-        # Judges: the two judge-set toggles (index + triage), analytics, version after Judges
-        self.assertLess(h.index(">Judges<"), h.index("id=rs-judges-index"))
-        self.assertLess(h.index(">Judges<"), h.index("id=rs-judges-triage"))
-        self.assertLess(h.index(">Judges<"), h.index("id=ra-open"))
-        self.assertLess(h.index(">Judges<"), h.index("id=rsver"))
+        # Debug (bottom): the judge-set SHOW toggles after Debug; analytics + version after them
+        self.assertLess(h.index(">Debug<"), h.index("id=rs-judges-index"))
+        self.assertLess(h.index(">Debug<"), h.index("id=rs-judges-triage"))
+        self.assertLess(h.index("id=rs-judges-triage"), h.index("id=ra-open"))
+        self.assertLess(h.index("id=ra-open"), h.index("id=rsver"), "version is the very bottom")
         self.assertNotIn("id=rs-debug", h)   # the single Debug toggle is gone
         # the judge toggles read as a DEBUG *show* control, not an on/off for the judges (the user 2026-06-30):
         # labels lead with "Show", and the sub spells out that it doesn't enable/disable them
         self.assertIn("<b>Show indexing judges</b>", h)
         self.assertIn("<b>Show triage judges</b>", h)
         self.assertIn("does NOT turn the judges on or off", h)
+
+    def test_the_sdk_backend_is_labelled_plain_sdk(self):
+        # "SDK", not "SDK (headless)" (the user 2026-07-12): it drives the same full chat UI
+        h = km._gear_html()
+        self.assertIn("<option value=sdk>SDK</option>", h)
+        self.assertNotIn("headless", h)
 
     def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
         # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)
