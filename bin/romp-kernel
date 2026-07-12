@@ -3074,12 +3074,16 @@ def _tunnel_status(proc_alive, port_up, remote_answered):
 
 def _remote_public(r):
     """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen.
-    kernelSha/localSha/outOfDate let the dashboard flag a remote running older code + offer to update it."""
+    kernelSha/localSha/outOfDate let the dashboard flag a remote running older code + offer to update it;
+    behindBy/aheadBy/kernelDate say HOW it drifted (computed only when it actually did)."""
+    ood = _remote_out_of_date(r)
+    drift = _behind_info(r.get("kernel_sha") or "") if ood else {"behind": 0, "ahead": 0, "date": ""}
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
             "token": r.get("token") or "", "status": r.get("status") or "down",
             "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
-            "outOfDate": _remote_out_of_date(r)}
+            "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
+            "kernelDate": drift["date"]}
 
 
 def _remotes_save():
@@ -3301,6 +3305,47 @@ def _remote_out_of_date(r):
     — mixing the cached compare with a live-HEAD push is exactly why the banner never went away)."""
     return bool(r.get("kernel_sha") and _local_head(short=True)
                 and not _shas_agree(r.get("kernel_sha"), _local_head(short=True)))
+
+
+_BEHIND_CACHE = {}   # (remote sha base, local full HEAD) → drift dict; both key parts name immutable commits
+
+
+def _behind_info(remote_sha):
+    """HOW an out-of-date remote's commit relates to local HEAD, for the popover row: `behind` = commits a
+    push would deliver, `ahead` = commits the REMOTE has that this repo lacks (a push would clobber them, and
+    _update_remote refuses — so the row must say 'ahead'/'diverged', never a false 'behind'), `date` = the
+    remote commit's date. behind/ahead are None when the remote's sha isn't in this repo at all (it was
+    updated from some other machine) — the row says so instead of guessing. Memoized per (remote sha, local
+    HEAD): git runs only when either commit actually changes, not on every /tunnels poll."""
+    base, lfull = _sha_base(remote_sha), _local_head()
+    if not base or not lfull:
+        return {"behind": None, "ahead": None, "date": ""}
+    key = (base, lfull)
+    hit = _BEHIND_CACHE.get(key)
+    if hit is not None:
+        return hit
+    info = {"behind": None, "ahead": None, "date": ""}
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", "--quiet", base + "^{commit}"],
+                           capture_output=True, text=True, timeout=3)
+        full = (r.stdout.strip() if r.returncode == 0 else "")
+        if full:
+            b = subprocess.run(["git", "-C", str(ROOT), "rev-list", "--count", full + ".." + lfull],
+                               capture_output=True, text=True, timeout=5)
+            a = subprocess.run(["git", "-C", str(ROOT), "rev-list", "--count", lfull + ".." + full],
+                               capture_output=True, text=True, timeout=5)
+            if b.returncode == 0 and a.returncode == 0:
+                info["behind"], info["ahead"] = int(b.stdout.strip()), int(a.stdout.strip())
+            d = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%cs", full],
+                               capture_output=True, text=True, timeout=3)
+            if d.returncode == 0:
+                info["date"] = d.stdout.strip()
+    except Exception:
+        pass
+    if len(_BEHIND_CACHE) > 64:   # HEAD moves, remotes come and go — keep the memo from growing unbounded
+        _BEHIND_CACHE.clear()
+    _BEHIND_CACHE[key] = info
+    return info
 
 
 _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its HEAD to on the remote
@@ -10708,9 +10753,17 @@ ts.forEach(function(t){var row=document.createElement('div');row.className='rnet
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
 var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
-// version drift: an up remote running a DIFFERENT commit than this kernel shows "behind" + a Push button that
-// pushes THIS machine's committed build to it + restarts it, peer-to-peer (the user 2026-07-04). Else its sha.
-var ver=t.outOfDate?' \\u00b7 <span class=rnet-old>behind</span>':(t.kernelSha?' \\u00b7 <span class=rnet-sha>'+t.kernelSha+'</span>':'');
+// version drift: an up remote running a DIFFERENT commit than this kernel names HOW it differs — 'behind N
+// commits' (a push delivers exactly those), 'ahead N commits'/'diverged' (it has commits this repo lacks — a
+// push would clobber them, and the kernel refuses), or 'different build' (its sha is unknown here, e.g. it was
+// updated from another machine). Shas + the remote commit's date ride the tooltip. Else its sha.
+var ver='';
+if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
+if(typeof bb==='number'&&typeof ab==='number'){
+w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
+var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+' \\u2014 this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
+ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
+else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
 var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s romp to '+t.host+' + restart it\">Push</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
