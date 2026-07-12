@@ -42,6 +42,12 @@ class LandingShell(unittest.TestCase):
         html = km._landing()
         for act in ("data-act=settings", "data-act=net", "data-act=usage"):
             self.assertIn(act, html)
+        # ICONS, not words (the user 2026-07-11): settings wears the desktop rail's own gear glyph, net its
+        # network-tree SVG; usage gets the theme's own motif — two stacked fill bars at different levels
+        self.assertIn("data-act=settings aria-label=Settings title=Settings>&#9885;</button>", html)
+        self.assertIn("data-act=net aria-label='Remote kernels'", html)
+        self.assertIn("<rect x='1' y='3' width='9' height='4' rx='1' fill='currentColor'/>", html)   # the used-bar fill
+        self.assertNotIn(">Gear</button>", html)
         self.assertIn("{romp:'openSettings'}", km._LANDING_MOBILE_JS)   # same path as the desktop gear
         self.assertIn("__rompOpenNet", km._LANDING_MOBILE_JS)           # opens the shell's remotes panel
         self.assertIn("window.__rompOpenNet=open", km._LANDING_REMOTES_JS)

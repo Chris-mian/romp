@@ -11156,7 +11156,8 @@ def _landing():
             "#mtabs button.on{color:#4da4ff}"
             # action buttons: dimmer + fixed-width so the four pane tabs keep the room; thin divider between
             "#mtabs .mtabs-div{flex:0 0 1px;background:#303031;margin:5px 0}"
-            "#mtabs button.mact{flex:0 0 auto;padding:6px 9px;color:#7d848b}"
+            "#mtabs button.mact{flex:0 0 auto;padding:6px 10px;color:#7d848b;font-size:17px;line-height:1}"
+            "#mtabs button.mact svg{display:block}"
             "}"
             # default Chat + Feed + Timeline shown, Fleet off (the user 2026-06-25); the rail toggles + ?panes=
             # reconcile in _LANDING_COLLAPSE_JS.
@@ -11258,9 +11259,22 @@ def _landing():
             # panel + a usage panel showing the desktop tooltip's window bars. data-act (not data-pane) —
             # they fire, they don't switch the shown pane.
             "<span class=mtabs-div></span>"
-            "<button class=mact data-act=usage>Usage</button>"
-            "<button class=mact data-act=net>Net</button>"
-            "<button class=mact data-act=settings>Gear</button>"
+            # the ACTUAL rail icons, not words (the user 2026-07-11). Usage has no desktop icon (the rail
+            # shows the live bars themselves) — its icon is the same motif: two stacked fill bars at
+            # different levels. SVG ATTRIBUTES MUST BE QUOTED (the rail-net invisible-squares saga).
+            "<button class=mact data-act=usage aria-label=Usage title=Usage>"
+            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<rect x='1' y='3' width='14' height='4' rx='1' fill='none' stroke='currentColor' stroke-width='1'/>"
+            "<rect x='1' y='3' width='9' height='4' rx='1' fill='currentColor'/>"
+            "<rect x='1' y='9' width='14' height='4' rx='1' fill='none' stroke='currentColor' stroke-width='1'/>"
+            "<rect x='1' y='9' width='6' height='4' rx='1' fill='currentColor'/></svg></button>"
+            "<button class=mact data-act=net aria-label='Remote kernels' title='Remote kernels'>"
+            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<path d='M8 5 L8 8 M3 11 L3 8 L13 8 L13 11' fill='none' stroke='currentColor' stroke-width='1' stroke-linejoin='round'/>"
+            "<rect x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></button>"
+            "<button class=mact data-act=settings aria-label=Settings title=Settings>&#9885;</button>"
             "</nav>"
             # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
             "<div id=rnet-back hidden><div id=rnet-panel>"
