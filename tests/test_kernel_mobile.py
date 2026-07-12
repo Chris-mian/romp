@@ -22,8 +22,34 @@ class LandingShell(unittest.TestCase):
     def test_mobile_tabbar_one_button_per_pane(self):
         html = km._landing()
         self.assertIn("id=mtabs", html)
-        for pane in ("data-pane=chat", "data-pane=feed", "data-pane=timeline"):
+        for pane in ("data-pane=chat", "data-pane=fleet", "data-pane=feed", "data-pane=timeline"):
             self.assertIn(pane, html)
+
+    def test_outline_is_a_mobile_tab_not_desktop_only(self):
+        # the user 2026-07-11: "I can't access the outline view in the mobile UI" — the fleet pane was
+        # explicitly desktop-only (#fleet-pane display:none!important, no tab, no switcher entry).
+        html = km._landing()
+        self.assertIn(">Outline</button>", html)                       # the tab exists, labeled Outline
+        self.assertIn("#f-chat.m-on,#f-fleet.m-on,#f-feed.m-on{display:block}", html)   # ...and shows as the active pane
+        self.assertNotIn("#fleet-pane{display:none!important}", html)  # the desktop-only exclusion is gone
+        self.assertIn("fleet:document.getElementById('f-fleet')", km._LANDING_MOBILE_JS)
+        # the chat header's Fleet pill / the fleet's back-to-chat (toggleFleet) is a tab switch on mobile
+        self.assertIn("'toggleFleet'", km._LANDING_MOBILE_JS)
+
+    def test_rail_actions_reachable_on_mobile(self):
+        # the user 2026-07-11: settings / the network panel / usage stats were rail-only (the rail is
+        # hidden on mobile). Three data-act buttons on the bar; each routes to the existing machinery.
+        html = km._landing()
+        for act in ("data-act=settings", "data-act=net", "data-act=usage"):
+            self.assertIn(act, html)
+        self.assertIn("{romp:'openSettings'}", km._LANDING_MOBILE_JS)   # same path as the desktop gear
+        self.assertIn("__rompOpenNet", km._LANDING_MOBILE_JS)           # opens the shell's remotes panel
+        self.assertIn("window.__rompOpenNet=open", km._LANDING_REMOTES_JS)
+        self.assertIn("__rompUsagePanel", km._LANDING_MOBILE_JS)        # the tooltip's bars as a modal
+        self.assertIn("window.__rompUsagePanel=function", km._LANDING_USAGE_JS)
+        self.assertIn("#ru-tip.ru-modal", html)                         # centered placement for the panel
+        # the lifted-fullscreen settings iframe must override the mobile display:none
+        self.assertIn("body.settings-open #f-feed{display:block;position:fixed", html)
 
     def test_desktop_unchanged_tabbar_hidden_until_breakpoint(self):
         html = km._landing()
