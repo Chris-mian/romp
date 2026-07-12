@@ -4,6 +4,9 @@ scenes. `POST /tunnels/update` runs the ssh git-pull + restart; the rail popover
 SYNTHETIC hosts; subprocess/http are stubbed so nothing actually launches or connects."""
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 
@@ -304,6 +307,116 @@ class RompUpdateCLI(unittest.TestCase):
 def inspect_src():
     import inspect
     return inspect.getsource(km)
+
+
+class BehindInfo(unittest.TestCase):
+    """The popover's drift wording data (the user 2026-07-11: 'something more informative than just
+    behind'): _behind_info measures HOW an out-of-date remote differs — commits behind, commits ahead
+    (a push would clobber those, so 'behind' would be a lie), and the remote commit's date."""
+    LOCAL_FULL = "abc1234000000000"
+    REMOTE_FULL = "def5678000000000"
+
+    def setUp(self):
+        self._hc = dict(km._HEAD_CACHE)
+        km._HEAD_CACHE.update(ts=9e18, full=self.LOCAL_FULL, short="abc1234")
+        km._BEHIND_CACHE.clear()
+        self._run = km.subprocess.run
+
+    def tearDown(self):
+        km._HEAD_CACHE.clear(); km._HEAD_CACHE.update(self._hc)
+        km._BEHIND_CACHE.clear()
+        km.subprocess.run = self._run
+
+    def _mock_git(self, behind="12", ahead="0", date="2026-07-08", known=True, calls=None):
+        loc, rem = self.LOCAL_FULL, self.REMOTE_FULL
+
+        def run(argv, **kw):
+            if calls is not None:
+                calls.append(list(argv))
+            j = " ".join(argv)
+            if "rev-parse" in j and "^{commit}" in j:
+                return _R(out=rem + "\n") if known else _R(rc=1)
+            if "rev-list" in j and (rem + ".." + loc) in j:
+                return _R(out=behind + "\n")
+            if "rev-list" in j and (loc + ".." + rem) in j:
+                return _R(out=ahead + "\n")
+            if "log" in j:
+                return _R(out=date + "\n")
+            return _R(rc=1)
+        km.subprocess.run = run
+
+    def test_behind_counts_and_the_remote_commits_date(self):
+        self._mock_git(behind="12", ahead="0", date="2026-07-08")
+        self.assertEqual(km._behind_info("def5678"),
+                         {"behind": 12, "ahead": 0, "date": "2026-07-08"})
+
+    def test_ahead_is_distinguished_from_behind(self):
+        # the remote has its own commits (updated from another machine, or local was rolled back):
+        # a push would CLOBBER them, so the row must not claim 'behind'
+        self._mock_git(behind="0", ahead="3")
+        info = km._behind_info("def5678")
+        self.assertEqual((info["behind"], info["ahead"]), (0, 3))
+
+    def test_unknown_sha_reports_none_not_a_guess(self):
+        self._mock_git(known=False)
+        self.assertEqual(km._behind_info("def5678"), {"behind": None, "ahead": None, "date": ""})
+
+    def test_memoized_per_sha_pair(self):
+        calls = []
+        self._mock_git(calls=calls)
+        km._behind_info("def5678")
+        n = len(calls)
+        self.assertGreater(n, 0)
+        km._behind_info("def5678")
+        self.assertEqual(len(calls), n, "the second read is served from the memo — git never re-runs")
+
+    def test_remote_public_carries_the_drift_fields(self):
+        self._mock_git(behind="12", ahead="0", date="2026-07-08")
+        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801,
+                                 "status": "up", "kernel_sha": "def5678"})
+        self.assertTrue(pub["outOfDate"])
+        self.assertEqual((pub["behindBy"], pub["aheadBy"], pub["kernelDate"]), (12, 0, "2026-07-08"))
+
+    def test_in_sync_remote_never_touches_git(self):
+        def boom(argv, **kw):
+            raise AssertionError("an in-sync row must not pay for drift measurement: %s" % argv)
+        km.subprocess.run = boom
+        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801,
+                                 "status": "up", "kernel_sha": "abc1234"})
+        self.assertFalse(pub["outOfDate"])
+        self.assertEqual((pub["behindBy"], pub["aheadBy"], pub["kernelDate"]), (0, 0, ""))
+
+
+class DriftWordingUI(unittest.TestCase):
+    """The popover row names HOW the remote differs, not just 'behind' (the user 2026-07-11)."""
+
+    def test_row_names_how_the_remote_differs(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("'behind '+bb+' commit'", js)
+        self.assertIn("'ahead '+ab+' commit'", js)
+        self.assertIn("'diverged'", js)
+        self.assertIn("'different build'", js, "an unknown sha says so instead of guessing")
+
+    def test_tooltip_carries_the_shas_and_date(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("running '+(t.kernelSha||'?')", js)
+        self.assertIn("this machine is at '+(t.localSha||'?')", js)
+        self.assertIn("t.kernelDate", js)
+
+    def test_popover_js_parses(self):
+        # the inline JS ships unparsed inside the kernel's HTML — a stray brace only surfaces
+        # when the popover breaks in the browser; parse it the way the browser will
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node unavailable")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(km._LANDING_REMOTES_JS)
+            path = f.name
+        try:
+            r = subprocess.run([node, "--check", path], capture_output=True, text=True, timeout=15)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":
