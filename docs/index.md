@@ -1,17 +1,16 @@
-# romp
+# Romp
 
-AI coding agents can do more and more on their own, so it is natural to run
-several at once. But managing them can consume the attention you meant to
-spend directing them: keeping track of which agent is working on which task,
-scrolling through transcripts for the background a decision needs, checking
-in on the agents to see which ones are stuck or need you, and coordinating
-work across the agents yourself, since they have no way to talk to each
-other.
+AI agents like Claude Code can do more and more on their own, so it is
+natural to run several at once. But running them in parallel scatters your
+attention across management tasks: keeping track of which agent is doing
+what, scrolling through transcripts to find the background a decision needs,
+checking in to see which agents are stuck, and coordinating handoffs of work
+and information between them.
 
-Romp provides the tools to do the managing, so your attention stays on
-directing: one dashboard shows every agent and what needs you, the work is
-organized by task rather than by session, stalled agents get nudged back to
-their open work, and agents message each other directly, across machines.
+Romp provides the tools to make this management seamless, so you can stay
+focused on what you're trying to accomplish instead of how the work is
+happening. It organizes your interaction with the agents by human-facing
+tasks and goals.
 
 <div class="grid cards" markdown>
 
@@ -52,6 +51,6 @@ their open work, and agents message each other directly, across machines.
 
 ## Everything stays on your machine
 
-romp only ever talks to `127.0.0.1` (the local kernel and postal service); the
+Romp only ever talks to `127.0.0.1` (the local kernel and postal service); the
 only external traffic is the `claude` CLI you already use. Recorded state lives
 under `${XDG_STATE_HOME:-~/.local/state}/romp/` and is never uploaded.

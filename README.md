@@ -2,16 +2,17 @@
   <img src="assets/romp-wordmark.png" alt="romp" width="440">
 </p>
 
-AI coding agents can do more and more on their own, so it is natural to run
-several at once. But managing them can consume the attention you meant to
-spend directing them: keeping track of which agent is working on which task,
-scrolling through transcripts for the background a decision needs, checking
-in on the agents to see which ones are stuck or need you, and coordinating
-work across the agents yourself, since they have no way to talk to each
-other.
+AI agents like Claude Code can do more and more on their own, so it is
+natural to run several at once. But running them in parallel scatters your
+attention across management tasks: keeping track of which agent is doing
+what, scrolling through transcripts to find the background a decision needs,
+checking in to see which agents are stuck, and coordinating handoffs of work
+and information between them.
 
-Romp provides the tools to do the managing, so your attention stays on
-directing:
+Romp provides the tools to make this management seamless, so you can stay
+focused on what you're trying to accomplish instead of how the work is
+happening. It organizes your interaction with the agents by human-facing
+tasks and goals. This includes:
 
 - **The whole fleet at a glance.** One dashboard shows every agent: who is
   working, who is stuck, who has been waiting on you, and for how long.
@@ -21,13 +22,13 @@ directing:
   has it, what got handed off, what is done, what needs you, plus a short
   summary and the background you need to decide, so picking a thread back up
   after a week costs a glance.
-- **Stalled agents get a nudge.** Since romp knows which tasks are still open,
+- **Stalled agents get a nudge.** Since Romp knows which tasks are still open,
   an agent that goes idle with work left gets nudged back to it; the fleet
   keeps moving without you watching for stalls.
 - **Coordination across agents and machines.** The Romp Postal Service is mail
   between agents: they delegate, hand off, and ask each other questions
-  directly, and romp tracks every exchange. It runs over SSH, so one fleet can
-  span machines.
+  directly, and Romp tracks every exchange so you stay in the loop. It runs
+  over SSH, so one fleet can span machines.
 - **Transcripts built for humans.** Timestamps, live status, and collapsible
   detail; read at any level, from a one-line summary down to the raw exchange.
 - **No thread is lost.** Every session is indexed and searchable, and a closed
@@ -83,15 +84,15 @@ export PATH="$PATH:$(pwd)/bin"   # add to your shell rc
 ```
 
 `install.sh` also registers the hooks in your `~/.claude/settings.json`
-(idempotently — it only adds missing romp entries and never touches other
+(idempotently — it only adds missing Romp entries and never touches other
 hooks; see `hooks/` headers for what fires on which event) and installs the
 login service so the kernel manager is always up.
 
 State lives under `${XDG_STATE_HOME:-~/.local/state}/romp/`.
 
-## What romp records, where it lives, what it costs
+## What Romp records, where it lives, what it costs
 
-Everything stays on your machine. romp itself only ever talks to `127.0.0.1`
+Everything stays on your machine. Romp itself only ever talks to `127.0.0.1`
 (the local kernel and Romp Postal Service); the only external traffic is the `claude`
 CLI you already use.
 
