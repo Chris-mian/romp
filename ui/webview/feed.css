@@ -180,8 +180,10 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    timestamp when it fits, else it drops to its own right-aligned line (the compactness ladder). */
 .fask-row1 .fdismiss { float: right; margin-left: 8px; }
 /* the by-session header on the column BACKDROP opening that session's run of cards: identity-colored
-   name + the working dot; cards under it drop their own name row. */
-.feed-sess-head { display: flex; align-items: center; gap: 6px; margin: 9px 3px 0; font-size: 0.9em; font-weight: 600; }
+   name + the working dot; cards under it drop their own name row. NO font-size of its own (the user
+   2026-07-13): it wears the base size + weight the CARD TITLES render at, so the two read as one rank. */
+.feed-sess-head { display: flex; align-items: center; gap: 6px; margin: 9px 3px 0; font-weight: 600; }
+.feed-sess-head .fname { font-size: inherit; }   /* not .fname's 0.92em — the header matches the card titles exactly */
 .feed-sess-head:first-child { margin-top: 2px; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
