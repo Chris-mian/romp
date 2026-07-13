@@ -37,3 +37,15 @@ export const ATTACH_TITLE_WEB = "Attach a file — inserts its path";
 // three state columns and their header chips inside #feed-list at runtime).
 export const FEED_BODY = `  <div id="feed-head"></div>
   <div id="feed-list"></div>`;
+
+// Fleet ("Outline") view: docked search bar, the per-session goal-tree list, and
+// the docked control bar. Mirrors the kernel's _fleet_page body.
+export const FLEET_BODY = `  <div id="fleet-search-bar"><div id="fleet-search-wrap">
+    <input id="fleet-search" type="search" autocomplete="off" placeholder="Search sessions and tasks…">
+    <button id="fleet-search-clear" type="button" aria-label="Clear search" title="Clear search" hidden>×</button>
+  </div></div>
+  <div id="fleet-list"></div><div id="fleet-foot"></div>`;
+
+// Timeline view: one host div — TimelinePanel (bundled into dist/timeline.js)
+// builds everything inside it. Mirrors the kernel's _timeline_page body.
+export const TIMELINE_BODY = `  <div id="host"></div>`;

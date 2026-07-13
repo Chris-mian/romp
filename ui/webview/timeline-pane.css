@@ -1,0 +1,30 @@
+/* The timeline pane's wrapper styles (the romp-tl-* classes TimelinePanel renders into),
+   shared by BOTH hosts: bin/romp-kernel reads this file live for the /timeline page, and
+   chat-view/esbuild.js bundles it to dist/timeline-pane.css for the VS Code view. Theme
+   vars come from each host (the kernel's THEME_CSS in the browser; VS Code natively). */
+html,body{margin:0;padding:0;background:var(--vscode-editor-background,#1e1e1e);color:var(--vscode-foreground,#cccccc);}
+:root{--text-muted:#9aa0a6;--text-faint:#6e7681;}#host{width:100%;}
+.romp-tl-top{display:flex;align-items:center;gap:12px;padding:2px 0 8px;flex:0 0 auto;}
+.romp-tl-winlabel{color:var(--text-muted);font-size:12px;min-width:92px;}
+.romp-tl-src{color:var(--text-faint);font-size:11px;margin-left:auto;}
+.romp-tl-slider{flex:1;max-width:420px;-webkit-appearance:none;appearance:none;height:6px;
+border-radius:3px;background:#2a2f37;outline:none;}
+.romp-tl-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;
+border-radius:50%;background:#e6edf3;cursor:pointer;}
+.romp-tl-wrap{overflow-x:auto;}.romp-tl-wrap svg{display:block;}
+/* Touch devices: the view forces a >=640px-wide SVG, which on a ~390px phone overflowed into a NATIVE
+   horizontal scroller that competed with (and beat) the one-finger pan gesture. Fit the SVG to the screen
+   instead (uniform scale via its viewBox) and kill the overflow scroller, so the touch handlers own all
+   horizontal motion and pinch-zoom is the way to get detail (the user 2026-06-16). */
+@media (pointer:coarse){.romp-tl-wrap{overflow-x:hidden;touch-action:pan-y;}
+.romp-tl-wrap svg{width:100%;height:auto;}}
+.romp-tl-tip{position:fixed;pointer-events:none;z-index:1000;max-width:320px;background:#1c2430;
+border:1px solid #ffffff1f;border-radius:8px;padding:7px 9px;font-size:12px;color:#e6edf3;
+box-shadow:0 8px 24px #00000066;opacity:0;transform:translateY(4px);transition:opacity .1s,transform .1s;}
+.romp-tl-tip.show{opacity:1;transform:translateY(0);}
+.romp-tl-tip .r{display:flex;align-items:center;gap:6px;}
+.romp-tl-tip .chip{width:9px;height:9px;border-radius:50%;display:inline-block;}
+.romp-tl-tip .who{font-weight:650;}.romp-tl-tip .ar{color:#6e7681;}
+.romp-tl-tip .t{color:#8b949e;margin-left:2px;font-variant-numeric:tabular-nums;}
+.romp-tl-tip .k{color:#6e7681;font-size:10px;text-transform:uppercase;letter-spacing:.04em;}
+.romp-tl-tip .b{margin-top:4px;color:#cdd9e5;}

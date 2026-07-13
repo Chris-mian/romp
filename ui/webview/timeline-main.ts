@@ -1,0 +1,22 @@
+// The VS Code timeline surface's entry point: bundles the shared TimelinePanel
+// (ui/romp-timeline-view.js — the SAME file the kernel injects into /timeline)
+// together with the boot glue, into dist/timeline.js for the rompTimeline
+// webview view. The extension host holds the kernel WebSocket (app=timeline)
+// and relays frames via postMessage, exactly like chat/feed.
+import { installDomHelpers, dispatchFrame, bridgeFunctions } from "./timeline-boot";
+
+// CJS view module — esbuild inlines it into this bundle at build time.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { TimelinePanel } = require("../romp-timeline-view.js");
+
+const api = (window as any).acquireVsCodeApi();
+const post = (m: Record<string, unknown>) => api.postMessage(m);
+
+installDomHelpers(HTMLElement.prototype);
+Object.assign(window, bridgeFunctions(post));
+
+let panel: any = null;
+window.addEventListener("message", (ev: MessageEvent) => { dispatchFrame(panel, ev.data); });
+
+panel = new TimelinePanel(document.getElementById("host"));
+post({ type: "ready" }); // ask the kernel to push the initial lanes (like chat/feed/fleet)

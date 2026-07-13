@@ -165,7 +165,9 @@ class TimelineTouchSurface(unittest.TestCase):
         # regression: the view forces a >=640px SVG; on a ~390px phone the default overflow-x:auto turned
         # that into a native horizontal scroller that beat the one-finger pan gesture. On a touch device the
         # SVG must fit the screen (width:100%) with no overflow scroller, so the gesture owns horizontal pan.
-        css = km.TIMELINE_CSS
+        # The wrapper styles moved to ui/webview/timeline-pane.css (shared with the VS Code view); the
+        # kernel reads that file live, so pin the served page rather than a constant.
+        css = km._timeline_page()
         self.assertIn("@media (pointer:coarse)", css)
         self.assertIn("overflow-x:hidden", css)
         self.assertIn("touch-action:pan-y", css)

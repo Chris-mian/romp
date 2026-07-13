@@ -5,8 +5,9 @@
 // bin/romp-serve). This extension only:
 //   1. ensures a kernel is running (spawn-or-attach on the default port,
 //      restarting a stale one once after a VSIX update),
-//   2. hosts the two webview panels (chat + feed) and pipes their postMessage
-//      traffic over the kernel's WebSocket protocol verbatim,
+//   2. hosts the four webview surfaces — chat + feed (editor panels) and
+//      timeline + outline/fleet (native panel/sidebar views) — and pipes their
+//      postMessage traffic over the kernel's WebSocket protocol verbatim,
 //   3. supplies the few genuinely CLIENT-side capabilities: opening files in
 //      the editor, the OS file picker, the clipboard, external links, and
 //      panel reveal/focus orchestration.
@@ -15,9 +16,14 @@
 // front ends are clients of one kernel, sharing tabs with per-client focus.
 import * as vscode from "vscode";
 import * as http from "http";
+import { execFile } from "child_process";
 import WebSocket from "ws";
-import { chatBody, FEED_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
+import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach } from "./kernel-attach";
+import { routeViewMessage } from "./view-routing";
+import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
+import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
+import { parsePorcelain } from "./session-diff";
 
 const HOST = "127.0.0.1";
 
@@ -37,6 +43,8 @@ let panel: vscode.WebviewPanel | undefined;
 let feedPanel: vscode.WebviewPanel | undefined;
 let chatPipe: KernelPipe | undefined;
 let feedPipe: KernelPipe | undefined;
+let timelinePipe: KernelPipe | undefined;
+let fleetPipe: KernelPipe | undefined;
 // Webview-cold replays: a deep link / picker-open that arrived before the chat
 // webview signalled "ready" is re-sent when the ready flows past us.
 let pendingToWebview: any[] = [];
@@ -54,17 +62,28 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewPanelSerializer("rompFeed", {
       async deserializeWebviewPanel(webviewPanel) { wireFeedPanel(webviewPanel); },
     }),
+    // Timeline + Outline are native VIEWS (bottom panel / sidebar by default —
+    // the user can drag them anywhere), resolved lazily when first shown.
+    vscode.window.registerWebviewViewProvider("rompTimeline",
+      { resolveWebviewView: (v) => wireTimelineView(v) },
+      { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.window.registerWebviewViewProvider("rompFleet",
+      { resolveWebviewView: (v) => wireFleetView(v) },
+      { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerUriHandler({ handleUri: onDeepLink }),
     vscode.commands.registerCommand("rompChat.open", async () => {
       const had = !!panel;
       openPanel();
       const chatCol = panel?.viewColumn;
       openFeedPanel(true, chatCol !== undefined ? ((chatCol as number) + 1) as vscode.ViewColumn : undefined);
-      try { await vscode.commands.executeCommand("trackchanges.timeline.focus"); } catch { /* not installed */ }
+      // Bring the timeline up without stealing focus from the chat panel.
+      try { await vscode.commands.executeCommand("rompTimeline.focus", { preserveFocus: true }); } catch { /* view unavailable */ }
       panel?.reveal(panel.viewColumn ?? vscode.ViewColumn.Beside, false);
       if (had) toWebview({ type: "openPicker" });
     }),
     vscode.commands.registerCommand("rompChat.openFeed", () => openFeedPanel()),
+    vscode.commands.registerCommand("rompChat.openTimeline", () => vscode.commands.executeCommand("rompTimeline.focus")),
+    vscode.commands.registerCommand("rompChat.openFleet", () => vscode.commands.executeCommand("rompFleet.focus")),
     vscode.commands.registerCommand("rompChat.addSession", () => { openPanel(); toWebview({ type: "openPicker", pick: false }); }),
     vscode.commands.registerCommand("rompChat.pickSession", (arg?: unknown) =>
       pickSessionExternal(
@@ -83,7 +102,21 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showWarningMessage("romp: open a .jsonl transcript first.");
       }
     }),
+    vscode.commands.registerCommand("rompChat.citeInComposer", citeInComposer),
+    vscode.commands.registerCommand("rompChat.openSessionWorktree", openSessionWorktree),
+    vscode.commands.registerCommand("rompChat.diffSessionChanges", diffSessionChanges),
+    // HEAD side of the session-diff editor: romp-git:/<rel>?<json {dir,rel}>
+    vscode.workspace.registerTextDocumentContentProvider("romp-git", {
+      provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+        try {
+          const q = JSON.parse(uri.query);
+          if (!q.rel) return Promise.resolve("");   // untracked: no HEAD side
+          return gitIn(String(q.dir), ["show", `HEAD:${String(q.rel)}`]).catch(() => "");
+        } catch { return Promise.resolve(""); }
+      },
+    }),
   );
+  startFleetStatus(context);
 }
 
 export function deactivate() {
@@ -91,6 +124,9 @@ export function deactivate() {
   // reap here — closing/reloading VS Code just drops our attach; the kernel keeps running.
   chatPipe?.dispose();
   feedPipe?.dispose();
+  timelinePipe?.dispose();
+  fleetPipe?.dispose();
+  statusPipe?.dispose();
 }
 
 // Post into the chat webview, deferring until its "ready" if it's still cold
@@ -174,9 +210,14 @@ class KernelPipe {
   private everConnected = false;
   webviewReady = false;
   constructor(
-    private app: "chat" | "feed",
+    private app: "chat" | "feed" | "timeline" | "fleet",
     private onDown: (m: any) => void,
     private onReconnect: () => void,
+    private onState?: (up: boolean) => void,
+    // A passive pipe OBSERVES: it polls healthz and attaches when a kernel is
+    // there, but never asks the manager to spawn one and never toasts — the
+    // ambient status bar must not resurrect a kernel the user turned off.
+    private passive = false,
   ) {
     void this.connect();
   }
@@ -187,9 +228,9 @@ class KernelPipe {
   }
   private async connect() {
     if (!this.alive) return;
-    const ok = await ensureKernel();
+    const ok = this.passive ? (await healthz()).ok : await ensureKernel();
     if (!this.alive) return;
-    if (!ok) { setTimeout(() => void this.connect(), 5000); return; }
+    if (!ok) { this.onState?.(false); setTimeout(() => void this.connect(), 5000); return; }
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
@@ -197,6 +238,7 @@ class KernelPipe {
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }
+      this.onState?.(true);
       if (this.everConnected) {
         // A reconnect after a kernel restart: the kernel lost this client's
         // state, so reload the webview — its fresh "ready" resyncs everything.
@@ -218,6 +260,7 @@ class KernelPipe {
     const reconnect = () => {
       if (this.ws !== ws) return;
       this.ws = null;
+      this.onState?.(false);
       if (this.alive) setTimeout(() => void this.connect(), 1500);
     };
     ws.on("close", reconnect);
@@ -288,8 +331,8 @@ function wirePanel(p: vscode.WebviewPanel) {
       for (const q of pendingToWebview.splice(0)) p.webview.postMessage(q);
       return;
     }
-    // reveal side-effects ride along; the kernel does the real work
-    if (m.type === "dotOpen") openFeedPanel(true);
+    const r = routeViewMessage("chat", m);
+    if (r.revealFeed) openFeedPanel(r.revealFeed.preserveFocus);
     pipe.send(m);
   });
   p.onDidDispose(() => {
@@ -344,10 +387,9 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (m.type === "ready") pipe.webviewReady = true;
     // Clicking into a session (or locating a card's chat turn) should bring
     // the CHAT panel forward — panel reveal is this host's job; the kernel
-    // opens/focuses the tab itself.
-    if (m.type === "openSession") openPanel(false);
-    else if (m.type === "showOnTimeline") openPanel(true);   // kernel locates the chat for prompt AND work clicks
-    else if (m.type === "showAskPath" && m.locate !== false && !m.jump && !m.off) openPanel(true);
+    // opens/focuses the tab itself. The rules live in view-routing.ts.
+    const r = routeViewMessage("feed", m);
+    if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     pipe.send(m);
   });
   p.onDidDispose(() => {
@@ -355,6 +397,253 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
   });
+}
+
+// ---- fleet status: the ambient status bar item + needs-you notifications ----
+// One host-held feed pipe (independent of the feed panel, which may be closed)
+// keeps the status bar live in every window: working / needs-you counts from
+// the kernel's authoritative feed frames, "offline" while the socket is down.
+// A needs-you card APPEARING is the one event worth a native notification —
+// "interrupt only when the human is the bottleneck"; existing cards on
+// (re)connect are status, not news, and never notify.
+
+let statusPipe: KernelPipe | undefined;
+let statusItem: vscode.StatusBarItem | undefined;
+let statusSeen: Set<string> | null = null;   // needs-you itemIds already seen (null = baseline pending)
+let statusOffline = true;
+let lastStatus: FleetStatus | null = null;
+let lastFrame: any = null;                   // last feed frame (tooltip detail)
+let sessionDirs: SessionInfo[] = [];         // /sessions cache for the "this window" tooltip line
+let statusCompKey = "";                      // fleet composition key: refetch dirs only when it changes
+
+function startFleetStatus(context: vscode.ExtensionContext) {
+  statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusItem.name = "romp";
+  statusItem.command = "rompChat.open";
+  context.subscriptions.push(statusItem);
+  paintStatus();
+  statusItem.show();
+  statusPipe = new KernelPipe(
+    "feed",
+    (m) => onStatusFrame(m),
+    () => { statusSeen = null; },              // kernel restarted: re-baseline, don't replay old asks
+    (up) => {
+      statusOffline = !up;
+      if (!up) statusSeen = null;
+      // No webview behind this pipe, so announce readiness ourselves — the
+      // kernel pushes the full feed state in response.
+      else statusPipe?.send({ type: "ready" });
+      paintStatus();
+    },
+    true,                                      // passive: observe only, never spawn/toast
+  );
+}
+
+function onStatusFrame(m: any) {
+  const st = deriveStatus(m);
+  if (!st) return;                             // ka frames and other chatter
+  lastStatus = st;
+  lastFrame = m;
+  const { seen, fresh } = freshNeedsYou(statusSeen, m);
+  statusSeen = seen;
+  paintStatus();
+  notifyNeedsYou(fresh);
+  // Refresh the session→dir map only when the fleet's composition changes
+  // (each frame is already an event; composition is the part the tooltip's
+  // "this window" line depends on).
+  const key = JSON.stringify([m.working || [], (m.asks || []).map((a: any) => a.itemId)]);
+  if (key !== statusCompKey) {
+    statusCompKey = key;
+    void fetchSessions().then((s) => { sessionDirs = s; paintStatus(); });
+  }
+}
+
+function paintStatus() {
+  if (!statusItem) return;
+  const r = renderStatusBar(statusOffline, lastStatus);
+  statusItem.text = r.text;
+  statusItem.backgroundColor = r.warn ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+  if (statusOffline) {
+    statusItem.tooltip = "The romp kernel is unreachable — start it with `romp --on`.";
+    return;
+  }
+  const lines = lastFrame ? statusTooltipLines(lastFrame) : [];
+  const here = sessionsForWorkspace(sessionDirs, workspaceFolderPaths()).map((s) => s.name);
+  if (here.length) lines.unshift(`This window: ${here.join(", ")}`);
+  statusItem.tooltip = lines.join("\n") || "romp fleet";
+}
+
+function notifyNeedsYou(fresh: any[]) {
+  if (!fresh.length) return;
+  if (panel?.active) return;                   // already looking at the romp chat — the card is on screen
+  const first = fresh[0];
+  const msg = fresh.length === 1
+    ? `romp: ${first.name} needs you — ${String(first.text || "").slice(0, 120)}`
+    : `romp: ${fresh.length} sessions need you (${[...new Set(fresh.map((a) => a.name))].join(", ")})`;
+  void vscode.window.showInformationMessage(msg, "Open").then((choice) => {
+    if (choice !== "Open") return;
+    openPanel(false);
+    chatPipe?.send({ type: "openSession", id: String(first.sid) });
+  });
+}
+
+// ---- native views (timeline + fleet/outline) ----
+// WebviewViews resolve lazily when first shown and are re-resolved if the user
+// drags them to another container — wire a fresh pipe each time. Same relay as
+// the panels: the host holds the kernel WS, the webview never opens a socket.
+
+function wireTimelineView(v: vscode.WebviewView) {
+  timelinePipe?.dispose();
+  timelinePipe = wireView(v, "timeline", buildTimelineHtml, (p) => { if (timelinePipe === p) timelinePipe = undefined; });
+}
+
+function wireFleetView(v: vscode.WebviewView) {
+  fleetPipe?.dispose();
+  fleetPipe = wireView(v, "fleet", buildFleetHtml, (p) => { if (fleetPipe === p) fleetPipe = undefined; });
+}
+
+function wireView(
+  v: vscode.WebviewView,
+  app: "timeline" | "fleet",
+  build: (w: vscode.Webview) => string,
+  onGone: (p: KernelPipe) => void,
+): KernelPipe {
+  v.webview.options = {
+    enableScripts: true,
+    localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+  };
+  v.webview.html = build(v.webview);
+  const pipe = new KernelPipe(
+    app,
+    (m) => {
+      if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
+      v.webview.postMessage(m);
+    },
+    () => { v.webview.html = build(v.webview); },
+  );
+  v.webview.onDidReceiveMessage((m) => {
+    if (!m) return;
+    if (m.type === "ready") pipe.webviewReady = true;
+    const r = routeViewMessage(app, m);
+    if (r.revealChat) openPanel(r.revealChat.preserveFocus);
+    if (r.openLinkLocally) openLink(r.openLinkLocally);
+    if (r.forward) pipe.send(m);
+  });
+  v.onDidDispose(() => { pipe.dispose(); onGone(pipe); });
+  return pipe;
+}
+
+// ---- workspace integration: sessions ↔ the folders this window has open ----
+
+// The kernel's /sessions endpoint — the authoritative unified session list
+// (id, name, dir per session). Empty on any failure; callers surface that.
+function fetchSessions(): Promise<SessionInfo[]> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: HOST, port: kernelPort(), path: "/sessions", timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => {
+        try {
+          const j = JSON.parse(body);
+          resolve(Array.isArray(j)
+            ? j.map((s: any) => ({ id: String(s.id), name: String(s.name), dir: String(s.dir || "") }))
+            : []);
+        } catch { resolve([]); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); resolve([]); });
+    req.on("error", () => resolve([]));
+  });
+}
+
+function workspaceFolderPaths(): string[] {
+  return (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+}
+
+function gitIn(dir: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", ["-C", dir, ...args], { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
+
+async function pickKernelSession(placeHolder: string): Promise<SessionInfo | undefined> {
+  const sessions = await fetchSessions();
+  if (!sessions.length) {
+    vscode.window.showWarningMessage("romp: no sessions (is the kernel running? `romp --on`).");
+    return undefined;
+  }
+  const folders = workspaceFolderPaths();
+  const here = new Set(sessionsForWorkspace(sessions, folders).map((s) => s.id));
+  const pick = await vscode.window.showQuickPick(
+    sessions.map((s) => ({
+      label: s.name,
+      description: s.dir + (here.has(s.id) ? "  (this window)" : ""),
+      session: s,
+    })),
+    { placeHolder },
+  );
+  return pick?.session;
+}
+
+// Insert the active file (with the selected line range) into the chat
+// composer — the cheapest editor → agent handoff. Rides the same droppedPath
+// message a file drop uses, so the composer treats both identically.
+function citeInComposer() {
+  const ed = vscode.window.activeTextEditor;
+  if (!ed || ed.document.uri.scheme !== "file") {
+    vscode.window.showWarningMessage("romp: open a file to cite it.");
+    return;
+  }
+  const sel = ed.selection;
+  // A selection ending at column 0 visually excludes that line.
+  const endLine = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line : sel.end.line + 1;
+  const text = citeText(ed.document.uri.fsPath, sel.start.line + 1, endLine, !sel.isEmpty);
+  openPanel(true);
+  toWebview({ type: "droppedPath", path: text });
+}
+
+async function openSessionWorktree() {
+  const s = await pickKernelSession("Open a session's working directory");
+  if (!s || !s.dir) return;
+  if (sessionsForWorkspace([s], workspaceFolderPaths()).length) {
+    vscode.window.showInformationMessage(`romp: ${s.name}'s directory is already open in this window (${s.dir}).`);
+    return;
+  }
+  await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(s.dir), { forceNewWindow: true });
+}
+
+// Review what a session changed without leaving this window: pick a session,
+// pick one of its uncommitted files, open the native diff (HEAD vs working).
+async function diffSessionChanges() {
+  const s = await pickKernelSession("Diff a session's uncommitted changes");
+  if (!s || !s.dir) return;
+  let files;
+  try {
+    files = parsePorcelain(await gitIn(s.dir, ["status", "--porcelain"]));
+  } catch {
+    vscode.window.showWarningMessage(`romp: ${s.dir} is not a git repository (or git failed).`);
+    return;
+  }
+  if (!files.length) {
+    vscode.window.showInformationMessage(`romp: ${s.name} has no uncommitted changes in ${s.dir}.`);
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    files.map((f) => ({ label: f.path, description: f.status, file: f })),
+    { placeHolder: `${s.name}: uncommitted changes in ${s.dir}` },
+  );
+  if (!pick) return;
+  const f = pick.file;
+  const right = vscode.Uri.file(`${s.dir}/${f.path}`);
+  const left = vscode.Uri.from({
+    scheme: "romp-git",
+    path: "/" + f.path,
+    query: JSON.stringify({ dir: s.dir, rel: f.untracked ? null : f.renamedFrom || f.path }),
+  });
+  await vscode.commands.executeCommand("vscode.diff", left, right, `${f.path} — HEAD vs working (${s.name})`);
 }
 
 // ---- client capabilities ----
@@ -489,6 +778,64 @@ function buildFeedHtml(webview: vscode.Webview): string {
 </head>
 <body>
 ${FEED_BODY}
+  <script nonce="${n}" src="${js}"></script>
+</body>
+</html>`;
+}
+
+function buildTimelineHtml(webview: vscode.Webview): string {
+  const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-main.js"));
+  const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-pane.css"));
+  const n = nonce();
+  const csp = [
+    "default-src 'none'",
+    `img-src ${webview.cspSource} data:`,
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `font-src ${webview.cspSource}`,
+    `script-src 'nonce-${n}'`,
+  ].join("; ");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="${css}" rel="stylesheet" />
+  <title>romp timeline</title>
+</head>
+<body>
+${TIMELINE_BODY}
+  <script nonce="${n}" src="${js}"></script>
+</body>
+</html>`;
+}
+
+function buildFleetHtml(webview: vscode.Webview): string {
+  const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "fleet.js"));
+  // styles.css first (the .ledger-* goal-tree styling), fleet-pane.css after it
+  // (the page layout) — same order as the kernel's /fleet page.
+  const cssBase = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
+  const cssPane = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "fleet-pane.css"));
+  const n = nonce();
+  const csp = [
+    "default-src 'none'",
+    `img-src ${webview.cspSource} data:`,
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `font-src ${webview.cspSource}`,
+    `script-src 'nonce-${n}'`,
+  ].join("; ");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="${cssBase}" rel="stylesheet" />
+  <link href="${cssPane}" rel="stylesheet" />
+  <title>romp outline</title>
+</head>
+<body>
+${FLEET_BODY}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
