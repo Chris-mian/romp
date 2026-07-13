@@ -73,6 +73,7 @@ interface AskItem {
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
+  judging?: boolean;                               // provisional PHASE (the user 2026-07-12): the turn has SETTLED and the planner's classify pass is due/in flight → the chip says Analyzing…; an open turn stays the honest Working…
   tree: AskTreeNode[];                             // the ask's DAG, rendered as a tree in the expanded body
 }
 // A GROUP = N sibling asks minted by ONE typed turn (shared turnId), folded into a
@@ -979,8 +980,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       ? why + ". Not on you; paused until the background work lands."
       : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.";
   } else if (it.provisional && it.column === "working") {
-    spinCaption = "Working…";
-    spinTip = "A new prompt, not yet sorted into a goal. Placeholder until it is.";
+    // the chip tells the truth about the phase (the user 2026-07-12): an OPEN turn is just Working — the
+    // judge has nothing to classify yet; once the turn settles (kernel `judging`) the planner's pass is
+    // due/in flight and only THEN does the chip say Analyzing…
+    spinCaption = it.judging ? "Analyzing…" : "Working…";
+    spinTip = it.judging
+      ? "This stretch of work finished; the judge is sorting it into a goal."
+      : "A new prompt, still running. Sorted into a goal once this stretch of work finishes.";
   } else if (it.recheck) {
     spinCaption = "Analyzing…";
     spinTip = "You followed up. Reopened to Working; the judge will resolve it or re-block it.";

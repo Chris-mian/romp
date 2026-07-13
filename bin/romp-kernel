@@ -6980,24 +6980,31 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     prompt = _split_reminders(_seg_prompt(held))[0].strip()
     if not prompt and not held.get("seam"):
         return None
-    # "Analyzing: <gist>" — the captioner's MESSAGE caption for this held segment (the same gist the timeline
-    # dot reads), produced the moment the message lands. Until it lands, the raw prompt so the card is never
+    # "Working: <gist>" vs "Analyzing: <gist>" — the prefix tells the TRUTH about the phase (the user
+    # 2026-07-12: "is it actually analyzing, or is it just working and hasn't received the segment yet?").
+    # While the turn is OPEN the judge has nothing to classify — the session is simply WORKING (matching the
+    # swirl's Working… chip); the moment the turn settles the planner's pass is due, and THAT is Analyzing.
+    # The gist is the captioner's MESSAGE caption for this held segment (the same gist the timeline dot
+    # reads), produced the moment the message lands. Until it lands, the raw prompt so the card is never
     # blank. (the user 2026-06-19: reuses the captioner's message caption rather than a SEPARATE 'gist' judge
     # call — the captioner already glosses every message, so there's no redundant call and no hidden judge.)
     # A settle-SEAM tail has no prompt: caption when ready, else name the completed goal it followed.
+    pre = "Working: " if turn_open else "Analyzing: "
     g = _seg_caption(_captions(fsid), held["id"])      # drift-safe (same key family as _seg_placed)
     if held.get("seam") and not prompt:
-        text = ("Analyzing: " + g if g
+        text = (pre + g if g
                 else "Working past “%s”" % (((held.get("seamOf") or {}).get("text") or "a completed goal")[:100]))
     else:
-        text = "Analyzing: " + g if g else prompt[:140].strip()
+        text = pre + g if g else prompt[:140].strip()
     t = held.get("t", lt["t"])
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
             "turnId": None, "origin": None, "followupPending": None,
             "summary": None, "blockSummary": None, "background": None,
             "blocked": None, "column": "working",
-            "provisional": True, "tree": []}
+            # judging = the turn has SETTLED and the planner's classify pass is due/in flight — the swirl
+            # chip says Analyzing… only then; an open turn keeps the honest Working… (the user 2026-07-12)
+            "provisional": True, "judging": not turn_open, "tree": []}
 
 
 def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
@@ -7029,7 +7036,9 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
                 prompt = _split_reminders(_seg_prompt(held))[0].strip()
                 if prompt:
                     g = _seg_caption(_captions(fsid), held["id"])
-                    text = ("Analyzing: " + g) if g else prompt[:140].strip()
+                    # bare gist, no "Analyzing:" — nothing is being analyzed here: the session is halted
+                    # mid-turn waiting on YOU, and the blocked badge already carries that state (2026-07-12)
+                    text = g if g else prompt[:140].strip()
     if not text:
         # The picker/permission prompt's actual QUESTION is the most useful title — it says WHAT input is being
         # asked for, not just "Awaiting your input" (the user 2026-06-29). Pull it from the live ask the backend
@@ -9917,6 +9926,13 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              "margin-top:2px;color:#cdd3da;font-size:.92em;line-height:1.35;background:#1b1b1c;border:1px solid #3a3a3a;"
              "border-radius:6px;padding:6px 9px;box-shadow:0 4px 14px #000000aa;pointer-events:none}"
              "#rsettings .rs-sub code{background:#0d0d0d;border-radius:3px;padding:0 3px}"
+             # judge model/effort rows are one-liners (the user 2026-07-12): label left, picker right on the
+             # SAME line — four compact rows instead of four label-over-select stacks. The description stays a
+             # hover tooltip like every other row's.
+             "#rsettings .rs-jrow{align-items:center;cursor:default}"
+             "#rsettings .rs-jrow b{flex:1 1 auto}"
+             "#rsettings .rs-jrow select{flex:0 0 auto;width:45%;background:#1e1e1e;color:#ccc;"
+             "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer}"
              # a horizontal gradient bar previewing the SELECTED feed colormap (the user 2026-06-23)
              # feed-colormap dropdown: the button shows the picked map's bar; the list is one bar per map.
              "#rs-cmap{position:relative;margin-top:5px}"
@@ -9986,7 +10002,6 @@ def _gear_html():
   # (value "") meaning no --effort — the judges' long-standing behavior.
   _mopts = "".join('<option value="%s">%s</option>' % (m["value"], m["label"]) for m in MODEL_CHOICES)
   _eopts = '<option value="">Default</option>' + "".join('<option value="%s">%s</option>' % (e["value"], e["label"]) for e in EFFORT_CHOICES)
-  _jsel = "style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'"
   return ("<button id=rgear hidden aria-hidden=true></button>"
               "<div id=rsettings hidden><div class=rs-card>"
               "<div class=rs-h>Settings</div>"
@@ -10020,18 +10035,19 @@ def _gear_html():
               # timeline pickers fetch from /models), so the model vocabulary lives in exactly one place.
               # TRIAGE = planner/grouper/closer/distiller/courier (judgment); INDEX = captioner + archiver (bulk).
               # (The show-judges TOGGLES live in the Debug section at the bottom — they only visualize.)
-              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Triage model</b>"
+              # One-line rows (the user 2026-07-12): label + picker on the same line (.rs-jrow), sub on hover.
+              "<div class='rs-row rs-jrow'><b>Triage model</b>"
               "<span class=rs-sub>The model the triage judges use — planner, grouper, closer, distiller, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart.</span>"
-              "<select id=rs-judgemodel " + _jsel + ">" + _mopts + "</select></span></div>"
-              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Triage effort</b>"
+              "<select id=rs-judgemodel>" + _mopts + "</select></div>"
+              "<div class='rs-row rs-jrow'><b>Triage effort</b>"
               "<span class=rs-sub>Thinking effort for the triage judges. Default = no effort flag (the judges' standard behavior). Not every model accepts every level.</span>"
-              "<select id=rs-judgeeffort " + _jsel + ">" + _eopts + "</select></span></div>"
-              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Indexing model</b>"
+              "<select id=rs-judgeeffort>" + _eopts + "</select></div>"
+              "<div class='rs-row rs-jrow'><b>Indexing model</b>"
               "<span class=rs-sub>The model the indexing judges use — captioner + archiver (high-volume, low-stakes summarization). Haiku by default for cost.</span>"
-              "<select id=rs-indexmodel " + _jsel + ">" + _mopts + "</select></span></div>"
-              "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Indexing effort</b>"
+              "<select id=rs-indexmodel>" + _mopts + "</select></div>"
+              "<div class='rs-row rs-jrow'><b>Indexing effort</b>"
               "<span class=rs-sub>Thinking effort for the indexing judges. Default = none (indexing runs with thinking disabled as a cost lever; leave Default unless you know you want it).</span>"
-              "<select id=rs-indexeffort " + _jsel + ">" + _eopts + "</select></span></div>"
+              "<select id=rs-indexeffort>" + _eopts + "</select></div>"
               "<div class=rs-sec>Keyboard shortcuts</div>"
               + _shortcut_rows() +
               "<div class=rs-sec>Chat</div>"
@@ -10853,14 +10869,21 @@ hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'
 var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
 function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (its Start button fast-polls on click)
+// the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
+function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
+function paintIcon(up,busy){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
+var m=mnet();if(m){m.classList.toggle('on',up);m.classList.toggle('busy',busy);}}
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-var ts=(d&&d.tunnels)||[];icon.classList.toggle('on',ts.some(function(t){return t.status==='up';}));   // glow accent-blue while a remote is connected
+var ts=(d&&d.tunnels)||[];var busy=ts.some(function(t){return busyStatus(t.status);});
+// glow accent-blue while a remote is connected; MARCH the connector dashes while one is mid-attach
+// (the user 2026-07-12: the icon should visibly move while it's connecting)
+paintIcon(ts.some(function(t){return t.status==='up';}),busy);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+' \\u2014 '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
 if(!back.hidden)render(ts);
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
-schedule(ts.some(function(t){return busyStatus(t.status);})?600:3000);
+schedule(busy?600:3000);
 }).catch(function(){schedule(3000);});}
 function render(ts){list.innerHTML='';
 if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
@@ -10905,6 +10928,7 @@ else{b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed: '+((d&&
 attach.onclick=function(){var h=hostSel.value;if(!h)return;
 try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}   // remember for MRU-first ordering next time
 attach.disabled=true;attach.textContent='Attaching\\u2026';
+icon.classList.add('busy');var mb=mnet();if(mb)mb.classList.add('busy');   // motion starts on the CLICK (ack now); the next /tunnels poll re-derives it
 fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){
 attach.disabled=false;attach.textContent='Attach';refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';});};
 refresh();   // self-schedules (fast while attaching, slow keep-alive otherwise) so the rail icon's connected-state highlight stays current even while closed
@@ -11191,6 +11215,15 @@ def _landing():
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
             ".rail-act.on{color:var(--accent)}"   # the network icon glows accent-blue while a remote is connected
+            # mid-attach motion cue (the user 2026-07-12): while any tunnel is authorizing/connecting/starting
+            # the network glyph turns accent and its connector lines MARCH (dashes flowing down the bus) — the
+            # icon visibly "does something" during the seconds an attach takes. Class-driven off the same
+            # /tunnels poll that lights .on (event-based; it clears the moment every tunnel settles). The
+            # mobile bottom bar's Net button carries the same classes.
+            ".rail-act.busy,#mtabs .mact.busy{color:var(--accent)}"
+            ".rail-act.busy svg path,#mtabs .mact.busy svg path{stroke-dasharray:3 3;animation:rnet-march 0.9s linear infinite}"
+            "@keyframes rnet-march{to{stroke-dashoffset:-6}}"
+            "#mtabs .mact.on{color:var(--accent)}"   # the mobile Net button lights up like the rail icon when connected
             # a centered modal (like settings/help), shell-native so it renders over collapsed panes too.
             "#rnet-back{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;"
             "background:rgba(0,0,0,0.55)}#rnet-back[hidden]{display:none}"
