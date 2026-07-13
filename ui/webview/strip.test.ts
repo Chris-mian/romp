@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { usageColor, fmtReset, usageWindows } from "./strip";
+import { usageColor, fmtReset, usageWindows, STRIP_PANES } from "./strip";
 
 test("usageColor mirrors the rail's green/amber/red ramp", () => {
   assert.equal(usageColor(0), "#54B204");
@@ -45,6 +45,26 @@ test("a window that reset since the last report reads 0, not stale", () => {
 test("no usage → no windows (the strip stays quiet, never fakes bars)", () => {
   assert.deepEqual(usageWindows(null, 100), []);
   assert.deepEqual(usageWindows({}, 100), []);
+});
+
+test("the strip carries the rail's controls: refresh, network popover, pane quick-opens", () => {
+  const src = fs.readFileSync(path.join(path.resolve(process.cwd(), ".."), "ui", "webview", "strip.ts"), "utf8");
+  assert.ok(src.includes('"/restart"') || src.includes("/restart`"), "the refresh button restarts the kernel");
+  for (const ep of ["/ssh-hosts", "/tunnels", "/tunnels/detach", "/tunnels/update", "/tunnels/start"])
+    assert.ok(src.includes(ep), `the network popover must drive ${ep} (the rail twin)`);
+  assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
+});
+
+test("the strip quick-opens cover chat/outline/feed only (timeline is a native panel)", () => {
+  assert.deepEqual(STRIP_PANES.map((p) => p.key), ["chat", "fleet", "feed"]);
+  assert.deepEqual(STRIP_PANES.map((p) => p.label), ["Chat", "Outline", "Feed"]);
+});
+
+test("the chat hosts its OWN gear modal (opens over the pane it was clicked in)", () => {
+  const ROOT = path.resolve(process.cwd(), "..");
+  const render = fs.readFileSync(path.join(ROOT, "ui", "webview", "render.ts"), "utf8");
+  assert.ok(render.includes('require("./gear.js")'), "chat bundle must load the gear module");
+  assert.ok(!render.includes("openRompSettings"), "no cross-pane settings hop remains");
 });
 
 test("both bundles init the strip; the web pages never opt in", () => {

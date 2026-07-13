@@ -12,7 +12,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("commands come from the kernel /commands endpoint, fetched per active session", () => {
   assert.match(RENDER, /interface SlashCmd \{ name: string; description\?: string; argumentHint\?: string; aliases\?: string\[\]; \}/);
-  assert.match(RENDER, /fetch\("\/commands\?sid=" \+ encodeURIComponent\(sid\)/);
+  assert.match(RENDER, /fetch\(kernelUrl\("\/commands\?sid=" \+ encodeURIComponent\(sid\)\)/);
   // re-load when the active session changes; "" is the kernel-cwd fallback, distinct from the never-loaded null
   assert.match(RENDER, /let slashSid: string \| null = null;/);
   assert.match(RENDER, /const sid = activeId \|\| "";/);

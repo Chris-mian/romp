@@ -95,6 +95,9 @@ export function activate(context: vscode.ExtensionContext) {
       const had = !!panel;
       openPanel();
       const chatCol = panel?.viewColumn;
+      // Outline rides as a TAB in the chat's group; feed gets the group to the
+      // right (the user 2026-07-13). Reveal order leaves the chat tab active.
+      openFleetPanel(true, chatCol);
       openFeedPanel(true, chatCol !== undefined ? ((chatCol as number) + 1) as vscode.ViewColumn : undefined);
       // Bring the timeline up without stealing focus from the chat panel.
       try { await vscode.commands.executeCommand("rompTimeline.focus", { preserveFocus: true }); } catch { /* view unavailable */ }
@@ -194,8 +197,22 @@ function toFeedWebview(msg: any) {
 // the strip, but when the feed panel is VISIBLE the chat hides its copy — one
 // strip on screen, the feed's preferred. Event-driven: feed create/dispose/
 // view-state changes and the chat's ready all re-derive it.
-function updateChatStrip() {
+function openPaneByKey(pane: string) {
+  if (pane === "chat") openPanel(false);
+  else if (pane === "fleet") openFleetPanel();
+  else if (pane === "feed") openFeedPanel(false);
+}
+
+function updateStrips() {
   toWebview({ type: "stripShow", show: !(feedPanel && feedPanel.visible) });
+  // Quick-open labels show only for panes NOT on screen (the user 2026-07-13).
+  const hidden = {
+    chat: !(panel && panel.visible),
+    fleet: !(fleetPanel && fleetPanel.visible),
+    feed: !(feedPanel && feedPanel.visible),
+  };
+  toWebview({ type: "stripPanes", hidden });
+  toFeedWebview({ type: "stripPanes", hidden });
 }
 
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
@@ -383,8 +400,7 @@ function wirePanel(p: vscode.WebviewPanel) {
     // its own versions. Everything else goes to the kernel verbatim.
     if (m.type === "openFile" && m.path) { openFileInEditor(String(m.path), m.line); return; }
     if (m.type === "openLink" && typeof m.href === "string") { openLink(String(m.href)); return; }
-    // The chat strip's gear: the settings modal lives in the FEED bundle.
-    if (m.type === "openRompSettings") { openFeedPanel(true); toFeedWebview({ romp: "openSettings" }); return; }
+    if (m.type === "openPane") { openPaneByKey(String(m.pane)); return; }   // strip quick-open
     if (m.type === "pickFile") { void pickFileForComposer(p); return; }
     if (m.type === "readClipboard") {
       vscode.env.clipboard.readText().then(
@@ -397,19 +413,21 @@ function wirePanel(p: vscode.WebviewPanel) {
       pipe.webviewReady = true;
       pipe.send(m);
       for (const q of pendingToWebview.splice(0)) p.webview.postMessage(q);
-      updateChatStrip();
+      updateStrips();
       return;
     }
     const r = routeViewMessage("chat", m);
     if (r.revealFeed) openFeedPanel(r.revealFeed.preserveFocus);
     pipe.send(m);
   });
+  p.onDidChangeViewState(() => updateStrips());
   p.onDidDispose(() => {
     pipe.dispose();
     if (chatPipe === pipe) chatPipe = undefined;
     panel = undefined;
     pendingToWebview = [];
     resolvePick(undefined);
+    updateStrips();
   });
 }
 
@@ -456,7 +474,9 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (m.type === "ready") {
       pipe.webviewReady = true;
       for (const q of pendingToFeed.splice(0)) p.webview.postMessage(q);
+      updateStrips();
     }
+    if (m.type === "openPane") { openPaneByKey(String(m.pane)); return; }   // strip quick-open
     // Clicking into a session (or locating a card's chat turn) should bring
     // the CHAT panel forward — panel reveal is this host's job; the kernel
     // opens/focuses the tab itself. The rules live in view-routing.ts.
@@ -464,15 +484,15 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     pipe.send(m);
   });
-  p.onDidChangeViewState(() => updateChatStrip());
+  p.onDidChangeViewState(() => updateStrips());
   p.onDidDispose(() => {
     pipe.dispose();
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
     pendingToFeed = [];
-    updateChatStrip();
+    updateStrips();
   });
-  updateChatStrip();
+  updateStrips();
 }
 
 // ---- fleet status: the ambient status bar item + needs-you notifications ----
@@ -591,15 +611,15 @@ function refreshWebviewHtml() {
 }
 
 // Outline: an editor tab like chat/feed (same pipe pattern, app=fleet).
-function openFleetPanel(preserveFocus = false) {
+function openFleetPanel(preserveFocus = false, column?: vscode.ViewColumn) {
   if (fleetPanel) {
-    fleetPanel.reveal(fleetPanel.viewColumn ?? vscode.ViewColumn.Beside, preserveFocus);
+    fleetPanel.reveal(column ?? fleetPanel.viewColumn ?? vscode.ViewColumn.Beside, preserveFocus);
     return;
   }
   const p = vscode.window.createWebviewPanel(
     "rompFleet",
     "romp outline",
-    { viewColumn: vscode.ViewColumn.Beside, preserveFocus },
+    { viewColumn: column ?? vscode.ViewColumn.Beside, preserveFocus },
     {
       enableScripts: true,
       retainContextWhenHidden: true,
@@ -633,11 +653,14 @@ function wireFleetPanel(p: vscode.WebviewPanel) {
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     if (r.forward) pipe.send(m);
   });
+  p.onDidChangeViewState(() => updateStrips());
   p.onDidDispose(() => {
     pipe.dispose();
     if (fleetPipe === pipe) fleetPipe = undefined;
     fleetPanel = undefined;
+    updateStrips();
   });
+  updateStrips();
 }
 
 function wireView(
@@ -944,6 +967,7 @@ function buildHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "render.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
   const stripCss = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "strip.css"));
+  const gearCss = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "gear.css"));
   const n = nonce();
   // The romp strip's initial /usage fetch goes straight to the kernel.
   const kernelBase = `http://${HOST}:${kernelPort()}`;
@@ -964,6 +988,7 @@ function buildHtml(webview: vscode.Webview): string {
   ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
   <link href="${stripCss}" rel="stylesheet" />
+  <link href="${gearCss}" rel="stylesheet" />
   <title>romp</title>
 </head>
 <body>
@@ -1001,6 +1026,7 @@ function buildFeedHtml(webview: vscode.Webview): string {
   ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
   <link href="${webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "strip.css"))}" rel="stylesheet" />
+  <link href="${webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "gear.css"))}" rel="stylesheet" />
   <title>romp feed</title>
 </head>
 <body>

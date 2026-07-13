@@ -12,7 +12,7 @@ const read = (...p: string[]) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
 const KERNEL = read("bin", "romp-kernel");
 const GEAR = read("ui", "webview", "gear.js");
 const FEED = read("ui", "webview", "feed.ts");
-const FEED_CSS = read("ui", "webview", "feed.css");
+const GEAR_CSS = read("ui", "webview", "gear.css");
 const EXT = read("vscode-extension", "src", "extension.ts");
 
 test("the kernel no longer carries an inline gear (single source: the feed bundle)", () => {
@@ -51,7 +51,8 @@ test("the gear owns its browseResult (the reply lands in the FEED document, not 
   assert.ok(GEAR.includes("'browseResult'") && GEAR.includes("'gear'"));
 });
 
-test("feed.css carries the gear styling for both hosts", () => {
+test("gear.css carries the modal styling for every pane that hosts it", () => {
   for (const sel of ["#rsettings", ".rs-card", "#rs-cmap-btn", "#rs-pal-btn", ".ra-openbtn", "#ranalytics"])
-    assert.ok(FEED_CSS.includes(sel), `feed.css must style ${sel}`);
+    assert.ok(GEAR_CSS.includes(sel), `gear.css must style ${sel}`);
+  assert.ok(KERNEL.includes("/dist/gear.css"), "the kernel feed page must link the extracted stylesheet");
 });

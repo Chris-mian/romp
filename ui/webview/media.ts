@@ -8,3 +8,14 @@ export function mediaSrc(name: string): string {
   const base = (typeof window !== "undefined" && (window as any).__rompMediaBase) || "/media";
   return `${base}/${name}`;
 }
+
+// Kernel HTTP endpoints the bundles fetch directly (/models, /palette,
+// /commands, /followup-preview, /usage, ...). Same story as mediaSrc: the
+// browser is served BY the kernel ('' → same-origin), but the VS Code
+// webview's synthetic origin needs the host-injected base — without it these
+// fetches fail silently and the features quietly vanish (the empty model
+// picker, the user 2026-07-13).
+export function kernelUrl(path: string): string {
+  const base = (typeof window !== "undefined" && (window as any).__rompKernelBase) || "";
+  return `${base}${path}`;
+}

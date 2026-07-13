@@ -267,7 +267,8 @@ initGear((m: Record<string, unknown>) => vscodeApi?.postMessage(m));
 // The romp strip (VS Code only — the host opts in via __rompShowStrip): usage
 // bars + the gear button, docked below #feed-foot. The gear raises the modal
 // in THIS document (the gear listener above).
-initStrip(() => window.postMessage({ romp: "openSettings" }, "*"));
+initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
+  (m: Record<string, unknown>) => vscodeApi?.postMessage(m));
 
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything

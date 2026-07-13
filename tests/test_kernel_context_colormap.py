@@ -73,4 +73,4 @@ def _gear_src():
 
 def _gear_css_src():
     import pathlib
-    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.css").read_text()

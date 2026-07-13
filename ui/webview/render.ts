@@ -23,7 +23,7 @@ import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewThumb, canPreview } from "./preview";
 import { hostNameNodes } from "./host-prefix";
-import { mediaSrc } from "./media";
+import { mediaSrc, kernelUrl } from "./media";
 import { initStrip } from "./strip";
 
 for (const [name, lang] of Object.entries({
@@ -154,10 +154,18 @@ const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
 
 // The romp strip (VS Code only — the host opts in via __rompShowStrip): usage
-// bars + the gear button, docked below the composer. The gear lives in the
-// FEED bundle, so the click asks the host to open the feed's settings modal;
-// the host also hides this copy while the feed panel is visible (feed wins).
-initStrip(() => vscodeApi?.postMessage({ type: "openRompSettings" }));
+// bars, pane quick-opens, refresh, remotes, and the gear — docked below the
+// composer. The chat hosts its OWN copy of the settings modal (gear.js +
+// gear.css), so the gear opens right here, over the pane it was clicked in
+// (the user 2026-07-13); the host still hides this strip while the feed panel
+// is visible (feed wins).
+if ((window as any).__rompShowStrip) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { initGear } = require("./gear.js");
+  initGear((m: Record<string, unknown>) => vscodeApi?.postMessage(m));
+}
+initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
+  (m) => vscodeApi?.postMessage(m));
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 const expandedGroups = new Set<string>();      // compact mode: tool-group keys the user clicked open
@@ -171,7 +179,7 @@ const tabMeta = new Map<string, { name: string; color: Color | null }>();
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
 // The palette is SELECTABLE now (the user 2026-07-12): a {type:"palette"} push lands the new set on switch.
 let paletteColors: string[] = [];
-fetch("/palette", { cache: "no-store" }).then((r) => r.json())
+fetch(kernelUrl("/palette"), { cache: "no-store" }).then((r) => r.json())
   .then((d) => { if (Array.isArray(d.colors)) paletteColors = d.colors; }).catch(() => { /* menu omits the swatch row */ });
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
@@ -4767,7 +4775,7 @@ type MetaKind = "mode" | "model" | "effort";
 // keeps its reference; the session picker appends its own "Default" (use-the-CLI-default) sentinel — not a model.
 const MODEL_CHOICES: { label: string; value: string }[] = [];
 const EFFORT_CHOICES: { label: string; value: string }[] = [];
-fetch("/models", { cache: "no-store" }).then((r) => r.json()).then((d) => {
+fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
   if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
   if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
 }).catch(() => { /* picker stays empty until it lands */ });
@@ -5217,7 +5225,7 @@ function openCitePreview(id: string, anchor: HTMLElement): void {
     pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
     return;
   }
-  const url = "/followup-preview?itemId=" + encodeURIComponent(cite.itemId) + "&text=" + encodeURIComponent(draft);
+  const url = kernelUrl("/followup-preview?itemId=" + encodeURIComponent(cite.itemId) + "&text=" + encodeURIComponent(draft));
   fetch(url, { cache: "no-store" }).then((r) => r.json()).then((d) => {
     if (citePreviewEl !== pop) return;   // closed while loading
     body.textContent = (d && typeof d.body === "string" && d.body) ? d.body : "(no context — this goal may have been cleared)";
@@ -5830,7 +5838,7 @@ function setupComposer() {
   // null) re-arms it. Latched here; set on Esc, cleared the moment the "/token" context is gone.
   let slashDismissed = false;
   const loadCmds = (sid: string, then?: () => void) => {
-    fetch("/commands?sid=" + encodeURIComponent(sid), { cache: "no-store" })
+    fetch(kernelUrl("/commands?sid=" + encodeURIComponent(sid)), { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         slashCmds = Array.isArray(d.commands) ? d.commands : [];
