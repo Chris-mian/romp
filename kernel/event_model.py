@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""romp-event-model — the rebuilt bottom-layer parser (design/event-model.md).
+"""romp-event-model — the rebuilt bottom-layer parser (docs/event-model.md).
 
 Turns a romp session's transcript(s) into the Session -> Turn -> Atom tree the
 design doc pins down: the Claude streaming protocol made graph-aware. An atom is
@@ -844,7 +844,7 @@ def segments(turn):
     return segs
 
 
-# ── settle-time SEAM split (design/segment-regrowth.md): when a goal settles while its segment is
+# ── settle-time SEAM split (plans/segment-regrowth.md): when a goal settles while its segment is
 # still growing, the post-settle tail becomes its OWN segment so the planner can see it. The split
 # primitive lives here (pure over a segment); WHICH segments split — ownership via the goal store's
 # placements — is the judge's call (jd.apply_seams), keeping this layer store-free.
@@ -871,7 +871,7 @@ def _seam_real_work(atoms):
 
 def split_segment(seg, t):
     """(head, tail) or None — split `seg` after the last atom at/before wall-clock `t` (a goal's settle
-    moment, design/segment-regrowth.md). None unless BOTH sides are non-empty and the tail holds real
+    moment, plans/segment-regrowth.md). None unless BOTH sides are non-empty and the tail holds real
     work (_seam_real_work). The head keeps the original id (its t + trigger text are unchanged, so an
     existing placement still matches); the tail is trigger-less, `seam`-flagged, with a STABLE id from
     its own first atom — every pass re-derives the same split, so placement idempotency holds."""

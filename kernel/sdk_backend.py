@@ -4,7 +4,7 @@ A second SessionBackend that coexists with tmux (selectable per session). It run
 the SAME `claude` binary romp launches in tmux, so it writes the SAME transcripts
 to the SAME paths (the read side — event model, judges, panes — is unchanged).
 What changes is the control channel: a long-lived SDK client per session instead
-of TUI-scraping. Design: design/sdk-backend.md.
+of TUI-scraping. Design: docs/sdk-backend.md.
 
 Concurrency: the kernel is threaded and synchronous (no asyncio). Each SDK session
 runs in its own daemon thread that owns a private asyncio loop (quarantined — the

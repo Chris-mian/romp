@@ -28,10 +28,13 @@ The judge layer is documented on this site:
 - [The judge pipeline](judge-pipeline.md) — the one-page diagram map.
 - [How a card gets its state](goal-state.md) — the state model, chip by chip.
 
-The remaining design documents live in the repository's `design/` directory:
+So are the architecture/schema deep dives:
 
-- **`event-model.md`** — the bottom-layer event tree built from each transcript.
-- **`read-side.md`** — the kernel and the panes.
-- **`sdk-backend.md`** — the Agent SDK (non-tmux) session backend.
-- **`segment-regrowth.md`** — the settle-time segment seam.
-- **`stalled-open-todos-nudge.md`** — the stalled-with-open-to-dos nudge.
+- [The event model](event-model.md) — the bottom-layer event tree built from each transcript.
+- [The read side](read-side.md) — the kernel and the panes.
+- [The SDK session backend](sdk-backend.md) — the Agent SDK (non-tmux) session backend.
+
+Design docs for work that has since shipped (kept as history, with the why):
+the repository's `plans/` directory — e.g. `segment-regrowth.md` (the
+settle-time segment seam) and `stalled-open-todos-nudge.md` (the
+stalled-with-open-to-dos nudge).

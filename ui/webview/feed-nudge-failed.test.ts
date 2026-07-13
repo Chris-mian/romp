@@ -1,4 +1,4 @@
-// The "stalled" chip + the "stalled" needs-you badge (design/stalled-open-todos-nudge.md; chip label per
+// The "stalled" chip + the "stalled" needs-you badge (plans/stalled-open-todos-nudge.md; chip label per
 // the user 2026-07-02): romp auto-nudges a stalled goal ONCE; if the response turn ends with the goal still
 // working-stalled, it is never re-asked — the card carries a red "stalled" pill instead. A FORK-flavored
 // failure (the goal had items the agent's OWN to-do list still marks open) additionally floors the card to

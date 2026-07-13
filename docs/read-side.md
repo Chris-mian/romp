@@ -1,7 +1,7 @@
 # The read side: the kernel, the UI, and the three panes
 
-Internal design doc (not user-facing). Layer 3 of the rebuilt romp: it turns the
-records written by the event model (`design/event-model.md`) and the summarizer
+Architecture deep dive. Layer 3 of the rebuilt romp: it turns the
+records written by the event model (`event-model.md`) and the summarizer
 layer (`docs/judges.md`) into the three web-UI panes the user actually looks at:
 the **feed**, the **chat**, and the **timeline**. Built fresh beside the existing
 `chat-view/` kernel + `obsidian/` timeline + `cli/feed.py`, which stay until the

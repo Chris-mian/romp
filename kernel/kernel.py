@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""romp-kernel — the merged read-side kernel (design/read-side.md). One always-on process:
+"""romp-kernel — the merged read-side kernel (docs/read-side.md). One always-on process:
 the Layer-1 parser + Layer-2 judges (producer) co-located with an HTTP+WebSocket server,
 single writer. It serves the HUMAN'S TUNED web UI (render.js/feed.js bundles, reused
 verbatim) and pushes reshaped payloads built ONLY from the new records (captions/ goals/
@@ -549,7 +549,7 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
                 quote.append("  • " + lt + (" (blocked)" if ld.get("blocked") else "") + why)
             if len(subs) > CAP:
                 quote.append("  • …and %d more" % (len(subs) - CAP))
-            # `stalled` = the FORK nudge (design/stalled-open-todos-nudge.md): the goal has items the
+            # `stalled` = the FORK nudge (plans/stalled-open-todos-nudge.md): the goal has items the
             # agent's OWN to-do list still marks open, so instead of a per-piece status report the body asks
             # the agent to pick a branch — continue, or name the blockers (which the planner then applies as
             # blocks). The enumerated quote above already names the open pieces.
@@ -976,7 +976,7 @@ def _set_session_flag(sid, flag, value):
 # Off by default. State: auto-nudge.json {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
 AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anything blocked waiting on a decision from me?"   # the auto-nudge ask (the manual feed Nudge button was removed 2026-06-30); phrased like a person checking in, not a status form (g13)
-# The FORK nudge (design/stalled-open-todos-nudge.md, the user 2026-07-01): sent INSTEAD of AUTO_NUDGE_TEXT
+# The FORK nudge (plans/stalled-open-todos-nudge.md, the user 2026-07-01): sent INSTEAD of AUTO_NUDGE_TEXT
 # when the stalled goal has items the agent's OWN to-do list still marks open (authoritative-open). Claude
 # Code's to-do system has no "blocked" state, so a session routinely stops with open items and can't say why —
 # this asks the agent to pick a branch: continue the work, or name what it needs from the user (which the
@@ -1673,7 +1673,7 @@ def _auto_nudge_tick(now, tmux):
             if arm_id is None or rec.get("lastTurnId") == arm_id:   # already nudged this genuine stall (a romp
                 #                                          response turn doesn't move arm_id → can never re-fire),
                 #                                          or nothing genuine to arm off at all
-                # NUDGE FAILED (design/stalled-open-todos-nudge.md): we already nudged, the agent's response
+                # NUDGE FAILED (plans/stalled-open-todos-nudge.md): we already nudged, the agent's response
                 # turn has ENDED (the session-level gates above passed: not working, genuine stop, closer
                 # settled), yet the goal is STILL 'working' (the per-goal status gate above). The one ask
                 # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
@@ -1701,7 +1701,7 @@ def _auto_nudge_tick(now, tmux):
             count = rec.get("count", 0) + 1
             # (the nudge-fire forensics side-log was retired with the P3.4 sweep, 2026-07-07 — the goal's
             # verdict diary is the audit trail now)
-            # FORK vs regular text (design/stalled-open-todos-nudge.md): a goal whose subtree holds an item
+            # FORK vs regular text (plans/stalled-open-todos-nudge.md): a goal whose subtree holds an item
             # the agent's OWN to-do list still marks open gets the STALLED fork — "continue these, or tell me
             # which are blocked and what you need" — instead of the plain status check. The agent can't
             # self-mark a to-do blocked (Claude Code has no such state), so the fork elicits the blocker the
@@ -1976,7 +1976,7 @@ def _spawn_session(name, cwd=None):
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
-# --- optional SDK (non-tmux) session backend (design/sdk-backend.md) --------------------
+# --- optional SDK (non-tmux) session backend (docs/sdk-backend.md) --------------------
 # A second SessionBackend that drives Claude via the Agent SDK instead of a tmux TUI,
 # selectable per session. Built lazily so the tmux-only path never imports the SDK and the
 # kernel runs unchanged when the SDK (or its dependency) is absent.
@@ -6994,7 +6994,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
         return None
     held = segs[-1]                                  # the latest segment — the ask the planner withholds / just got
     # A real user prompt warrants a placeholder; a settle-SEAM tail does too (it exists only because real
-    # post-close work exists, design/segment-regrowth.md); and so does a kernel RESUME (_seg_system: the
+    # post-close work exists, plans/segment-regrowth.md); and so does a kernel RESUME (_seg_system: the
     # romp-system restart/resume notice, the user 2026-07-09). A restart is the USER'S action (romp --refresh
     # / a crash heal), and the resumed turn is continued user work — leaving that actively-working session
     # cardless breaks the "a WORKING session always shows a card" invariant. Safe because plan_units PLACES a
@@ -7624,7 +7624,7 @@ def build_feed(now, tmux=None):
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
             # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
             api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))
-            # NUDGE FAILED (design/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
+            # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
             # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
             # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
             # the story instead. Surfaced only while the goal still reads working (a later block/completion
@@ -7727,7 +7727,7 @@ def build_feed(now, tmux=None):
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
                 "retrying": (sess_retrying if column == "working" else None),   # api-retry storm in the OPEN turn → "retrying since HH:MM" chip on the working card; chip only, no column move (the user 2026-07-09)
-                "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
+                "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (plans/stalled-open-todos-nudge.md)
                 "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
                 "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
                 "column": column,
@@ -8073,7 +8073,7 @@ def _seg_anchors(atoms):
 
 
 def _segs_seam(turn, store):
-    """Seam-aware segmentation — MUST mirror the judge's jd._segs (design/segment-regrowth.md): seg ids
+    """Seam-aware segmentation — MUST mirror the judge's jd._segs (plans/segment-regrowth.md): seg ids
     the judges place/anchor against a settle-split have to be the same ids the kernel renders/resolves,
     or trails and deep-links written for a tail would silently stop matching."""
     return jd.apply_seams(em.segments(turn), store or {})
@@ -9055,7 +9055,7 @@ def _show_on_timeline_focus(msg):
 def _request_feed_detail(item_id, generate):
     """Card-detail expand. The old expand-paragraph writer (romp-feed-detail + the feed-detail/ store)
     is retired with the clean-break rebuild: a goal card's modal shows its caption trail directly
-    (design/read-side.md — "until [the remade card detail] is in, a card shows its caption trail").
+    (docs/read-side.md — "until [the remade card detail] is in, a card shows its caption trail").
     We still answer the `expand` protocol so the UI's '…' resolves to the trail-only view; no old-store
     read, no writer spawn. Re-add a real detail source here when the card detail is remade."""
     _send_to_app("feed", {"type": "detailFailed", "itemId": item_id, "reason": "unavailable"})
@@ -11191,7 +11191,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    # ── serve-layer security (design/read-side.md): Origin/Host gate always; token for non-local reach ──
+    # ── serve-layer security (docs/read-side.md): Origin/Host gate always; token for non-local reach ──
     def _is_local_host(self):
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
         if host in ("127.0.0.1", "localhost", "::1"):

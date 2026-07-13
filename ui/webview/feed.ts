@@ -473,7 +473,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
   // sets the text/title when it shows for recheck.
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↩ re-judging"; fupBadge.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass"; fupBadge.style.display = "none";
-  // "stalled" (design/stalled-open-todos-nudge.md; label per the user 2026-07-02): romp asked this stalled
+  // "stalled" (plans/stalled-open-todos-nudge.md; label per the user 2026-07-02): romp asked this stalled
   // goal ONCE and the response didn't resolve it; per the anti-loop rule it is never re-asked, so the card
   // says so instead.
   const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "stalled";
@@ -964,7 +964,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     a._followedup.style.display = "none";
   }
-  // "stalled" chip (design/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the stall and
+  // "stalled" chip (plans/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the stall and
   // it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07), so
   // the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
   a._nudgeFailed.style.display = it.nudgeFailed ? "" : "none";
@@ -1099,7 +1099,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const isApiErr = it.blocked?.state === "apiError";
   a._blocked.style.display = (it.blocked && !isApiErr) ? "" : "none";
   if (it.blocked && !isApiErr) {
-    // "stalled" (design/stalled-open-todos-nudge.md): not a live prompt — the session stopped with its own
+    // "stalled" (plans/stalled-open-todos-nudge.md): not a live prompt — the session stopped with its own
     // to-do items open and the one fork nudge didn't get them moving, so the card floors to Needs-you.
     a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval"
       : "⏸ picker";

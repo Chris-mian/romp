@@ -76,7 +76,7 @@ where they interact), and the chat you already know.
   over HTTP + WebSocket. Its lifecycle is owned by **`bin/romp-manager`** (start with
   `romp --on`; `bin/romp-service` auto-starts it at login). Open
   `http://127.0.0.1:7433/` in any browser — no VS Code required.
-  Design: `design/read-side.md`.
+  Design: `docs/read-side.md`.
 - **UI** — the four panes (chat, feed, fleet, timeline). The chat + feed +
   fleet render bundles are built from `ui/webview/` and served by the kernel;
   the timeline is `ui/romp-timeline-view.js`, served verbatim at `/timeline`.
@@ -145,6 +145,7 @@ with a page per capability (`the-fleet.md`, `tasks.md`, `nudges.md`,
 `postal-service.md`, `sessions.md`, `remote-access.md`), `architecture.md`,
 and the judge layer — `judges.md` (the roster), `judge-pipeline.md` (the
 diagram map), and `goal-state.md` (the card state model). Architecture +
-schemas live in `design/`: `event-model.md` (the bottom-layer event tree),
-`read-side.md` (the kernel + the panes), `sdk-backend.md` (the Agent SDK
-backend), `segment-regrowth.md`, and `stalled-open-todos-nudge.md`.
+schema deep dives live there too: `event-model.md` (the bottom-layer event
+tree), `read-side.md` (the kernel + the panes), and `sdk-backend.md` (the
+Agent SDK backend). Design docs for work that has since shipped are kept as
+history in `plans/`.

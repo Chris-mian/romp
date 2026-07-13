@@ -1971,7 +1971,7 @@ SEAM_CAP = 32                             # live seam points kept per store (old
 
 
 def _stamp_seam(store, top, now):
-    """Record the settle-time SEAM for `top` (design/segment-regrowth.md): the wall-clock moment romp
+    """Record the settle-time SEAM for `top` (plans/segment-regrowth.md): the wall-clock moment romp
     concluded it was done. apply_seams splits a segment that top OWNS here if it keeps growing with
     real work, making the post-close tail a fresh plannable segment — pivot work can't hide behind the
     placed head. The seam captures the owned SEGMENT KEYS at stamp time (subtree trails + placements,
@@ -2321,7 +2321,7 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "done/block.</note>")
         if agent_open_nums:
             nums = ", ".join("#%d" % n for n in agent_open_nums)
-            # the FORK-nudge blocked branch (design/stalled-open-todos-nudge.md, the user 2026-07-02): these
+            # the FORK-nudge blocked branch (plans/stalled-open-todos-nudge.md, the user 2026-07-02): these
             # items mirror the agent's OWN to-do list, which has no "blocked" state — the planner is the only
             # place a blocker can be recorded, so on a blocked-flavored reply it must land on ≥1 of them.
             user += ("\n<note>Of the open goals, %s mirror items still **open** on the agent's **own** to-do list — "
@@ -2733,7 +2733,7 @@ def plan_units(session, store=None):
             work_text = _unit_text(seg["atoms"])
             if not work_text:
                 continue
-            if seg.get("seam"):                           # settle-time seam tail (design/segment-regrowth.md): work that
+            if seg.get("seam"):                           # settle-time seam tail (plans/segment-regrowth.md): work that
                 # continued past its goal's close. Tell the planner so wrap-up files without reopening
                 # and only a genuine PIVOT mints its own goal.
                 work_text = ("Note: everything below happened **after** the goal \"%s\" was already completed "
@@ -3648,7 +3648,7 @@ def _segs_for(seg_by_id, seg_ids):
 
 
 def apply_seams(segs, store):
-    """Seam-aware segmentation (design/segment-regrowth.md): split any segment that kept growing with
+    """Seam-aware segmentation (plans/segment-regrowth.md): split any segment that kept growing with
     REAL work past the settle moment of the TOP goal that OWNED it. Ownership is read off the SEAM
     itself (its `segs` keys, captured at stamp time by _stamp_seam) — never re-resolved through live
     nodes, which a Clear archives away. The tail is a fresh trigger-less segment (em.split_segment)

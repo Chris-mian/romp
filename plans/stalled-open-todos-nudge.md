@@ -45,7 +45,7 @@ open to-dos (`agent_open_nums`) and requires blocking ≥1 of them on a blocked-
 
 ## 1. Problem & root cause
 
-romp's **authoritative-tier plan-sync** (see `design/` history + memory `authoritative-plan-sync-built`)
+romp's **authoritative-tier plan-sync** (see `plans/` history + memory `authoritative-plan-sync-built`)
 takes the agent's OWN to-do list as authoritative that work is *undone*: an open agent to-do
 (`node["agentTask"]`) forces its goal to roll up **WORKING**, overriding the judge's inference. But
 **Claude Code's to-do system only has pending / in-progress / completed — there is no "blocked."** So the
