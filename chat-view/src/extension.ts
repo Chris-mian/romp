@@ -24,7 +24,7 @@ import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
 import { parsePorcelain } from "./session-diff";
-import { buildMenu, settingsMenu, settingOp, usageSummary } from "./romp-menu";
+import { buildMenu, usageSummary } from "./romp-menu";
 
 const HOST = "127.0.0.1";
 
@@ -143,6 +143,15 @@ function toWebview(msg: any) {
   if (!panel) return;
   if (chatPipe?.webviewReady) panel.webview.postMessage(msg);
   else pendingToWebview.push(msg);
+}
+
+// Same deferral for the feed webview (the menu's Settings opens the gear in a
+// possibly just-created feed panel).
+let pendingToFeed: any[] = [];
+function toFeedWebview(msg: any) {
+  if (!feedPanel) return;
+  if (feedPipe?.webviewReady) feedPanel.webview.postMessage(msg);
+  else pendingToFeed.push(msg);
 }
 
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
@@ -394,7 +403,10 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
   feedPipe = pipe;
   p.webview.onDidReceiveMessage((m) => {
     if (!m) return;
-    if (m.type === "ready") pipe.webviewReady = true;
+    if (m.type === "ready") {
+      pipe.webviewReady = true;
+      for (const q of pendingToFeed.splice(0)) p.webview.postMessage(q);
+    }
     // Clicking into a session (or locating a card's chat turn) should bring
     // the CHAT panel forward — panel reveal is this host's job; the kernel
     // opens/focuses the tab itself. The rules live in view-routing.ts.
@@ -406,6 +418,7 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     pipe.dispose();
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
+    pendingToFeed = [];
   });
 }
 
@@ -635,60 +648,12 @@ async function rompMenu() {
     case "cite": void vscode.commands.executeCommand("rompChat.citeInComposer"); return;
     case "worktree": void vscode.commands.executeCommand("rompChat.openSessionWorktree"); return;
     case "diff": void vscode.commands.executeCommand("rompChat.diffSessionChanges"); return;
-    case "settings": await rompSettingsMenu(); return;
-  }
-}
-
-async function rompSettingsMenu() {
-  const version = await fetchJson("/version");
-  if (!version) {
-    vscode.window.showWarningMessage("romp: couldn't read the kernel's settings (/version).");
-    return;
-  }
-  const pick = await vscode.window.showQuickPick(
-    settingsMenu(version).map((mi) => ({ label: mi.label, description: mi.description, action: mi.action })),
-    { placeHolder: "romp settings" },
-  );
-  if (!pick) return;
-  const send = (op: Record<string, unknown> | null) => {
-    if (!op) return;
-    statusPipe?.send(op);
-    vscode.window.setStatusBarMessage(`romp: ${pick.action.replace("setting:", "")} updated`, 4000);
-  };
-  switch (pick.action) {
-    case "setting:autoNudge":
-      send(settingOp(pick.action, !version.autoNudge));
-      return;
-    case "setting:judgeModel":
-    case "setting:indexModel": {
-      const models = (await fetchJson("/models"))?.models || [];
-      const m = await vscode.window.showQuickPick(
-        models.map((c: any) => ({ label: c.label, value: c.value })),
-        { placeHolder: pick.label });
-      if (m) send(settingOp(pick.action, (m as any).value));
-      return;
-    }
-    case "setting:judgeEffort":
-    case "setting:indexEffort": {
-      const efforts = (await fetchJson("/models"))?.efforts || [];
-      const e = await vscode.window.showQuickPick(
-        [{ label: "default", value: "" }, ...efforts.map((c: any) => ({ label: c.label, value: c.value }))],
-        { placeHolder: pick.label });
-      if (e) send(settingOp(pick.action, (e as any).value));
-      return;
-    }
-    case "setting:defaultDir": {
-      const dir = await vscode.window.showInputBox({
-        prompt: "Default directory for new sessions",
-        value: String(version.defaultDir || ""),
-      });
-      if (dir !== undefined) send(settingOp(pick.action, dir));
-      return;
-    }
-    case "setting:browser":
-      // The full gear (colormap/palette pickers, analytics chart) is visual —
-      // hand off to the browser dashboard rather than rebuild it natively.
-      void vscode.env.openExternal(vscode.Uri.parse(`http://${HOST}:${kernelPort()}/`));
+    case "settings":
+      // The romp-styled settings modal (the gear) lives in the feed bundle —
+      // the SAME one the browser renders (the user 2026-07-13, over a native
+      // QuickPick). Open the feed and ask it to raise the modal.
+      openFeedPanel(false);
+      toFeedWebview({ romp: "openSettings" });
       return;
   }
 }
@@ -948,11 +913,17 @@ function buildFeedHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "feed.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "feed.css"));
   const n = nonce();
+  // The gear modal (in the feed bundle) fetches /models, /palette, /version,
+  // /analytics straight from the kernel: allow that origin and tell the bundle
+  // where it is (the browser serves the feed FROM the kernel, so its base is
+  // ''; this webview's synthetic origin needs the explicit one).
+  const kernelBase = `http://${HOST}:${kernelPort()}`;
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
+    `connect-src ${kernelBase}`,
     `script-src 'nonce-${n}'`,
   ].join("; ");
   return `<!DOCTYPE html>
@@ -968,6 +939,7 @@ function buildFeedHtml(webview: vscode.Webview): string {
 <body>
 ${FEED_BODY}
   ${mediaBaseTag(webview, n)}
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;

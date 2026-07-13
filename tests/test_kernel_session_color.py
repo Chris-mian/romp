@@ -126,14 +126,27 @@ class SessionColor(unittest.TestCase):
                       "boot rewrites the shell mirror so bin/romp can never assign from a stale set")
 
     def test_gear_offers_the_session_colors_picker(self):
-        html = km._gear_html()
+        html = _gear_src()
         self.assertIn(">Session colors<", html)
         self.assertIn("id=rs-pal-btn", html)
         self.assertIn("id=rs-pal-list", html)
-        self.assertIn("{type:'setPalette',name:name}", km._GEAR_JS)
-        self.assertIn("plFill();fill();}", km._GEAR_JS,
+        self.assertIn("{ type: 'setPalette', name: name }", _gear_src())
+        self.assertIn("plFill(); fill(); }", _gear_src(),
                       "gear open re-reads the server-authoritative choice from /palette")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The gear moved from kernel-inline strings into the shared feed bundle
+# (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
+# the gear pins read THAT file (and feed.css for its styling).
+def _gear_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+
+
+def _gear_css_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()

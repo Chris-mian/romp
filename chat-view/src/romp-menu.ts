@@ -53,36 +53,9 @@ export function buildMenu(usage: any, nowS: number): MenuItem[] {
     { label: "Cite File in Chat Composer", action: "cite" },
     { label: "Open Session Worktree", action: "worktree" },
     { label: "Diff Session Changes", action: "diff" },
-    { label: "Settings", description: "auto-nudge, judge models, default directory…", action: "settings" },
+    // Opens the romp-styled gear modal in the feed (the SAME settings UI the
+    // browser renders — the user 2026-07-13), not a native picker.
+    { label: "Settings", description: "the romp settings modal", action: "settings" },
   );
   return items;
-}
-
-// The Settings submenu, current values shown beside each entry (from /version).
-export function settingsMenu(version: any): MenuItem[] {
-  const v = version || {};
-  const eff = (x: string) => (x ? x : "default");
-  return [
-    { label: `Auto Nudge: ${v.autoNudge ? "on" : "off"}`, description: "toggle", action: "setting:autoNudge" },
-    { label: `Judge model: ${v.judgeModel || "?"}`, action: "setting:judgeModel" },
-    { label: `Judge effort: ${eff(v.judgeEffort)}`, action: "setting:judgeEffort" },
-    { label: `Index model: ${v.indexModel || "?"}`, action: "setting:indexModel" },
-    { label: `Index effort: ${eff(v.indexEffort)}`, action: "setting:indexEffort" },
-    { label: `Default directory: ${v.defaultDir || "?"}`, action: "setting:defaultDir" },
-    { label: "All settings (browser dashboard)", description: "colormap, session palette, analytics…", action: "setting:browser" },
-  ];
-}
-
-// setting action id → the kernel op carrying the picked value. The ops and
-// their param names are the kernel's _dispatch_ws contract.
-export function settingOp(action: string, value: string | boolean): Record<string, unknown> | null {
-  switch (action) {
-    case "setting:autoNudge": return { type: "setAutoNudge", enabled: !!value };
-    case "setting:judgeModel": return { type: "setJudgeModel", model: String(value) };
-    case "setting:indexModel": return { type: "setIndexModel", model: String(value) };
-    case "setting:judgeEffort": return { type: "setJudgeEffort", effort: String(value) };
-    case "setting:indexEffort": return { type: "setIndexEffort", effort: String(value) };
-    case "setting:defaultDir": return { type: "setDefaultDir", dir: String(value) };
-    default: return null;
-  }
 }

@@ -77,6 +77,8 @@ def test_landing_shows_build_staleness_banner():
 def test_gear_panel_drops_inline_stale_hint():
     # the gear stays the version display, but the proactive reload alert now lives in the banner,
     # so the gear no longer shows its own inline "stale" hint (one stale surface, not two).
-    feed = km._feed_page()
-    assert "id=rgear" in feed, "the version gear should remain"
-    assert "reload</span>" not in feed
+    # the gear moved into the feed BUNDLE (ui/webview/gear.js, 2026-07-13)
+    import pathlib
+    gear = (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+    assert "id=rgear" in gear, "the version gear should remain"
+    assert "reload</span>" not in gear and "reload</span>" not in km._feed_page()

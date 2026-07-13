@@ -112,10 +112,12 @@ class JudgeSettings(unittest.TestCase):
         self.assertEqual((v["judgeEffort"], v["indexEffort"]), ("", ""))
 
     def test_gear_has_four_dropdowns_with_plain_names(self):
-        html = km._gear_html()
+        html = _gear_src()
         for sel in ("id=rs-judgemodel", "id=rs-judgeeffort", "id=rs-indexmodel", "id=rs-indexeffort"):
             self.assertIn(sel, html)
-        self.assertIn(">Sonnet<", html)
+        # options come from GET /models at open (2026-07-13) — plain labels, one source
+        self.assertIn("fetch(kb() + '/models'", html)
+        self.assertIn({"value": "sonnet", "label": "Sonnet"}, km.MODEL_CHOICES)
         self.assertNotIn("balanced", html)   # descriptions dropped (the user: "just the model names")
 
     def test_ws_handlers_exist(self):
@@ -126,3 +128,16 @@ class JudgeSettings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The gear moved from kernel-inline strings into the shared feed bundle
+# (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
+# the gear pins read THAT file (and feed.css for its styling).
+def _gear_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+
+
+def _gear_css_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()
