@@ -2536,7 +2536,14 @@ function quoteSelectionIntoComposer(text: string) {
   ta.selectionStart = ta.selectionEnd = caret;
   growComposer(ta);
   ta.focus();
-  if (activeId) { drafts.set(activeId, ta.value); persistDrafts(); }
+  if (activeId) {
+    drafts.set(activeId, ta.value);
+    // the selection that opened this menu ALSO seeded the auto quote-chip (selectionchange, the user
+    // 2026-07-13) — the quote now lives IN the composer text, so drop the chip or the send would quote twice
+    const c = composerCitations.get(activeId);
+    if (c?.quote) { composerCitations.delete(activeId); renderComposerChips(activeId); }
+    persistDrafts();
+  }
 }
 
 function copyToClipboard(text: string) {
@@ -5111,7 +5118,11 @@ const drafts = new Map<string, string>();
 // romp follow-up (via askFollowUp on send), so the goal's context travels along and the goal reopens
 // (done→working, unless cleared). One per session's composer — clicking another card REPLACES it (matches the
 // singular "one of those little boxes"). Keyed by session id like drafts, so it belongs to its tab.
-interface Citation { itemId: string; title: string }
+// TWO flavors (the user 2026-07-13): a GOAL citation (itemId — the card-click case above) and a QUOTE
+// citation (quote [+ the containing turn's uuid] — highlighting transcript text seeds it). A quote chip has
+// no goal to reopen: the send wraps the highlighted text into a plain message (quoteReplyBody) so the agent
+// knows exactly which part is being replied to. Same chip, same dismissal, last seed wins.
+interface Citation { itemId?: string; title: string; quote?: string; uuid?: string | null }
 const composerCitations = new Map<string, Citation>();
 
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
@@ -5130,9 +5141,13 @@ try {
   if (saved && typeof saved === "object") for (const [k, v] of Object.entries(saved)) if (typeof v === "string") drafts.set(k, v);
   const savedCites = ((vscodeApi?.getState?.() || {}) as any).citations;
   if (savedCites && typeof savedCites === "object")
-    for (const [k, v] of Object.entries(savedCites))
-      if (v && typeof (v as any).itemId === "string" && typeof (v as any).title === "string")
-        composerCitations.set(k, { itemId: (v as any).itemId, title: (v as any).title });
+    for (const [k, v] of Object.entries(savedCites)) {
+      const c = v as any;   // either flavor restores: a goal chip (itemId) or a quote chip (quote [+ uuid])
+      if (c && typeof c.title === "string" && (typeof c.itemId === "string" || typeof c.quote === "string"))
+        composerCitations.set(k, { itemId: typeof c.itemId === "string" ? c.itemId : undefined, title: c.title,
+                                   quote: typeof c.quote === "string" ? c.quote : undefined,
+                                   uuid: typeof c.uuid === "string" ? c.uuid : null });
+    }
 } catch { /* ignore */ }
 
 // Render (or clear) the citation chip strip for a session's composer. The chip is a pill in the romp accent
@@ -5148,10 +5163,13 @@ function renderComposerChips(id: string | null): void {
   if (!cite) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
   const chip = el("div", "composer-chip");
-  chip.title = "click to see exactly what romp will send the model · ✕ to remove";
+  chip.title = cite.quote
+    ? "replying to the highlighted text — click to preview the message · ✕ to remove"
+    : "click to see exactly what romp will send the model · ✕ to remove";
   chip.style.cursor = "pointer";
   chip.addEventListener("click", () => { if (id) openCitePreview(id, chip); });
-  const mark = el("span", "composer-chip-mark"); mark.textContent = "↩"; chip.appendChild(mark);
+  // a quote chip wears the typographic quote mark; a goal chip keeps the follow-up arrow
+  const mark = el("span", "composer-chip-mark"); mark.textContent = cite.quote ? "“" : "↩"; chip.appendChild(mark);
   const label = el("span", "composer-chip-label"); label.textContent = cite.title; chip.appendChild(label);
   const x = el("button", "composer-chip-x"); x.setAttribute("aria-label", "Remove citation"); x.textContent = "✕";
   x.addEventListener("click", (e) => { e.stopPropagation(); if (id) removeCitation(id); });   // stop → don't open the preview
@@ -5191,6 +5209,13 @@ function openCitePreview(id: string, anchor: HTMLElement): void {
   pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
   document.addEventListener("keydown", citePreviewKey, true);
   document.addEventListener("mousedown", citePreviewOutside, true);
+  if (!cite.itemId) {
+    // a QUOTE chip's body is composed CLIENT-side (quoteReplyBody IS the send path — no kernel wrap, so
+    // nothing to fetch and nothing to drift). Same popover, same clamp-after-content.
+    body.textContent = quoteReplyBody(cite.quote || "", draft || "(your message)");
+    pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
+    return;
+  }
   const url = "/followup-preview?itemId=" + encodeURIComponent(cite.itemId) + "&text=" + encodeURIComponent(draft);
   fetch(url, { cache: "no-store" }).then((r) => r.json()).then((d) => {
     if (citePreviewEl !== pop) return;   // closed while loading
@@ -5206,6 +5231,43 @@ function setCitation(id: string, cite: Citation): void {
   persistDrafts();
   if (id === activeId) { renderComposerChips(id); focusComposer(); }
 }
+
+// The outgoing body for a QUOTE citation (the user 2026-07-13): the highlighted transcript text rides
+// ahead of the typed message as a markdown quote block, so the agent knows exactly which part of the
+// conversation is being replied to. Also what the chip's audit preview shows — one function, no drift.
+function quoteReplyBody(quote: string, text: string): string {
+  const q = quote.split("\n").map((l) => "> " + l).join("\n");
+  return "Replying to this part of the conversation:\n" + q + "\n\n" + text;
+}
+
+// HIGHLIGHT-TO-REPLY (the user 2026-07-13): selecting text in the chat transcript seeds the composer chip
+// as reply context, exactly like a distilled-summary click — but quote-flavored. Event-based on
+// selectionchange; a selection qualifies only when BOTH endpoints sit inside transcript turns (.turn), so
+// composer/tab-bar/modal selections never seed. A COLLAPSE never clears the chip: clicking into the
+// composer to type collapses the selection, and must not eat the chip it just made — dismissal stays the
+// ✕ / Backspace-at-start. Unlike setCitation this never focuses the composer: stealing focus mid-drag
+// would collapse the very selection being made (the focusCardUnlessTyping lesson).
+const QUOTE_CAP = 4000;   // a selection can be huge; the send stays bounded
+function setQuoteCitation(id: string, quote: string, uuid: string | null): void {
+  const title = quote.replace(/\s+/g, " ").trim().slice(0, 140);
+  composerCitations.set(id, { title, quote: quote.slice(0, QUOTE_CAP), uuid });
+  persistDrafts();
+  if (id === activeId) renderComposerChips(id);
+}
+document.addEventListener("selectionchange", () => {
+  if (!activeId) return;
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return;   // never clear on collapse
+  const turnOf = (n: Node | null) => {
+    const e = n instanceof Element ? n : n?.parentElement;
+    return e?.closest?.(".turn") ?? null;
+  };
+  const a = turnOf(sel.anchorNode), f = turnOf(sel.focusNode);
+  if (!a || !f) return;                                     // both endpoints must be transcript turns
+  const text = sel.toString().trim();
+  if (!text) return;
+  setQuoteCitation(activeId, text, a.getAttribute("data-uuid"));
+});
 
 // Dismiss the citation — via the chip ✕ or Backspace at the very start of an empty composer (so it deletes
 // "like a character", as the user asked). Re-focuses the box so typing continues uninterrupted.
@@ -5231,7 +5293,7 @@ function dropCitationByItem(itemId: string, itemIds?: string[]): void {
   gone.add(itemId);
   let changed = false;
   for (const [sid, c] of composerCitations) {
-    if (gone.has(c.itemId)) { composerCitations.delete(sid); changed = true; if (sid === activeId) renderComposerChips(sid); }
+    if (c.itemId && gone.has(c.itemId)) { composerCitations.delete(sid); changed = true; if (sid === activeId) renderComposerChips(sid); }   // quote chips cite no goal — a card clear never drops them
   }
   if (changed) persistDrafts();
 }
@@ -5684,10 +5746,12 @@ function setupComposer() {
     // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
     // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
     // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
-    // just seeded by the click. A plain message (no chip) still goes out as sendMessage.
+    // just seeded by the click. A QUOTE chip (highlighted transcript text, the user 2026-07-13) has no goal:
+    // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage.
     const cite = composerCitations.get(activeId);
     if (vscodeApi) {
-      if (cite) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
+      if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
+      else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text) });
       else vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
     }
     if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send

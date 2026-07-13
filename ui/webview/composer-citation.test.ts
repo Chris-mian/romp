@@ -52,9 +52,9 @@ test("Backspace at the start of the box deletes the citation like a character", 
   assert.match(RENDER, /removeCitation\(activeId\);/);
 });
 
-test("sending with a citation routes as an askFollowUp (reopen) and consumes the chip", () => {
+test("sending with a GOAL citation routes as an askFollowUp (reopen) and consumes the chip", () => {
   assert.match(RENDER, /const cite = composerCitations\.get\(activeId\);/);
-  assert.match(RENDER, /if \(cite\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
+  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
   assert.match(RENDER, /else vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\);/);
   assert.match(RENDER, /if \(cite\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
 });
@@ -76,7 +76,7 @@ test("clearing a card drops any composer chip pointing INTO it (the user 2026-07
   // dropCitationByItem removes every chip citing the card OR any node under it
   assert.match(RENDER, /function dropCitationByItem\(itemId: string, itemIds\?: string\[\]\): void/);
   assert.match(RENDER, /const gone = new Set\(itemIds && itemIds\.length \? itemIds : \[itemId\]\);/);
-  assert.match(RENDER, /if \(gone\.has\(c\.itemId\)\) \{ composerCitations\.delete\(sid\);/);
+  assert.match(RENDER, /if \(c\.itemId && gone\.has\(c\.itemId\)\) \{ composerCitations\.delete\(sid\);/);   // quote chips cite no goal → never dropped by a card clear
 });
 
 test("a sub-goal click cites ITSELF, not the card's top goal (the user 2026-07-01)", () => {
@@ -85,4 +85,38 @@ test("a sub-goal click cites ITSELF, not the card's top goal (the user 2026-07-0
   // generic top-goal quote. The kernel uses itemId only for the citation; navigation is anchorUuid-based.
   assert.match(FEED, /const navId = node\.id \|\| it\.turnId;/);
   assert.doesNotMatch(FEED, /const navId = node\.kind === "handoff" \? node\.id : it\.turnId;/);
+});
+
+test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-context flavored (the user 2026-07-13)", () => {
+  // two flavors on one Citation: a goal chip (itemId) or a quote chip (quote [+ the turn's uuid])
+  assert.match(RENDER, /interface Citation \{ itemId\?: string; title: string; quote\?: string; uuid\?: string \| null \}/);
+  // event-based on selectionchange; BOTH endpoints must sit inside transcript turns, so composer/tab
+  // selections never seed; a collapse never clears (clicking into the composer must not eat the chip)
+  assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
+  assert.match(RENDER, /if \(!sel \|\| !sel\.rangeCount \|\| sel\.isCollapsed\) return;\s*\/\/ never clear on collapse/);
+  assert.match(RENDER, /const a = turnOf\(sel\.anchorNode\), f = turnOf\(sel\.focusNode\);/);
+  assert.match(RENDER, /if \(!a \|\| !f\) return;/);
+  // seeding NEVER focuses the composer — a focus steal would collapse the selection mid-drag
+  const seeder = RENDER.split("function setQuoteCitation(")[1].split("\n}")[0];
+  assert.doesNotMatch(seeder, /focusComposer/);
+  assert.match(seeder, /quote: quote\.slice\(0, QUOTE_CAP\)/);
+});
+
+test("a quote chip sends a plain message wrapped by quoteReplyBody — never askFollowUp (no goal to reopen)", () => {
+  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
+  assert.match(RENDER, /else if \(cite\?\.quote\) vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text: quoteReplyBody\(cite\.quote, text\) \}\);/);
+  // the wrap: a lead-in + the highlighted text as a markdown quote block, then the typed message
+  assert.match(RENDER, /return "Replying to this part of the conversation:\\n" \+ q \+ "\\n\\n" \+ text;/);
+  // the chip's audit preview shows the SAME composed body, client-side (no /followup-preview fetch)
+  assert.match(RENDER, /body\.textContent = quoteReplyBody\(cite\.quote \|\| "", draft \|\| "\(your message\)"\);/);
+  // a quote chip wears the typographic quote mark; the goal chip keeps ↩
+  assert.match(RENDER, /mark\.textContent = cite\.quote \? "“" : "↩";/);
+  // clearing a card drops only GOAL chips citing it — a quote chip cites no goal
+  assert.match(RENDER, /if \(c\.itemId && gone\.has\(c\.itemId\)\)/);
+});
+
+test("right-click Reply drops the auto-seeded quote chip — the quote is in the composer now, never sent twice", () => {
+  // the selection that opened the context menu also seeded the chip (selectionchange); quoting it into the
+  // composer text must consume the chip, or the send would wrap an already-quoted message again
+  assert.match(RENDER, /if \(c\?\.quote\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
 });
