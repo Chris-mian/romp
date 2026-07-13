@@ -4,8 +4,8 @@
 
 AI agents like Claude Code can work autonomously for long stretches, so
 running several in parallel multiplies what you can get done. But it also
-scatters your attention across management tasks: keeping track of which
-agent is doing what, scrolling through transcripts to find the background a
+creates management overhead: keeping track of which agent is doing what,
+scrolling through transcripts to find the background a
 decision needs, checking in to see which agents are stuck, and coordinating
 handoffs of work and information between them.
 
