@@ -1,8 +1,8 @@
 # Romp
 
 AI agents like Claude Code can work autonomously for long stretches, so
-running several in parallel multiplies what you can get done. But it also
-creates management overhead: keeping track of which agent is doing what,
+running several in parallel multiplies what you can accomplish. But it also
+means more to manage: keeping track of which agent is doing what,
 scrolling through transcripts to find the background a
 decision needs, checking in to see which agents are stuck, and coordinating
 handoffs of work and information between them.
@@ -10,44 +10,19 @@ handoffs of work and information between them.
 Romp provides the tools to make this management seamless, so you can stay
 focused on what you're trying to accomplish instead of how the work is
 happening. It organizes your interaction with the agents by human-facing
-tasks and goals.
+tasks and goals:
 
-<div class="grid cards" markdown>
+- **See the whole fleet at a glance.** One place shows every agent: who is
+  working, who is stuck, and who is waiting on you.
+- **Pick up any thread in a glance.** Each task carries a plain-language
+  summary and the background a decision needs, so you never dig through
+  transcripts to get your bearings.
+- **The fleet keeps moving on its own.** An agent that stalls with work left
+  gets nudged back to it, so progress does not wait on you noticing.
+- **Agents coordinate with each other.** They hand off work and ask each other
+  questions directly, across machines, while you stay in the loop.
 
--   :material-console:{ .lg .middle } **Sessions**
-
-    ---
-
-    Named, colored, persistent sessions on the Agent SDK or tmux backend:
-    launch, resume, attach, revive.
-
-    [:octicons-arrow-right-24: Getting started](getting-started.md)
-
--   :material-email-fast-outline:{ .lg .middle } **Postal service**
-
-    ---
-
-    Inter-session mail: send, inbox, working-notes, parked handoffs, revive.
-
-    [:octicons-arrow-right-24: The postal service](guide/postal-service.md)
-
--   :material-sitemap-outline:{ .lg .middle } **The kernel**
-
-    ---
-
-    One always-on process reads the transcripts, infers the tasks, and serves
-    the UI.
-
-    [:octicons-arrow-right-24: Architecture](architecture.md)
-
--   :material-view-dashboard-outline:{ .lg .middle } **The four views**
-
-    ---
-
-    Feed, fleet, timeline, and chat. Open `http://127.0.0.1:7433/` in any
-    browser.
-
-</div>
+New to Romp? Start with [Getting started](getting-started.md).
 
 ## Everything stays on your machine
 

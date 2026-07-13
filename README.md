@@ -3,8 +3,8 @@
 </p>
 
 AI agents like Claude Code can work autonomously for long stretches, so
-running several in parallel multiplies what you can get done. But it also
-creates management overhead: keeping track of which agent is doing what,
+running several in parallel multiplies what you can accomplish. But it also
+means more to manage: keeping track of which agent is doing what,
 scrolling through transcripts to find the background a
 decision needs, checking in to see which agents are stuck, and coordinating
 handoffs of work and information between them.
