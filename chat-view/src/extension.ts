@@ -171,6 +171,14 @@ function toFeedWebview(msg: any) {
   else pendingToFeed.push(msg);
 }
 
+// The romp strip's feed-over-chat rule (the user 2026-07-13): both panes carry
+// the strip, but when the feed panel is VISIBLE the chat hides its copy — one
+// strip on screen, the feed's preferred. Event-driven: feed create/dispose/
+// view-state changes and the chat's ready all re-derive it.
+function updateChatStrip() {
+  toWebview({ type: "stripShow", show: !(feedPanel && feedPanel.visible) });
+}
+
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
 // VS Code does NOT spawn the kernel. It attaches to a manager-owned kernel on romp.kernelPort; if none
 // is there, it asks the `romp --on` manager to ENSURE one (the manager spawns + owns it), waits for it,
@@ -356,6 +364,8 @@ function wirePanel(p: vscode.WebviewPanel) {
     // its own versions. Everything else goes to the kernel verbatim.
     if (m.type === "openFile" && m.path) { openFileInEditor(String(m.path), m.line); return; }
     if (m.type === "openLink" && typeof m.href === "string") { openLink(String(m.href)); return; }
+    // The chat strip's gear: the settings modal lives in the FEED bundle.
+    if (m.type === "openRompSettings") { openFeedPanel(true); toFeedWebview({ romp: "openSettings" }); return; }
     if (m.type === "pickFile") { void pickFileForComposer(p); return; }
     if (m.type === "readClipboard") {
       vscode.env.clipboard.readText().then(
@@ -368,6 +378,7 @@ function wirePanel(p: vscode.WebviewPanel) {
       pipe.webviewReady = true;
       pipe.send(m);
       for (const q of pendingToWebview.splice(0)) p.webview.postMessage(q);
+      updateChatStrip();
       return;
     }
     const r = routeViewMessage("chat", m);
@@ -434,12 +445,15 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     pipe.send(m);
   });
+  p.onDidChangeViewState(() => updateChatStrip());
   p.onDidDispose(() => {
     pipe.dispose();
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
     pendingToFeed = [];
+    updateChatStrip();
   });
+  updateChatStrip();
 }
 
 // ---- fleet status: the ambient status bar item + needs-you notifications ----
@@ -631,7 +645,14 @@ function wireView(
     if (m.type === "ready") pipe.webviewReady = true;
     // The timeline view forwards the /usage payload to the host's chrome (the
     // status-bar item + its menu), like it feeds the web shell's rail.
-    if (app === "timeline" && m.type === "usageData") { lastUsage = m.usage || null; paintStatus(); }
+    if (app === "timeline" && m.type === "usageData") {
+      lastUsage = m.usage || null;
+      paintStatus();
+      // The strips ride the same live event the web rail does.
+      const push = { type: "usage", usage: lastUsage };
+      if (chatPipe?.webviewReady) panel?.webview.postMessage(push);
+      if (feedPipe?.webviewReady) feedPanel?.webview.postMessage(push);
+    }
     const r = routeViewMessage(app, m);
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     if (r.openLinkLocally) openLink(r.openLinkLocally);
@@ -903,12 +924,16 @@ function zoomStyle(): string {
 function buildHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "render.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
+  const stripCss = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "strip.css"));
   const n = nonce();
+  // The romp strip's initial /usage fetch goes straight to the kernel.
+  const kernelBase = `http://${HOST}:${kernelPort()}`;
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
+    `connect-src ${kernelBase}`,
     `script-src 'nonce-${n}'`,
   ].join("; ");
   return `<!DOCTYPE html>
@@ -919,11 +944,13 @@ function buildHtml(webview: vscode.Webview): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
+  <link href="${stripCss}" rel="stylesheet" />
   <title>romp</title>
 </head>
 <body>
 ${chatBody(ATTACH_TITLE_VSCODE)}
   ${mediaBaseTag(webview, n)}
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompShowStrip=true;</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -954,12 +981,13 @@ function buildFeedHtml(webview: vscode.Webview): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
+  <link href="${webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "strip.css"))}" rel="stylesheet" />
   <title>romp feed</title>
 </head>
 <body>
 ${FEED_BODY}
   ${mediaBaseTag(webview, n)}
-  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};</script>
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompShowStrip=true;</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;

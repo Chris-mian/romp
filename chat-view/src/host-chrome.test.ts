@@ -29,3 +29,21 @@ test("fleet/timeline skeletons keep their containers", () => {
   assert.ok(FLEET_BODY.includes('id="fleet-foot"'));
   assert.ok(TIMELINE_BODY.includes('id="host"'));
 });
+
+test("the romp strip: both builders opt in, chat gets the kernel origin, feed wins visibility", () => {
+  const flags = SRC.match(/window\.__rompShowStrip=true/g) || [];
+  assert.equal(flags.length, 2, "chat AND feed builders must opt into the strip");
+  const stripLinks = SRC.match(/"strip\.css"/g) || [];
+  assert.equal(stripLinks.length, 2, "chat AND feed builders must link strip.css");
+  assert.ok(SRC.includes('m.type === "openRompSettings"'), "the chat strip's gear must open the feed's modal");
+  assert.ok(SRC.includes('{ type: "stripShow", show: !(feedPanel && feedPanel.visible) }'),
+    "feed-over-chat: the chat strip hides while the feed panel is visible");
+});
+
+test("the top-right swirl opens romp; the menu lives on the status-bar item", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+  const et = pkg.contributes.menus["editor/title"];
+  assert.equal(et[0].command, "rompChat.open", "the editor-title button is the plain launcher again");
+  assert.ok(SRC.includes('statusItem.command = "rompChat.menu"'), "the status-bar item keeps the menu");
+});

@@ -24,6 +24,7 @@ import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewThumb, canPreview } from "./preview";
 import { hostNameNodes } from "./host-prefix";
 import { mediaSrc } from "./media";
+import { initStrip } from "./strip";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -151,6 +152,12 @@ interface Session { id: string; name: string; color: Color | null; events: ChatE
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
+
+// The romp strip (VS Code only — the host opts in via __rompShowStrip): usage
+// bars + the gear button, docked below the composer. The gear lives in the
+// FEED bundle, so the click asks the host to open the feed's settings modal;
+// the host also hides this copy while the feed panel is visible (feed wins).
+initStrip(() => vscodeApi?.postMessage({ type: "openRompSettings" }));
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 const expandedGroups = new Set<string>();      // compact mode: tool-group keys the user clicked open
