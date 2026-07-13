@@ -63,13 +63,13 @@ where they interact), and the chat you already know.
   backends: the Agent SDK (default; the kernel drives the Claude Agent SDK) or
   tmux (terminal sessions tagged `@romp`). A `bin/README.md` maps every bin
   command.
-- **Romp Postal Service** (`bin/romp-postal-service`) — inter-session mail: send,
+- **Romp Postal Service** (`postal/postal_service.py`) — inter-session mail: send,
   inbox, working-notes, parked mail for dead sessions, session search, revive.
   Exposed to Claude sessions as an MCP server (`romp-postal-service mcp`) and on the
   shell as `romp --mail …`.
-- **Kernel** (`bin/romp-kernel`) — THE always-on core: one Python process,
+- **Kernel** (`kernel/kernel.py`) — THE always-on core: one Python process,
   single writer. It parses each session's transcript into an event tree
-  (`bin/romp-event-model`), runs the **judges** (`bin/romp-judge` — an index
+  (`kernel/event_model.py`), runs the **judges** (`kernel/judge.py` — an index
   tier always on, the planners and board keepers while a client is watching;
   the roster lives in `docs/judges.md`) that
   write the durable records, and serves the chat / feed / fleet / timeline UI

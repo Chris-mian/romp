@@ -43,10 +43,10 @@ so an idle fleet costs file stats, not model calls.
 Twelve prompts back the thirteen names: the consolidator reuses the
 grouper's prompt over a different column, under its own name. Usage and error logs
 carry one name per prompt; the timeline band keeps five family rows and
-folds the fine names onto them (`_JUDGE_FAMILY` in `bin/romp-kernel`).
+folds the fine names onto them (`_JUDGE_FAMILY` in `kernel/kernel.py`).
 Naming history: log rows before 2026-07-08 use the family names, and the
 opener was "prompt-planner" for one day (07-08 to 07-09). Prompts are named
-by their constant in `bin/romp-judge`; grep the constant, line numbers
+by their constant in `kernel/judge.py`; grep the constant, line numbers
 drift.
 
 ## A turn through the judges
@@ -293,4 +293,4 @@ toward nothing.
   `STATE/judge-errors.jsonl` (the row contract above; kinds are parse,
   call, give-up, cite-miss, rate-limited, task-store, history-unreadable).
 - Debugging: run the judge's own code against the live store
-  (`SourceFileLoader` on `bin/romp-judge`) rather than inferring from logs.
+  (`SourceFileLoader` on `kernel/judge.py`) rather than inferring from logs.

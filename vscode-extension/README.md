@@ -5,7 +5,7 @@ VS Code / Cursor — styled to look like the official Claude Code panel, but for
 *any* session (including ones running in a terminal / romp), which the official
 panel can't drive.
 
-It is a thin client of the romp **kernel** (`bin/romp-kernel`): it connects over
+It is a thin client of the romp **kernel** (`kernel/kernel.py`): it connects over
 WebSocket and renders the chat / feed / timeline the kernel pushes, so the panel
 updates live as the session advances. A browser tab and this extension share one
 kernel and render the same UI.
@@ -13,7 +13,7 @@ kernel and render the same UI.
 ## How it works
 
 - The **kernel** parses each session's transcript into an event tree
-  (`bin/romp-event-model`) and pushes pane payloads over WebSocket.
+  (`kernel/event_model.py`) and pushes pane payloads over WebSocket.
 - `src/extension.ts` (extension host) spawn-or-attaches a kernel and hosts the
   webviews, piping `postMessage` both ways — it does not parse transcripts.
 - `../ui/webview/render.ts` + `feed.ts` + `styles.css` (webview) render the

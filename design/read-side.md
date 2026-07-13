@@ -4,7 +4,7 @@ Internal design doc (not user-facing). Layer 3 of the rebuilt romp: it turns the
 records written by the event model (`design/event-model.md`) and the summarizer
 layer (`docs/judges.md`) into the three web-UI panes the user actually looks at:
 the **feed**, the **chat**, and the **timeline**. Built fresh beside the existing
-`chat-view/` kernel + `obsidian/` timeline + `bin/romp-feed`, which stay until the
+`chat-view/` kernel + `obsidian/` timeline + `cli/feed.py`, which stay until the
 new one is proven. Started 2026-06-15.
 
 ## The governing principle
@@ -200,7 +200,7 @@ its own Completed card. No read-time DAG rebuild, no status derivation, no hando
 
 A single read library (TS, in `ui/`) of pure functions `records → ChatView |
 FeedView | TimelineView`. It **replaces four duplicated reducers**: `kernel/feed.ts`,
-`bin/romp-feed` (the Python twin, gone with the TUI), `kernel/chat.ts`'s parser,
+`cli/feed.py` (the Python twin, gone with the TUI), `kernel/chat.ts`'s parser,
 and `romp-events --emit`. One implementation, because there is one front end now.
 
 ## The heuristics, triaged
@@ -269,7 +269,7 @@ The pieces already exist; here is how they compose with the merged kernel.
   stay local to the machine that produced them.
 - **Postal federates over SSH.** Local and remote sessions share one bus address; a
   remote session tunnels the bus port to the laptop with `ssh -R
-  PORT:127.0.0.1:PORT` and heartbeats for presence (`bin/romp-postal-service`). So messages
+  PORT:127.0.0.1:PORT` and heartbeats for presence (`postal/postal_service.py`). So messages
   cross machines today; nothing in the merged kernel changes that.
 - **Viewing remote sessions**: simplest path is to forward the remote kernel's HTTP
   port and open a second browser view at it (one view per machine). A unified view
@@ -284,7 +284,7 @@ Binding `127.0.0.1` is not an auth boundary: any webpage the user opens can reac
 localhost, and WebSockets are not covered by CORS, so without origin checks a
 malicious page can open `ws://127.0.0.1:PORT/ws` and drive the kernel (inject
 prompts, spawn/interrupt sessions). This is the ClawJacked class (CVE-2026-25253).
-The new Python kernel (`bin/romp-kernel`) must close it from the start.
+The new Python kernel (`kernel/kernel.py`) must close it from the start.
 
 - **Always-on Origin/Host validation (token-independent).** Validate `Origin` and
   `Host` on every HTTP request AND the `/ws` upgrade; allow only the kernel's own
