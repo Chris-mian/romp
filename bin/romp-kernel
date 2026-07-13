@@ -1526,6 +1526,27 @@ def _closer_settled(store, turn_id, atom_count):
     return sig.get(turn_id, atom_count) == atom_count
 
 
+def _closer_pending(sid, path, now, store):
+    """True while `sid`'s LATEST turn has SETTLED but the closer hasn't yet delivered its considered
+    verdict for it — the gap between "the session finished" and "the judge filed the work" (the user
+    2026-07-13: a finished session's card sat inertly in Working for a beat before moving to Completed;
+    the working card wears the Analyzing… swirl through that gap instead). The SAME freshness event as
+    auto-nudge's closer gate: _closer_settled over the judge's OWN parse — parsed_session's turn ids and
+    atom counts are what closedTurns/closedSig record; the kernel's states-less _parse diverges on
+    idle-led turns, so keying on it would never match (the 2026-06-22 obsidian lesson). Self-clearing by
+    construction: every end-known turn is eventually swept (a no-menu/command turn closes as a no-op, a
+    parse give-up stamps at current size), and CLOSER_ON off reads settled. Cheap: parsed_session is
+    (mtime,size)-cached in-process, and the caller only asks for a LIVE, idle session with a warm parse."""
+    try:
+        turns = jd.parsed_session(sid, [path], now)["turns"]
+    except Exception:
+        return False
+    if not turns:
+        return False
+    lt = turns[-1]
+    return not _closer_settled(store, lt.get("id"), len(lt.get("atoms") or []))
+
+
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
     isn't awaiting/compacting/api-error, isn't WAITING ON A LIVE PEER (a wait isn't a stall — the human's
@@ -7280,6 +7301,13 @@ def build_feed(now, tmux=None):
         sess_retrying = _session_retrying(fsid, tm)
         store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
                                                  # status never shows a half-applied intermediate (atomic visibility)
+        # ANALYZING gap (the user 2026-07-13): the turn just SETTLED but the closer hasn't delivered its
+        # verdict yet — without this the card sits inertly in Working after the session finished, until the
+        # judge's pass lands. Session-scoped (we don't know WHICH goal the turn resolved until the verdict);
+        # each working card wears the Analyzing… swirl meanwhile (feed.ts spinCaption). Cache-warm only,
+        # like the working dot: a cold start paints plain and the swirl snaps in after _warm_fleet_bg.
+        sess_judging = bool(live and ps and not who_working
+                            and _closer_pending(fsid, s["path"], now, store))
         nodes, status = store.get("nodes", {}), store.get("status", {})
         # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
         # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
@@ -7660,6 +7688,7 @@ def build_feed(now, tmux=None):
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
+                "judging": bool(sess_judging and column == "working"),   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
                 "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
                                              store.get("placements") or {}) or None)
                             if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section

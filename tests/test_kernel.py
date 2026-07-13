@@ -1593,6 +1593,44 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(p["text"], "Analyzing: trimming the empty space below the cards")
         self.assertTrue(p["judging"], "settled turn awaiting placement → the chip may say Analyzing…")
 
+    def test_working_card_wears_judging_through_the_settle_gap(self):
+        # The user 2026-07-13: a finished session's card sat inertly in Working for a beat before moving to
+        # Completed — the gap between the turn settling and the closer's verdict landing. A REAL working
+        # card now carries `judging` through that gap (feed.ts shows the Analyzing… swirl), keyed on the
+        # SAME event auto-nudge waits for: _closer_settled over the judge's own parse.
+        g1 = SID + ":g1"
+        self._goal_store({g1: {"id": g1, "text": "fix the flicker", "parentId": None, "nodeComplete": False,
+                               "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g1: "working"}, last=g1)
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g1)
+        self.assertEqual(card["column"], "working")
+        self.assertTrue(card["judging"], "turn settled + no closer verdict yet → the Analyzing… gap")
+        # the closer stamps its verdict for the turn AT ITS CURRENT SIZE → the swirl drops the same push
+        lt = jd.parsed_session(SID, [str(self.tpath)], NOW)["turns"][-1]
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g1, "closedTurns": [lt["id"]],
+            "closedSig": {lt["id"]: len(lt["atoms"])},
+            "nodes": {g1: {"id": g1, "text": "fix the flicker", "parentId": None, "nodeComplete": False,
+                           "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            "placements": {}, "status": {g1: "working"}}))
+        card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g1)
+        self.assertFalse(card2["judging"], "verdict recorded → no more Analyzing…; the card is plainly Working")
+
+    def test_judging_never_shows_while_the_turn_is_still_open(self):
+        # An OPEN turn is honest Working — nothing is being analyzed while the session still runs; the
+        # swirl only covers the settled-but-unjudged beat (mirrors the provisional card's phase truth).
+        g1 = SID + ":g1"
+        self._goal_store({g1: {"id": g1, "text": "fix the flicker", "parentId": None, "nodeComplete": False,
+                               "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g1: "working"}, last=g1)
+        saved = km._session_working
+        km._session_working = lambda turns: True
+        try:
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g1)
+        finally:
+            km._session_working = saved
+        self.assertFalse(card["judging"], "open turn → plain Working, never Analyzing…")
+
     # ── Auto Nudge (the user 2026-06-19): follow up ONCE on an orphaned working goal ──
     def _stub_nudge(self):
         # capture nudges instead of pasting into tmux; returns (sent_list, restore_fn)
@@ -5356,6 +5394,39 @@ class TestCloserSettledGate(unittest.TestCase):
                             "closer off → nothing to wait for, never suppress the nudge")
         finally:
             jd.CLOSER_ON = saved
+
+    # ── _closer_pending: the feed's Analyzing… gap flag (the user 2026-07-13) rides the same event ──
+    def _with_parse(self, turns):
+        # _closer_pending must read the judge's OWN parse (parsed_session): its turn ids/atom counts are
+        # what closedTurns/closedSig record — the kernel's states-less _parse diverges on idle-led turns.
+        saved = jd.parsed_session
+        jd.parsed_session = lambda sid, files, now: {"turns": turns}
+        return saved
+
+    def test_pending_while_the_latest_turn_awaits_the_closers_verdict(self):
+        saved = self._with_parse([{"id": self.TID, "atoms": [{}] * 5}])
+        try:
+            self.assertTrue(km._closer_pending("sid", "/tmp/t.jsonl", 0, self._store()),
+                            "settled turn, no verdict recorded → the Analyzing… gap is live")
+            store = self._store(closed=[self.TID], sig={self.TID: 5})
+            self.assertFalse(km._closer_pending("sid", "/tmp/t.jsonl", 0, store),
+                             "verdict recorded at the turn's current size → gap over")
+            grown = self._store(closed=[self.TID], sig={self.TID: 3})
+            self.assertTrue(km._closer_pending("sid", "/tmp/t.jsonl", 0, grown),
+                            "the turn grew past the recorded verdict → analyzing again (re-judge due)")
+        finally:
+            jd.parsed_session = saved
+
+    def test_pending_is_false_on_an_empty_or_unreadable_parse(self):
+        # No turns / a raising parse must read NOT pending — a cosmetic swirl never blocks the paint and
+        # never spins on a session with nothing to judge.
+        saved = self._with_parse([])
+        try:
+            self.assertFalse(km._closer_pending("sid", "/tmp/t.jsonl", 0, self._store()))
+            jd.parsed_session = lambda sid, files, now: (_ for _ in ()).throw(OSError("gone"))
+            self.assertFalse(km._closer_pending("sid", "/tmp/t.jsonl", 0, self._store()))
+        finally:
+            jd.parsed_session = saved
 
 
 class SlashCommands(unittest.TestCase):

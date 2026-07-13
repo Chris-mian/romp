@@ -91,3 +91,11 @@ test("the swirl uses the shared glyph, spins SLOWER (calmer) + reverse like the 
   assert.match(CSS, /@keyframes fask-swirl-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);   // reverse, like rl-spin
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.fask-awaiting-swirl \{ animation: none; \} \}/);
 });
+
+test("a REAL working card wears the Analyzing… swirl through the settle→verdict gap (the user 2026-07-13)", () => {
+  // the session finished its turn but the closer's verdict hasn't landed — kernel `judging` on a real
+  // working card (not just the provisional) lights the swirl so the card never sits inertly in Working
+  // after the session is done; it hands off to the column move (then Distilling…) when the verdict files.
+  assert.match(FEED, /\} else if \(it\.judging && it\.column === "working"\) \{[\s\S]*?spinCaption = "Analyzing…";/);
+  assert.match(FEED, /the judge is deciding whether it completed or blocked this goal\./);
+});
