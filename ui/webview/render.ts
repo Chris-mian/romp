@@ -1725,7 +1725,7 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   // Per-thread suppression (the user 2026-07-06): the user interrupted THIS thread's storm → its auto-retry is
   // held off until a successful turn re-arms it. Distinct from the global pause; "Retry now" + a message still work.
   const suppressed = activeId ? !!sessions.get(activeId)?.status.retrySuppressed : false;
-  if (paused) countdown.textContent = "auto-retry off (global)";
+  if (paused) countdown.textContent = retryPausedText();   // a usage-limit pause counts down to the window reset
   else if (suppressed) countdown.textContent = "auto-retry stopped for this session — send a message to resume";
   const stop = el("button", "apierror-stop") as HTMLButtonElement;
   stop.textContent = paused ? "Resume all auto-retries" : "Stop all auto-retries";
@@ -1740,7 +1740,7 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
       (btn as HTMLElement).title = globalRetryPaused ? "resume auto-retrying globally" : "stop the auto-retry loop for all errors globally";
     }
     for (const cd of Array.from(document.querySelectorAll(".apierror-countdown"))) {
-      cd.textContent = globalRetryPaused ? "auto-retry off (global)" : "retrying soon…";
+      cd.textContent = globalRetryPaused ? retryPausedText() : "retrying soon…";
     }
   });
   head.appendChild(stop);
@@ -1760,27 +1760,45 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
 const API_RETRY_MS = 10_000;
 const apiRetryNext = new Map<string, number>();   // sid -> epoch ms of its next auto-retry
 let globalRetryPaused = false;                    // persisted via host globalRetryPaused push
+let globalRetryResumeAt: number | null = null;    // epoch SECONDS the limiting usage window resets (kernel resumeAt) — null for a manual pause
+
+// The paused line names WHEN retrying resumes (the user 2026-07-13): a usage-limit pause carries the
+// window's reset time, so the card counts down to the actual retry instead of a mute "off" label.
+function retryPausedText(): string {
+  if (globalRetryResumeAt) {
+    const dt = Math.max(0, Math.ceil(globalRetryResumeAt - Date.now() / 1000));
+    const hm = new Date(globalRetryResumeAt * 1000).toTimeString().slice(0, 5);
+    return `usage limit — retrying at ${hm} (in ${durLabel(dt)})`;
+  }
+  return "auto-retry off (global)";
+}
 
 function apiRetryTick(): void {
-  if (globalRetryPaused) return;                  // user stopped retrying globally
   const now = Date.now();
-  const blocked = new Set<string>();
-  // A thread the user interrupted (status.retrySuppressed) is left OUT of the retry set — same as a recovered
-  // one: romp won't re-fire "retry" into it until a successful turn re-arms it (the user 2026-07-06).
-  sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed) blocked.add(id); });
-  apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered / suppressed → stop
-  blocked.forEach((id) => {
-    if (!apiRetryNext.has(id)) apiRetryNext.set(id, now + API_RETRY_MS);
-    if (now >= (apiRetryNext.get(id) as number)) {
-      if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id });
-      apiRetryNext.set(id, now + API_RETRY_MS);                                          // reset the countdown
-    }
-  });
-  // live "retrying in Ns" on the active session's card, if it's the blocked one being viewed
-  const cd = document.querySelector(".apierror-countdown") as HTMLElement | null;
+  if (!globalRetryPaused) {                       // user/limit stopped retrying globally → schedule nothing
+    const blocked = new Set<string>();
+    // A thread the user interrupted (status.retrySuppressed) is left OUT of the retry set — same as a recovered
+    // one: romp won't re-fire "retry" into it until a successful turn re-arms it (the user 2026-07-06).
+    sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed) blocked.add(id); });
+    apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered / suppressed → stop
+    blocked.forEach((id) => {
+      if (!apiRetryNext.has(id)) apiRetryNext.set(id, now + API_RETRY_MS);
+      if (now >= (apiRetryNext.get(id) as number)) {
+        if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id });
+        apiRetryNext.set(id, now + API_RETRY_MS);                                          // reset the countdown
+      }
+    });
+  }
+  // live countdown on the NEWEST error card (the live one — older cards in the transcript are settled
+  // history and stay static): "retrying in Ns", or during a usage-limit pause the reset-time countdown
+  // (the user 2026-07-13). Ticks every second even while paused, so the paused line stays live.
+  const cds = document.querySelectorAll(".apierror-countdown");
+  const cd = cds.length ? (cds[cds.length - 1] as HTMLElement) : null;
   if (cd) {
     const active = activeId ? sessions.get(activeId) : null;
-    if (active?.status.retrySuppressed) {
+    if (globalRetryPaused) {
+      cd.textContent = retryPausedText();
+    } else if (active?.status.retrySuppressed) {
       cd.textContent = "auto-retry stopped for this session — send a message to resume";
     } else {
       const at = activeId ? apiRetryNext.get(activeId) : undefined;
@@ -5478,12 +5496,14 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;
+    // limit-driven pause → the usage window's reset epoch (seconds); manual pause / unknown → null
+    globalRetryResumeAt = typeof m.resumeAt === "number" ? m.resumeAt : null;
     for (const btn of Array.from(document.querySelectorAll(".apierror-stop"))) {
       btn.textContent = globalRetryPaused ? "Resume all auto-retries" : "Stop all auto-retries";
       (btn as HTMLElement).title = globalRetryPaused ? "resume auto-retrying globally" : "stop the auto-retry loop for all errors globally";
     }
     for (const cd of Array.from(document.querySelectorAll(".apierror-countdown"))) {
-      cd.textContent = globalRetryPaused ? "auto-retry off (global)" : "retrying soon…";
+      cd.textContent = globalRetryPaused ? retryPausedText() : "retrying soon…";
     }
   }
   else if (m.type === "chatTail") chatTail(m);

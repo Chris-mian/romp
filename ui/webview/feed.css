@@ -176,6 +176,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fask-row1 { display: block; }
 .fask-row1 .fcard-title { display: inline; }
 .fask-row1 .ftime { margin-left: 8px; }
+/* GROUPED mode (the user 2026-07-13): Clear floats right on the TIME line — right-justified beside the
+   timestamp when it fits, else it drops to its own right-aligned line (the compactness ladder). */
+.fask-row1 .fdismiss { float: right; margin-left: 8px; }
+/* the by-session header on the column BACKDROP opening that session's run of cards: identity-colored
+   name + the working dot; cards under it drop their own name row. */
+.feed-sess-head { display: flex; align-items: center; gap: 6px; margin: 9px 3px 0; font-size: 0.9em; font-weight: 600; }
+.feed-sess-head:first-child { margin-top: 2px; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 /* wraps: when the name + "↪ from <peer>" provenance + the reopened/Followed-up chips can't all fit on
@@ -282,6 +289,12 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   align-self: flex-start; max-width: 100%; margin: 3px 0 4px; align-items: flex-start;
   border: 1px solid var(--box-border); border-radius: 8px; padding: 3px 9px;
 }
+/* "Waiting on task" pill (the user 2026-07-13): a bg-TASK wait is a compact section toggle instead of the
+   boxed caption — the mini swirl spins inside the pill; the expanded list's rows (same view as the
+   Sub-goals checklist) wear the same swirl as their mark. */
+.fask-taskbtn { display: inline-flex; align-items: center; gap: 5px; }
+.fask-taskbtn .fask-awaiting-swirl { width: 10px; height: 10px; }
+.ftask-swirl.fask-awaiting-swirl { display: inline-block; width: 11px; height: 11px; vertical-align: -1px; }
 
 /* "Followed up" — optimistic reopen pending the judge's re-file (judges delegation, 2026-06-17); blue pill */
 .fask-followedup { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;

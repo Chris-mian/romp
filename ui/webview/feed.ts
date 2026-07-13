@@ -69,7 +69,7 @@ interface AskItem {
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp --debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
-  awaiting?: { why?: string | null } | null;       // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why".
+  awaiting?: { why?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Waiting on task" pill (expands the list, like Sub-goals) replaces the boxed why.
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -248,16 +248,22 @@ const vscodeApi =
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { newestFirst: boolean; collapsed: boolean } {
+function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
     // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
     // arrive with their summary open (the user 2026-07-07). collapsed is the DEFAULT section state new cards
     // inherit — a per-card expand overrides just that card without turning the mode off. (Sub-goals is now one
     // of the mutually-exclusive sections 2026-07-08; the same `collapsed` default applies — see resolveSec.)
-    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true };
-  } catch { return { newestFirst: false, collapsed: false }; }
+    // grouped (the user 2026-07-13): each column groups its cards by SESSION (tab/lane order), a session-name
+    // header on the backdrop between runs, the per-card name dropped — the compact by-session read.
+    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped === true };
+  } catch { return { newestFirst: false, collapsed: false, grouped: false }; }
 }
+// The kernel's session order (session-order.json — the SAME order the chat tabs + timeline lanes hold; the
+// user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
+// per-host orders local-first, ids pre-prefixed.
+let sessionOrder: string[] = [];
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
@@ -542,14 +548,21 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the inline sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no
   // sub-goals. Wired in applySections alongside Background/Summary (one open at a time, or none).
   const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
+  // "Waiting on task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
+  // the mini spinning swirl inside) that replaces the old boxed awaiting caption when live bg TASKS exist;
+  // click expands the task list in the checklist spot, same interaction as Sub-goals. Filled in applySections.
+  const taskBtn = el("button", "fask-secbtn fask-taskbtn"); taskBtn.style.display = "none";
+  const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true");
+  const taskLbl = el("span", "fask-taskbtn-lbl");
+  taskBtn.append(taskGlyph, taskLbl);
   // "N artifacts" (the user 2026-07-08): when the distiller listed PRODUCED files (and the kernel verified
   // they exist), a small nav line at the BOTTOM of the summary body — click opens the modal, where the
   // artifacts render as previews. Filled in applySections; shows only with the summary section.
   const artline = el("div", "fask-artline nav"); artline.style.display = "none";
   secs.append(bgBody, distill, artline);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
-  // now that the toggles exist, populate row3: Background · Summary · Sub-goals — GROUPED left, wrapping
-  // together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
-  row3.append(bgBtn, takeBtn, subBtn, actions);
+  // now that the toggles exist, populate row3: Background · Summary · Sub-goals · Waiting-on-task — GROUPED
+  // left, wrapping together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
+  row3.append(bgBtn, takeBtn, subBtn, taskBtn, actions);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -653,6 +666,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
+  a._row1 = row1; a._row2 = row2;   // grouped mode re-homes Clear between these (the user 2026-07-13)
   a._nudgeFailed = nfBadge;
   a._interrupting = intingBadge;
   a._interrupted = intBadge;
@@ -664,6 +678,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
   a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn; a._subBtn = subBtn;
+  a._taskBtn = taskBtn; a._taskLbl = taskLbl;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -675,8 +690,8 @@ function makeAskCard(it: AskItem): HTMLElement {
 // which the footer "Collapsed" toggle sets: OFF → "summary" open (a completed card's takeaway shows); ON →
 // "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
 // (click the open one → off; click another → switch) that survives the mode.
-const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "subgoals" | "none" {
+const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "none">();
+function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "none" {
   return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
 }
 // Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08 — "the
@@ -717,12 +732,17 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     }
   }
   const hasSubs = subCount > 0;
+  // live background tasks (the user 2026-07-13): when the card is AWAITING on tasks, the compact
+  // "Waiting on task" pill joins the section toggles and expands this list (the old boxed caption is gone)
+  const taskList = ((it.awaiting && it.awaiting.tasks) || []).filter(Boolean);
+  const hasTasks = taskList.length > 0;
   // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
   let choice = resolveSec(id);
   if (choice === "bg" && !bg) choice = "none";
   if (choice === "summary" && !distillShown) choice = "none";
   if (choice === "subgoals" && !hasSubs) choice = "none";
-  const pick = (want: "bg" | "summary" | "subgoals") => (ev: Event) => {
+  if (choice === "tasks" && !hasTasks) choice = "none";
+  const pick = (want: "bg" | "summary" | "subgoals" | "tasks") => (ev: Event) => {
     ev.stopPropagation();
     secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
     applySections(a, it, distillShown);
@@ -762,6 +782,15 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
   subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
   subBtn.onclick = pick("subgoals");
+  // "Waiting on task" pill (the user 2026-07-13) — visible only while live bg tasks exist; the mini swirl
+  // inside keeps the "in flight" cue; pressed when the task list is showing. No preachy tooltip.
+  const taskBtn = a._taskBtn as HTMLElement;
+  taskBtn.style.display = hasTasks ? "" : "none";
+  (a._taskLbl as HTMLElement).textContent = taskList.length === 1 ? "Waiting on task" : "Waiting on " + taskList.length + " tasks";
+  taskBtn.classList.toggle("on", choice === "tasks");
+  taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
+  taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
+  taskBtn.onclick = pick("tasks");
   // the bg/summary BODIES container shows only when one of those two is open (the tree is a separate element)
   a._secs.style.display = (choice === "bg" || choice === "summary") ? "" : "none";
   // the inline sub-goal TREE (in _checklist), shown only when choice === "subgoals". Whole subtree, indented
@@ -772,6 +801,21 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const cl = a._checklist as HTMLElement;
   const renderTree = () => {
     cl.innerHTML = "";
+    // the TASK list (the user 2026-07-13): same view/spot as the sub-goal checklist — one row per live
+    // background task, a small spinning swirl as its mark (in flight), the task's own description as text
+    if (choice === "tasks") {
+      for (const d of taskList) {
+        const row = el("div", "fcheck ftask");
+        const tri = el("span", "fcheck-tri empty");
+        const mark = el("span", "fcheck-mark");
+        mark.appendChild(el("span", "fask-awaiting-swirl ftask-swirl"));
+        const txt = el("span", "fcheck-text"); txt.textContent = d;
+        row.append(tri, mark, txt);
+        cl.appendChild(row);
+      }
+      cl.style.display = cl.children.length ? "" : "none";
+      return;
+    }
     if (choice !== "subgoals" || !root) { cl.style.display = "none"; return; }
     const rows: { node: AskTreeNode; depth: number; repeat: boolean; expandable: boolean; collapsed: boolean }[] = [];
     const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
@@ -968,11 +1012,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // as "in flight, not stalled", which is exactly the awaiting state — the box already distinguishes it from
   // the actively-working cases, so the glyph needn't also freeze). The caption wraps to two lines if long.
   let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
-  if (aw && !it.waitingOn) {
+  // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Waiting on task" pill
+  // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
+  const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
+  if (aw && !it.waitingOn && !awTasks.length) {
     awaitingBg = true;
-    // A background-TASK why carries the task's own description (the CLI's task lifecycle stream) — show it
-    // verbatim so the box says WHAT it's waiting on ("Waiting on a background task: 20-minute timer…", the
-    // user 2026-07-11); a subagent why keeps the classic label. The caption wraps to two lines if long.
+    // A subagent/overlay why keeps the classic boxed label. The caption wraps to two lines if long.
     const why = aw.why || "";
     spinCaption = /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
                                            : "Awaiting background agents";
@@ -1117,6 +1162,18 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     ho.appendChild(line);
   }
   ho.style.display = ho.children.length ? "" : "none";
+
+  // GROUPED mode (the user 2026-07-13): the session header on the backdrop carries the identity + working
+  // dot, so the card drops its own name and Clear moves up beside the timestamp (float-right: on the time
+  // line when it fits, else its own right-justified line). The move is guarded so a steady-state re-render
+  // never detaches the button mid-press (click-safety); row2 hides entirely once nothing on it shows.
+  const gmode = feedPrefs().grouped;
+  ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
+  const clrHome = (gmode ? a._row1 : a._row2) as HTMLElement;
+  if ((a._clr as HTMLElement).parentElement !== clrHome) clrHome.append(a._clr);
+  const r2 = a._row2 as HTMLElement;
+  const r2live = (Array.from(r2.children) as HTMLElement[]).some((c) => c.style.display !== "none");
+  r2.style.display = gmode && !r2live ? "none" : "";
 
   // (bg / summary / sub-goals are wired above in applySections — one mutually-exclusive selection.)
 }
@@ -1264,6 +1321,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._members = memberList;
+  a._row1 = row1; a._row2 = row2; a._clr = clr;   // grouped mode re-homes Clear between the rows (2026-07-13)
   return card;
 }
 
@@ -1294,6 +1352,13 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
       host.appendChild(line);
     }
   }
+  // GROUPED mode (the user 2026-07-13) — same treatment as the ask card: the backdrop header carries the
+  // name + dot, Clear rides up beside the timestamp, the emptied name row hides. Move guarded (click-safety).
+  const gmode = feedPrefs().grouped;
+  ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
+  const clrHome = (gmode ? a._row1 : a._row2) as HTMLElement;
+  if ((a._clr as HTMLElement).parentElement !== clrHome) clrHome.append(a._clr);
+  (a._row2 as HTMLElement).style.display = gmode ? "none" : "";   // the group's row2 is only name + Clear
 }
 
 // Transient hover-highlight signal: hovering a modal line emits its event id(s);
@@ -1933,7 +1998,29 @@ function renderGroupModalBody(host: HTMLElement, members: AskItem[]) {
 // builder + cache map by kind.
 type Entry =
   | { kind: "ask"; t: number; ask: AskItem }
-  | { kind: "group"; t: number; group: AskGroup };
+  | { kind: "group"; t: number; group: AskGroup }
+  // a SESSION HEADER row in grouped mode (the user 2026-07-13): the session's name + working dot on the
+  // column backdrop, heading that session's run of cards. Only emitted for runs that exist.
+  | { kind: "sess"; t: number; sid: string; name: string; color: { bg: string; fg: string } | null; live: boolean };
+
+// Grouped-mode session headers, one reused element per (column, sid) — same keyed-incremental treatment as
+// cards so re-renders never rebuild a header mid-press. Pruned when a reconcile drops them from the DOM.
+const sessHeadEls = new Map<string, HTMLElement>();
+function makeSessHead(): HTMLElement {
+  const h = el("div", "feed-sess-head");
+  const nm = el("a", "fname"); nm.title = "open this session";
+  h.append(nm);
+  (h as any)._name = nm;
+  return h;
+}
+function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
+  const nm = (h as any)._name as HTMLElement;
+  nm.replaceChildren(...hostNameNodes(e.name, e.sid));
+  if (e.color) nm.style.color = e.color.bg;
+  nm.classList.toggle("dead", !e.live);
+  nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
+  setWorkDot(nm, workingSet.has(e.name));   // the yellow working dot rides the header, not the cards
+}
 
 // UndoClear (top right): restore the most recently cleared card — the host pops
 // the newest cleared.jsonl row. Built fresh wherever the top strip renders: on
@@ -2037,6 +2124,14 @@ function ensureCollapsedToggle(): HTMLElement {
     () => secChoice.clear());   // drop per-card section overrides so every card re-flows to the new default
 }
 
+// "Group" — organize each column BY SESSION (the user 2026-07-13): kernel tab/lane order, a name+dot header
+// on the backdrop opening each session's run, per-card names dropped (the header carries the identity).
+function ensureGroupToggle(): HTMLElement {
+  return ensureFeedToggle("feed-grouped", "Group", () => feedPrefs().grouped, "grouped",
+    "grouped by session — click for the flat column order",
+    "group each column's cards by session (tab order), a session header between runs");
+}
+
 // (The footer "Sub-goals" checkbox was removed 2026-07-08: sub-goals is now a per-card "Sub-goals" button
 // beside Summary — wired in applySections as the third mutually-exclusive section.)
 
@@ -2121,6 +2216,13 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       card = askEls.get(e.ask.itemId) || makeAskCard(e.ask);
       askEls.set(e.ask.itemId, card);
       updateAskCard(card, e.ask);
+    } else if (e.kind === "sess") {
+      // grouped-mode session header — keyed per (column, sid): one session can head a run in EVERY column
+      key = "s:" + listEl.id + ":" + e.sid;
+      card = sessHeadEls.get(key) || makeSessHead();
+      card.dataset.key = key;
+      sessHeadEls.set(key, card);
+      updateSessHead(card, e);
     } else {
       key = "g:" + e.group.turnId;
       card = groupEls.get(e.group.turnId) || makeGroupCard(e.group);
@@ -2252,6 +2354,7 @@ function render() {
   const showCA = !!asks.length;
   ensureNewestFirst().style.display = showCA ? "" : "none";       // reverse the column order
   ensureCollapsedToggle().style.display = showCA ? "" : "none";   // default section state (collapsed / expanded)
+  ensureGroupToggle().style.display = showCA ? "" : "none";       // by-session grouping (the user 2026-07-13)
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -2299,6 +2402,32 @@ function render() {
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
   const newestFirst = feedPrefs().newestFirst;
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
+  // GROUPED mode (the user 2026-07-13): within each column, cards gather by SESSION — session order = the
+  // kernel's session-order list (the same order the chat tabs + timeline lanes hold; sessions the list
+  // doesn't know keep their time order after it) — with a name+dot header entry opening each run. The sort
+  // is stable, so per-session cards keep the column's newest/oldest order. Headers only where a run exists.
+  if (feedPrefs().grouped) {
+    const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
+    const eSid = (e: Entry) => e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
+    for (const k of Object.keys(buckets) as Column[]) {
+      const extra = new Map<string, number>();   // sids the order list doesn't know → after it, first-seen order
+      for (const e of buckets[k]) { const s = eSid(e); if (!rank.has(s) && !extra.has(s)) extra.set(s, extra.size); }
+      const rk = (e: Entry) => { const s = eSid(e); return rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };
+      buckets[k].sort((x, y) => rk(x) - rk(y));
+      const withHeads: Entry[] = [];
+      let cur: string | null = null;
+      for (const e of buckets[k]) {
+        const s = eSid(e);
+        if (s !== cur) {
+          cur = s;
+          const src: any = e.kind === "ask" ? e.ask : e.kind === "group" ? e.group : e;
+          withHeads.push({ kind: "sess", t: e.t, sid: s, name: src.name, color: src.color || null, live: !!src.live });
+        }
+        withHeads.push(e);
+      }
+      buckets[k] = withHeads;
+    }
+  }
 
   // FLIP-across-identity bookkeeping (the user 2026-06-29): map every goal itemId this render → the card KEY
   // that renders it, so the next render can slide a card whose IDENTITY changed (group↔solo, umbrella absorb)
@@ -2323,9 +2452,10 @@ function render() {
   // the count chip shows the number only when there ARE cards; an empty column shows nothing — not "0"
   // (the user 2026-06-25). Empty string collapses the chip (it has no padding/background of its own).
   const setCount = (elc: HTMLElement, n: number) => { elc.textContent = n ? String(n) : ""; elc.style.display = n ? "" : "none"; };
-  setCount(cols.asksCount, buckets.asks.length);
-  setCount(cols.needsInputCount, buckets.needsInput.length);
-  setCount(cols.completedCount, buckets.completed.length);
+  const nCards = (es: Entry[]) => es.filter((e) => e.kind !== "sess").length;   // headers aren't cards
+  setCount(cols.asksCount, nCards(buckets.asks));
+  setCount(cols.needsInputCount, nCards(buckets.needsInput));
+  setCount(cols.completedCount, nCards(buckets.completed));
 
   // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
   // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).
@@ -2494,6 +2624,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
     }
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
+    if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;

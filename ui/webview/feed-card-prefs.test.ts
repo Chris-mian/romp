@@ -9,11 +9,12 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
-test("feed reads newestFirst/collapsed (default OFF) from romp:settings; the subgoals pref is gone", () => {
+test("feed reads newestFirst/collapsed/grouped (default OFF) from romp:settings; the subgoals pref is gone", () => {
   assert.match(FEED, /function feedPrefs\(\)/);
   assert.match(FEED, /localStorage\.getItem\("romp:settings"\)/);
-  // the two mode toggles default OFF (=== true); `subgoals` is no longer a feed-wide pref (per-card button now)
-  assert.match(FEED, /return \{ newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true \};/);
+  // the mode toggles default OFF (=== true); `subgoals` is no longer a feed-wide pref (per-card button now).
+  // `grouped` (the user 2026-07-13) = by-session grouping, the footer Group toggle.
+  assert.match(FEED, /return \{ newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true, grouped: s\.grouped === true \};/);
   assert.doesNotMatch(FEED, /s\.subgoals/, "no feed-wide subgoals pref — it's a per-card toggle now");
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
 });

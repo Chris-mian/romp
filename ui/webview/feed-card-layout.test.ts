@@ -15,7 +15,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the name row; toggles grouped on row3", () => {
   // the TIME now trails the title on row1 (both cards); row3 holds the Background/Summary/Sub-goals toggles
   assert.match(FEED, /row1\.append\(title, time\)/, "the time trails the title on row1");
-  assert.match(FEED, /row3\.append\(bgBtn, takeBtn, subBtn, actions\)/, "ask card: row3 is Background/Summary/Sub-goals (+ rare Retry/Revive)");
+  assert.match(FEED, /row3\.append\(bgBtn, takeBtn, subBtn, taskBtn, actions\)/, "ask card: row3 is Background/Summary/Sub-goals/Waiting-on-task (+ rare Retry/Revive)");
   assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "…so the action row is Retry/Revive only (Clear + toggles moved up)");
   // Clear is the rightmost control on the NAME row now (both ask + group cards)
   assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");

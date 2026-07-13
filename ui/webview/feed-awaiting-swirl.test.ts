@@ -24,9 +24,11 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
   // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (moved to Working while in flight) →
   // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
-  // AWAITING: a bg-TASK why shows the task's description verbatim ("Waiting on a background task: …",
-  // the user 2026-07-11); a subagent why keeps the boxed "Awaiting background agents" label (2026-07-04).
-  assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;/);
+  // AWAITING: a bg-TASK wait skips the box entirely (the user 2026-07-13) — the compact "Waiting on task"
+  // pill carries it (task list one click away, like Sub-goals); a subagent/overlay why keeps the boxed
+  // "Awaiting background agents" label (2026-07-04).
+  assert.match(FEED, /const awTasks = \(\(aw && aw\.tasks\) \|\| \[\]\)\.filter\(Boolean\);/);
+  assert.match(FEED, /if \(aw && !it\.waitingOn && !awTasks\.length\) \{\s*\n\s*awaitingBg = true;/);
   assert.match(FEED, /spinCaption = \/\^waiting on\/i\.test\(why\) \? why\.charAt\(0\)\.toUpperCase\(\) \+ why\.slice\(1\)\s*\n\s*: "Awaiting background agents";/);
   // the provisional chip is PHASE-truthful (the user 2026-07-12): open turn → "Working…" (the judge has
   // nothing to classify yet); turn settled (kernel `judging`) → "Analyzing…" (the planner pass is due/live)
@@ -39,6 +41,18 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   assert.match(FEED, /import \{ distillText, applyDistillLine, distillPending \} from "\.\/distiller-line";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
+});
+
+test("a bg-task wait wears the compact 'Waiting on task' pill that expands the task list (the user 2026-07-13)", () => {
+  // the pill joins the mutually-exclusive card sections (bg / summary / subgoals / tasks), swirl inside
+  assert.match(FEED, /const taskBtn = el\("button", "fask-secbtn fask-taskbtn"\)/);
+  assert.match(FEED, /"bg" \| "summary" \| "subgoals" \| "tasks" \| "none"/);
+  assert.match(FEED, /taskList\.length === 1 \? "Waiting on task" : "Waiting on " \+ taskList\.length \+ " tasks"/);
+  assert.match(FEED, /taskBtn\.onclick = pick\("tasks"\);/);
+  // expanded rows render in the checklist spot, same view as Sub-goals, the swirl as each row's mark
+  assert.match(FEED, /if \(choice === "tasks"\) \{[\s\S]*?el\("div", "fcheck ftask"\)[\s\S]*?ftask-swirl/);
+  assert.match(CSS, /\.fask-taskbtn \{ display: inline-flex/);
+  assert.match(CSS, /\.ftask-swirl\.fask-awaiting-swirl/);
 });
 
 test("each case carries a concise tooltip on the swirl (hover → the key idea, not an essay)", () => {

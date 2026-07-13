@@ -55,6 +55,6 @@ test("an EMPTY column shows nothing — no '—' placeholder, and the count chip
   // the count chip shows the number only when > 0; an empty column's chip is blank AND collapsed (display:none)
   assert.match(FEED, /elc\.textContent = n \? String\(n\) : "";/);
   assert.match(FEED, /elc\.style\.display = n \? "" : "none";/);
-  assert.match(FEED, /setCount\(cols\.asksCount, buckets\.asks\.length\)/);
+  assert.match(FEED, /setCount\(cols\.asksCount, nCards\(buckets\.asks\)\)/);   // headers (grouped mode) aren't counted
   assert.doesNotMatch(FEED, /asksCount\.textContent = String\(/, "the unconditional String(count) is gone");
 });

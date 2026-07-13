@@ -1050,6 +1050,27 @@ def _retry_pause_ts():
         return 0.0
 
 
+def _retry_resume_at():
+    """When the current global retry-pause will lift, if it's LIMIT-driven: the earliest future reset
+    among the account-wide limited usage windows (5h/7d — fable is model-scoped and never pauses, see
+    _auto_pause_on_limit). None while unpaused, for a manual pause, or with no usable reset — the client
+    then keeps the plain paused text. Rides the globalRetryPaused push so the chat's API-error card can
+    count down to the ACTUAL retry moment instead of saying 'retrying soon' (the user 2026-07-13)."""
+    if not _retry_paused_on():
+        return None
+    try:
+        u = _usage() or {}
+    except Exception:
+        return None
+    outs = []
+    for key in ("fiveHour", "sevenDay"):
+        if (u.get("limited") or {}).get(key):
+            ra = (u.get(key) or {}).get("resetsAt")
+            if isinstance(ra, (int, float)) and ra > time.time():
+                outs.append(ra)
+    return min(outs) if outs else None
+
+
 def _auto_pause_on_limit():
     """Hitting an ACCOUNT-WIDE usage limit (5h Session or 7d Weekly at 100%) auto-engages the global retry-pause
     (the user 2026-07-01): retrying into a rate-limited account just burns failed requests, so stop the
@@ -4224,6 +4245,17 @@ def _session_awaiting(sid, path, idle):
     if ov is not None:                                # a producer is writing overlay records → trust it
         return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
     return None
+
+
+def _awaiting_task_descs(sid):
+    """The live background-task DESCRIPTIONS for a session (the CLI's task-lifecycle set, via the backend
+    snapshot's bgTasks) — the feed's 'Waiting on task' pill expands them as a list (the user 2026-07-13).
+    [] for tmux sessions / no live tasks."""
+    out = []
+    for t in (_tmux_sessions().get(str(sid)) or {}).get("bgTasks") or []:
+        d = str((t or {}).get("desc") or "").strip()
+        out.append(d or "background task")
+    return out
 
 
 def _states_awaiting_overlay(sid):
@@ -7599,7 +7631,11 @@ def build_feed(now, tmux=None):
                 "turnId": nid, "origin": origin,
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 "waitingOn": (wmap.get(fsid) if (column == "working" and _peer_wait) else None),   # 'waiting on <peer>' chip: unanswered outbound to a live peer, only on a goal that predates the question (the user 2026-06-22/28)
-                "awaiting": ({"why": await_why} if col == "awaiting" else None),   # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated work) — the user 2026-06-22
+                # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated
+                # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):
+                # when present the card wears the compact "Waiting on task" pill (expands to this list, like
+                # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
+                "awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid)} if col == "awaiting" else None),
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
@@ -7676,6 +7712,9 @@ def build_feed(now, tmux=None):
             "tree": []})
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "dismissedCount": len(cleared), "showDismissed": False,
+            # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
+            # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
+            "order": _session_order(),
             "canUndoClear": len(cleared) > 0}
 
 
@@ -8751,6 +8790,9 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         awaiting_bg = (_session_awaiting(sid, s["path"], not open_now) if live else None)
         sessions.append({
             "id": sid, "name": name, "live": live, "state": state, "awaitingBg": awaiting_bg,
+            # the live bg-task descriptions behind awaitingBg (the user 2026-07-13): the lane draws the
+            # idle-but-waiting stretch as a thin dashed segment whose hover lists exactly what's pending
+            "awaitingTasks": (_awaiting_task_descs(sid) if awaiting_bg else []),
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
@@ -9336,7 +9378,8 @@ def _push(targets, connect=False):
             # session fills the placeholder in when it arrives below.
             tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
             for c in chat_clients:                       # tab strip first → the shell paints before any build
-                _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on()})
+                _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on(),
+                                                         "resumeAt": _retry_resume_at()})   # limit reset epoch → the card counts down to the real retry
                 _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
