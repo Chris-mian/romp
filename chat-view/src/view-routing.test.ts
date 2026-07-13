@@ -74,3 +74,9 @@ test("malformed messages are dropped, not forwarded", () => {
   assert.equal(routeViewMessage("feed", null).forward, false);
   assert.equal(routeViewMessage("timeline", { no: "type" }).forward, false);
 });
+
+test("timeline: usageData is host chrome (status bar), never forwarded to the kernel", () => {
+  const r = routeViewMessage("timeline", { type: "usageData", usage: { fiveHour: { pct: 50 } } });
+  assert.equal(r.forward, false);
+  assert.equal(r.revealChat, null);
+});

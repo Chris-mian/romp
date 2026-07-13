@@ -51,6 +51,14 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("served<=loaded&&!connStale", km._STALE_JS, "the version poll must not hide a live-conn prompt")
         self.assertIn("connStale=false", km._STALE_JS, "Dismiss clears the latch")
 
+    def test_shell_banner_words_a_build_raise_as_a_build(self):
+        # a pane's build-drift raise rides the same wsStale channel tagged build:1 → the shell shows
+        # BUILDMSG (not the connection wording), and latches it so its own /version poll — whose token
+        # may be current — can't clear the prompt out from under the stale pane (the user 2026-07-13)
+        self.assertIn("if(m.build){buildStale=true;show(BUILDMSG);}else{connStale=true;show(CONNMSG);}", km._STALE_JS)
+        self.assertIn("!connStale&&!buildStale", km._STALE_JS, "the poll's clear respects both latches")
+        self.assertIn("connStale=false;buildStale=false;", km._STALE_JS, "Dismiss clears both")
+
     def test_timeline_page_uses_the_shared_shim(self):
         # The timeline used to hand-roll its own WebSocket in _TIMELINE_BOOT (a copy of _shim's
         # connect/queue/watchdog) — which bypassed the federation manager, so remote hosts' lanes never

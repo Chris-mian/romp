@@ -18,7 +18,7 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
-        h = km._gear_html()
+        h = _gear_src()
         self.assertIn("<div class='rs-sec rs-sec-first'>Sessions</div>", h)
         for sec in ("Judges", "Keyboard shortcuts", "Chat", "Timeline", "Colors", "Debug"):
             self.assertIn("<div class=rs-sec>%s</div>" % sec, h)
@@ -29,7 +29,7 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertEqual(idx, sorted(idx), "sections in the 2026-07-12 order, version last")
 
     def test_each_setting_sits_under_the_right_section(self):
-        h = km._gear_html()
+        h = _gear_src()
         # Sessions (top): default dir + auto nudge + backend before the Judges header
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-defaultdir") < h.index(">Judges<"))
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-autonudge") < h.index(">Judges<"))
@@ -60,33 +60,46 @@ class SettingsSectionsTest(unittest.TestCase):
 
     def test_the_sdk_backend_is_labelled_plain_sdk(self):
         # "SDK", not "SDK (headless)" (the user 2026-07-12): it drives the same full chat UI
-        h = km._gear_html()
+        h = _gear_src()
         self.assertIn("<option value=sdk>SDK</option>", h)
         self.assertNotIn("headless", h)
 
     def test_judge_rows_are_one_line_label_plus_picker(self):
         # label + picker share the line (the user 2026-07-12): four .rs-jrow rows, the select right after
         # the hover sub, no full-width select stacked under the label; the flex CSS carries the layout
-        h = km._gear_html()
+        h = _gear_src()
         self.assertEqual(h.count("rs-jrow"), 4)
         for sel in ("rs-judgemodel", "rs-judgeeffort", "rs-indexmodel", "rs-indexeffort"):
             self.assertRegex(h, r"rs-jrow'><b>[^<]+</b><span class=rs-sub>[^<]*</span><select id=" + sel)
-        self.assertIn("#rsettings .rs-jrow select{", km._GEAR_CSS)
+        self.assertIn("#rsettings .rs-jrow select {", _gear_css_src())
 
     def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
         # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)
-        self.assertIn("collapseGaps:true", km._GEAR_JS)
-        self.assertIn("s.collapseGaps=cg.checked", km._GEAR_JS)
+        self.assertIn("collapseGaps: true", _gear_src())
+        self.assertIn("s.collapseGaps = cg.checked", _gear_src())
 
     def test_section_header_styling_exists(self):
-        self.assertIn("#rsettings .rs-sec{", km._GEAR_CSS)
-        self.assertIn("#rsettings .rs-sec-first{border-top:0", km._GEAR_CSS)
+        self.assertIn("#rsettings .rs-sec {", _gear_css_src())
+        self.assertIn("#rsettings .rs-sec-first { border-top: 0;", _gear_css_src())
 
     def test_oldest_first_toggle_is_gone(self):
         # the feed is always oldest-at-top now → no checkbox, no wiring (the user 2026-06-27)
-        self.assertNotIn("rs-oldest", km._gear_html())
-        self.assertNotIn("oldestFirst", km._GEAR_JS)
+        self.assertNotIn("rs-oldest", _gear_src())
+        self.assertNotIn("oldestFirst", _gear_src())
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The gear moved from kernel-inline strings into the shared feed bundle
+# (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
+# the gear pins read THAT file (and feed.css for its styling).
+def _gear_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+
+
+def _gear_css_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()

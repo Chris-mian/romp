@@ -49,8 +49,10 @@ class Aurora(unittest.TestCase):
         self.assertLess(max(Ls) - min(Ls), 0.02, "OKLab lightness stays ~constant across the ramp (%r)" % Ls)
 
     def test_selectable_first_in_the_gear_picker(self):
-        page = km._feed_page()   # the gear picker lives in the feed iframe
-        self.assertIn("CMAPS={aurora:[[84,178,4]", page, "the gear picker lists aurora FIRST as an option")
+        # the gear picker lives in the feed BUNDLE now (ui/webview/gear.js, 2026-07-13)
+        import pathlib
+        gear = (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+        self.assertIn("CMAPS = { aurora: [[84, 178, 4]", gear, "the gear picker lists aurora FIRST as an option")
 
     def test_set_colormap_accepts_aurora(self):
         try:

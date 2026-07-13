@@ -144,16 +144,18 @@ class PaneRailTest(unittest.TestCase):
         self.assertNotIn("id=rhelp-overlay", self.html)
         self.assertNotIn("id=rail-help", self.html)
         # the shortcuts render as a section in the feed's settings modal — a flat verified list, keys in <kbd>
-        feed = km._feed_page()
-        self.assertIn(">Keyboard shortcuts</div>", feed)
-        self.assertIn("class=rs-key", feed)
-        self.assertIn("<kbd>Enter</kbd>", feed)
-        self.assertIn("Send message", feed)
-        self.assertIn("Interrupt the session", feed)
-        self.assertIn("Switch session (from the tabs)", feed)
-        self.assertIn("Jump to the session tabs", feed)
-        self.assertNotIn("Slash-command menu", feed)
-        self.assertNotIn("Question picker", feed)
+        # the modal lives in the feed BUNDLE now (ui/webview/gear.js, 2026-07-13)
+        import pathlib
+        gear = (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+        self.assertIn(">Keyboard shortcuts</div>", gear)
+        self.assertIn("class=rs-key", gear)
+        self.assertIn("<kbd>Enter</kbd>", gear)
+        self.assertIn("Send message", gear)
+        self.assertIn("Interrupt the session", gear)
+        self.assertIn("Switch session (from the tabs)", gear)
+        self.assertIn("Jump to the session tabs", gear)
+        self.assertNotIn("Slash-command menu", gear)
+        self.assertNotIn("Question picker", gear)
 
     def test_rail_and_fleet_pane_are_hidden_on_mobile(self):
         # mobile shows one pane at a time via the bottom tab bar, not the rail; the desktop po-* pane-hiding

@@ -18,6 +18,10 @@ const extension = {
   target: "node18",
   outfile: "dist/extension.js",
   external: ["vscode", "bufferutil", "utf-8-validate"],   // ws optional native addons
+  // Bundle build stamp (epoch seconds — the same clock as the kernel's dist token). The extension
+  // compares it against the `dv` on kernel keepalives to raise the "newer romp build" prompt when the
+  // installed VSIX predates a rebuild of the shared webview sources.
+  define: { __ROMP_BUILD__: String(Math.floor(Date.now() / 1000)) },
   sourcemap: !production,
   minify: production,
   logLevel: "info",
