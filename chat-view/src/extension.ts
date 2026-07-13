@@ -27,6 +27,23 @@ import { parsePorcelain } from "./session-diff";
 
 const HOST = "127.0.0.1";
 
+// Build-drift banner (the user 2026-07-13: "if anything gets out of sync I want to see a banner").
+// __ROMP_BUILD__ is baked by esbuild.js at bundle time (epoch seconds); every kernel keepalive carries
+// `dv`, the kernel's current dist token (newest dist/*.js mtime, same clock). dv newer than this bundle
+// means the shared webview sources were rebuilt after this VSIX was packaged — the panes are rendering
+// live kernel payloads with outdated code. Prompt ONCE per window (never auto-anything); a webview
+// reload can't fix it (the code is bundled), so the prompt names the real remedy. The passive status
+// pipe never calls this (it must not toast — vscode-four-surfaces).
+declare const __ROMP_BUILD__: number;
+const BUILD_STAMP: number = typeof __ROMP_BUILD__ === "number" ? __ROMP_BUILD__ : 0;
+let buildNotified = false;
+function maybeBuildNotice(dv: unknown): void {
+  if (buildNotified || !BUILD_STAMP || typeof dv !== "number" || dv <= BUILD_STAMP) return;
+  buildNotified = true;
+  void vscode.window.showInformationMessage(
+    "A newer romp build is available — these panes run an older extension bundle. Reinstall the extension (install.sh), then reload this window.");
+}
+
 // Ports are CONFIGURABLE so different VS Code windows can attach to different kernels (each kernel
 // scopes its own group of agents). Precedence: the VS Code setting (if set) → env var → default.
 function cfgPort(key: "kernelPort" | "managerPort", env: string | undefined, dflt: number): number {
@@ -257,6 +274,9 @@ class KernelPipe {
       if (!this.alive) return;
       let m: any;
       try { m = JSON.parse(String(data)); } catch { return; }
+      // keepalive carries the kernel's dist build token — drift vs this bundle's stamp → one banner.
+      // Panel pipes only: the passive status pipe observes and never toasts.
+      if (m && m.type === "ka" && !this.passive) maybeBuildNotice(m.dv);
       this.onDown(m);
     });
     const reconnect = () => {

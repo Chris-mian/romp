@@ -29,7 +29,7 @@ class FleetLedgers(unittest.TestCase):
         self.assertIn('feed["ledgers"] = [{"sid": m["id"]', SRC)
 
     def test_the_fleet_page_connects_as_app_fleet(self):
-        self.assertIn('_pane_spin("fleet-list"), _shim("fleet")', SRC)
+        self.assertIn('_pane_spin("fleet-list"), _shim("fleet", v)', SRC)
 
 
 if __name__ == "__main__":

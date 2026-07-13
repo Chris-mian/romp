@@ -8971,7 +8971,12 @@ KEEPALIVE_S = float(os.environ.get("ROMP_WS_KEEPALIVE", "10"))   # heartbeat cad
 _last_keepalive = [0.0]
 
 def _keepalive_all():
-    s = json.dumps({"type": "ka"})
+    # `dv` = the current dist build token (the same value baked into every page's ?v= urls). Riding the
+    # keepalive makes build-drift detection EVENT-based on every surface with a live socket: a page whose
+    # LOADEDV is older raises the reload banner within one heartbeat of a rebuild — no per-page /version
+    # polling. The VS Code extension compares it against its bundled build stamp the same way (the user
+    # 2026-07-13: a stale tab sat silent through several rebuilds; drift must always show a banner).
+    s = json.dumps({"type": "ka", "dv": _dist_ver()})
     with _clients_lock:
         targets = list(_clients)
     for c in targets:
@@ -9791,10 +9796,14 @@ html,body{background:var(--vscode-editor-background);}
 body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-foreground);margin:0;padding:0;}"""
 
 # The WS bridge shim (ported verbatim from chat-view server.ts shimJs — same protocol).
-def _shim(app):
+def _shim(app, v=0):
+    # `v` = the dist build token this page was served with (its ?v= urls). The shim compares it against the
+    # `dv` riding every keepalive and raises the build banner on drift — so EVERY kernel-served page gets the
+    # "newer build" prompt, not just the dashboard landing's /version poll (the user 2026-07-13: a standalone
+    # pane sat silent through rebuilds).
     return """
 (function(){var queue=[],ws=null,everConnected=false;var wid=new URLSearchParams(location.search).get("wid")||"";
-var APP="%s";var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
+var APP="%s";var LOADEDV=%d;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
 // network drop used to blind-reload into a dead page, leaving the pane silently frozen with no explanation.
 function netState(s){try{if(window.parent!==window)window.parent.postMessage({romp:"wsState",app:APP,state:s},"*");}catch(e){}}
@@ -9804,15 +9813,24 @@ function netState(s){try{if(window.parent!==window)window.parent.postMessage({ro
 // auto-reloading (foisted, jarring) or leaving them staring at stale content. In the dashboard the pane rides
 // in an iframe, so hand it to the shell's ONE #rstale reload banner; a standalone page (feed/timeline opened
 // directly) has no shell, so self-inject a minimal top bar with the same Reload action.
-function selfStale(){try{if(document.getElementById("romp-stale-self"))return;
+function selfBar(t){try{if(document.getElementById("romp-stale-self"))return;
 var b=document.createElement("div");b.id="romp-stale-self";
 b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
-b.innerHTML="<span>romp lost the live connection, so what you see may be stale.</span>";
+var m=document.createElement("span");m.textContent=t;b.appendChild(m);
 var r=document.createElement("button");r.textContent="Reload";
 r.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";
 r.onclick=function(){location.reload();};b.appendChild(r);
 (document.body||document.documentElement).appendChild(b);}catch(e){}}
+function selfStale(){selfBar("romp lost the live connection, so what you see may be stale.");}
 function raiseStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
+// BUILD drift (the user 2026-07-13): the keepalive carries the kernel's current dist token (dv); a page whose
+// baked LOADEDV is older is running outdated code against newer kernel state — prompt a reload (never auto).
+// In the dashboard the raise routes to the shell's #rstale banner (build:1 → its BUILDMSG); standalone pages
+// self-inject the same bar. Latched: one prompt per page life, cleared only by the reload it asks for.
+var buildRaised=false;
+function raiseBuild(){if(buildRaised)return;buildRaised=true;
+if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale",build:1},"*");}catch(e){}}
+else selfBar("A newer romp build is available.");}
 function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
 ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):""));
@@ -9821,7 +9839,7 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 // replaces the old silent location.reload() (the user: don't foist a reload; let me click — [[prefer-reload-banner-not-auto]]).
 ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn)raiseStale();};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
-if(msg&&msg.type==="ka")return;   // keepalive: stamped lastRecv above; nothing for the bundle to render
+if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}   // keepalive: stamped lastRecv above; carries the build token (drift → reload banner); nothing for the bundle to render
 if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
 // onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29: "the swirling thing upon
 // kernel restart"), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
@@ -9842,7 +9860,7 @@ setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastR
 // prompt at once AND force a reconnect (which resyncs live), rather than leaving the user on a frozen frame.
 document.addEventListener("visibilitychange",function(){if(document.visibilityState!=="visible"||!everConnected)return;
 if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){raiseStale();try{if(ws&&ws.readyState===1)ws.close();}catch(e){}}});})();
-""" % (app, app, app)
+""" % (app, int(v), app, app)
 
 
 # On a narrow / touch viewport the chat's session tabs wrap into several rows and eat vertical space.
@@ -10010,7 +10028,7 @@ def _chat_page():
             "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
             "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim, before the bundle
             "<script src=/dist/render.js?v=%d></script><script>%s</script></body></html>"
-            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat"), v, v, _CHAT_MOBILE_JS))
+            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat", v), v, v, _CHAT_MOBILE_JS))
 
 
 # Settings gear (WEB KERNEL ONLY — kernel-injected, never in the shared feed.ts). A ⚙ in the corner
@@ -10420,7 +10438,7 @@ def _feed_page():
             "<script src=/dist/feed.js?v=%d></script><script>%s</script></body></html>"
             % (v, THEME_CSS, _GEAR_CSS,
                '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _gear_html(),
-               _pane_spin("feed-list"), _shim("feed"), v, v, _GEAR_JS))
+               _pane_spin("feed-list"), _shim("feed", v), v, v, _GEAR_JS))
 
 
 # Fleet — a BY-SESSION view that MIRRORS the ledger box (the user 2026-06-23): each session, then its goal
@@ -10451,7 +10469,7 @@ def _fleet_page():
             "<div id=fleet-list></div><div id=fleet-foot></div>%s"
             "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
             "<script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, fleet_css, _pane_spin("fleet-list"), _shim("fleet"), v, v))
+            % (v, THEME_CSS, fleet_css, _pane_spin("fleet-list"), _shim("fleet", v), v, v))
 
 
 # The romp-tl-* wrapper styles live in ui/webview/timeline-pane.css — ONE file, read live here (like the
@@ -10518,7 +10536,7 @@ def _timeline_page():
             "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
             "var TimelinePanel=module.exports.TimelinePanel;"
             "window.__rompConnectTimeline(new TimelinePanel(document.getElementById('host')));"
-            "</script></body></html>" % (THEME_CSS, tl_css, _shim("timeline"), v, _TIMELINE_BOOT, view_js))
+            "</script></body></html>" % (THEME_CSS, tl_css, _shim("timeline", v), v, _TIMELINE_BOOT, view_js))
 
 
 def _chat_body():
@@ -11057,23 +11075,25 @@ _STALE_HTML = (
 _STALE_JS = (
     "(function(){var box=document.getElementById('rstale'),msg=box.querySelector('.rs-msg'),"
     "rl=document.getElementById('rstale-reload'),dm=document.getElementById('rstale-dismiss');"
-    "var loaded=__LOADEDVER__,dismissed=0,served=0,connStale=false;"
+    "var loaded=__LOADEDVER__,dismissed=0,served=0,connStale=false,buildStale=false;"
     "var BUILDMSG='A newer romp build is available.',"
     "CONNMSG='romp lost the live connection to the dashboard, so what you see may be stale.';"
     "function show(m){msg.textContent=m;box.classList.add('show');}"
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){"
     "served=v.dist_ver||0;"
     "if(loaded&&served>loaded&&served!==dismissed)show(BUILDMSG);"
-    "else if(served<=loaded&&!connStale)box.classList.remove('show');}).catch(function(){});}"
+    "else if(served<=loaded&&!connStale&&!buildStale)box.classList.remove('show');}).catch(function(){});}"
     # A pane whose WebSocket dropped-and-reconnected (or a foregrounded tab that found its socket dead) posts
     # {romp:'wsStale'} — the same shell-coalesced channel as the disconnect banner, but a RELOAD PROMPT rather
     # than a silent auto-reload (the user 2026-07-05: a stale feed card showed 'Re-judging' while the kernel had
     # long since moved on, with no cue the view was frozen). connStale latches so the /version poll can't clear
-    # the prompt out from under it; Dismiss (or a reload) clears it.
+    # the prompt out from under it; Dismiss (or a reload) clears it. A pane's BUILD-drift raise (the shim's
+    # keepalive dv check, the user 2026-07-13) rides the same channel with build:1 → the BUILDMSG wording;
+    # buildStale latches it identically so the poll (whose own token may be current) can't clear it.
     "window.addEventListener('message',function(e){var m=e&&e.data;"
-    "if(m&&m.romp==='wsStale'){connStale=true;show(CONNMSG);}});"
+    "if(m&&m.romp==='wsStale'){if(m.build){buildStale=true;show(BUILDMSG);}else{connStale=true;show(CONNMSG);}}});"
     "rl.onclick=function(){location.reload();};"
-    "dm.onclick=function(){dismissed=served;connStale=false;box.classList.remove('show');};"
+    "dm.onclick=function(){dismissed=served;connStale=false;buildStale=false;box.classList.remove('show');};"
     "check();setInterval(check,30000);})();")
 
 

@@ -35,8 +35,9 @@ class Keepalive(unittest.TestCase):
             {"app": "timeline", "wid": "", "send": got_b.append, "alive": True},
         ]
         km._keepalive_all()
-        self.assertEqual([json.loads(x) for x in got_a], [{"type": "ka"}], "feed client got one keepalive")
-        self.assertEqual([json.loads(x) for x in got_b], [{"type": "ka"}], "timeline client too — every app, not just one")
+        dv = km._dist_ver()
+        self.assertEqual([json.loads(x) for x in got_a], [{"type": "ka", "dv": dv}], "feed client got one keepalive")
+        self.assertEqual([json.loads(x) for x in got_b], [{"type": "ka", "dv": dv}], "timeline client too — every app, not just one")
 
     def test_keepalive_marks_a_broken_client_not_alive(self):
         def boom(_s):
@@ -69,7 +70,43 @@ class ShimWatchdogSourcePins(unittest.TestCase):
         self.assertNotIn("new WebSocket", km._TIMELINE_BOOT, "the timeline boot owns no socket of its own")
 
     def test_shim_ignores_the_keepalive_frame(self):
-        self.assertIn('if(msg&&msg.type==="ka")return;', KSRC)
+        # the ka frame never reaches the bundles: the shim consumes it (build-drift check, then return)
+        self.assertIn('if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}', KSRC)
+
+
+class BuildDriftBanner(unittest.TestCase):
+    """Build drift always shows a banner (the user 2026-07-13): the keepalive carries the kernel's current
+    dist token (dv); every kernel-served page bakes its own load-time token (LOADEDV) into the shim and
+    raises the reload prompt when dv passes it — so a standalone pane (no dashboard shell, previously NO
+    check at all) prompts too, and within one heartbeat instead of a 30s poll. Reload stays the user's
+    click, never automatic ([[prefer-reload-banner-not-auto]])."""
+
+    def test_keepalive_frame_carries_the_dist_token(self):
+        got = []
+        km._clients[:] = [{"app": "feed", "wid": "", "send": got.append, "alive": True}]
+        try:
+            km._keepalive_all()
+        finally:
+            km._clients[:] = []
+        self.assertIn("dv", json.loads(got[0]), "every keepalive carries the current dist build token")
+
+    def test_shim_bakes_the_pages_loaded_version(self):
+        self.assertIn("var LOADEDV=123;", km._shim("feed", 123))
+        # default (no version passed) bakes 0, which DISABLES the check (the LOADEDV&& guard) — a page
+        # that doesn't know its build can never false-positive
+        self.assertIn("var LOADEDV=0;", km._shim("feed"))
+
+    def test_shim_raises_the_build_banner_once_shell_or_self(self):
+        js = km._shim("chat", 7)
+        self.assertIn('window.parent.postMessage({romp:"wsStale",build:1}', js,
+                      "embedded pane routes build drift to the shell banner, tagged so it words it as a BUILD")
+        self.assertIn('selfBar("A newer romp build is available.")', js,
+                      "standalone page self-injects the same reload bar")
+        self.assertIn("var buildRaised=false;", js)   # latched: one prompt per page life
+
+    def test_every_pane_page_passes_its_version_to_the_shim(self):
+        for app in ("chat", "feed", "fleet", "timeline"):
+            self.assertIn('_shim("%s", v)' % app, KSRC, "%s page bakes its ?v token into the shim" % app)
 
 
 if __name__ == "__main__":
