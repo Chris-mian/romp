@@ -21,8 +21,8 @@ two hosts cannot drift.
 
 ## Build story
 
-- The **kernel** serves these sources to the browser (and rebuilds stale
-  bundles at startup via `bin/romp-serve`); the pane CSS files are read live.
+- The **kernel** serves these sources to the browser and self-rebuilds stale
+  bundles at startup (`_ensure_bundles`); the pane CSS files are read live.
 - The **extension** bundles the same files into its VSIX with
   `vscode-extension/esbuild.js`.
 

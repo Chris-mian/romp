@@ -22,7 +22,7 @@ no separate implementation to point at.
 | `romp-service` | Bash | Installs/removes the launchd (macOS) / systemd-user (Linux) login agent. Run by `install.sh`. |
 | `romp-node-launch` | POSIX sh | Runs the manager under a romp-owned copy of node (`romp-node`) so macOS TCC permissions can be granted to romp alone. |
 | `romp-manager` | Node | The kernel **supervisor**: spawns kernels via `romp-serve`, respawns on crash, `up/ensure/restart-all/status/down`. Reached via `romp --on/--refresh/--status`. |
-| `romp-serve` | Bash | The manager→kernel seam: rebuilds stale UI bundles, then `exec`s the kernel (PID preserved for the supervisor). |
+| `romp-serve` | Bash | The manager→kernel seam: maps the manager's spawn contract onto the kernel's env, picks the python, then `exec`s the kernel (PID preserved for the supervisor; the kernel self-builds stale UI bundles). |
 | `romp-sdk-setup` | Bash | Provisions the Agent SDK venv for the SDK backend. Run by `install.sh`. |
 
 ## Symlinks → `kernel/` (the always-on core)
