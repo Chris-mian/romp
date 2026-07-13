@@ -69,7 +69,7 @@ interface AskItem {
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp --debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
-  awaiting?: { why?: string | null } | null;       // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why".
+  awaiting?: { why?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Waiting on task" pill (expands the list, like Sub-goals) replaces the boxed why.
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -542,14 +542,21 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the inline sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no
   // sub-goals. Wired in applySections alongside Background/Summary (one open at a time, or none).
   const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
+  // "Waiting on task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
+  // the mini spinning swirl inside) that replaces the old boxed awaiting caption when live bg TASKS exist;
+  // click expands the task list in the checklist spot, same interaction as Sub-goals. Filled in applySections.
+  const taskBtn = el("button", "fask-secbtn fask-taskbtn"); taskBtn.style.display = "none";
+  const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true");
+  const taskLbl = el("span", "fask-taskbtn-lbl");
+  taskBtn.append(taskGlyph, taskLbl);
   // "N artifacts" (the user 2026-07-08): when the distiller listed PRODUCED files (and the kernel verified
   // they exist), a small nav line at the BOTTOM of the summary body — click opens the modal, where the
   // artifacts render as previews. Filled in applySections; shows only with the summary section.
   const artline = el("div", "fask-artline nav"); artline.style.display = "none";
   secs.append(bgBody, distill, artline);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
-  // now that the toggles exist, populate row3: Background · Summary · Sub-goals — GROUPED left, wrapping
-  // together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
-  row3.append(bgBtn, takeBtn, subBtn, actions);
+  // now that the toggles exist, populate row3: Background · Summary · Sub-goals · Waiting-on-task — GROUPED
+  // left, wrapping together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
+  row3.append(bgBtn, takeBtn, subBtn, taskBtn, actions);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -664,6 +671,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
   a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn; a._subBtn = subBtn;
+  a._taskBtn = taskBtn; a._taskLbl = taskLbl;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -675,8 +683,8 @@ function makeAskCard(it: AskItem): HTMLElement {
 // which the footer "Collapsed" toggle sets: OFF → "summary" open (a completed card's takeaway shows); ON →
 // "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
 // (click the open one → off; click another → switch) that survives the mode.
-const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "subgoals" | "none" {
+const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "none">();
+function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "none" {
   return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
 }
 // Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08 — "the
@@ -717,12 +725,17 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
     }
   }
   const hasSubs = subCount > 0;
+  // live background tasks (the user 2026-07-13): when the card is AWAITING on tasks, the compact
+  // "Waiting on task" pill joins the section toggles and expands this list (the old boxed caption is gone)
+  const taskList = ((it.awaiting && it.awaiting.tasks) || []).filter(Boolean);
+  const hasTasks = taskList.length > 0;
   // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
   let choice = resolveSec(id);
   if (choice === "bg" && !bg) choice = "none";
   if (choice === "summary" && !distillShown) choice = "none";
   if (choice === "subgoals" && !hasSubs) choice = "none";
-  const pick = (want: "bg" | "summary" | "subgoals") => (ev: Event) => {
+  if (choice === "tasks" && !hasTasks) choice = "none";
+  const pick = (want: "bg" | "summary" | "subgoals" | "tasks") => (ev: Event) => {
     ev.stopPropagation();
     secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
     applySections(a, it, distillShown);
@@ -762,6 +775,15 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
   subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
   subBtn.onclick = pick("subgoals");
+  // "Waiting on task" pill (the user 2026-07-13) — visible only while live bg tasks exist; the mini swirl
+  // inside keeps the "in flight" cue; pressed when the task list is showing. No preachy tooltip.
+  const taskBtn = a._taskBtn as HTMLElement;
+  taskBtn.style.display = hasTasks ? "" : "none";
+  (a._taskLbl as HTMLElement).textContent = taskList.length === 1 ? "Waiting on task" : "Waiting on " + taskList.length + " tasks";
+  taskBtn.classList.toggle("on", choice === "tasks");
+  taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
+  taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
+  taskBtn.onclick = pick("tasks");
   // the bg/summary BODIES container shows only when one of those two is open (the tree is a separate element)
   a._secs.style.display = (choice === "bg" || choice === "summary") ? "" : "none";
   // the inline sub-goal TREE (in _checklist), shown only when choice === "subgoals". Whole subtree, indented
@@ -772,6 +794,21 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const cl = a._checklist as HTMLElement;
   const renderTree = () => {
     cl.innerHTML = "";
+    // the TASK list (the user 2026-07-13): same view/spot as the sub-goal checklist — one row per live
+    // background task, a small spinning swirl as its mark (in flight), the task's own description as text
+    if (choice === "tasks") {
+      for (const d of taskList) {
+        const row = el("div", "fcheck ftask");
+        const tri = el("span", "fcheck-tri empty");
+        const mark = el("span", "fcheck-mark");
+        mark.appendChild(el("span", "fask-awaiting-swirl ftask-swirl"));
+        const txt = el("span", "fcheck-text"); txt.textContent = d;
+        row.append(tri, mark, txt);
+        cl.appendChild(row);
+      }
+      cl.style.display = cl.children.length ? "" : "none";
+      return;
+    }
     if (choice !== "subgoals" || !root) { cl.style.display = "none"; return; }
     const rows: { node: AskTreeNode; depth: number; repeat: boolean; expandable: boolean; collapsed: boolean }[] = [];
     const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
@@ -968,11 +1005,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // as "in flight, not stalled", which is exactly the awaiting state — the box already distinguishes it from
   // the actively-working cases, so the glyph needn't also freeze). The caption wraps to two lines if long.
   let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
-  if (aw && !it.waitingOn) {
+  // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Waiting on task" pill
+  // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
+  const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
+  if (aw && !it.waitingOn && !awTasks.length) {
     awaitingBg = true;
-    // A background-TASK why carries the task's own description (the CLI's task lifecycle stream) — show it
-    // verbatim so the box says WHAT it's waiting on ("Waiting on a background task: 20-minute timer…", the
-    // user 2026-07-11); a subagent why keeps the classic label. The caption wraps to two lines if long.
+    // A subagent/overlay why keeps the classic boxed label. The caption wraps to two lines if long.
     const why = aw.why || "";
     spinCaption = /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
                                            : "Awaiting background agents";

@@ -41,9 +41,10 @@ test("the buttons ARE the toggles: pressed state reads at a glance, mutually exc
   assert.doesNotMatch(FEED, /fask-less/, "the less control is gone");
 });
 
-test("state: a single mutually-exclusive secChoice (bg | summary | subgoals | none); default follows Collapsed", () => {
-  // Sub-goals joined Background/Summary as the THIRD mutually-exclusive section (the user 2026-07-08)
-  assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "subgoals" \| "none">\(\);/);
+test("state: a single mutually-exclusive secChoice (bg | summary | subgoals | tasks | none); default follows Collapsed", () => {
+  // Sub-goals joined Background/Summary as the THIRD mutually-exclusive section (the user 2026-07-08);
+  // the "Waiting on task" list is the FOURTH (the user 2026-07-13)
+  assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "subgoals" \| "tasks" \| "none">\(\);/);
   // absent from the map → the DEFAULT, set by the footer "Collapsed" toggle (off → summary, on → none)
   assert.match(FEED, /return secChoice\.get\(id\) \?\? \(feedPrefs\(\)\.collapsed \? "none" : "summary"\);/);
   // click the showing section → off; click another → switch (one at a time)

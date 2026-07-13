@@ -1537,6 +1537,22 @@ class ViewBuilder(unittest.TestCase):
         self._working_tmux()                                               # tmux now reads "working"
         self.assertNotIn(name, km.build_feed(NOW)["working"], "ended turn → NOT working even though tmux reads working")
 
+    def test_awaiting_task_descs_read_the_live_snapshot(self):
+        # The feed's "Waiting on task" pill (the user 2026-07-13) expands the live bg-task DESCRIPTIONS —
+        # straight from the backend snapshot's bgTasks (the CLI task-lifecycle set); a desc-less task gets
+        # a generic label; tmux sessions / unknown sids read [].
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {SID: {"bgTasks": [{"task_id": "t1", "desc": "Watch for round3 copy"},
+                                                       {"task_id": "t2", "desc": ""}]}}
+        try:
+            self.assertEqual(km._awaiting_task_descs(SID), ["Watch for round3 copy", "background task"])
+        finally:
+            km._tmux_sessions = saved
+        self.assertEqual(km._awaiting_task_descs("00000000-0000-0000-0000-000000000000"), [])
+        # build_feed attaches the list on awaiting cards, beside the why (source pin)
+        src = Path(BIN, "romp-kernel").read_text()
+        self.assertIn('"awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid)}', src)
+
     def test_provisional_card_shows_the_message_caption_once_it_lands(self):
         # The user 2026-06-19: the card reads the captioner's persisted MESSAGE caption ('<segid>#p') — the
         # SAME gist the timeline dot uses, no separate 'gist' judge call. Until it lands, the raw prompt;

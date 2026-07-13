@@ -92,6 +92,20 @@ class TimelineAwaiting(unittest.TestCase):
         self.assertFalse(lane["live"])
         self.assertIsNone(lane["awaitingBg"], "a dead session cannot be awaiting background work")
 
+    def test_bg_task_wait_carries_the_task_descriptions(self):
+        # the dashed idle-but-waiting stretch (the user 2026-07-13): the lane carries the live bg-task
+        # descriptions beside the why, so the stretch's hover lists exactly what's pending
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None, "mode": "",
+                                           "bgTasks": [{"task_id": "t1", "desc": "Watch for round3 copy"}]}}
+        lane = self._lane()
+        self.assertEqual(lane["awaitingBg"], "waiting on a background task: Watch for round3 copy")
+        self.assertEqual(lane["awaitingTasks"], ["Watch for round3 copy"])
+
+    def test_overlay_flavor_awaiting_carries_no_task_rows(self):
+        self.states.write_text(json.dumps({"t": T0 + 21, "awaiting": True, "why": "bg agents"}) + "\n")
+        self.assertEqual(self._lane()["awaitingTasks"], [], "no live tasks → the stretch hover falls back to the why")
+
 
 class TimelineLiveTail(TimelineAwaiting):
     """build_timeline merges the LIVE TAIL like the chat (the user 2026-07-02): a /model change streams
