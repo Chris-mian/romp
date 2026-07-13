@@ -4,7 +4,7 @@
 // kernel never came up" so the UI can show the right fix. Tests inject deps so they run instantly.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { ensureThenAttach, warnAfter, AttachDeps } from "./kernel-attach";
+import { ensureThenAttach, parseHealthz, warnAfter, AttachDeps } from "./kernel-attach";
 
 const noDelay = () => Promise.resolve();
 
@@ -79,4 +79,20 @@ test("warnAfter: one failed round is a transient (quiet); a persistent failure w
   assert.equal(warnAfter(1), false, "a single failure (e.g. attaching mid-restart) must not interrupt");
   assert.equal(warnAfter(2), true);
   assert.equal(warnAfter(5), true);
+});
+
+test("parseHealthz accepts BOTH kernel generations: plain 'ok' and {ok:true} JSON", () => {
+  // The Python kernel's plain-text form read as unhealthy under the old JSON-only
+  // parse — VS Code could never attach to a healthy kernel (2026-07-13).
+  assert.deepEqual(parseHealthz(200, "ok"), { ok: true });
+  assert.deepEqual(parseHealthz(200, " ok\n"), { ok: true });
+  assert.deepEqual(parseHealthz(200, '{"ok": true, "version": "1.2"}'), { ok: true, version: "1.2" });
+  assert.equal(parseHealthz(200, '{"ok": false}').ok, false);
+});
+
+test("parseHealthz rejects non-200s and junk bodies", () => {
+  assert.equal(parseHealthz(403, "ok").ok, false, "a forbidden 'ok' body is not health");
+  assert.equal(parseHealthz(undefined, "ok").ok, false);
+  assert.equal(parseHealthz(200, "<html>proxy error</html>").ok, false);
+  assert.equal(parseHealthz(200, "").ok, false);
 });

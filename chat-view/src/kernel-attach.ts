@@ -45,6 +45,26 @@ export async function ensureThenAttach(d: AttachDeps): Promise<AttachResult> {
   return { ok: false, reason: "kernel-didnt-start" };
 }
 
+// The liveness probe's answer. The Python kernel serves /healthz as plain-text
+// "ok" (auth-exempt); the superseded TS kernel answered {"ok":true,"version":…}.
+// The old JSON-only parse read the plain form as UNHEALTHY, so the extension
+// could never attach to the real kernel and always escalated to the manager —
+// the "couldn't bring up a kernel" toast with a healthy kernel on the port
+// (the user 2026-07-13, broken since the serve-layer security change
+// de58481 on 2026-06-15). Accept both forms — a remote/federated kernel may
+// run either generation.
+export function parseHealthz(status: number | undefined, body: string): { ok: boolean; version?: string } {
+  if ((status ?? 0) !== 200) return { ok: false };
+  const t = String(body || "").trim();
+  if (t === "ok") return { ok: true };
+  try {
+    const j = JSON.parse(t);
+    return { ok: !!j.ok, version: j.version ? String(j.version) : undefined };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // Should this many CONSECUTIVE failed attach rounds interrupt the user? One
 // round can fail transiently (attaching in the middle of a kernel restart);
 // the caller's retry loop runs another round seconds later, and only a

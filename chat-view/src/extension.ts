@@ -19,7 +19,7 @@ import * as http from "http";
 import { execFile } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
-import { ensureThenAttach, warnAfter } from "./kernel-attach";
+import { ensureThenAttach, parseHealthz, warnAfter } from "./kernel-attach";
 import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
@@ -150,10 +150,7 @@ function healthz(): Promise<{ ok: boolean; version?: string }> {
     const req = http.get({ host: HOST, port: kernelPort(), path: "/healthz", timeout: 1500 }, (res) => {
       let body = "";
       res.on("data", (d) => (body += d));
-      res.on("end", () => {
-        try { const j = JSON.parse(body); resolve({ ok: !!j.ok, version: j.version ? String(j.version) : undefined }); }
-        catch { resolve({ ok: false }); }
-      });
+      res.on("end", () => resolve(parseHealthz(res.statusCode, body)));
     });
     req.on("timeout", () => { req.destroy(); resolve({ ok: false }); });
     req.on("error", () => resolve({ ok: false }));
