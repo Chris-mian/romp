@@ -7,10 +7,11 @@ scrolling through transcripts to find the background a
 decision needs, checking in to see which agents are stuck, and coordinating
 handoffs of work and information between them.
 
-Romp provides the tools to make this management seamless, so you can stay
-focused on what you're trying to accomplish instead of how the work is
-happening. It organizes your interaction with the agents by human-facing
-tasks and goals:
+Romp runs on top of however many agents you run, whatever they are doing and
+whatever tools they use. It adds control and visibility across the fleet, so
+you can stay focused on what you're trying to accomplish instead of how the
+work is happening. It organizes your interaction with the agents by
+human-facing tasks and goals:
 
 - **See the whole fleet at a glance.** One place shows every agent: who is
   working, who is stuck, and who is waiting on you.
