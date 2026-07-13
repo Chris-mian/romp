@@ -36,6 +36,9 @@ const webview = {
     "../ui/webview/feed.ts",
     "../ui/webview/feed.css",
     "../ui/webview/fleet.ts",
+    "../ui/webview/fleet-pane.css",      // fleet page layout — the kernel reads the same file live
+    "../ui/webview/timeline-main.ts",    // VS Code timeline view: boot glue + ui/romp-timeline-view.js inlined
+    "../ui/webview/timeline-pane.css",   // timeline wrapper styles — the kernel reads the same file live
     "../ui/webview/federation.ts",   // multi-kernel manager: loaded after the shim on chat/feed/fleet pages
   ],
   nodePaths: [path.join(__dirname, "node_modules")],

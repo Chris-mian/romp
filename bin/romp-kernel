@@ -10312,74 +10312,20 @@ def _feed_page():
 # TREE beneath it — the same collapsible checkmark nodes + recency-coloured times the chat's ledger box draws.
 # Fed by app=fleet (each session's build_session ledger). ui/webview/fleet.ts renders it; it loads the chat's
 # styles.css for the .ledger-* tree styling. Completed top goals hide behind a "Show completed" checkbox (off).
-_FLEET_CSS = (
-    "html,body{margin:0;height:100%;background:var(--vscode-editor-background,#1e1e1e);"
-    "color:var(--vscode-foreground,#cccccc);font-family:var(--vscode-font-family,system-ui,-apple-system,'Segoe UI',sans-serif);"
-    "font-size:13px;display:flex;flex-direction:column;overflow:hidden}"
-    # docked search bar at the TOP (the user 2026-06-29): filter the fleet to sessions whose NAME matches.
-    "#fleet-search-bar{flex:0 0 auto;padding:8px 12px;border-bottom:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12))}"
-    "#fleet-search-wrap{position:relative}"
-    "#fleet-search{width:100%;box-sizing:border-box;background:var(--vscode-input-background,#3c3c3c);"
-    "color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#3c3c3c);"
-    "border-radius:6px;padding:5px 28px 5px 10px;font:inherit;font-size:12.5px;outline:none}"
-    "#fleet-search:focus{border-color:var(--accent,#9cd2ff)}"
-    "#fleet-search::placeholder{color:var(--vscode-descriptionForeground,#9a9a9a)}"
-    # hide the engine's native search-cancel button — we draw our own clear ✕ so it behaves the same everywhere
-    "#fleet-search::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}"
-    "#fleet-search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);"
-    "display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;"
-    "border-radius:50%;background:transparent;color:var(--vscode-descriptionForeground,#9a9a9a);"
-    "font-size:15px;line-height:1;cursor:pointer}"
-    "#fleet-search-clear:hover{color:var(--vscode-foreground,#ccc);background:rgba(255,255,255,0.10)}"
-    "#fleet-search-clear[hidden]{display:none}"
-    "#fleet-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:6px 0}"
-    ".fl-empty{opacity:.6;text-align:center;padding:26px 14px;line-height:1.5}"
-    ".fl-session{padding:4px 0 10px}"
-    ".fl-head{display:flex;align-items:center;gap:7px;padding:5px 14px 4px;cursor:pointer;font-weight:650}"
-    ".fl-head:hover{background:rgba(255,255,255,0.05)}"
-    ".fl-workdot{width:7px;height:7px;border-radius:50%;background:#e0b020;flex:0 0 auto}"
-    ".fl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-    # the goal tree per session: drop the ledger box's scroll cap + fit-content so each session shows in full,
-    # indented under its name. The .ledger-* node styling itself comes from the linked styles.css.
-    ".fl-session .ledger-tree{max-height:none;width:auto;margin:0;padding:0 14px 0 18px}"
-    # FLAT (ungrouped) view: the merged chronological list reuses .ledger-tree but with its own padding, and
-    # each top goal carries a right-aligned .fl-sesslabel naming its session.
-    ".fl-flat{max-height:none;width:auto;margin:0;padding:2px 14px}"
-    ".fl-sesslabel{flex:0 0 auto;margin-left:10px;display:inline-flex;align-items:center;gap:5px;max-width:38%;"
-    "font-size:11px;font-weight:600;opacity:.92;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer}"
-    ".fl-sesslabel-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-    # DOCKED control bar (the user 2026-06-29): a dedicated bottom rectangle in normal flow — left cluster =
-    # grouping + collapse/expand, right cluster = recency slider + Show completed.
-    # COMPACT docked bar (the user 2026-06-29): 10.5px to MATCH the feed's controls, tight padding/gaps, and
-    # flex-wrap so the clusters STACK (never clip/overflow) when the fleet pane is narrow.
-    "#fleet-foot{flex:0 0 auto;border-top:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));"
-    "background:var(--vscode-editorWidget-background,#252526);padding:6px 10px;display:flex;align-items:center;"
-    "flex-wrap:wrap;justify-content:space-between;gap:7px 12px;user-select:none;font-size:10.5px;"
-    "color:var(--vscode-descriptionForeground,#9a9a9a)}"
-    ".fl-foot-left,.fl-foot-right{display:flex;align-items:center;flex-wrap:wrap;gap:7px}"
-    ".fl-foot-toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}"
-    ".fl-foot-toggle input{cursor:pointer;margin:0;width:13px;height:13px}"
-    ".fl-foot-btn{background:rgba(255,255,255,0.06);color:var(--vscode-foreground,#ccc);"
-    "border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.14));border-radius:5px;cursor:pointer;"
-    "font:inherit;font-size:10.5px;padding:2px 8px;white-space:nowrap}"
-    ".fl-foot-btn:hover{background:rgba(255,255,255,0.12)}"
-    # a toggled-ON Collapse/Expand button "stays clicked" — accent fill (the romp blue), per CLAUDE.md
-    ".fl-foot-btn.on{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);border-color:var(--accent,#9cd2ff)}"
-    ".fl-foot-btn.on:hover{background:var(--accent,#9cd2ff)}"
-    ".fl-back{background:#1d3a52;color:#9cd2ff;border:1px solid #2b6088;border-radius:6px;cursor:pointer;"
-    "font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:4px 11px}"
-    ".fl-back:hover{background:#234a6a;color:#fff}"
-    ".fl-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;"
-    "color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:none}"
-)
-
-
+# Its layout CSS lives in ui/webview/fleet-pane.css — ONE file, read live here and bundled into the VS Code
+# VSIX by chat-view/esbuild.js, so the two hosts cannot drift.
 def _fleet_page():
+    try:
+        fleet_css = (UI / "webview" / "fleet-pane.css").read_text()
+    except OSError:
+        return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
+                "background:#1e1e1e;padding:12px'>romp outline needs the ui/ modules "
+                "(webview/fleet-pane.css).</body></html>")
     v = _dist_ver()
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · outline</title>"
-            # the chat's stylesheet provides the .ledger-* tree styling; _FLEET_CSS (in the <style> AFTER it)
+            # the chat's stylesheet provides the .ledger-* tree styling; fleet-pane.css (in the <style> AFTER it)
             # overrides the body/layout bits so the chat rules don't fight the fleet page.
             "<link href=/dist/styles.css?v=%d rel=stylesheet>"
             "<style>%s\n%s</style></head><body>"
@@ -10390,35 +10336,11 @@ def _fleet_page():
             "<div id=fleet-list></div><div id=fleet-foot></div>%s"
             "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
             "<script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("fleet"), v, v))
+            % (v, THEME_CSS, fleet_css, _pane_spin("fleet-list"), _shim("fleet"), v, v))
 
 
-# The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
-TIMELINE_CSS = """:root{--text-muted:#9aa0a6;--text-faint:#6e7681;}#host{width:100%;}
-.romp-tl-top{display:flex;align-items:center;gap:12px;padding:2px 0 8px;flex:0 0 auto;}
-.romp-tl-winlabel{color:var(--text-muted);font-size:12px;min-width:92px;}
-.romp-tl-src{color:var(--text-faint);font-size:11px;margin-left:auto;}
-.romp-tl-slider{flex:1;max-width:420px;-webkit-appearance:none;appearance:none;height:6px;
-border-radius:3px;background:#2a2f37;outline:none;}
-.romp-tl-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;
-border-radius:50%;background:#e6edf3;cursor:pointer;}
-.romp-tl-wrap{overflow-x:auto;}.romp-tl-wrap svg{display:block;}
-/* Touch devices: the view forces a >=640px-wide SVG, which on a ~390px phone overflowed into a NATIVE
-   horizontal scroller that competed with (and beat) the one-finger pan gesture. Fit the SVG to the screen
-   instead (uniform scale via its viewBox) and kill the overflow scroller, so the touch handlers own all
-   horizontal motion and pinch-zoom is the way to get detail (the user 2026-06-16). */
-@media (pointer:coarse){.romp-tl-wrap{overflow-x:hidden;touch-action:pan-y;}
-.romp-tl-wrap svg{width:100%;height:auto;}}
-.romp-tl-tip{position:fixed;pointer-events:none;z-index:1000;max-width:320px;background:#1c2430;
-border:1px solid #ffffff1f;border-radius:8px;padding:7px 9px;font-size:12px;color:#e6edf3;
-box-shadow:0 8px 24px #00000066;opacity:0;transform:translateY(4px);transition:opacity .1s,transform .1s;}
-.romp-tl-tip.show{opacity:1;transform:translateY(0);}
-.romp-tl-tip .r{display:flex;align-items:center;gap:6px;}
-.romp-tl-tip .chip{width:9px;height:9px;border-radius:50%;display:inline-block;}
-.romp-tl-tip .who{font-weight:650;}.romp-tl-tip .ar{color:#6e7681;}
-.romp-tl-tip .t{color:#8b949e;margin-left:2px;font-variant-numeric:tabular-nums;}
-.romp-tl-tip .k{color:#6e7681;font-size:10px;text-transform:uppercase;letter-spacing:.04em;}
-.romp-tl-tip .b{margin-top:4px;color:#cdd9e5;}"""
+# The romp-tl-* wrapper styles live in ui/webview/timeline-pane.css — ONE file, read live here (like the
+# view JS itself) and bundled into the VS Code VSIX by chat-view/esbuild.js, so the two hosts cannot drift.
 
 
 # The timeline page bootstrap: shim the 3 Obsidian
@@ -10461,10 +10383,11 @@ def _timeline_page():
     appear here too. The view JS is read live from UI/ so an edit goes live on a browser reload."""
     try:
         view_js = (UI / "romp-timeline-view.js").read_text()
+        tl_css = (UI / "webview" / "timeline-pane.css").read_text()
     except OSError:
         return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
                 "background:#1e1e1e;padding:12px'>romp timeline needs the ui/ modules "
-                "(romp-timeline-view.js).</body></html>")
+                "(romp-timeline-view.js + webview/timeline-pane.css).</body></html>")
     v = _dist_ver()
     # No _pane_spin("host") here (the user 2026-06-26): that full-pane loader hides the instant #host gets
     # its first child — which is the .romp-tl-wrap on TimelinePanel construction, BEFORE any bars — so it
@@ -10480,7 +10403,7 @@ def _timeline_page():
             "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
             "var TimelinePanel=module.exports.TimelinePanel;"
             "window.__rompConnectTimeline(new TimelinePanel(document.getElementById('host')));"
-            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _shim("timeline"), v, _TIMELINE_BOOT, view_js))
+            "</script></body></html>" % (THEME_CSS, tl_css, _shim("timeline"), v, _TIMELINE_BOOT, view_js))
 
 
 def _chat_body():

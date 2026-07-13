@@ -53,8 +53,50 @@
         "command": "rompChat.openFeed",
         "title": "romp: Open Feed",
         "icon": "$(list-unordered)"
+      },
+      {
+        "command": "rompChat.openTimeline",
+        "title": "romp: Open Timeline"
+      },
+      {
+        "command": "rompChat.openFleet",
+        "title": "romp: Open Outline"
       }
     ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "rompPanel",
+          "title": "romp",
+          "icon": "media/romp-swirl-glyph.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "rompSidebar",
+          "title": "romp",
+          "icon": "media/romp-swirl-glyph.svg"
+        }
+      ]
+    },
+    "views": {
+      "rompPanel": [
+        {
+          "type": "webview",
+          "id": "rompTimeline",
+          "name": "Timeline",
+          "icon": "media/romp-swirl-glyph.svg"
+        }
+      ],
+      "rompSidebar": [
+        {
+          "type": "webview",
+          "id": "rompFleet",
+          "name": "Outline",
+          "icon": "media/romp-swirl-glyph.svg"
+        }
+      ]
+    },
     "menus": {
       "editor/title": [
         {

@@ -5,8 +5,9 @@
 // bin/romp-serve). This extension only:
 //   1. ensures a kernel is running (spawn-or-attach on the default port,
 //      restarting a stale one once after a VSIX update),
-//   2. hosts the two webview panels (chat + feed) and pipes their postMessage
-//      traffic over the kernel's WebSocket protocol verbatim,
+//   2. hosts the four webview surfaces — chat + feed (editor panels) and
+//      timeline + outline/fleet (native panel/sidebar views) — and pipes their
+//      postMessage traffic over the kernel's WebSocket protocol verbatim,
 //   3. supplies the few genuinely CLIENT-side capabilities: opening files in
 //      the editor, the OS file picker, the clipboard, external links, and
 //      panel reveal/focus orchestration.
@@ -16,8 +17,9 @@
 import * as vscode from "vscode";
 import * as http from "http";
 import WebSocket from "ws";
-import { chatBody, FEED_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
+import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach } from "./kernel-attach";
+import { routeViewMessage } from "./view-routing";
 
 const HOST = "127.0.0.1";
 
@@ -37,6 +39,8 @@ let panel: vscode.WebviewPanel | undefined;
 let feedPanel: vscode.WebviewPanel | undefined;
 let chatPipe: KernelPipe | undefined;
 let feedPipe: KernelPipe | undefined;
+let timelinePipe: KernelPipe | undefined;
+let fleetPipe: KernelPipe | undefined;
 // Webview-cold replays: a deep link / picker-open that arrived before the chat
 // webview signalled "ready" is re-sent when the ready flows past us.
 let pendingToWebview: any[] = [];
@@ -54,17 +58,28 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewPanelSerializer("rompFeed", {
       async deserializeWebviewPanel(webviewPanel) { wireFeedPanel(webviewPanel); },
     }),
+    // Timeline + Outline are native VIEWS (bottom panel / sidebar by default —
+    // the user can drag them anywhere), resolved lazily when first shown.
+    vscode.window.registerWebviewViewProvider("rompTimeline",
+      { resolveWebviewView: (v) => wireTimelineView(v) },
+      { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.window.registerWebviewViewProvider("rompFleet",
+      { resolveWebviewView: (v) => wireFleetView(v) },
+      { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerUriHandler({ handleUri: onDeepLink }),
     vscode.commands.registerCommand("rompChat.open", async () => {
       const had = !!panel;
       openPanel();
       const chatCol = panel?.viewColumn;
       openFeedPanel(true, chatCol !== undefined ? ((chatCol as number) + 1) as vscode.ViewColumn : undefined);
-      try { await vscode.commands.executeCommand("trackchanges.timeline.focus"); } catch { /* not installed */ }
+      // Bring the timeline up without stealing focus from the chat panel.
+      try { await vscode.commands.executeCommand("rompTimeline.focus", { preserveFocus: true }); } catch { /* view unavailable */ }
       panel?.reveal(panel.viewColumn ?? vscode.ViewColumn.Beside, false);
       if (had) toWebview({ type: "openPicker" });
     }),
     vscode.commands.registerCommand("rompChat.openFeed", () => openFeedPanel()),
+    vscode.commands.registerCommand("rompChat.openTimeline", () => vscode.commands.executeCommand("rompTimeline.focus")),
+    vscode.commands.registerCommand("rompChat.openFleet", () => vscode.commands.executeCommand("rompFleet.focus")),
     vscode.commands.registerCommand("rompChat.addSession", () => { openPanel(); toWebview({ type: "openPicker", pick: false }); }),
     vscode.commands.registerCommand("rompChat.pickSession", (arg?: unknown) =>
       pickSessionExternal(
@@ -91,6 +106,8 @@ export function deactivate() {
   // reap here — closing/reloading VS Code just drops our attach; the kernel keeps running.
   chatPipe?.dispose();
   feedPipe?.dispose();
+  timelinePipe?.dispose();
+  fleetPipe?.dispose();
 }
 
 // Post into the chat webview, deferring until its "ready" if it's still cold
@@ -174,7 +191,7 @@ class KernelPipe {
   private everConnected = false;
   webviewReady = false;
   constructor(
-    private app: "chat" | "feed",
+    private app: "chat" | "feed" | "timeline" | "fleet",
     private onDown: (m: any) => void,
     private onReconnect: () => void,
   ) {
@@ -288,8 +305,8 @@ function wirePanel(p: vscode.WebviewPanel) {
       for (const q of pendingToWebview.splice(0)) p.webview.postMessage(q);
       return;
     }
-    // reveal side-effects ride along; the kernel does the real work
-    if (m.type === "dotOpen") openFeedPanel(true);
+    const r = routeViewMessage("chat", m);
+    if (r.revealFeed) openFeedPanel(r.revealFeed.preserveFocus);
     pipe.send(m);
   });
   p.onDidDispose(() => {
@@ -344,10 +361,9 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (m.type === "ready") pipe.webviewReady = true;
     // Clicking into a session (or locating a card's chat turn) should bring
     // the CHAT panel forward — panel reveal is this host's job; the kernel
-    // opens/focuses the tab itself.
-    if (m.type === "openSession") openPanel(false);
-    else if (m.type === "showOnTimeline") openPanel(true);   // kernel locates the chat for prompt AND work clicks
-    else if (m.type === "showAskPath" && m.locate !== false && !m.jump && !m.off) openPanel(true);
+    // opens/focuses the tab itself. The rules live in view-routing.ts.
+    const r = routeViewMessage("feed", m);
+    if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     pipe.send(m);
   });
   p.onDidDispose(() => {
@@ -355,6 +371,52 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
   });
+}
+
+// ---- native views (timeline + fleet/outline) ----
+// WebviewViews resolve lazily when first shown and are re-resolved if the user
+// drags them to another container — wire a fresh pipe each time. Same relay as
+// the panels: the host holds the kernel WS, the webview never opens a socket.
+
+function wireTimelineView(v: vscode.WebviewView) {
+  timelinePipe?.dispose();
+  timelinePipe = wireView(v, "timeline", buildTimelineHtml, (p) => { if (timelinePipe === p) timelinePipe = undefined; });
+}
+
+function wireFleetView(v: vscode.WebviewView) {
+  fleetPipe?.dispose();
+  fleetPipe = wireView(v, "fleet", buildFleetHtml, (p) => { if (fleetPipe === p) fleetPipe = undefined; });
+}
+
+function wireView(
+  v: vscode.WebviewView,
+  app: "timeline" | "fleet",
+  build: (w: vscode.Webview) => string,
+  onGone: (p: KernelPipe) => void,
+): KernelPipe {
+  v.webview.options = {
+    enableScripts: true,
+    localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+  };
+  v.webview.html = build(v.webview);
+  const pipe = new KernelPipe(
+    app,
+    (m) => {
+      if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
+      v.webview.postMessage(m);
+    },
+    () => { v.webview.html = build(v.webview); },
+  );
+  v.webview.onDidReceiveMessage((m) => {
+    if (!m) return;
+    if (m.type === "ready") pipe.webviewReady = true;
+    const r = routeViewMessage(app, m);
+    if (r.revealChat) openPanel(r.revealChat.preserveFocus);
+    if (r.openLinkLocally) openLink(r.openLinkLocally);
+    if (r.forward) pipe.send(m);
+  });
+  v.onDidDispose(() => { pipe.dispose(); onGone(pipe); });
+  return pipe;
 }
 
 // ---- client capabilities ----
@@ -489,6 +551,64 @@ function buildFeedHtml(webview: vscode.Webview): string {
 </head>
 <body>
 ${FEED_BODY}
+  <script nonce="${n}" src="${js}"></script>
+</body>
+</html>`;
+}
+
+function buildTimelineHtml(webview: vscode.Webview): string {
+  const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-main.js"));
+  const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "timeline-pane.css"));
+  const n = nonce();
+  const csp = [
+    "default-src 'none'",
+    `img-src ${webview.cspSource} data:`,
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `font-src ${webview.cspSource}`,
+    `script-src 'nonce-${n}'`,
+  ].join("; ");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="${css}" rel="stylesheet" />
+  <title>romp timeline</title>
+</head>
+<body>
+${TIMELINE_BODY}
+  <script nonce="${n}" src="${js}"></script>
+</body>
+</html>`;
+}
+
+function buildFleetHtml(webview: vscode.Webview): string {
+  const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "fleet.js"));
+  // styles.css first (the .ledger-* goal-tree styling), fleet-pane.css after it
+  // (the page layout) — same order as the kernel's /fleet page.
+  const cssBase = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
+  const cssPane = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "fleet-pane.css"));
+  const n = nonce();
+  const csp = [
+    "default-src 'none'",
+    `img-src ${webview.cspSource} data:`,
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `font-src ${webview.cspSource}`,
+    `script-src 'nonce-${n}'`,
+  ].join("; ");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="${cssBase}" rel="stylesheet" />
+  <link href="${cssPane}" rel="stylesheet" />
+  <title>romp outline</title>
+</head>
+<body>
+${FLEET_BODY}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
