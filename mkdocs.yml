@@ -1,11 +1,9 @@
 site_name: romp
-site_description: A multi-agent session manager for Claude Code.
+site_description: Mission control for a fleet of AI coding agents.
 
-# Set these when you go public (a project site is served at
-# https://<your-user>.github.io/romp/, or point a custom domain at it):
-# site_url: https://OWNER.github.io/romp/
-# repo_url: https://github.com/OWNER/romp
-# repo_name: OWNER/romp
+site_url: https://romp-on.github.io/romp/
+repo_url: https://github.com/romp-on/romp
+repo_name: romp-on/romp
 
 theme:
   name: material

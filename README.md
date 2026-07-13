@@ -35,11 +35,12 @@ Romp gives you the tools to direct the fleet:
   machine serving a web dashboard, with no hosted service in the middle. Open
   the dashboard in a browser tab, in the editor, or over SSH from any device.
 
-## The three views
+## The four views
 
-The feed splits the work into task cards, the timeline lays the sessions out
-over time and shows where they interact, and the chat is the conversation you
-already know, laid out for scanning.
+The feed splits the work into task cards, the fleet lists every session with
+its open tasks beneath it, the timeline lays the sessions out over time and
+shows where they interact, and the chat is the conversation you already know,
+laid out for scanning.
 
 ## Components
 
@@ -57,14 +58,14 @@ already know, laid out for scanning.
   (`bin/romp-event-model`), runs the **judges** (`bin/romp-judge` — an index
   tier always on, the planners and board keepers while a client is watching;
   the roster lives in `docs/judges.md`) that
-  write the durable records, and serves the chat / feed / timeline UI over
-  HTTP + WebSocket. Its lifecycle is owned by **`bin/romp-manager`** (start with
+  write the durable records, and serves the chat / feed / fleet / timeline UI
+  over HTTP + WebSocket. Its lifecycle is owned by **`bin/romp-manager`** (start with
   `romp --on`; `bin/romp-service` auto-starts it at login). Open
   `http://127.0.0.1:7433/` in any browser — no VS Code required.
   Design: `design/read-side.md`.
-- **UI** — the three panes (chat, feed, timeline). The chat + feed render
-  bundles are built from `ui/webview/` and served by the kernel; the
-  timeline is `ui/romp-timeline-view.js`, served verbatim at `/timeline`.
+- **UI** — the four panes (chat, feed, fleet, timeline). The chat + feed +
+  fleet render bundles are built from `ui/webview/` and served by the kernel;
+  the timeline is `ui/romp-timeline-view.js`, served verbatim at `/timeline`.
 - **chat-view/** — the VS Code/Cursor extension: a thin WebSocket client of the
   same kernel. The editor panel and a browser tab share one kernel — same tabs,
   per-client focus.
@@ -128,5 +129,5 @@ The published site sources live in `docs/`: `getting-started.md`,
 `judges.md` (the roster), `judge-pipeline.md` (the diagram map), and
 `goal-state.md` (the card state model). Architecture + schemas live in
 `design/`: `event-model.md` (the bottom-layer event tree), `read-side.md`
-(the kernel + the three panes), `sdk-backend.md` (the Agent SDK backend),
+(the kernel + the panes), `sdk-backend.md` (the Agent SDK backend),
 `segment-regrowth.md`, and `stalled-open-todos-nudge.md`.

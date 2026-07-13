@@ -3,19 +3,20 @@
 ## Requirements
 
 - macOS or Linux
-- [tmux](https://github.com/tmux/tmux)
-- Python 3.10+ for the headless (Agent SDK) backend — the kernel picks the newest
-  `python3.x` it can find (a [uv](https://docs.astral.sh/uv/)-managed one in
-  `~/.local/bin` counts), so an older system `python3` alongside is fine. The
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) — the `claude` CLI
+- Python 3.10+ for the Agent SDK backend (the default) — the kernel picks the
+  newest `python3.x` it can find (a [uv](https://docs.astral.sh/uv/)-managed one
+  in `~/.local/bin` counts), so an older system `python3` alongside is fine. The
   `bin/` tools are pure standard library — no third-party deps beyond the
   SDK venv `install.sh` builds.
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) — the `claude` CLI
+- [tmux](https://github.com/tmux/tmux) — only for terminal sessions (the tmux
+  backend); sessions started from the dashboard don't need it
 - Node.js — only if you want the VS Code / Cursor extension
 
 ## Install
 
 ```bash
-git clone https://github.com/OWNER/romp.git   # ← your repo
+git clone https://github.com/romp-on/romp.git
 cd romp
 ./install.sh
 export PATH="$PATH:$(pwd)/bin"   # add this line to your shell rc
@@ -31,9 +32,18 @@ export PATH="$PATH:$(pwd)/bin"   # add this line to your shell rc
 - installs a login service so the kernel manager is always up (opt out with
   `ROMP_NO_SERVICE=1`).
 
-!!! tip "First run"
-    Open `http://127.0.0.1:7433/` in any browser — no VS Code required. From
-    there you can watch the fleet and even start sessions.
+## First run
+
+1. Open `http://127.0.0.1:7433/` in any browser — no VS Code required. The
+   login service keeps the kernel up.
+2. Start a session: type a name in the dashboard's session picker and choose
+   **New session**, or run `romp <name>` in a terminal for a tmux session.
+3. Give the agent work in the chat, then open the **feed**: a task card
+   appears, tracking what the agent is doing, what is done, and what needs
+   you.
+4. Add more sessions. The **fleet** view lists each one with its open tasks,
+   and the **timeline** lays them out over time and shows where they
+   interact.
 
 ## Remote hosts (federation)
 

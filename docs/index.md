@@ -1,17 +1,16 @@
 # romp
 
-A multi-agent session manager for **Claude Code**. romp turns a fleet of Claude
-sessions into a coordinated, observable system: named, colored, persistent
-sessions; inter-session mail; automatic per-turn captions; and a live activity
-feed, goal inbox, and timeline.
+AI coding agents can work in parallel and unattended for hours, but once you
+run more than a few, managing them consumes the attention you meant to spend
+directing them. You have to keep track of which agent is working on which
+task, scroll through transcripts for the relevant background a decision needs,
+check in on the agents to see which ones are stuck or need you, and coordinate
+work across agents yourself, since they have no way to talk to each other.
 
-## Why romp
-
-> The bottleneck in AI coding is human attention.
-
-romp lets one person direct a whole fleet of agents by spending that attention
-where it counts and surfacing only what is worth acting on — so you keep the
-focus and flow that good work needs while running many agents at once.
+Romp gives you the tools to direct the fleet: one dashboard shows every agent
+and what needs you, the work is organized by task rather than by session,
+stalled agents get nudged back to their open work, and agents message each
+other directly, across machines.
 
 <div class="grid cards" markdown>
 
@@ -19,7 +18,8 @@ focus and flow that good work needs while running many agents at once.
 
     ---
 
-    Named, colored, persistent sessions (SDK or tmux) — launch, resume, attach.
+    Named, colored, persistent sessions on the Agent SDK or tmux backend:
+    launch, resume, attach, revive.
 
     [:octicons-arrow-right-24: Getting started](getting-started.md)
 
@@ -35,15 +35,17 @@ focus and flow that good work needs while running many agents at once.
 
     ---
 
-    One always-on process parses transcripts, runs the judges, serves the UI.
+    One always-on process reads the transcripts, infers the tasks, and serves
+    the UI.
 
     [:octicons-arrow-right-24: Architecture](architecture.md)
 
--   :material-view-dashboard-outline:{ .lg .middle } **The panes**
+-   :material-view-dashboard-outline:{ .lg .middle } **The four views**
 
     ---
 
-    Chat, feed, and timeline — open `http://127.0.0.1:7433/` in any browser.
+    Feed, fleet, timeline, and chat. Open `http://127.0.0.1:7433/` in any
+    browser.
 
 </div>
 
