@@ -1034,10 +1034,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     spinTip = why
       ? why + ". Not on you; paused until the background work lands."
       : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.";
-  } else if (it.provisional && it.column === "working") {
+  } else if (it.provisional && it.column === "working" && !aw) {
     // the chip tells the truth about the phase (the user 2026-07-12): an OPEN turn is just Working — the
     // judge has nothing to classify yet; once the turn settles (kernel `judging`) the planner's pass is
-    // due/in flight and only THEN does the chip say Analyzing…
+    // due/in flight and only THEN does the chip say Analyzing…. An AWAITING placeholder (a bg-task wait with
+    // no goal to floor, the user 2026-07-13) is provisional too but NOT working: !aw defers it to the boxed
+    // why (branch above) or, when tasks exist, to the "Waiting on task" pill — never a false "Working…".
     spinCaption = it.judging ? "Analyzing…" : "Working…";
     spinTip = it.judging
       ? "This stretch of work finished; the judge is sorting it into a goal."

@@ -31,8 +31,10 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   assert.match(FEED, /if \(aw && !it\.waitingOn && !awTasks\.length\) \{\s*\n\s*awaitingBg = true;/);
   assert.match(FEED, /spinCaption = \/\^waiting on\/i\.test\(why\) \? why\.charAt\(0\)\.toUpperCase\(\) \+ why\.slice\(1\)\s*\n\s*: "Awaiting background agents";/);
   // the provisional chip is PHASE-truthful (the user 2026-07-12): open turn → "Working…" (the judge has
-  // nothing to classify yet); turn settled (kernel `judging`) → "Analyzing…" (the planner pass is due/live)
-  assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{[\s\S]*?spinCaption = it\.judging \? "Analyzing…" : "Working…";/);
+  // nothing to classify yet); turn settled (kernel `judging`) → "Analyzing…" (the planner pass is due/live).
+  // `&& !aw` (the user 2026-07-13): an AWAITING placeholder (a bg-task wait with no goal) is provisional too
+  // but NOT working — it defers to the boxed why / "Waiting on task" pill, never a false "Working…".
+  assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working" && !aw\) \{[\s\S]*?spinCaption = it\.judging \? "Analyzing…" : "Working…";/);
   assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is

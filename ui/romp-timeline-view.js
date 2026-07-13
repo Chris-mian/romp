@@ -2197,28 +2197,29 @@ class TimelinePanel {
         hit.addEventListener('click', () => { this._select(s.id); this.openChat(t.tid || this._laneTid(s), workAnchorOf(t), false, false, t.start); });
         svg.appendChild(hit);
       });
-      // AWAITING a background task while the main thread is idle (the user 2026-07-13): a THIN DASHED
-      // segment in the lane color from the last work period's end to the live edge — "something is pending
-      // here" without reading as active work (which stays the thicker solid bar). Its own hover lists the
-      // task(s), consistent with the feed's "Waiting on task" pill. Event-gated on the SAME live signal the
-      // lane badge reads (s.awaitingBg — kernel _session_awaiting, non-null only while the turn is CLOSED),
-      // so it appears with the wait and vanishes the moment the tasks settle or a new turn opens.
+      // AWAITING a background task while the main thread is idle (the user 2026-07-13): a full-thickness
+      // segment (BAR_H, the work-bar reference) in the lane color from the last work period's end to the
+      // live edge, but FADED to 0.4 alpha — "something is pending here", a faded continuation of the work
+      // bar rather than active work (which stays the solid ~0.9 bar). Its own hover lists the task(s),
+      // consistent with the feed's "Waiting on task" pill. Event-gated on the SAME live signal the lane
+      // badge reads (s.awaitingBg — kernel _session_awaiting, non-null only while the turn is CLOSED), so
+      // it appears with the wait and vanishes the moment the tasks settle or a new turn opens.
       if (s.live && s.awaitingBg) {
         let anchor = t0;                       // wait began before the window → the stretch enters from the left edge
         turnsOf(s.id).forEach((t) => { if (t.end > anchor) anchor = Math.min(t.end, t1); });
         const lx1 = x(anchor), lx2 = x(Math.max(anchor, Math.min(nowS, t1)));
         if (lx2 - lx1 > 3) {
-          const ln = el('line', { x1: lx1, y1: y, x2: lx2, y2: y, stroke: F(s.color), 'stroke-width': 1.6,
-            'stroke-dasharray': '5 4', 'stroke-linecap': 'round', opacity: 0.85, 'pointer-events': 'none' });
+          const ln = el('line', { x1: lx1, y1: y, x2: lx2, y2: y, stroke: s.color, 'stroke-width': BAR_H,
+            'stroke-linecap': 'round', opacity: 0.4, 'pointer-events': 'none' });
           svg.appendChild(ln);
           const rows = ((s.awaitingTasks && s.awaitingTasks.length) ? s.awaitingTasks : [s.awaitingBg])
             .map((d) => '<div class="b" style="opacity:.85">' + esc(d) + '</div>').join('');
           const tip = '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name)
             + '</span><span class="t">' + clock(anchor) + '– waiting…</span></div>' + rows;
           const wh = el('rect', { x: lx1, y: y - 7, width: lx2 - lx1, height: 14, fill: 'transparent' }); wh.style.cursor = 'grab';
-          wh.addEventListener('mouseenter', (e) => { ln.setAttribute('stroke-width', '2.6'); this.showTip(tip, e); });
+          wh.addEventListener('mouseenter', (e) => { ln.setAttribute('stroke-width', String(BAR_H + 2)); ln.setAttribute('opacity', '0.6'); this.showTip(tip, e); });
           wh.addEventListener('mousemove', (e) => this.moveTip(e));
-          wh.addEventListener('mouseleave', () => { ln.setAttribute('stroke-width', '1.6'); this.hideTip(); });
+          wh.addEventListener('mouseleave', () => { ln.setAttribute('stroke-width', String(BAR_H)); ln.setAttribute('opacity', '0.4'); this.hideTip(); });
           // the stretch keeps the empty-row behaviors it covers: drag to pan/reorder, click to select/open
           wh.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));
           wh.addEventListener('click', () => {

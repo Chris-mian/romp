@@ -7069,6 +7069,42 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
             "provisional": True, "judging": not turn_open, "tree": []}
 
 
+def _awaiting_card(s, name, color, fsid, live, now, why):
+    """A lightweight WORKING-column placeholder for a LIVE, IDLE session AWAITING a dispatched BACKGROUND
+    TASK when there is NO open goal to floor to awaiting (the user 2026-07-13). The turn ended and every
+    card is done/cleared/placed, so the goal loop has nothing to floor AND _provisional_card bows out (its
+    held segment is already placed) — yet the session isn't finished: a background task it dispatched is
+    still running (the SAME _session_awaiting signal the timeline's faded awaiting stretch reads). Without
+    this the feed showed NOTHING while the timeline showed the wait — the "there's no card there" hole.
+
+    Ephemeral by construction: the caller only builds it while sess_awaiting_why is set, so it drops the
+    instant the task settles; and the had_working gate means a real working/awaiting card always wins. No
+    goal node (empty tree), open-on-click like the provisional placeholder; `awaiting.tasks` drives the
+    card's compact "Waiting on task" pill (feed.ts), which lists the live task descriptions."""
+    if not live:                                     # a dead session isn't awaiting anything live
+        return None
+    t = now
+    try:
+        turns = _parse(s["path"], fsid, now)["turns"]
+        if turns:
+            t = turns[-1].get("t", now)              # last activity → recency tint, sorts with the working column
+    except Exception:
+        pass
+    # _session_awaiting already phrases the why ("waiting on a background task: <desc>"); capitalize it for
+    # the headline. The task list rides `awaiting` for the pill, so the headline needn't repeat every task.
+    text = (why[:1].upper() + why[1:]) if why else "Waiting on a background task"
+    return {"itemId": "awaiting:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
+            "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "turnId": None, "origin": None, "followupPending": None,
+            "summary": None, "blockSummary": None, "background": None,
+            "blocked": None, "column": "working",
+            # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
+            # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
+            # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
+            "awaiting": {"why": why, "tasks": _awaiting_task_descs(fsid)},
+            "provisional": True, "judging": False, "tree": []}
+
+
 def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     """A NEEDS-INPUT placeholder for a session HARD-BLOCKED on a live prompt (permission / picker) BEFORE the
     planner has minted ANY goal — e.g. an SDK session that fired an AskUserQuestion on its very first turn
@@ -7710,6 +7746,13 @@ def build_feed(now, tmux=None):
                 # by the real card once the planner places the answered work.
                 asks.append(_blocked_placeholder(s, name, color, fsid, live, now, perm_state,
                                                  tm.get("since") if tm else None))
+            elif sess_awaiting_why:
+                # AWAITING a dispatched background task with NO goal to floor (the user 2026-07-13): the
+                # session's work is all placed/done, but a background task it dispatched is still running
+                # (the same signal the timeline's faded awaiting stretch reads). Surface a working-column
+                # awaiting card so the wait shows in the FEED, not just on the timeline — the hole the user
+                # hit ("there's no card there"). Ephemeral: gone the moment sess_awaiting_why clears.
+                asks.append(_awaiting_card(s, name, color, fsid, live, now, sess_awaiting_why))
     if cold_parse:
         _warm_fleet_bg(now)                          # a living session wasn't parsed yet → warm it + re-push (dots/anchors)
     # NO caption stream. The feed's cards are TOP-LEVEL GOALS ONLY (read-side.md: Inbox = goal cards;
