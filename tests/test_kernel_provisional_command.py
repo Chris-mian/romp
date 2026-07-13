@@ -69,6 +69,24 @@ class ProvisionalCommand(unittest.TestCase):
         self.assertIsNotNone(card, "a kernel-resume turn is continued user work → it warrants a placeholder")
         self.assertEqual(card["column"], "working")
         self.assertTrue(card["provisional"])
+        # ...but the notice BODY is romp plumbing, never a headline (the user 2026-07-13: the raw nudge,
+        # comment markers and all, showed as the Working card's text). The card speaks about the state.
+        self.assertEqual(card["text"], "Resuming work after a restart")
+        self.assertNotIn("<!--", card["text"])
+        self.assertNotIn("[romp]", card["text"])
+
+    def test_marker_comments_never_render_in_the_headline(self):
+        # any comment marker riding a real prompt (pasted HTML, a stray romp marker mention) is stripped
+        # from the DISPLAY text — markers are plumbing, the headline is for the user (the user 2026-07-13)
+        now = int(time.time())
+        s = self._session([{"type": "user", "timestamp": _iso(now - 5), "uuid": "u1", "parentUuid": None,
+                            "promptSource": "typed",
+                            "message": {"role": "user", "content":
+                                        "please fix the <!-- some comment --> rendering in the header"}}])
+        card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
+        self.assertIsNotNone(card)
+        self.assertNotIn("<!--", card["text"])
+        self.assertIn("please fix the", card["text"])
 
     def test_a_followup_gets_no_provisional_placeholder(self):
         # a follow-up (carries the romp-goal-id marker) files UNDER its already-reopened target goal, so a

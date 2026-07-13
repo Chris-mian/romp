@@ -6977,8 +6977,10 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     if (_seg_placed(placements, held["id"])            # timestamp-invariant: the judge's recorded key can
             and not (turn_open and _live_cleared_under(placements, nodes, held["id"]))):   # drifted t (SDK echo)
         return None
-    prompt = _split_reminders(_seg_prompt(held))[0].strip()
-    if not prompt and not held.get("seam"):
+    # Comment markers are romp plumbing, never display text: without the strip a resurrected follow-up's
+    # <!-- romp-goal-id --> (or any pasted comment) renders literally in the card headline.
+    prompt = re.sub(r"<!--.*?-->", "", _split_reminders(_seg_prompt(held))[0], flags=re.S).strip()
+    if not prompt and not held.get("seam") and not jd._seg_system(held):
         return None
     # "Working: <gist>" vs "Analyzing: <gist>" — the prefix tells the TRUTH about the phase (the user
     # 2026-07-12: "is it actually analyzing, or is it just working and hasn't received the segment yet?").
@@ -6991,7 +6993,14 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     # A settle-SEAM tail has no prompt: caption when ready, else name the completed goal it followed.
     pre = "Working: " if turn_open else "Analyzing: "
     g = _seg_caption(_captions(fsid), held["id"])      # drift-safe (same key family as _seg_placed)
-    if held.get("seam") and not prompt:
+    if jd._seg_system(held):
+        # A kernel resume/status notice (BOOT/CRASH_RESUME_NUDGE, task_death_notice) is romp PLUMBING —
+        # its body must never headline a card (the user 2026-07-13: the raw nudge, markers and all, showed
+        # as a Working card). The placeholder itself stays (the 07-09 invariant: a working session always
+        # shows a card) but speaks about the session's state; the caption is skipped too — it would only
+        # gloss the nudge, which is the same plumbing in different words.
+        text = "Resuming work after a restart"
+    elif held.get("seam") and not prompt:
         text = (pre + g if g
                 else "Working past “%s”" % (((held.get("seamOf") or {}).get("text") or "a completed goal")[:100]))
     else:
@@ -7033,7 +7042,8 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
             held = segs[-1]                          # the live segment — what the user is being asked about
             t = held.get("t", lt["t"])
             if jd._seg_human(held):
-                prompt = _split_reminders(_seg_prompt(held))[0].strip()
+                prompt = re.sub(r"<!--.*?-->", "", _split_reminders(_seg_prompt(held))[0],
+                                flags=re.S).strip()   # markers are plumbing, never display (see _provisional_card)
                 if prompt:
                     g = _seg_caption(_captions(fsid), held["id"])
                     # bare gist, no "Analyzing:" — nothing is being analyzed here: the session is halted
