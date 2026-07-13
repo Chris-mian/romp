@@ -10059,11 +10059,12 @@ def _feed_page():
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
-            "<link href=/dist/feed.css?v=%d rel=stylesheet><title>Romp · feed</title>"
+            "<link href=/dist/feed.css?v=%d rel=stylesheet>"
+            "<link href=/dist/gear.css?v=%d rel=stylesheet><title>Romp · feed</title>"
             "<style>%s</style></head><body>%s%s<script>%s</script>"
             "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager (also hosts the attach UI in the gear)
             "<script src=/dist/feed.js?v=%d></script></body></html>"   # feed.js builds + wires the gear modal itself
-            % (v, THEME_CSS,
+            % (v, v, THEME_CSS,
                '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>',
                _pane_spin("feed-list"), _shim("feed", v), v, v))
 
@@ -11717,6 +11718,21 @@ class Handler(BaseHTTPRequestHandler):
             # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
             _dismissed_lanes.add(str(msg["id"]))
             _mark_views_dirty()
+        elif msg and msg.get("type") == "locateDiag":
+            # Every chat landing attempt (render.ts posts one per anchor jump, hit or miss) → an
+            # append-only audit, so a "couldn't locate" report is diagnosed from the recorded trail
+            # instead of re-reproduction (the user 2026-07-13: a feed summary click landed on the
+            # web but honest-failed in VS Code; the two clients' resident-history state differs).
+            try:
+                rec = {"t": int(time.time()), "wid": str(client.get("wid") or ""),
+                       "ok": bool(msg.get("ok")), "sid": str(msg.get("id") or ""),
+                       "anchor": msg.get("anchor"), "anchorT": msg.get("anchorT"),
+                       "kind": msg.get("kind"),
+                       "trail": msg.get("trail") if isinstance(msg.get("trail"), list) else []}
+                with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec) + "\n")
+            except OSError:
+                pass
         elif msg and msg.get("type") == "orderAudit":
             # a CLIENT detected its rendered tab order permuting (render.ts auditTabOrder) → same audit log
             # as the kernel's own order mutations, with the client's JS stack, so one file tells the whole
