@@ -636,15 +636,17 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    card to ASKS — a continuation, not the red destructive Clear) */
 .fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
 /* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. */
-/* Clear-all + Undo-clear + the Sub-goals toggle live in #feed-foot — a DOCKED control bar (the user
-   2026-06-29): its own dedicated rectangle in normal flow at the bottom of the pane, NOT a floating overlay.
-   The body is a column flex, so #feed-list flexes to fill above it and the bar sits below without overlapping
-   a card. Sub-goals toggle sits far-left (margin-right:auto pushes the rest right); Undo-clear is far-right
-   (restorative, blue hover via .ffollow); Clear all to its left (destructive, red). */
+/* The feed's DOCKED control bar (the user 2026-06-29): its own dedicated rectangle in normal flow at the
+   bottom of the pane, NOT a floating overlay. The body is a column flex, so #feed-list flexes to fill above
+   it and the bar sits below without overlapping a card. Layout (the user 2026-07-13): the VIEW toggles
+   (Newest first · Collapsed · Group) sit left; the ACTIONS (Clear all, then Undo clear) dock right — flex
+   `order` + margin-left:auto, so the split holds whatever order the ensure* calls appended the buttons in. */
 #feed-foot { flex: 0 0 auto; z-index: 5;
   display: flex; align-items: center; gap: 8px; padding: 6px 12px;
   border-top: 1px solid var(--card-border);
   background: var(--vscode-editorWidget-background, #252526); }   /* opaque panel so it reads as a dedicated bar */
+#feed-clearall { order: 10; margin-left: auto; }   /* destructive, red hover */
+#feed-undoclear { order: 11; }                     /* restorative, blue hover — far right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
 /* the "Newest first" / "Collapsed" MODE toggles: pressed (.on) wears the accent language (blue text + border
    + faint wash), the same selected-state look the card section toggles use (the user 2026-07-07) */

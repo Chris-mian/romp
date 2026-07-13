@@ -12,8 +12,8 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
 
-test("the footer Group toggle persists `grouped` in romp:settings like Newest first / Collapsed", () => {
-  assert.match(FEED, /grouped: s\.grouped === true/);
+test("the footer Group toggle persists `grouped` in romp:settings; grouping is the DEFAULT (the user 2026-07-13)", () => {
+  assert.match(FEED, /grouped: s\.grouped !== false/);   // default ON — the toggle opts OUT
   assert.match(FEED, /ensureFeedToggle\("feed-grouped", "Group", \(\) => feedPrefs\(\)\.grouped, "grouped",/);
   assert.match(FEED, /ensureGroupToggle\(\)\.style\.display = showCA \? "" : "none";/);
 });

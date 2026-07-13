@@ -9,14 +9,23 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
-test("feed reads newestFirst/collapsed/grouped (default OFF) from romp:settings; the subgoals pref is gone", () => {
+test("feed prefs from romp:settings: newestFirst/collapsed default OFF, grouped default ON; the subgoals pref is gone", () => {
   assert.match(FEED, /function feedPrefs\(\)/);
   assert.match(FEED, /localStorage\.getItem\("romp:settings"\)/);
-  // the mode toggles default OFF (=== true); `subgoals` is no longer a feed-wide pref (per-card button now).
-  // `grouped` (the user 2026-07-13) = by-session grouping, the footer Group toggle.
-  assert.match(FEED, /return \{ newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true, grouped: s\.grouped === true \};/);
+  // newestFirst + collapsed default OFF (=== true); grouped defaults ON (!== false — the user 2026-07-13:
+  // by-session grouping is the feed's normal reading mode, the footer Group toggle opts OUT).
+  // `subgoals` is no longer a feed-wide pref (per-card button now).
+  assert.match(FEED, /return \{ newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true, grouped: s\.grouped !== false \};/);
+  assert.match(FEED, /catch \{ return \{ newestFirst: false, collapsed: false, grouped: true \}; \}/);
   assert.doesNotMatch(FEED, /s\.subgoals/, "no feed-wide subgoals pref — it's a per-card toggle now");
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
+});
+
+test("footer layout: view toggles left, Clear all + Undo clear dock right (the user 2026-07-13)", () => {
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+  // flex `order` + margin-left:auto so the split holds whatever order the ensure* calls appended in
+  assert.match(CSS, /#feed-clearall \{ order: 10; margin-left: auto; \}/);
+  assert.match(CSS, /#feed-undoclear \{ order: 11; \}/);
 });
 
 test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/generating placeholder (restored 2026-06-29)", () => {

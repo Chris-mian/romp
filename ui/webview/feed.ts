@@ -267,8 +267,9 @@ function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boole
     // of the mutually-exclusive sections 2026-07-08; the same `collapsed` default applies — see resolveSec.)
     // grouped (the user 2026-07-13): each column groups its cards by SESSION (tab/lane order), a session-name
     // header on the backdrop between runs, the per-card name dropped — the compact by-session read.
-    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped === true };
-  } catch { return { newestFirst: false, collapsed: false, grouped: false }; }
+    // Default ON (!== false, same day): grouping is the feed's normal reading mode; the toggle opts OUT.
+    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped !== false };
+  } catch { return { newestFirst: false, collapsed: false, grouped: true }; }
 }
 // The kernel's session order (session-order.json — the SAME order the chat tabs + timeline lanes hold; the
 // user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
