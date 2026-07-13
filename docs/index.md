@@ -21,11 +21,41 @@ tasks and goals:
   gets nudged back to it, so progress does not wait on you noticing.
 - **Agents coordinate with each other.** They hand off work and ask each other
   questions directly, across machines, while you stay in the loop.
+- **Never lose your place.** A closed session revives with its full history,
+  and everything is searchable, so stepping away is always safe.
 
-New to Romp? Start with [Getting started](getting-started.md).
+## Self-hosted, reachable from anywhere
 
-## Everything stays on your machine
+You run Romp yourself, on your laptop or a server, with no hosted service in
+between. Connect several machines over SSH and they federate into one fleet
+whose agents message across the boundary. Open the dashboard in a browser or
+as a VS Code / Cursor extension, and reach it from your phone over Tailscale
+to check in or keep a conversation going. The only traffic that leaves your
+machine is the `claude` CLI you already use.
 
-Romp only ever talks to `127.0.0.1` (the local kernel and postal service); the
-only external traffic is the `claude` CLI you already use. Recorded state lives
-under `${XDG_STATE_HOME:-~/.local/state}/romp/` and is never uploaded.
+## Quick start
+
+```bash
+git clone https://github.com/romp-on/romp.git
+cd romp
+./install.sh
+export PATH="$PATH:$(pwd)/bin"   # add this to your shell rc
+```
+
+Then open `http://127.0.0.1:7433/` in any browser and start a session. Full
+requirements, remote-host setup, and configuration are in
+[Getting started](getting-started.md).
+
+## See it in action
+
+<!-- TODO: screenshots / short GIFs go here. Planned captures:
+     - The fleet at a glance: the dashboard with several agents, each showing status (working / stuck / needs you).
+     - A task card opening to its summary and background ("Tasks, not transcripts").
+     - A stalled agent getting nudged back to its open work.
+     - Two agents exchanging postal mail (a delegate / handoff / question).
+     - The timeline laying sessions out over time and showing where they interact.
+     - Reviving a closed session with its history intact.
+     - Reaching the dashboard from a phone over Tailscale.
+     - The VS Code / Cursor extension panel beside a browser tab (same fleet, two surfaces).
+-->
+
