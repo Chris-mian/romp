@@ -1050,6 +1050,27 @@ def _retry_pause_ts():
         return 0.0
 
 
+def _retry_resume_at():
+    """When the current global retry-pause will lift, if it's LIMIT-driven: the earliest future reset
+    among the account-wide limited usage windows (5h/7d — fable is model-scoped and never pauses, see
+    _auto_pause_on_limit). None while unpaused, for a manual pause, or with no usable reset — the client
+    then keeps the plain paused text. Rides the globalRetryPaused push so the chat's API-error card can
+    count down to the ACTUAL retry moment instead of saying 'retrying soon' (the user 2026-07-13)."""
+    if not _retry_paused_on():
+        return None
+    try:
+        u = _usage() or {}
+    except Exception:
+        return None
+    outs = []
+    for key in ("fiveHour", "sevenDay"):
+        if (u.get("limited") or {}).get(key):
+            ra = (u.get(key) or {}).get("resetsAt")
+            if isinstance(ra, (int, float)) and ra > time.time():
+                outs.append(ra)
+    return min(outs) if outs else None
+
+
 def _auto_pause_on_limit():
     """Hitting an ACCOUNT-WIDE usage limit (5h Session or 7d Weekly at 100%) auto-engages the global retry-pause
     (the user 2026-07-01): retrying into a rate-limited account just burns failed requests, so stop the
@@ -9357,7 +9378,8 @@ def _push(targets, connect=False):
             # session fills the placeholder in when it arrives below.
             tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
             for c in chat_clients:                       # tab strip first → the shell paints before any build
-                _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on()})
+                _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on(),
+                                                         "resumeAt": _retry_resume_at()})   # limit reset epoch → the card counts down to the real retry
                 _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first

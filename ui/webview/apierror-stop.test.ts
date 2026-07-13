@@ -20,10 +20,11 @@ test("the API-error card has a global Stop/Resume retry button that pauses retry
 });
 
 test("the retry tick SKIPS all retries when paused globally", () => {
-  // paused → no auto-retry this pass
-  assert.match(R, /if \(globalRetryPaused\) return;/);
-  // the countdown reads "auto-retry off (global)" while paused
-  assert.match(R, /if \(paused\) countdown\.textContent = "auto-retry off \(global\)"/);
+  // paused → the SCHEDULE loop is gated (the countdown text still ticks every second — a usage-limit
+  // pause counts down to the window reset, the user 2026-07-13)
+  assert.match(R, /if \(!globalRetryPaused\) \{/);
+  assert.match(R, /if \(paused\) countdown\.textContent = retryPausedText\(\)/);
+  assert.match(R, /return "auto-retry off \(global\)";/);   // a manual pause (no reset ETA) keeps the plain label
 });
 
 test("Stop retrying reads as a NEUTRAL action, not the red Retry alarm", () => {

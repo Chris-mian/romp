@@ -40,6 +40,35 @@ class UsageLimitSignal(unittest.TestCase):
             "seven_day": {"pct": seven_pct, "resets_at": seven_reset if seven_reset is not None else fut},
             "fable": {"pct": fable_pct, "resets_at": fut} if fable_pct is not None else None}))
 
+    # ── _retry_resume_at (the user 2026-07-13): the globalRetryPaused push carries WHEN a limit-driven
+    # pause lifts — the earliest future account-window reset — so the chat's API-error card counts down
+    # to the actual retry ("usage limit — retrying at HH:MM (in Nm)") instead of a mute paused label. ──
+    def test_limited_pause_reports_the_earliest_account_reset(self):
+        fut5, fut7 = int(time.time()) + 1800, int(time.time()) + 7200
+        self._write(100, 100, five_reset=fut5, seven_reset=fut7)
+        km._set_retry_paused(True)
+        self.assertEqual(km._retry_resume_at(), fut5, "the earliest account-window reset wins")
+
+    def test_manual_pause_has_no_schedule(self):
+        self._write(10, 10)
+        km._set_retry_paused(True)
+        self.assertIsNone(km._retry_resume_at(), "no limited window → a manual pause carries no ETA")
+
+    def test_unpaused_reports_no_resume_time(self):
+        self._write(100, 10)
+        km._set_retry_paused(False)
+        self.assertIsNone(km._retry_resume_at())
+
+    def test_a_fable_only_limit_reports_no_resume_time(self):
+        # fable is model-scoped and never engages the pause; its reset must not masquerade as the ETA
+        self._write(10, 10, fable_pct=100)
+        km._set_retry_paused(True)
+        self.assertIsNone(km._retry_resume_at())
+
+    def test_the_push_carries_resume_at(self):
+        self.assertIn('"resumeAt": _retry_resume_at()', Path(BIN, "romp-kernel").read_text(),
+                      "the globalRetryPaused push carries the limit-reset ETA")
+
     def test_a_maxed_window_is_flagged_limited(self):
         self._write(100, 40)
         lim = km._usage()["limited"]

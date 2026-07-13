@@ -27,3 +27,13 @@ test("the AUTO-retry tick stays a plain apiRetry (no manual) so the pause/suppre
   // only the button overrides; the 10s auto-loop must remain gated
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "apiRetry", id \}\)/);   // apiRetryTick's post — no manual flag
 });
+
+test("a usage-limit pause counts down to the window reset instead of a mute label (the user 2026-07-13)", () => {
+  // the kernel's globalRetryPaused push carries resumeAt (the limiting window's reset epoch, seconds)
+  assert.match(RENDER, /globalRetryResumeAt = typeof m\.resumeAt === "number" \? m\.resumeAt : null;/);
+  assert.match(RENDER, /usage limit — retrying at \$\{hm\} \(in \$\{durLabel\(dt\)\}\)/);
+  // the tick updates the countdown every second EVEN while paused (only the schedule loop is gated)
+  assert.match(RENDER, /if \(globalRetryPaused\) \{\s*\n\s*cd\.textContent = retryPausedText\(\);/);
+  // the LIVE (newest) error card ticks — older cards in the transcript are settled history
+  assert.match(RENDER, /const cd = cds\.length \? \(cds\[cds\.length - 1\] as HTMLElement\) : null;/);
+});
