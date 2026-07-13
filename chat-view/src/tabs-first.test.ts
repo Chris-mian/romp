@@ -36,7 +36,7 @@ test("makePlaceholderTab draws name + identity color, non-interactive (no data-a
 test("the placeholder shows the mini romp swirl loader (not a whole-tab opacity pulse) and is non-interactive", () => {
   // the user 2026-07-03: a still-building tab shows the spinning romp swirl glyph — the loader motif — rather
   // than the old .tab-ph-pulse opacity breathing on the whole tab.
-  assert.match(RENDER, /swirl\.src = "\/media\/romp-swirl-glyph\.svg"/);
+  assert.match(RENDER, /swirl\.src = mediaSrc\("romp-swirl-glyph\.svg"\)/);
   assert.match(RENDER, /tab\.appendChild\(swirl\);/);
   assert.match(CSS, /\.tab\.tab-placeholder \{ cursor: default; \}/);
   assert.match(CSS, /\.tab-ph-swirl \{[\s\S]*?animation: tab-ph-swirl-spin/);

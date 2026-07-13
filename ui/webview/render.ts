@@ -23,6 +23,7 @@ import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewThumb, canPreview } from "./preview";
 import { hostNameNodes } from "./host-prefix";
+import { mediaSrc } from "./media";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -462,7 +463,7 @@ function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chi
   const chip = el("span", "notice-chip notice-chip-" + o.variant);
   if (o.logo) {   // the romp swirl marks a romp notice as "from romp", the way the postal card does
     const logo = el("img", "notice-chip-logo") as HTMLImageElement;
-    logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
+    logo.src = mediaSrc("romp-swirl-glyph.svg"); logo.alt = ""; logo.onerror = () => logo.remove();
     chip.appendChild(logo);
   }
   chip.appendChild(document.createTextNode(o.chip));
@@ -1116,7 +1117,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         // sandbox without it the img self-removes (alt stays empty).
         const tag = el("div", "romp-tag");
         const logo = el("img", "romp-tag-logo") as HTMLImageElement;
-        logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
+        logo.src = mediaSrc("romp-swirl-glyph.svg"); logo.alt = ""; logo.onerror = () => logo.remove();
         tag.appendChild(logo);
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
@@ -2003,7 +2004,7 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
   // the romp swirl marks this as a romp-postal-service message (the user 2026-06-23: postal is "from romp" too)
   const rlogo = el("img", "postal-service-romp-logo") as HTMLImageElement;
-  rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "Romp Postal Service message"; rlogo.onerror = () => rlogo.remove();
+  rlogo.src = mediaSrc("romp-swirl-glyph.svg"); rlogo.alt = ""; rlogo.title = "Romp Postal Service message"; rlogo.onerror = () => rlogo.remove();
   head.appendChild(rlogo);
   head.appendChild(arrow);
   head.appendChild(verb);
@@ -2344,7 +2345,7 @@ function makePlaceholderTab(id: string): HTMLElement {
     tab.classList.add("colored");
   }
   const swirl = el("img", "tab-ph-swirl") as HTMLImageElement;
-  swirl.src = "/media/romp-swirl-glyph.svg"; swirl.alt = ""; swirl.onerror = () => swirl.remove();
+  swirl.src = mediaSrc("romp-swirl-glyph.svg"); swirl.alt = ""; swirl.onerror = () => swirl.remove();
   tab.appendChild(swirl);
   const label = el("span", "tab-label");
   if (meta?.name) label.replaceChildren(...hostNameNodes(meta.name, id));
@@ -2975,7 +2976,7 @@ function showReviveLoader(id: string, name: string) {
   const word = el("div", "rl-word");
   const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
   const swirl = el("img", "rl-o") as HTMLImageElement;
-  swirl.src = "/media/romp-swirl-o.svg"; swirl.alt = "o"; swirl.onerror = () => swirl.remove();
+  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = "o"; swirl.onerror = () => swirl.remove();
   const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
   const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
   word.append(r, swirl, mm, p);

@@ -19,7 +19,7 @@ import * as http from "http";
 import { execFile } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
-import { ensureThenAttach } from "./kernel-attach";
+import { ensureThenAttach, warnAfter } from "./kernel-attach";
 import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
@@ -162,6 +162,7 @@ function healthz(): Promise<{ ok: boolean; version?: string }> {
 
 let ensuring: Promise<boolean> | null = null;
 let notRunningWarned = false;
+let ensureFails = 0;   // consecutive failed rounds — one is a transient (a kernel restart), see warnAfter
 function ensureKernel(): Promise<boolean> {
   if (ensuring) return ensuring;
   ensuring = (async () => {
@@ -170,9 +171,13 @@ function ensureKernel(): Promise<boolean> {
       ensureViaManager: () => askManagerEnsure(kernelPort()),
       delay: (ms) => new Promise((r) => setTimeout(r, ms)),
     });
-    if (res.ok) { notRunningWarned = false; return true; }
-    // Point the user at the fix, once (not on every panel mount / reconnect poll).
-    if (!notRunningWarned) {
+    if (res.ok) { notRunningWarned = false; ensureFails = 0; return true; }
+    ensureFails++;
+    // Point the user at the fix, once (not on every panel mount / reconnect
+    // poll) — and only when the failure PERSISTS across rounds: attaching in
+    // the middle of a `romp --refresh` fails one round and self-heals on the
+    // pipes' retry, and that transient must not toast (the user 2026-07-13).
+    if (!notRunningWarned && warnAfter(ensureFails)) {
       notRunningWarned = true;
       const port = kernelPort();
       vscode.window.showErrorMessage(
@@ -729,6 +734,16 @@ function resolvePick(v: PickValue | undefined) {
 // ---- webview HTML (the bundles ship in the VSIX; the kernel pipe replaces
 // the host logic, not the rendering) ----
 
+// The bundles' JS-created <img>/<image> assets resolve through
+// window.__rompMediaBase (ui/webview/media.ts + the timeline view's mediaUrl):
+// the kernel serves /media on the web origin, but this webview's synthetic
+// origin needs the asWebviewUri form — without it the src 404s and e.g. the
+// loader's broken-image icon spins on the rl-o animation (the user 2026-07-13).
+function mediaBaseTag(webview: vscode.Webview, n: string): string {
+  const base = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "media"));
+  return `<script nonce="${n}">window.__rompMediaBase=${JSON.stringify(String(base))};</script>`;
+}
+
 function buildHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "render.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
@@ -751,6 +766,7 @@ function buildHtml(webview: vscode.Webview): string {
 </head>
 <body>
 ${chatBody(ATTACH_TITLE_VSCODE)}
+  ${mediaBaseTag(webview, n)}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -778,6 +794,7 @@ function buildFeedHtml(webview: vscode.Webview): string {
 </head>
 <body>
 ${FEED_BODY}
+  ${mediaBaseTag(webview, n)}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -805,6 +822,7 @@ function buildTimelineHtml(webview: vscode.Webview): string {
 </head>
 <body>
 ${TIMELINE_BODY}
+  ${mediaBaseTag(webview, n)}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -836,6 +854,7 @@ function buildFleetHtml(webview: vscode.Webview): string {
 </head>
 <body>
 ${FLEET_BODY}
+  ${mediaBaseTag(webview, n)}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;

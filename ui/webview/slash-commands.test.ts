@@ -69,7 +69,7 @@ test("while the kernel warms its probe the menu shows the romp loader, not a bla
 test("the popup + selected-row accent + loader spin are styled", () => {
   assert.match(CSS, /\.slash-pop \{[\s\S]*?position: fixed/);
   assert.match(CSS, /\.slash-row\.sel \{ background: var\(--accent\); \}/);   // selected row = romp accent
-  assert.match(CSS, /\.slash-spin \{[\s\S]*?url\(\/media\/romp-swirl-glyph\.svg\)/);
+  assert.match(CSS, /\.slash-spin \{[\s\S]*?url\(\.\.\/media\/romp-swirl-glyph\.svg\)/);
   assert.match(CSS, /@keyframes slash-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.slash-spin \{ animation: none; \} \}/);
 });

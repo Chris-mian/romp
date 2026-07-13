@@ -19,7 +19,7 @@ test("a romp event renders the gray romp-bubble + a romp tag, NOT the blue or th
   assert.match(RENDER, /const injected = !ev\.human && !romp;/);
   // the tag shows the romp swirl-glyph LOGO (not the old ↯ symbol) + "romp" (the user 2026-06-19)
   assert.match(RENDER, /el\("img", "romp-tag-logo"\)/);
-  assert.match(RENDER, /logo\.src = "\/media\/romp-swirl-glyph\.svg"/);
+  assert.match(RENDER, /logo\.src = mediaSrc\("romp-swirl-glyph\.svg"\)/);
   assert.match(RENDER, /createTextNode\("romp"\)/);
   assert.doesNotMatch(RENDER, /tag\.textContent = "↯ romp"/, "the ↯ placeholder is gone");
   assert.match(RENDER, /\(romp \? "romp-bubble" : injected \? "user-note" : "user-bubble"\)/);
@@ -38,7 +38,7 @@ test("the swirl LOGO is on EVERY romp bubble, next to the 'romp' tag (the user 2
 
 test("a postal card carries the romp swirl (postal is 'from romp' too — the user 2026-06-23)", () => {
   assert.match(RENDER, /el\("img", "postal-service-romp-logo"\)/);
-  assert.match(RENDER, /rlogo\.src = "\/media\/romp-swirl-glyph\.svg"/);
+  assert.match(RENDER, /rlogo\.src = mediaSrc\("romp-swirl-glyph\.svg"\)/);
   assert.match(CSS, /\.postal-service-romp-logo \{/);
 });
 

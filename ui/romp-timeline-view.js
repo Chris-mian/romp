@@ -356,6 +356,15 @@ function crossX(lo0, hi0, xs, xe, obstacles) {
   return xc > xe ? xs : xc;
 }
 
+// Media assets: the kernel serves /media on the page origin (web/Obsidian), but a VS Code
+// webview has a synthetic origin with no /media route — an absolute src there 404s and the
+// loader's broken-image icon SPINS on the rl-o animation (the user 2026-07-13). The VS Code
+// host injects window.__rompMediaBase = <asWebviewUri of media/>; every asset URL routes
+// through here so both hosts resolve.
+function mediaUrl(name) {
+  return ((typeof window !== 'undefined' && window.__rompMediaBase) || '/media') + '/' + name;
+}
+
 class TimelinePanel {
   constructor(host) {
     this.host = host;
@@ -2687,12 +2696,12 @@ class TimelinePanel {
         // mark its dot as a ROMP MESSAGE — a BLACK-filled dot with the romp favicon swirl inside (the user
         // 2026-06-23, replacing the old white ⚡ bolt). A button/retry nudge renders as a normal prompt dot.
         const tip = t.nudgeAuto
-          ? () => '<div class="r"><img src="/media/romp-swirl-glyph.svg" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body('romp nudged ' + esc(s.name))
+          ? () => '<div class="r"><img src="' + mediaUrl('romp-swirl-glyph.svg') + '" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body('romp nudged ' + esc(s.name))
           : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t));
         dot(dx, y, t.nudgeAuto ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // auto-nudge → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
         if (t.nudgeAuto) {                               // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
           const sz = DOT_R * 1.9;
-          svg.appendChild(el('image', { x: dx - sz / 2, y: y - sz / 2, width: sz, height: sz, href: '/media/romp-swirl-glyph.svg', 'pointer-events': 'none' }));
+          svg.appendChild(el('image', { x: dx - sz / 2, y: y - sz / 2, width: sz, height: sz, href: mediaUrl('romp-swirl-glyph.svg'), 'pointer-events': 'none' }));
         }
       });
     });
@@ -2848,7 +2857,7 @@ class TimelinePanel {
     if (!document.getElementById('tl-loader-css')) {
       const st = document.createElement('style'); st.id = 'tl-loader-css';
       st.textContent =
-        "@font-face{font-family:'RompAnta';src:url(/media/Anta-Regular.ttf) format('truetype');font-display:swap}"
+        "@font-face{font-family:'RompAnta';src:url(" + mediaUrl('Anta-Regular.ttf') + ") format('truetype');font-display:swap}"
         + ".tl-loader{min-height:240px;display:flex;align-items:center;justify-content:center}"
         + ".tl-loader .rl-in{display:flex;flex-direction:column;align-items:center;gap:18px}"
         + ".tl-loader .rl-word{font-family:'RompAnta',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
@@ -2865,7 +2874,8 @@ class TimelinePanel {
     const inner = document.createElement('div'); inner.className = 'rl-in';
     const word = document.createElement('div'); word.className = 'rl-word';
     const mk = (t, c) => { const s = document.createElement('span'); s.style.color = c; s.textContent = t; return s; };
-    const o = document.createElement('img'); o.className = 'rl-o'; o.src = '/media/romp-swirl-o.svg'; o.alt = 'o';
+    const o = document.createElement('img'); o.className = 'rl-o'; o.src = mediaUrl('romp-swirl-o.svg'); o.alt = 'o';
+    o.onerror = () => o.remove();   // a missing asset must never leave a spinning broken-image icon
     word.appendChild(mk('R', '#1EA1EB')); word.appendChild(o);
     word.appendChild(mk('m', '#54B204')); word.appendChild(mk('p', '#4EA8A9'));
     const dots = document.createElement('div'); dots.className = 'rl-dots';

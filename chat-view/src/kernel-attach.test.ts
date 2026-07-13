@@ -4,7 +4,7 @@
 // kernel never came up" so the UI can show the right fix. Tests inject deps so they run instantly.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { ensureThenAttach, AttachDeps } from "./kernel-attach";
+import { ensureThenAttach, warnAfter, AttachDeps } from "./kernel-attach";
 
 const noDelay = () => Promise.resolve();
 
@@ -59,4 +59,24 @@ test("manager acked but the kernel never serves → reason kernel-didnt-start (b
   });
   assert.deepEqual(res, { ok: false, reason: "kernel-didnt-start" });
   assert.equal(polls, 5, "1 initial probe + 4 post-ensure polls, then give up");
+});
+
+test("default poll budget covers a kernel RESTART, not just a clean spawn (>= 10s)", async () => {
+  // A `romp --refresh` respawn + cold boot can exceed the old ~5s budget; attaching mid-restart
+  // then toasted "couldn't bring up a kernel" while it came up seconds later (2026-07-13).
+  let waited = 0;
+  const res = await ensureThenAttach({
+    healthz: () => Promise.resolve(false),
+    ensureViaManager: () => Promise.resolve(true),
+    delay: (ms) => { waited += ms; return Promise.resolve(); },
+  });
+  assert.deepEqual(res, { ok: false, reason: "kernel-didnt-start" });
+  assert.ok(waited >= 10000, `default budget must be >= 10s of polling, got ${waited}ms`);
+});
+
+test("warnAfter: one failed round is a transient (quiet); a persistent failure warns", () => {
+  assert.equal(warnAfter(0), false);
+  assert.equal(warnAfter(1), false, "a single failure (e.g. attaching mid-restart) must not interrupt");
+  assert.equal(warnAfter(2), true);
+  assert.equal(warnAfter(5), true);
 });

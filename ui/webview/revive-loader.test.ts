@@ -20,7 +20,7 @@ test("the Revive click acknowledges at once: post reviveSession AND show the loa
 
 test("the loader is the romp treatment: wordmark + swirl + pulsing dots + caption", () => {
   assert.match(RENDER, /const word = el\("div", "rl-word"\)/, "reuses the boot-splash .rl-* styles already on the page");
-  assert.match(RENDER, /swirl\.src = "\/media\/romp-swirl-o\.svg"/);
+  assert.match(RENDER, /swirl\.src = mediaSrc\("romp-swirl-o\.svg"\)/);
   assert.match(RENDER, /const dots = el\("div", "rl-dots"\)/);
   assert.match(RENDER, /cap\.textContent = `reviving “\$\{name\}”…`/);
 });

@@ -489,7 +489,10 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .slash-empty, .slash-loading { padding: 8px 10px; color: var(--vscode-descriptionForeground, #9a9a9a);
   display: flex; align-items: center; gap: 8px; }
 .slash-spin { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto;
-  background: url(/media/romp-swirl-glyph.svg) center / contain no-repeat;
+  /* relative to the emitted dist/styles.css (like the wordmark above): resolves against
+     the kernel's /media AND the VS Code webview's extension root — an absolute /media
+     404s in the webview's synthetic origin */
+  background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
   animation: slash-spin 2.4s linear infinite; }
 @keyframes slash-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .slash-spin { animation: none; } }

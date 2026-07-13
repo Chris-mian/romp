@@ -14,9 +14,14 @@ export interface AttachDeps {
   ensureViaManager: () => Promise<boolean>;
   // await-able sleep (injected so tests run instantly)
   delay: (ms: number) => Promise<void>;
-  // how long to wait for a freshly-ensured kernel to start serving
-  pollTries?: number;   // default 25
-  pollMs?: number;      // default 200  → ~5s total
+  // How long to wait for a freshly-ensured kernel to start serving. A RESTART
+  // (romp --refresh) also lands here — healthz is down while the manager
+  // respawns, and a cold kernel boot (reconcile + bundle check) can take well
+  // over 5s — so the budget must cover a restart, not just a clean spawn
+  // (the user 2026-07-13: a reload during a refresh raised the failure toast
+  // even though the kernel was up seconds later).
+  pollTries?: number;   // default 40
+  pollMs?: number;      // default 250  → ~10s total
 }
 
 export type AttachResult =
@@ -30,12 +35,21 @@ export async function ensureThenAttach(d: AttachDeps): Promise<AttachResult> {
   // 2. None there — ask the manager to ensure one. If the manager isn't running, we can't proceed.
   if (!(await d.ensureViaManager())) return { ok: false, reason: "no-manager" };
   // 3. Manager is bringing it up (or already owns it) — poll until it's serving.
-  const tries = d.pollTries ?? 25;
-  const ms = d.pollMs ?? 200;
+  const tries = d.pollTries ?? 40;
+  const ms = d.pollMs ?? 250;
   for (let i = 0; i < tries; i++) {
     await d.delay(ms);
     if (await d.healthz()) return { ok: true };
   }
   // 4. Manager answered but no kernel came up — most often the port is held by a foreign process.
   return { ok: false, reason: "kernel-didnt-start" };
+}
+
+// Should this many CONSECUTIVE failed attach rounds interrupt the user? One
+// round can fail transiently (attaching in the middle of a kernel restart);
+// the caller's retry loop runs another round seconds later, and only a
+// PERSISTENT failure is the user's problem — a false interrupt is a broken
+// flow state.
+export function warnAfter(consecutiveFailures: number): boolean {
+  return consecutiveFailures >= 2;
 }
