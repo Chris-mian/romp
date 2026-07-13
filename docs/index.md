@@ -1,16 +1,17 @@
 # romp
 
-AI coding agents can work in parallel and unattended for hours, but once you
-run more than a few, managing them consumes the attention you meant to spend
-directing them. You have to keep track of which agent is working on which
-task, scroll through transcripts for the relevant background a decision needs,
-check in on the agents to see which ones are stuck or need you, and coordinate
-work across agents yourself, since they have no way to talk to each other.
+AI coding agents can do more and more on their own, so it is natural to run
+several at once. But managing them can consume the attention you meant to
+spend directing them: keeping track of which agent is working on which task,
+scrolling through transcripts for the background a decision needs, checking
+in on the agents to see which ones are stuck or need you, and coordinating
+work across the agents yourself, since they have no way to talk to each
+other.
 
-Romp gives you the tools to direct the fleet: one dashboard shows every agent
-and what needs you, the work is organized by task rather than by session,
-stalled agents get nudged back to their open work, and agents message each
-other directly, across machines.
+Romp provides the tools to do the managing, so your attention stays on
+directing: one dashboard shows every agent and what needs you, the work is
+organized by task rather than by session, stalled agents get nudged back to
+their open work, and agents message each other directly, across machines.
 
 <div class="grid cards" markdown>
 
