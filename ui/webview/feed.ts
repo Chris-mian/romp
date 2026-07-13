@@ -248,16 +248,22 @@ const vscodeApi =
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { newestFirst: boolean; collapsed: boolean } {
+function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
     // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
     // arrive with their summary open (the user 2026-07-07). collapsed is the DEFAULT section state new cards
     // inherit — a per-card expand overrides just that card without turning the mode off. (Sub-goals is now one
     // of the mutually-exclusive sections 2026-07-08; the same `collapsed` default applies — see resolveSec.)
-    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true };
-  } catch { return { newestFirst: false, collapsed: false }; }
+    // grouped (the user 2026-07-13): each column groups its cards by SESSION (tab/lane order), a session-name
+    // header on the backdrop between runs, the per-card name dropped — the compact by-session read.
+    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped === true };
+  } catch { return { newestFirst: false, collapsed: false, grouped: false }; }
 }
+// The kernel's session order (session-order.json — the SAME order the chat tabs + timeline lanes hold; the
+// user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
+// per-host orders local-first, ids pre-prefixed.
+let sessionOrder: string[] = [];
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
@@ -660,6 +666,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
+  a._row1 = row1; a._row2 = row2;   // grouped mode re-homes Clear between these (the user 2026-07-13)
   a._nudgeFailed = nfBadge;
   a._interrupting = intingBadge;
   a._interrupted = intBadge;
@@ -1156,6 +1163,18 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   ho.style.display = ho.children.length ? "" : "none";
 
+  // GROUPED mode (the user 2026-07-13): the session header on the backdrop carries the identity + working
+  // dot, so the card drops its own name and Clear moves up beside the timestamp (float-right: on the time
+  // line when it fits, else its own right-justified line). The move is guarded so a steady-state re-render
+  // never detaches the button mid-press (click-safety); row2 hides entirely once nothing on it shows.
+  const gmode = feedPrefs().grouped;
+  ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
+  const clrHome = (gmode ? a._row1 : a._row2) as HTMLElement;
+  if ((a._clr as HTMLElement).parentElement !== clrHome) clrHome.append(a._clr);
+  const r2 = a._row2 as HTMLElement;
+  const r2live = (Array.from(r2.children) as HTMLElement[]).some((c) => c.style.display !== "none");
+  r2.style.display = gmode && !r2live ? "none" : "";
+
   // (bg / summary / sub-goals are wired above in applySections — one mutually-exclusive selection.)
 }
 
@@ -1302,6 +1321,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._members = memberList;
+  a._row1 = row1; a._row2 = row2; a._clr = clr;   // grouped mode re-homes Clear between the rows (2026-07-13)
   return card;
 }
 
@@ -1332,6 +1352,13 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
       host.appendChild(line);
     }
   }
+  // GROUPED mode (the user 2026-07-13) — same treatment as the ask card: the backdrop header carries the
+  // name + dot, Clear rides up beside the timestamp, the emptied name row hides. Move guarded (click-safety).
+  const gmode = feedPrefs().grouped;
+  ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
+  const clrHome = (gmode ? a._row1 : a._row2) as HTMLElement;
+  if ((a._clr as HTMLElement).parentElement !== clrHome) clrHome.append(a._clr);
+  (a._row2 as HTMLElement).style.display = gmode ? "none" : "";   // the group's row2 is only name + Clear
 }
 
 // Transient hover-highlight signal: hovering a modal line emits its event id(s);
@@ -1971,7 +1998,29 @@ function renderGroupModalBody(host: HTMLElement, members: AskItem[]) {
 // builder + cache map by kind.
 type Entry =
   | { kind: "ask"; t: number; ask: AskItem }
-  | { kind: "group"; t: number; group: AskGroup };
+  | { kind: "group"; t: number; group: AskGroup }
+  // a SESSION HEADER row in grouped mode (the user 2026-07-13): the session's name + working dot on the
+  // column backdrop, heading that session's run of cards. Only emitted for runs that exist.
+  | { kind: "sess"; t: number; sid: string; name: string; color: { bg: string; fg: string } | null; live: boolean };
+
+// Grouped-mode session headers, one reused element per (column, sid) — same keyed-incremental treatment as
+// cards so re-renders never rebuild a header mid-press. Pruned when a reconcile drops them from the DOM.
+const sessHeadEls = new Map<string, HTMLElement>();
+function makeSessHead(): HTMLElement {
+  const h = el("div", "feed-sess-head");
+  const nm = el("a", "fname"); nm.title = "open this session";
+  h.append(nm);
+  (h as any)._name = nm;
+  return h;
+}
+function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
+  const nm = (h as any)._name as HTMLElement;
+  nm.replaceChildren(...hostNameNodes(e.name, e.sid));
+  if (e.color) nm.style.color = e.color.bg;
+  nm.classList.toggle("dead", !e.live);
+  nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
+  setWorkDot(nm, workingSet.has(e.name));   // the yellow working dot rides the header, not the cards
+}
 
 // UndoClear (top right): restore the most recently cleared card — the host pops
 // the newest cleared.jsonl row. Built fresh wherever the top strip renders: on
@@ -2075,6 +2124,14 @@ function ensureCollapsedToggle(): HTMLElement {
     () => secChoice.clear());   // drop per-card section overrides so every card re-flows to the new default
 }
 
+// "Group" — organize each column BY SESSION (the user 2026-07-13): kernel tab/lane order, a name+dot header
+// on the backdrop opening each session's run, per-card names dropped (the header carries the identity).
+function ensureGroupToggle(): HTMLElement {
+  return ensureFeedToggle("feed-grouped", "Group", () => feedPrefs().grouped, "grouped",
+    "grouped by session — click for the flat column order",
+    "group each column's cards by session (tab order), a session header between runs");
+}
+
 // (The footer "Sub-goals" checkbox was removed 2026-07-08: sub-goals is now a per-card "Sub-goals" button
 // beside Summary — wired in applySections as the third mutually-exclusive section.)
 
@@ -2159,6 +2216,13 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       card = askEls.get(e.ask.itemId) || makeAskCard(e.ask);
       askEls.set(e.ask.itemId, card);
       updateAskCard(card, e.ask);
+    } else if (e.kind === "sess") {
+      // grouped-mode session header — keyed per (column, sid): one session can head a run in EVERY column
+      key = "s:" + listEl.id + ":" + e.sid;
+      card = sessHeadEls.get(key) || makeSessHead();
+      card.dataset.key = key;
+      sessHeadEls.set(key, card);
+      updateSessHead(card, e);
     } else {
       key = "g:" + e.group.turnId;
       card = groupEls.get(e.group.turnId) || makeGroupCard(e.group);
@@ -2290,6 +2354,7 @@ function render() {
   const showCA = !!asks.length;
   ensureNewestFirst().style.display = showCA ? "" : "none";       // reverse the column order
   ensureCollapsedToggle().style.display = showCA ? "" : "none";   // default section state (collapsed / expanded)
+  ensureGroupToggle().style.display = showCA ? "" : "none";       // by-session grouping (the user 2026-07-13)
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -2337,6 +2402,32 @@ function render() {
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
   const newestFirst = feedPrefs().newestFirst;
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
+  // GROUPED mode (the user 2026-07-13): within each column, cards gather by SESSION — session order = the
+  // kernel's session-order list (the same order the chat tabs + timeline lanes hold; sessions the list
+  // doesn't know keep their time order after it) — with a name+dot header entry opening each run. The sort
+  // is stable, so per-session cards keep the column's newest/oldest order. Headers only where a run exists.
+  if (feedPrefs().grouped) {
+    const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
+    const eSid = (e: Entry) => e.kind === "ask" ? e.ask.sid : e.kind === "group" ? e.group.sid : e.sid;
+    for (const k of Object.keys(buckets) as Column[]) {
+      const extra = new Map<string, number>();   // sids the order list doesn't know → after it, first-seen order
+      for (const e of buckets[k]) { const s = eSid(e); if (!rank.has(s) && !extra.has(s)) extra.set(s, extra.size); }
+      const rk = (e: Entry) => { const s = eSid(e); return rank.has(s) ? rank.get(s)! : 1e9 + (extra.get(s) || 0); };
+      buckets[k].sort((x, y) => rk(x) - rk(y));
+      const withHeads: Entry[] = [];
+      let cur: string | null = null;
+      for (const e of buckets[k]) {
+        const s = eSid(e);
+        if (s !== cur) {
+          cur = s;
+          const src: any = e.kind === "ask" ? e.ask : e.kind === "group" ? e.group : e;
+          withHeads.push({ kind: "sess", t: e.t, sid: s, name: src.name, color: src.color || null, live: !!src.live });
+        }
+        withHeads.push(e);
+      }
+      buckets[k] = withHeads;
+    }
+  }
 
   // FLIP-across-identity bookkeeping (the user 2026-06-29): map every goal itemId this render → the card KEY
   // that renders it, so the next render can slide a card whose IDENTITY changed (group↔solo, umbrella absorb)
@@ -2361,9 +2452,10 @@ function render() {
   // the count chip shows the number only when there ARE cards; an empty column shows nothing — not "0"
   // (the user 2026-06-25). Empty string collapses the chip (it has no padding/background of its own).
   const setCount = (elc: HTMLElement, n: number) => { elc.textContent = n ? String(n) : ""; elc.style.display = n ? "" : "none"; };
-  setCount(cols.asksCount, buckets.asks.length);
-  setCount(cols.needsInputCount, buckets.needsInput.length);
-  setCount(cols.completedCount, buckets.completed.length);
+  const nCards = (es: Entry[]) => es.filter((e) => e.kind !== "sess").length;   // headers aren't cards
+  setCount(cols.asksCount, nCards(buckets.asks));
+  setCount(cols.needsInputCount, nCards(buckets.needsInput));
+  setCount(cols.completedCount, nCards(buckets.completed));
 
   // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
   // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).
@@ -2532,6 +2624,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
     }
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
+    if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;

@@ -1537,6 +1537,12 @@ class ViewBuilder(unittest.TestCase):
         self._working_tmux()                                               # tmux now reads "working"
         self.assertNotIn(name, km.build_feed(NOW)["working"], "ended turn → NOT working even though tmux reads working")
 
+    def test_feed_carries_the_shared_session_order(self):
+        # grouped mode (the user 2026-07-13) sorts each column's session runs by the SAME order the chat
+        # tabs + timeline lanes hold (session-order.json) — the feed payload carries it on every push
+        (km.jd.STATE / "session-order.json").write_text(json.dumps([SID, "22222222-0000-0000-0000-000000000000"]))
+        self.assertEqual(km.build_feed(NOW)["order"], [SID, "22222222-0000-0000-0000-000000000000"])
+
     def test_awaiting_task_descs_read_the_live_snapshot(self):
         # The feed's "Waiting on task" pill (the user 2026-07-13) expands the live bg-task DESCRIPTIONS —
         # straight from the backend snapshot's bgTasks (the CLI task-lifecycle set); a desc-less task gets

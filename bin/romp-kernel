@@ -7691,6 +7691,9 @@ def build_feed(now, tmux=None):
             "tree": []})
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "dismissedCount": len(cleared), "showDismissed": False,
+            # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
+            # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
+            "order": _session_order(),
             "canUndoClear": len(cleared) > 0}
 
 
