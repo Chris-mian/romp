@@ -1540,7 +1540,8 @@ class ViewBuilder(unittest.TestCase):
     def test_provisional_card_shows_the_message_caption_once_it_lands(self):
         # The user 2026-06-19: the card reads the captioner's persisted MESSAGE caption ('<segid>#p') — the
         # SAME gist the timeline dot uses, no separate 'gist' judge call. Until it lands, the raw prompt;
-        # once the captioner writes it, "Analyzing: <caption>".
+        # once the captioner writes it, the phase prefix + the caption. An OPEN turn wears the honest
+        # "Working:" — nothing is being analyzed while the session is still running (the user 2026-07-12).
         self._open_turn_transcript(ended=False)
         g1 = SID + ":g1"
         self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
@@ -1552,7 +1553,23 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("Analyzing", first["text"], "no stuck 'Analyzing…' placeholder — just the raw prompt")
         self._write_msg_caption("trimming the empty space below the cards")
         p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
+        self.assertEqual(p["text"], "Working: trimming the empty space below the cards")
+        self.assertFalse(p["judging"], "open turn → the swirl chip stays Working…, not Analyzing…")
+
+    def test_provisional_card_says_analyzing_only_once_the_turn_settles(self):
+        # The phase prefix tells the truth (the user 2026-07-12: "is it actually analyzing, or is it just
+        # working and hasn't received the segment to analyze yet?"): the turn has ENDED but the planner
+        # hasn't placed the segment — its classify pass is due/in flight — and only NOW does the card say
+        # "Analyzing:" (and `judging` flips the swirl chip to Analyzing…).
+        self._open_turn_transcript(ended=True)
+        g1 = SID + ":g1"
+        self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g1: "completed"}, last=g1)
+        self._write_msg_caption("trimming the empty space below the cards")
+        p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
         self.assertEqual(p["text"], "Analyzing: trimming the empty space below the cards")
+        self.assertTrue(p["judging"], "settled turn awaiting placement → the chip may say Analyzing…")
 
     # ── Auto Nudge (the user 2026-06-19): follow up ONCE on an orphaned working goal ──
     def _stub_nudge(self):

@@ -127,6 +127,18 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn(".rail-act.on{color:var(--accent)}", self.html)
         self.assertIn("icon.classList.toggle('on'", self.html)
 
+    def test_network_icon_marches_while_a_tunnel_is_mid_attach(self):
+        # the motion cue (the user 2026-07-12): while any tunnel is authorizing/connecting/starting the
+        # glyph turns accent and its connector dashes MARCH — class-driven off the same /tunnels poll
+        # (event-based: it clears the moment every tunnel settles), armed optimistically on Attach click
+        # so the icon moves the instant the user acts. The mobile Net button carries the same classes.
+        self.assertIn("@keyframes rnet-march", self.html)
+        self.assertIn(".rail-act.busy svg path,#mtabs .mact.busy svg path{stroke-dasharray:3 3;", self.html)
+        self.assertIn("icon.classList.toggle('busy',busy)", self.html)
+        self.assertIn("paintIcon(ts.some(function(t){return t.status==='up';}),busy)", self.html)
+        self.assertIn("icon.classList.add('busy')", self.html, "Attach click arms the motion before the poll")
+        self.assertIn("#mtabs .mact[data-act=net]", self.html, "the mobile Net button mirrors on/busy")
+
     def test_keyboard_shortcuts_live_in_the_settings_modal(self):
         # folded into settings (the user 2026-06-30): no standalone ? modal in the shell anymore
         self.assertNotIn("id=rhelp-overlay", self.html)

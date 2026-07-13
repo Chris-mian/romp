@@ -116,8 +116,8 @@ class SegCaptionDrift(unittest.TestCase):
             card = km._provisional_card({"path": str(path), "sid": SID, "name": "T"}, "T", None, SID, True,
                                         now, store={"placements": {}})
             self.assertIsNotNone(card)
-            self.assertEqual(card["text"], "Analyzing: flaky export test fix",
-                             "the gist resolves despite the captioner's drifted key")
+            self.assertEqual(card["text"], "Working: flaky export test fix",
+                             "the gist resolves despite the captioner's drifted key (open turn → Working:)")
         finally:
             km.jd.CAPDIR = saved
 

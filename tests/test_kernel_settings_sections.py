@@ -64,6 +64,15 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("<option value=sdk>SDK</option>", h)
         self.assertNotIn("headless", h)
 
+    def test_judge_rows_are_one_line_label_plus_picker(self):
+        # label + picker share the line (the user 2026-07-12): four .rs-jrow rows, the select right after
+        # the hover sub, no full-width select stacked under the label; the flex CSS carries the layout
+        h = km._gear_html()
+        self.assertEqual(h.count("rs-jrow"), 4)
+        for sel in ("rs-judgemodel", "rs-judgeeffort", "rs-indexmodel", "rs-indexeffort"):
+            self.assertRegex(h, r"rs-jrow'><b>[^<]+</b><span class=rs-sub>[^<]*</span><select id=" + sel)
+        self.assertIn("#rsettings .rs-jrow select{", km._GEAR_CSS)
+
     def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
         # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)
         self.assertIn("collapseGaps:true", km._GEAR_JS)

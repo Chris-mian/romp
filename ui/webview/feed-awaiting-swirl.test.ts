@@ -28,7 +28,9 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // the user 2026-07-11); a subagent why keeps the boxed "Awaiting background agents" label (2026-07-04).
   assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;/);
   assert.match(FEED, /spinCaption = \/\^waiting on\/i\.test\(why\) \? why\.charAt\(0\)\.toUpperCase\(\) \+ why\.slice\(1\)\s*\n\s*: "Awaiting background agents";/);
-  assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
+  // the provisional chip is PHASE-truthful (the user 2026-07-12): open turn → "Working…" (the judge has
+  // nothing to classify yet); turn settled (kernel `judging`) → "Analyzing…" (the planner pass is due/live)
+  assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{[\s\S]*?spinCaption = it\.judging \? "Analyzing…" : "Working…";/);
   assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is
@@ -42,7 +44,8 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
 test("each case carries a concise tooltip on the swirl (hover → the key idea, not an essay)", () => {
   assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "", awaitingBg = false;/);
   // tooltips are short and plain-spoken (the user 2026-06-29): the key idea, no LLM-essay phrasing, no em dashes
-  assert.match(FEED, /spinTip = "A new prompt, not yet sorted into a goal\. Placeholder until it is\.";/);
+  assert.match(FEED, /"A new prompt, still running\. Sorted into a goal once this stretch of work finishes\.";/);
+  assert.match(FEED, /"This stretch of work finished; the judge is sorting it into a goal\."/);
   assert.match(FEED, /spinTip = "You followed up\. Reopened to Working; the judge will resolve it or re-block it\.";/);
   assert.match(FEED, /spinTip = "You replied on this thread\. Moved to Working while the reply runs; it comes back if the judge re-confirms the block\.";/);
   // no em dashes anywhere in the swirl tooltips (JLD + the user's house style ban them)
