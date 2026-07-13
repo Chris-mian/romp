@@ -2,12 +2,12 @@
   <img src="assets/romp-wordmark.png" alt="romp" width="440">
 </p>
 
-AI agents like Claude Code can do more and more on their own, so it is
-natural to run several at once. But running them in parallel scatters your
-attention across management tasks: keeping track of which agent is doing
-what, scrolling through transcripts to find the background a decision needs,
-checking in to see which agents are stuck, and coordinating handoffs of work
-and information between them.
+AI agents like Claude Code can work autonomously for long stretches, so
+running several in parallel multiplies what you can get done. But it also
+scatters your attention across management tasks: keeping track of which
+agent is doing what, scrolling through transcripts to find the background a
+decision needs, checking in to see which agents are stuck, and coordinating
+handoffs of work and information between them.
 
 Romp provides the tools to make this management seamless, so you can stay
 focused on what you're trying to accomplish instead of how the work is
