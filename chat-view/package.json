@@ -62,6 +62,18 @@
       {
         "command": "rompChat.openFleet",
         "title": "romp: Open Outline"
+      },
+      {
+        "command": "rompChat.citeInComposer",
+        "title": "romp: Cite File in Chat Composer"
+      },
+      {
+        "command": "rompChat.openSessionWorktree",
+        "title": "romp: Open Session Worktree"
+      },
+      {
+        "command": "rompChat.diffSessionChanges",
+        "title": "romp: Diff Session Changes"
       }
     ],
     "viewsContainers": {
@@ -99,6 +111,13 @@
       ]
     },
     "menus": {
+      "editor/context": [
+        {
+          "command": "rompChat.citeInComposer",
+          "group": "romp@1",
+          "when": "resourceScheme == 'file'"
+        }
+      ],
       "editor/title": [
         {
           "command": "rompChat.open",

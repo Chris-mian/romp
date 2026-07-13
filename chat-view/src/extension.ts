@@ -16,11 +16,14 @@
 // front ends are clients of one kernel, sharing tabs with per-client focus.
 import * as vscode from "vscode";
 import * as http from "http";
+import { execFile } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach } from "./kernel-attach";
 import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
+import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
+import { parsePorcelain } from "./session-diff";
 
 const HOST = "127.0.0.1";
 
@@ -98,6 +101,19 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         vscode.window.showWarningMessage("romp: open a .jsonl transcript first.");
       }
+    }),
+    vscode.commands.registerCommand("rompChat.citeInComposer", citeInComposer),
+    vscode.commands.registerCommand("rompChat.openSessionWorktree", openSessionWorktree),
+    vscode.commands.registerCommand("rompChat.diffSessionChanges", diffSessionChanges),
+    // HEAD side of the session-diff editor: romp-git:/<rel>?<json {dir,rel}>
+    vscode.workspace.registerTextDocumentContentProvider("romp-git", {
+      provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+        try {
+          const q = JSON.parse(uri.query);
+          if (!q.rel) return Promise.resolve("");   // untracked: no HEAD side
+          return gitIn(String(q.dir), ["show", `HEAD:${String(q.rel)}`]).catch(() => "");
+        } catch { return Promise.resolve(""); }
+      },
     }),
   );
   startFleetStatus(context);
@@ -396,13 +412,16 @@ let statusItem: vscode.StatusBarItem | undefined;
 let statusSeen: Set<string> | null = null;   // needs-you itemIds already seen (null = baseline pending)
 let statusOffline = true;
 let lastStatus: FleetStatus | null = null;
+let lastFrame: any = null;                   // last feed frame (tooltip detail)
+let sessionDirs: SessionInfo[] = [];         // /sessions cache for the "this window" tooltip line
+let statusCompKey = "";                      // fleet composition key: refetch dirs only when it changes
 
 function startFleetStatus(context: vscode.ExtensionContext) {
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusItem.name = "romp";
   statusItem.command = "rompChat.open";
   context.subscriptions.push(statusItem);
-  paintStatus(null);
+  paintStatus();
   statusItem.show();
   statusPipe = new KernelPipe(
     "feed",
@@ -414,7 +433,7 @@ function startFleetStatus(context: vscode.ExtensionContext) {
       // No webview behind this pipe, so announce readiness ourselves — the
       // kernel pushes the full feed state in response.
       else statusPipe?.send({ type: "ready" });
-      paintStatus(null);
+      paintStatus();
     },
     true,                                      // passive: observe only, never spawn/toast
   );
@@ -424,20 +443,34 @@ function onStatusFrame(m: any) {
   const st = deriveStatus(m);
   if (!st) return;                             // ka frames and other chatter
   lastStatus = st;
+  lastFrame = m;
   const { seen, fresh } = freshNeedsYou(statusSeen, m);
   statusSeen = seen;
-  paintStatus(m);
+  paintStatus();
   notifyNeedsYou(fresh);
+  // Refresh the session→dir map only when the fleet's composition changes
+  // (each frame is already an event; composition is the part the tooltip's
+  // "this window" line depends on).
+  const key = JSON.stringify([m.working || [], (m.asks || []).map((a: any) => a.itemId)]);
+  if (key !== statusCompKey) {
+    statusCompKey = key;
+    void fetchSessions().then((s) => { sessionDirs = s; paintStatus(); });
+  }
 }
 
-function paintStatus(frame: any) {
+function paintStatus() {
   if (!statusItem) return;
   const r = renderStatusBar(statusOffline, lastStatus);
   statusItem.text = r.text;
   statusItem.backgroundColor = r.warn ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
-  statusItem.tooltip = statusOffline
-    ? "The romp kernel is unreachable — start it with `romp --on`."
-    : (frame ? statusTooltipLines(frame).join("\n") : undefined) || "romp fleet";
+  if (statusOffline) {
+    statusItem.tooltip = "The romp kernel is unreachable — start it with `romp --on`.";
+    return;
+  }
+  const lines = lastFrame ? statusTooltipLines(lastFrame) : [];
+  const here = sessionsForWorkspace(sessionDirs, workspaceFolderPaths()).map((s) => s.name);
+  if (here.length) lines.unshift(`This window: ${here.join(", ")}`);
+  statusItem.tooltip = lines.join("\n") || "romp fleet";
 }
 
 function notifyNeedsYou(fresh: any[]) {
@@ -498,6 +531,119 @@ function wireView(
   });
   v.onDidDispose(() => { pipe.dispose(); onGone(pipe); });
   return pipe;
+}
+
+// ---- workspace integration: sessions ↔ the folders this window has open ----
+
+// The kernel's /sessions endpoint — the authoritative unified session list
+// (id, name, dir per session). Empty on any failure; callers surface that.
+function fetchSessions(): Promise<SessionInfo[]> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: HOST, port: kernelPort(), path: "/sessions", timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => {
+        try {
+          const j = JSON.parse(body);
+          resolve(Array.isArray(j)
+            ? j.map((s: any) => ({ id: String(s.id), name: String(s.name), dir: String(s.dir || "") }))
+            : []);
+        } catch { resolve([]); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); resolve([]); });
+    req.on("error", () => resolve([]));
+  });
+}
+
+function workspaceFolderPaths(): string[] {
+  return (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+}
+
+function gitIn(dir: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", ["-C", dir, ...args], { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
+
+async function pickKernelSession(placeHolder: string): Promise<SessionInfo | undefined> {
+  const sessions = await fetchSessions();
+  if (!sessions.length) {
+    vscode.window.showWarningMessage("romp: no sessions (is the kernel running? `romp --on`).");
+    return undefined;
+  }
+  const folders = workspaceFolderPaths();
+  const here = new Set(sessionsForWorkspace(sessions, folders).map((s) => s.id));
+  const pick = await vscode.window.showQuickPick(
+    sessions.map((s) => ({
+      label: s.name,
+      description: s.dir + (here.has(s.id) ? "  (this window)" : ""),
+      session: s,
+    })),
+    { placeHolder },
+  );
+  return pick?.session;
+}
+
+// Insert the active file (with the selected line range) into the chat
+// composer — the cheapest editor → agent handoff. Rides the same droppedPath
+// message a file drop uses, so the composer treats both identically.
+function citeInComposer() {
+  const ed = vscode.window.activeTextEditor;
+  if (!ed || ed.document.uri.scheme !== "file") {
+    vscode.window.showWarningMessage("romp: open a file to cite it.");
+    return;
+  }
+  const sel = ed.selection;
+  // A selection ending at column 0 visually excludes that line.
+  const endLine = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line : sel.end.line + 1;
+  const text = citeText(ed.document.uri.fsPath, sel.start.line + 1, endLine, !sel.isEmpty);
+  openPanel(true);
+  toWebview({ type: "droppedPath", path: text });
+}
+
+async function openSessionWorktree() {
+  const s = await pickKernelSession("Open a session's working directory");
+  if (!s || !s.dir) return;
+  if (sessionsForWorkspace([s], workspaceFolderPaths()).length) {
+    vscode.window.showInformationMessage(`romp: ${s.name}'s directory is already open in this window (${s.dir}).`);
+    return;
+  }
+  await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(s.dir), { forceNewWindow: true });
+}
+
+// Review what a session changed without leaving this window: pick a session,
+// pick one of its uncommitted files, open the native diff (HEAD vs working).
+async function diffSessionChanges() {
+  const s = await pickKernelSession("Diff a session's uncommitted changes");
+  if (!s || !s.dir) return;
+  let files;
+  try {
+    files = parsePorcelain(await gitIn(s.dir, ["status", "--porcelain"]));
+  } catch {
+    vscode.window.showWarningMessage(`romp: ${s.dir} is not a git repository (or git failed).`);
+    return;
+  }
+  if (!files.length) {
+    vscode.window.showInformationMessage(`romp: ${s.name} has no uncommitted changes in ${s.dir}.`);
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    files.map((f) => ({ label: f.path, description: f.status, file: f })),
+    { placeHolder: `${s.name}: uncommitted changes in ${s.dir}` },
+  );
+  if (!pick) return;
+  const f = pick.file;
+  const right = vscode.Uri.file(`${s.dir}/${f.path}`);
+  const left = vscode.Uri.from({
+    scheme: "romp-git",
+    path: "/" + f.path,
+    query: JSON.stringify({ dir: s.dir, rel: f.untracked ? null : f.renamedFrom || f.path }),
+  });
+  await vscode.commands.executeCommand("vscode.diff", left, right, `${f.path} — HEAD vs working (${s.name})`);
 }
 
 // ---- client capabilities ----
