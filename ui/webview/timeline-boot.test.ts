@@ -137,3 +137,14 @@ test("kernel reads the extracted pane CSS files (no inline twins left)", () => {
   assert.ok(!KERNEL.includes("_FLEET_CSS"), "inline _FLEET_CSS twin must stay deleted");
   assert.ok(!KERNEL.includes("TIMELINE_CSS ="), "inline TIMELINE_CSS twin must stay deleted");
 });
+
+test("the view prefers the host usage hook over the iframe-parent forward", () => {
+  // In VS Code the webview's parent is the workbench wrapper — a parent
+  // postMessage vanishes, so __rompForwardUsage (installed by timeline-main)
+  // must win, keeping the toolbar copy hidden and feeding the status bar.
+  const hook = VIEW.indexOf("__rompForwardUsage");
+  const parentFwd = VIEW.indexOf("window.parent.postMessage({ romp: 'usage'");
+  assert.ok(hook > 0, "view must honor __rompForwardUsage");
+  assert.ok(parentFwd > 0, "web-shell forward must remain");
+  assert.ok(hook < parentFwd, "the host hook must be checked before the parent forward");
+});

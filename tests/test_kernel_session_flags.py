@@ -67,9 +67,9 @@ class AutoNudgeWiring(unittest.TestCase):
     and the checkbox reflects the kernel's state via /version (not localStorage) — the user 2026-06-19."""
 
     def test_gear_has_the_autonudge_toggle_posting_to_the_kernel(self):
-        self.assertIn("rs-autonudge", km._gear_html(), "the gear panel has an Auto Nudge checkbox")
-        self.assertIn("Auto Nudge", km._gear_html())
-        self.assertIn("setAutoNudge", km._GEAR_JS, "toggling posts the server-side message")
+        self.assertIn("rs-autonudge", _gear_src(), "the gear panel has an Auto Nudge checkbox")
+        self.assertIn("Auto Nudge", _gear_src())
+        self.assertIn("setAutoNudge", _gear_src(), "toggling posts the server-side message")
 
     def test_version_reports_autonudge_state_for_the_checkbox(self):
         saved = jd.STATE
@@ -87,3 +87,16 @@ class AutoNudgeWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The gear moved from kernel-inline strings into the shared feed bundle
+# (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
+# the gear pins read THAT file (and feed.css for its styling).
+def _gear_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+
+
+def _gear_css_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()

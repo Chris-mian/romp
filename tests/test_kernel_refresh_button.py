@@ -22,22 +22,35 @@ class RefreshButtonDecoupledTest(unittest.TestCase):
         html = km._landing()
         self.assertIn("id=rail-refresh", html)
         self.assertIn("fetch('/restart',{method:'POST'})", html)
-        self.assertNotIn("id=rrefresh", km._gear_html())   # gone from the feed gear
+        self.assertNotIn("id=rrefresh", _gear_src())   # gone from the feed gear
 
     def test_refresh_button_is_not_gated_on_debug(self):
         # the old applyDebug() helper (which hid #rrefresh unless s.debug) is gone entirely …
-        self.assertNotIn("applyDebug", km._GEAR_JS)
+        self.assertNotIn("applyDebug", _gear_src())
         # … and nothing else hides the refresh button by toggling its display off the debug flag
-        self.assertNotRegex(km._GEAR_JS, r"rf\.style\.display\s*=")
-        self.assertNotRegex(km._GEAR_JS, r"rrefresh[^\n]*display:none")
+        self.assertNotRegex(_gear_src(), r"rf\.style\.display\s*=")
+        self.assertNotRegex(_gear_src(), r"rrefresh[^\n]*display:none")
 
     def test_judge_toggles_do_not_touch_the_refresh_button(self):
         # the judge-set toggles (which replaced the single Debug toggle) save the pref + emit, but never
         # re-run any refresh-button visibility logic — the ↻ is always visible
-        self.assertIn("s.showIndexJudges=jix.checked", km._GEAR_JS)
-        self.assertIn("s.showTriageJudges=jtr.checked", km._GEAR_JS)
-        self.assertNotRegex(km._GEAR_JS, r"checked;[^\n]*applyDebug")
+        self.assertIn("s.showIndexJudges = jix.checked", _gear_src())
+        self.assertIn("s.showTriageJudges = jtr.checked", _gear_src())
+        self.assertNotRegex(_gear_src(), r"checked;[^\n]*applyDebug")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The gear moved from kernel-inline strings into the shared feed bundle
+# (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
+# the gear pins read THAT file (and feed.css for its styling).
+def _gear_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+
+
+def _gear_css_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()

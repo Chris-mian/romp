@@ -5,9 +5,9 @@
 // bin/romp-serve). This extension only:
 //   1. ensures a kernel is running (spawn-or-attach on the default port,
 //      restarting a stale one once after a VSIX update),
-//   2. hosts the four webview surfaces — chat + feed (editor panels) and
-//      timeline + outline/fleet (native panel/sidebar views) — and pipes their
-//      postMessage traffic over the kernel's WebSocket protocol verbatim,
+//   2. hosts the four webview surfaces — chat, feed, and outline/fleet
+//      (editor panels) plus the timeline (a native bottom-panel view) — and
+//      pipes their postMessage traffic over the kernel's WS protocol verbatim,
 //   3. supplies the few genuinely CLIENT-side capabilities: opening files in
 //      the editor, the OS file picker, the clipboard, external links, and
 //      panel reveal/focus orchestration.
@@ -24,6 +24,7 @@ import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
 import { parsePorcelain } from "./session-diff";
+import { buildMenu, usageSummary } from "./romp-menu";
 
 const HOST = "127.0.0.1";
 
@@ -58,6 +59,7 @@ let ctx: vscode.ExtensionContext;
 let extUri: vscode.Uri;
 let panel: vscode.WebviewPanel | undefined;
 let feedPanel: vscode.WebviewPanel | undefined;
+let fleetPanel: vscode.WebviewPanel | undefined;
 let chatPipe: KernelPipe | undefined;
 let feedPipe: KernelPipe | undefined;
 let timelinePipe: KernelPipe | undefined;
@@ -79,13 +81,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewPanelSerializer("rompFeed", {
       async deserializeWebviewPanel(webviewPanel) { wireFeedPanel(webviewPanel); },
     }),
-    // Timeline + Outline are native VIEWS (bottom panel / sidebar by default —
-    // the user can drag them anywhere), resolved lazily when first shown.
+    vscode.window.registerWebviewPanelSerializer("rompFleet", {
+      async deserializeWebviewPanel(webviewPanel) { wireFleetPanel(webviewPanel); },
+    }),
+    // Timeline is a native VIEW (bottom panel by default — the user can drag
+    // it anywhere), resolved lazily when first shown. Outline is an editor
+    // TAB like chat/feed (the sidebar home proved undiscoverable, 2026-07-13).
     vscode.window.registerWebviewViewProvider("rompTimeline",
       { resolveWebviewView: (v) => wireTimelineView(v) },
-      { webviewOptions: { retainContextWhenHidden: true } }),
-    vscode.window.registerWebviewViewProvider("rompFleet",
-      { resolveWebviewView: (v) => wireFleetView(v) },
       { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerUriHandler({ handleUri: onDeepLink }),
     vscode.commands.registerCommand("rompChat.open", async () => {
@@ -100,7 +103,12 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("rompChat.openFeed", () => openFeedPanel()),
     vscode.commands.registerCommand("rompChat.openTimeline", () => vscode.commands.executeCommand("rompTimeline.focus")),
-    vscode.commands.registerCommand("rompChat.openFleet", () => vscode.commands.executeCommand("rompFleet.focus")),
+    vscode.commands.registerCommand("rompChat.openFleet", () => openFleetPanel()),
+    vscode.commands.registerCommand("rompChat.menu", rompMenu),
+    // The webviews scale to the editor font (uiZoom) — re-render them when it changes.
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("editor.fontSize")) refreshWebviewHtml();
+    }),
     vscode.commands.registerCommand("rompChat.addSession", () => { openPanel(); toWebview({ type: "openPicker", pick: false }); }),
     vscode.commands.registerCommand("rompChat.pickSession", (arg?: unknown) =>
       pickSessionExternal(
@@ -152,6 +160,15 @@ function toWebview(msg: any) {
   if (!panel) return;
   if (chatPipe?.webviewReady) panel.webview.postMessage(msg);
   else pendingToWebview.push(msg);
+}
+
+// Same deferral for the feed webview (the menu's Settings opens the gear in a
+// possibly just-created feed panel).
+let pendingToFeed: any[] = [];
+function toFeedWebview(msg: any) {
+  if (!feedPanel) return;
+  if (feedPipe?.webviewReady) feedPanel.webview.postMessage(msg);
+  else pendingToFeed.push(msg);
 }
 
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
@@ -406,7 +423,10 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
   feedPipe = pipe;
   p.webview.onDidReceiveMessage((m) => {
     if (!m) return;
-    if (m.type === "ready") pipe.webviewReady = true;
+    if (m.type === "ready") {
+      pipe.webviewReady = true;
+      for (const q of pendingToFeed.splice(0)) p.webview.postMessage(q);
+    }
     // Clicking into a session (or locating a card's chat turn) should bring
     // the CHAT panel forward — panel reveal is this host's job; the kernel
     // opens/focuses the tab itself. The rules live in view-routing.ts.
@@ -418,6 +438,7 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     pipe.dispose();
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
+    pendingToFeed = [];
   });
 }
 
@@ -435,13 +456,14 @@ let statusSeen: Set<string> | null = null;   // needs-you itemIds already seen (
 let statusOffline = true;
 let lastStatus: FleetStatus | null = null;
 let lastFrame: any = null;                   // last feed frame (tooltip detail)
+let lastUsage: any = null;                   // /usage payload (fed by the timeline view when open)
 let sessionDirs: SessionInfo[] = [];         // /sessions cache for the "this window" tooltip line
 let statusCompKey = "";                      // fleet composition key: refetch dirs only when it changes
 
 function startFleetStatus(context: vscode.ExtensionContext) {
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusItem.name = "romp";
-  statusItem.command = "rompChat.open";
+  statusItem.command = "rompChat.menu";   // opens romp when closed; the dropdown when open
   context.subscriptions.push(statusItem);
   paintStatus();
   statusItem.show();
@@ -492,6 +514,8 @@ function paintStatus() {
   const lines = lastFrame ? statusTooltipLines(lastFrame) : [];
   const here = sessionsForWorkspace(sessionDirs, workspaceFolderPaths()).map((s) => s.name);
   if (here.length) lines.unshift(`This window: ${here.join(", ")}`);
+  const u = usageSummary(lastUsage);
+  if (u) lines.push(`Usage: ${u}`);
   statusItem.tooltip = lines.join("\n") || "romp fleet";
 }
 
@@ -514,14 +538,73 @@ function notifyNeedsYou(fresh: any[]) {
 // drags them to another container — wire a fresh pipe each time. Same relay as
 // the panels: the host holds the kernel WS, the webview never opens a socket.
 
+let timelineView: vscode.WebviewView | undefined;
 function wireTimelineView(v: vscode.WebviewView) {
   timelinePipe?.dispose();
-  timelinePipe = wireView(v, "timeline", buildTimelineHtml, (p) => { if (timelinePipe === p) timelinePipe = undefined; });
+  timelineView = v;
+  timelinePipe = wireView(v, "timeline", buildTimelineHtml, (p) => {
+    if (timelinePipe === p) timelinePipe = undefined;
+    if (timelineView === v) timelineView = undefined;
+  });
 }
 
-function wireFleetView(v: vscode.WebviewView) {
-  fleetPipe?.dispose();
-  fleetPipe = wireView(v, "fleet", buildFleetHtml, (p) => { if (fleetPipe === p) fleetPipe = undefined; });
+// The webviews scale to the editor font — re-render every open surface when it
+// changes (same full-reload path a kernel-restart reconnect takes).
+function refreshWebviewHtml() {
+  if (panel) panel.webview.html = buildHtml(panel.webview);
+  if (feedPanel) feedPanel.webview.html = buildFeedHtml(feedPanel.webview);
+  if (fleetPanel) fleetPanel.webview.html = buildFleetHtml(fleetPanel.webview);
+  if (timelineView) timelineView.webview.html = buildTimelineHtml(timelineView.webview);
+}
+
+// Outline: an editor tab like chat/feed (same pipe pattern, app=fleet).
+function openFleetPanel(preserveFocus = false) {
+  if (fleetPanel) {
+    fleetPanel.reveal(fleetPanel.viewColumn ?? vscode.ViewColumn.Beside, preserveFocus);
+    return;
+  }
+  const p = vscode.window.createWebviewPanel(
+    "rompFleet",
+    "romp outline",
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus },
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+    },
+  );
+  wireFleetPanel(p);
+}
+
+function wireFleetPanel(p: vscode.WebviewPanel) {
+  fleetPanel = p;
+  p.webview.options = {
+    enableScripts: true,
+    localResourceRoots: [vscode.Uri.joinPath(extUri, "dist"), vscode.Uri.joinPath(extUri, "media")],
+  };
+  p.iconPath = vscode.Uri.joinPath(extUri, "media", "romp-swirl.svg");
+  p.webview.html = buildFleetHtml(p.webview);
+  const pipe = new KernelPipe(
+    "fleet",
+    (m) => {
+      if (m.type === "kernelToast") { vscode.window.setStatusBarMessage(`romp: ${m.text}`, 5000); return; }
+      p.webview.postMessage(m);
+    },
+    () => { p.webview.html = buildFleetHtml(p.webview); },
+  );
+  fleetPipe = pipe;
+  p.webview.onDidReceiveMessage((m) => {
+    if (!m) return;
+    if (m.type === "ready") pipe.webviewReady = true;
+    const r = routeViewMessage("fleet", m);
+    if (r.revealChat) openPanel(r.revealChat.preserveFocus);
+    if (r.forward) pipe.send(m);
+  });
+  p.onDidDispose(() => {
+    pipe.dispose();
+    if (fleetPipe === pipe) fleetPipe = undefined;
+    fleetPanel = undefined;
+  });
 }
 
 function wireView(
@@ -546,6 +629,9 @@ function wireView(
   v.webview.onDidReceiveMessage((m) => {
     if (!m) return;
     if (m.type === "ready") pipe.webviewReady = true;
+    // The timeline view forwards the /usage payload to the host's chrome (the
+    // status-bar item + its menu), like it feeds the web shell's rail.
+    if (app === "timeline" && m.type === "usageData") { lastUsage = m.usage || null; paintStatus(); }
     const r = routeViewMessage(app, m);
     if (r.revealChat) openPanel(r.revealChat.preserveFocus);
     if (r.openLinkLocally) openLink(r.openLinkLocally);
@@ -555,27 +641,65 @@ function wireView(
   return pipe;
 }
 
+// ---- the romp menu: the status-bar button's dropdown when romp is open ----
+// Closed (no chat panel) or kernel offline → the click just opens romp, as
+// before. Open → a QuickPick with the surfaces, the editor actions, the
+// kernel's settings, and the account usage windows up top (the user
+// 2026-07-13). Menu construction is pure (romp-menu.ts).
+
+async function rompMenu() {
+  if (statusOffline || !panel) {
+    await vscode.commands.executeCommand("rompChat.open");
+    return;
+  }
+  const usage = (await fetchJson("/usage")) || lastUsage;
+  if (usage) { lastUsage = usage; paintStatus(); }
+  const items = buildMenu(usage, Math.floor(Date.now() / 1000)).map((mi) => ({
+    label: mi.label, description: mi.description, action: mi.action,
+  }));
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: "romp" });
+  if (!pick) return;
+  switch (pick.action) {
+    case "usage": return;                                    // informational row
+    case "openChat": openPanel(false); return;
+    case "openFeed": openFeedPanel(); return;
+    case "openTimeline": void vscode.commands.executeCommand("rompTimeline.focus"); return;
+    case "openFleet": openFleetPanel(); return;
+    case "cite": void vscode.commands.executeCommand("rompChat.citeInComposer"); return;
+    case "worktree": void vscode.commands.executeCommand("rompChat.openSessionWorktree"); return;
+    case "diff": void vscode.commands.executeCommand("rompChat.diffSessionChanges"); return;
+    case "settings":
+      // The romp-styled settings modal (the gear) lives in the feed bundle —
+      // the SAME one the browser renders (the user 2026-07-13, over a native
+      // QuickPick). Open the feed and ask it to raise the modal.
+      openFeedPanel(false);
+      toFeedWebview({ romp: "openSettings" });
+      return;
+  }
+}
+
+// GET a kernel JSON endpoint; null on any failure (callers surface it).
+function fetchJson(path: string): Promise<any | null> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: HOST, port: kernelPort(), path, timeout: 2500 }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => {
+        try { resolve(res.statusCode === 200 ? JSON.parse(body) : null); } catch { resolve(null); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve(null));
+  });
+}
+
 // ---- workspace integration: sessions ↔ the folders this window has open ----
 
 // The kernel's /sessions endpoint — the authoritative unified session list
 // (id, name, dir per session). Empty on any failure; callers surface that.
 function fetchSessions(): Promise<SessionInfo[]> {
-  return new Promise((resolve) => {
-    const req = http.get({ host: HOST, port: kernelPort(), path: "/sessions", timeout: 2000 }, (res) => {
-      let body = "";
-      res.on("data", (d) => (body += d));
-      res.on("end", () => {
-        try {
-          const j = JSON.parse(body);
-          resolve(Array.isArray(j)
-            ? j.map((s: any) => ({ id: String(s.id), name: String(s.name), dir: String(s.dir || "") }))
-            : []);
-        } catch { resolve([]); }
-      });
-    });
-    req.on("timeout", () => { req.destroy(); resolve([]); });
-    req.on("error", () => resolve([]));
-  });
+  return fetchJson("/sessions").then((j) =>
+    Array.isArray(j) ? j.map((s: any) => ({ id: String(s.id), name: String(s.name), dir: String(s.dir || "") })) : []);
 }
 
 function workspaceFolderPaths(): string[] {
@@ -761,6 +885,21 @@ function mediaBaseTag(webview: vscode.Webview, n: string): string {
   return `<script nonce="${n}">window.__rompMediaBase=${JSON.stringify(String(base))};</script>`;
 }
 
+// Scale every romp surface to the EDITOR font (the user 2026-07-13: "at least
+// as big as a file's text"). The bundles set absolute px sizes around a 13px
+// base, so a uniform zoom is the scale knob: editor.fontSize / 13, never
+// below 1 (a small editor font keeps romp at its designed size). Re-applied
+// on editor.fontSize changes via refreshWebviewHtml().
+function uiZoom(): number {
+  const fs = vscode.workspace.getConfiguration("editor").get<number>("fontSize") || 12;
+  return Math.max(1, Math.min(2, fs / 13));
+}
+
+function zoomStyle(): string {
+  const z = uiZoom();
+  return z === 1 ? "" : `<style>body{zoom:${z.toFixed(4)};}</style>`;
+}
+
 function buildHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "render.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "styles.css"));
@@ -778,6 +917,7 @@ function buildHtml(webview: vscode.Webview): string {
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
   <title>romp</title>
 </head>
@@ -793,11 +933,17 @@ function buildFeedHtml(webview: vscode.Webview): string {
   const js = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "feed.js"));
   const css = webview.asWebviewUri(vscode.Uri.joinPath(extUri, "dist", "feed.css"));
   const n = nonce();
+  // The gear modal (in the feed bundle) fetches /models, /palette, /version,
+  // /analytics straight from the kernel: allow that origin and tell the bundle
+  // where it is (the browser serves the feed FROM the kernel, so its base is
+  // ''; this webview's synthetic origin needs the explicit one).
+  const kernelBase = `http://${HOST}:${kernelPort()}`;
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
+    `connect-src ${kernelBase}`,
     `script-src 'nonce-${n}'`,
   ].join("; ");
   return `<!DOCTYPE html>
@@ -806,12 +952,14 @@ function buildFeedHtml(webview: vscode.Webview): string {
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
   <title>romp feed</title>
 </head>
 <body>
 ${FEED_BODY}
   ${mediaBaseTag(webview, n)}
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -834,6 +982,7 @@ function buildTimelineHtml(webview: vscode.Webview): string {
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  ${zoomStyle()}
   <link href="${css}" rel="stylesheet" />
   <title>romp timeline</title>
 </head>
@@ -865,6 +1014,7 @@ function buildFleetHtml(webview: vscode.Webview): string {
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  ${zoomStyle()}
   <link href="${cssBase}" rel="stylesheet" />
   <link href="${cssPane}" rel="stylesheet" />
   <title>romp outline</title>

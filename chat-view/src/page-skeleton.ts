@@ -34,9 +34,13 @@ export const ATTACH_TITLE_VSCODE = "Attach a file — inserts its path (drag-and
 export const ATTACH_TITLE_WEB = "Attach a file — inserts its path";
 
 // Feed view: the (now hidden) head bar + the column/card list (feed.js builds the
-// three state columns and their header chips inside #feed-list at runtime).
+// three state columns and their header chips inside #feed-list at runtime), and the
+// docked #feed-foot control bar BELOW the list. feed.js appends its Clear-all /
+// Undo / toggle controls into #feed-foot — without it they fall back to
+// document.body and render as unstyled full-size buttons (the user 2026-07-13).
 export const FEED_BODY = `  <div id="feed-head"></div>
-  <div id="feed-list"></div>`;
+  <div id="feed-list"></div>
+  <div id="feed-foot"></div>`;
 
 // Fleet ("Outline") view: docked search bar, the per-session goal-tree list, and
 // the docked control bar. Mirrors the kernel's _fleet_page body.

@@ -255,6 +255,14 @@ const TINT_ALPHA = 0.22;
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
 
+// The settings gear (the ⛭ modal + analytics) is part of THIS bundle now —
+// gear.js builds its DOM here and rides our one kernel channel, so both hosts
+// (the kernel's /feed page and the VS Code feed panel) get the same modal.
+// Opened by a {romp:'openSettings'} window message (web shell rail / VS Code menu).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { initGear } = require("./gear.js");
+initGear((m: Record<string, unknown>) => vscodeApi?.postMessage(m));
+
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.

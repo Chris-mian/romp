@@ -50,5 +50,6 @@ export function routeViewMessage(app: App, m: any): Routed {
   if (m.type === "deepLink") return { ...NONE, revealChat: { preserveFocus: true } }; // a lane click jumps the chat there
   if (m.type === "openLink" && typeof m.href === "string")
     return { ...NONE, openLinkLocally: m.href, forward: false };
+  if (m.type === "usageData") return { ...NONE, forward: false }; // host-consumed (status-bar chrome), not a kernel op
   return NONE;
 }

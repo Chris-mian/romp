@@ -1,0 +1,293 @@
+// The settings gear — the ⛭ modal (#rsettings) + token-usage analytics modal,
+// SHARED by both hosts. This used to live as inline strings in the kernel's
+// feed page (_gear_html/_GEAR_CSS/_GEAR_JS), which made it browser-only and a
+// hand-ported drift surface; now the feed bundle renders it everywhere (the
+// user 2026-07-13: the SAME romp-styled settings UI in VS Code, not a native
+// picker). Styling lives in feed.css (the "settings gear" section).
+//
+// Host adaptations, all injected:
+// - post(op): the feed bundle's one host channel (a real VS Code webview
+//   throws if the API is acquired twice, so the old per-change re-acquire is
+//   gone). Kernel ops (setAutoNudge, setJudgeModel, ...) ride it.
+// - window.__rompKernelBase: fetch prefix — '' in the browser (same origin);
+//   the VS Code host injects http://127.0.0.1:<port> and allows it in the
+//   webview CSP (connect-src).
+// - Opening: a {romp:'openSettings'} window message (the web shell's rail gear
+//   posts it into the feed iframe; the VS Code host posts it into the webview).
+// Model/effort <option>s come from GET /models at open (they were server-baked
+// into the HTML before — /models was already the single source of truth).
+
+function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
+
+// Static port of the kernel's _shortcut_rows() (the chat-surface shortcuts).
+var SHORTCUT_ROWS =
+  '<div class=rs-key><span class=rs-key-combo><kbd>Enter</kbd></span><span class=rs-key-desc>Send message</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>Shift</kbd> + <kbd>Enter</kbd></span><span class=rs-key-desc>New line</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>Esc</kbd></span><span class=rs-key-desc>Jump to the session tabs</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>←</kbd> / <kbd>→</kbd></span><span class=rs-key-desc>Switch session (from the tabs)</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>Ctrl</kbd> + <kbd>C</kbd></span><span class=rs-key-desc>Interrupt the session</span></div>';
+
+// The modal markup — ported verbatim from the kernel's _gear_html; the model/
+// effort selects start empty and are filled from /models (see fill()).
+var GEAR_HTML =
+  '<button id=rgear hidden aria-hidden=true></button>' +
+  '<div id=rsettings hidden><div class=rs-card>' +
+  '<div class=rs-h>Settings</div>' +
+  "<div class='rs-sec rs-sec-first'>Sessions</div>" +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>" +
+  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
+  "<div style='display:flex;gap:6px;margin-top:5px'>" +
+  "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:#1e1e1e;color:#ccc;" +
+  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>" +
+  "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:3px 8px'>Browse…</button>" +
+  '</div></span></div>' +
+  "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
+  '<span><b>Auto Nudge</b>' +
+  '<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>' +
+  '</span></label>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
+  '<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs via the Agent SDK. Both kinds run side by side; this only sets the default.</span>' +
+  "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;" +
+  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>" +
+  '<option value=sdk>SDK</option><option value=tmux>tmux (terminal)</option>' +
+  '</select></span></div>' +
+  '<div class=rs-sec>Judges</div>' +
+  "<div class='rs-row rs-jrow'><b>Triage model</b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, distiller, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart.</span><select id=rs-judgemodel></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Triage effort</b><span class=rs-sub>Thinking effort for the triage judges. Default = no effort flag (the judges' standard behavior). Not every model accepts every level.</span><select id=rs-judgeeffort></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Indexing model</b><span class=rs-sub>The model the indexing judges use — captioner + archiver (high-volume, low-stakes summarization). Haiku by default for cost.</span><select id=rs-indexmodel></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Indexing effort</b><span class=rs-sub>Thinking effort for the indexing judges. Default = none (indexing runs with thinking disabled as a cost lever; leave Default unless you know you want it).</span><select id=rs-indexeffort></select></div>" +
+  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
+  '<div class=rs-sec>Chat</div>' +
+  '<label class=rs-row><input type=checkbox id=rs-compact>' +
+  '<span><b>Compact transcript</b>' +
+  '<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>' +
+  '</span></label>' +
+  '<label class=rs-row><input type=checkbox id=rs-branch>' +
+  '<span><b>Show git branch</b>' +
+  "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>" +
+  '</span></label>' +
+  '<div class=rs-sec>Timeline</div>' +
+  '<label class=rs-row><input type=checkbox id=rs-collapsegaps checked>' +
+  '<span><b>Collapse idle gaps</b>' +
+  '<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>' +
+  '</span></label>' +
+  '<div class=rs-sec>Colors</div>' +
+  "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
+  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
+  "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the recency colormap'></button>" +
+  '<div id=rs-cmap-list hidden></div></div></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
+  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
+  "<div id=rs-pal><button id=rs-pal-btn type=button title='Pick the session palette'></button>" +
+  '<div id=rs-pal-list hidden></div></div></span></div>' +
+  '<div class=rs-sec>Debug</div>' +
+  '<div class=rs-judges>' +
+  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
+  '<span><b>Show indexing judges</b>' +
+  "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
+  '</span></label>' +
+  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>' +
+  '<span><b>Show triage judges</b>' +
+  "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
+  '</span></label>' +
+  '</div>' +
+  "<div class=rs-sep style='padding-top:8px'>" +
+  '<button id=ra-open class=ra-openbtn>Token usage analytics</button></div>' +
+  "<div class='rs-h rs-sep'>romp · version</div>" +
+  '<div id=rsver>…</div></div></div>' +
+  '<div id=ranalytics-back hidden><div id=ranalytics>' +
+  '<div class=ra-top><div class=ra-title>Token usage</div>' +
+  '<button id=ra-close aria-label=Close>✕</button></div>' +
+  '<div class=ra-periods>' +
+  '<button data-w=3600>1h</button><button data-w=21600>6h</button>' +
+  '<button data-w=86400 class=on>24h</button><button data-w=604800>7d</button>' +
+  '<button data-w=2592000>30d</button></div>' +
+  '<div class=ra-group>' +
+  '<button data-g=judge class=on>By judge</button>' +
+  '<button data-g=tier>Index vs triage</button></div>' +
+  '<div class=ra-metric>' +
+  '<button data-m=tokens class=on>Tokens</button>' +
+  '<button data-m=cost>Cost ($)</button></div>' +
+  '<div id=ra-chart class=ra-chart></div>' +
+  '<div id=ra-legend class=ra-legend></div>' +
+  '<div id=ra-note class=ra-note></div>' +
+  '</div></div>';
+
+// Wire the whole gear into the current document. `post` is the feed bundle's
+// kernel channel (webview postMessage → host pipe → kernel WS, or the browser
+// shim's WS directly). Idempotent: a second init is a no-op.
+function initGear(post) {
+  if (document.getElementById('rsettings')) return;
+  document.body.insertAdjacentHTML('beforeend', GEAR_HTML);
+
+  var g = document.getElementById('rgear'), p = document.getElementById('rsettings'),
+    b = document.getElementById('rsver'), cc = document.getElementById('rs-compact'),
+    jix = document.getElementById('rs-judges-index'), jtr = document.getElementById('rs-judges-triage'),
+    an = document.getElementById('rs-autonudge'), bk = document.getElementById('rs-backend'),
+    dd = document.getElementById('rs-defaultdir'), gb = document.getElementById('rs-branch'),
+    cg = document.getElementById('rs-collapsegaps'), jm = document.getElementById('rs-judgemodel'),
+    im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
+    ie = document.getElementById('rs-indexeffort');
+  function load() { try { return Object.assign({ compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'tmux', defaultDir: '', showBranch: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'tmux', defaultDir: '', showBranch: true, collapseGaps: true }; } }
+  function save(s) { try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {} }
+  function emit() { try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {} }   // same-doc signal → the feed re-gates its cards
+  cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
+  if (gb) gb.addEventListener('change', function () { var s = load(); s.showBranch = gb.checked; save(s); emit(); });
+  jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); emit(); });
+  jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); emit(); });
+  if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); emit(); });
+  // Auto Nudge / judge tiers are SERVER-SIDE (the kernel runs them): post the
+  // change; the controls re-initialize from /version on every open (fill()).
+  if (an) an.addEventListener('change', function () { post({ type: 'setAutoNudge', enabled: an.checked }); });
+  if (jm) jm.addEventListener('change', function () { post({ type: 'setJudgeModel', model: jm.value }); });
+  if (im) im.addEventListener('change', function () { post({ type: 'setIndexModel', model: im.value }); });
+  if (je) je.addEventListener('change', function () { post({ type: 'setJudgeEffort', effort: je.value }); });
+  if (ie) ie.addEventListener('change', function () { post({ type: 'setIndexEffort', effort: ie.value }); });
+  // feed-colormap preview bar: a horizontal gradient of the SELECTED map's stops (mirrors render.ts COLORMAPS).
+  var CMAPS = { aurora: [[84, 178, 4], [0, 180, 115], [35, 175, 156], [66, 169, 176], [25, 168, 201], [14, 164, 227], [74, 155, 241], [113, 145, 244], [144, 136, 240]],
+    hawaii: [[140, 2, 115], [146, 46, 85], [151, 78, 62], [155, 111, 40], [156, 150, 28], [137, 189, 74], [107, 212, 142], [103, 233, 213], [179, 242, 253]],
+    viridis: [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [110, 206, 88], [181, 222, 43], [253, 231, 37]],
+    magma: [[0, 0, 4], [28, 16, 68], [79, 18, 123], [129, 37, 129], [181, 54, 122], [229, 80, 100], [251, 135, 97], [254, 194, 135], [252, 253, 191]],
+    inferno: [[0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99], [212, 72, 66], [245, 125, 21], [250, 193, 39], [252, 255, 164]],
+    plasma: [[13, 8, 135], [75, 3, 161], [125, 3, 168], [168, 34, 150], [203, 70, 121], [229, 107, 93], [248, 148, 65], [253, 195, 40], [240, 249, 33]],
+    cividis: [[0, 34, 78], [33, 59, 110], [76, 85, 108], [108, 110, 114], [142, 137, 120], [177, 165, 112], [217, 197, 92], [254, 232, 56]] };
+  var cmBtn = document.getElementById('rs-cmap-btn'), cmList = document.getElementById('rs-cmap-list');
+  function cmGrad(name) { var st = CMAPS[(name || '').toLowerCase()] || CMAPS.hawaii;
+    return 'linear-gradient(to right,' + st.map(function (c) { return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; }).join(',') + ')'; }
+  function cmPaint(name) { if (cmBtn) cmBtn.style.background = cmGrad(name);
+    if (cmList) Array.prototype.forEach.call(cmList.children, function (o) { o.classList.toggle('sel', o.getAttribute('data-cmap') === name); }); }
+  function cmBuild() { if (!cmList || cmList.children.length) return; Object.keys(CMAPS).forEach(function (name) {
+    var o = document.createElement('div'); o.className = 'rs-cmap-opt'; o.setAttribute('data-cmap', name); o.title = name;
+    o.style.background = cmGrad(name); o.addEventListener('click', function (e) { e.stopPropagation(); cmPick(name); }); cmList.appendChild(o); }); }
+  function cmPick(name) { var s = load(); s.colormap = name; save(s); cmPaint(name); if (cmList) cmList.hidden = true;
+    post({ type: 'setColormap', name: name }); }
+  if (cmBtn) cmBtn.addEventListener('click', function (e) { e.stopPropagation(); cmBuild(); if (cmList) cmList.hidden = !cmList.hidden; });
+  document.addEventListener('click', function (e) { var w = document.getElementById('rs-cmap');
+    if (cmList && !cmList.hidden && w && !w.contains(e.target)) cmList.hidden = true; });
+  // Session-colors palette picker: options + the active name come from /palette (the kernel is authoritative).
+  var plBtn = document.getElementById('rs-pal-btn'), plList = document.getElementById('rs-pal-list'), plData = null, plActive = '';
+  function plDots(cols) { return cols.map(function (c) { return '<span class=rs-pal-dot style="background:' + c + '"></span>'; }).join(''); }
+  function plRow(pd) { return plDots(pd.colors) + '<span class=rs-pal-name>' + pd.label + '</span>'; }
+  function plPaint() { if (!plData) return; plData.forEach(function (pd) { if (pd.name === plActive && plBtn) plBtn.innerHTML = plRow(pd); });
+    if (plList) Array.prototype.forEach.call(plList.children, function (o) { o.classList.toggle('sel', o.getAttribute('data-pal') === plActive); }); }
+  function plBuild() { if (!plList || !plData || plList.children.length) return; plData.forEach(function (pd) {
+    var o = document.createElement('div'); o.className = 'rs-pal-opt'; o.setAttribute('data-pal', pd.name); o.title = pd.label;
+    o.innerHTML = plRow(pd); o.addEventListener('click', function (e) { e.stopPropagation(); plPick(pd.name); }); plList.appendChild(o); }); }
+  function plPick(name) { plActive = name; plPaint(); if (plList) plList.hidden = true;
+    post({ type: 'setPalette', name: name }); }
+  function plFill() { fetch(kb() + '/palette', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.palettes) { plData = d.palettes; plActive = d.active || ''; plBuild(); plPaint(); } }).catch(function () {}); }
+  if (plBtn) plBtn.addEventListener('click', function (e) { e.stopPropagation(); plBuild(); if (plList) plList.hidden = !plList.hidden; });
+  document.addEventListener('click', function (e) { var w = document.getElementById('rs-pal');
+    if (plList && !plList.hidden && w && !w.contains(e.target)) plList.hidden = true; });
+  if (bk) bk.addEventListener('change', function () { var s = load(); s.backend = bk.value; save(s); emit(); });   // webview-local pref read at createSession time
+  if (dd) dd.addEventListener('change', function () { var v = dd.value.trim(); var s = load(); s.defaultDir = v; save(s);
+    post({ type: 'setDefaultDir', value: v }); });   // persist kernel-side: _default_create_dir reads this file FIRST
+  var ddb = document.getElementById('rs-defaultdir-browse');
+  if (ddb) ddb.addEventListener('click', function () { post({ type: 'browseDir', target: 'gear' }); });   // kernel-side native folder dialog
+  // The kernel's browseResult (target 'gear') fills the field + persists via the change handler.
+  // (This listener lives HERE, with the field — it used to sit in render.ts, a different document.)
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (m && m.type === 'browseResult' && m.target === 'gear' && typeof m.path === 'string' && dd) {
+      dd.value = m.path; dd.dispatchEvent(new Event('change'));
+    }
+  });
+  // The model/effort <option>s come from /models — the same single source the
+  // chat + timeline pickers use. Cached after the first successful fetch.
+  var choices = null;
+  function fillChoices() {
+    if (choices) return Promise.resolve(choices);
+    return fetch(kb() + '/models', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+      choices = d || { models: [], efforts: [] };
+      var mo = (choices.models || []).map(function (m) { return '<option value="' + m.value + '">' + m.label + '</option>'; }).join('');
+      var eo = '<option value="">Default</option>' + (choices.efforts || []).map(function (m) { return '<option value="' + m.value + '">' + m.label + '</option>'; }).join('');
+      if (jm) jm.innerHTML = mo; if (im) im.innerHTML = mo;
+      if (je) je.innerHTML = eo; if (ie) ie.innerHTML = eo;
+      return choices;
+    }).catch(function () { return null; });
+  }
+  function lv() { var t = document.querySelector('script[src*="feed.js"]');
+    var m = t && t.getAttribute('src').match(/[?&]v=(\d+)/); return m ? +m[1] : 0; }
+  function fill() { fillChoices().then(function () { return fetch(kb() + '/version', { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
+    if (an) an.checked = !!v.autoNudge;
+    if (jm && typeof v.judgeModel === 'string') jm.value = v.judgeModel;   // the judge's ACTUAL current model/effort per tier is authoritative
+    if (im && typeof v.indexModel === 'string') im.value = v.indexModel;
+    if (je && typeof v.judgeEffort === 'string') je.value = v.judgeEffort;
+    if (ie && typeof v.indexEffort === 'string') ie.value = v.indexEffort;
+    if (dd && typeof v.defaultDir === 'string') dd.value = v.defaultDir;   // the kernel's persisted default is authoritative
+    var x = lv(); b.innerHTML = 'kernel ' + (v.kernel_sha || '?') + '\nserving v' + v.dist_ver + '\nthis tab v' + (x || '?');
+  }).catch(function () { b.textContent = '(version unavailable)'; }); }
+  // The settings modal is full-WINDOW in the web shell — ask it to expand the
+  // feed iframe while open (no-op elsewhere: VS Code's feed panel IS the window).
+  function feedFull(on) { try { if (window.parent !== window) window.parent.postMessage({ romp: 'settings', on: !!on }, '*'); } catch (e) {} }
+  function setModalCls(on) { var de = document.documentElement, m = 'rs-modal-open';
+    if (on) { de.classList.add(m); document.body.classList.add(m); } else { de.classList.remove(m); document.body.classList.remove(m); } }
+  function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
+  function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
+    p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'tmux'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+  if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
+  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
+  p.addEventListener('click', function (e) { if (e.target === p) closeSettings(); });   // click the dimmed backdrop (not the card) → close
+  document.addEventListener('click', function (e) { if (!p.hidden && e.target !== g && !p.contains(e.target)) closeSettings(); });
+  var rf = document.getElementById('rrefresh');   // ↻ (web shell rail only): POST /restart, poll /healthz, reload
+  if (rf) rf.onclick = function () { rf.disabled = true; try { fetch(kb() + '/restart', { method: 'POST' }).catch(function () {}); } catch (e) {}
+    var n = 0; (function again() { setTimeout(function () { n++; fetch(kb() + '/healthz', { cache: 'no-store' }).then(function (r) { if (r && r.ok) location.reload(); else if (n < 40) again(); }).catch(function () { if (n < 40) again(); }); }, 500); })(); };
+  // ── token-usage analytics modal: a sessions-vs-judges bar chart over a selectable window ──
+  var raBack = document.getElementById('ranalytics-back'), raOpen = document.getElementById('ra-open'),
+    raClose = document.getElementById('ra-close'), raChart = document.getElementById('ra-chart'),
+    raLegend = document.getElementById('ra-legend'), raNote = document.getElementById('ra-note');
+  var JCOL = { captioner: '#1EA1EB', archiver: '#54B204', planner: '#E0B020', grouper: '#4EA8A9', closer: '#C0392B', distiller: '#D26EA8', courier: '#9088F0' };
+  var JORDER = ['captioner', 'archiver', 'planner', 'grouper', 'closer', 'distiller', 'courier'];
+  var TIERCOL = { index: '#3FA7C4', triage: '#E0973A' };
+  var raState = { window: 86400, periodLabel: '24h', group: 'judge', metric: 'tokens', data: null, loading: false };
+  function fmtTok(n) { n = n || 0; if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M'; if (n >= 1e3) return Math.round(n / 1e3) + 'k'; return '' + n; }
+  function fmtUsd(v) { v = v || 0; return v >= 100 ? '$' + v.toFixed(0) : (v >= 1 ? '$' + v.toFixed(2) : '$' + v.toFixed(3)); }
+  function raCost() { return raState.metric === 'cost'; }
+  function raVal(o) { return raCost() ? (o.cost || 0) : ((o.in || 0) + (o.out || 0)); }
+  function raFmt(v) { return raCost() ? fmtUsd(v) : fmtTok(v); }
+  function raEsc(s) { return (s == null ? '' : '' + s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function raSegments() { var j = (raState.data && raState.data.judges) || { byJudge: {}, byTier: {} }; var segs = [];
+    if (raState.group === 'tier') { ['index', 'triage'].forEach(function (k) { var bt = (j.byTier || {})[k] || {};
+      segs.push({ label: k === 'index' ? 'index (captioner+archiver)' : 'triage (planner/grouper/closer/distiller/courier)', color: TIERCOL[k], in: bt.in || 0, out: bt.out || 0, calls: bt.calls || 0, cost: bt.cost || 0 }); }); }
+    else { JORDER.forEach(function (k) { var bj = (j.byJudge || {})[k]; if (bj) segs.push({ label: k, color: JCOL[k] || '#888', in: bj.in || 0, out: bj.out || 0, calls: bj.calls || 0, cost: bj.cost || 0 }); });
+      Object.keys(j.byJudge || {}).forEach(function (k) { if (JORDER.indexOf(k) < 0 && k !== '?') { var bj = j.byJudge[k]; segs.push({ label: k, color: '#888', in: bj.in || 0, out: bj.out || 0, calls: bj.calls || 0, cost: bj.cost || 0 }); } }); }
+    return segs.filter(function (s) { return (s.in + s.out) > 0; }); }
+  function raRender() {
+    if (raState.loading) { raChart.innerHTML = '<div class=ra-empty>loading…</div>'; raLegend.innerHTML = ''; raNote.textContent = ''; return; }
+    var d = raState.data; if (!d) { raChart.innerHTML = '<div class=ra-empty>no data</div>'; return; }
+    var sess = d.sessions || { in: 0, out: 0, cost: 0 }, sessTot = raVal(sess);
+    var segs = raSegments(), judgeTot = segs.reduce(function (a, s) { return a + raVal(s); }, 0);
+    var maxV = Math.max(sessTot, judgeTot, 1);
+    var W = 480, H = 250, top = 24, bot = 30, chartH = H - top - bot, baseY = top + chartH, barW = 92, cx1 = W * 0.30, cx2 = W * 0.70;
+    function rect(x, y, w, h, fill, title) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + Math.max(h, 0) + '" fill="' + fill + '" rx="2"><title>' + raEsc(title) + '</title></rect>'; }
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet">';
+    svg += '<line x1="6" y1="' + baseY + '" x2="' + (W - 6) + '" y2="' + baseY + '" stroke="#3a3a3a"/>';
+    var sh = sessTot / maxV * chartH;
+    svg += rect(cx1 - barW / 2, baseY - sh, barW, sh, '#7d8590', 'sessions · ' + fmtTok(sess.in) + ' in / ' + fmtTok(sess.out || 0) + ' out · ' + fmtUsd(sess.cost || 0));
+    svg += '<text x="' + cx1 + '" y="' + (baseY - sh - 6) + '" text-anchor="middle" fill="#ddd" font-size="12">' + raFmt(sessTot) + '</text>';
+    svg += '<text x="' + cx1 + '" y="' + (baseY + 18) + '" text-anchor="middle" fill="#9aa0a6" font-size="12">Sessions</text>';
+    var cum = 0; segs.forEach(function (s) { var st = raVal(s), h = st / maxV * chartH, y = baseY - cum - h; cum += h;
+      svg += rect(cx2 - barW / 2, y, barW, h, s.color, s.label + ' · ' + fmtTok(s.in) + ' in / ' + fmtTok(s.out) + ' out · ' + s.calls + ' calls · ' + fmtUsd(s.cost || 0)); });
+    svg += '<text x="' + cx2 + '" y="' + (baseY - cum - 6) + '" text-anchor="middle" fill="#ddd" font-size="12">' + raFmt(judgeTot) + '</text>';
+    svg += '<text x="' + cx2 + '" y="' + (baseY + 18) + '" text-anchor="middle" fill="#9aa0a6" font-size="12">Judges</text>';
+    svg += '</svg>'; raChart.innerHTML = svg;
+    var lg = segs.map(function (s) { return '<span class=ra-li><span class=ra-sw style="background:' + s.color + '"></span>' + raEsc(s.label) + ' <b>' + raFmt(raVal(s)) + '</b></span>'; }).join('');
+    raLegend.innerHTML = '<span class=ra-li><span class="ra-sw" style="background:#7d8590"></span>sessions <b>' + raFmt(sessTot) + '</b></span>' + lg;
+    var ratio = sessTot ? (judgeTot / sessTot * 100) : 0;
+    raNote.textContent = 'last ' + raState.periodLabel + ' · judges = ' + (sessTot ? ratio.toFixed(1) : '0') + '% of session ' + (raCost() ? 'cost' : 'tokens') + ' · combined ' + raFmt(sessTot + judgeTot); }
+  function raFetch() { raState.loading = true; raRender();
+    fetch(kb() + '/analytics?window=' + raState.window, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { raState.loading = false; raState.data = d; raRender(); }).catch(function () { raState.loading = false; raChart.innerHTML = '<div class=ra-empty>analytics unavailable</div>'; raLegend.innerHTML = ''; raNote.textContent = ''; }); }
+  if (raOpen) raOpen.onclick = function (e) { e.stopPropagation(); raBack.hidden = false; p.hidden = true; raFetch(); };
+  if (raClose) raClose.onclick = function () { raBack.hidden = true; };
+  if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raBack.hidden = true; });
+  Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'), function (btn) { btn.onclick = function () { raState.window = +btn.getAttribute('data-w'); raState.periodLabel = btn.textContent;
+    Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'), function (b2) { b2.className = (b2 === btn) ? 'on' : ''; }); raFetch(); }; });
+  Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'), function (btn) { btn.onclick = function () { raState.group = btn.getAttribute('data-g');
+    Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'), function (b2) { b2.className = (b2 === btn) ? 'on' : ''; }); raRender(); }; });
+  Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'), function (btn) { btn.onclick = function () { raState.metric = btn.getAttribute('data-m');
+    Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'), function (b2) { b2.className = (b2 === btn) ? 'on' : ''; }); raRender(); }; });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && raBack && !raBack.hidden) raBack.hidden = true; });
+}
+
+module.exports = { initGear };

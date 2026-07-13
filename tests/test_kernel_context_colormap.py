@@ -47,8 +47,8 @@ class ContextColormap(unittest.TestCase):
 
     def test_the_gear_colormap_label_is_global_not_feed_only(self):
         # _GEAR_HTML became the _gear_html() builder when the settings modal went dynamic
-        self.assertIn(">Colormap<", km._gear_html(), "the label is global now")
-        self.assertNotIn(">Feed colormap<", km._gear_html(), "no longer scoped to the feed")
+        self.assertIn(">Colormap<", _gear_src(), "the label is global now")
+        self.assertNotIn(">Feed colormap<", _gear_src(), "no longer scoped to the feed")
 
     def test_ramp_maps_higher_to_the_bright_end_on_a_darklight_map(self):
         # ramp(v) walks v=0→stops[0] to v=1→stops[-1]; on a DARK→LIGHT map (hawaii) a higher fill lands
@@ -61,3 +61,16 @@ class ContextColormap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The gear moved from kernel-inline strings into the shared feed bundle
+# (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
+# the gear pins read THAT file (and feed.css for its styling).
+def _gear_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
+
+
+def _gear_css_src():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "feed.css").read_text()
