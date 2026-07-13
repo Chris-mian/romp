@@ -59,6 +59,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Guide:
+      - A worked example (MNIST): guide/example-workflow.md
       - The fleet at a glance: guide/the-fleet.md
       - Tasks, not transcripts: guide/tasks.md
       - Keeping the fleet moving: guide/nudges.md
