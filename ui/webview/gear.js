@@ -128,7 +128,7 @@ function initGear(post) {
     cg = document.getElementById('rs-collapsegaps'), jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
     ie = document.getElementById('rs-indexeffort');
-  function load() { try { return Object.assign({ compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'tmux', defaultDir: '', showBranch: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'tmux', defaultDir: '', showBranch: true, collapseGaps: true }; } }
+  function load() { try { return Object.assign({ compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }; } }
   function save(s) { try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {} }
   function emit() { try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {} }   // same-doc signal → the feed re-gates its cards
   cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
@@ -225,7 +225,7 @@ function initGear(post) {
     if (on) { de.classList.add(m); document.body.classList.add(m); } else { de.classList.remove(m); document.body.classList.remove(m); } }
   function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
   function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
-    p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'tmux'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
   p.addEventListener('click', function (e) { if (e.target === p) closeSettings(); });   // click the dimmed backdrop (not the card) → close

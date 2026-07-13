@@ -25,8 +25,8 @@ test("both judge-set toggles default OFF (the user 2026-06-29): the timeline's j
   assert.equal(DEFAULT_SETTINGS.showTriageJudges, false);
 });
 
-test("Default backend defaults to tmux (the user 2026-06-22): the + button preserves today's behavior; both backends coexist", () => {
-  assert.equal(DEFAULT_SETTINGS.backend, "tmux");
+test("Default backend defaults to sdk (the user 2026-07-13, superseding the 06-22 tmux default); both backends coexist", () => {
+  assert.equal(DEFAULT_SETTINGS.backend, "sdk");
 });
 
 test("the backend pref roundtrips through storage (the gear writes it; createSession reads it fresh)", () => {

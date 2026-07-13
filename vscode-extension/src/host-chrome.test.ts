@@ -35,9 +35,15 @@ test("the romp strip: both builders opt in, chat gets the kernel origin, feed wi
   assert.equal(flags.length, 2, "chat AND feed builders must opt into the strip");
   const stripLinks = SRC.match(/"strip\.css"/g) || [];
   assert.equal(stripLinks.length, 2, "chat AND feed builders must link strip.css");
-  assert.ok(SRC.includes('m.type === "openRompSettings"'), "the chat strip's gear must open the feed's modal");
+  assert.ok(SRC.includes('m.type === "openPane"'), "the strips' quick-opens must reach the host");
   assert.ok(SRC.includes('{ type: "stripShow", show: !(feedPanel && feedPanel.visible) }'),
     "feed-over-chat: the chat strip hides while the feed panel is visible");
+  const paneBroadcasts = SRC.match(/type: "stripPanes"/g) || [];
+  assert.ok(paneBroadcasts.length >= 1, "the host must broadcast the hidden-pane set to the strips");
+  assert.ok(SRC.includes("openFleetPanel(true, chatCol)"),
+    "the launcher tabs Outline into the chat's group (the user 2026-07-13)");
+  const gearLinks = SRC.match(/"gear\.css"/g) || [];
+  assert.equal(gearLinks.length, 2, "chat AND feed builders must link the gear stylesheet (local modal)");
 });
 
 test("the top-right swirl opens romp; the menu lives on the status-bar item", () => {

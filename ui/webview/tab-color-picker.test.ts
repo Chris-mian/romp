@@ -10,7 +10,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 
 test("the palette is fetched once from the kernel /palette (the client doesn't own the palette list)", () => {
   assert.match(RENDER, /let paletteColors: string\[\] = \[\];/);
-  assert.match(RENDER, /fetch\("\/palette"/);
+  assert.match(RENDER, /fetch\(kernelUrl\("\/palette"\)/);   // host-aware: VS Code webviews need the kernel base
   // the swatches are built from the fetched list, not a hard-coded array of hexes
   assert.match(RENDER, /for \(const bg of paletteColors\)/);
 });
