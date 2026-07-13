@@ -36,7 +36,7 @@ test("a name+dot header entry opens each session's run; only runs that exist get
   assert.match(FEED, /key = "s:" \+ listEl\.id \+ ":" \+ e\.sid;/);
   // the header carries the identity: colored name, host prefix treatment, the yellow working dot
   assert.match(FEED, /nm\.replaceChildren\(\.\.\.hostNameNodes\(e\.name, e\.sid\)\);/);
-  assert.match(FEED, /setWorkDot\(nm, workingSet\.has\(e\.name\)\);/);
+  assert.match(FEED, /setWorkDot\(nm, dotFor\(e\.name\)\);/);   // work OR awaiting dot — straw when idle-but-awaiting (the user 2026-07-13)
   // headers aren't cards: the column count chips exclude them
   assert.match(FEED, /const nCards = \(es: Entry\[\]\) => es\.filter\(\(e\) => e\.kind !== "sess"\)\.length;/);
   assert.match(CSS, /\.feed-sess-head \{ display: flex; align-items: center;/);

@@ -135,7 +135,7 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";
+type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; retrySuppressed?: boolean; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
@@ -2418,9 +2418,11 @@ function renderTabs() {
     else if (st === "compacting") tab.classList.add("tab-compacting");
     else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
     if (s.status.faded) tab.classList.add("at-rest");
-    // WORKING shows a yellow dot; BLOCKED (API error) gets NO dot — the dashed red tab highlight instead
-    // (the user 2026-06-16).
+    // WORKING shows a yellow dot; AWAITING-BG the same dot in straw — matching the chip's color, so the
+    // tab reads the split at a glance (the user 2026-07-13); BLOCKED (API error) gets NO dot — the dashed
+    // red tab highlight instead (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
+    else if (st === "awaitingBg") tab.appendChild(el("span", "tab-dot await"));
     // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
     // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
     // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
@@ -4976,6 +4978,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 
 const CHIP_LABEL: Record<ChipState, string> = {
   working: "Working", ready: "Ready", awaiting: "Blocked",
+  awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — straw, not working-yellow (the user 2026-07-13)
   idle: "Idle", closed: "Closed", compacting: "Compacting", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
   interrupting: "Interrupting…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
@@ -5028,6 +5031,17 @@ function updateStatusline() {
     const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
     chip.appendChild(label);
+    sl.appendChild(chip);
+    const timer = el("span", "status-timer");
+    timer.id = "work-timer";
+    timer.textContent = elapsedMs(s.status.sinceEpoch);
+    sl.appendChild(timer);
+  } else if (s.status.state === "awaitingBg") {
+    // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own straw
+    // chip — no pulse (nothing is computing HERE), but the elapsed timer stays so the wait has a clock
+    const chip = el("span", "chip chip-awaitingBg");
+    chip.textContent = CHIP_LABEL.awaitingBg;
+    chip.title = "idle, waiting on background work it dispatched — clears when the result lands";
     sl.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
@@ -5602,7 +5616,7 @@ window.addEventListener("message", (e: MessageEvent) => {
 setInterval(() => {
   const s = activeId ? sessions.get(activeId) : null;
   if (!s) return;
-  if (s.status.state === "working") {
+  if (s.status.state === "working" || s.status.state === "awaitingBg") {
     const timer = document.getElementById("work-timer");
     if (timer) timer.textContent = elapsedMs(s.status.sinceEpoch);
     else updateStatusline();

@@ -44,7 +44,8 @@ const BADGE_FS = 9;
 const NICE = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800];
 const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8', fg: '#ffffff' },
                 attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' },
-                retrying: { bg: '#e67e22', fg: '#2a1500' } };   // amber: soft-blocked on an API rate-limit/overload auto-retry (api 2026-06-23)
+                retrying: { bg: '#e67e22', fg: '#2a1500' },   // amber: soft-blocked on an API rate-limit/overload auto-retry (api 2026-06-23)
+                awaitbg: { bg: '#d9c37a', fg: '#332600' } };  // straw: idle, waiting on bg work — matches the chat chip (--st-awaitbg-bg; the user 2026-07-13)
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and
@@ -230,12 +231,12 @@ function badgeFor(s) {
   else if (s.state === 'blocked') m = { label: 'API error', kind: 'attention' };  // same red the chat chip shows
   else if (s.state === 'interrupting') m = { label: 'Interrupting', kind: 'working' };  // stop in flight
   else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'Blocked', kind: 'attention' };
-  // AWAITING dispatched/background work (s.awaitingBg, the kernel's _session_awaiting — the SAME signal the
-  // chat folds into its yellow working dot): in flight elsewhere, NOT on you, NOT plain READY. Closes the
-  // last designed chat/timeline split in the working model (the user 2026-07-01). Working-yellow family so
-  // the two surfaces read consistently; distinct label so it never claims the session itself is producing.
-  // (The LEGACY lane state 'awaiting' above means blocked-on-you — the new field dodges that name.)
-  else if (s.awaitingBg) m = { label: 'Awaiting', kind: 'working' };
+  // AWAITING dispatched/background work: its OWN chip state now ('awaitingBg', the kernel's shared
+  // _session_chip split, the user 2026-07-13 — no longer folded into working) in STRAW, the working gold's
+  // paler sibling: same family, visibly held rather than producing. The s.awaitingBg why-field key stays as
+  // the fallback (a remote host on an older kernel still reports state 'working' + the field).
+  // (The LEGACY lane state 'awaiting' above means blocked-on-you — this name dodges that.)
+  else if (s.state === 'awaitingBg' || s.awaitingBg) m = { label: 'Awaiting', kind: 'awaitbg' };
   else if (s.state === 'ready' || s.state === 'waiting' || s.state === 'idle') m = { label: 'Ready', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
@@ -2182,7 +2183,7 @@ class TimelinePanel {
         }
         const bar = el('rect', { x: bx, y: y - BAR_H / 2, width: bw, height: BAR_H, rx: BAR_H / 2, fill: s.color, opacity: 0.9 });
         svg.appendChild(bar);
-        const act = s.state === 'working' || s.state === 'permission' || s.state === 'awaiting' || s.state === 'compacting';
+        const act = s.state === 'working' || s.state === 'permission' || s.state === 'awaiting' || s.state === 'awaitingBg' || s.state === 'compacting';
         const ongoing = s.live && act && t.end > t.start && (data.now - t.end) <= 5;
         const hit = el('rect', { x: bx, y: y - 7, width: bw, height: 14, fill: 'transparent' }); hit.style.cursor = 'pointer';
         const html = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(t.start) + '–' + clock(t.end) + '</span></div>' + this.barBody(t, ongoing);

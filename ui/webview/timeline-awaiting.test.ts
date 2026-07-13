@@ -1,8 +1,9 @@
-// Timeline AWAITING badge (the user 2026-07-01, working-state audit): the chat chip folds "awaiting
-// dispatched/background work" into its yellow working dot, but the timeline lane showed a bare READY —
-// the last designed split between the surfaces' working models. The kernel now emits `awaitingBg` per
-// live lane (the same _session_awaiting signal), and badgeFor renders it as an AWAITING badge in the
-// working-yellow family — in flight elsewhere, not on you, never claiming the session itself is producing.
+// Timeline AWAITING badge (the user 2026-07-01, working-state audit; recolored 2026-07-13): the lane
+// shows a distinct AWAITING badge for "waiting on dispatched/background work". Originally the badge wore
+// working-yellow; since the kernel's shared _session_chip split awaitingBg out of "working" (the user
+// 2026-07-13: "differentiate working from awaiting") it wears its OWN straw — the working gold's paler
+// sibling — matching the chat chip and the tab/feed dots. The s.awaitingBg why-field stays the fallback
+// key for a remote host on an older kernel (state still 'working' there).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -10,8 +11,13 @@ import * as path from "node:path";
 
 const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
-test("an awaitingBg lane renders an Awaiting badge in the working-yellow family", () => {
-  assert.match(TL, /else if \(s\.awaitingBg\) m = \{ label: 'Awaiting', kind: 'working' \};/);
+test("an awaitingBg lane renders an Awaiting badge in its own straw color (the user 2026-07-13)", () => {
+  // keyed on the chip state (the shared _session_chip split) OR the legacy why-field (older remote kernels)
+  assert.match(TL, /else if \(s\.state === 'awaitingBg' \|\| s\.awaitingBg\) m = \{ label: 'Awaiting', kind: 'awaitbg' \};/);
+  // straw, matching --st-awaitbg-bg in styles.css (this file loads standalone, so the hex is mirrored)
+  assert.match(TL, /awaitbg: \{ bg: '#d9c37a', fg: '#332600' \}/);
+  // an awaitingBg lane still reads ACTIVE (full opacity / ongoing treatment), like working/compacting
+  assert.match(TL, /s\.state === 'awaitingBg' \|\| s\.state === 'compacting';/);
 });
 
 test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {

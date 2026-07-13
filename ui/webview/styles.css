@@ -31,6 +31,10 @@
   --st-working-bg: #e0b020; --st-working-fg: #332600;
   --st-ready-bg: #2b7fb8;   --st-ready-fg: #ffffff;
   --st-awaiting-bg: #c0392b;--st-awaiting-fg: #ffffff;
+  /* awaiting-BACKGROUND (idle, waiting on bg work it dispatched — the user 2026-07-13): straw — the
+     working gold's paler, washed sibling, so it reads "held, in motion elsewhere" next to Working.
+     Mirrored as a hex in feed.css .fwork-dot.await + the timeline BADGE map (those files load standalone). */
+  --st-awaitbg-bg: #d9c37a; --st-awaitbg-fg: #332600;
   --st-compacting-bg: #14b8a6; --st-compacting-fg: #ffffff;   /* teal — the compacting accent (text + compression bar) */
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;   /* alarm red — session stopped on an API error */
 
@@ -116,6 +120,7 @@ body { display: flex; flex-direction: column; }
 .tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
+.tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the straw chip (the user 2026-07-13) */
 /* compacting → a tiny animated compaction bar before the name (this state gets no tab outline, so the bar
    is the cue). A teal fill whose right edge slides left and loops — the same compression motion as the
    statusline ctx-scan bar, miniaturised — so it reads as a transient process, not a status colour (the user
@@ -570,6 +575,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .apierror-body { margin-top: 5px; font-size: 0.86em; color: var(--dim); line-height: 1.35; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
 .chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
+.chip-awaitingBg { background: var(--st-awaitbg-bg); color: var(--st-awaitbg-fg); }
 /* retrying = a SOFT 'blocked on the API' (rate-limit / overload auto-retry) — not a hang, not working. Amber/
    orange, deliberately distinct from working-yellow and blocked-red (the user via api 2026-06-23). */
 .chip-retrying { background: #e67e22; color: #2a1500; }

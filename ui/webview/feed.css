@@ -370,6 +370,9 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 /* margin-right is negative to offset the .fask-id flex gap (6px) → the dot sits
    snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
 .fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
+/* idle-but-awaiting background work → the same dot in straw, matching the chat chip's Awaiting color
+   (--st-awaitbg-bg in styles.css; hex here because the feed page loads only this file — the user 2026-07-13) */
+.fwork-dot.await { background: #d9c37a; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.9em; font-weight: 400;
   white-space: nowrap; }   /* same size as the card checklist lines it corresponds to, never bold (the user 2026-07-02) */
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's

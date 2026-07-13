@@ -277,14 +277,23 @@ let sessionOrder: string[] = [];
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
-// Ensure a `.fwork-dot` sits immediately before `nameEl` iff `on` (idempotent on
-// re-render). The name's own text/color are untouched.
-function setWorkDot(nameEl: HTMLElement | null, on: boolean) {
+// names of sessions idle-but-AWAITING background work (the user 2026-07-13): the same dot in straw —
+// matching the chat chip's Awaiting color — so a held session reads differently from a working one.
+let awaitingSet = new Set<string>();
+type DotState = "" | "work" | "await";
+const dotFor = (name: string): DotState => workingSet.has(name) ? "work" : awaitingSet.has(name) ? "await" : "";
+// Ensure a `.fwork-dot` sits immediately before `nameEl` iff `state` is non-empty (idempotent on
+// re-render; an existing dot RETINTS in place when the state flips). The name's text/color are untouched.
+function setWorkDot(nameEl: HTMLElement | null, state: DotState | boolean) {
   if (!nameEl) return;
+  const st: DotState = state === true ? "work" : state === false ? "" : state;
   const prev = nameEl.previousElementSibling;
   const has = !!prev && prev.classList.contains("fwork-dot");
-  if (on && !has) nameEl.parentElement?.insertBefore(el("span", "fwork-dot"), nameEl);
-  else if (!on && has) prev!.remove();
+  if (st && !has) {
+    const d = el("span", "fwork-dot"); d.classList.toggle("await", st === "await");
+    nameEl.parentElement?.insertBefore(d, nameEl);
+  } else if (st && has) prev!.classList.toggle("await", st === "await");
+  else if (!st && has) prev!.remove();
 }
 
 let hostNow = Math.floor(Date.now() / 1000);
@@ -915,7 +924,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._title.textContent = it.text;
   a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
   if (it.color) a._name.style.color = it.color.bg;
-  setWorkDot(a._name, workingSet.has(it.name));   // working dot before the session name
+  setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
   // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
   const og = a._origin as HTMLElement;
   if (it.origin && it.origin.peer) {
@@ -1357,7 +1366,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   a._title.textContent = g.title;
   a._name.replaceChildren(...hostNameNodes(g.name, g.sid));
   if (g.color) a._name.style.color = g.color.bg;
-  setWorkDot(a._name, workingSet.has(g.name));   // working dot before the session name
+  setWorkDot(a._name, dotFor(g.name));   // working/awaiting dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
@@ -1944,7 +1953,7 @@ function renderModal() {
     const gm0 = grp.members[0];   // prompt-intent title → the first member's MINTING message (resolves by id, kernel 92e23ff)
     const gm0Prompt = gm0.tree?.find((n) => n.id === gm0.itemId)?.promptAnchorUuid ?? null;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
-    agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
+    agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, dotFor(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
     ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
@@ -1960,7 +1969,7 @@ function renderModal() {
     // tree is only the session name + a recency-tinted age; Follow up moved to the footer below the tree.
     ttlEl.style.display = "none";
     titleHoverId = it.turnId;
-    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name)); agent.classList.toggle("dead", !it.live);
+    agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
@@ -2038,7 +2047,7 @@ function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
   if (e.color) nm.style.color = e.color.bg;
   nm.classList.toggle("dead", !e.live);
   nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
-  setWorkDot(nm, workingSet.has(e.name));   // the yellow working dot rides the header, not the cards
+  setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
 }
 
 // UndoClear (top right): restore the most recently cleared card — the host pops
@@ -2643,6 +2652,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
     }
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
+    awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // straw awaiting dots (the user 2026-07-13)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;

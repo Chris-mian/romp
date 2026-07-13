@@ -1,0 +1,59 @@
+// The distinct AWAITING state (the user 2026-07-13: "differentiate working from awaiting"): a session
+// whose main thread is idle but waiting on background work it dispatched no longer folds into "working".
+// The kernel's shared _session_chip emits `awaitingBg`; the chat chip says "Awaiting" in STRAW
+// (--st-awaitbg-bg #d9c37a, the working gold's paler sibling — same family, visibly held), and the little
+// dots match the chip's color everywhere: the chat tab dot and the feed's fwork-dot (cards, group cards,
+// modal headers, grouped-mode session headers). ("awaiting" the chip state = a live permission/picker
+// prompt, on YOU — a different concept; the Bg suffix dodges that name.) Source pins (no jsdom).
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const W = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
+const RENDER = W("render.ts");
+const STYLES = W("styles.css");
+const FEED = W("feed.ts");
+const FEEDCSS = W("feed.css");
+const FED = W("federation.ts");
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
+
+test("the chat chip knows awaitingBg: its own straw chip, label 'Awaiting', with the elapsed timer", () => {
+  assert.match(RENDER, /"awaiting" \| "awaitingBg" \|/);           // the ChipState union carries both meanings
+  assert.match(RENDER, /awaitingBg: "Awaiting",/);                 // CHIP_LABEL
+  // its own statusline branch: straw chip + the wait's clock — but NO pulse (nothing computing here)
+  assert.match(RENDER, /\} else if \(s\.status\.state === "awaitingBg"\) \{[\s\S]*?chip chip-awaitingBg[\s\S]*?timer\.id = "work-timer";/);
+  assert.doesNotMatch(RENDER.split('state === "awaitingBg") {')[1].split("} else if")[0], /chip-pulse/);
+  // the ticking clock covers it, same as working
+  assert.match(RENDER, /if \(s\.status\.state === "working" \|\| s\.status\.state === "awaitingBg"\) \{\s*\n\s*const timer = document\.getElementById\("work-timer"\);/);
+  // no stop button — the main thread is idle, there's nothing to interrupt
+  assert.doesNotMatch(RENDER, /awaitingBg[^\n]*stopButton|stopButton[^\n]*awaitingBg/);
+});
+
+test("the chat tab dot matches the chip: straw for awaitingBg, yellow for working", () => {
+  assert.match(RENDER, /if \(st === "working"\) tab\.appendChild\(el\("span", "tab-dot"\)\);\s*\n\s*else if \(st === "awaitingBg"\) tab\.appendChild\(el\("span", "tab-dot await"\)\);/);
+  assert.match(STYLES, /--st-awaitbg-bg: #d9c37a; --st-awaitbg-fg: #332600;/);
+  assert.match(STYLES, /\.chip-awaitingBg \{ background: var\(--st-awaitbg-bg\); color: var\(--st-awaitbg-fg\); \}/);
+  assert.match(STYLES, /\.tab-dot\.await \{ background: var\(--st-awaitbg-bg\); \}/);
+});
+
+test("the feed dot matches too: dotFor picks work/await per name, the dot retints in place", () => {
+  // the kernel's feed payload carries the awaiting name list beside working; federation merges + prefixes it
+  assert.match(KERNEL, /"working": working, "awaiting": awaiting,/);
+  assert.match(KERNEL, /if sess_awaiting_why and not who_working:\s*\n\s*awaiting\.append\(name\)/);
+  assert.match(KERNEL, /\{"type": "working", "names": feed\["working"\],\s*\n\s*"awaiting": feed\.get\("awaiting"\) or \[\]\}/);
+  assert.match(FEED, /awaitingSet = new Set\(Array\.isArray\(m\.awaiting\) \? m\.awaiting : \[\]\);/);
+  assert.match(FEED, /const dotFor = \(name: string\): DotState => workingSet\.has\(name\) \? "work" : awaitingSet\.has\(name\) \? "await" : "";/);
+  // an existing dot RETINTS when the state flips (working → awaiting), instead of only add/remove
+  assert.match(FEED, /else if \(st && has\) prev!\.classList\.toggle\("await", st === "await"\);/);
+  // every name-dot site routes through dotFor: cards, group cards, both modal headers, grouped headers
+  assert.equal((FEED.match(/setWorkDot\((?:a\._name|agent|nm), dotFor\(/g) || []).length, 5);
+  assert.match(FEEDCSS, /\.fwork-dot\.await \{ background: #d9c37a; \}/);
+  assert.match(FED, /const ARRAY_ID = \["order", "names", "working", "awaiting"\];/);
+  assert.match(FED, /if \(Array\.isArray\(f\.awaiting\)\) merged\.awaiting\.push\(\.\.\.f\.awaiting\);/);
+});
+
+test("the kernel split happens in the ONE shared derivation (_session_chip), not per surface", () => {
+  assert.match(KERNEL, /"working" if open_now else\n/);
+  assert.match(KERNEL, /"awaitingBg" if awaiting_why else "ready"\)/);
+});

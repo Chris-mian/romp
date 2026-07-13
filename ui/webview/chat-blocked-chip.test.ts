@@ -32,10 +32,12 @@ test("build_session computes open_now + the awaiting signal BEFORE the gate cons
   assert.ok(onow < gate && awaiting < gate, "open_now + awaiting_why must be defined before the gate (else NameError)");
 });
 
-test("the chip reads 'working' for an open turn OR awaiting background work (not 'ready'/'blocked')", () => {
+test("the chip reads 'working' for an open turn, 'awaitingBg' for a held one — never 'ready'/'blocked'", () => {
   // the formula lives in the SHARED _session_chip now (the user 2026-07-03) — one derivation for the
-  // chat chip AND the timeline lane, so the two surfaces can never disagree
-  assert.match(KERNEL, /"working" if \(open_now or awaiting_why\) else "ready"\)/);
+  // chat chip AND the timeline lane, so the two surfaces can never disagree. Since 2026-07-13 the
+  // awaiting-background case is its OWN state (straw Awaiting), no longer folded into working.
+  assert.match(KERNEL, /"working" if open_now else\n/);
+  assert.match(KERNEL, /"awaitingBg" if awaiting_why else "ready"\)/);
   assert.match(KERNEL, /chip = _session_chip\(sid, sess\["path"\], session, tm, now\)/);
 });
 

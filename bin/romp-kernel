@@ -1213,7 +1213,7 @@ def _auto_resume_session_retry(now, tmux):
         if _last_human_msg_t(session["turns"]) <= floor:
             continue                                      # user hasn't re-engaged since the stop → still hands-off
         chip = _session_chip(sid, path, session, tmux.get(sid), now)
-        if chip in ("ready", "idle", "awaiting", "closed"):   # re-engaged turn settled clean → the message went through
+        if chip in ("ready", "idle", "awaiting", "awaitingBg", "closed"):   # re-engaged turn settled clean → the message went through
             if _clear_session_retry_suppress(sid):
                 changed = True
                 sys.stderr.write("retry-suppress: re-armed session %s — a successful turn landed\n" % sid)
@@ -5399,7 +5399,12 @@ def _session_chip(sid, path, session, tm, now):
             "blocked" if aerr else
             "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
             "retrying" if st == "retrying" else
-            "working" if (open_now or awaiting_why) else "ready")
+            "working" if open_now else
+            # idle main thread, waiting on background work it dispatched (bg tasks / subagents / overlay):
+            # its OWN state, no longer folded into "working" (the user 2026-07-13: "differentiate working
+            # from awaiting") — the chip says Awaiting in the straw color, the tab/feed dots match, and the
+            # timeline badge recolors, all off this one shared value. ("awaiting" above = awaiting INPUT.)
+            "awaitingBg" if awaiting_why else "ready")
 
 
 # ANY drive op requested WHILE the session compacts is PARKED (the user 2026-07-01 for /model — tmux
@@ -7290,7 +7295,7 @@ def build_feed(now, tmux=None):
     # inspectable from the card modal (judge, kind, evidence, and in-debug capture: input + reply).
     # Zero cost when off: no rows read, no key emitted.
     dbg_rows = _judge_error_rows(now) if jd._debug_mode() else None
-    asks, working = [], []
+    asks, working, awaiting = [], [], []
     alive = _alive_sessions(now, tmux)               # hard filter: living sessions only
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
     cold_parse = False                               # any living session not yet parsed → warm it in the background
@@ -7500,6 +7505,9 @@ def build_feed(now, tmux=None):
         # do NOT count (the user 2026-07-07) — see _session_awaiting.
         # Computed BEFORE the API-error floor, which must yield to it (the user 2026-07-05).
         sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
+        if sess_awaiting_why and not who_working:
+            awaiting.append(name)                    # the AWAITING dot list (straw, the user 2026-07-13) — the
+            #                                          same split _session_chip makes; feed/chat dots match the chip
         # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
         # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
         # "API error" badge + a Retry button (the user 2026-06-16). Same focus-goal walk as the perm floor.
@@ -7783,7 +7791,8 @@ def build_feed(now, tmux=None):
             "column": "needs_input",
             "tree": []})
     return {"type": "feed", "asks": asks, "now": now,
-            "working": working, "dismissedCount": len(cleared), "showDismissed": False,
+            "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
+            "dismissedCount": len(cleared), "showDismissed": False,
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
             "order": _session_order(),
@@ -9504,8 +9513,10 @@ def _push(targets, connect=False):
                                     "ledger": ({**m["ledger"], "archivedTops": _fleet_archived_tops(m["id"])}
                                                if isinstance(m.get("ledger"), dict)
                                                else m.get("ledger"))} for m in chat_sessions]
-            for c in chat_clients:                       # the working-dot list (chat reads feed["working"])
-                _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
+            for c in chat_clients:                       # the working-dot list (chat reads feed["working"]);
+                #                                          awaiting rides along for the straw dots (2026-07-13)
+                _send_client(c, ("working",), {"type": "working", "names": feed["working"],
+                                               "awaiting": feed.get("awaiting") or []})
         # TIMELINE in two messages (the user 2026-06-25): the LANES SKELETON ({type:"data"}) flushes FIRST —
         # cheap, so the lanes/status paint instantly — THEN the heavy bars+judging ride a {type:"bars"} message
         # (the ~95% of the payload). On a COLD connect the skeleton is on the wire before the expensive

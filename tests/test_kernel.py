@@ -4332,6 +4332,44 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(lane["state"], chip, "one shared derivation — the surfaces cannot disagree")
         self.assertEqual(chip, "ready", "the event model (turn ended) wins over the stale snapshot")
 
+    def test_awaiting_bg_is_its_own_chip_state_on_both_surfaces(self):
+        # The user 2026-07-13 ("differentiate working from awaiting"): an idle session waiting on
+        # background work it dispatched is no longer folded into "working" — the shared _session_chip
+        # emits `awaitingBg`, so the chat chip (straw "Awaiting") and the timeline lane split together.
+        saved = km._session_awaiting
+        km._session_awaiting = lambda sid, path, idle: "bg agents" if idle else None
+        try:
+            chip = km.build_session(SID, NOW)["status"]["state"]
+            lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)["state"]
+        finally:
+            km._session_awaiting = saved
+        self.assertEqual(chip, "awaitingBg", "idle + awaiting bg work → its own state, not working")
+        self.assertEqual(lane, chip, "one shared derivation — both surfaces split together")
+
+    def test_an_open_turn_still_reads_working_not_awaiting(self):
+        # working beats the awaiting flavor: while the main thread is actually producing, the chip says
+        # Working — awaitingBg only covers the idle-but-held stretch.
+        saved_aw, saved_w = km._session_awaiting, km._session_working
+        km._session_awaiting = lambda sid, path, idle: "bg agents"
+        km._session_working = lambda turns: True
+        try:
+            chip = km.build_session(SID, NOW)["status"]["state"]
+        finally:
+            km._session_awaiting, km._session_working = saved_aw, saved_w
+        self.assertEqual(chip, "working")
+
+    def test_feed_carries_the_awaiting_name_list_beside_working(self):
+        # the straw dots (feed cards/headers + chat tabs) key on feed["awaiting"] exactly as the yellow
+        # dots key on feed["working"] — same names, same federation prefixing (ARRAY_ID).
+        saved = km._session_awaiting
+        km._session_awaiting = lambda sid, path, idle: "bg agents" if idle else None
+        try:
+            feed = km.build_feed(NOW)
+        finally:
+            km._session_awaiting = saved
+        self.assertEqual(feed["awaiting"], ["testsess"], "the idle awaiting session is listed by name")
+        self.assertEqual(feed["working"], [], "awaiting is not working — the lists are disjoint")
+
     def test_skeleton_lane_and_chat_chip_share_the_live_merged_input(self):
         # the user 2026-07-03, second round of the split: the FORMULA was shared (_session_chip) but not
         # the INPUT — the chat merged the SDK live tail while the lane badge rides the SKELETON build
