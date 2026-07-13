@@ -20,6 +20,7 @@ import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach } from "./kernel-attach";
 import { routeViewMessage } from "./view-routing";
+import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 
 const HOST = "127.0.0.1";
 
@@ -99,6 +100,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+  startFleetStatus(context);
 }
 
 export function deactivate() {
@@ -108,6 +110,7 @@ export function deactivate() {
   feedPipe?.dispose();
   timelinePipe?.dispose();
   fleetPipe?.dispose();
+  statusPipe?.dispose();
 }
 
 // Post into the chat webview, deferring until its "ready" if it's still cold
@@ -194,6 +197,11 @@ class KernelPipe {
     private app: "chat" | "feed" | "timeline" | "fleet",
     private onDown: (m: any) => void,
     private onReconnect: () => void,
+    private onState?: (up: boolean) => void,
+    // A passive pipe OBSERVES: it polls healthz and attaches when a kernel is
+    // there, but never asks the manager to spawn one and never toasts — the
+    // ambient status bar must not resurrect a kernel the user turned off.
+    private passive = false,
   ) {
     void this.connect();
   }
@@ -204,9 +212,9 @@ class KernelPipe {
   }
   private async connect() {
     if (!this.alive) return;
-    const ok = await ensureKernel();
+    const ok = this.passive ? (await healthz()).ok : await ensureKernel();
     if (!this.alive) return;
-    if (!ok) { setTimeout(() => void this.connect(), 5000); return; }
+    if (!ok) { this.onState?.(false); setTimeout(() => void this.connect(), 5000); return; }
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
@@ -214,6 +222,7 @@ class KernelPipe {
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }
+      this.onState?.(true);
       if (this.everConnected) {
         // A reconnect after a kernel restart: the kernel lost this client's
         // state, so reload the webview — its fresh "ready" resyncs everything.
@@ -235,6 +244,7 @@ class KernelPipe {
     const reconnect = () => {
       if (this.ws !== ws) return;
       this.ws = null;
+      this.onState?.(false);
       if (this.alive) setTimeout(() => void this.connect(), 1500);
     };
     ws.on("close", reconnect);
@@ -370,6 +380,77 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     pipe.dispose();
     if (feedPipe === pipe) feedPipe = undefined;
     feedPanel = undefined;
+  });
+}
+
+// ---- fleet status: the ambient status bar item + needs-you notifications ----
+// One host-held feed pipe (independent of the feed panel, which may be closed)
+// keeps the status bar live in every window: working / needs-you counts from
+// the kernel's authoritative feed frames, "offline" while the socket is down.
+// A needs-you card APPEARING is the one event worth a native notification —
+// "interrupt only when the human is the bottleneck"; existing cards on
+// (re)connect are status, not news, and never notify.
+
+let statusPipe: KernelPipe | undefined;
+let statusItem: vscode.StatusBarItem | undefined;
+let statusSeen: Set<string> | null = null;   // needs-you itemIds already seen (null = baseline pending)
+let statusOffline = true;
+let lastStatus: FleetStatus | null = null;
+
+function startFleetStatus(context: vscode.ExtensionContext) {
+  statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusItem.name = "romp";
+  statusItem.command = "rompChat.open";
+  context.subscriptions.push(statusItem);
+  paintStatus(null);
+  statusItem.show();
+  statusPipe = new KernelPipe(
+    "feed",
+    (m) => onStatusFrame(m),
+    () => { statusSeen = null; },              // kernel restarted: re-baseline, don't replay old asks
+    (up) => {
+      statusOffline = !up;
+      if (!up) statusSeen = null;
+      // No webview behind this pipe, so announce readiness ourselves — the
+      // kernel pushes the full feed state in response.
+      else statusPipe?.send({ type: "ready" });
+      paintStatus(null);
+    },
+    true,                                      // passive: observe only, never spawn/toast
+  );
+}
+
+function onStatusFrame(m: any) {
+  const st = deriveStatus(m);
+  if (!st) return;                             // ka frames and other chatter
+  lastStatus = st;
+  const { seen, fresh } = freshNeedsYou(statusSeen, m);
+  statusSeen = seen;
+  paintStatus(m);
+  notifyNeedsYou(fresh);
+}
+
+function paintStatus(frame: any) {
+  if (!statusItem) return;
+  const r = renderStatusBar(statusOffline, lastStatus);
+  statusItem.text = r.text;
+  statusItem.backgroundColor = r.warn ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+  statusItem.tooltip = statusOffline
+    ? "The romp kernel is unreachable — start it with `romp --on`."
+    : (frame ? statusTooltipLines(frame).join("\n") : undefined) || "romp fleet";
+}
+
+function notifyNeedsYou(fresh: any[]) {
+  if (!fresh.length) return;
+  if (panel?.active) return;                   // already looking at the romp chat — the card is on screen
+  const first = fresh[0];
+  const msg = fresh.length === 1
+    ? `romp: ${first.name} needs you — ${String(first.text || "").slice(0, 120)}`
+    : `romp: ${fresh.length} sessions need you (${[...new Set(fresh.map((a) => a.name))].join(", ")})`;
+  void vscode.window.showInformationMessage(msg, "Open").then((choice) => {
+    if (choice !== "Open") return;
+    openPanel(false);
+    chatPipe?.send({ type: "openSession", id: String(first.sid) });
   });
 }
 

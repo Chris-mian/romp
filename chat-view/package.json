@@ -13,6 +13,7 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onStartupFinished",
     "onWebviewPanel:rompChat",
     "onWebviewPanel:rompFeed",
     "onUri"
