@@ -83,13 +83,6 @@
           "title": "romp",
           "icon": "media/romp-swirl-glyph.svg"
         }
-      ],
-      "activitybar": [
-        {
-          "id": "rompSidebar",
-          "title": "romp",
-          "icon": "media/romp-swirl-glyph.svg"
-        }
       ]
     },
     "views": {
@@ -98,14 +91,6 @@
           "type": "webview",
           "id": "rompTimeline",
           "name": "Timeline",
-          "icon": "media/romp-swirl-glyph.svg"
-        }
-      ],
-      "rompSidebar": [
-        {
-          "type": "webview",
-          "id": "rompFleet",
-          "name": "Outline",
           "icon": "media/romp-swirl-glyph.svg"
         }
       ]

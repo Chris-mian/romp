@@ -14,6 +14,10 @@ const post = (m: Record<string, unknown>) => api.postMessage(m);
 
 installDomHelpers(HTMLElement.prototype);
 Object.assign(window, bridgeFunctions(post));
+// Usage bars belong to the host's chrome (here: the status-bar item's menu),
+// not the pane — the view hands the /usage payload to the host and keeps its
+// own toolbar copy hidden, like it does for the web shell's rail.
+(window as any).__rompForwardUsage = (usage: unknown) => post({ type: "usageData", usage });
 
 let panel: any = null;
 window.addEventListener("message", (ev: MessageEvent) => { dispatchFrame(panel, ev.data); });
