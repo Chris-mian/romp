@@ -59,7 +59,12 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Guide:
+      - The fleet at a glance: guide/the-fleet.md
+      - Tasks, not transcripts: guide/tasks.md
+      - Keeping the fleet moving: guide/nudges.md
       - The postal service: guide/postal-service.md
+      - Sessions and revival: guide/sessions.md
+      - Self-hosted and remote access: guide/remote-access.md
   - Architecture: architecture.md
   - Internals:
       - Judges: judges.md

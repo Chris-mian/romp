@@ -48,6 +48,10 @@ requirements, remote-host setup, and configuration are in
 
 ## See it in action
 
+Romp presents the fleet through four views: the feed (work as task cards), the
+fleet (every session with its open tasks), the timeline (sessions over time and
+where they interact), and the chat you already know.
+
 <!-- TODO: screenshots / short GIFs go here. Planned captures:
      - The fleet at a glance: the dashboard with several agents, each showing status (working / stuck / needs you).
      - A task card opening to its summary and background ("Tasks, not transcripts").

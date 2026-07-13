@@ -12,37 +12,46 @@ handoffs of work and information between them.
 Romp provides the tools to make this management seamless, so you can stay
 focused on what you're trying to accomplish instead of how the work is
 happening. It organizes your interaction with the agents by human-facing
-tasks and goals. This includes:
+tasks and goals:
 
-- **The whole fleet at a glance.** One dashboard shows every agent: who is
-  working, who is stuck, who has been waiting on you, and for how long.
-- **Tasks, not transcripts.** Romp infers what tasks the agents are working on
-  and organizes the work by task rather than by session: several tasks can
-  interleave in one session, and one task can span several. Each task shows who
-  has it, what got handed off, what is done, what needs you, plus a short
-  summary and the background you need to decide, so picking a thread back up
-  after a week costs a glance.
-- **Stalled agents get a nudge.** Since Romp knows which tasks are still open,
-  an agent that goes idle with work left gets nudged back to it; the fleet
-  keeps moving without you watching for stalls.
-- **Coordination across agents and machines.** The Romp Postal Service is mail
-  between agents: they delegate, hand off, and ask each other questions
-  directly, and Romp tracks every exchange so you stay in the loop. It runs
-  over SSH, so one fleet can span machines.
-- **Transcripts built for humans.** Timestamps, live status, and collapsible
-  detail; read at any level, from a one-line summary down to the raw exchange.
-- **No thread is lost.** Every session is indexed and searchable, and a closed
-  session revives with its history intact.
-- **On your machine, from any screen.** Romp is a kernel you run on your own
-  machine serving a web dashboard, with no hosted service in the middle. Open
-  the dashboard in a browser tab, in the editor, or over SSH from any device.
+- **See the whole fleet at a glance.** One place shows every agent: who is
+  working, who is stuck, and who is waiting on you.
+- **Pick up any thread in a glance.** Each task carries a plain-language
+  summary and the background a decision needs, so you never dig through
+  transcripts to get your bearings.
+- **The fleet keeps moving on its own.** An agent that stalls with work left
+  gets nudged back to it, so progress does not wait on you noticing.
+- **Agents coordinate with each other.** They hand off work and ask each other
+  questions directly, across machines, while you stay in the loop.
+- **Never lose your place.** A closed session revives with its full history,
+  and everything is searchable, so stepping away is always safe.
 
-## The four views
+## Self-hosted, reachable from anywhere
 
-The feed splits the work into task cards, the fleet lists every session with
-its open tasks beneath it, the timeline lays the sessions out over time and
-shows where they interact, and the chat is the conversation you already know,
-laid out for scanning.
+You run Romp yourself, on your laptop or a server, with no hosted service in
+between. Connect several machines over SSH and they federate into one fleet
+whose agents message across the boundary. Open the dashboard in a browser or
+as a VS Code / Cursor extension, and reach it from your phone over Tailscale
+to check in or keep a conversation going. The only traffic that leaves your
+machine is the `claude` CLI you already use.
+
+## See it in action
+
+Romp presents the fleet through four views: the feed (work as task cards), the
+fleet (every session with its open tasks), the timeline (sessions over time and
+where they interact), and the chat you already know.
+
+<!-- TODO: screenshots / short GIFs go here. Planned captures:
+     - The fleet at a glance: the dashboard with several agents, each showing status (working / stuck / needs you).
+     - A task card opening to its summary and background ("Tasks, not transcripts").
+     - A stalled agent getting nudged back to its open work.
+     - Two agents exchanging postal mail (a delegate / handoff / question).
+     - The timeline laying sessions out over time and showing where they interact.
+     - Reviving a closed session with its history intact.
+     - Reaching the dashboard from a phone over Tailscale.
+     - The VS Code / Cursor extension panel beside a browser tab (same fleet, two surfaces).
+-->
+
 
 ## Components
 
@@ -79,6 +88,8 @@ laid out for scanning.
 ## Install
 
 ```bash
+git clone https://github.com/romp-on/romp.git
+cd romp
 ./install.sh                 # hooks, skill, MCP config symlinks + chat-view extension
 export PATH="$PATH:$(pwd)/bin"   # add to your shell rc
 ```
@@ -126,10 +137,11 @@ python3 -m pytest tests/
 
 ## Docs
 
-The published site sources live in `docs/`: `getting-started.md`,
-`guide/postal-service.md`, `architecture.md`, and the judge layer —
-`judges.md` (the roster), `judge-pipeline.md` (the diagram map), and
-`goal-state.md` (the card state model). Architecture + schemas live in
-`design/`: `event-model.md` (the bottom-layer event tree), `read-side.md`
-(the kernel + the panes), `sdk-backend.md` (the Agent SDK backend),
-`segment-regrowth.md`, and `stalled-open-todos-nudge.md`.
+The published site sources live in `docs/`: `getting-started.md`, a `guide/`
+with a page per capability (`the-fleet.md`, `tasks.md`, `nudges.md`,
+`postal-service.md`, `sessions.md`, `remote-access.md`), `architecture.md`,
+and the judge layer — `judges.md` (the roster), `judge-pipeline.md` (the
+diagram map), and `goal-state.md` (the card state model). Architecture +
+schemas live in `design/`: `event-model.md` (the bottom-layer event tree),
+`read-side.md` (the kernel + the panes), `sdk-backend.md` (the Agent SDK
+backend), `segment-regrowth.md`, and `stalled-open-todos-nudge.md`.
