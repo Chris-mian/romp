@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""romp-update — push THIS machine's committed romp to attached REMOTE kernels + restart them
+(`romp update [host...]`).
+
+Peer-to-peer, no GitHub (the user 2026-07-04): the local kernel pushes its committed HEAD straight to each
+host over ssh and restarts it, so the remote runs exactly the local code — no `git pull` from origin, no round
+trip through GitHub. With NO host it updates every attached remote that is out of date (running a different
+commit than local). Uncommitted local edits are NOT sent — commit first. (To update THIS machine, use your own
+`git pull`/checkout then `romp --refresh`.)
+"""
+import json
+import sys
+import urllib.error
+import urllib.request
+
+KPORTS = ["http://127.0.0.1:7433", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
+
+
+def _kernel():
+    """The base URL of the running LOCAL kernel (it owns the remote tunnels), or None."""
+    for u in KPORTS:
+        try:
+            with urllib.request.urlopen(u + "/version", timeout=1.5) as r:
+                if r.status == 200:
+                    return u
+        except Exception:
+            continue
+    return None
+
+
+def _get(u, path):
+    with urllib.request.urlopen(u + path, timeout=5) as r:
+        return json.loads(r.read().decode() or "{}")
+
+
+def _post(u, path, body):
+    req = urllib.request.Request(u + path, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:          # git pull + restart can take a while
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:                              # 502 → {ok:false, detail:...}
+        try:
+            return json.loads(e.read().decode() or "{}")
+        except Exception:
+            return {"ok": False, "detail": "HTTP %s" % e.code}
+    except Exception as e:
+        return {"ok": False, "detail": str(e)}
+
+
+def main(argv):
+    u = _kernel()
+    if not u:
+        sys.stderr.write("romp update: no running kernel found (is romp on? try `romp --status`)\n")
+        return 2
+    hosts = [a for a in argv if not a.startswith("-")]
+    if not hosts:                                                   # no host → the out-of-date attached remotes
+        try:
+            tuns = _get(u, "/tunnels").get("tunnels", [])
+        except Exception as e:
+            sys.stderr.write("romp update: couldn't list remotes: %s\n" % e)
+            return 2
+        if not tuns:
+            sys.stdout.write("romp update: no remotes attached (attach one from the rail's network popover).\n")
+            return 0
+        hosts = [t["host"] for t in tuns if t.get("outOfDate")]
+        if not hosts:
+            sys.stdout.write("romp update: all attached remotes are up to date.\n")
+            return 0
+    rc = 0
+    for h in hosts:
+        sys.stdout.write("updating %s … " % h)
+        sys.stdout.flush()
+        body = _post(u, "/tunnels/update", {"host": h})
+        if body.get("ok"):
+            sys.stdout.write("ok — %s\n" % (body.get("detail") or "updated + restarting"))
+        else:
+            sys.stdout.write("FAILED — %s\n" % (body.get("detail") or "unknown"))
+            rc = 1
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

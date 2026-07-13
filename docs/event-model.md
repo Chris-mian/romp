@@ -1,7 +1,6 @@
 # Event model: the bottom-layer schema
 
-Internal design and schema doc, not user-facing (those live in `docs/`). This is
-the pinned target for the rebuilt bottom layer of romp: how a session's
+Architecture deep dive: the pinned schema for the rebuilt bottom layer of romp: how a session's
 transcript becomes a structured, queryable model of turns and atoms. Built
 during the bottom-up redesign, 2026-06-13.
 

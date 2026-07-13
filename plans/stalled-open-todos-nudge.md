@@ -45,7 +45,7 @@ open to-dos (`agent_open_nums`) and requires blocking ≥1 of them on a blocked-
 
 ## 1. Problem & root cause
 
-romp's **authoritative-tier plan-sync** (see `design/` history + memory `authoritative-plan-sync-built`)
+romp's **authoritative-tier plan-sync** (see `plans/` history + memory `authoritative-plan-sync-built`)
 takes the agent's OWN to-do list as authoritative that work is *undone*: an open agent to-do
 (`node["agentTask"]`) forces its goal to roll up **WORKING**, overriding the judge's inference. But
 **Claude Code's to-do system only has pending / in-progress / completed — there is no "blocked."** So the
@@ -59,7 +59,7 @@ the `track` session's g9 fired every ~5s, count climbing to 82, **burning tokens
 
 ## 2. What's already shipped — Increment 1 (`58bc7ad`)
 
-The auto-nudge (`_auto_nudge_tick` in `bin/romp-kernel`) now fires **at most once per GENUINE stall**:
+The auto-nudge (`_auto_nudge_tick` in `kernel/kernel.py`) now fires **at most once per GENUINE stall**:
 the re-arm gate skips when `rec["lastTurnId"] == lt_id` (a folded nudge-response — same turn id) **OR**
 `_turn_romp_injected(lt)` (a new romp-opened response turn). It re-arms only on a genuine
 (human/sdk/peer-opened) NEW ended turn. This reverted the loop-causing `728a1e8` and killed the runaway.
@@ -100,7 +100,7 @@ re-nudged. Only a genuine new stall (real new work → stop) can nudge again.
 
 ## 4. Implementation plan (per file)
 
-### 4a. Judge (`bin/romp-judge`) — status + block reason + distiller
+### 4a. Judge (`kernel/judge.py`) — status + block reason + distiller
 - **Relax the authoritative-open override** so a planner-set block on an open agent-task item STICKS
   (is not forced back to open/working by the agent's "still pending" to-do status). READ FIRST:
   `rollup_status` (the open_task authority), the `agentTask` field shape + its status values
@@ -114,7 +114,7 @@ re-nudged. Only a genuine new stall (real new work → stop) can nudge again.
   `blockSummary`/`briefedMt` from a blocked node). It should trigger naturally once the node is blocked
   with a `blockWhy`; verify it fires for this path.
 
-### 4b. Kernel (`bin/romp-kernel`) — detection, fork nudge, chip
+### 4b. Kernel (`kernel/kernel.py`) — detection, fork nudge, chip
 - **Detect "open authoritative to-dos":** a top goal whose subtree has a node with an OPEN `agentTask`
   status. The feed tree already exposes `auth = (nd.get("agentTask") or {}).get("status")` (in `flatten`,
   ~line 5385). Find the open status values (pending / in_progress).
@@ -132,7 +132,7 @@ re-nudged. Only a genuine new stall (real new work → stop) can nudge again.
 
 ### 4c. UI (`ui/webview/feed.ts`) — the chip
 - Render a **"nudge failed"** chip on a card whose ask carries `nudgeFailed`. Model it on the existing
-  card chips (e.g. the `↻ Followed up` chip). Build via `npm --prefix chat-view run build` (dist-only —
+  card chips (e.g. the `↻ Followed up` chip). Build via `npm --prefix vscode-extension run build` (dist-only —
   no kernel restart to deploy the UI, but the KERNEL changes above need a refresh).
 
 ## 5. Tests (repo rule: a test per change)

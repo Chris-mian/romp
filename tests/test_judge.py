@@ -4554,7 +4554,7 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd["summaryAnchor"], "a1", "the brief's citation lands in the same anchor field")
 
     def test_brief_fires_for_a_blocked_open_agent_todo(self):
-        # design/stalled-open-todos-nudge.md: the fork-nudge path ends with the planner blocking an OPEN
+        # plans/stalled-open-todos-nudge.md: the fork-nudge path ends with the planner blocking an OPEN
         # agentTask node. The authoritative-open tier (which holds the top un-complete) must not keep that
         # block from the block-distiller: rollup stamps the TOP blocked, and the brief runs with the open
         # item's blockWhy as the owed question.
@@ -5192,7 +5192,7 @@ class QuoteTitleHeal(unittest.TestCase):
 
 
 class SeamRegrowth(unittest.TestCase):
-    """Settle-time seam (design/segment-regrowth.md): a top goal that settles while its placed segment
+    """Settle-time seam (plans/segment-regrowth.md): a top goal that settles while its placed segment
     keeps GROWING splits that segment at the settle moment — the post-close tail becomes a fresh,
     unplaced, plannable segment (trigger-less, seam-flagged), so pivot work can't hide behind the placed
     head. Ownership-gated: only the settled top's own segment splits, and only when the tail holds REAL

@@ -665,7 +665,7 @@ class ViewBuilder(unittest.TestCase):
 
     def test_ledger_tree_carries_mt_for_click_to_jump_nav(self):
         # Each tree node carries `mt` (the segment where it was last resolved/blocked), distinct from `t`
-        # (where it began) — the chat-view click-to-jump nav lands done/blocked goals on mt, open on t
+        # (where it began) — the chat view's click-to-jump nav lands done/blocked goals on mt, open on t
         # (the user 2026-06-16). Mirrors build_feed.
         nid = SID + ":n1"
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
@@ -1441,7 +1441,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(calls, [(SID, SID + ":g1")], "the click reaches user_move with the store + goal id")
 
     def test_provisional_card_surfaces_for_a_seam_tail(self):
-        # design/segment-regrowth.md: a top settles while its placed segment keeps growing with real
+        # plans/segment-regrowth.md: a top settles while its placed segment keeps growing with real
         # work → the tail splits into a fresh unplaced segment, and the feed shows a Working placeholder
         # NEXT TO the completed card (previously the pivot work was invisible: the segment was placed, so
         # the placeholder's drop-gate suppressed it by design). Placed tail → the placeholder yields.
@@ -1947,7 +1947,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(sent, [], "a turn opened by our own nudge must NOT re-arm (kills the runaway loop)")
 
     def test_auto_nudge_sends_the_fork_text_for_open_agent_todos(self):
-        # design/stalled-open-todos-nudge.md: a stalled goal whose subtree holds an item the agent's OWN
+        # plans/stalled-open-todos-nudge.md: a stalled goal whose subtree holds an item the agent's OWN
         # to-do list still marks open gets the FORK nudge — "continue these, or tell me which are blocked
         # and what you need" — instead of the plain status check. Claude Code's to-do system has no
         # "blocked" state, so this is how the blocker gets said out loud (the planner's nudge-mode note
@@ -2006,7 +2006,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("where does it stand", body, "and asks for per-item progress")
 
     def test_auto_nudge_stamps_failed_when_its_response_leaves_the_goal_stalled(self):
-        # design/stalled-open-todos-nudge.md: after the ONE nudge, the agent's response turn ends (judged —
+        # plans/stalled-open-todos-nudge.md: after the ONE nudge, the agent's response turn ends (judged —
         # the closer-settled gate has passed, and the closer runs last among the judge tiers) with the goal
         # STILL working → never re-nudged; the record is stamped `failed` so the feed shows the "nudge
         # failed" chip (and floors a fork-flavored one to needs-you). Event-based: the trigger is the
@@ -2065,7 +2065,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(card["blocked"], "no stalled badge without the fork flavor")
 
     def test_failed_fork_nudge_floors_the_card_to_needs_input(self):
-        # design/stalled-open-todos-nudge.md: fork flavor + to-dos STILL open + the response didn't resolve
+        # plans/stalled-open-todos-nudge.md: fork flavor + to-dos STILL open + the response didn't resolve
         # it → the human is the bottleneck; the card floors to needs-you with the "stalled" badge (and is
         # never re-nudged — escalation instead of the loop).
         g, c = SID + ":gw", SID + ":gt"
@@ -3280,7 +3280,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("showBranch: true", _gear_src())                # load() default ON, both branches
 
     def test_chat_body_has_an_explicit_send_button(self):
-        # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
+        # The web-dashboard composer (kernel _chat_body, a SECOND copy of vscode-extension/src/page-skeleton.chatBody)
         # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).
         body = km._chat_body()
         self.assertIn('id="composer-send"', body)
@@ -4761,7 +4761,7 @@ class WsFraming(unittest.TestCase):
 
 
 class ServeSecurity(unittest.TestCase):
-    """The serve-layer gate (design/read-side.md): Origin/Host validation on every request AND the
+    """The serve-layer gate (docs/read-side.md): Origin/Host validation on every request AND the
     /ws upgrade (kills the cross-site WS hole token-free), + ROMP_SERVE_TOKEN for non-local reach.
     Runs the REAL handler over a loopback server (GET /feed is a static page → no model calls)."""
 

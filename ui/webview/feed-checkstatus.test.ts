@@ -11,7 +11,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 
 test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
   // exact-string pins: the passive "nudge failed" CHIP (fask-nudgefailed / a._nudgeFailed — a status cue
-  // from the auto-nudge, design/stalled-open-todos-nudge.md) is a different thing and allowed to exist.
+  // from the auto-nudge, plans/stalled-open-todos-nudge.md) is a different thing and allowed to exist.
   assert.doesNotMatch(FEED, /"fask-nudge"/);
   assert.doesNotMatch(FEED, /nudge\.onclick/);
   assert.doesNotMatch(FEED, /a\._nudge[^A-Za-z]/);

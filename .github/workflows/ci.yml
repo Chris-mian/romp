@@ -1,7 +1,7 @@
 name: CI
 
 # Run the test suites that gate romp: the Python pipeline (bin/), the shell
-# surfaces (tmux hooks / postal / manager), and the chat-view extension build.
+# surfaces (tmux hooks / postal / manager), and the VS Code extension build.
 # Minimal on purpose — one Linux runner per suite, the dev Python/Node versions.
 # Broaden to a {macOS, Linux} x {Python 3.11..3.13} matrix later if needed.
 
@@ -39,12 +39,12 @@ jobs:
       - name: Run bats
         run: bats tests/*.bats
 
-  chat-view:
-    name: chat-view (typecheck + test + build)
+  vscode-extension:
+    name: vscode-extension (typecheck + test + build)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: chat-view
+        working-directory: vscode-extension
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

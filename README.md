@@ -63,24 +63,24 @@ where they interact), and the chat you already know.
   backends: the Agent SDK (default; the kernel drives the Claude Agent SDK) or
   tmux (terminal sessions tagged `@romp`). A `bin/README.md` maps every bin
   command.
-- **Romp Postal Service** (`bin/romp-postal-service`) — inter-session mail: send,
+- **Romp Postal Service** (`postal/postal_service.py`) — inter-session mail: send,
   inbox, working-notes, parked mail for dead sessions, session search, revive.
   Exposed to Claude sessions as an MCP server (`romp-postal-service mcp`) and on the
   shell as `romp --mail …`.
-- **Kernel** (`bin/romp-kernel`) — THE always-on core: one Python process,
+- **Kernel** (`kernel/kernel.py`) — THE always-on core: one Python process,
   single writer. It parses each session's transcript into an event tree
-  (`bin/romp-event-model`), runs the **judges** (`bin/romp-judge` — an index
+  (`kernel/event_model.py`), runs the **judges** (`kernel/judge.py` — an index
   tier always on, the planners and board keepers while a client is watching;
   the roster lives in `docs/judges.md`) that
   write the durable records, and serves the chat / feed / fleet / timeline UI
   over HTTP + WebSocket. Its lifecycle is owned by **`bin/romp-manager`** (start with
   `romp --on`; `bin/romp-service` auto-starts it at login). Open
   `http://127.0.0.1:7433/` in any browser — no VS Code required.
-  Design: `design/read-side.md`.
+  Design: `docs/read-side.md`.
 - **UI** — the four panes (chat, feed, fleet, timeline). The chat + feed +
   fleet render bundles are built from `ui/webview/` and served by the kernel;
   the timeline is `ui/romp-timeline-view.js`, served verbatim at `/timeline`.
-- **chat-view/** — the VS Code/Cursor extension: a thin WebSocket client of the
+- **vscode-extension/** — the VS Code/Cursor extension: a thin WebSocket client of the
   same kernel. The editor panel and a browser tab share one kernel — same tabs,
   per-client focus.
 - **hooks/** — Claude Code hooks: tmux status-line state, the live one-line
@@ -93,7 +93,7 @@ where they interact), and the chat you already know.
 ```bash
 git clone https://github.com/romp-on/romp.git
 cd romp
-./install.sh                 # hooks, skill, MCP config symlinks + chat-view extension
+./install.sh                 # hooks, skill, MCP config symlinks + VS Code extension
 export PATH="$PATH:$(pwd)/bin"   # add to your shell rc
 ```
 
@@ -145,6 +145,33 @@ with a page per capability (`the-fleet.md`, `tasks.md`, `nudges.md`,
 `postal-service.md`, `sessions.md`, `remote-access.md`), `architecture.md`,
 and the judge layer — `judges.md` (the roster), `judge-pipeline.md` (the
 diagram map), and `goal-state.md` (the card state model). Architecture +
-schemas live in `design/`: `event-model.md` (the bottom-layer event tree),
-`read-side.md` (the kernel + the panes), `sdk-backend.md` (the Agent SDK
-backend), `segment-regrowth.md`, and `stalled-open-todos-nudge.md`.
+schema deep dives live there too: `event-model.md` (the bottom-layer event
+tree), `read-side.md` (the kernel + the panes), and `sdk-backend.md` (the
+Agent SDK backend). Design docs for work that has since shipped are kept as
+history in `plans/`.
+
+## Code layout
+
+```text
+bin/               every runnable command (put on $PATH) — bash/node launch glue
+                   as real files, Python commands as symlinks into the source
+                   folders below; `ls -l bin` or bin/README.md is the map
+kernel/            the always-on core: event_model.py -> judge.py -> kernel.py,
+                   plus the session backends (SDK + tmux) behind one seam
+postal/            the Romp Postal Service (inter-session mail: MCP server + CLI)
+cli/               terminal tools: feed mirror, judge monitor, version, update
+ui/                front-end source for all four panes (chat, feed, fleet,
+                   timeline) — one set of bundles for browser and VS Code
+vscode-extension/  the VS Code/Cursor extension packaging (thin client; bundles
+                   ui/ sources into its VSIX)
+hooks/             Claude Code lifecycle hooks (status pipe, judge wake, postal)
+claude/            what romp ships into Claude Code: session prompt, MCP config,
+                   the romp + romp-postal skills
+docs/              the published docs site (mkdocs) + architecture deep dives
+plans/             design history for work that has since shipped (the why)
+tests/             all suites: pytest, bats, node (see tests/README.md)
+assets/            brand sources (swirl, wordmark) + generator scripts
+install.sh         one-shot setup: hooks, skills, MCP config, extension, service
+```
+
+Each folder has its own README with the next level of detail.

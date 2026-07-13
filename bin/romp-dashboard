@@ -109,7 +109,7 @@ format_duration() {
 # wall-clock: an elapsed-time gate can't tell "asleep / long tool call" from
 # "stuck", and a laptop-sleep clock jump snaps `now - since` past the threshold,
 # which would wrongly fade a live WORKING row (the 2026-06-12 sleep/wake
-# incident). Mirrors chat-view's fadedFor; a genuinely stuck 'working' is healed
+# incident). Mirrors the chat view's fadedFor; a genuinely stuck 'working' is healed
 # to 'waiting' by romp-idle-dots (pane check) and THEN fades here as a ready row.
 # Pure (state, elapsed) -> "true"/"false" so it can be tested. Event-based.
 row_is_stale() {

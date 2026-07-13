@@ -265,7 +265,7 @@ class RollupAuthority(unittest.TestCase):
 
 
 class BlockedAuthority(unittest.TestCase):
-    """Stalled-with-open-to-dos (design/stalled-open-todos-nudge.md): the agent CANNOT self-mark a to-do
+    """Stalled-with-open-to-dos (plans/stalled-open-todos-nudge.md): the agent CANNOT self-mark a to-do
     blocked (Claude Code's to-do system has no such state), so when the fork nudge elicits "blocked because
     …" the PLANNER blocks the open agentTask node — and that block must STICK. The rollup contract that
     makes it stick: blocked outranks the authoritative-open tier (open_task only gates completeness), and

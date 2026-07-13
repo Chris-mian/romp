@@ -101,7 +101,7 @@ test("Timeline: blur force-releases a stuck press/tip so the lanes can't freeze 
 // Its click-acknowledgement test is gone with it; pin that no Nudge button remains on the feed card.
 test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
   // exact-string pin: the passive "nudge failed" CHIP (fask-nudgefailed, a status cue from the
-  // auto-nudge — design/stalled-open-todos-nudge.md) is a different thing and allowed to exist.
+  // auto-nudge — plans/stalled-open-todos-nudge.md) is a different thing and allowed to exist.
   assert.doesNotMatch(FEED, /"fask-nudge"/);
   assert.doesNotMatch(FEED, /nudge\.onclick/);
 });

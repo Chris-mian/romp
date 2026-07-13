@@ -1,5 +1,5 @@
 /* The fleet ("Outline") pane's layout styles, shared by BOTH hosts: bin/romp-kernel reads
-   this file live for the /fleet page, and chat-view/esbuild.js bundles it to
+   this file live for the /fleet page, and vscode-extension/esbuild.js bundles it to
    dist/fleet-pane.css for the VS Code view. The .ledger-* goal-tree styling comes from the
    chat's styles.css (linked before this file on both hosts); these rules own the page
    layout so the chat rules don't fight the fleet page. */

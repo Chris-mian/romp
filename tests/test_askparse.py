@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for bin/romp-askparse — the Python port of chat-view/src/askparse.ts.
+"""Tests for bin/romp-askparse — the Python port of vscode-extension/src/askparse.ts.
 
 Pane-capture fixtures verified against the real Claude Code picker screens
-documented in askparse.ts. Ported 1:1 from chat-view/src/askparse.test.ts: same
+documented in askparse.ts. Ported 1:1 from vscode-extension/src/askparse.test.ts: same
 synthetic fixtures, same expected outputs, same assertions. Synthetic only:
 invented prompt text, no real session data.
 """

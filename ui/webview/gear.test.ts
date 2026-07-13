@@ -13,7 +13,7 @@ const KERNEL = read("bin", "romp-kernel");
 const GEAR = read("ui", "webview", "gear.js");
 const FEED = read("ui", "webview", "feed.ts");
 const FEED_CSS = read("ui", "webview", "feed.css");
-const EXT = read("chat-view", "src", "extension.ts");
+const EXT = read("vscode-extension", "src", "extension.ts");
 
 test("the kernel no longer carries an inline gear (single source: the feed bundle)", () => {
   for (const twin of ["_GEAR_CSS", "_GEAR_JS", "_gear_html"])

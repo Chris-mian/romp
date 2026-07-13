@@ -30,8 +30,8 @@ const extension = {
 /** @type {import('esbuild').BuildOptions} */
 const webview = {
   // The browser UI sources live in the top-level ui/ dir (consolidated out of
-  // chat-view/src/webview/). This extension package still owns the build + dist,
-  // so we reach up into ../ui/webview and add chat-view/node_modules to the
+  // the old chat-view/src/webview/). This extension package still owns the build + dist,
+  // so we reach up into ../ui/webview and add vscode-extension/node_modules to the
   // resolver (nodePaths) — ui/ is outside this package, so marked/dompurify/
   // highlight.js wouldn't resolve by the normal upward walk otherwise.
   entryPoints: [
@@ -52,7 +52,7 @@ const webview = {
   platform: "browser",
   target: "es2020",
   outdir: "dist",
-  // Leave media url()s verbatim — they're served from chat-view/media at runtime (kernel
+  // Leave media url()s verbatim — they're served from vscode-extension/media at runtime (kernel
   // /media or VS Code localResourceRoot), NOT bundled. `../media/x.png` is correct relative
   // to the emitted dist/feed.css; esbuild must not try to resolve it against the source tree.
   external: ["*.png", "*.svg"],
