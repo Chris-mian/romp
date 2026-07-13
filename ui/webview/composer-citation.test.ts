@@ -89,7 +89,7 @@ test("a sub-goal click cites ITSELF, not the card's top goal (the user 2026-07-0
 
 test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-context flavored (the user 2026-07-13)", () => {
   // two flavors on one Citation: a goal chip (itemId) or a quote chip (quote [+ the turn's uuid])
-  assert.match(RENDER, /interface Citation \{ itemId\?: string; title: string; quote\?: string; uuid\?: string \| null \}/);
+  assert.match(RENDER, /interface Citation \{ itemId\?: string; title: string; quote\?: string; uuid\?: string \| null; src\?: string \}/);
   // event-based on selectionchange; BOTH endpoints must sit inside transcript turns, so composer/tab
   // selections never seed; a collapse never clears (clicking into the composer must not eat the chip)
   assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
@@ -104,11 +104,11 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
 
 test("a quote chip sends a plain message wrapped by quoteReplyBody — never askFollowUp (no goal to reopen)", () => {
   assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
-  assert.match(RENDER, /else if \(cite\?\.quote\) vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text: quoteReplyBody\(cite\.quote, text\) \}\);/);
+  assert.match(RENDER, /else if \(cite\?\.quote\) vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text: quoteReplyBody\(cite\.quote, text, cite\.src\) \}\);/);
   // the wrap: a lead-in + the highlighted text as a markdown quote block, then the typed message
-  assert.match(RENDER, /return "Replying to this part of the conversation:\\n" \+ q \+ "\\n\\n" \+ text;/);
+  assert.match(RENDER, /return lead \+ "\\n" \+ q \+ "\\n\\n" \+ text;/);
   // the chip's audit preview shows the SAME composed body, client-side (no /followup-preview fetch)
-  assert.match(RENDER, /body\.textContent = quoteReplyBody\(cite\.quote \|\| "", draft \|\| "\(your message\)"\);/);
+  assert.match(RENDER, /body\.textContent = quoteReplyBody\(cite\.quote \|\| "", draft \|\| "\(your message\)", cite\.src\);/);
   // a quote chip wears the typographic quote mark; the goal chip keeps ↩
   assert.match(RENDER, /mark\.textContent = cite\.quote \? "“" : "↩";/);
   // clearing a card drops only GOAL chips citing it — a quote chip cites no goal
@@ -119,4 +119,17 @@ test("right-click Reply drops the auto-seeded quote chip — the quote is in the
   // the selection that opened the context menu also seeded the chip (selectionchange); quoting it into the
   // composer text must consume the chip, or the send would wrap an already-quoted message again
   assert.match(RENDER, /if \(c\?\.quote\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
+});
+
+test("a VS Code EDITOR highlight seeds the same chip, labeled + wrapped with its file:lines origin (the user 2026-07-13)", () => {
+  // the extension host posts editorSelection {text, src} on onDidChangeTextEditorSelection (see
+  // vscode-extension/src editor-selection pins); the webview seeds the quote chip from it
+  assert.match(RENDER, /m\.type === "editorSelection" && typeof m\.text === "string" && m\.text\.trim\(\) && activeId/);
+  assert.match(RENDER, /setQuoteCitation\(activeId, m\.text, null, typeof m\.src === "string" \? m\.src : undefined\);/);
+  // the chip title leads with the origin; the wrap lead-in points at the code, not the conversation
+  assert.match(RENDER, /const title = \(src \? src \+ " — " \+ snip : snip\)\.slice\(0, 140\);/);
+  assert.match(RENDER, /const lead = src \? "Replying to this highlighted code \(" \+ src \+ "\):" : "Replying to this part of the conversation:";/);
+  // both consumers thread the origin through: the send wrap and the chip's audit preview
+  assert.match(RENDER, /quoteReplyBody\(cite\.quote, text, cite\.src\)/);
+  assert.match(RENDER, /quoteReplyBody\(cite\.quote \|\| "", draft \|\| "\(your message\)", cite\.src\)/);
 });

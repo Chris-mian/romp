@@ -5122,7 +5122,7 @@ const drafts = new Map<string, string>();
 // citation (quote [+ the containing turn's uuid] — highlighting transcript text seeds it). A quote chip has
 // no goal to reopen: the send wraps the highlighted text into a plain message (quoteReplyBody) so the agent
 // knows exactly which part is being replied to. Same chip, same dismissal, last seed wins.
-interface Citation { itemId?: string; title: string; quote?: string; uuid?: string | null }
+interface Citation { itemId?: string; title: string; quote?: string; uuid?: string | null; src?: string }   // src = a VS Code editor highlight's origin, workspace-relative file:lines (the user 2026-07-13)
 const composerCitations = new Map<string, Citation>();
 
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
@@ -5146,7 +5146,8 @@ try {
       if (c && typeof c.title === "string" && (typeof c.itemId === "string" || typeof c.quote === "string"))
         composerCitations.set(k, { itemId: typeof c.itemId === "string" ? c.itemId : undefined, title: c.title,
                                    quote: typeof c.quote === "string" ? c.quote : undefined,
-                                   uuid: typeof c.uuid === "string" ? c.uuid : null });
+                                   uuid: typeof c.uuid === "string" ? c.uuid : null,
+                                   src: typeof c.src === "string" ? c.src : undefined });
     }
 } catch { /* ignore */ }
 
@@ -5212,7 +5213,7 @@ function openCitePreview(id: string, anchor: HTMLElement): void {
   if (!cite.itemId) {
     // a QUOTE chip's body is composed CLIENT-side (quoteReplyBody IS the send path — no kernel wrap, so
     // nothing to fetch and nothing to drift). Same popover, same clamp-after-content.
-    body.textContent = quoteReplyBody(cite.quote || "", draft || "(your message)");
+    body.textContent = quoteReplyBody(cite.quote || "", draft || "(your message)", cite.src);
     pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
     return;
   }
@@ -5232,12 +5233,15 @@ function setCitation(id: string, cite: Citation): void {
   if (id === activeId) { renderComposerChips(id); focusComposer(); }
 }
 
-// The outgoing body for a QUOTE citation (the user 2026-07-13): the highlighted transcript text rides
-// ahead of the typed message as a markdown quote block, so the agent knows exactly which part of the
-// conversation is being replied to. Also what the chip's audit preview shows — one function, no drift.
-function quoteReplyBody(quote: string, text: string): string {
+// The outgoing body for a QUOTE citation (the user 2026-07-13): the highlighted text rides ahead of the
+// typed message as a markdown quote block, so the agent knows exactly which part is being replied to.
+// Also what the chip's audit preview shows — one function, no drift. `src` (the VS Code editor flavor,
+// same day) names where the highlight came from — a workspace-relative file:lines — so the lead-in points
+// the agent at the code, not the conversation.
+function quoteReplyBody(quote: string, text: string, src?: string | null): string {
   const q = quote.split("\n").map((l) => "> " + l).join("\n");
-  return "Replying to this part of the conversation:\n" + q + "\n\n" + text;
+  const lead = src ? "Replying to this highlighted code (" + src + "):" : "Replying to this part of the conversation:";
+  return lead + "\n" + q + "\n\n" + text;
 }
 
 // HIGHLIGHT-TO-REPLY (the user 2026-07-13): selecting text in the chat transcript seeds the composer chip
@@ -5248,9 +5252,11 @@ function quoteReplyBody(quote: string, text: string): string {
 // ✕ / Backspace-at-start. Unlike setCitation this never focuses the composer: stealing focus mid-drag
 // would collapse the very selection being made (the focusCardUnlessTyping lesson).
 const QUOTE_CAP = 4000;   // a selection can be huge; the send stays bounded
-function setQuoteCitation(id: string, quote: string, uuid: string | null): void {
-  const title = quote.replace(/\s+/g, " ").trim().slice(0, 140);
-  composerCitations.set(id, { title, quote: quote.slice(0, QUOTE_CAP), uuid });
+function setQuoteCitation(id: string, quote: string, uuid: string | null, src?: string): void {
+  const snip = quote.replace(/\s+/g, " ").trim();
+  // an editor highlight leads its chip with where it came from (file:lines), then the snippet
+  const title = (src ? src + " — " + snip : snip).slice(0, 140);
+  composerCitations.set(id, { title, quote: quote.slice(0, QUOTE_CAP), uuid, src: src || undefined });
   persistDrafts();
   if (id === activeId) renderComposerChips(id);
 }
@@ -5677,6 +5683,10 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") insertComposerText(m.path);
+  // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
+  // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
+  else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim() && activeId)
+    setQuoteCitation(activeId, m.text, null, typeof m.src === "string" ? m.src : undefined);
   else if (m.type === "closed") dismissSession(m.id);   // a session died on its own (or the kernel confirms our close)
 });
 
@@ -5751,7 +5761,7 @@ function setupComposer() {
     const cite = composerCitations.get(activeId);
     if (vscodeApi) {
       if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
-      else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text) });
+      else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text, cite.src) });
       else vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
     }
     if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send

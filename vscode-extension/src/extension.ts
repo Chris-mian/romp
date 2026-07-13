@@ -128,6 +128,25 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("rompChat.citeInComposer", citeInComposer),
+    // HIGHLIGHT-TO-REPLY from an editor (the user 2026-07-13): selecting text in a real file seeds the
+    // chat composer's quote chip, exactly like highlighting text inside the chat transcript — the chip
+    // carries the highlight + its file:lines origin, and the send wraps both around the typed message.
+    // Event-based; only non-empty selections in file-scheme documents qualify; a COLLAPSE never clears
+    // (the chip's ✕ / Backspace dismisses, and clicking into the chat must not eat the chip just made);
+    // and a selection never SUMMONS the panel — no open chat, no seed. (citeInComposer above stays the
+    // manual path-citation command; this quotes the CONTENT.)
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      if (!panel || e.textEditor.document.uri.scheme !== "file") return;
+      const sel = e.selections[0];
+      if (!sel || sel.isEmpty) return;                       // never clear on collapse
+      const text = e.textEditor.document.getText(sel);
+      if (!text.trim()) return;
+      const rel = vscode.workspace.asRelativePath(e.textEditor.document.uri, false);
+      // a selection ending at column 0 visually excludes that line (same rule as citeInComposer)
+      const endLine = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line : sel.end.line + 1;
+      const src = rel + ":" + (sel.start.line + 1) + (endLine > sel.start.line + 1 ? "-" + endLine : "");
+      toWebview({ type: "editorSelection", text: text.slice(0, 4000), src });
+    }),
     vscode.commands.registerCommand("rompChat.openSessionWorktree", openSessionWorktree),
     vscode.commands.registerCommand("rompChat.diffSessionChanges", diffSessionChanges),
     // HEAD side of the session-diff editor: romp-git:/<rel>?<json {dir,rel}>
