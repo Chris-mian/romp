@@ -80,7 +80,7 @@ where they interact), and the chat you already know.
 - **UI** — the four panes (chat, feed, fleet, timeline). The chat + feed +
   fleet render bundles are built from `ui/webview/` and served by the kernel;
   the timeline is `ui/romp-timeline-view.js`, served verbatim at `/timeline`.
-- **chat-view/** — the VS Code/Cursor extension: a thin WebSocket client of the
+- **vscode-extension/** — the VS Code/Cursor extension: a thin WebSocket client of the
   same kernel. The editor panel and a browser tab share one kernel — same tabs,
   per-client focus.
 - **hooks/** — Claude Code hooks: tmux status-line state, the live one-line
@@ -93,7 +93,7 @@ where they interact), and the chat you already know.
 ```bash
 git clone https://github.com/romp-on/romp.git
 cd romp
-./install.sh                 # hooks, skill, MCP config symlinks + chat-view extension
+./install.sh                 # hooks, skill, MCP config symlinks + VS Code extension
 export PATH="$PATH:$(pwd)/bin"   # add to your shell rc
 ```
 

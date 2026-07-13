@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """romp-kernel — the merged read-side kernel (design/read-side.md). One always-on process:
 the Layer-1 parser + Layer-2 judges (producer) co-located with an HTTP+WebSocket server,
-single writer. It serves the HUMAN'S TUNED chat-view UI (render.js/feed.js bundles, reused
+single writer. It serves the HUMAN'S TUNED web UI (render.js/feed.js bundles, reused
 verbatim) and pushes reshaped payloads built ONLY from the new records (captions/ goals/
 archive/). The Python projection here is the SINGLE view-builder; the bundles only render.
 
@@ -26,7 +26,7 @@ cm = SourceFileLoader("romp_colormap", str(HERE / "romp_colormap.py")).load_modu
 pal = SourceFileLoader("romp_palette", str(HERE / "romp_palette.py")).load_module()  # session-identity palettes (selectable)
 ap = SourceFileLoader("romp_askparse", str(HERE / "romp-askparse")).load_module()  # tmux-pane → live AskUserQuestion picker
 sb = SourceFileLoader("romp_session_backend", str(HERE / "romp_session_backend.py")).load_module()  # the SessionBackend ABC
-CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
+CHAT_VIEW = ROOT / "vscode-extension"               # the tuned UI, current in this worktree via `git merge main`
 DIST = CHAT_VIEW / "dist"                    # bundles built from ui/webview sources (the human's tuned render layer)
 MEDIA = CHAT_VIEW / "media"
 UI = ROOT / "ui"                             # the browser UI: timeline view + webview sources (served/built from here)
@@ -10072,7 +10072,7 @@ def _feed_page():
 # Fed by app=fleet (each session's build_session ledger). ui/webview/fleet.ts renders it; it loads the chat's
 # styles.css for the .ledger-* tree styling. Completed top goals hide behind a "Show completed" checkbox (off).
 # Its layout CSS lives in ui/webview/fleet-pane.css — ONE file, read live here and bundled into the VS Code
-# VSIX by chat-view/esbuild.js, so the two hosts cannot drift.
+# VSIX by vscode-extension/esbuild.js, so the two hosts cannot drift.
 def _fleet_page():
     try:
         fleet_css = (UI / "webview" / "fleet-pane.css").read_text()
@@ -10099,7 +10099,7 @@ def _fleet_page():
 
 
 # The romp-tl-* wrapper styles live in ui/webview/timeline-pane.css — ONE file, read live here (like the
-# view JS itself) and bundled into the VS Code VSIX by chat-view/esbuild.js, so the two hosts cannot drift.
+# view JS itself) and bundled into the VS Code VSIX by vscode-extension/esbuild.js, so the two hosts cannot drift.
 
 
 # The timeline page bootstrap: shim the 3 Obsidian
@@ -10166,7 +10166,7 @@ def _timeline_page():
 
 
 def _chat_body():
-    # ported from chat-view page-skeleton.chatBody
+    # ported from vscode-extension/src/page-skeleton.chatBody
     return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
             '<div id="ledger" style="display:none"></div>'
             # the live-ask picker lives INSIDE #content (the user 2026-06-27) so it flows at the bottom of the
@@ -11947,11 +11947,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _ensure_bundles():
-    """Build the chat-view webview bundles (the human's tuned UI) if missing/stale — keeps the
+    """Build the shared webview bundles (the human's tuned UI) if missing/stale — keeps the
     kernel a single command and auto-rebuilds after TS/CSS edits (mirrors bin/romp-serve). Watches
     .css as well as .ts: a CSS-only change must still trigger a rebuild on restart (the user 2026-06-16
     hit a shipped style that didn't go live because only *.ts was checked)."""
-    cv = ROOT / "chat-view"
+    cv = ROOT / "vscode-extension"
     render = DIST / "render.js"
     if not (cv / "node_modules").exists():
         sys.stderr.write("romp-kernel: UI deps missing — run once: (cd %s && npm install)\n" % cv)

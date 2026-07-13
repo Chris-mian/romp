@@ -49,7 +49,7 @@ test("stylesheet media url()s are relative to the emitted dist css, never absolu
 });
 
 test("the extension host injects __rompMediaBase into all four webview surfaces", () => {
-  const src = read("chat-view", "src", "extension.ts");
+  const src = read("vscode-extension", "src", "extension.ts");
   const injections = src.match(/mediaBaseTag\(webview, n\)/g) || [];
   assert.equal(injections.length, 4, "chat, feed, timeline, and fleet builders must all inject the base");
   assert.ok(src.includes("window.__rompMediaBase="), "the injected tag must set window.__rompMediaBase");

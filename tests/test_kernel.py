@@ -665,7 +665,7 @@ class ViewBuilder(unittest.TestCase):
 
     def test_ledger_tree_carries_mt_for_click_to_jump_nav(self):
         # Each tree node carries `mt` (the segment where it was last resolved/blocked), distinct from `t`
-        # (where it began) — the chat-view click-to-jump nav lands done/blocked goals on mt, open on t
+        # (where it began) — the chat view's click-to-jump nav lands done/blocked goals on mt, open on t
         # (the user 2026-06-16). Mirrors build_feed.
         nid = SID + ":n1"
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
@@ -3280,7 +3280,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("showBranch: true", _gear_src())                # load() default ON, both branches
 
     def test_chat_body_has_an_explicit_send_button(self):
-        # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
+        # The web-dashboard composer (kernel _chat_body, a SECOND copy of vscode-extension/src/page-skeleton.chatBody)
         # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).
         body = km._chat_body()
         self.assertIn('id="composer-send"', body)

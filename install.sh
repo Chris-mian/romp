@@ -95,9 +95,9 @@ if [[ -z "${ROMP_NO_SDK:-}" && -x "$ROMP_DIR/bin/romp-sdk-setup" ]]; then
     "$ROMP_DIR/bin/romp-sdk-setup" || echo "  (SDK backend not provisioned — tmux sessions unaffected)"
 fi
 
-if [[ -z "${ROMP_NO_EXT:-}" && -x "$ROMP_DIR/chat-view/install.sh" ]]; then
+if [[ -z "${ROMP_NO_EXT:-}" && -x "$ROMP_DIR/vscode-extension/install.sh" ]]; then
     echo "  Installing romp-chat-view extension..."
-    "$ROMP_DIR/chat-view/install.sh" || echo "  (romp-chat-view install skipped/failed)"
+    "$ROMP_DIR/vscode-extension/install.sh" || echo "  (romp-chat-view install skipped/failed)"
 fi
 
 # Auto-start: install the login service so the kernel supervisor (romp-manager) is

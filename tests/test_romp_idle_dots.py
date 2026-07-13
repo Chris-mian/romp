@@ -3,7 +3,7 @@
 
 Born from the 2026-06-10 test_slector incident: a terminal Esc-interrupt fires
 NO Claude hook, so @claude-state sat at "working" for 34+ minutes, stranding
-the chat-view chip, the timeline work-bar, and the ghostty tab dot at once.
+the chat-tab chip, the timeline work-bar, and the ghostty tab dot at once.
 The trap these tests encode: a stale `since` ALONE cannot distinguish an
 interrupted session from one legitimately inside a long tool call — only the
 pane content can ("esc to interrupt" = genuinely busy; idle composer ❯ = heal).

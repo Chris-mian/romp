@@ -53,7 +53,7 @@ completed); the feed just paints columns. (Reflected back into `docs/judges.md`.
   entry, no scrollback over old history). Actively reject any back-compat path that
   makes the system more confusing to reason about.
 - **The VS Code extension is a thin client, unchanged in kind.** It already speaks
-  the kernel's WebSocket protocol (`chat-view/src/extension.ts`: "a THIN CLIENT of
+  the kernel's WebSocket protocol (`vscode-extension/src/extension.ts`: "a THIN CLIENT of
   the romp web kernel", `ws://HOST:kernelPort()/ws?app=...`). Browser and extension
   render the **same served UI** over the **same protocol**, so the two front ends
   stay consistent by construction. Keeping the WS protocol stable is the

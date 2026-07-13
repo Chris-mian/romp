@@ -26,7 +26,7 @@ Run:  python make_wordmark.py
 Outputs two identical PNGs (flat #0e1116 background — needed so the letters can be
 thinned to the swirl's line weight via a background-colored text-stroke):
   - romp-wordmark.png (here) — the README hero.
-  - ../../chat-view/media/romp-wordmark.png — a copy served at /media for the
+  - ../../vscode-extension/media/romp-wordmark.png — a copy served at /media for the
     dashboard's inbox-zero empty state.
 """
 import base64
@@ -44,7 +44,7 @@ HERE = Path(__file__).resolve().parent
 FONT = HERE / "Anta-Regular.ttf"          # vendored (OFL, see OFL-Anta.txt)
 OUT = HERE / "romp-wordmark.png"          # dark-banner README hero
 # transparent copy served by the kernel at /media for the inbox-zero empty state
-MEDIA_OUT = HERE.parent.parent / "chat-view" / "media" / "romp-wordmark.png"
+MEDIA_OUT = HERE.parent.parent / "vscode-extension" / "media" / "romp-wordmark.png"
 
 # --- design constants -------------------------------------------------------
 FONT_PX = 300

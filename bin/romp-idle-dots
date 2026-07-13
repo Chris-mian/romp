@@ -12,7 +12,7 @@ for the two missing-timer cases:
 
 2. STUCK WORKING: Claude fires NO hook when a turn is interrupted with Esc, so
    an interrupted session sits at @claude-state=working forever — stranding the
-   chat-view chip, the timeline work-bar, AND the ghostty 🟡 dot at once (the
+   chat-tab chip, the timeline work-bar, AND the ghostty 🟡 dot at once (the
    2026-06-10 test_slector incident). A stale `since` ALONE can't tell an
    interrupted session from one legitimately inside a long tool call (neither
    fires events), so the PANE disambiguates: a genuinely-working Claude shows
@@ -102,7 +102,7 @@ def compact_pct(pane):
 
 
 def _heal(name, since0, now):
-    """Mirror the hook's Stop branch (and chat-view's markPaneIdle): state +
+    """Mirror the hook's Stop branch (and the chat view's markPaneIdle): state +
     since + emoji + the states/<sid>.jsonl transition the timeline reads — so
     the chip, the work-bar, and the tab dot all recover in one write. Re-reads
     `since` immediately before writing so a real hook event mid-sweep wins."""

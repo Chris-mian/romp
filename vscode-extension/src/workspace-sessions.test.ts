@@ -13,7 +13,7 @@ test("session matches the window that has its dir (or a parent/child of it) open
   assert.ok(sessionMatchesFolders("/repos/romp", ["/repos/romp"]));               // exact
   assert.ok(sessionMatchesFolders("/repos/romp-vscode", ["/repos/romp-vscode"])); // a worktree opened directly
   assert.ok(sessionMatchesFolders("/repos/romp/ui", ["/repos/romp"]));            // session below the root
-  assert.ok(sessionMatchesFolders("/repos/romp", ["/repos/romp/chat-view"]));     // window on a subfolder
+  assert.ok(sessionMatchesFolders("/repos/romp", ["/repos/romp/vscode-extension"]));     // window on a subfolder
   assert.ok(!sessionMatchesFolders("/repos/romp", ["/repos/romp-vscode"]));       // sibling is NOT a prefix match
   assert.ok(!sessionMatchesFolders("/repos/other", ["/repos/romp"]));
   assert.ok(!sessionMatchesFolders("", ["/repos/romp"]));
@@ -37,14 +37,14 @@ test("citeText: bare file, single line, and range", () => {
 test("parsePorcelain: modified, added, untracked, renamed, quoted", () => {
   const out = [
     " M ui/webview/render.ts",
-    "A  chat-view/src/new.ts",
+    "A  vscode-extension/src/new.ts",
     "?? notes.txt",
     'R  "old name.ts" -> "new name.ts"',
     "",
   ].join("\n");
   const files = parsePorcelain(out);
   assert.deepEqual(files.map((f) => f.path),
-    ["ui/webview/render.ts", "chat-view/src/new.ts", "notes.txt", "new name.ts"]);
+    ["ui/webview/render.ts", "vscode-extension/src/new.ts", "notes.txt", "new name.ts"]);
   assert.equal(files[0].status, "M");
   assert.equal(files[2].untracked, true);
   assert.equal(files[3].renamedFrom, "old name.ts");

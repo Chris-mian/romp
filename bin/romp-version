@@ -2,7 +2,7 @@
 """romp-version — what version of romp is running, across all the moving parts. `romp --version`.
 
 Three things drift independently and a stale one is the usual cause of "the UI doesn't match the code":
-  - the WORKING TREE (the .py/.js sources the kernel loads straight from bin/ and chat-view/),
+  - the WORKING TREE (the .py/.js sources the kernel loads straight from bin/ and vscode-extension/),
   - the RUNNING KERNEL (what it last (re)started from — reported by its /version endpoint),
   - the BUILT BUNDLES on disk vs the bundle the kernel is actually serving.
 This prints all three so you can see at a glance whether a `romp --refresh` (or a browser hard-reload) is
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DIST = ROOT / "chat-view" / "dist"
+DIST = ROOT / "vscode-extension" / "dist"
 
 
 def _git_sha():

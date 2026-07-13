@@ -272,11 +272,11 @@ function modelLabel(s) {
   return s.effort ? s.model + ' ' + s.effort : s.model;
 }
 
-// The model + effort labels are little drop-down pickers (mirror of the chat-view statusline's): on a
+// The model + effort labels are little drop-down pickers (mirror of the chat statusline's): on a
 // LIVE lane, clicking the model or effort word opens a menu whose pick injects the matching /model or
 // /effort slash command into that session's pane (see _sendCommand → tmux, like _compactSession). The
 // label refreshes on the next poll when the TUI republishes @claude-model/@claude-effort; _metaPending
-// dims the word in the gap. Values mirror chat-view's allowlist (extension.ts META_VALUES) verbatim.
+// dims the word in the gap. Values mirror the extension's allowlist (extension.ts META_VALUES) verbatim.
 const META_HOVER_FG = '#e6edf3';   // brighten the word + reveal its caret on hover
 const META_CARET = ' ▾';           // appended (hair-spaced) after each clickable word
 // Per-lane feed show/hide TOGGLE (the user 2026-06-22; a circular CHECKBOX since 2026-06-23, was an eye):
@@ -328,7 +328,7 @@ try {
   }).catch(() => {});
 } catch (e) {}
 // Is this menu entry the lane's CURRENT value? Effort matches exactly; the model var holds a display
-// name ("Opus 4.8"), so match on the leading word — same rule as the chat-view's isCurrentMeta.
+// name ("Opus 4.8"), so match on the leading word — same rule as the chat view's isCurrentMeta.
 function isCurrentMeta(kind, s, value) {
   const cur = ((kind === 'model' ? s.model : s.effort) || '').toLowerCase();
   return kind === 'effort' ? cur === value : cur.startsWith(value);
@@ -763,7 +763,7 @@ class TimelinePanel {
     this.openChat(this._laneTid(s), null, preserveFocus);   // switch → bottom (latest), no specific anchor
   }
   // Enter on the selected lane → open its tab (at bottom) and drop the cursor into the chat's message
-  // box so you can type a message to that session. (Needs the chat-view composer enabled — vs_chat.)
+  // box so you can type a message to that session. (Needs the chat composer enabled — vs_chat.)
   composeSelected() {
     const s = (this._vis || []).find((x) => x.id === this.selectedSid);
     if (!s) return;
@@ -1239,7 +1239,7 @@ class TimelinePanel {
 
   // ── vertical drag-to-reorder ─────────────────────────────────────────────
   // A row drag reorders the lanes AND writes the new full SID order to the shared session-order.json,
-  // which the chat-view tabs read+write too — so dragging a row reorders the tabs and vice-versa.
+  // which the chat tabs read+write too — so dragging a row reorders the tabs and vice-versa.
   // Distinguished from a plain click by a small movement threshold; the lanes shuffle live under the
   // cursor, and the order is persisted on drop (optimistically applied so there's no snap-back).
   _svgY(e) {
@@ -1661,7 +1661,7 @@ class TimelinePanel {
     // blocks) when the uuid anchor misses — so a click NEVER silently no-ops. Sent belt-and-braces.
     if (anchorT != null && isFinite(anchorT)) url += '&anchorT=' + Math.round(anchorT);
     // anchorKind=user (PROMPT-intent opens only): when the uuid anchor misses and the open falls back
-    // to time, the chat-view (≥v0.4.157) restricts the nearest-readable-turn search to the USER's own
+    // to time, the chat view (≥v0.4.157) restricts the nearest-readable-turn search to the USER's own
     // turns — so a prompt-intent click can degrade in PRECISION but never land on an assistant answer
     // (the user's rule: a fallback may degrade landing precision, never landing KIND). Omitted = any turn.
     if (anchorKind) url += '&anchorKind=' + encodeURIComponent(anchorKind);
@@ -1800,7 +1800,7 @@ class TimelinePanel {
   // Inject a slash command into a session's pane (the model/effort pickers). VS Code surface: hand it
   // to the host hook if present; Obsidian: shell tmux. We BRACKETED-PASTE the command (set-buffer +
   // paste-buffer -p) rather than send-keys -l, then submit with a delayed Enter — mirroring the
-  // chat-view's sendToSession. A literal type would feed "/model …" to Claude Code's slash-command
+  // the extension's sendToSession. A literal type would feed "/model …" to Claude Code's slash-command
   // AUTOCOMPLETE char-by-char and an immediate Enter would race the TUI; a bracketed paste lands the
   // whole string atomically (no autocomplete), and the 250ms gap lets the paste arrive before Enter.
   //
@@ -1835,7 +1835,7 @@ class TimelinePanel {
 
   // Open the model/effort drop-down anchored under the clicked label. Re-clicking the same word's
   // caret toggles it shut. Refused while the lane is AWAITING a prompt — the pane's keyboard belongs to
-  // the picker, so a pasted "/model …" + Enter would answer it instead (chat-view guards the same way).
+  // the picker, so a pasted "/model …" + Enter would answer it instead (the chat view guards the same way).
   _openMetaMenu(kind, s, anchorEl) {
     const reopen = this._metaMenu && this._metaMenu._kind === kind && this._metaMenu._sid === s.id;
     this._closeMetaMenu();
@@ -2539,7 +2539,7 @@ class TimelinePanel {
           if (s.faded) { fadedEls.push({ el: chipBg, full: bdg.bg, faded: F(bdg.bg) }); fadedEls.push({ el: bt, full: bdg.fg, faded: F(bdg.fg) }); }
         }
       }
-      // context-window battery bar (matches the chat-view): faint box + level-colored fill (width ∝ pct)
+      // context-window battery bar (matches the chat view): faint box + level-colored fill (width ∝ pct)
       // + "N%" inside. While COMPACTING it instead shows a rainbow scan-bar (no %), the live cue.
       const cinfo = visC[i], isComp = compactingNow(s);
       if (cinfo || isComp) {

@@ -132,7 +132,7 @@ re-nudged. Only a genuine new stall (real new work → stop) can nudge again.
 
 ### 4c. UI (`ui/webview/feed.ts`) — the chip
 - Render a **"nudge failed"** chip on a card whose ask carries `nudgeFailed`. Model it on the existing
-  card chips (e.g. the `↻ Followed up` chip). Build via `npm --prefix chat-view run build` (dist-only —
+  card chips (e.g. the `↻ Followed up` chip). Build via `npm --prefix vscode-extension run build` (dist-only —
   no kernel restart to deploy the UI, but the KERNEL changes above need a refresh).
 
 ## 5. Tests (repo rule: a test per change)
