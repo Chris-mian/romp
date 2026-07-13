@@ -73,7 +73,7 @@ interface AskItem {
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
-  judging?: boolean;                               // provisional PHASE (the user 2026-07-12): the turn has SETTLED and the planner's classify pass is due/in flight → the chip says Analyzing…; an open turn stays the honest Working…
+  judging?: boolean;                               // the turn has SETTLED and the judge's pass is due/in flight → the swirl chip says Analyzing… — on a provisional card while the planner's classify is pending (the user 2026-07-12), and on a REAL working card while the closer's verdict is (the settle→verdict gap, the user 2026-07-13); an open turn stays the honest Working…
   tree: AskTreeNode[];                             // the ask's DAG, rendered as a tree in the expanded body
 }
 // A GROUP = N sibling asks minted by ONE typed turn (shared turnId), folded into a
@@ -133,6 +133,16 @@ const clearedStack: AskItem[][] = [];
 // kernel push actually carries them again — otherwise the very next push (before the kernel un-archived) would
 // replace `asks` and drop the just-restored card, a flicker. Dropped once the kernel lists the id.
 const pendingRestored = new Map<string, AskItem>();
+// Finish an optimistic dismiss: the 180ms fade just removed the card element, so drop the item(s) from the
+// LOCAL model and re-render NOW — in grouped mode a run whose last card left takes its session-name header
+// with it, and the column count follows, instead of both lingering until the next kernel push (the user
+// 2026-07-13: "the card disappears really fast… make [the session name] disappear immediately"). Only the
+// local view advances; pendingCleared still guards incoming pushes until the kernel confirms the clear.
+function dropDismissed(ids: string[]): void {
+  const gone = new Set(ids);
+  asks = asks.filter((a) => !gone.has(a.itemId));
+  render();
+}
 // Optimistic follow-up MOVE (the user 2026-06-30): submitting a follow-up on a blocked card moves it to
 // Working IMMEDIATELY, instead of waiting out the kernel round-trip (be.send + build_feed + push). The kernel
 // stays AUTHORITATIVE — this is only a short-lived prediction: the kernel's own optimistic_followup flips the
@@ -616,7 +626,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     clearedStack.push([it]);         // cache for an instant optimistic Undo clear
     card.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });
-    setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
+    setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); dropDismissed([it.itemId]); } }, 180);
   };
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
   // this card's timeline journey. LEAVE → restore the pinned card's journey, or
@@ -1038,6 +1048,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else if (it.rejudging) {
     spinCaption = "Analyzing…";
     spinTip = "You replied on this thread. Moved to Working while the reply runs; it comes back if the judge re-confirms the block.";
+  } else if (it.judging && it.column === "working") {
+    //  • SETTLE GAP (the user 2026-07-13) — the session FINISHED its turn but the closer's verdict hasn't
+    //    landed, so the card would sit inertly in Working ("the session is done, why is its card still
+    //    working?"). The swirl says what's actually happening; it hands off to the column move (and then
+    //    Distilling…) when the verdict files the work.
+    spinCaption = "Analyzing…";
+    spinTip = "This stretch of work finished; the judge is deciding whether it completed or blocked this goal.";
   } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
     //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
     //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief
@@ -1277,7 +1294,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId, sid: m.sid }); }   // clear every member
     // only finalize if a render in the 180ms window didn't revive (re-render clears
     // .dismissing) or replace this card — else a stale timeout yanks the wrong one
-    setTimeout(() => { if (groupEls.get(cur.turnId) === card && card.classList.contains("dismissing")) { card.remove(); groupEls.delete(cur.turnId); } }, 180);
+    setTimeout(() => { if (groupEls.get(cur.turnId) === card && card.classList.contains("dismissing")) { card.remove(); groupEls.delete(cur.turnId); dropDismissed(cur.members.map((m) => m.itemId)); } }, 180);
   };
   // hover (120ms intent) → white border + preview the group's timeline journey
   // (first member). leave → restore the pin (ask OR group) or clear.

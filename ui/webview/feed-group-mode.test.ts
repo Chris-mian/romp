@@ -52,3 +52,14 @@ test("grouped cards drop their own name row; Clear re-homes beside the timestamp
   // float-right = right-justified beside the time when it fits, else its own right-aligned line
   assert.match(CSS, /\.fask-row1 \.fdismiss \{ float: right; margin-left: 8px; \}/);
 });
+
+test("clearing a run's last card drops its session header at once, not on the next push (the user 2026-07-13)", () => {
+  // the 180ms dismiss timer finishes by dropping the item from the LOCAL model and re-rendering — the
+  // grouped transform recomputes runs from the filtered list, so an emptied run loses its header (and the
+  // column count follows) the moment the card element leaves the DOM. pendingCleared still guards pushes.
+  assert.match(FEED, /function dropDismissed\(ids: string\[\]\): void \{/);
+  assert.match(FEED, /asks = asks\.filter\(\(a\) => !gone\.has\(a\.itemId\)\);\s*\n\s*render\(\);/);
+  // both optimistic dismiss paths finish through it: the single ask card and the sibling-group card
+  assert.match(FEED, /card\.remove\(\); askEls\.delete\(it\.itemId\); dropDismissed\(\[it\.itemId\]\);/);
+  assert.match(FEED, /groupEls\.delete\(cur\.turnId\); dropDismissed\(cur\.members\.map\(\(m\) => m\.itemId\)\);/);
+});
