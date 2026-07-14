@@ -4109,7 +4109,9 @@ class DistillArtifacts(unittest.TestCase):
     def test_distill_session_stores_artifacts(self):
         d = Distiller("test_distills_completed_top_from_its_discontinuous_trail")
         records = [uline(T0, "plot the results", "u1", ps="typed"),
-                   aline(T0 + 10, "Saved the plot to /tmp/out/plot.png.", "a1", "u1", stop="end_turn")]
+                   aline(T0 + 10, "Saved the plot to /tmp/out/plot.png with all four series rendered, "
+                                  "styled, and labeled the way the earlier drafts settled on.", "a1", "u1",
+                         stop="end_turn")]
         path = d._setup(records)
         try:
             now = T0 + 5000
@@ -4189,7 +4191,8 @@ class DistillSections(unittest.TestCase):
         # end-to-end through the same harness the Distiller class uses
         d = Distiller("test_distills_completed_top_from_its_discontinuous_trail")
         records = [uline(T0, "make the export faster", "u1", ps="typed"),
-                   aline(T0 + 10, "Shipped gzip export.", "a1", "u1", stop="end_turn")]
+                   aline(T0 + 10, "Shipped gzip export: the writer streams compressed chunks now and the "
+                                  "tests cover both encodings end to end.", "a1", "u1", stop="end_turn")]
         path = d._setup(records)
         try:
             now = T0 + 5000
@@ -4259,10 +4262,12 @@ class SourceCitation(unittest.TestCase):
     deep-link is what the summary was GROUNDED IN, written by the same reader, not a length heuristic."""
 
     def test_marks_label_assistant_messages_and_map_back_to_uuids(self):
+        one = "Did part one: rewired the parser to stream records incrementally and pinned it with a test."
+        two = "Finished part two: the cache now persists across restarts, with the golden suite green."
         records = [uline(T0, "do part one", "u1", ps="typed"),
-                   aline(T0 + 10, "did part one", "a1", "u1", stop="end_turn"),
+                   aline(T0 + 10, one, "a1", "u1", stop="end_turn"),
                    uline(T0 + 100, "now part two", "u2", "a1", ps="typed"),
-                   aline(T0 + 110, "finished part two", "a2", "u2", stop="end_turn")]
+                   aline(T0 + 110, two, "a2", "u2", stop="end_turn")]
         s = build_session(records)
         segs = [sg for turn in s["turns"] for sg in em.segments(turn)]
         seg_by_id = {sg["id"]: sg for sg in segs}
@@ -4271,11 +4276,36 @@ class SourceCitation(unittest.TestCase):
         st["nodes"][g["id"]]["trail"] = [sg["id"] for sg in segs]
         marks = jd._CiteMarks()
         work = jd._goal_work_text(st, seg_by_id, g["id"], 10000, marks=marks)
-        self.assertIn("[m1] did part one", work, "each assistant message carries its inline label")
-        self.assertIn("[m2] finished part two", work)
+        self.assertIn("[m1] " + one, work, "each substantive assistant message carries its inline label")
+        self.assertIn("[m2] " + two, work)
         self.assertEqual(marks.map, {"m1": "a1", "m2": "a2"}, "labels resolve back to the exact atom uuids")
         unmarked = jd._goal_work_text(st, seg_by_id, g["id"], 10000)
         self.assertNotIn("[m1]", unmarked, "no marks → the shared gather is unchanged for the other judges")
+
+    def test_marks_never_label_a_connective_stub(self):
+        # The citation gate at the OFFER side (the user 2026-07-14): a completed card's summary click landed
+        # on a short lead-in that merely named the goal — the distiller cited it because it was offered a
+        # label like any other message. Sub-floor (< CITE_MIN_CHARS) messages now ride along as unlabeled
+        # context: still readable, uncitable by construction.
+        stub = "Now the next item:"
+        wrap = ("Wrapped up: the flag is honored by both prompt builders, the callers pass it through, "
+                "and the new tests pin the behavior end to end.")
+        records = [uline(T0, "do the work", "u1", ps="typed"),
+                   aline(T0 + 10, stub, "aStub", "u1", stop="end_turn"),
+                   uline(T0 + 100, "carry on", "u2", "aStub", ps="typed"),
+                   aline(T0 + 110, wrap, "aWrap", "u2", stop="end_turn")]
+        s = build_session(records)
+        segs = [sg for turn in s["turns"] for sg in em.segments(turn)]
+        seg_by_id = {sg["id"]: sg for sg in segs}
+        st = _store()
+        g = _mknode(st, "Do the work")
+        st["nodes"][g["id"]]["trail"] = [sg["id"] for sg in segs]
+        marks = jd._CiteMarks()
+        work = jd._goal_work_text(st, seg_by_id, g["id"], 10000, marks=marks)
+        self.assertIn(stub, work, "the stub still rides along as context")
+        self.assertNotIn("] " + stub, work, "…but carries no [mN] label")
+        self.assertEqual(list(marks.map.values()), ["aWrap"],
+                         "only the substantive wrap-up is offered for citation")
 
     def test_split_source_strips_the_final_citation_line(self):
         self.assertEqual(jd._split_source("The fix shipped.\nSOURCE: m3"), ("The fix shipped.", "m3"))
@@ -4291,6 +4321,9 @@ class SourceCitation(unittest.TestCase):
     def test_prompts_ask_for_the_source_line(self):
         for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
             self.assertIn("SOURCE: mN", sys_prompt, "the call is told to cite one labeled message")
+            self.assertIn("never a line that merely announces", sys_prompt,
+                          "a lead-in that names the goal is explicitly barred from citation "
+                          "(the user 2026-07-14: a summary click landed on such a stub)")
         self.assertIn("most current", jd.DISTILL_SYS, "the citation targets the most informative AND most "
                       "current message (the user 2026-07-01), not an early plan or superseded attempt")
 
@@ -4372,10 +4405,12 @@ class Distiller(unittest.TestCase):
         # the reply's SOURCE line resolves through the call's _CiteMarks to the exact atom uuid, stored as
         # node["summaryAnchor"] — the summary deep-link then lands on what the summary was grounded in
         # (the user 2026-07-01). The SOURCE line itself never reaches the stored summary.
+        one = "Did part one: rewired the parser to stream records incrementally and pinned it with a test."
+        two = "Finished part two: the cache persists across restarts now, with the golden suite green."
         records = [uline(T0, "do part one", "u1", ps="typed"),
-                   aline(T0 + 10, "did part one", "a1", "u1", stop="end_turn"),
+                   aline(T0 + 10, one, "a1", "u1", stop="end_turn"),
                    uline(T0 + 200, "now finish part two", "u2", "a1", ps="typed"),
-                   aline(T0 + 210, "finished part two, all wrapped up", "a2", "u2", stop="end_turn")]
+                   aline(T0 + 210, two, "a2", "u2", stop="end_turn")]
         path = self._setup(records)
         now = T0 + 5000
         session = jd.parsed_session(SID, [path], now)
@@ -4392,8 +4427,8 @@ class Distiller(unittest.TestCase):
         jd.distill_llm = fake_distill
         self.assertEqual(jd.run_distill(now=now), 1)
         nd = jd.load_goals(SID)["nodes"][gid]
-        self.assertIn("[m1] did part one", seen["work"], "the work fed to the call carries the labels")
-        self.assertIn("[m2] finished part two", seen["work"])
+        self.assertIn("[m1] " + one, seen["work"], "the work fed to the call carries the labels")
+        self.assertIn("[m2] " + two, seen["work"])
         self.assertEqual(nd["summary"], "Both parts delivered.", "the SOURCE line is parsed off the summary")
         self.assertEqual(nd["summaryAnchor"], "a2", "the cited label resolves to the exact atom uuid")
 
@@ -4423,7 +4458,8 @@ class Distiller(unittest.TestCase):
         # click shows what happened and why) AND logs err "cite-miss" to judge-errors.jsonl (the user
         # 2026-07-02, after a live summary link landed on the goal's opening restatement).
         records = [uline(T0, "do the thing", "u1", ps="typed"),
-                   aline(T0 + 10, "did the thing, wrapped up and shipped", "a1", "u1", stop="end_turn")]
+                   aline(T0 + 10, "Did the thing: wrapped up, shipped, and verified end to end against "
+                                  "the acceptance list from the original ask.", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
@@ -4459,7 +4495,8 @@ class Distiller(unittest.TestCase):
         # citing a label that was never offered (m99) is the same anomaly as omitting the line: nothing
         # resolvable was stored, so the warn + error fire and summaryAnchor stays None.
         records = [uline(T0, "do the thing", "u1", ps="typed"),
-                   aline(T0 + 10, "did the thing", "a1", "u1", stop="end_turn")]
+                   aline(T0 + 10, "Did the thing across both surfaces, with the regression pinned by a "
+                                  "new golden fixture in the suite.", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
@@ -4487,7 +4524,8 @@ class Distiller(unittest.TestCase):
         # the warn means "this anomaly is live" — a later re-distill that DOES cite takes the chip off
         # the card (and drops the key entirely so stores stay clean).
         records = [uline(T0, "do the thing", "u1", ps="typed"),
-                   aline(T0 + 10, "did the thing, wrapped up", "a1", "u1", stop="end_turn")]
+                   aline(T0 + 10, "Did the thing and wrapped up: both callers migrated, docs refreshed, "
+                                  "and the full suite is green.", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
@@ -4508,7 +4546,8 @@ class Distiller(unittest.TestCase):
         # the block-brief path is the distiller's twin — the same miss stamps the same warn kind (logged
         # under tier "briefer", matching its other error records).
         records = [uline(T0, "ship it", "u1", ps="typed"),
-                   aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
+                   aline(T0 + 10, "Need your call on the approach before shipping: the two options differ "
+                                  "in rollout risk and neither is reversible.", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
         now = T0 + 5000
         s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
@@ -4536,7 +4575,8 @@ class Distiller(unittest.TestCase):
         # the block-brief cites too (usually where the question and options were laid out), through the
         # same summaryAnchor field the card's distiller-line click reads.
         records = [uline(T0, "ship it", "u1", ps="typed"),
-                   aline(T0 + 10, "need your call on the approach: A or B, tradeoffs laid out", "a1", "u1",
+                   aline(T0 + 10, "Need your call on the approach: A ships fast with a migration risk, B is "
+                                  "slower but reversible; tradeoffs laid out.", "a1", "u1",
                          stop="end_turn")]
         path = self._setup(records)
         now = T0 + 5000

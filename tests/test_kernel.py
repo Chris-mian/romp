@@ -2838,18 +2838,54 @@ class ViewBuilder(unittest.TestCase):
     def test_summary_anchor_prefers_the_distillers_cited_source(self):
         # the distiller CITES the message its takeaway is grounded in (node["summaryAnchor"], written by
         # the judge from the reply's SOURCE line): the kernel honors that over the deterministic fallback
-        # whenever the uuid resolves in the live parse (the user 2026-07-01). Here the fallback would pick
-        # the LAST prose atom (a2); the citation names the earlier a1 and must win.
+        # whenever the uuid resolves in the live parse AND is substantive (the user 2026-07-01/07-14).
+        # Here the fallback would pick the LAST prose atom (a2); the citation names the earlier
+        # (substantive) a1 and must win.
+        early = "Grounding detail: the fix landed in the renderer's diff path, with a regression pin. " + "e " * 20
+        late = "And the docs were refreshed to match the new behavior across both surfaces. " + "l " * 20
+        recs = [uline(T0, "fix the feed flicker", "u1", ps="typed"),
+                aline(T0 + 20, early, "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "continue", "u2", "a1", ps="typed"),
+                aline(T0 + 120, late, "a2", "u2", stop="end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
-        seg = em.segments(session["turns"][0])[0]
+        segs = [sg for turn in session["turns"] for sg in em.segments(turn)]
         nid = SID + ":g43"
         store = {"rompUuid": SID, "seq": 43, "nodes": {
             nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True, "blocked": False,
-                  "trail": [seg["id"]], "t": NOW, "summary": "Shipped.", "summaryAnchor": "a1"}},
+                  "trail": [sg["id"] for sg in segs], "t": NOW, "summary": "Shipped.", "summaryAnchor": "a1"}},
             "placements": {}, "status": {}}
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
         self.assertEqual(card["summaryAnchorUuid"], "a1", "the distiller's cited source wins over the fallback")
+
+    def test_summary_anchor_rejects_a_cited_connective_stub(self):
+        # the incident shape (the user 2026-07-14): the distiller cited a short lead-in that merely NAMED
+        # the goal ("Next the small one:") instead of the wrap-up where the outcome lives — topic match beat
+        # substance. A citation is honored only when the cited atom is substantive (≥ jd.CITE_MIN_CHARS of
+        # prose); a stub cite falls through to the deterministic latest-prose fallback, which lands on the
+        # wrap-up. This heals bad anchors ALREADY stored, with no re-distill needed.
+        stub = "Next the small one:"                                            # < 80 chars, names the goal
+        wrap = ("All items are implemented, tested, and committed; the prompts now honor the tracking "
+                "flag end to end and the suite is green.")
+        recs = [uline(T0, "work the list", "u1", ps="typed"),
+                aline(T0 + 20, stub, "aStub", "u1", stop="end_turn"),
+                uline(T0 + 100, "carry on", "u2", "aStub", ps="typed"),
+                aline(T0 + 120, wrap, "aWrap", "u2", stop="end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        segs = [sg for turn in session["turns"] for sg in em.segments(turn)]
+        nid = SID + ":g48"
+        store = {"rompUuid": SID, "seq": 48, "nodes": {
+            nid: {"id": nid, "text": "The small one", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [sg["id"] for sg in segs], "t": NOW, "summary": "Done.", "summaryAnchor": "aStub"}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], "aWrap",
+                         "a cited stub is rejected → the fallback lands on the substantive wrap-up")
 
     def test_summary_anchor_ignores_a_cited_source_that_does_not_resolve(self):
         # a citation whose uuid isn't in this parse (stale store, model copy error) must NOT ship a dead

@@ -656,11 +656,23 @@ def _tool_arg(name, inp):
     return ""
 
 
+# The "substantive prose" floor (chars) for citation anchors, shared with the kernel (its
+# _seg_last_text fallback and its summaryAnchorUuid resolve gate read this same constant): only an
+# assistant message at/above it is offered an [mN] cite label, and only such an atom may hold a stored
+# citation. 80 sits just above connective stubs ("Now the next item:"), so a lead-in line that merely
+# names a goal can never hold its summary link — the link's job is the outcome, and a stub is never
+# where the outcome lives (the user 2026-07-14: a completed card's summary click landed on the
+# announcement stub instead of the wrap-up).
+CITE_MIN_CHARS = 80
+
+
 def _unit_text(atoms, marker=None):
     """The caption model's input for one unit (segment or turn): what the user asked, what the
     assistant said, and the tools it used (with each tool's key arg) — drawn from the unit's atoms.
-    `marker` (a _CiteMarks, distill/brief calls only) labels each assistant message inline ([m3]) so
-    the model can CITE the one message its takeaway is grounded in (see _split_source)."""
+    `marker` (a _CiteMarks, distill/brief calls only) labels each SUBSTANTIVE assistant message inline
+    ([m3]) so the model can CITE the one message its takeaway is grounded in (see _split_source).
+    Sub-floor stubs (< CITE_MIN_CHARS) still ride along as context, just unlabeled — uncitable by
+    construction."""
     user_said, asst_said, tools = [], [], []
     for a in atoms:
         if a["type"] == "user" and a.get("author") is not None:
@@ -670,7 +682,7 @@ def _unit_text(atoms, marker=None):
         elif a["type"] == "assistant" and not a.get("isApiError"):   # skip API-error records — a retry / usage-limit storm's noise, never captionable work (the user 2026-07-06)
             t = _atom_text(a)
             if t:
-                if marker is not None and a.get("uuid"):
+                if marker is not None and a.get("uuid") and len(t) >= CITE_MIN_CHARS:
                     t = "%s %s" % (marker.label(a["uuid"]), t)
                 asst_said.append(t)
             for b in (a.get("message") or {}).get("content", []):
@@ -2239,6 +2251,13 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
                                                              why="the agent crossed it off its own list"):
                 nd["agentTask"] = {"key": key, "status": "done", "raw": (it or {}).get("status") or "completed"}
                 nd["agentDone"] = True; nd["mt"] = seg_t
+                if seg_id and seg_id not in (nd.get("trail") or []):
+                    # DONE-ANCHOR, plan-sync edition (the user 2026-07-14): the syncing segment holds the
+                    # work that crossed the item off — ride the trail so the distiller reads that work and
+                    # the summary link can land on it, mirroring the closer's recap append. Without it a
+                    # mirror completed only here kept its mint-time trail, so the distiller saw nothing but
+                    # the announcement segment and the summary anchored on a stub.
+                    nd.setdefault("trail", []).append(seg_id)
                 changed = True
         elif nid not in has_child:                          # born-DONE backlog leaf (pre-fix) → self-heal it away
             nodes.pop(nid, None)
@@ -5336,7 +5355,8 @@ DISTILL_SYS = (
     "label you weren't shown. It cites the single message the user should open to see the full "
     "substance behind your takeaway: the most informative and most current one, usually the message "
     "that wrapped up the work; never an early plan, analysis, or superseded attempt when a later "
-    "message reflects how it actually ended. This line is parsed off and never shown.")
+    "message reflects how it actually ended, and never a line that merely announces or hands off "
+    "work about to start, however closely it names the goal. This line is parsed off and never shown.")
 
 
 def distill_llm(goal_text, work_text, done_why="", prior_summary=""):
@@ -5384,7 +5404,8 @@ BLOCK_BRIEF_SYS = (
     "it on the line and nothing after it — never omit it while labels are present, and never invent a "
     "label you weren't shown. It cites the single message the user should open for the fullest, most "
     "current context on the decision, usually where the question and its options were actually laid "
-    "out. This line is parsed off and never shown.")
+    "out; never a line that merely announces or hands off work about to start, however closely it "
+    "names the goal. This line is parsed off and never shown.")
 
 
 def brief_llm(goal_text, work_text, block_why):

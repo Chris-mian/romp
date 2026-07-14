@@ -173,6 +173,23 @@ class SyncFindOrCreate(unittest.TestCase):
         self.assertEqual(nd["agentTask"]["status"], "done")
         self.assertTrue(nd["nodeComplete"])
 
+    def test_crossoff_appends_the_completing_segment_to_the_trail(self):
+        # DONE-ANCHOR, plan-sync edition (the user 2026-07-14): a mirror completed HERE (the agent crossed
+        # it off) used to keep only its mint-time trail, so the distiller read nothing but the announcement
+        # segment and the card's summary link anchored on a stub. The syncing segment — where the crossing-
+        # off work lives — must ride the trail, mirroring the closer's recap append.
+        store = fresh_store()
+        jd._sync_declared_plan(store, plan_session([("Phase A", "Doing A", [])]), "seg1", T0 + 50)
+        nd = agent_nodes(store)["1"]
+        self.assertEqual(nd["trail"], ["seg1"], "minted with the declaring segment")
+        done_s = plan_session([("Phase A", "Doing A", [("completed",)])])
+        jd._sync_declared_plan(store, done_s, "seg2", T0 + 100)
+        self.assertEqual(nd["trail"], ["seg1", "seg2"],
+                         "the completing segment joins the trail so distiller + fallback anchor can see it")
+        # idempotent: a re-sync with the same segment never duplicates the trail entry
+        jd._sync_declared_plan(store, done_s, "seg2", T0 + 110)
+        self.assertEqual(nd["trail"], ["seg1", "seg2"])
+
     def test_reopen_clears_only_our_done(self):
         store = fresh_store()
         # born OPEN under watch, then completed → kept as authoritative-done
