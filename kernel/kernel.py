@@ -291,7 +291,8 @@ def _kernel_sha():
 def _version_info():
     """What this kernel is running — code sha + per-bundle build mtimes + pid/uptime. Lets the feed's
     settings gear / `romp --version` / a curl tell at a glance whether the browser is on a stale bundle
-    (compare the served ?v= against bundles[].mtime here). No filesystem paths (privacy)."""
+    (compare the served ?v= against bundles[].mtime here). Any path here is $HOME-collapsed for privacy
+    (like defaultDir/rompDir) — never a raw /Users/<name> path."""
     bundles = {}
     try:
         for p in sorted(DIST.glob("*.js")) + sorted(DIST.glob("*.css")):
@@ -306,7 +307,11 @@ def _version_info():
             "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
             "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),  # current per-tier judge efforts ("" = default/none)
-            "defaultDir": _tilde(_default_create_dir())}   # the resolved default new-session dir → the gear "Default directory" field
+            "defaultDir": _tilde(_default_create_dir()),   # the resolved default new-session dir → the gear "Default directory" field
+            # The repo root ($HOME-collapsed), so the VS Code extension host can run vscode-extension/install.sh
+            # to self-update a drifted VSIX (a webview reload can't — the code is baked into the on-disk VSIX).
+            # ROMP_DIR is reliably exported by romp-serve/launchd; HERE.parent (kernel/ → repo root) backs it up.
+            "rompDir": _tilde(os.environ.get("ROMP_DIR") or str(HERE.parent))}
 
 
 def _dist_ver():

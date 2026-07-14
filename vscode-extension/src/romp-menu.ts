@@ -53,6 +53,8 @@ export function buildMenu(usage: any, nowS: number): MenuItem[] {
     { label: "Cite File in Chat Composer", action: "cite" },
     { label: "Open Session Worktree", action: "worktree" },
     { label: "Diff Session Changes", action: "diff" },
+    // Rebuild + reinstall the VSIX from source — the clickable form of the drift toast, reachable anytime.
+    { label: "Update Extension", description: "rebuild + reinstall the VSIX from source", action: "update" },
     // Opens the romp-styled gear modal in the feed (the SAME settings UI the
     // browser renders — the user 2026-07-13), not a native picker.
     { label: "Settings", description: "the romp settings modal", action: "settings" },
