@@ -13,16 +13,17 @@
 export type UsageWindow = {
   key: string;
   label: string;        // the rail's expanded label
+  short: string;        // the compressed tag a narrow strip swaps in ("5h" / "7d" / "F5")
   pct: number;          // used % of the limit
   elapsedPct: number | null;  // % of the window elapsed (pace comparison)
   title: string;        // hover detail
 };
 
-// The rail's window set: [key, span seconds, expanded label].
-const WINS: Array<[string, number, string]> = [
-  ["fiveHour", 5 * 3600, "5 hours"],
-  ["sevenDay", 7 * 86400, "7 days"],
-  ["fable", 7 * 86400, "Fable 5"],
+// The rail's window set: [key, span seconds, expanded label, compressed tag].
+const WINS: Array<[string, number, string, string]> = [
+  ["fiveHour", 5 * 3600, "5 hours", "5h"],
+  ["sevenDay", 7 * 86400, "7 days", "7d"],
+  ["fable", 7 * 86400, "Fable 5", "F5"],
 ];
 
 // The rail's usage color ramp: green under 70%, amber under 90%, red at 90+.
@@ -42,7 +43,7 @@ export function fmtReset(resetsAt: number, nowS: number): string {
 // /usage payload → the windows worth drawing (unreported windows drop out).
 export function usageWindows(usage: any, nowS: number): UsageWindow[] {
   const out: UsageWindow[] = [];
-  for (const [key, span, label] of WINS) {
+  for (const [key, span, label, short] of WINS) {
     const seg = usage && usage[key];
     if (!seg || typeof seg.pct !== "number") continue;
     const rolled = seg.resetsAt && nowS > seg.resetsAt;   // the window reset since the last report
@@ -52,7 +53,7 @@ export function usageWindows(usage: any, nowS: number): UsageWindow[] {
       elapsedPct = Math.max(0, Math.min(100, Math.round(((nowS - (seg.resetsAt - span)) / span) * 100)));
     }
     out.push({
-      key, label, pct, elapsedPct,
+      key, label, short, pct, elapsedPct,
       title: `${label} — used ${pct}%`
         + (elapsedPct != null ? ` · ${elapsedPct}% through the window` : "")
         + (seg.resetsAt ? ` · resets in ${fmtReset(seg.resetsAt, nowS)}` : ""),
@@ -83,8 +84,6 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
   // hidden-set ({type:"stripPanes"}) on every panel create/dispose/view-state.
   const panesWrap = document.createElement("div");
   panesWrap.id = "strip-panes";
-  const spacer = document.createElement("div");
-  spacer.className = "strip-spacer";
   // ↻ kernel restart — the rail's #rrefresh twin. The pipes reconnect and the
   // host reloads the webviews on their own once the kernel is back.
   const refresh = document.createElement("button");
@@ -112,7 +111,14 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
   gear.title = "romp settings";
   gear.textContent = "⛭";
   gear.addEventListener("click", (e) => { e.stopPropagation(); openSettings(); });
-  strip.append(usageWrap, panesWrap, spacer, refresh, net, gear);
+  // The actions travel as ONE cluster pushed to the right edge (margin-left:auto,
+  // not a spacer item): the strip WRAPS rather than overflow into a horizontal
+  // scrollbar (the user 2026-07-13), and a wrapped cluster keeps its right pin
+  // on whatever row it lands on — a spacer only pushes within its own row.
+  const acts = document.createElement("div");
+  acts.className = "strip-acts";
+  acts.append(refresh, net, gear);
+  strip.append(usageWrap, panesWrap, acts);
   document.body.appendChild(strip);
   initNetPopover(net, base);
 
@@ -136,9 +142,18 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
       const box = document.createElement("span");
       box.className = "ru-w";
       box.title = w.title;
+      // Both the expanded label and the compressed tag render; the container-query
+      // ladder in strip.css shows exactly one (or neither at the narrowest tier),
+      // so compressing the pane never needs a JS re-render.
       const name = document.createElement("span");
       name.className = "ru-name";
-      name.textContent = w.label;
+      const nameFull = document.createElement("span");
+      nameFull.className = "ru-name-full";
+      nameFull.textContent = w.label;
+      const nameShort = document.createElement("span");
+      nameShort.className = "ru-name-short";
+      nameShort.textContent = w.short;
+      name.append(nameFull, nameShort);
       const bars = document.createElement("span");
       bars.className = "ru-bars";
       const mkTrack = (pct: number, color: string) => {
