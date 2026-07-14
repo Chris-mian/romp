@@ -30,6 +30,9 @@ class FakeBackend:
     def interrupt(self, sid):
         self.calls.append(("interrupt", sid)); return True
 
+    def busy(self, sid):
+        return None   # no authoritative signal in this double → the gate uses the cached parse, as before
+
     def kill(self, sid):
         self.calls.append(("kill", sid)); return True
 
