@@ -62,27 +62,54 @@ test("the strip quick-opens cover chat/outline/feed only (timeline is a native p
 });
 
 // A narrow pane must NEVER grow a horizontal scrollbar under the strip (the
-// user 2026-07-13): the strip is a size container whose @container ladder
-// compresses the usage windows tier by tier, and flex-wrap folds whatever
-// still doesn't fit onto another row.
-test("the strip compresses through concise tiers and wraps instead of overflowing", () => {
+// user 2026-07-13), and the ladder must be MEASURED, not width-thresholded
+// (the user 2026-07-14: hardcoded @container widths compressed the labels
+// while free space remained, and the bars never narrowed): the bars are
+// fluid down to a floor, fit() steps the label tiers only when the bars are
+// actually pinched or the strip wrapped, and flex-wrap folds whatever still
+// doesn't fit onto another row.
+test("the strip compresses by measurement: fluid bars, fit()-stepped tiers, wrap backstop", () => {
   const ROOT = path.resolve(process.cwd(), "..");
   const css = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.css"), "utf8");
   const stripRule = css.match(/#romp-strip \{[^}]*\}/)![0];
-  assert.ok(stripRule.includes("container: romp-strip / inline-size"), "the strip is a named size container (zoom-safe, unlike media queries)");
   assert.ok(stripRule.includes("flex-wrap: wrap"), "the wrap backstop: leftover buttons take another row");
-  const tiers = [...css.matchAll(/@container romp-strip \(max-width: (\d+)px\)/g)].map((m) => Number(m[1]));
-  assert.equal(tiers.length, 3, "three compress tiers below the full layout");
-  assert.deepEqual([...tiers].sort((a, b) => b - a), tiers, "tiers narrow monotonically");
-  // ladder order: first the label compresses to its tag, then the % readout goes, then the label entirely
-  const after = (w: number) => css.slice(css.indexOf(`(max-width: ${w}px)`));
-  assert.ok(after(tiers[0]).includes(".ru-name-full { display: none; }"), "tier 1 swaps the expanded label for the tag");
-  assert.ok(after(tiers[1]).includes(".ru-pct { display: none; }"), "tier 2 drops the % readout");
-  assert.ok(after(tiers[2]).includes(".ru-name { display: none; }"), "tier 3 drops labels — bars only");
+  assert.ok(!css.includes("@container"), "no width-threshold ladder — tiers are measured (fit()), never guessed from pane width");
+  const barsRule = css.match(/\.ru-bars \{[^}]*\}/)![0];
+  assert.ok(barsRule.includes("width: 54px") && barsRule.includes("min-width: 18px") && barsRule.includes("flex: 0 1 auto"),
+    "bars are fluid: a definite 54px width (intrinsic-size-proof, unlike a bare flex-basis) shrinking to an 18px floor");
+  // the tier ladder rides #romp-strip[data-tier]: tag, then no %, then no labels
+  assert.ok(css.includes('#romp-strip[data-tier="1"] .ru-name-full'), "tier 1 swaps the expanded label for the tag");
+  assert.ok(css.includes('#romp-strip[data-tier="2"] .ru-pct'), "tier 2 drops the % readout");
+  assert.ok(css.includes('#romp-strip[data-tier="3"] .ru-name'), "tier 3 drops labels — bars only");
   const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
   assert.ok(src.includes('"ru-name-full"') && src.includes('"ru-name-short"'), "both label variants render; CSS picks one");
+  assert.ok(src.includes("BAR_COMFORT") && src.includes("ResizeObserver"),
+    "fit() steps tiers off real measurements, re-run on width changes (event-based)");
+  assert.ok(src.includes("offsetWidth"), "measurements use layout px — zoom-independent under uiZoom");
   assert.ok(src.includes('"strip-acts"'), "the actions travel as one right-pinned cluster");
   assert.ok(!src.includes("strip-spacer"), "no spacer item — margin-left:auto keeps the pin across wrapped rows");
+});
+
+// The network button must acknowledge and fail LOUDLY (the user 2026-07-14
+// reported it "doing nothing" in VS Code while every repro elsewhere works):
+// instant .open chrome on the button, instant popover content before any
+// round-trip, a visible error line when the kernel is unreachable, and a
+// clientDiag breadcrumb through the host so the kernel records what the
+// click actually observed.
+test("the net button acknowledges, fails loudly, and leaves a diagnostic trail", () => {
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  assert.ok(src.includes('button.classList.toggle("open", open)'), "the button itself acknowledges the toggle");
+  assert.ok(src.includes("Checking remotes…"), "the popover never opens blank");
+  assert.ok(src.includes("Couldn't reach the kernel"), "an unreachable kernel reads as an error, not an empty box");
+  assert.ok(src.includes("(kernel unreachable)"), "the host select fails loudly too");
+  const diags = src.match(/type: "clientDiag"/g) || [];
+  assert.ok(diags.length >= 2, "toggle + fetch outcome each post a clientDiag breadcrumb");
+  const cssSrc = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.css"), "utf8");
+  assert.ok(cssSrc.includes("#strip-net.open"), "the .open acknowledgment has visible chrome");
+  const kernel = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
+  assert.ok(kernel.includes('"clientDiag"') && kernel.includes("client-diag.jsonl"),
+    "the kernel persists clientDiag breadcrumbs (the locateDiag pattern, generalized)");
 });
 
 test("the feed's control bar wraps on a narrow pane instead of overflowing", () => {

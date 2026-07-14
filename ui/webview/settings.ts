@@ -19,7 +19,9 @@ export interface RompSettings {
 }
 // NOTE: the old `explanations` pref is GONE (the user 2026-06-18) — cards no longer show the planner's
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
-export const DEFAULT_SETTINGS: RompSettings = { compact: false, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true };
+// compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
+// (thinking hidden, tool runs folded); the gear opts back into the full stream.
+export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
@@ -36,10 +38,30 @@ export function saveSettings(patch: Partial<RompSettings>): RompSettings {
   return next;
 }
 
-// Fire `cb` when the settings change in ANOTHER same-origin tab (the browser views share localStorage;
-// the `storage` event does NOT fire in the tab that made the change, so callers apply their own change
-// directly). No-op where there's no window (tests, headless).
+// Fire `cb` when the settings change ANYWHERE they can change:
+// - another same-origin tab (the browser views share localStorage → `storage` event);
+// - THIS document (the gear modal now lives in the same page — VS Code's chat and feed
+//   each host their own copy — and a same-document write never fires `storage`, which
+//   left the compact toggle dead in the VS Code chat; gear.js's save() dispatches the
+//   'romp:settings' window event instead, the user 2026-07-14).
+// No-op where there's no window (tests, headless).
 export function onExternalSettingsChange(cb: (s: RompSettings) => void): void {
   if (typeof window === "undefined") return;
   window.addEventListener("storage", (e: StorageEvent) => { if (e.key === KEY) cb(loadSettings()); });
+  window.addEventListener("romp:settings", () => cb(loadSettings()));
+}
+
+// VS Code cross-pane settings sync, inbound side: each webview owns a separate
+// localStorage, so a gear save in one pane reaches the others as a host-relayed
+// {settingsSync} message (gear.js save() posts it; extension.ts fans it out).
+// Applying = write our copy of the store, then raise the same-document signal so
+// every consumer above reacts. Never re-posts — the host already broadcast it.
+export function installSettingsSync(): void {
+  if (typeof window === "undefined") return;
+  window.addEventListener("message", (ev: MessageEvent) => {
+    const m = ev.data;
+    if (!m || m.type !== "settingsSync" || !m.settings) return;
+    try { localStorage.setItem(KEY, JSON.stringify(m.settings)); } catch { /* ignore */ }
+    try { window.dispatchEvent(new Event("romp:settings")); } catch { /* ignore */ }
+  });
 }

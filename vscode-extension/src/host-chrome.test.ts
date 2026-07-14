@@ -42,6 +42,11 @@ test("the romp strip: both builders opt in, chat gets the kernel origin, feed wi
   assert.ok(paneBroadcasts.length >= 1, "the host must broadcast the hidden-pane set to the strips");
   assert.ok(SRC.includes("openFleetPanel(true, chatCol)"),
     "the launcher tabs Outline into the chat's group (the user 2026-07-13)");
+  // The launcher is PURELY idempotent (the user 2026-07-14): re-clicking it
+  // re-reveals the surfaces and must never raise the add-session picker.
+  const launcher = SRC.slice(SRC.indexOf('registerCommand("rompChat.open"'), SRC.indexOf('registerCommand("rompChat.openFeed"'));
+  assert.ok(launcher.length > 0, "found the rompChat.open registration");
+  assert.ok(!launcher.includes("openPicker"), "the launcher must not post openPicker on re-click");
   const gearLinks = SRC.match(/"gear\.css"/g) || [];
   assert.equal(gearLinks.length, 2, "chat AND feed builders must link the gear stylesheet (local modal)");
 });

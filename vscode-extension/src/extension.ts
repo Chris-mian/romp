@@ -92,7 +92,9 @@ export function activate(context: vscode.ExtensionContext) {
       { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerUriHandler({ handleUri: onDeepLink }),
     vscode.commands.registerCommand("rompChat.open", async () => {
-      const had = !!panel;
+      // Purely idempotent (the user 2026-07-14): open/reveal the surfaces and
+      // NOTHING else — no session picker on re-click (the strip's quick-opens
+      // and the + tab cover adding sessions).
       openPanel();
       const chatCol = panel?.viewColumn;
       // Outline rides as a TAB in the chat's group; feed gets the group to the
@@ -102,7 +104,6 @@ export function activate(context: vscode.ExtensionContext) {
       // Bring the timeline up without stealing focus from the chat panel.
       try { await vscode.commands.executeCommand("rompTimeline.focus", { preserveFocus: true }); } catch { /* view unavailable */ }
       panel?.reveal(panel.viewColumn ?? vscode.ViewColumn.Beside, false);
-      if (had) toWebview({ type: "openPicker" });
     }),
     vscode.commands.registerCommand("rompChat.openFeed", () => openFeedPanel()),
     vscode.commands.registerCommand("rompChat.openTimeline", () => vscode.commands.executeCommand("rompTimeline.focus")),
@@ -213,6 +214,17 @@ function updateStrips() {
   };
   toWebview({ type: "stripPanes", hidden });
   toFeedWebview({ type: "stripPanes", hidden });
+}
+
+// A gear save in one webview → every OTHER surface applies it. Each VS Code
+// webview has its own synthetic origin, so its own localStorage: the browser's
+// storage-event sync between panes simply doesn't exist here, and a compact
+// toggle made in the feed's gear left the chat transcript unchanged (the user
+// 2026-07-14). gear.js posts {settingsSync} on every save; this fans it out.
+function broadcastSettings(settings: unknown, from?: vscode.Webview) {
+  for (const w of [panel?.webview, feedPanel?.webview, fleetPanel?.webview, timelineView?.webview]) {
+    if (w && w !== from) w.postMessage({ type: "settingsSync", settings });
+  }
 }
 
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
@@ -401,6 +413,7 @@ function wirePanel(p: vscode.WebviewPanel) {
     if (m.type === "openFile" && m.path) { openFileInEditor(String(m.path), m.line); return; }
     if (m.type === "openLink" && typeof m.href === "string") { openLink(String(m.href)); return; }
     if (m.type === "openPane") { openPaneByKey(String(m.pane)); return; }   // strip quick-open
+    if (m.type === "settingsSync") { broadcastSettings(m.settings, p.webview); return; }   // gear save → other panes
     if (m.type === "pickFile") { void pickFileForComposer(p); return; }
     if (m.type === "readClipboard") {
       vscode.env.clipboard.readText().then(
@@ -477,6 +490,7 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
       updateStrips();
     }
     if (m.type === "openPane") { openPaneByKey(String(m.pane)); return; }   // strip quick-open
+    if (m.type === "settingsSync") { broadcastSettings(m.settings, p.webview); return; }   // gear save → other panes
     // Clicking into a session (or locating a card's chat turn) should bring
     // the CHAT panel forward — panel reveal is this host's job; the kernel
     // opens/focuses the tab itself. The rules live in view-routing.ts.

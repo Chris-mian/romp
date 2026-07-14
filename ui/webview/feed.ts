@@ -9,6 +9,7 @@
 import { distillText, applyDistillLine, distillPending } from "./distiller-line";
 import { hostNameNodes } from "./host-prefix";
 import { initStrip } from "./strip";
+import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
 
 // (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
@@ -269,6 +270,7 @@ initGear((m: Record<string, unknown>) => vscodeApi?.postMessage(m));
 // in THIS document (the gear listener above).
 initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m: Record<string, unknown>) => vscodeApi?.postMessage(m));
+installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
 
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything

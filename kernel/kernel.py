@@ -11733,6 +11733,19 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(json.dumps(rec) + "\n")
             except OSError:
                 pass
+        elif msg and msg.get("type") == "clientDiag":
+            # Generic client-side breadcrumb (the locateDiag idea, un-specialized): a control
+            # that "does nothing" on the user's machine but works in every repro posts what it
+            # actually observed (click fired? fetch outcome? rects?) so the next report carries
+            # recorded evidence. First user: the strip's network button (the user 2026-07-14).
+            try:
+                rec = {"t": int(time.time()), "wid": str(client.get("wid") or ""),
+                       "surface": str(msg.get("surface") or ""), "what": str(msg.get("what") or ""),
+                       "data": msg.get("data")}
+                with open(jd.STATE / "client-diag.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec) + "\n")
+            except OSError:
+                pass
         elif msg and msg.get("type") == "orderAudit":
             # a CLIENT detected its rendered tab order permuting (render.ts auditTabOrder) → same audit log
             # as the kernel's own order mutations, with the client's JS stack, so one file tells the whole

@@ -120,7 +120,38 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
   acts.append(refresh, net, gear);
   strip.append(usageWrap, panesWrap, acts);
   document.body.appendChild(strip);
-  initNetPopover(net, base);
+  initNetPopover(net, base, post);
+
+  // The compress ladder, MEASURED (the user 2026-07-14): fixed width thresholds
+  // stepped the labels down while free space remained (with every pane open there
+  // are no quick-open buttons, so the strip's real content is far narrower than
+  // any hardcoded threshold could know). Instead the bars are fluid (strip.css:
+  // .ru-bars flex-basis 54px, min-width 18px — they compress continuously as the
+  // pane narrows) and a tier is stepped only when the bars are actually pinched
+  // below comfort, or the strip has wrapped. Tiers on #romp-strip[data-tier]:
+  // 0 full label · 1 short tag · 2 no % readout · 3 bars only. offsetWidth/Top
+  // (layout px) keep the math zoom-independent under the host's uiZoom.
+  const BAR_COMFORT = 34;
+  function fit() {
+    if (!usageWrap.childElementCount) { strip.removeAttribute("data-tier"); return; }
+    for (let t = 0; ; t++) {
+      strip.dataset.tier = String(t);
+      if (t >= 3) return;   // narrowest tier — from here the fluid bars + row wrap absorb the rest
+      const bars = usageWrap.querySelector(".ru-bars") as HTMLElement | null;
+      const pinched = !!bars && bars.offsetWidth < BAR_COMFORT;
+      const wrapped = acts.offsetTop >= usageWrap.offsetTop + usageWrap.offsetHeight - 1;
+      if (!pinched && !wrapped) return;
+    }
+  }
+  let fitW = 0;
+  try {
+    new ResizeObserver(() => {
+      const w = strip.offsetWidth;
+      if (Math.abs(w - fitW) < 1) return;   // our own tier flips / wraps only change height
+      fitW = w;
+      fit();
+    }).observe(strip);
+  } catch { /* no ResizeObserver → the fluid bars + wrap still prevent overflow */ }
 
   function renderPanes(hidden: Record<string, boolean>) {
     panesWrap.textContent = "";
@@ -133,6 +164,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
       b.addEventListener("click", (e) => { e.stopPropagation(); post?.({ type: "openPane", pane: p.key }); });
       panesWrap.appendChild(b);
     }
+    fit();
   }
 
   function render(usage: any) {
@@ -142,9 +174,9 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
       const box = document.createElement("span");
       box.className = "ru-w";
       box.title = w.title;
-      // Both the expanded label and the compressed tag render; the container-query
+      // Both the expanded label and the compressed tag render; the [data-tier]
       // ladder in strip.css shows exactly one (or neither at the narrowest tier),
-      // so compressing the pane never needs a JS re-render.
+      // so a tier flip never needs a JS re-render.
       const name = document.createElement("span");
       name.className = "ru-name";
       const nameFull = document.createElement("span");
@@ -174,6 +206,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
       box.append(name, bars, pct);
       usageWrap.appendChild(box);
     }
+    fit();
   }
 
   window.addEventListener("message", (ev: MessageEvent) => {
@@ -195,7 +228,13 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
 // (/ssh-hosts, /tunnels, /tunnels/detach|update|start), leaner chrome. The two
 // copies unify when client federation reaches VS Code; until then remote
 // SESSIONS render only in the browser — this manages the kernel's tunnels.
-function initNetPopover(button: HTMLButtonElement, base: string) {
+//
+// The button acknowledges every toggle (.open accent chrome) and each toggle
+// posts a clientDiag breadcrumb through the host to the kernel's
+// client-diag.jsonl — the user reported the button "doing nothing" in VS Code
+// (2026-07-14) while every repro outside VS Code works, so the next report
+// comes with recorded evidence instead of guesses.
+function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Record<string, unknown>) => void) {
   const pop = document.createElement("div");
   pop.id = "strip-net-pop";
   pop.hidden = true;
@@ -224,7 +263,7 @@ function initNetPopover(button: HTMLButtonElement, base: string) {
       sel.innerHTML = hs.length
         ? hs.map((h) => `<option value="${h}">${h}</option>`).join("")
         : `<option value="">(no ~/.ssh/config hosts)</option>`;
-    }).catch(() => { /* the empty option reads as the reason */ });
+    }).catch(() => { sel.innerHTML = `<option value="">(kernel unreachable)</option>`; });   // loud, never silently empty
   }
 
   function act(path: string, host: string, b: HTMLButtonElement, busyText: string) {
@@ -282,12 +321,24 @@ function initNetPopover(button: HTMLButtonElement, base: string) {
     }
   }
 
+  let diagPending = false;   // report the first /tunnels outcome of each open, not every 3s poll
   function refresh() {
     fetch(`${base}/tunnels`, { cache: "no-store" }).then((r) => r.json()).then((d) => {
       const ts = (d && d.tunnels) || [];
+      if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
       renderList(ts);
       schedule(ts.some((t: any) => busy(t.status)) ? 600 : 3000);   // fast while mid-attach, slow keep-alive after
-    }).catch(() => schedule(3000));
+    }).catch((err) => {
+      // Fail loudly: an unreachable kernel renders as an error line, never a
+      // silently empty box that reads as a dead button.
+      if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: false, err: String(err) } }); }
+      list.textContent = "";
+      const e = document.createElement("div");
+      e.className = "sn-empty";
+      e.textContent = `Couldn't reach the kernel (${base || "same origin"}) — retrying…`;
+      list.appendChild(e);
+      schedule(3000);
+    });
   }
 
   attach.addEventListener("click", () => {
@@ -295,13 +346,33 @@ function initNetPopover(button: HTMLButtonElement, base: string) {
     act("/tunnels", sel.value, attach, "Attaching…");
     setTimeout(() => { attach.disabled = false; attach.textContent = "Attach"; }, 2000);
   });
+  const setOpen = (open: boolean) => {
+    pop.hidden = !open;
+    button.classList.toggle("open", open);   // instant acknowledgment on the button itself
+    if (!open) clearTimeout(timer);
+  };
   button.addEventListener("click", (e) => {
     e.stopPropagation();
-    pop.hidden = !pop.hidden;
-    if (!pop.hidden) { loadHosts(); refresh(); }
-    else clearTimeout(timer);
+    setOpen(pop.hidden);
+    if (!pop.hidden) {
+      // Instant content before any round-trip: the box never opens blank.
+      if (!list.childElementCount) {
+        const e2 = document.createElement("div");
+        e2.className = "sn-empty";
+        e2.textContent = "Checking remotes…";
+        list.appendChild(e2);
+      }
+      // Anchor just above the strip however many rows it wrapped to. offsetWidth
+      // math is layout-px; style px are layout px too, so this stays zoom-safe.
+      const strip = document.getElementById("romp-strip");
+      if (strip) pop.style.bottom = `${strip.offsetHeight + 6}px`;
+      diagPending = true;
+      loadHosts();
+      refresh();
+    }
+    post?.({ type: "clientDiag", surface: "strip", what: "netToggle", data: { open: !pop.hidden, base } });
   });
   document.addEventListener("click", (e) => {
-    if (!pop.hidden && !pop.contains(e.target as Node) && e.target !== button) { pop.hidden = true; clearTimeout(timer); }
+    if (!pop.hidden && !pop.contains(e.target as Node) && e.target !== button) setOpen(false);
   });
 }

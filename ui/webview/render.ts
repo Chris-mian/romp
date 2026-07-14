@@ -15,7 +15,7 @@ import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
 import { markerLabel, chooseStamps } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
-import { loadSettings, onExternalSettingsChange, type RompSettings } from "./settings";
+import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
@@ -166,6 +166,7 @@ if ((window as any).__rompShowStrip) {
 }
 initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m) => vscodeApi?.postMessage(m));
+installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 const expandedGroups = new Set<string>();      // compact mode: tool-group keys the user clicked open

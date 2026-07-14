@@ -128,14 +128,25 @@ function initGear(post) {
     cg = document.getElementById('rs-collapsegaps'), jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
     ie = document.getElementById('rs-indexeffort');
-  function load() { try { return Object.assign({ compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: false, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }; } }
-  function save(s) { try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {} }
-  function emit() { try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {} }   // same-doc signal → the feed re-gates its cards
+  function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }; } }
+  // save() ALWAYS dispatches the same-doc 'romp:settings' signal: consumers in
+  // THIS document (the feed's card gates, and the chat transcript now that it
+  // hosts its own gear) never get a 'storage' event for a same-document write —
+  // the compact toggle sat dead in the VS Code chat because its handler was the
+  // one save that forgot to emit (the user 2026-07-14). It also posts the save
+  // to the host: VS Code webviews each own a SEPARATE localStorage, so the host
+  // fans {settingsSync} out to the other panes (the browser ignores it — its
+  // same-origin tabs already sync via the storage event).
+  function save(s) {
+    try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {}
+    try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {}
+    post({ type: 'settingsSync', settings: s });
+  }
   cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
-  if (gb) gb.addEventListener('change', function () { var s = load(); s.showBranch = gb.checked; save(s); emit(); });
-  jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); emit(); });
-  jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); emit(); });
-  if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); emit(); });
+  if (gb) gb.addEventListener('change', function () { var s = load(); s.showBranch = gb.checked; save(s); });
+  jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); });
+  jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); });
+  if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); });
   // Auto Nudge / judge tiers are SERVER-SIDE (the kernel runs them): post the
   // change; the controls re-initialize from /version on every open (fill()).
   if (an) an.addEventListener('change', function () { post({ type: 'setAutoNudge', enabled: an.checked }); });
@@ -180,7 +191,7 @@ function initGear(post) {
   if (plBtn) plBtn.addEventListener('click', function (e) { e.stopPropagation(); plBuild(); if (plList) plList.hidden = !plList.hidden; });
   document.addEventListener('click', function (e) { var w = document.getElementById('rs-pal');
     if (plList && !plList.hidden && w && !w.contains(e.target)) plList.hidden = true; });
-  if (bk) bk.addEventListener('change', function () { var s = load(); s.backend = bk.value; save(s); emit(); });   // webview-local pref read at createSession time
+  if (bk) bk.addEventListener('change', function () { var s = load(); s.backend = bk.value; save(s); });   // webview-local pref read at createSession time
   if (dd) dd.addEventListener('change', function () { var v = dd.value.trim(); var s = load(); s.defaultDir = v; save(s);
     post({ type: 'setDefaultDir', value: v }); });   // persist kernel-side: _default_create_dir reads this file FIRST
   var ddb = document.getElementById('rs-defaultdir-browse');
