@@ -2839,6 +2839,8 @@ class ViewBuilder(unittest.TestCase):
         # the distiller CITES the message its takeaway is grounded in (node["summaryAnchor"], written by
         # the judge from the reply's SOURCE line): the kernel honors that over the deterministic fallback
         # whenever the uuid resolves in the live parse AND is substantive (the user 2026-07-01/07-14).
+        # Scope: this is the primary tier for a goal that is NOT completed (status {} here → working);
+        # a COMPLETED goal pins to the completion turn's wrap-up first (see the completed-pin tests).
         # Here the fallback would pick the LAST prose atom (a2); the citation names the earlier
         # (substantive) a1 and must win.
         early = "Grounding detail: the fix landed in the renderer's diff path, with a regression pin. " + "e " * 20
@@ -2927,6 +2929,60 @@ class ViewBuilder(unittest.TestCase):
         card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
         self.assertEqual(card["summaryAnchorUuid"], "a2",
                          "the latest substantive message (the wrap-up) beats a longer early analysis")
+
+    def test_completed_summary_anchor_pins_to_the_completion_turns_wrapup(self):
+        # the incident, round two (the user 2026-07-14): the distiller cited a SUBSTANTIVE mid-turn
+        # status note (it passed the prose floor that filters connective stubs), so the summary click
+        # landed mid-turn instead of on the giant turn-end recap. For a COMPLETED goal the anchor is
+        # now EVENT-DERIVED, not a guess: the closer's DONE-ANCHOR appended the completing turn's final
+        # segment as the trail tail (judge _close_turn), and the summary pins to that segment's last
+        # substantive assistant block — the wrap-up — outranking the citation.
+        note = ("Next the small one — item seven: the prompts now follow the tracking flag; "
+                "moving on to the rename-healing work next after this lands cleanly.")
+        wrap = ("Done: all nine items are implemented and committed; prompts honor the tracking flag, "
+                "the rename heal landed with tests, and both suites are green.")
+        recs = [uline(T0, "work the list", "u1", ps="typed"),
+                aline(T0 + 20, note, "aNote", "u1", stop="end_turn"),
+                uline(T0 + 100, "carry on", "u2", "aNote", ps="typed"),
+                aline(T0 + 120, wrap, "aWrap", "u2", stop="end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        segs = [sg for turn in session["turns"] for sg in em.segments(turn)]
+        nid = SID + ":g49"
+        store = {"rompUuid": SID, "seq": 49, "nodes": {
+            nid: {"id": nid, "text": "The list", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [sg["id"] for sg in segs], "t": NOW, "summary": "Done.",
+                  "summaryAnchor": "aNote"}},   # substantive mid-turn citation — passes the prose gate
+            "placements": {}, "status": {nid: "completed"}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], "aWrap",
+                         "a completed goal pins its summary to the completion turn's wrap-up, over the citation")
+
+    def test_completed_pin_defers_to_the_citation_when_the_recap_has_no_prose(self):
+        # a completed goal whose completion segment closed tool-only / one-liner (no substantive prose)
+        # cannot pin — the distiller's citation stays the anchor (its purpose: name what informed the
+        # summary), so the pin never trades a good link for a worse one.
+        early = "Grounding detail: the fix landed in the renderer diff path, with a regression pin. " + "e " * 20
+        recs = [uline(T0, "fix it", "u1", ps="typed"),
+                aline(T0 + 20, early, "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "continue", "u2", "a1", ps="typed"),
+                aline(T0 + 120, "Done.", "a2", "u2", stop="end_turn")]   # short close — below the prose floor
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        segs = [sg for turn in session["turns"] for sg in em.segments(turn)]
+        nid = SID + ":g50"
+        store = {"rompUuid": SID, "seq": 50, "nodes": {
+            nid: {"id": nid, "text": "Fix it", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [sg["id"] for sg in segs], "t": NOW, "summary": "Fixed.",
+                  "summaryAnchor": "a1"}},
+            "placements": {}, "status": {nid: "completed"}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], "a1",
+                         "no substantive recap to pin on → the citation keeps the anchor")
 
     def test_followup_body_appends_goal_marker(self):
         # The follow-up judge reopens the tagged goal: every follow-up ends with a hidden

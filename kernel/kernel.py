@@ -7667,20 +7667,32 @@ def build_feed(now, tmux=None):
                                         or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
-            # summaryAnchorUuid: where a click on the distilled summary line lands. PREFERRED: the anchor the
-            # distiller/brief itself CITED while writing the line (node["summaryAnchor"], judge _split_source)
-            # — the same reader that wrote the summary names what it read, so the link is "what informed the
-            # summary" by construction (the user 2026-07-01); honored only when the uuid resolves in this
-            # parse AND carries substantive prose (cite_uuids — a citation on a connective stub is wrong by
-            # construction, the user 2026-07-14). FALLBACK (older goals, no/invalid/stub citation): the most
-            # CURRENT substantive assistant message across the goal's whole subtree trail (mint→resolution)
-            # — the wrap-up that closed the work. Never the old biggest-text-block pick: "longest ever" is
-            # monotone, so a long early analysis held the anchor forever while the real outcome landed later
-            # (the user 2026-07-01).
+            # summaryAnchorUuid: where a click on the distilled summary line lands.
+            # COMPLETED goals pin to the COMPLETION TURN'S wrap-up — event-derived, not a guess: the
+            # closer's DONE-ANCHOR appended the completing turn's final segment as the node's trail tail
+            # (judge _close_turn), so that segment's last substantive assistant block is the big turn-end
+            # recap the user expects the summary to open on (the user 2026-07-14: the distiller's own
+            # citation kept naming a mid-turn status note that merely passed the prose floor).
+            # NEXT: the anchor the distiller/brief itself CITED while writing the line
+            # (node["summaryAnchor"], judge _split_source) — the reader that wrote the summary names what
+            # it read (the user 2026-07-01); honored only when the uuid resolves in this parse AND carries
+            # substantive prose (cite_uuids — a citation on a connective stub is wrong by construction,
+            # the user 2026-07-14). This is the primary tier for a BLOCKED brief (no completion turn
+            # exists) and for a completed goal whose recap segment is tool-only.
+            # FALLBACK (older goals, no/invalid/stub citation): the most CURRENT substantive assistant
+            # message across the goal's whole subtree trail (mint→resolution). Never the old
+            # biggest-text-block pick: "longest ever" is monotone, so a long early analysis held the
+            # anchor forever while the real outcome landed later (the user 2026-07-01).
             _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
-            if _cited and _cited in cite_uuids:
+            if col == "completed":
+                _tr = nodes[nid].get("trail") or []
+                if _tr:
+                    _u, _sub, _ = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
+                    if _u and _sub:
+                        _sa_u = _u
+            if _sa_u is None and _cited and _cited in cite_uuids:
                 _sa_u = _cited
-            else:
+            if _sa_u is None:
                 _best = None                             # (substantive, seg_t): prefer substantive, then latest
                 for _x in _subtree(nid):
                     for _sid in (nodes[_x].get("trail") or []):
@@ -7719,7 +7731,7 @@ def build_feed(now, tmux=None):
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "artifacts": _feed_artifacts(nodes[nid].get("artifacts"), fsid),   # files the work PRODUCED (distiller ARTIFACTS line), existence-filtered NOW — "N artifacts" under the summary; previews in the modal (the user 2026-07-08)
-                "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
+                "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
                 "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
                            if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
