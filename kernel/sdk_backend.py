@@ -105,6 +105,14 @@ def _alias_label(alias: str) -> str:
     return pretty_model(alias) if alias.startswith("claude-") else alias.capitalize()
 
 
+def _is_compact_cmd(text: str) -> bool:
+    """True if `text` is a /compact invocation (bare or with custom-summary args) — the CLI interprets it as
+    the compaction command whether it comes from the compact button, a parked-op delivery, or the user
+    typing it. Drives the authoritative SdkSession._compacting bracket."""
+    t = (text or "").strip()
+    return t == "/compact" or t.startswith("/compact ")
+
+
 def _model_reflects_alias(live_pretty: str, alias: str) -> bool:
     """Does the LIVE model display name reflect the chosen ALIAS — i.e. the switch has taken effect? A
     bare alias ('opus') is a substring of its pretty name ('Opus 4.8'), case-insensitively; 'default'/''
@@ -713,6 +721,12 @@ class SdkSession:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
         self.inflight = 0
+        # AUTHORITATIVE compacting signal (the user 2026-07-14): set when a /compact is delivered, cleared by
+        # the compact_boundary event (a real compaction landed → the continuation is normal work) OR by the
+        # /compact turn's ResultMessage (nothing-to-compact → no boundary ever comes). This replaces the
+        # kernel's optimistic _compact_clicked + 180s cap for SDK sessions — that cap held parked ops (a
+        # model pick, a message) hostage for up to 3 minutes whenever /compact found nothing to compact.
+        self._compacting = False
         # BUSY is an EVENT, not a count. The CLI is "working" from the moment we hand it input (or it
         # streams output) until it emits a ResultMessage; a ResultMessage means the CLI has drained
         # EVERYTHING we sent — however many messages were forwarded mid-turn — and is idle again. We
@@ -1137,6 +1151,7 @@ class SdkSession:
                 self.inflight = 0
                 self._interrupted = False
                 self._intr_level = 0
+                self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
                 self._mark("waiting")
                 self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
@@ -1249,6 +1264,7 @@ class SdkSession:
                                    # the refinement once a real turn lands.
             asyncio.ensure_future(self._do_refresh_context())   # re-pull the real context % + model from the SDK
         elif isinstance(msg, SystemMessage) and msg.subtype == "compact_boundary":
+            self._compacting = False   # a real compaction LANDED → done; the CLI's continuation is normal work
             # Compaction just landed: the active context dropped to the summary. Re-pull the % NOW, on the
             # boundary event itself, rather than waiting for the next turn's ResultMessage — the CLI auto-runs
             # a continuation turn after /compact that can work for minutes, and until it settled the bar kept
@@ -1319,6 +1335,9 @@ class SdkSession:
             # phantom-working bug, the user 2026-07-09.) If a genuinely separate turn is still queued in
             # the CLI, its next streamed atom re-asserts 'working' via _forward — the stream is the truth.
             self.inflight = 0
+            # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
+            # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
+            self._compacting = False
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
             self._mark("waiting")
             self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
@@ -2093,6 +2112,11 @@ class SdkBackend:
         s = self._ensure(sid)
         if not s:
             return False
+        if _is_compact_cmd(text):
+            # Delivering /compact: mark the session compacting NOW (authoritative), covering the gap between
+            # this send and the CLI actually starting the turn — so a drive op the producer tick checks in
+            # that window still parks. Cleared event-based by the boundary / the turn's ResultMessage.
+            s._compacting = True
         s.enqueue(text)
         # optimistic input echo: show the user's own message INSTANTLY (neither the transcript nor the
         # stream has it yet at send time — only we know the text). Synthetic uuid; pruned by text once the
@@ -2147,6 +2171,16 @@ class SdkBackend:
             return None
         with s._lock:
             return s.inflight > 0 or bool(s._pending)
+
+    def compacting(self, sid: str) -> "bool | None":
+        """Authoritative 'is a /compact in progress' (see SessionBackend.compacting): set when /compact is
+        delivered, cleared event-based by the compact_boundary or the /compact turn's ResultMessage — so a
+        no-op compaction (nothing to compact, no boundary) can't strand the kernel's optimistic latch for
+        180s. None when we don't run this sid (→ the kernel's optimistic/tmux path)."""
+        s = self.sessions.get(sid)
+        if not s:
+            return None
+        return s._compacting
 
     def kill(self, sid: str) -> bool:
         reg = read_reg(self.state_dir, sid)

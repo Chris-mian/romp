@@ -63,6 +63,15 @@ class SessionBackend(ABC):
         count exactly; tmux has no equivalent (returns None → cached-parse fallback, unchanged)."""
         return None
 
+    def compacting(self, sid: str) -> "bool | None":
+        """AUTHORITATIVE 'is a /compact in progress right now', or None when the backend has no such signal
+        (→ the kernel's optimistic/tmux compacting derivation). The kernel otherwise infers SDK compaction
+        from an OPTIMISTIC stamp with a 180s cap: when /compact finds nothing to compact, no compact_boundary
+        event ever lands, so that cap held parked ops (a model pick, a queued message) for up to 3 minutes
+        (the user 2026-07-14). The SDK brackets it exactly — set on /compact delivery, cleared by the boundary
+        or the /compact turn's settle; tmux keeps the None default (its @claude-state path is unchanged)."""
+        return None
+
     @abstractmethod
     def set_model(self, sid: str, value: str) -> bool: ...
 

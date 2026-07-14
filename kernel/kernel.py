@@ -5513,6 +5513,17 @@ def _compacting(sid, st, session, now, since):
     chip (compacting) from the feed/transcript (working). So compaction is OVER the instant the transcript
     shows an OPEN working turn OR a compact_boundary atom at/after the compaction start (@claude-state-since);
     only then do we trust the live 'compacting' signal (the user 2026-06-24)."""
+    # AUTHORITATIVE first (the user 2026-07-14): a backend that brackets its own compaction (the SDK, via the
+    # /compact-delivery → boundary/settle events) is the ground truth — no optimistic 180s cap that stranded
+    # parked ops when /compact found nothing to compact. None → this backend has no such signal (tmux) → the
+    # @claude-state + optimistic corroboration below, unchanged.
+    try:
+        be = Sessions.backend_for(sid)
+        bc = be.compacting(sid) if be is not None else None
+    except Exception:
+        bc = None
+    if bc is not None:
+        return bc
     if not (st == "compacting" or _compacting_optimistic(sid, session, now)):
         return False
     turns = session.get("turns", [])

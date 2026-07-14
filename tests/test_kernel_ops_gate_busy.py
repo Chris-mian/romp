@@ -26,15 +26,20 @@ SID = "11111111-2222-3333-4444-555555555555"
 
 
 class _FakeBackend:
-    """A backend that OWNS the sid and reports an authoritative busy flag — like the SDK's inflight."""
-    def __init__(self, busy_val):
+    """A backend that OWNS the sid and reports authoritative busy + compacting flags — like the SDK's
+    inflight and its /compact bracket."""
+    def __init__(self, busy_val, compacting_val=None):
         self._busy = busy_val
+        self._compacting = compacting_val
 
     def owns(self, sid):
         return True
 
     def busy(self, sid):
         return self._busy
+
+    def compacting(self, sid):
+        return self._compacting
 
 
 class OpsGateAuthoritativeBusy(unittest.TestCase):
@@ -51,8 +56,8 @@ class OpsGateAuthoritativeBusy(unittest.TestCase):
         km._parse_cached = self._saved_parse
         km._pending_ops.pop(SID, None)
 
-    def _use_backend(self, busy_val):
-        be = _FakeBackend(busy_val)
+    def _use_backend(self, busy_val, compacting_val=None):
+        be = _FakeBackend(busy_val, compacting_val)
         km._sdk = lambda: be
         return be
 
@@ -79,6 +84,40 @@ class OpsGateAuthoritativeBusy(unittest.TestCase):
         # the gate must not over-park: a genuinely idle session with no queue fires now (unchanged behavior).
         self._use_backend(False)
         self.assertFalse(km._ops_gate(SID), "idle + no queue + not compacting → fire immediately")
+
+
+class CompactingAuthoritativeSignal(unittest.TestCase):
+    """_compacting_now prefers the backend's authoritative /compact bracket over the optimistic 180s latch —
+    so a no-op /compact (nothing to compact, no boundary) can't strand parked ops (the user 2026-07-14)."""
+
+    def setUp(self):
+        self._saved_sdk = km._sdk
+        self._saved_parse = km._parse_cached
+        self._saved_tmux = km._tmux_sessions
+        km._parse_cached = lambda *a, **k: {"turns": []}
+        km._tmux_sessions = lambda: {}
+        km._compact_clicked[SID] = km.time.time()   # optimistic latch STAMPED (would hold 180s on its own)
+
+    def tearDown(self):
+        km._sdk = self._saved_sdk
+        km._parse_cached = self._saved_parse
+        km._tmux_sessions = self._saved_tmux
+        km._compact_clicked.pop(SID, None)
+
+    def test_backend_says_done_overrides_a_stamped_optimistic_latch(self):
+        km._sdk = lambda: _FakeBackend(False, compacting_val=False)
+        self.assertFalse(km._compacting_now(SID),
+                         "authoritative 'compaction done' wins over the stamped 180s optimistic latch — "
+                         "parked ops proceed the instant the /compact turn settles, no 3-minute stall")
+
+    def test_backend_says_compacting_is_honored(self):
+        km._sdk = lambda: _FakeBackend(True, compacting_val=True)
+        self.assertTrue(km._compacting_now(SID), "the backend's live /compact bracket reads as compacting")
+
+    def test_none_signal_falls_back_to_the_optimistic_latch(self):
+        # tmux (compacting→None) keeps the existing optimistic corroboration: the stamp + no boundary → True.
+        km._sdk = lambda: _FakeBackend(False, compacting_val=None)
+        self.assertTrue(km._compacting_now(SID), "None → the unchanged optimistic/tmux path (latch active here)")
 
 
 if __name__ == "__main__":
