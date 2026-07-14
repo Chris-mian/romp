@@ -3,12 +3,41 @@
    the feed's control bar. Linked ONLY by the VS Code builders (the web shell
    keeps its own rail), so these rules never load in the browser. The bar-pair
    look mirrors the rail's #rail-usage (.ru-*) styling. */
+/* The strip may NEVER induce a horizontal scrollbar (the user 2026-07-13). Two
+   mechanisms, both width-event-based: (1) the strip is a named size container and
+   the @container ladder below compresses the usage windows through ever more
+   concise tiers as the pane narrows — the web rail's degrade idea; (2) once even
+   the narrowest tier can't fit everything, flex-wrap folds the leftovers onto
+   another row. Container queries, not media queries: the host zooms the body to
+   the editor font (uiZoom), and a media query's viewport px would misalign by
+   that factor, while the container measures its own zoomed coordinate space. */
 #romp-strip { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; gap: 16px;
+  row-gap: 4px; flex-wrap: wrap; container: romp-strip / inline-size;
   padding: 4px 10px; box-sizing: border-box; user-select: none;
   border-top: 1px solid var(--vscode-editorHoverWidget-border, rgba(255, 255, 255, 0.12));
   background: var(--vscode-editorWidget-background, #252526); }
-#strip-usage { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; gap: 16px; }
-.strip-spacer { flex: 1 1 auto; }
+#strip-usage { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; gap: 16px;
+  flex-wrap: wrap; row-gap: 4px; }
+/* the actions cluster pins to the right edge of whatever row it wraps onto */
+.strip-acts { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; gap: 2px;
+  margin-left: auto; }
+/* the compress ladder: wide = expanded label + bar-pair + % readout; each tier
+   below drops the least essential piece (hover title keeps the full detail) */
+.ru-name-short { display: none; }
+@container romp-strip (max-width: 700px) {
+  .ru-name-full { display: none; }
+  .ru-name-short { display: inline; }
+  #strip-usage { gap: 11px; }
+  .ru-w { gap: 5px; }
+}
+@container romp-strip (max-width: 560px) {
+  .ru-pct { display: none; }
+  .ru-track { width: 44px; }
+}
+@container romp-strip (max-width: 440px) {
+  .ru-name { display: none; }
+  .ru-track { width: 36px; }
+}
 #strip-gear { flex: 0 0 auto; background: transparent; border: 1px solid transparent; border-radius: 5px;
   color: var(--vscode-descriptionForeground, #9aa0a6); font-size: 15px; line-height: 1; cursor: pointer;
   padding: 2px 6px; opacity: .8; }

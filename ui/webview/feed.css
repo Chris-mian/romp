@@ -643,6 +643,7 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    `order` + margin-left:auto, so the split holds whatever order the ensure* calls appended the buttons in. */
 #feed-foot { flex: 0 0 auto; z-index: 5;
   display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  flex-wrap: wrap; row-gap: 5px;   /* a narrow pane folds buttons onto another row — never a horizontal scrollbar */
   border-top: 1px solid var(--card-border);
   background: var(--vscode-editorWidget-background, #252526); }   /* opaque panel so it reads as a dedicated bar */
 #feed-clearall { order: 10; margin-left: auto; }   /* destructive, red hover */
