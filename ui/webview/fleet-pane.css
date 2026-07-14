@@ -61,3 +61,27 @@ font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:4px
 .fl-back:hover{background:#234a6a;color:#fff}
 .fl-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;
 color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:none}
+
+/* ── Outline hover card (the user 2026-07-13): the feed modal's story on row hover — state line, full
+   goal text, Background + Key takeaway (or Decision brief), sub-goal checklist. Lives on document.body
+   (render() wipes #fleet-list every push, which would kill anything mounted inside it mid-hover).
+   Sizes reuse the pane's ranks: 12px body (.fl-toggle rank), 10.5px labels (the footer-control rank). */
+.fl-hover{position:fixed;z-index:60;max-width:380px;min-width:220px;max-height:60vh;overflow-y:auto;
+  background:var(--vscode-editorWidget-background,#252526);border:1px solid rgba(255,255,255,0.16);
+  border-radius:8px;padding:9px 11px;box-shadow:0 6px 22px rgba(0,0,0,0.45);
+  font-size:12px;line-height:1.45;pointer-events:auto}
+.fl-hover-state{color:var(--vscode-descriptionForeground,#9a9a9a);margin-bottom:3px}
+.fl-hover-title{font-weight:600;margin-bottom:2px;white-space:normal}
+.fl-hover-sec{margin-top:7px}
+.fl-hover-lab{font-size:10.5px;text-transform:uppercase;letter-spacing:0.4px;
+  color:var(--vscode-descriptionForeground,#9a9a9a);margin-bottom:2px}
+.fl-hover-body{white-space:pre-wrap}
+.fl-hover-sub{display:flex;gap:6px;align-items:baseline;margin-top:1px}
+.fl-hover-sub .m{flex:0 0 12px;text-align:center}
+.fl-hover-sub .m.open{align-self:center;width:8px;height:8px;flex-basis:8px;border-radius:50%;
+  border:1.4px solid var(--vscode-descriptionForeground,#9a9a9a);margin-right:2px}   /* hollow ring, like the rows */
+.fl-hover-sub .t{min-width:0}
+.fl-hover-sub.done{opacity:0.6}
+.fl-hover-sub.done .m{color:#54b204}
+.fl-hover-sub.blocked .m{color:#e5484d}
+.fl-hover-more{color:var(--vscode-descriptionForeground,#9a9a9a);margin-top:2px}

@@ -38,6 +38,9 @@ let searchQuery = "";     // #fleet-search filter (the user 2026-06-29): show on
 // signature row per such session here. Stored from each push.
 interface ProvCard { sid: string; name: string; color: { bg: string; fg: string } | null; text: string }
 let provCards: ProvCard[] = [];
+// Full feed-card lookup by goal id (the SAME asks slice provCards reads): the hover card joins a top goal's
+// row to its feed card for the distiller BACKGROUND (cards carry it; ledger nodes don't — the user 2026-07-13).
+let asksById = new Map<string, { background?: string | null; summary?: string | null; blockSummary?: string | null }>();
 const DONE_KEY = "romp:fleetShowDone";
 function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; } }
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
@@ -340,27 +343,12 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   const mark = el("span", "ledger-tmark lz-nav");
   mark.dataset.sid = s.sid; mark.dataset.nid = n.id; mark.dataset.act = resolved ? "gowork" : "goprompt";
   mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";   // open = a hollow CSS ring (no glyph)
-  // restore the ledger box's mark TOOLTIP (the user 2026-06-24): the checkbox leads with WHY it reads the
-  // way it does — explicit vs inferred (roll-up = every sub-step done, roll-down = a resolved parent) vs
-  // dismissed vs blocked vs open — worked out from the children the render already has (no kernel round-trip).
-  const markReason = (): string => {
-    if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
-    if (n.cleared) {
-      if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
-      if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
-      return "dismissed — cleared, never judged done";
-    }
-    if (!n.derived) return "done — explicitly checked off";
-    const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerNode[];
-    return (kids.length > 0 && kids.every((k) => k.done))
-      ? "done — inferred: every sub-step is complete"
-      : "done — inferred: a parent goal was checked off";
-  };
-  mark.title = markReason();
+  // The mark's WHY tooltip + the text's full-goal tooltip both moved INTO the hover card (the user
+  // 2026-07-13): it leads with markReason() as its state line and the untruncated title, so the native
+  // titles would only pop redundantly on top of it. (markReason is hoisted below the render — one rule.)
   const txt = el("span", "ledger-ttext lz-nav");
   txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
   highlightInto(txt, n.text, curSearch);   // search: highlight the matched substring (plain text otherwise)
-  txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
   // (The ⊕ distiller-summary expander was removed 2026-06-27 — the user: show just the goals, not the
   //  distiller takeaway / decision brief.)
   const time = el("span", "ledger-ttime");
@@ -390,6 +378,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
     row.appendChild(tag);
   }
   row.dataset.act = "open"; row.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
+  row.dataset.nid = n.id;                              // the hover card keys off the row (sid, nid)
   container.appendChild(row);
   if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderFleetNode(ctx, c, depth + 1, container, now, flat); }
 }
@@ -685,6 +674,9 @@ window.addEventListener("message", (e: MessageEvent) => {
   provCards = (Array.isArray(m.asks) ? m.asks : [])
     .filter((a: any) => a && a.provisional && a.sid)
     .map((a: any) => ({ sid: a.sid, name: a.name || "", color: a.color || null, text: a.text || "Working…" }));
+  asksById = new Map((Array.isArray(m.asks) ? m.asks : [])
+    .filter((a: any) => a && a.itemId && !a.provisional)
+    .map((a: any) => [a.itemId as string, a] as const));
   render();
 });
 window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:settings") render(); });   // colormap change → recolour
@@ -716,6 +708,145 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
       render();
     },
   });
+})();
+
+// ── OUTLINE HOVER CARD (the user 2026-07-13) ─────────────────────────────────────────────────────
+// Hovering a goal row shows the FULL story its feed modal tells — the state line (markReason), the
+// untruncated goal text, the distiller's Background + Key takeaway (or the Decision brief), and the
+// sub-goal checklist — without leaving the Outline. ONE persistent panel on document.body: render()
+// wipes #fleet-list on every push (replaceChildren), so anything mounted inside it dies mid-hover
+// (the timeline SVG-wipe lesson) — the panel lives outside the wipe and only hides on a real
+// mouse-out / scroll / click. Wiring is DELEGATED to the stable #fleet-list; 120ms intent before
+// showing (the feed card's hover debounce) so row sweeps don't flash it.
+
+// WHY a node's checkbox reads the way it does — explicit vs inferred (roll-up = every sub-step done,
+// roll-down = a resolved parent) vs dismissed vs blocked vs open — worked out from the children the
+// render already has (no kernel round-trip). Was the mark's native tooltip (the user 2026-06-24); now
+// the hover card's state line — the same words, a richer home.
+function markReason(n: LedgerNode, byId: Map<string, LedgerNode>): string {
+  if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
+  if (n.cleared) {
+    if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
+    if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
+    return "dismissed — cleared, never judged done";
+  }
+  if (!n.derived) return "done — explicitly checked off";
+  const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerNode[];
+  return (kids.length > 0 && kids.every((k) => k.done))
+    ? "done — inferred: every sub-step is complete"
+    : "done — inferred: a parent goal was checked off";
+}
+
+const HOVER_SUB_CAP = 14;   // sub-goal rows shown before "…and N more" (the card stays a glance, not a scroll)
+let hoverCardEl: HTMLElement | null = null;
+let hoverKey = "";                      // "sid\0nid" currently shown (or pending)
+let hoverShowT: number | undefined, hoverHideT: number | undefined;
+
+function hideHoverCard(): void {
+  if (hoverShowT) { clearTimeout(hoverShowT); hoverShowT = undefined; }
+  if (hoverHideT) { clearTimeout(hoverHideT); hoverHideT = undefined; }
+  hoverKey = "";
+  if (hoverCardEl) { hoverCardEl.remove(); hoverCardEl = null; }
+}
+// Leaving a row schedules the hide with a short transit grace, so crossing the small gap into the card
+// (or to the next row, which re-keys) doesn't flicker it; entering the card cancels.
+function scheduleHideHover(): void {
+  if (hoverShowT) { clearTimeout(hoverShowT); hoverShowT = undefined; }
+  if (hoverHideT) clearTimeout(hoverHideT);
+  hoverHideT = window.setTimeout(hideHoverCard, 160);
+}
+
+// The card body — the modal's sections from data the pane already holds: the ledger node (state, text,
+// summary/blockSummary, subtree) + its feed card when one exists (background rides only on cards).
+function buildHoverCard(s: FleetSession, n: LedgerNode, byId: Map<string, LedgerNode>, now: number): HTMLElement {
+  const card = el("div", "fl-hover");
+  const state = el("div", "fl-hover-state");
+  const rec = nodeRecency(n);
+  state.textContent = markReason(n, byId) + (rec ? " · " + agehms(now - rec) + " ago" : "");
+  const title = el("div", "fl-hover-title"); title.textContent = n.text;
+  card.append(state, title);
+  const section = (label: string, text: string) => {
+    const sec = el("div", "fl-hover-sec");
+    const lab = el("div", "fl-hover-lab"); lab.textContent = label;
+    const body = el("div", "fl-hover-body"); body.textContent = text;
+    sec.append(lab, body); card.appendChild(sec);
+  };
+  const ask = asksById.get(n.id);   // top goals with a live feed card carry the distiller BACKGROUND
+  if (ask?.background && ask.background.trim()) section("Background", ask.background);
+  const summary = (n.summary || ask?.summary || "").trim();
+  const brief = (n.blockSummary || ask?.blockSummary || "").trim();
+  if (summary) section("Key takeaway", summary);
+  else if (brief) section("Decision brief", brief);
+  // sub-goal checklist: the node's whole subtree, depth-indented, same ✓/⏸/ring marks as the rows
+  const subs: { d: number; c: LedgerNode }[] = [];
+  const walk = (id: string, d: number) => {
+    const c = byId.get(id);
+    if (!c) return;
+    subs.push({ d, c });
+    for (const cid of c.children || []) walk(cid, d + 1);
+  };
+  for (const cid of n.children || []) walk(cid, 0);
+  if (subs.length) {
+    const sec = el("div", "fl-hover-sec");
+    const lab = el("div", "fl-hover-lab"); lab.textContent = "Sub-goals";
+    sec.appendChild(lab);
+    for (const { d, c } of subs.slice(0, HOVER_SUB_CAP)) {
+      const row = el("div", "fl-hover-sub" + (c.done ? " done" : "") + (c.blocked && !c.done ? " blocked" : ""));
+      row.style.paddingLeft = (d * 12) + "px";
+      const m = el("span", "m" + (!c.done && !c.blocked ? " open" : ""));
+      m.textContent = c.done ? "✓" : c.blocked ? "⏸" : "";   // open = a hollow CSS ring, like the rows
+      const t = el("span", "t"); t.textContent = c.text;
+      row.append(m, t); sec.appendChild(row);
+    }
+    if (subs.length > HOVER_SUB_CAP) {
+      const more = el("div", "fl-hover-more"); more.textContent = "…and " + (subs.length - HOVER_SUB_CAP) + " more";
+      sec.appendChild(more);
+    }
+    card.appendChild(sec);
+  }
+  return card;
+}
+
+function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
+  const s = sessions.find((x) => x.sid === sid);
+  const n = fleetNode(sid, nid);
+  if (!s || !n) return;
+  const byId = new Map([...(s.ledger?.tree || []), ...(s.ledger?.archivedTops || [])].map((x) => [x.id, x] as const));
+  if (hoverCardEl) hoverCardEl.remove();
+  const card = buildHoverCard(s, n, byId, Math.floor(Date.now() / 1000));
+  card.addEventListener("mouseenter", () => { if (hoverHideT) { clearTimeout(hoverHideT); hoverHideT = undefined; } });
+  card.addEventListener("mouseleave", scheduleHideHover);
+  document.body.appendChild(card);
+  hoverCardEl = card;
+  // position: below the row, clamped into the viewport; flip above when the bottom lacks room
+  const r = row.getBoundingClientRect();
+  const w = card.offsetWidth, h = card.offsetHeight;
+  card.style.left = Math.max(6, Math.min(r.left + 12, window.innerWidth - w - 6)) + "px";
+  card.style.top = (r.bottom + 4 + h <= window.innerHeight - 6 ? r.bottom + 4 : Math.max(6, r.top - h - 4)) + "px";
+}
+
+(() => {
+  const list = document.getElementById("fleet-list");
+  if (!list) return;
+  list.addEventListener("mouseover", (e) => {
+    const row = (e.target as Element).closest?.(".ledger-tnode") as HTMLElement | null;
+    const sid = row?.dataset.sid, nid = row?.dataset.nid;
+    if (!row || !sid || !nid) return;                 // provisional rows (no nid) keep their native title
+    if (hoverHideT) { clearTimeout(hoverHideT); hoverHideT = undefined; }
+    const key = sid + "\0" + nid;
+    if (key === hoverKey) return;                     // already shown/pending for this row
+    if (hoverShowT) clearTimeout(hoverShowT);
+    hoverKey = key;
+    hoverShowT = window.setTimeout(() => { hoverShowT = undefined; showHoverCard(row, sid, nid); }, 120);
+  });
+  list.addEventListener("mouseout", (e) => {
+    const to = e.relatedTarget as Element | null;
+    if (to && (to.closest?.(".ledger-tnode") || (hoverCardEl && hoverCardEl.contains(to)))) return;
+    scheduleHideHover();
+  });
+  // a click navigates away (open / deep-link) and a scroll moves the anchor — both drop the card at once
+  list.addEventListener("click", hideHoverCard);
+  list.addEventListener("scroll", hideHoverCard, true);
 })();
 
 // Wire the top search bar (the user 2026-06-29): typing filters the fleet to sessions whose NAME matches.

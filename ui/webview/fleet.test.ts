@@ -173,15 +173,39 @@ test("a super-category AUTO-COLLAPSES the instant it finishes, overriding a manu
   assert.match(SRC, /for \(const s of sessions\) \{\s*\n\s*for \(const r of s\.ledger\?\.tree/);
 });
 
-test("Fleet restores the ledger box's per-node mark TOOLTIP (the user 2026-06-24)", () => {
-  // the checkbox explains WHY it reads the way it does — explicit / inferred (roll-up vs roll-down) / dismissed
-  // / blocked / open — plus the full goal text on the row's text zone (it can clip in the narrow Fleet pane).
-  assert.match(SRC, /const markReason = \(\): string =>/);
+test("the mark's WHY rule (markReason) survives — as the hover card's state line, not a native tooltip", () => {
+  // the checkbox explanation the user asked for 2026-06-24 — explicit / inferred (roll-up vs roll-down) /
+  // dismissed / blocked / open — now LEADS the hover card (2026-07-13), which also carries the full goal
+  // text; the native mark/txt titles were dropped so they can't pop redundantly on top of the card.
+  assert.match(SRC, /function markReason\(n: LedgerNode, byId: Map<string, LedgerNode>\): string \{/);
   assert.match(SRC, /"done — inferred: every sub-step is complete"/);
   assert.match(SRC, /"done — inferred: a parent goal was checked off"/);
   assert.match(SRC, /"completed, then dismissed \(cleared\)"/);
-  assert.match(SRC, /mark\.title = markReason\(\);/);
-  assert.match(SRC, /txt\.title = n\.text;/);
+  assert.doesNotMatch(SRC, /mark\.title = /);
+  assert.doesNotMatch(SRC, /txt\.title = /);
+});
+
+test("hovering a row shows the modal's story: state, background, takeaway/brief, sub-goals (the user 2026-07-13)", () => {
+  // one persistent panel on document.body — render() wipes #fleet-list every push, so the card must live
+  // outside the wipe; wiring is delegated to the stable list, 120ms intent, keyed per (sid, nid)
+  assert.match(SRC, /row\.dataset\.nid = n\.id;/);
+  assert.match(SRC, /document\.body\.appendChild\(card\);/);
+  assert.match(SRC, /hoverShowT = window\.setTimeout\(\(\) => \{ hoverShowT = undefined; showHoverCard\(row, sid, nid\); \}, 120\);/);
+  // the modal's sections, from data the pane already holds (ledger node + the matching feed card)
+  assert.match(SRC, /state\.textContent = markReason\(n, byId\)/);
+  assert.match(SRC, /if \(ask\?\.background && ask\.background\.trim\(\)\) section\("Background", ask\.background\);/);
+  assert.match(SRC, /if \(summary\) section\("Key takeaway", summary\);/);
+  assert.match(SRC, /else if \(brief\) section\("Decision brief", brief\);/);
+  assert.match(SRC, /lab\.textContent = "Sub-goals";/);
+  // background rides only on feed cards → the asks slice is kept as a by-id lookup
+  assert.match(SRC, /asksById = new Map\(\(Array\.isArray\(m\.asks\) \? m\.asks : \[\]\)/);
+  // click (navigates) and scroll (moves the anchor) drop the card at once; a row-to-card transit doesn't
+  assert.match(SRC, /list\.addEventListener\("click", hideHoverCard\);/);
+  assert.match(SRC, /list\.addEventListener\("scroll", hideHoverCard, true\);/);
+  assert.match(SRC, /card\.addEventListener\("mouseleave", scheduleHideHover\);/);
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "fleet-pane.css"), "utf8");
+  assert.match(CSS, /\.fl-hover\{position:fixed;z-index:60/);
+  assert.match(CSS, /\.fl-hover-sub \.m\.open\{/);
 });
 
 test("a node/header click opens that session AND flips back to chat (the user 2026-06-24)", () => {
