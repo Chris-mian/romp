@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""A MACHINE cut — a kernel restart (BOOT_RESUME_NUDGE) or the session's own claude process dying
+mid-turn (CRASH_RESUME_NUDGE) — mints the SAME "[Request interrupted by user]" stop record as a genuine
+Esc/Stop, but romp caused it and immediately queued a resume notice to CONTINUE the work. So it must NOT
+read as a user-chosen stop: no false "you stopped this — romp won't follow up" badge, auto-nudge is NOT
+suppressed (the session is continued), and it is never blocked-on-you (the user 2026-07-14: restart-cut
+SDK sessions sat inertly in Working wearing that false badge, and auto-nudge stayed off so a genuine
+RE-stall was never caught).
+
+Conversely a GENUINE user stop still suppresses the nudge AND flips the focus goal to Blocked (needs-you)
+regardless of the auto-nudge toggle — the interrupt-block flip is a needs-you rule, not a nudge feature.
+Synthetic fixtures only."""
+import json
+import os
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+em = SourceFileLoader("romp_event_model_mc", os.path.join(BIN, "romp-event-model")).load_module()
+SourceFileLoader("romp_judge_mc", os.path.join(BIN, "romp-judge")).load_module()
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+km = SourceFileLoader("romp_kernel_mc", os.path.join(BIN, "romp-kernel")).load_module()
+sb = SourceFileLoader("romp_sdk_backend_mc", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+jd = km.jd
+
+NOW = 1781100000
+SID = "11111111-2222-3333-4444-555555555555"
+T0 = NOW - 3600
+
+
+def iso(t):
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def uline(t, text, uuid, parent=None):
+    return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+            "promptSource": "typed", "message": {"role": "user", "content": text}}
+
+
+def aline(t, text, uuid, parent, stop):
+    return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": stop}}
+
+
+def uatom(t, text, author="human"):
+    """A bare user atom (no parse) for the pure-logic predicates."""
+    return {"type": "user", "t": t, "author": author,
+            "message": {"role": "user", "content": text}}
+
+
+def intr(t):
+    return uatom(t, "[Request interrupted by user]", author="human")
+
+
+class InterruptCauseClassifier(unittest.TestCase):
+    """_interrupt_cause reads the romp resume notice that FOLLOWS an interrupt record — the same signal
+    the chat seam's cause label uses — and names the machine cut, or None for a genuine stop."""
+
+    def test_restart_notice_is_a_restart_cut(self):
+        self.assertEqual(km._interrupt_cause(uatom(T0, km.INTR_RESTART_SIG, "romp")), "restart")
+
+    def test_crash_notice_is_a_crash_cut(self):
+        self.assertEqual(km._interrupt_cause(uatom(T0, km.INTR_CRASH_SIG, "romp")), "crash")
+
+    def test_a_typed_human_reply_is_a_user_stop(self):
+        self.assertIsNone(km._interrupt_cause(uatom(T0, "actually, try the other approach")))
+
+    def test_nothing_after_the_stop_is_a_user_stop(self):
+        self.assertIsNone(km._interrupt_cause(None))
+
+    def test_lockstep_with_the_actual_resume_nudges(self):
+        # the classifier keys on the SAME text the SDK backend injects — pinned against the real nudges
+        # so a wording drift breaks here, not silently in production
+        self.assertIn(km.INTR_RESTART_SIG, sb.BOOT_RESUME_NUDGE,
+                      "the restart signature must be a substring of BOOT_RESUME_NUDGE")
+        self.assertIn(km.INTR_CRASH_SIG, sb.CRASH_RESUME_NUDGE,
+                      "the crash signature must be a substring of CRASH_RESUME_NUDGE")
+        self.assertEqual(km._interrupt_cause(uatom(T0, sb.BOOT_RESUME_NUDGE, "romp")), "restart")
+        self.assertEqual(km._interrupt_cause(uatom(T0, sb.CRASH_RESUME_NUDGE, "romp")), "crash")
+
+
+class MachineCutSuppression(unittest.TestCase):
+    """_interrupt_suppresses_nudge excludes a machine cut from the user-stop tally: romp caused it and
+    re-engaged, so it must not suppress the nudge (nor paint the feed's 'interrupted' badge)."""
+
+    def _turns(self, atoms):
+        return [{"atoms": atoms}]
+
+    def test_a_restart_cut_does_not_suppress(self):
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 61, sb.BOOT_RESUME_NUDGE, "romp")])
+        self.assertFalse(km._interrupt_suppresses_nudge(turns),
+                         "romp restarted and re-queued the work — not a user stop")
+
+    def test_a_crash_cut_does_not_suppress(self):
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 61, sb.CRASH_RESUME_NUDGE, "romp")])
+        self.assertFalse(km._interrupt_suppresses_nudge(turns),
+                         "the claude process died and was resumed — not a user stop")
+
+    def test_a_genuine_stop_still_suppresses(self):
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 60)])
+        self.assertTrue(km._interrupt_suppresses_nudge(turns),
+                        "an Esc with no resume notice after it is the user driving — still suppressed")
+
+    def test_a_user_stop_AFTER_a_machine_cut_suppresses(self):
+        # the resumed session was then genuinely stopped by the user — the NEWEST interrupt is a real stop
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 10),
+                             uatom(T0 + 11, sb.BOOT_RESUME_NUDGE, "romp"),
+                             intr(T0 + 30)])
+        self.assertTrue(km._interrupt_suppresses_nudge(turns),
+                        "the user stopped the RESUMED turn → they're driving now")
+
+    def test_the_users_message_after_a_machine_cut_still_reads_re_engaged(self):
+        # a machine cut then the user speaks: last_human outranks nothing (the cut doesn't count) → not suppressed
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 10),
+                             uatom(T0 + 11, sb.BOOT_RESUME_NUDGE, "romp"),
+                             uatom(T0 + 40, "ok, take plan B")])
+        self.assertFalse(km._interrupt_suppresses_nudge(turns))
+
+
+class MachineCutFeedAndNudge(unittest.TestCase):
+    """End to end through the parse: a restart-cut session is CONTINUED (auto-nudge fires), wears NO
+    'interrupted' badge, and is never interrupt-blocked. A genuine user stop flips the focus goal to
+    Blocked (needs-you) even with auto-nudge OFF, and wears the badge in the needs-you column."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        self.tpath = pdir / (SID + ".jsonl")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self.saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES, jd.CLOSER_ON)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE = names, proj, td / "goals", td
+        km.NAMES = names
+        jd.CLOSER_ON = False              # closer-verdict gate idles → the interrupt gates are what's exercised
+        jd.GOALDIR.mkdir(parents=True)
+        km._downtime[:] = []
+        km._parse_cache.clear()
+        km._autonudge_cache.clear()
+        km._pending_ops.clear()
+        km._write_auto_nudge({"enabled": True, "nudged": {}, "intrBlocked": {}})
+        self.tmux = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+                           "context": None, "compactPct": None, "color": None}}
+
+    def tearDown(self):
+        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE, km.NAMES, jd.CLOSER_ON) = self.saved
+        km._pending_ops.clear()
+        km._parse_cache.clear()
+        km._autonudge_cache.clear()
+        self.td.cleanup()
+
+    def _machine_cut(self, notice):
+        # a genuine turn CUT mid-flight (interrupt record ends it), then romp's resume notice opens a
+        # fresh turn that ran and re-stalled with the goal still working
+        recs = [uline(T0, "wire the thing", "u1"),
+                aline(T0 + 20, "digging in", "a1", "u1", "tool_use"),
+                uline(T0 + 60, "[Request interrupted by user]", "u2", "a1"),
+                uline(T0 + 61, notice, "u3", "u2"),
+                aline(T0 + 80, "picked it back up; still on it", "a2", "u3", "end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def _genuine_stop(self):
+        recs = [uline(T0, "wire the thing", "u1"),
+                aline(T0 + 20, "digging in", "a1", "u1", "tool_use"),
+                uline(T0 + 60, "[Request interrupted by user]", "u2", "a1")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def _goal(self):
+        g = SID + ":gw"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g, "closedTurns": [],
+            "nodes": {g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                          "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            "placements": {}, "status": {g: "working"}}))
+        return g
+
+    def _stub_send(self):
+        sent = []
+        saved = km._tmux_send, jd.optimistic_followup
+        km._tmux_send = lambda name, body, **kw: sent.append((name, body))
+        jd.optimistic_followup = lambda sid, gid: True
+
+        def restore():
+            km._tmux_send, jd.optimistic_followup = saved
+        return sent, restore
+
+    def _card(self):
+        km._parse(str(self.tpath), SID, NOW)                       # warm the cache (stands in for _warm_fleet_bg)
+        return next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
+
+    # --- restart / crash cut: continued, no badge, not blocked ------------------------------------
+
+    def test_restart_cut_gets_nudged_to_continue(self):
+        self._machine_cut(sb.BOOT_RESUME_NUDGE)
+        g = self._goal()
+        sent, restore = self._stub_send()
+        try:
+            km._auto_nudge_tick(NOW, self.tmux)
+            self.assertEqual(len(sent), 1, "a restart-cut, re-stalled goal is nudged to continue — not left silent")
+            self.assertIn("romp-goal-id: " + g, sent[0][1])
+        finally:
+            restore()
+
+    def test_restart_cut_wears_no_interrupted_badge(self):
+        self._machine_cut(sb.BOOT_RESUME_NUDGE)
+        self._goal()
+        self.assertFalse(self._card().get("interrupted"),
+                         "romp caused the cut and continued — never 'you stopped this, romp won't follow up'")
+
+    def test_restart_cut_card_stays_in_working_not_blocked(self):
+        self._machine_cut(sb.BOOT_RESUME_NUDGE)
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "working",
+                         "a machine cut is continued, never blocked-on-you")
+        self.assertEqual(self._card()["column"], "working")
+
+    def test_crash_cut_is_also_continued_not_blocked(self):
+        self._machine_cut(sb.CRASH_RESUME_NUDGE)
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "working")
+        self.assertFalse(self._card().get("interrupted"))
+
+    # --- genuine user stop: blocked (needs-you) even with auto-nudge OFF --------------------------
+
+    def test_genuine_stop_blocks_the_focus_goal_with_autonudge_off(self):
+        km._set_auto_nudge(False)                       # the toggle must not gate the needs-you flip
+        self._genuine_stop()
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "blocked",
+                         "a user-stopped session needs the user → Blocked, not sitting in Working")
+
+    def test_genuine_stop_card_lands_in_needs_input_with_the_badge(self):
+        km._set_auto_nudge(False)
+        self._genuine_stop()
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        card = self._card()
+        self.assertEqual(card["column"], "needs_input", "the interrupted card comes to the user's attention")
+        self.assertTrue(card.get("interrupted"), "and says WHY it's here — the user stopped it mid-turn")
+
+    def test_genuine_stop_block_lifts_when_the_user_re_engages(self):
+        km._set_auto_nudge(False)
+        self._genuine_stop()
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "blocked")
+        # the user speaks → a fresh turn opens; the block WE placed lifts
+        with open(self.tpath, "a") as f:
+            f.write(json.dumps(uline(T0 + 200, "keep going with plan B", "u3", "u2")) + "\n")
+        km._parse_cache.clear()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "working",
+                         "the user re-engaged → our interrupt block lifts")
+
+
+if __name__ == "__main__":
+    unittest.main()

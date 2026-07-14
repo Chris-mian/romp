@@ -108,24 +108,56 @@ def _turn_romp_injected(turn):
     return bool(a and a.get("author") == "romp")
 
 
+# The discriminating phrases in the resume notices romp injects to CONTINUE a machine-cut turn
+# (sdk_backend.BOOT_RESUME_NUDGE / CRASH_RESUME_NUDGE). A kernel restart or the session's own claude
+# process dying mid-turn ALSO mints a "[Request interrupted by user]" stop record — but romp, not the
+# user, caused that cut and immediately queued one of these notices as the very next user-role message
+# to pick the work back up. Matching on them (the SAME signal _stamp_interrupt_causes reads for the
+# chat seam's cause label) tells a MACHINE cut from a genuine user stop. Kept in lockstep with the
+# nudge text by test_kernel_interrupt_machine_cut.
+INTR_RESTART_SIG = "kernel restarted and cut"        # BOOT_RESUME_NUDGE
+INTR_CRASH_SIG = "died mid-turn"                      # CRASH_RESUME_NUDGE
+
+
+def _interrupt_cause(nxt_atom):
+    """The MACHINE-cut cause named by the romp resume notice that FOLLOWS an interrupt record (its very
+    next user-role atom), or None for a genuine user stop. 'restart' = a kernel restart cut the turn;
+    'crash' = the session's own claude process died mid-turn. Both are cuts romp itself caused and is
+    already continuing (via the injected resume notice) — never a user-chosen stop, so they must not
+    suppress the nudge nor paint the "you stopped this" badge (the user 2026-07-14)."""
+    body = (_atom_user_text(nxt_atom) or "") if nxt_atom else ""
+    if INTR_RESTART_SIG in body:
+        return "restart"
+    if INTR_CRASH_SIG in body:
+        return "crash"
+    return None
+
+
 def _interrupt_suppresses_nudge(turns):
-    """True while the session's most recent USER action is an INTERRUPT: the user stopped the agent and
-    hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until their NEXT
-    message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never a timer or
-    merely "a newer turn ended"). Concretely: the newest interrupt record outranks the newest genuine
-    HUMAN prompt. A peer postal message or romp injection opening a turn in between does NOT lift it —
-    only the user speaking does. The interrupt record itself authors 'human', so it's classified FIRST.
-    Also drives the feed's "interrupted" badge: the card's quiet is user-chosen, and says so."""
+    """True while the session's most recent USER action is a GENUINE user INTERRUPT: the user stopped
+    the agent and hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until
+    their NEXT message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never
+    a timer or merely "a newer turn ended"). Concretely: the newest genuine-stop interrupt record
+    outranks the newest genuine HUMAN prompt. A peer postal message or romp injection opening a turn in
+    between does NOT lift it — only the user speaking does. The interrupt record itself authors 'human',
+    so it's classified FIRST. Also drives the feed's "interrupted" badge: the card's quiet is user-chosen.
+
+    A MACHINE cut — a kernel restart or the session's own process dying mid-turn — mints the SAME stop
+    record, but romp (not the user) caused it and immediately queued a resume notice to CONTINUE the
+    work, so it must never suppress the nudge nor paint "you stopped this — romp won't follow up" (the
+    user 2026-07-14: restart-cut SDK sessions sat inertly in Working wearing that false badge, and
+    auto-nudge stayed off so a genuine RE-stall was never caught). Such a cut is identified by the romp
+    resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally."""
+    users = [a for turn in turns for a in (turn.get("atoms") or []) if a.get("type") == "user"]
     last_intr = last_human = 0
-    for turn in turns:
-        for a in turn.get("atoms") or []:
-            if a.get("type") != "user":
-                continue
-            t = a.get("t", 0)
-            if em.is_interrupt_record(a):
-                last_intr = max(last_intr, t)
-            elif a.get("author") == "human":
-                last_human = max(last_human, t)
+    for i, a in enumerate(users):
+        t = a.get("t", 0)
+        if em.is_interrupt_record(a):
+            if _interrupt_cause(users[i + 1] if i + 1 < len(users) else None):
+                continue                                 # machine cut → romp re-engaged, not the user
+            last_intr = max(last_intr, t)
+        elif a.get("author") == "human":
+            last_human = max(last_human, t)
     return last_intr > last_human
 
 
@@ -1352,6 +1384,44 @@ def _set_intr_blocked(sid, gid):
     _write_auto_nudge(d)
 
 
+def _interrupt_block_tick(now, tmux):
+    """Interrupt → Blocked, INDEPENDENT of the auto-nudge switch (the user 2026-07-14). A session the
+    user genuinely STOPPED mid-turn is waiting on their next instruction: its focus goal needs THEM, so
+    it belongs in the Blocked (needs-you) column — never sitting quietly in Working. This flip used to
+    live inside _auto_nudge_tick, so it only happened with auto-nudge ON; it is a needs-you rule, not a
+    nudge feature, so it runs every push regardless of the toggle. A MACHINE cut (kernel restart /
+    process death) is NOT a user stop — _interrupt_suppresses_nudge already excludes it — so those are
+    continued, never blocked. On re-engage (the user's next message, or once a machine cut is no longer
+    the latest action) the block WE placed is lifted; a real judge verdict recorded since then stays."""
+    changed = False
+    for s in _alive_sessions(now, tmux):
+        sid = s["sid"]
+        if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no interrupt-block bookkeeping either
+            continue
+        st = (tmux.get(sid) or {}).get("state", "")
+        if st in _NEEDS_INPUT_STATES or st == "compacting" or _compacting_now(sid):
+            continue                                     # awaiting you / compacting → a different needs-you path owns it
+        if _api_error(s["path"]):                        # stopped on an API error → not a user stop
+            continue
+        try:
+            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+        except Exception:
+            continue
+        block_it = bool(turns) and not _session_working(turns) and _interrupt_suppresses_nudge(turns)
+        if block_it:                                     # a GENUINE user stop → block the focus goal on them,
+            if not _intr_blocked(sid):                   # once per interrupt episode (the intrBlocked marker)
+                g = _record_interrupt_block(sid)
+                if g:
+                    _set_intr_blocked(sid, g); changed = True
+        else:                                            # working / re-engaged / machine cut → lift OUR block if any
+            ib = _intr_blocked(sid)
+            if ib:
+                _lift_interrupt_block(sid, ib)
+                _set_intr_blocked(sid, None); changed = True
+    if changed:                                          # a needs-you flip should reach the feed at once
+        _push_all()
+
+
 def _log_nudge_event(sid, gid, t, count):
     """Append one auto-nudge fire to STATE/nudge-events.jsonl — {sid, gid, t, count} — for the timeline's
     DEBUG judging band to render a per-nudge ⚡ marker and escalate at high counts (the view is business's)."""
@@ -1589,20 +1659,10 @@ def _auto_nudge_tick(now, tmux):
         lt = turns[-1]
         if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
-        if _interrupt_suppresses_nudge(turns):           # the user's LAST action was an interrupt → they're driving;
-            # ...and (the user 2026-07-07) the stopped focus goal is BLOCKED on them: record the verdict
-            # once per interrupt episode (the intrBlocked marker), exactly like a stalled nudge-failure.
-            if not _intr_blocked(sid):
-                _g = _record_interrupt_block(sid)
-                if _g:
-                    _set_intr_blocked(sid, _g)
-                    fired = True
-            continue                                     # suppressed until their NEXT message, not merely a newer turn
-        _ib = _intr_blocked(sid)
-        if _ib:                                          # they re-engaged → lift OUR block (a real judge verdict stays)
-            _lift_interrupt_block(sid, _ib)
-            _set_intr_blocked(sid, None)
-            fired = True
+        if _interrupt_suppresses_nudge(turns):           # the user's LAST action was a GENUINE interrupt → they're
+            continue                                     # driving; suppressed until their NEXT message. The stopped
+            #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
+            #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
         if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
             continue                                     # queued intent; a nudge would jump their queue (the user 2026-07-05)
         ls_val, ls_t = _last_state(sid)
@@ -6070,9 +6130,9 @@ def _stamp_interrupt_causes(events):
                 continue                                  # the settle-reply / thinking between marker and notice
             if nxt.get("rompSystem"):
                 body = nxt.get("md") or ""
-                if "kernel restarted and cut" in body:
+                if INTR_RESTART_SIG in body:              # same signatures the nudge gate reads (_interrupt_cause)
                     ev["interruptCause"] = "restart"
-                elif "died mid-turn" in body:
+                elif INTR_CRASH_SIG in body:
                     ev["interruptCause"] = "crash"
             break                                         # first user-role event decides; a typed prompt = user stop
     return events
@@ -9813,6 +9873,10 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+        try:                                  # Interrupt → Blocked runs EVERY push, independent of the nudge toggle
+            _interrupt_block_tick(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
         try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
             _auto_pause_on_limit()
         except Exception:
