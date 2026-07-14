@@ -19,6 +19,8 @@ test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the nam
   assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "…so the action row is Retry/Revive only (Clear + toggles moved up)");
   // Clear is the rightmost control on the NAME row now (both ask + group cards)
   assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");
+  // its tooltip is plain-spoken (the user 2026-07-13): "clear this task", not the inbox-zero jargon
+  assert.match(FEED, /clr\.title = "clear this task";/);
   assert.match(FEED, /row2\.append\(idwrap, clr\)/, "group card: Clear on the name row");
   // the group card has no row3 anymore (its only content, the time, moved to row1)
   assert.match(FEED, /main\.append\(row1, row2, memberList\)/, "group card: no row3 (time moved to row1)");

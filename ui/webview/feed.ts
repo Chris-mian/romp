@@ -524,7 +524,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // The header "awaiting" chip was REMOVED (the user 2026-07-04): it duplicated the "Awaiting background
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
-  const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
+  const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this task";   // plain-spoken (the user 2026-07-13, over the inbox-zero jargon)
   // Manual "Nudge" REMOVED (the user 2026-06-30): once Auto Nudge is robust you never hand-nudge — the
   // background nudge follows up on a stalled working goal automatically, so the manual button (and the whole
   // concept of manually nudging) is gone. Working cards now have no footer action of their own.
