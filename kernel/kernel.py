@@ -7360,7 +7360,7 @@ def build_feed(now, tmux=None):
         # title is prompt-intent and must land on the USER turn — passing the trigger uuid (which the chat
         # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
         # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
-        seg_uuid, seg_trig, seg_best, atom_uuids = {}, {}, {}, set()
+        seg_uuid, seg_trig, seg_best, cite_uuids = {}, {}, {}, set()
         try:
             for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
                 for seg in _segs_seam(turn, store):
@@ -7369,9 +7369,13 @@ def build_feed(now, tmux=None):
                     seg_trig[_seg_key(seg["id"])] = seg.get("trigger")
                     _lu, _lsub = _seg_last_text(seg["atoms"])
                     seg_best[_seg_key(seg["id"])] = (_lu, _lsub, seg.get("t", 0))   # latest prose → summary deep-link fallback
-                    for _a in seg["atoms"]:              # resolvable-uuid set: gates the distiller's CITED anchor
-                        if _a.get("uuid"):
-                            atom_uuids.add(_a["uuid"])
+                    for _a in seg["atoms"]:              # citable-uuid set: gates the distiller's CITED anchor.
+                        # Resolvable in THIS parse AND substantive (the user 2026-07-14): a stored citation
+                        # pointing at a connective stub (a lead-in that merely names the goal) is a wrong
+                        # link by construction — the outcome never lives there — so it falls through to the
+                        # deterministic fallback below, healing bad anchors already in stores at read time.
+                        if _a.get("uuid") and _atom_prose_chars(_a) >= jd.CITE_MIN_CHARS:
+                            cite_uuids.add(_a["uuid"])
         except Exception:
             pass
         children = {}
@@ -7667,12 +7671,14 @@ def build_feed(now, tmux=None):
             # distiller/brief itself CITED while writing the line (node["summaryAnchor"], judge _split_source)
             # — the same reader that wrote the summary names what it read, so the link is "what informed the
             # summary" by construction (the user 2026-07-01); honored only when the uuid resolves in this
-            # parse. FALLBACK (older goals, no/invalid citation): the most CURRENT substantive assistant
-            # message across the goal's whole subtree trail (mint→resolution) — the wrap-up that closed the
-            # work. Never the old biggest-text-block pick: "longest ever" is monotone, so a long early
-            # analysis held the anchor forever while the real outcome landed later (the user 2026-07-01).
+            # parse AND carries substantive prose (cite_uuids — a citation on a connective stub is wrong by
+            # construction, the user 2026-07-14). FALLBACK (older goals, no/invalid/stub citation): the most
+            # CURRENT substantive assistant message across the goal's whole subtree trail (mint→resolution)
+            # — the wrap-up that closed the work. Never the old biggest-text-block pick: "longest ever" is
+            # monotone, so a long early analysis held the anchor forever while the real outcome landed later
+            # (the user 2026-07-01).
             _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
-            if _cited and _cited in atom_uuids:
+            if _cited and _cited in cite_uuids:
                 _sa_u = _cited
             else:
                 _best = None                             # (substantive, seg_t): prefer substantive, then latest
@@ -8079,30 +8085,38 @@ def _segs_seam(turn, store):
     return jd.apply_seams(em.segments(turn), store or {})
 
 
+def _atom_prose_chars(a):
+    """Chars of assistant prose on one atom — 0 for a non-assistant, API-error, or prose-less atom. The
+    ONE measure behind both "substantive" reads: _seg_last_text's fallback floor and build_feed's
+    citation gate (both against jd.CITE_MIN_CHARS), so the two can never drift."""
+    if a.get("type") != "assistant" or a.get("isApiError"):
+        return 0
+    blocks = (a.get("message") or {}).get("content", [])
+    if not isinstance(blocks, list):
+        return 0
+    return sum(len(b.get("text", "")) for b in blocks
+               if isinstance(b, dict) and b.get("type") == "text")
+
+
 def _seg_last_text(atoms):
     """(uuid, substantive) — the LAST assistant prose atom in a segment, preferring a SUBSTANTIVE one
-    (≥80 chars of text). The summary deep-link FALLBACK when the distiller didn't cite a source: the most
-    current substantive message (the wrap-up that closed the work) is where the outcome lives, per the
-    closer's own doctrine that the completion verdict is the ground truth to anchor on. Replaces the old
-    biggest-text-block pick, which let a long early analysis hold the anchor forever (the user 2026-07-01).
-    The substantive floor is 80, NOT 200 (the user 2026-07-02): an agent working in terse status notes can
-    go a whole session with only its OPENING RESTATEMENT past 200 chars — a live card's summary link landed
-    there, on the one message this anchor exists to avoid — while the real wrap-ups ran 90-190. Recency is
-    the signal; the floor only filters connective stubs ("Now the function rewrite:"), so it sits just
-    above them. API-error atoms are skipped (like _seg_anchors: a failed turn carries text but is never a
-    jump target). (None, False) when the segment has no assistant prose."""
+    (≥ jd.CITE_MIN_CHARS chars of text). The summary deep-link FALLBACK when the distiller didn't cite a
+    source: the most current substantive message (the wrap-up that closed the work) is where the outcome
+    lives, per the closer's own doctrine that the completion verdict is the ground truth to anchor on.
+    Replaces the old biggest-text-block pick, which let a long early analysis hold the anchor forever
+    (the user 2026-07-01). The substantive floor is 80, NOT 200 (the user 2026-07-02): an agent working
+    in terse status notes can go a whole session with only its OPENING RESTATEMENT past 200 chars — a
+    live card's summary link landed there, on the one message this anchor exists to avoid — while the
+    real wrap-ups ran 90-190. Recency is the signal; the floor only filters connective stubs ("Now the
+    function rewrite:"), so it sits just above them. API-error atoms are skipped (like _seg_anchors: a
+    failed turn carries text but is never a jump target). (None, False) when the segment has no
+    assistant prose."""
     last_any, last_sub = None, None
     for a in atoms:
-        if a.get("type") != "assistant" or a.get("isApiError"):
-            continue
-        blocks = (a.get("message") or {}).get("content", [])
-        if not isinstance(blocks, list):
-            continue
-        n = sum(len(b.get("text", "")) for b in blocks
-                if isinstance(b, dict) and b.get("type") == "text")
+        n = _atom_prose_chars(a)
         if n and a.get("uuid"):
             last_any = a["uuid"]
-            if n >= 80:
+            if n >= jd.CITE_MIN_CHARS:
                 last_sub = a["uuid"]
     return (last_sub or last_any), last_sub is not None
 
