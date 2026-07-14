@@ -1,6 +1,7 @@
 """API errors (the user 2026-06-29): a TRANSIENT API error is not blocking — its card stays in Working with the
-⚠ chip and auto-retry recovers it. BUT a "prompt is too long" error is on YOU (compact needed), so it (and only
-it) floors the focus card to needs-input and gets the alarm-red tab. Source pins on _api_error + build_feed."""
+⚠ chip and auto-retry recovers it. BUT an ON-YOU error floors the focus card to needs-input and gets the
+alarm-red tab: "prompt is too long" (compact needed) or a monthly spend cap (raise it, the user 2026-07-14) —
+the spend cap ALSO stops auto-retry entirely (no reset to wait out). Source pins on _api_error + build_feed."""
 import inspect
 import os
 import unittest
@@ -18,12 +19,22 @@ class ApiErrorWorking(unittest.TestCase):
         src = inspect.getsource(km._api_error)
         self.assertIn('"tooLong": "too long" in text.lower()', src)
 
-    def test_only_tooLong_floors_the_card_to_needs_input(self):
+    def test_only_on_you_errors_floor_the_card_to_needs_input(self):
         src = inspect.getsource(km.build_feed)
-        # api_block fires ONLY for a "prompt too long" api_top; a transient error does NOT move the card
-        self.assertIn('api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))', src)
+        # api_block fires for an ON-YOU api_top — "prompt too long" (compact) OR a monthly spend cap (raise it,
+        # the user 2026-07-14); a transient error does NOT move the card (it auto-retries in Working).
+        self.assertIn('api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit"))))', src)
         self.assertIn('column = ("needs_input" if (api_block or nid == perm_top', src)   # stalled_floor retired 2026-07-07
         self.assertIn('or (col == "blocked" and not recheck and not rejudging))', src)
+
+    def test_spend_cap_is_classified_and_floors_like_tooLong(self):
+        # a monthly spend cap is on you (raise it) AND never auto-retried — classified in _api_error, floored
+        # to needs-input, and badged with the raise-your-cap guidance (the user 2026-07-14).
+        self.assertIn('"spendLimit": _is_spend_limit(text)', inspect.getsource(km._api_error))
+        bf = inspect.getsource(km.build_feed)
+        self.assertIn('"spendLimit": bool(aerr.get("spendLimit"))', bf)
+        self.assertIn("monthly spend limit — raise it at claude.ai/settings/usage", bf)
+        self.assertIn('"apiSpendLimit": bool(aerr and aerr.get("spendLimit"))', inspect.getsource(km.build_session))
 
     def test_status_marks_tooLong_so_the_tab_can_color_it(self):
         src = inspect.getsource(km.build_session)

@@ -60,6 +60,7 @@ interface AskItem {
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
   blocked?: { state: string; what: string; status?: number; text?: string;
               tooLong?: boolean;   // apiError: a "prompt is too long" error (on you → compact) vs a transient API error
+              spendLimit?: boolean;   // apiError: a monthly spend cap (on you → raise it, never auto-retried; the user 2026-07-14)
               toName?: string; toSid?: string };   // parkedHandoff adds to*
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
@@ -1144,13 +1145,18 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
+  const spendLimit = !!(it.blocked && it.blocked.spendLimit);
   a._apiBadge.style.display = isApiErr ? "" : "none";
-  a._apiRetry.style.display = isApiErr ? "" : "none";
+  // Retry pastes "retry" to resume a stalled turn — useless against a monthly spend cap (retrying can't lift a
+  // billing limit), so hide it there and let the badge tell you to raise the cap (the user 2026-07-14).
+  a._apiRetry.style.display = (isApiErr && !spendLimit) ? "" : "none";
   if (isApiErr && it.blocked) {
-    // "prompt is too long" is on you (compact); other API errors are transient (auto-retrying) — the user 2026-06-29
-    a._apiBadge.textContent = it.blocked.tooLong ? "⚠ Prompt too long"
+    // on-you errors name themselves: a spend cap (raise it) or "prompt too long" (compact); other API errors are
+    // transient and auto-retrying (the user 2026-06-29 / 2026-07-14).
+    a._apiBadge.textContent = spendLimit ? "⚠ Spend limit"
+      : it.blocked.tooLong ? "⚠ Prompt too long"
       : it.blocked.status ? `⚠ API error · ${it.blocked.status}` : "⚠ API error";
-    a._apiBadge.title = it.blocked.text || it.blocked.what;
+    a._apiBadge.title = spendLimit ? it.blocked.what : (it.blocked.text || it.blocked.what);
     a._apiRetry.disabled = false; a._apiRetry.textContent = "Retry";
     a._apiRetry.onclick = (ev: Event) => {
       ev.stopPropagation();

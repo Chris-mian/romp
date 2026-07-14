@@ -1071,13 +1071,26 @@ def _retry_paused_on():
         return False
 
 
-def _set_retry_paused(paused):
+def _set_retry_paused(paused, reason=""):
     # Record WHEN a pause began: the auto-resume floor. Only a successful response AFTER this instant proves
     # the API recovered (an old success from before the outage doesn't). No `t` when un-pausing.
+    # `reason` (the user 2026-07-14): "spend" when a monthly spend cap auto-engaged the pause, so the card
+    # shows "raise your cap" instead of a reset countdown; "" for a manual Stop or a rate-window pause.
     d = {"paused": bool(paused)}
     if paused:
         d["t"] = time.time()
+        if reason:
+            d["reason"] = reason
     _atomic_write(jd.STATE / "retry-paused.json", json.dumps(d))
+
+
+def _retry_pause_reason():
+    """Why the current global pause engaged ("spend" for a monthly spend cap), or "" (manual / rate
+    window). Rides the globalRetryPaused push so the card can name the cause."""
+    try:
+        return str(json.loads((jd.STATE / "retry-paused.json").read_text()).get("reason") or "")
+    except Exception:
+        return ""
 
 
 def _retry_pause_ts():
@@ -1136,6 +1149,37 @@ def _auto_pause_on_limit():
         _set_retry_paused(True)
         sys.stderr.write("retry-pause: auto-engaged — usage limit reached (%s) → auto-retry + judges paused until reset\n"
                          % ",".join(account))
+        _push_all()
+
+
+def _spend_capped_session(now, tmux):
+    """The first alive session sitting blocked on a MONTHLY SPEND CAP error, or None. Account-wide by
+    nature (the cap is on the account, so every session hits it), so one is enough to pause everything."""
+    for s in _alive_sessions(now, tmux):
+        p = s.get("path")
+        if p:
+            e = _api_error(p)
+            if e and e.get("spendLimit"):
+                return s
+    return None
+
+
+def _auto_pause_on_spend_limit(now, tmux):
+    """A monthly spend cap auto-engages the global retry-pause (the user 2026-07-14) — the SPEND twin of
+    _auto_pause_on_limit. Unlike a 5h/7d RATE window (a known reset the card counts down to, retried at
+    the reset), a spend cap has no readable reset: retrying just re-fails until the user raises it, so the
+    10s auto-retry storms indefinitely (the reported "retry retry retry…"). Detected from the transcript
+    (isApiErrorMessage → _api_error.spendLimit), not the usage report, because the cap is a BILLING limit
+    the /usage windows don't carry. Pausing stops BOTH the auto-retry AND the judges (they gate on this
+    flag) — correct, since a capped account fails every model call. _auto_resume_retry clears it the moment
+    a session serves a request again (which can't happen until the cap lifts), so it holds exactly as long
+    as the cap does. reason='spend' → the card shows 'raise your cap', not a reset countdown. Idempotent."""
+    if _retry_paused_on():
+        return
+    if _spend_capped_session(now, tmux) is not None:
+        _set_retry_paused(True, reason="spend")
+        sys.stderr.write("retry-pause: auto-engaged — monthly spend limit reached → auto-retry + judges "
+                         "paused until the cap is raised (claude.ai/settings/usage)\n")
         _push_all()
 
 
@@ -4608,6 +4652,21 @@ def _bg_tasks(path, spawned_at=None, live=None):
     return {"count": len(scan), "tasks": out}
 
 
+# The MONTHLY SPEND CAP error (the user 2026-07-14): a billing limit ("You've hit your monthly spend
+# limit · raise it at claude.ai/settings/usage") — distinct from a 5h/7d RATE window (which _usage()
+# reports, _auto_pause_on_limit already pauses, and which resets on a KNOWN clock the card counts down
+# to). A spend cap has no readable reset: it lifts only when the user raises it (or the billing cycle
+# rolls), so retrying into it just re-fails forever — the "retry retry retry…" storm. Matched on the
+# billing-specific phrasing so it never catches a rate-window error (no "raise it" there): those keep
+# their countdown-and-retry path. Kept as its own predicate (not an inline substring) so the marker set
+# lives in one place and the test pins the exact phrasings.
+def _is_spend_limit(text):
+    low = (text or "").lower()
+    return ("spend limit" in low
+            or ("raise" in low and "settings/usage" in low)
+            or ("spending" in low and "limit" in low))
+
+
 def _api_error(path):
     """If the session is sitting BLOCKED on an API error right now, the error; else None. Claude Code
     writes every API failure to the transcript as an assistant record with top-level
@@ -4648,7 +4707,10 @@ def _api_error(path):
                         # errors are transient (auto-retry recovers them) and stay in Working.
                         err = {"text": text, "status": o.get("apiErrorStatus"),
                                "category": o.get("error") or "unknown",
-                               "tooLong": "too long" in text.lower()}
+                               "tooLong": "too long" in text.lower(),
+                               # a spend cap is on YOU (raise it), like tooLong — but ALSO stops the
+                               # auto-retry entirely (no reset to wait out); see _auto_pause_on_spend_limit
+                               "spendLimit": _is_spend_limit(text)}
                     elif (isinstance(c, list) and any(isinstance(b, dict)
                             and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                             or (isinstance(c, str) and c.strip()):
@@ -6650,6 +6712,9 @@ def build_session(sid, now, tmux=None):
         # so the client auto-retry still fires + recovers the transient ones (the user 2026-06-29).
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
+                  # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
+                  # the client's apiRetryTick skips it, and the global pause it engages stops the loop too
+                  "apiSpendLimit": bool(aerr and aerr.get("spendLimit")),
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -7709,7 +7774,7 @@ def build_feed(now, tmux=None):
             # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
             # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
-            api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))
+            api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit"))))
             # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
             # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
             # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
@@ -7820,7 +7885,9 @@ def build_feed(now, tmux=None):
                 "blocked": ({"state": "apiError",
                              "status": aerr.get("status"),
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
-                             "what": ("this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
+                             "spendLimit": bool(aerr.get("spendLimit")),
+                             "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
+                                      else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
                                       else "this session stopped on an API error — Retry to resume")} if nid == api_top
                             else {"state": perm_state,
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
@@ -9574,7 +9641,8 @@ def _push(targets, connect=False):
             tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
             for c in chat_clients:                       # tab strip first → the shell paints before any build
                 _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on(),
-                                                         "resumeAt": _retry_resume_at()})   # limit reset epoch → the card counts down to the real retry
+                                                         "resumeAt": _retry_resume_at(),   # limit reset epoch → the card counts down to the real retry
+                                                         "reason": _retry_pause_reason()})   # "spend" → the card says 'raise your cap', no countdown
                 _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
@@ -9886,6 +9954,10 @@ def _pusher():
             _auto_pause_on_limit()
         except Exception:
             sys.stderr.write("auto-pause-on-limit: %s\n" % traceback.format_exc())
+        try:                                  # a monthly spend cap (no readable reset) also engages it — else it storms forever
+            _auto_pause_on_spend_limit(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
         try:                                  # a paused retry auto-clears once any session serves a request again
             _auto_resume_retry(int(time.time()), _tmux_sessions())
         except Exception:

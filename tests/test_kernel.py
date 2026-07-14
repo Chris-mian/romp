@@ -4701,6 +4701,37 @@ class TestApiError(unittest.TestCase):
             f.write(json.dumps(uline(T0 + 9, "retry", "u2", parent="e1")) + "\n")
         self.assertIsNone(km._api_error(self.p), "append busts the (mtime,size) cache")
 
+    def test_spend_limit_is_classified_on_you(self):
+        # a monthly SPEND cap (a billing limit) is on you — raise it; distinct from a transient error AND
+        # from a rate window (the user 2026-07-14). It must never auto-retry, so it carries spendLimit.
+        self._write(uline(T0, "do it", "u1"),
+                    apierr_line(T0 + 5, "e1", "u1",
+                                text="You've hit your monthly spend limit. Raise it at claude.ai/settings/usage.",
+                                status=None, category="usage_limit"))
+        e = km._api_error(self.p)
+        self.assertTrue(e["spendLimit"], "the spend-cap phrasing is classified as a spend limit")
+        self.assertFalse(e["tooLong"], "a spend cap is not a prompt-too-long error")
+
+    def test_transient_and_ratewindow_errors_are_not_spend_limits(self):
+        # a plain 500 is transient (auto-retries); a 5h/7d RATE window has its own countdown-and-retry path
+        # (_auto_pause_on_limit via the usage report) and must NOT be misread as a no-reset spend cap.
+        self._write(apierr_line(T0 + 5, "e1", None))                      # default 500 server_error
+        self.assertFalse(km._api_error(self.p)["spendLimit"])
+        self._write(apierr_line(T0 + 5, "e2", None,
+                                text="Usage limit reached. Your limit resets at 3pm.", status=429,
+                                category="rate_limit"))
+        self.assertFalse(km._api_error(self.p)["spendLimit"],
+                         "a rate-window reset message is not a spend cap (no 'raise it')")
+
+    def test_is_spend_limit_predicate(self):
+        for t in ("You've hit your monthly spend limit.",
+                  "Reached your spending limit for this month.",
+                  "Please raise your budget at claude.ai/settings/usage"):
+            self.assertTrue(km._is_spend_limit(t), t)
+        for t in ("API Error: 500 Internal server error.", "Request timed out",
+                  "Usage limit reached — resets at 3pm.", "prompt is too long"):
+            self.assertFalse(km._is_spend_limit(t), t)
+
 
 class ApiRetryAndTabOrderRoutes(unittest.TestCase):
     """WS handlers hard to drive through the socket — assert the routing is wired in source (mirrors

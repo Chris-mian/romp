@@ -138,6 +138,63 @@ class AutoPauseOnLimit(unittest.TestCase):
         self.assertTrue(km._retry_paused_on(), "a real 5h/7d limit still engages the pause")
 
 
+class AutoPauseOnSpendLimit(unittest.TestCase):
+    """A monthly SPEND cap auto-engages the global retry-pause — the SPEND twin of AutoPauseOnLimit (the
+    user 2026-07-14). Unlike a 5h/7d RATE window (a known reset the card counts down to), a spend cap has
+    no readable reset: retrying just re-fails until it's raised, so the 10s auto-retry storms forever
+    without this. Detected from the transcript (_api_error.spendLimit), not the usage report. reason='spend'
+    → the card says 'raise your cap', no countdown. Synthetic fixtures only."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = (jd.STATE, km._alive_sessions, km._api_error, km._push_all)
+        jd.STATE = Path(self.td.name)
+        km._push_all = lambda: None
+
+    def tearDown(self):
+        jd.STATE, km._alive_sessions, km._api_error, km._push_all = self.saved
+        self.td.cleanup()
+
+    def _sessions(self, *errs):
+        sess = [{"sid": "s%d" % i, "path": "/tmp/s%d.jsonl" % i} for i in range(len(errs))]
+        emap = {s["path"]: e for s, e in zip(sess, errs)}
+        km._alive_sessions = lambda now, tmux: sess
+        km._api_error = lambda p: emap.get(p)
+
+    def test_a_spend_cap_engages_the_pause_with_reason_spend(self):
+        self._sessions({"spendLimit": True, "tooLong": False, "text": "monthly spend limit"})
+        self.assertFalse(km._retry_paused_on())
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertTrue(km._retry_paused_on(), "a spend cap auto-engages the global pause")
+        self.assertEqual(km._retry_pause_reason(), "spend", "the pause names the spend-cap cause")
+        self.assertIsNone(km._retry_resume_at(), "a spend cap has no reset to count down to")
+
+    def test_only_the_capped_session_among_healthy_peers_triggers_it(self):
+        self._sessions(None, {"spendLimit": True, "text": "spend limit"}, {"spendLimit": False, "text": "500"})
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertTrue(km._retry_paused_on(), "one capped session is enough — the cap is account-wide")
+
+    def test_a_transient_error_does_not_engage(self):
+        self._sessions({"spendLimit": False, "tooLong": False, "text": "500 server error"})
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertFalse(km._retry_paused_on(), "a transient API error keeps auto-retry running")
+
+    def test_no_error_does_not_engage(self):
+        self._sessions(None, None)
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertFalse(km._retry_paused_on())
+
+    def test_it_is_idempotent_and_never_clobbers_an_existing_pause_reason(self):
+        km._set_retry_paused(True)                       # a manual / rate-window pause already on (no reason)
+        self._sessions({"spendLimit": True, "text": "spend limit"})
+        km._auto_pause_on_spend_limit(0, {})
+        self.assertEqual(km._retry_pause_reason(), "", "an existing pause is left untouched")
+
+    def test_the_push_carries_the_reason(self):
+        self.assertIn('"reason": _retry_pause_reason()', Path(BIN, "romp-kernel").read_text(),
+                      "the globalRetryPaused push carries the pause reason")
+
+
 class LimitBannerWiring(unittest.TestCase):
     def test_the_shell_has_the_banner_and_the_widget_drives_it(self):
         land = km._landing()
