@@ -2823,11 +2823,23 @@ function showOpeningModal(name: string) {
   overlay.id = "opening";
   overlay.style.display = "flex";
   const box = el("div", "picker-box opening-box");
+  // ✕ to abort (the user 2026-07-14): a spawn sometimes fails and the cue would otherwise hang for the
+  // full 30s backstop. The ✕ / Esc / backdrop all drop the modal AND cancel the pending spawn.
+  const cancel = el("button", "opening-cancel");
+  cancel.textContent = "✕";
+  cancel.title = "Cancel — stop waiting and abort this session";
+  cancel.addEventListener("click", (e) => { e.stopPropagation(); cancelOpening(); });
   const title = el("div", "opening-title"); title.textContent = "Opening session";
   const nm = el("div", "opening-name"); nm.textContent = name;
   const dots = el("div", "opening-dots"); dots.append(el("span"), el("span"), el("span"));
-  box.append(title, nm, dots);
+  box.append(cancel, title, nm, dots);
   overlay.appendChild(box);
+  // Backdrop click / Esc cancel too — mirrors showConfirm, so a hung spawn never traps the user. The key
+  // handler is stored on the node and removed in hideOpeningModal (no leaked listeners across opens).
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) cancelOpening(); });
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); cancelOpening(); } };
+  (overlay as any)._key = onKey;
+  document.addEventListener("keydown", onKey, true);
   document.body.appendChild(overlay);
   // safety net: never strand the modal if the session never materializes (spawn failed)
   openingTimer = setTimeout(hideOpeningModal, 30000);
@@ -2835,7 +2847,19 @@ function showOpeningModal(name: string) {
 function hideOpeningModal() {
   pendingNewSession = null;
   if (openingTimer) { clearTimeout(openingTimer); openingTimer = undefined; }
-  document.getElementById("opening")?.remove();
+  const o = document.getElementById("opening");
+  if (o) {
+    const k = (o as any)._key;
+    if (k) document.removeEventListener("keydown", k, true);
+    o.remove();
+  }
+}
+// The ✕ / Esc / backdrop on the "Opening…" cue: drop the modal AND tell the kernel to abort the pending
+// spawn, so a slow-but-successful open doesn't leave behind an orphan session the user meant to cancel.
+function cancelOpening() {
+  const name = pendingNewSession;                  // hideOpeningModal nulls it — capture first
+  hideOpeningModal();
+  if (name && vscodeApi) vscodeApi.postMessage({ type: "cancelCreate", name });
 }
 
 // Full-screen bridge (the user 2026-07-05): the picker is rendered inside the /chat iframe, so its

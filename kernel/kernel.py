@@ -372,6 +372,11 @@ _seen_live = set()
 # timeline-only by default, a read-only tab only when asked for (the user 2026-06-17).
 _kept_open = set()
 
+# Names whose "Opening…" spawn the webview cancelled (the ✕/Esc on the cue, the user 2026-07-14). A
+# LOCAL name lands here so a still-in-flight threaded tmux spawn is reaped the moment it materializes;
+# an already-live session is torn down inline in the handler and never enters this set.
+_cancel_pending = set()
+
 
 # ───────────────────────── helpers ─────────────────────────
 def iso(t):
@@ -2069,6 +2074,30 @@ def _resolve_create_dir(raw):
     return os.path.realpath(p), None
 
 
+def _end_pending_sid(sid):
+    """Tear down a session whose "Opening…" cue the webview cancelled — kill it on its owning backend,
+    hide the tab, and prune it from the live view. Best-effort: a kill failure is logged, not raised."""
+    be = Sessions.backend_for(sid)
+    if be:
+        try:
+            be.kill(sid)
+        except Exception:
+            sys.stderr.write("cancelCreate kill '%s': %s\n" % (sid, traceback.format_exc()))
+    _set_hidden_tab(sid, True)
+    _send_to_app("chat", {"type": "closed", "id": sid})
+    _push_soon()
+
+
+def _reap_if_cancelled(name):
+    """A pending spawn just materialized — if its "Opening…" cue was cancelled while in flight, end it now
+    (the threaded tmux spawn races the ✕; the SDK path is inline so it's caught in the handler instead)."""
+    if name in _cancel_pending:
+        _cancel_pending.discard(name)
+        sid = _live_names(_tmux_sessions()).get(name)
+        if sid:
+            _end_pending_sid(sid)
+
+
 def _spawn_session(name, cwd=None):
     """Create a detached romp session named `name` — the same launch the old TS backend ran
     (`romp --detach <name>`, tmux-backend.ts). Threaded so the ~seconds-long launch never blocks the WS
@@ -2082,6 +2111,7 @@ def _spawn_session(name, cwd=None):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         sys.stderr.write("spawn '%s': %s\n" % (name, traceback.format_exc()))
+    _reap_if_cancelled(name)   # the ✕ may have fired while this spawn was in flight
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
@@ -12036,6 +12066,19 @@ class Handler(BaseHTTPRequestHandler):
                             "run bin/romp-sdk-setup with Python 3.10+). Session not created."}))
                 else:
                     threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
+        elif msg and msg.get("type") == "cancelCreate" and msg.get("name"):
+            # The webview's "Opening…" cue was cancelled (the ✕/Esc/backdrop — the spawn hung/failed, or the
+            # user changed their mind). We only know the NAME (no id yet). Tear down a matching LOCAL session
+            # so a slow-but-successful open doesn't leave an orphan tab; if it hasn't materialized yet, arm
+            # _cancel_pending so the in-flight threaded spawn is reaped on arrival. A remote cue ("host:name")
+            # is dismissed client-side only — nothing local to reap.
+            host, bare = _split_host_id(str(msg["name"]).strip())
+            if not host and bare:
+                sid = _live_names(_tmux_sessions()).get(bare)   # tmux + SDK live names (Sessions.live merge)
+                if sid:
+                    _end_pending_sid(sid)
+                else:
+                    _cancel_pending.add(bare)
         elif msg and msg.get("type") == "requestSessions":
             client["send"](json.dumps({"type": "sessionList",
                                        "items": _session_list(int(time.time()), _tmux_sessions()),

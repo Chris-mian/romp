@@ -107,7 +107,7 @@ class BuildSessionEmitsTeammateCard(unittest.TestCase):
         td = Path(self.td.name)
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         self.tpath = pdir / (SID + ".jsonl")
         names = td / "names"; names.mkdir()

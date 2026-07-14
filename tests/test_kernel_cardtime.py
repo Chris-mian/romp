@@ -45,7 +45,7 @@ class CardTime(unittest.TestCase):
         td = Path(self.td.name)
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         recs = [uline(T0, "do the thing", "u1"),
                 aline(T0 + 20, "Done.", "a1", "u1", stop="end_turn")]

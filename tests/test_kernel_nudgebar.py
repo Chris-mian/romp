@@ -45,7 +45,7 @@ class NudgeBar(unittest.TestCase):
         td = Path(self.td.name)
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         # turn 1: a genuine human prompt. turn 2: a romp NUDGE — the injected marker authors its trigger
         # 'romp', so its bar must come back nudge=True (note: promptSource stays 'typed'; the marker wins).
