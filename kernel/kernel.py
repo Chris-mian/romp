@@ -1976,6 +1976,23 @@ def _spawn_session(name, cwd=None):
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
+def _create_sdk_session(nm, cwd):
+    """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14: "why does it take so long
+    to open a new SDK session?"). spawn() is file writes and connect() is threaded (~0.4s to a booting
+    CLI) — the 7-10s the user waited was the handler's inline _push_all(): a new session invalidates the
+    discover cache, so that build re-scans and re-serializes the whole fleet SYNCHRONOUSLY on the WS
+    thread, duplicating the rebuild the pusher (woken by spawn's poke) was already doing. Order matters:
+    focus FIRST — setActive holds the sid client-side, so the tab lands already-selected whenever the
+    pusher's build arrives — then the dirty-mark wake. Never a synchronous fleet build on this path
+    (the push-architecture rule, 2026-07-05)."""
+    sid = _sdk().spawn(nm, cwd)
+    _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
+    _set_hidden_tab(sid, False)
+    _reveal_chat({"type": "focus", "id": sid})
+    _mark_views_dirty()
+    return sid
+
+
 # --- optional SDK (non-tmux) session backend (docs/sdk-backend.md) --------------------
 # A second SessionBackend that drives Claude via the Agent SDK instead of a tmux TUI,
 # selectable per session. Built lazily so the tmux-only path never imports the SDK and the
@@ -11832,14 +11849,12 @@ class Handler(BaseHTTPRequestHandler):
                 if derr:
                     client["send"](json.dumps({"type": "warn", "text": derr}))
                 elif nm in live:                 # already running → just (re)open it, don't re-spawn
-                    _set_hidden_tab(live[nm], False); _push_all()
+                    _set_hidden_tab(live[nm], False)
                     _reveal_chat({"type": "focus", "id": live[nm]})
+                    _mark_views_dirty()          # pusher ships the tab; never a synchronous fleet build here
                 elif msg.get("backend") == "sdk":   # non-tmux: drive via the Agent SDK
                     if _sdk():
-                        sid = _sdk().spawn(nm, cwd)
-                        _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
-                        _set_hidden_tab(sid, False); _push_all()
-                        _reveal_chat({"type": "focus", "id": sid})
+                        _create_sdk_session(nm, cwd)
                     else:
                         # NEVER silently fall back to tmux (the user asked for SDK and got a mystery tmux
                         # session on a host without the venv — jetty, 2026-07-02). Say what's missing.
