@@ -214,14 +214,18 @@ export function activate(context: vscode.ExtensionContext) {
     // HIGHLIGHT-TO-REPLY from an editor (the user 2026-07-13): selecting text in a real file seeds the
     // chat composer's quote chip, exactly like highlighting text inside the chat transcript — the chip
     // carries the highlight + its file:lines origin, and the send wraps both around the typed message.
-    // Event-based; only non-empty selections in file-scheme documents qualify; a COLLAPSE never clears
-    // (the chip's ✕ / Backspace dismisses, and clicking into the chat must not eat the chip just made);
-    // and a selection never SUMMONS the panel — no open chat, no seed. (citeInComposer above stays the
-    // manual path-citation command; this quotes the CONTENT.)
+    // Event-based; only non-empty selections in file-scheme documents qualify; a COLLAPSE (deselect /
+    // click away) posts editorSelectionCleared so the webview drops that chip — an abandoned highlight
+    // shouldn't leave stale context (the user 2026-07-14). The webview clears ONLY the editor-seeded chip
+    // and only while the composer is empty, so an in-progress reply keeps its quote and a
+    // transcript-highlight chip is never touched. Clicking into the chat webview doesn't fire this event
+    // (a webview isn't a text editor), so the "click into chat to type" flow keeps the chip. A selection
+    // never SUMMONS the panel — no open chat, no seed. (citeInComposer above stays the manual
+    // path-citation command; this quotes the CONTENT.)
     vscode.window.onDidChangeTextEditorSelection((e) => {
       if (!panel || e.textEditor.document.uri.scheme !== "file") return;
       const sel = e.selections[0];
-      if (!sel || sel.isEmpty) return;                       // never clear on collapse
+      if (!sel || sel.isEmpty) { toWebview({ type: "editorSelectionCleared" }); return; }   // deselect → drop the chip
       const text = e.textEditor.document.getText(sel);
       if (!text.trim()) return;
       const rel = vscode.workspace.asRelativePath(e.textEditor.document.uri, false);

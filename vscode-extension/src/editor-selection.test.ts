@@ -1,8 +1,8 @@
 // Editor highlight-to-reply (the user 2026-07-13): selecting text in a real file seeds the chat
 // composer's quote chip — the extension host listens on onDidChangeTextEditorSelection and posts
 // editorSelection {text, src} into the chat webview (render.ts seeds the chip; composer-citation.test.ts
-// pins that side). Host-side pins, matching the webview's selection rules: never clear on a collapse,
-// never summon the panel, only real files.
+// pins that side). Host-side pins: a COLLAPSE posts editorSelectionCleared so the webview drops the chip
+// (the user 2026-07-14), never summon the panel, only real files.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -18,7 +18,7 @@ test("a non-empty selection in a file-scheme editor posts editorSelection {text,
   assert.match(SRC, /const src = rel \+ ":" \+ \(sel\.start\.line \+ 1\) \+ \(endLine > sel\.start\.line \+ 1 \? "-" \+ endLine : ""\);/);
 });
 
-test("a collapse never clears, a selection never summons the panel, and non-file schemes are ignored", () => {
+test("a collapse posts editorSelectionCleared (deselect drops the chip), and non-file schemes are ignored", () => {
   assert.match(SRC, /if \(!panel \|\| e\.textEditor\.document\.uri\.scheme !== "file"\) return;/);
-  assert.match(SRC, /if \(!sel \|\| sel\.isEmpty\) return;\s*\/\/ never clear on collapse/);
+  assert.match(SRC, /if \(!sel \|\| sel\.isEmpty\) \{ toWebview\(\{ type: "editorSelectionCleared" \}\); return; \}/);
 });

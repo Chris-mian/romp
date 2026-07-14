@@ -133,3 +133,17 @@ test("a VS Code EDITOR highlight seeds the same chip, labeled + wrapped with its
   assert.match(RENDER, /quoteReplyBody\(cite\.quote, text, cite\.src\)/);
   assert.match(RENDER, /quoteReplyBody\(cite\.quote \|\| "", draft \|\| "\(your message\)", cite\.src\)/);
 });
+
+test("deselecting in the editor (editorSelectionCleared) drops the editor chip, scoped + focus-safe (the user 2026-07-14)", () => {
+  // the host posts editorSelectionCleared on a collapse; the webview drops the chip that highlight seeded
+  assert.match(RENDER, /m\.type === "editorSelectionCleared"\) clearEditorCitation\(activeId\);/);
+  assert.match(RENDER, /function clearEditorCitation\(id: string \| null\): void/);
+  const fn = RENDER.split("function clearEditorCitation(")[1].split("\n}")[0];
+  // ONLY the editor-seeded chip (it alone carries src) — a transcript-quote or goal chip is left alone
+  assert.match(fn, /if \(!cite \|\| !cite\.src\) return;/);
+  // an in-progress reply keeps its quote: bail when the active composer has typed text
+  assert.match(fn, /if \(id === activeId && ta && ta\.value\.trim\(\)\) return;/);
+  // clears state + re-renders, but NEVER steals focus back to the composer (the user is in the editor)
+  assert.match(fn, /composerCitations\.delete\(id\);\s*\n\s*persistDrafts\(\);/);
+  assert.doesNotMatch(fn, /focusComposer/);
+});

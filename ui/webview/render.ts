@@ -5304,6 +5304,23 @@ function focusComposer(): void {
   ta?.focus();
 }
 
+// A VS Code editor selection collapsed (the user deselected / clicked away) — drop the chip that
+// highlight seeded so an abandoned selection doesn't leave stale context (the user 2026-07-14). Scoped
+// tight: ONLY the editor-seeded chip (it alone carries `src`; a transcript-highlight quote chip has a
+// uuid and no src, a goal chip has an itemId — both are left alone), and ONLY while the composer is
+// empty, so a reply already being typed against the code keeps its quote. Unlike removeCitation this
+// never focuses the composer — the user is in the editor, and yanking focus to the chat would be wrong.
+function clearEditorCitation(id: string | null): void {
+  if (!id) return;
+  const cite = composerCitations.get(id);
+  if (!cite || !cite.src) return;                          // not an editor-highlight chip → leave it
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (id === activeId && ta && ta.value.trim()) return;    // a reply is in progress → keep the context
+  composerCitations.delete(id);
+  persistDrafts();
+  if (id === activeId) renderComposerChips(id);            // rebuild the strip WITHOUT stealing focus
+}
+
 // Drop any session's citation that points at a now-cleared card (itemId = the goal node id, sid-prefixed so
 // it belongs to exactly one session's composer). `itemIds` (when the kernel sends it) is the cleared card's
 // whole SUBTREE: a chip can cite a SUB-goal of the card (wireNodeZones sends the clicked node's id), and
@@ -5703,6 +5720,8 @@ window.addEventListener("message", (e: MessageEvent) => {
   // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
   else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim() && activeId)
     setQuoteCitation(activeId, m.text, null, typeof m.src === "string" ? m.src : undefined);
+  // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
+  else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
   else if (m.type === "closed") dismissSession(m.id);   // a session died on its own (or the kernel confirms our close)
 });
 
