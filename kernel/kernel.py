@@ -5603,9 +5603,18 @@ def _compacting_now(sid):
 
 
 def _working_now(sid):
-    """Is the session's turn OPEN right now — the event-model working signal off the CACHED parse (cheap
-    enough for the WS handler + producer tick, refreshed by the turn-end pokes; same freshness contract
-    as _compacting_now)."""
+    """Is the session's turn OPEN right now. Prefer the backend's AUTHORITATIVE busy signal (SDK inflight)
+    — the CACHED parse below LAGS a just-started turn (transcript-not-yet-written), which raced the drive-op
+    gate: a /compact pressed while a turn was truly in flight saw 'not working', skipped the FIFO, and fired
+    immediately, out of press-order (the user 2026-07-14). tmux has no such signal (busy→None) → the cached
+    event-model parse, unchanged. Both are cheap enough for the WS handler + producer tick."""
+    try:
+        be = Sessions.backend_for(sid)
+        b = be.busy(sid) if be is not None else None
+    except Exception:
+        b = None                                      # a backend hiccup must never crash the working check
+    if b is not None:
+        return b
     path = _path_of(sid)
     session = (_parse_cached(path) if path else None) or {"turns": []}
     return _session_working(session["turns"])

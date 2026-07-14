@@ -27,6 +27,9 @@ class _FakeBackend:
         self.calls.append((sid, value))
         return True
 
+    def busy(self, sid):
+        return None   # no authoritative signal → _working_now falls back to the (idle) cached parse, as before
+
 
 class ParkOrApply(unittest.TestCase):
     def setUp(self):

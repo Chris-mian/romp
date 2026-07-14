@@ -2138,6 +2138,16 @@ class SdkBackend:
         self._poke()
         return True
 
+    def busy(self, sid: str) -> "bool | None":
+        """Authoritative in-flight signal (see SessionBackend.busy): a turn is running (inflight>0) OR one is
+        queued and about to run (_pending). Either means a drive op pressed now must PARK to hold press-order,
+        with no wait for the transcript to catch up. None when we don't run this sid (→ cached-parse fallback)."""
+        s = self.sessions.get(sid)
+        if not s:
+            return None
+        with s._lock:
+            return s.inflight > 0 or bool(s._pending)
+
     def kill(self, sid: str) -> bool:
         reg = read_reg(self.state_dir, sid)
         if reg:

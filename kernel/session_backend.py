@@ -52,6 +52,17 @@ class SessionBackend(ABC):
     def interrupt(self, sid: str) -> bool:
         """Stop the in-flight turn (Esc) and leave the input clean."""
 
+    def busy(self, sid: str) -> "bool | None":
+        """AUTHORITATIVE 'is a turn in flight (or queued) right now' from the backend that actually drives
+        the CLI — or None when the backend has no such signal, so the caller falls back to the event-model
+        parse. The kernel's park-or-fire gate (_ops_gate) otherwise reads the CACHED transcript parse, which
+        LAGS a just-started turn: the transcript isn't written until the turn produces output, so a drive op
+        pressed in that window saw 'not working', bypassed the FIFO, and fired immediately — /compact jumped
+        ahead of a model/message pressed right after it, and the parked ops then stalled (the user 2026-07-14,
+        reproduced: compact→model→send pressed 150ms apart delivered out of order). The SDK knows its inflight
+        count exactly; tmux has no equivalent (returns None → cached-parse fallback, unchanged)."""
+        return None
+
     @abstractmethod
     def set_model(self, sid: str, value: str) -> bool: ...
 
