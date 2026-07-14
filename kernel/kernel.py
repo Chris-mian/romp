@@ -11203,6 +11203,16 @@ class Handler(BaseHTTPRequestHandler):
             # the tailnet after the tab is closed) — for simplify's auto-serve/permanence work.
             self.send_header("Set-Cookie", "romp_token=%s; Path=/; Max-Age=31536000; "
                              "SameSite=Strict; HttpOnly" % self._set_cookie)
+        # CORS delivery for an AUTHORIZED browser origin (set at the _authorize call sites).
+        # A VS Code webview's synthetic origin makes every kernel fetch cross-origin, and
+        # without an echoed Access-Control-Allow-Origin the browser withholds the response
+        # AFTER it arrives — the strip's net popover read "Failed to fetch" with the kernel
+        # up (the user 2026-07-14). Echo the specific origin (never *), and only after the
+        # auth gate passed, so a cross-site page's fetch stays unreadable: its request gets
+        # a 403 with no echo. Auth still lives in _authorize; this is delivery, not access.
+        if getattr(self, "_cors_origin", None):
+            self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(body)
 
@@ -11275,10 +11285,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(size))   # the real length, no body (HEAD semantics)
             self.send_header("Cache-Control", "no-cache")
+            if getattr(self, "_cors_origin", None):         # the chat's fetch-HEAD probe rides CORS too
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+                self.send_header("Vary", "Origin")
             self.end_headers()
             return
         with open(fp, "rb") as f:
             return self._send(200, f.read(), mime, cache="no-cache")
+
+    def do_OPTIONS(self):
+        """CORS preflight. The strip's tunnel actions POST JSON (Content-Type:
+        application/json is not a 'simple' request, so the webview's browser asks
+        first). Approve only what the auth gate itself allows — the actual request
+        still runs the full _authorize on arrival; this grants delivery, not access."""
+        q = parse_qs(urlparse(self.path).query)
+        ok, _, _ = self._authorize(q)
+        origin = self.headers.get("Origin")
+        if not (ok and origin):
+            self._cors_origin = None
+            return self._send(403, b"", "text/plain")
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     def do_HEAD(self):
         # HEAD exists for ONE route: /file (the preview existence probe). Without this the base handler
@@ -11286,8 +11318,14 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         self._set_cookie = None
+        # CORS delivery baseline: an allowed browser origin echoes on every response,
+        # including the auth-EXEMPT routes (/healthz, /version) served before _authorize
+        # runs; the _authorize call site then refines it (a valid token authorizes a
+        # foreign origin — the federated dashboard — and a denial clears the echo).
+        self._cors_origin = self.headers.get("Origin") if self._origin_ok() else None
         try:
             ok, self._set_cookie, why = self._authorize(q)
+            self._cors_origin = self.headers.get("Origin") if ok else None   # echoed by _send (CORS delivery)
             if not ok:
                 return self._send(403, b"", "text/plain")
             if u.path == "/file":
@@ -11306,12 +11344,18 @@ class Handler(BaseHTTPRequestHandler):
         p = u.path
         q = parse_qs(u.query)
         self._set_cookie = None
+        # CORS delivery baseline: an allowed browser origin echoes on every response,
+        # including the auth-EXEMPT routes (/healthz, /version) served before _authorize
+        # runs; the _authorize call site then refines it (a valid token authorizes a
+        # foreign origin — the federated dashboard — and a denial clears the echo).
+        self._cors_origin = self.headers.get("Origin") if self._origin_ok() else None
         try:
             if p == "/healthz":
                 return self._send(200, "ok", "text/plain")   # liveness probe — exempt from auth
             if p == "/version":                               # build/version report — exempt from auth (no paths, harmless)
                 return self._send(200, json.dumps(_version_info()), "application/json", cache="no-cache")
             ok, self._set_cookie, why = self._authorize(q)
+            self._cors_origin = self.headers.get("Origin") if ok else None   # echoed by _send (CORS delivery)
             if not ok:
                 return self._send(403, "forbidden: " + why, "text/plain")
             if p == "/ws":
@@ -11410,6 +11454,11 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         self._set_cookie = None
+        # CORS delivery baseline: an allowed browser origin echoes on every response,
+        # including the auth-EXEMPT routes (/healthz, /version) served before _authorize
+        # runs; the _authorize call site then refines it (a valid token authorizes a
+        # foreign origin — the federated dashboard — and a denial clears the echo).
+        self._cors_origin = self.headers.get("Origin") if self._origin_ok() else None
         raw_body = b""
         try:
             n = int(self.headers.get("Content-Length") or 0)   # read the body (keep-alive safety + POST payloads)
@@ -11419,6 +11468,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
         try:
             ok, self._set_cookie, why = self._authorize(q)
+            self._cors_origin = self.headers.get("Origin") if ok else None   # echoed by _send (CORS delivery)
             if not ok:
                 return self._send(403, "forbidden: " + why, "text/plain")
             if u.path == "/restart":
