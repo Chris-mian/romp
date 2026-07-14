@@ -2392,8 +2392,11 @@ def place_llm(step_text, why, card_menu_text, model=None, effort=None):
 # ───────────────────────── discovery (names/, file-based) ─────────────────────────
 def _proj_dir(d):
     """Claude's transcript project dir for a launch dir (realpath first: a symlinked launch
-    dir writes transcripts under the PHYSICAL path)."""
-    return PROJECTS / re.sub(r"[/.]", "-", os.path.realpath(d))
+    dir writes transcripts under the PHYSICAL path). Claude encodes the path by replacing EVERY
+    non-alphanumeric char with '-' — including '_' (a dir like romp_demo → -...-romp-demo). Match
+    that exactly: an underscore/space in the path had us scanning a folder that doesn't exist, so
+    the session's transcript was never found and it silently dropped out of the feed (no card ever)."""
+    return PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(d))
 
 
 def _custom_title(p):

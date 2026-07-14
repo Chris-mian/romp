@@ -37,7 +37,7 @@ class TimelineAwaiting(unittest.TestCase):
         td = Path(self.td.name)
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / km.jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / km.jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         recs = [{"type": "user", "timestamp": _iso(T0), "uuid": "u1", "parentUuid": None,
                  "promptSource": "typed",

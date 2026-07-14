@@ -385,7 +385,7 @@ class OpenerExtend(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()

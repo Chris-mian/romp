@@ -335,7 +335,7 @@ class _FleetHarness:
         cdir = td / "launchdir"
         cdir.mkdir()
         proj = td / "projects"
-        munged = jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        munged = jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir = proj / munged
         pdir.mkdir(parents=True)
         self._tpath = pdir / (SID + ".jsonl")
@@ -1466,7 +1466,7 @@ class Grouper(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
@@ -1562,7 +1562,7 @@ class Grouper(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
@@ -1622,7 +1622,7 @@ class Consolidator(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
@@ -2636,7 +2636,7 @@ class PlanPass(unittest.TestCase):
             td = Path(td)
             cdir = td / "launchdir"; cdir.mkdir()
             proj = td / "projects"
-            pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+            pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
             pdir.mkdir(parents=True)
             (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
             names = td / "names"; names.mkdir()
@@ -2671,7 +2671,7 @@ class PlanSkip(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
@@ -3238,7 +3238,7 @@ class SweepSession(unittest.TestCase):
         td = Path(self._td.name)
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         records = [uline(T0, "task A", "u1", ps="typed"),
                    aline(T0 + 30, "did A", "a1", "u1", stop="end_turn"),
@@ -3571,7 +3571,7 @@ class FollowUp(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
@@ -4347,7 +4347,7 @@ class Distiller(unittest.TestCase):
         td = Path(tempfile.mkdtemp())
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir = proj / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
         path = pdir / (SID + ".jsonl")
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")

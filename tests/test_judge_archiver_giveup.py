@@ -45,7 +45,7 @@ class ArchiverGiveUp(unittest.TestCase):
         td = Path(self.td.name)
         cdir = td / "launchdir"; cdir.mkdir()
         proj = td / "projects"
-        munged = re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        munged = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir)))
         (proj / munged).mkdir(parents=True)
         self.tpath = proj / munged / (SID + ".jsonl")
         self.records = [uline(T0, "fix the flicker", "u1"),
