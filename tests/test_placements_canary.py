@@ -71,14 +71,22 @@ RECORDS = [
                     "prompt": [{"type": "text", "text": "also gzip the exported CSV"}]}},
     {"type": "queue-operation", "timestamp": iso(T0 + 335), "operation": "remove", "content": None},
     aline(T0 + 360, "Renamed the columns, updated the importer tests, gzipped the export.", "a4", "att1"),
+    # a COMPACTION much later (2026-07-13): the boundary opens its OWN turn (the phantom pre-compaction
+    # work-bar fix) — pinned here so the compact-turn split is part of placement identity too.
+    {"type": "system", "subtype": "compact_boundary", "timestamp": iso(T0 + 4000), "uuid": "cb1",
+     "parentUuid": None, "logicalParentUuid": "a4",
+     "compactMetadata": {"trigger": "manual", "preTokens": 90000}},
+    aline(T0 + 4020, "Resuming after compaction.", "a5", "cb1"),
 ]
 
-# The pinned derivation, recorded under PLACEMENTS_V = 3 (2026-07-10).
+# The pinned derivation, recorded under PLACEMENTS_V = 4 (2026-07-13; ids unchanged from the v3 pin —
+# the compact-turn split shifts ids only in transcripts WITH compactions, which this fixture now has).
 EXPECTED_SEG_IDS = [
     SID + ":1780000000:ca8d36fd",
     SID + ":1780000120:f03c5f4f",
     SID + ":1780000240:686c9d66",
     SID + ":1780000330:f3320ed1",
+    SID + ":1780004000:da39a3ee",
 ]
 
 
@@ -100,7 +108,7 @@ class PlacementIdentityCanary(unittest.TestCase):
     def test_placements_v_is_current(self):
         # The pins above were recorded under this version; a bump without re-pinning (or re-pinning
         # without a bump) should both fail loudly.
-        self.assertEqual(jd.PLACEMENTS_V, 3, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=3 — "
+        self.assertEqual(jd.PLACEMENTS_V, 4, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=4 — "
                          "re-pin the ids and this version together, in the same commit")
 
 

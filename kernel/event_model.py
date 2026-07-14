@@ -732,6 +732,19 @@ def segment_turns(atoms, rompuuid):
     cur = None
     ended = False     # has the current turn hit end_turn since its last opener?
     for atom in atoms:
+        if atom["type"] == "system" and atom.get("subtype") == "compact_boundary":
+            # Compaction always opens a FRESH turn (the user 2026-07-13): a non-opener would absorb into
+            # the current turn, and _finalize_turn's end = max(atom ends) then stretched that turn's bar
+            # to the boundary's timestamp — the timeline drew a phantom work period spanning the whole
+            # idle gap "leading up to the moment of compaction", growing live while the compact ran. The
+            # boundary anchors its own turn instead. ended=True so a GENUINE post-compact prompt opens
+            # its own turn (it's a real ask — the planner needs it as a trigger); the CLI's autonomous
+            # continuation (assistant atoms, non-openers) still files under the boundary turn, so its
+            # bar starts AT the compaction, never before.
+            cur = {"trigger": None, "atoms": [atom]}
+            turns.append(cur)
+            ended = True
+            continue
         if _is_opener(atom):
             if cur is None or ended:
                 cur = {"trigger": {"uuid": atom.get("uuid")}, "atoms": [atom]}
@@ -776,6 +789,12 @@ def _finalize_turn(turn, rompuuid):
     # A command WITH output / model work ends naturally on that assistant atom's stop_reason above; this only
     # catches the bare-invocation case. (Working-during-execution is the live backend state's job, not this.)
     if not turn["ended"] and atoms[0].get("command") and not any(a["type"] == "assistant" for a in atoms):
+        turn["ended"] = True
+    # a compaction turn with no assistant work yet is likewise SELF-CONTAINED (the user 2026-07-13): the
+    # boundary is a completed event, not in-flight work — left open it reads as a phantom open bar/WORKING
+    # until the CLI's continuation lands (whose stop_reason then owns `ended` via the rule above).
+    if (not turn["ended"] and atoms[0].get("type") == "system" and atoms[0].get("subtype") == "compact_boundary"
+            and not any(a["type"] == "assistant" for a in atoms)):
         turn["ended"] = True
     # an INTERRUPT record at the turn's tail ends it (the user 2026-07-05): the CLI's stop record is the
     # interrupt event — the aborted assistant work before it never wrote an end_turn, so without this the
