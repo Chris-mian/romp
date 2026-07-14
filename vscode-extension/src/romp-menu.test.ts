@@ -28,7 +28,7 @@ test("buildMenu leads with usage when known, then surfaces, actions, settings", 
   const items = buildMenu(USAGE, 10_000);
   assert.ok(items[0].label.startsWith("Usage: session 91%"));
   const actions = items.map((i) => i.action);
-  for (const a of ["openChat", "openFeed", "openTimeline", "openFleet", "cite", "worktree", "diff", "settings"])
+  for (const a of ["openChat", "openFeed", "openTimeline", "openFleet", "cite", "worktree", "diff", "update", "settings"])
     assert.ok(actions.includes(a), `missing ${a}`);
 });
 

@@ -79,6 +79,10 @@
         "command": "rompChat.menu",
         "title": "romp: Menu",
         "icon": "media/romp-swirl-glyph.svg"
+      },
+      {
+        "command": "rompChat.updateExtension",
+        "title": "romp: Update Extension"
       }
     ],
     "viewsContainers": {

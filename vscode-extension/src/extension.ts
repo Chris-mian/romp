@@ -16,6 +16,8 @@
 // front ends are clients of one kernel, sharing tabs with per-client focus.
 import * as vscode from "vscode";
 import * as http from "http";
+import * as path from "path";
+import * as os from "os";
 import { execFile } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
@@ -32,9 +34,10 @@ const HOST = "127.0.0.1";
 // __ROMP_BUILD__ is baked by esbuild.js at bundle time (epoch seconds); every kernel keepalive carries
 // `dv`, the kernel's current dist token (newest dist/*.js mtime, same clock). dv newer than this bundle
 // means the shared webview sources were rebuilt after this VSIX was packaged — the panes are rendering
-// live kernel payloads with outdated code. Prompt ONCE per window (never auto-anything); a webview
-// reload can't fix it (the code is bundled), so the prompt names the real remedy. The passive status
-// pipe never calls this (it must not toast — vscode-four-surfaces).
+// live kernel payloads with outdated code. Prompt ONCE per window; a webview reload can't fix it (the
+// code is baked into the on-disk VSIX), so unlike the browser's Reload the prompt offers a real
+// "Update extension" that rebuilds + reinstalls the VSIX for the user (updateExtension below). The
+// passive status pipe never calls this (it must not toast — vscode-four-surfaces).
 declare const __ROMP_BUILD__: number;
 const BUILD_STAMP: number = typeof __ROMP_BUILD__ === "number" ? __ROMP_BUILD__ : 0;
 let buildNotified = false;
@@ -42,7 +45,80 @@ function maybeBuildNotice(dv: unknown): void {
   if (buildNotified || !BUILD_STAMP || typeof dv !== "number" || dv <= BUILD_STAMP) return;
   buildNotified = true;
   void vscode.window.showInformationMessage(
-    "A newer romp build is available — these panes run an older extension bundle. Reinstall the extension (install.sh), then reload this window.");
+    "A newer romp build is available — these panes run an older extension bundle.",
+    "Update extension").then((choice) => {
+      if (choice === "Update extension") void updateExtension();
+    });
+}
+
+// Self-update: rebuild + repackage + reinstall the VSIX so a drifted pane heals with a click (the user
+// 2026-07-14: "I want a button that does this for me, like the web view has" — the browser's drift
+// banner just reloads, but VS Code loads bundled code from the on-disk VSIX, so a reload changes
+// nothing; the fix is the SAME vscode-extension/install.sh a user would run by hand). We run it from the
+// extension HOST, not the kernel: the host carries VS Code's resolved shell environment (the reliable
+// PATH with node/npm/npx/code), whereas a launchd/manager-spawned kernel often does not. The kernel
+// only tells us WHERE the repo lives (rompDir on /version). Reload stays a user click, never automatic
+// (prefer-reload-banner-not-auto).
+let updating = false;
+async function updateExtension(): Promise<void> {
+  if (updating) return;                                    // one run per host (double-click, or toast + palette)
+  const info = await fetchJson("/version");
+  const reported = info && typeof info.rompDir === "string" ? String(info.rompDir) : "";
+  // rompDir is $HOME-collapsed for privacy; expand it back (same machine as the local kernel, so ~ → our home).
+  const repo = reported.startsWith("~") ? path.join(os.homedir(), reported.slice(1)) : reported;
+  if (!repo) {
+    void vscode.window.showErrorMessage(
+      "romp: couldn't locate the romp repo to update from (the kernel didn't report rompDir). Run vscode-extension/install.sh in a terminal.");
+    return;
+  }
+  const extDir = path.join(repo, "vscode-extension");
+  const script = path.join(extDir, "install.sh");
+  updating = true;
+  try {
+    const out = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "romp: updating the extension…", cancellable: false },
+      () => runInstall(script, extDir));
+    // install.sh exits 0 even when it SKIPS (no node / no editor CLI found) — so a clean exit is NOT
+    // proof it worked. The real success markers are that it packaged the VSIX AND installed into a CLI.
+    // Anything else is a failure we surface loudly with the manual remedy (fail loudly, don't degrade).
+    const ok = out.code === 0 && /packaged romp-chat-view\.vsix/.test(out.text) && /install into:/.test(out.text);
+    if (ok) {
+      void vscode.window.showInformationMessage(
+        "romp extension updated — reload this window to apply.", "Reload window").then((choice) => {
+          if (choice === "Reload window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        });
+    } else {
+      void vscode.window.showErrorMessage(
+        "romp: the extension update didn't complete — " + updateHint(out) +
+        " You can run vscode-extension/install.sh in a terminal.");
+    }
+  } finally {
+    updating = false;
+  }
+}
+
+// Run vscode-extension/install.sh via bash, inheriting the host's resolved env (its PATH finds
+// node/npm/npx/code). install.sh cd's to its own dir; capture stdout+stderr and the exit code so the
+// caller can tell a real install from a graceful skip. 5-minute cap (npm install + vsce package).
+function runInstall(script: string, cwd: string): Promise<{ code: number; text: string }> {
+  return new Promise((resolve) => {
+    execFile("bash", [script], { cwd, env: process.env, maxBuffer: 16 * 1024 * 1024, timeout: 300000 },
+      (err, stdout, stderr) => {
+        const text = String(stdout || "") + String(stderr || "");
+        const code = err && typeof (err as { code?: unknown }).code === "number"
+          ? ((err as { code: number }).code) : err ? 1 : 0;
+        resolve({ code, text });
+      });
+  });
+}
+
+// A short, human reason the update didn't land — surfaced in the failure toast.
+function updateHint(out: { code: number; text: string }): string {
+  const t = out.text;
+  if (/node not found/.test(t)) return "node isn't on the extension host's PATH.";
+  if (/No VS Code-family editor CLI found/.test(t)) return "no editor CLI was found to install into.";
+  const last = t.trim().split(/\r?\n/).filter((l) => l.trim()).slice(-1)[0] || "";
+  return last ? "the build reported: " + last.slice(0, 200) : "see the terminal for details.";
 }
 
 // Ports are CONFIGURABLE so different VS Code windows can attach to different kernels (each kernel
@@ -109,6 +185,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("rompChat.openTimeline", () => vscode.commands.executeCommand("rompTimeline.focus")),
     vscode.commands.registerCommand("rompChat.openFleet", () => openFleetPanel()),
     vscode.commands.registerCommand("rompChat.menu", rompMenu),
+    // Rebuild + reinstall the VSIX from source, then offer a reload — the clickable form of the
+    // drift toast's remedy, always reachable (a faded toast leaves nothing to click). See updateExtension.
+    vscode.commands.registerCommand("rompChat.updateExtension", updateExtension),
     // The webviews scale to the editor font (uiZoom) — re-render them when it changes.
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("editor.fontSize")) refreshWebviewHtml();
@@ -745,6 +824,7 @@ async function rompMenu() {
     case "cite": void vscode.commands.executeCommand("rompChat.citeInComposer"); return;
     case "worktree": void vscode.commands.executeCommand("rompChat.openSessionWorktree"); return;
     case "diff": void vscode.commands.executeCommand("rompChat.diffSessionChanges"); return;
+    case "update": void vscode.commands.executeCommand("rompChat.updateExtension"); return;
     case "settings":
       // The romp-styled settings modal (the gear) lives in the feed bundle —
       // the SAME one the browser renders (the user 2026-07-13, over a native

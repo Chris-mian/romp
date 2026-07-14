@@ -1,10 +1,13 @@
-// Build-drift banner in VS Code (the user 2026-07-13: "if anything gets out of sync I want to see a
-// banner telling me to reload"). The VS Code panes run VSIX-BUNDLED webview code — no kernel-served
-// page, no ?v= token, so the browser pages' shim check never runs here, and a pane's wsStale posts go
-// to a parent that doesn't handle them. Instead the EXTENSION compares the `dv` (kernel dist token)
-// riding every keepalive against its own bundled build stamp (__ROMP_BUILD__, baked by esbuild.js) and
-// prompts ONCE when the installed bundle predates a rebuild. Source pins (the extension host needs the
-// vscode module, so the wiring can't run under node --test).
+// Build-drift banner + one-click self-update in VS Code (the user 2026-07-13: "if anything gets out of
+// sync I want to see a banner"; 2026-07-14: "I want a button that does this for me, like the web view
+// has"). The VS Code panes run VSIX-BUNDLED webview code — no kernel-served page, no ?v= token, so the
+// browser pages' shim check never runs here, and a pane's wsStale posts go to a parent that doesn't
+// handle them. Instead the EXTENSION compares the `dv` (kernel dist token) riding every keepalive
+// against its own bundled build stamp (__ROMP_BUILD__, baked by esbuild.js) and prompts ONCE when the
+// installed bundle predates a rebuild. Unlike the browser (whose fix is a reload), a VS Code reload
+// can't help — the code is baked into the on-disk VSIX — so the prompt offers a real "Update extension"
+// that rebuilds + reinstalls the VSIX via vscode-extension/install.sh. Source pins (the extension host
+// needs the vscode module, so the wiring can't run under node --test).
 import { test } from "node:test";
 import assert from "node:assert";
 import * as fs from "fs";
@@ -12,6 +15,15 @@ import * as path from "path";
 
 const EXT = fs.readFileSync(path.resolve(process.cwd(), "src", "extension.ts"), "utf8");
 const ESBUILD = fs.readFileSync(path.resolve(process.cwd(), "esbuild.js"), "utf8");
+
+// The body of updateExtension()..runInstall — where any reload lives — used to pin "reload is
+// user-gated" without matching the whole file.
+function slice(start: string, end: string): string {
+  const a = EXT.indexOf(start);
+  const b = EXT.indexOf(end, a + 1);
+  assert.ok(a >= 0 && b > a, `could not slice ${start}..${end}`);
+  return EXT.slice(a, b);
+}
 
 test("esbuild bakes a build stamp into the extension bundle", () => {
   // epoch SECONDS — the same clock as the kernel's dist token (newest dist/*.js mtime), so the two
@@ -24,8 +36,46 @@ test("the extension compares keepalive dv against the stamp and prompts once", (
   assert.ok(EXT.includes("function maybeBuildNotice(dv: unknown)"), "the drift check exists");
   assert.ok(EXT.includes("if (buildNotified || !BUILD_STAMP || typeof dv !== \"number\" || dv <= BUILD_STAMP) return;"),
     "latched (one prompt per window), guarded when the stamp is absent, and only NEWER dv fires");
-  assert.ok(EXT.includes("showInformationMessage"), "a prompt, never an auto-reload");
-  assert.ok(!EXT.includes("reloadWindow"), "no auto window reload — the user acts on the prompt");
+});
+
+test("the drift prompt is ACTIONABLE — an Update extension button, not a bare toast", () => {
+  const notice = slice("function maybeBuildNotice(dv: unknown)", "async function updateExtension");
+  assert.ok(notice.includes('"Update extension"'), "offers the Update extension action");
+  assert.ok(notice.includes("void updateExtension()"), "the action runs the self-update");
+  // The notice itself must NOT reload — the drift toast never auto-anything (the reload is gated later).
+  assert.ok(!notice.includes("reloadWindow"), "maybeBuildNotice must not reload the window");
+});
+
+test("updateExtension rebuilds+reinstalls the VSIX, then offers a USER-gated reload", () => {
+  const upd = slice("async function updateExtension", "function runInstall");
+  assert.ok(upd.includes('fetchJson("/version")') && upd.includes("info.rompDir"),
+    "learns the repo root from the kernel's /version rompDir");
+  assert.ok(upd.includes('path.join(os.homedir(), reported.slice(1))'),
+    "$HOME-collapses rompDir back to a real path (same machine as the local kernel)");
+  assert.ok(upd.includes("runInstall(script, extDir)") && upd.includes('"install.sh"'),
+    "runs vscode-extension/install.sh");
+  assert.ok(upd.includes("packaged romp-chat-view\\.vsix") && upd.includes("install into:"),
+    "a clean exit is not enough — require the packaged + installed markers (install.sh skips gracefully)");
+  // Reload is behind an explicit button click, never automatic (prefer-reload-banner-not-auto).
+  assert.ok(upd.includes('"Reload window"') && upd.includes('choice === "Reload window"') &&
+    upd.includes('executeCommand("workbench.action.reloadWindow")'),
+    "reload only fires when the user clicks Reload window");
+  assert.ok(upd.includes("showErrorMessage") && upd.includes("install.sh in a terminal"),
+    "a failed/skipped update fails loudly with the manual remedy");
+});
+
+test("runInstall shells out with the host's resolved env so node/npm/code resolve", () => {
+  const run = slice("function runInstall", "function updateHint");
+  assert.ok(run.includes('execFile("bash"') && run.includes("env: process.env"),
+    "install.sh runs under bash with the extension host's PATH");
+});
+
+test("a palette command exposes the update anytime a faded toast can't be clicked", () => {
+  assert.ok(EXT.includes('registerCommand("rompChat.updateExtension", updateExtension)'),
+    "the command is registered");
+  const pkg = fs.readFileSync(path.resolve(process.cwd(), "package.json"), "utf8");
+  assert.ok(pkg.includes('"rompChat.updateExtension"') && pkg.includes('"romp: Update Extension"'),
+    "declared in package.json so it shows in the command palette");
 });
 
 test("only panel pipes check drift — the passive status pipe never toasts", () => {
