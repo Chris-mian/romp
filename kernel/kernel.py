@@ -11487,13 +11487,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── serve-layer security (docs/read-side.md): Origin/Host gate always; token for non-local reach ──
     def _is_local_host(self):
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
-        if host in ("127.0.0.1", "localhost", "::1"):
-            return True
-        # An ABSENT Host counts as local only when we're bound to loopback. When
-        # serving off-box (ROMP_SERVE_HOST=0.0.0.0), a Host-less client must NOT
-        # bypass the token gate.
-        return host == "" and BIND in ("127.0.0.1", "localhost", "::1")
+        # Locality is judged by the REAL TCP peer address, never the client-settable
+        # Host header: a remote client can send `Host: localhost` to forge locality and
+        # skip the token (proven bypass). Only a loopback peer is trusted without a
+        # token; every off-box client (tailnet, 0.0.0.0, tunnel) must present it.
+        try:
+            peer = self.client_address[0]
+        except Exception:
+            peer = ""
+        return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
     def _origin_ok(self):
         """Reject cross-site browser origins — the ClawJacked/WS hole (WS isn't covered by CORS, so
