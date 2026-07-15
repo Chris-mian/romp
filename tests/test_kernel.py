@@ -180,6 +180,26 @@ class ViewBuilder(unittest.TestCase):
         sig2 = km._fleet_view_sig(NOW, tmux)
         self.assertNotEqual(sig1, sig2, "a session-order change must bust the fleet-view sig")
 
+    def test_reorder_within_the_throttle_needs_a_dirty_mark(self):
+        """The sig-bust alone isn't enough: _cached_feed REUSES any build younger than REBUILD_MIN_S (2s) even
+        when the sig changed — so a reorder within 2s of the last feed build kept serving the OLD order (the
+        'still slow' report, the user 2026-07-15). The reorder handler now _mark_views_dirty()s, and a dirty
+        mark bypasses the throttle so the fresh order ships at once."""
+        now = int(time.time()); tmux = km._tmux_sessions()
+        km._built_feed[:] = [None, None, 0.0]; km._views_dirty[0] = 0.0
+        other = "22222222-3333-4444-5555-666666666666"
+        km._write_session_order([SID])
+        f1 = km._cached_feed(now, tmux, km._fleet_view_sig(now, tmux))   # warm the cache with this order
+        self.assertEqual(f1["order"], [SID])
+        # reorder within REBUILD_MIN_S: the sig changes, but the throttle still hands back the cached feed
+        km._write_session_order([other, SID])
+        f2 = km._cached_feed(now, tmux, km._fleet_view_sig(now, tmux))
+        self.assertEqual(f2["order"], [SID], "throttled reuse → still the pre-reorder order (the bug)")
+        # a dirty mark (what the reorder handler now does) bypasses the throttle → rebuild with the new order
+        km._mark_views_dirty()
+        f3 = km._cached_feed(now, tmux, km._fleet_view_sig(now, tmux))
+        self.assertEqual(f3["order"], [other, SID], "dirty mark → immediate rebuild with the fresh order")
+
     def test_send_client_dedups_per_client(self):
         """A client gets a payload once; an identical re-push is skipped; a changed one is sent (the
         diff-push that stops the 4s pusher from re-sending unchanged chat sessions)."""

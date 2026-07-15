@@ -12128,7 +12128,11 @@ class Handler(BaseHTTPRequestHandler):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
             # persisted one (don't overwrite): a chat-tab drag must not drop/reshuffle timeline-only lanes.
             _write_session_order(_merge_session_order(msg["order"]))
-            _push_all()
+            # _mark_views_dirty, NOT _push_all: the feed/timeline order the grouped cards CLIENT-side by this
+            # list, but a plain push serves the CACHED feed — reused for REBUILD_MIN_S (2s) even though the sig
+            # changed — so the reordered cards lagged up to ~2s (the user 2026-07-15). The dirty mark bypasses
+            # the throttle AND wakes the pusher, so the rebuilt payload (fresh order) ships right away.
+            _mark_views_dirty()
         elif msg and msg.get("type") == "createSession" and msg.get("name"):
             nm = str(msg["name"]).strip()
             if not NAME_RE.match(nm):
