@@ -41,10 +41,11 @@ test("the border colour is CSS-driven from the channels: 0.5α at rest", () => {
   assert.match(CSS, /\.fitem\.ask, \.fitem\.fgroup \{ border-color: rgba\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\), 0\.5\); \}/);
 });
 
-test("the highlight BOLDS the same colour (no white ring): pinned 0.8α, focused full opacity", () => {
-  assert.match(CSS, /\.fitem\.ask\.pinned  \{ border-color: rgba\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\), 0\.8\); \}/);
-  assert.match(CSS, /\.fitem\.ask\.focused \{ border-color: rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\); \}/);
-  // the old white box-shadow rings are gone
-  assert.doesNotMatch(CSS, /\.fitem\.ask\.focused \{ box-shadow: 0 0 0 2px #fff/);
-  assert.doesNotMatch(CSS, /\.fitem\.ask\.pinned \{ box-shadow: 0 0 0 1\.5px rgba\(255, 255, 255/);
+test("the highlight BOLDS the same colour (no white ring): pinned 0.85α, focused full + a same-colour ring", () => {
+  assert.match(CSS, /\.fitem\.ask\.pinned  \{ border-color: rgba\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\), 0\.85\); \}/);
+  // focused = full-opacity border AND a 1px same-colour ring (a touch bolder, no layout shift)
+  assert.match(CSS, /\.fitem\.ask\.focused \{[\s\S]*?border-color: rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\);/);
+  assert.match(CSS, /\.fitem\.ask\.focused \{[\s\S]*?box-shadow: 0 0 0 1px rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\), 0 2px 7px/);
+  // no white ring anywhere in the highlight
+  assert.doesNotMatch(CSS, /\.fitem\.ask\.focused \{[^}]*#fff/);
 });

@@ -32,3 +32,8 @@ test("both link variants get a pointer + hover affordance in CSS", () => {
   assert.match(CSS, /\.fask-distill-link:hover \{[^}]*text-decoration: underline/);
   assert.match(CSS, /\.ftree-summary-link \{[^}]*cursor: pointer/);
 });
+
+test("the card summary hover lights the TEXT (brighten + underline), NOT a box behind it (the user 2026-07-15)", () => {
+  assert.match(CSS, /\.fask-distill-link:hover \{[^}]*opacity: 1;[^}]*text-decoration: underline/);
+  assert.doesNotMatch(CSS, /\.fask-distill-link:hover \{[^}]*background/);   // no box fill on hover
+});

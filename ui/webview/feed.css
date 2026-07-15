@@ -216,8 +216,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    so a pinned-AND-focused card shows the bright (full) border. */
 .fitem.ask { cursor: pointer; }
 .fitem.ask, .fitem.fgroup { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.5); }
-.fitem.ask.pinned  { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.8); }   /* pinned: bolded, persistent */
-.fitem.ask.focused { border-color: rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255)); }        /* effective focus: full-opacity same colour */
+.fitem.ask.pinned  { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.85); }   /* pinned: bolded, persistent */
+/* effective focus: full-opacity same colour, thickened a touch by a 1px same-colour ring (a bolder highlight
+   without a layout-shifting border-width change), plus the hover lift — the user 2026-07-15 */
+.fitem.ask.focused {
+  border-color: rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255));
+  box-shadow: 0 0 0 1px rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255)), 0 2px 7px rgba(0, 0, 0, 0.30);
+}
 
 /* decision sub-card — an OPEN question needing the user, rendered in the ask card */
 .fq { border: 1px solid rgba(30, 161, 235, 0.4); border-left: 3px solid var(--rel-decision); border-radius: 8px; padding: 8px 10px; background: rgba(30, 161, 235, 0.07); }
@@ -246,9 +251,10 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    No why-rationale line; hidden until the distiller produces. pre-wrap keeps a copy-pasteable artifact intact. */
 .fask-distill { font-size: 0.86em; line-height: 1.4; margin: 1px 0 2px; color: var(--fg); opacity: 0.82; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* the distiller line is a LINK to where its text was written (it.summaryAnchorUuid) — give it the affordance
-   when it's wired (the user 2026-06-29). A subtle rounded hover fill, like the modal's nav zones. */
-.fask-distill-link { cursor: pointer; border-radius: 6px; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; transition: background 0.1s ease; }
-.fask-distill-link:hover { background: rgba(255, 255, 255, 0.07); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
+   when it's wired (the user 2026-06-29). Hover lights the TEXT itself (brighten + underline), not a box behind
+   it (the user 2026-07-15). */
+.fask-distill-link { cursor: pointer; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; }
+.fask-distill-link:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
 /* the card's distiller sections (the user 2026-07-07, compactness): the Background/Summary TOGGLES now ride
    the time row (row3) and are MUTUALLY EXCLUSIVE — one body shows at a time, or neither — so .fask-secs is
    just the body container (a plain block; whichever body is open runs the full card width). The toggles are
