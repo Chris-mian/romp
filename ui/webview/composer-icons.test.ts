@@ -29,3 +29,10 @@ test("the statusline directory shows a monochrome folder icon (folderIcon), not 
   // and the icon has an alignment rule
   assert.match(CSS, /\.status-dir-icon \{/);
 });
+
+test("the paperclip and send glyphs wear the romp accent blue (the user 2026-07-15)", () => {
+  // action affordances (not status), so var(--accent) is the intended use — currentColor on the paperclip SVG
+  // then picks up the accent tint from the button color
+  assert.match(CSS, /#composer-attach \{ right: 58px; color: var\(--accent\)/);
+  assert.match(CSS, /#composer-send:not\(:disabled\) \{ color: var\(--accent\)/);
+});

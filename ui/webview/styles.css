@@ -508,10 +508,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   background: transparent; border: none; border-radius: 5px;
   font-size: 15px; opacity: 0.55; cursor: pointer;
 }
-#composer-attach { right: 58px; }   /* 📎 sits LEFT of the send button */
+/* the paperclip + send glyphs wear the romp accent blue (the user 2026-07-15) — action affordances, not
+   status, so var(--accent) is the intended use; resting a touch dim, full on hover */
+#composer-attach { right: 58px; color: var(--accent); opacity: 0.8; }   /* clip sits LEFT of the send button */
 #composer-send   { right: 30px; font-size: 13px; }   /* the explicit ⏎ send button, rightmost */
 #composer-attach:hover, #composer-send:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
-#composer-send:not(:disabled) { color: var(--vscode-button-background, #2b7fb8); opacity: 0.85; }   /* a primary-action tint */
+#composer-send:not(:disabled) { color: var(--accent); opacity: 0.85; }   /* romp-blue send affordance */
 #composer-send:disabled { opacity: 0.3; cursor: not-allowed; }
 #composer-input {
   width: 100%; resize: none; box-sizing: border-box;
@@ -623,7 +625,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 /* the monochrome folder glyph (folderIcon) leading the dir basename — sits on the text row, inherits the dim
    tint via currentColor, and brightens with the rest on the .folder-link hover */
-.status-dir-icon { display: inline-block; width: 12px; height: 12px; margin-right: 2px; vertical-align: -2px; }
+.status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
 .status-dir-icon svg { display: block; }
 /* any local-folder location opens on click (the user 2026-06-27): a quiet link affordance used EVERYWHERE a
    folder is shown (statusline 📁, the System-context Directory row, …) — pointer + a brighter hover, no

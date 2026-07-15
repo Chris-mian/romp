@@ -1273,10 +1273,10 @@ function asFolderLink(elem: HTMLElement, cwd: string, sid?: string): void {
 // 📁 emoji beside the statusline directory (the user 2026-07-15). Trusted constant markup.
 function folderIcon(): HTMLElement {
   const span = el("span", "status-dir-icon");
-  span.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+  span.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" '
     + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M2 6 V4.8 a0.8 0.8 0 0 1 0.8-0.8 H6 L7.5 6 H13.2 a0.8 0.8 0 0 1 0.8 0.8 V11.2 '
-    + 'a0.8 0.8 0 0 1-0.8 0.8 H2.8 a0.8 0.8 0 0 1-0.8-0.8 Z"/></svg>';
+    + '<path d="M2 12.6 a1 1 0 0 1-1-1 V4.4 a1 1 0 0 1 1-1 H5.9 a1 1 0 0 1 0.7 0.3 L7.8 5 '
+    + 'H13 a1 1 0 0 1 1 1 V11.6 a1 1 0 0 1-1 1 Z"/></svg>';
   return span;
 }
 
