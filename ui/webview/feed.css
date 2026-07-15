@@ -512,9 +512,10 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .kbd-focus { outline: 2px solid var(--accent, #9cd2ff); outline-offset: 1px; border-radius: 4px; }
 .fitem {
   display: flex; gap: 10px; align-items: flex-start;
-  /* 2px outline in the corresponding session's identity colour, set inline per card (the user 2026-07-15) —
-     was a faint 1px recency tint. Provisional/recheck ghosts override to a 1.5px dashed white below. */
-  border: 2px solid transparent;
+  /* 1.5px outline in the corresponding session's identity colour, set inline per card (the user 2026-07-15) —
+     was a faint 1px recency tint, briefly 2px then dialled back ~25% for subtlety. Provisional/recheck ghosts
+     override to a 1.5px dashed white below. */
+  border: 1.5px solid transparent;
   border-radius: 11px;
   padding: 10px 12px 11px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20);
