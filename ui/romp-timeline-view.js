@@ -87,6 +87,12 @@ const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived'
 
 function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; }
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+// Strip romp's own HTML-comment markers (<!-- romp-injected/-system/-auto/-goal-id … -->) from a prompt before
+// it's shown. They're classification metadata — invisible in the chat's MARKDOWN render, but the timeline
+// tooltips ESCAPE their text, so an injected notice (a romp-system bg-task-death message) leaked the literal
+// "<!-- romp-injected --><!-- romp-system -->" into the tip (the user 2026-07-15). Leading whitespace left by a
+// removed marker is trimmed so the visible text starts at the real content.
+function stripRompMarks(s) { return (s || '').replace(/<!--\s*romp-[\s\S]*?-->/g, '').replace(/^\s+/, ''); }
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function clockS(t) { const d = new Date(t * 1000); return clock(t) + ':' + String(d.getSeconds()).padStart(2, '0'); }   // seconds precision for API call times
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
@@ -2920,7 +2926,7 @@ class TimelinePanel {
   // captioner produces it (ready early, the moment the message lands), and falls back to the raw prompt
   // only in the intermediate before that caption exists (the user 2026-06-19). The activity BAR is the
   // WORK (t.summary — what the agent DID); the two are now separate captions, dot vs line.
-  req(t) { return t.msgCaption ? esc(t.msgCaption) : (t.prompt ? esc(t.prompt.slice(0, 120)) : ''); }
+  req(t) { return t.msgCaption ? esc(t.msgCaption) : (t.prompt ? esc(stripRompMarks(t.prompt).slice(0, 120)) : ''); }
   // activity-bar hover = what the agent DID: the work period's own caption (t.summary), or a readable
   // Only when there's NO work caption yet do we fall
   // back to the request (the prompt) — "working on… <prompt>" in progress, else "request: <prompt>"
@@ -2928,11 +2934,11 @@ class TimelinePanel {
   barBody(t, ongoing) {
     const work = t.summary ? esc(t.summary) : '';
     if (work) return '<div class="b">' + work + '</div>';
-    const reqp = t.prompt ? esc(t.prompt.slice(0, 120)) : '';
+    const reqp = t.prompt ? esc(stripRompMarks(t.prompt).slice(0, 120)) : '';
     if (ongoing) return '<div class="b"><span style="opacity:.55;font-style:italic">working on: </span>' + (reqp || 'awaiting summary') + '</div>';
     return '<div class="b"><span style="opacity:.55;font-style:italic">request: </span>' + (reqp || '(no summary)') + '</div>';
   }
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks };
