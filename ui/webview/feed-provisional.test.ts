@@ -25,7 +25,7 @@ test("a provisional 'ghost' card gets a DASHED outline (distinct from a real car
   assert.match(FEED, /if \(it\.provisional\) \{[\s\S]*?card\.style\.borderStyle = "dashed";/);
   assert.match(FEED, /card\.style\.borderWidth = "1\.5px";/);
   // a real card resets to a solid border coloured by its own session (recency tint only as the fallback)
-  assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?card\.style\.borderColor = it\.color \? `color-mix/);
+  assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?card\.style\.borderColor = \(it\.color && \(hexToRgba/);
 });
 
 test("a placeholder has no curation affordances — Clear is hidden", () => {

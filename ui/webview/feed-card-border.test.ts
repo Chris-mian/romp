@@ -10,14 +10,22 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("the card border is 2px (bolder than the old 1px; softened via a 0.7-alpha colour)", () => {
+test("the card border is 2px (bolder than the old 1px; softened via a 0.5-alpha colour)", () => {
   assert.match(CSS, /\.fitem \{[\s\S]*?border: 2px solid transparent;/);
 });
 
-test("a real AskItem card is bordered in its session colour at 0.7 alpha, recency tint as fallback", () => {
-  assert.match(FEED, /card\.style\.borderColor = it\.color \? `color-mix\(in srgb, \$\{it\.color\.bg\} 70%, transparent\)` : `rgba\(\$\{r\}, \$\{g\}, \$\{b\}/);
+// PLAIN rgba, NOT color-mix — a reused card node silently rejects an invalid inline border-color and keeps
+// the old solid colour, so the alpha never appeared (the user 2026-07-15). hexToRgba builds the rgba directly.
+test("hexToRgba turns a session hex into a plain rgba() at the given alpha", () => {
+  assert.match(FEED, /function hexToRgba\(hex: string, alpha: number\): string \| null \{/);
+  assert.match(FEED, /return `rgba\(\$\{\(n >> 16\) & 255\}, \$\{\(n >> 8\) & 255\}, \$\{n & 255\}, \$\{alpha\}\)`;/);
+  assert.doesNotMatch(FEED, /borderColor = [^\n]*color-mix/);   // no border uses color-mix — it was being rejected
 });
 
-test("an AskGroup (multi-session) card is bordered in its group session colour at 0.7 alpha, recency tint as fallback", () => {
-  assert.match(FEED, /card\.style\.borderColor = g\.color \? `color-mix\(in srgb, \$\{g\.color\.bg\} 70%, transparent\)` : `rgba\(\$\{r\}, \$\{gg\}, \$\{b\}/);
+test("a real AskItem card is bordered in its session colour at 0.5 alpha (plain rgba), recency tint as fallback", () => {
+  assert.match(FEED, /card\.style\.borderColor = \(it\.color && \(hexToRgba\(it\.color\.bg, 0\.5\) \?\? it\.color\.bg\)\) \|\| `rgba\(\$\{r\}, \$\{g\}, \$\{b\}/);
+});
+
+test("an AskGroup (multi-session) card is bordered in its group session colour at 0.5 alpha, recency tint as fallback", () => {
+  assert.match(FEED, /card\.style\.borderColor = \(g\.color && \(hexToRgba\(g\.color\.bg, 0\.5\) \?\? g\.color\.bg\)\) \|\| `rgba\(\$\{r\}, \$\{gg\}, \$\{b\}/);
 });
