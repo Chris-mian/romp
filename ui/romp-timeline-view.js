@@ -12,6 +12,17 @@ const MIN_W = 60, MAX_W = 172800;                  // 1 min … 48 h window (NIC
 const MAX_OFFSET = 72 * 3600;                      // pan slider: right edge from now (0) back to −72 h (linear)
 // Compact metrics: rows collapse to the minimum height a bar+dots+label need.
 const LANE_GAP = 26, BAR_H = 8, CORNER = 6, MSG_DROP = 10, DOT_R = 6, CLEAR = DOT_R + 4, COINCIDE = 45;
+// Demo/recording VIEW filter (the user 2026-07-14): the dashboard loaded at `#only=<tag>` scopes every
+// pane to sessions whose name starts with <tag>. The timeline reads the SHELL's URL (window.top) so one
+// tag on the dashboard URL filters the lanes here too; a cross-origin top falls back to our own URL.
+// Filtering data.sessions is enough — cross-session flows already skip when a lane is absent (vidx guard).
+function _rompOnlyTag() {
+  const read = (loc) => { try { const hay = (loc.hash || "") + " " + (loc.search || ""); const m = hay.match(/only=([^&\s]+)/i); return m ? (decodeURIComponent(m[1]).trim().toLowerCase() || null) : null; } catch (e) { return null; } };
+  if (typeof window === "undefined") return null;   // no DOM (a test/headless context) → no filter
+  try { return read((window.top || window).location); } catch (e) { /* cross-origin top */ }
+  try { return read(window.location); } catch (e) { return null; }
+}
+function _rompMatchesOnly(name, tag) { return !tag || (name || "").toLowerCase().indexOf(tag) === 0; }
 // Each directed flow (A→B) is ONE line; its thickness = MSG_W0 + (count-1)*MSG_GROW
 // — linear in message count, no max cap (BAR_H=8 is the work-bar reference: a flow
 // passes that around ~5-6 messages and keeps growing). Drawn at alpha .5 so
@@ -1088,6 +1099,8 @@ class TimelinePanel {
 
   update(data) {
     if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); this._signalReady(); return; }
+    const _only = _rompOnlyTag();   // demo/recording view filter: keep only matching-name lanes (the user 2026-07-14)
+    if (_only) data = Object.assign({}, data, { sessions: data.sessions.filter((s) => _rompMatchesOnly(s.name, _only)) });
     // The kernel ships the timeline as TWO messages (the user 2026-06-25): {type:"data"} carries the LANES
     // SKELETON (sessions/status/tokens, no turns/judging/messages/nudges) and a following {type:"bars"} carries
     // the heavy detail (applyBars). Carry the last-known detail across a skeleton-only update so the bars don't

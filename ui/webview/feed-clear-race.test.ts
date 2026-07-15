@@ -23,8 +23,9 @@ test("Clear marks the id pending so a stale push can't resurrect the dismissing 
 test("incoming feed payloads drop still-pending ids, and release once the kernel confirms the clear", () => {
   // confirmed = the kernel's payload no longer lists it → stop suppressing
   assert.match(FEED, /if \(!incomingAsks\.some\(\(a\) => a\.itemId === id\)\) pendingCleared\.delete\(id\)/);
-  // otherwise filter the still-pending ones out of this payload
-  assert.match(FEED, /asks = pendingCleared\.size \? incomingAsks\.filter\(\(a\) => !pendingCleared\.has\(a\.itemId\)\) : incomingAsks;/);
+  // otherwise filter the still-pending ones out of this payload (the #only view filter, 2026-07-14, feeds
+  // this from `visible` — the name-scoped payload — but the pending-clear drop is unchanged)
+  assert.match(FEED, /asks = pendingCleared\.size \? visible\.filter\(\(a\) => !pendingCleared\.has\(a\.itemId\)\) : visible;/);
 });
 
 test("a mid-dismiss card is NOT removed by a push — its own timer finishes the collapse", () => {
