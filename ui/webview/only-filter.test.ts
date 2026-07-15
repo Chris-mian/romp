@@ -61,6 +61,16 @@ test("fleet sessions filter by the #only tag", () => {
   assert.match(FLEET, /if \(only && !matchesOnly\(s\.name, only\)\) continue;/);
 });
 
+test("the new-session picker seeds the name box with the tag prefix in a filtered view", () => {
+  // launching from `#only=demo` prefills `demo-` so a new session stays in view (the user 2026-07-15);
+  // only when creating is possible (create mode or pickAllowNew), and the cursor lands after the prefix
+  assert.match(RENDER, /const only = \(!pick \|\| pickAllowNew\) \? onlyTag\(\) : null;/);
+  assert.match(RENDER, /const seed = only \? only \+ "-" : "";/);
+  assert.match(RENDER, /s\.value = seed;/);
+  assert.match(RENDER, /if \(seed\) s\.setSelectionRange\(seed\.length, seed\.length\);/);
+  assert.match(RENDER, /filterPicker\(seed\);/);
+});
+
 test("timeline lanes filter by the #only tag (self-contained helper in the standalone file)", () => {
   assert.match(TL, /function _rompOnlyTag\(\)/);
   assert.match(TL, /function _rompMatchesOnly\(name, tag\)/);

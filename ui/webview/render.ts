@@ -3021,9 +3021,20 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   }
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
   if (di) di.value = kernelDefaultDir || loadSettings().defaultDir || "";   // the kernel's persisted default (file→env) wins; localStorage is a same-tab cache
+  // In a filtered view (#only=<tag>), a new session created here would vanish from the view unless its name
+  // matches. Prefill the name box with the tag so what you launch stays in view (the user 2026-07-15) —
+  // editable: clear it to launch outside the filter on purpose. Only when creating is possible here (the
+  // New-session button in create mode, or the New-session row when pickAllowNew), never in pure resume.
+  const only = (!pick || pickAllowNew) ? onlyTag() : null;
+  const seed = only ? only + "-" : "";
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
-  if (s) { s.value = ""; s.placeholder = prompt || "Search sessions, or type a new session's name…"; s.focus(); }
-  filterPicker(""); // reset row visibility and disarm the New-session button from a prior open
+  if (s) {
+    s.value = seed;
+    s.placeholder = prompt || "Search sessions, or type a new session's name…";
+    s.focus();
+    if (seed) s.setSelectionRange(seed.length, seed.length);   // cursor after the tag prefix, ready to type
+  }
+  filterPicker(seed); // reset row visibility; arm the New-session button for the (possibly seeded) value
   pickerError(null);
   if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
 }
