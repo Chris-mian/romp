@@ -1575,6 +1575,16 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 .picker-name { font-weight: 600; color: var(--fg); }
 .picker-time { color: var(--dim); font-size: 0.85em; flex: 0 0 auto; }
 .picker-row.running .picker-time { color: var(--st-ready-bg); font-weight: 600; }
+/* a still-RUNNING session whose tab is closed (surfaced at the top of the + picker to reopen, the user
+   2026-07-15): a green badge with a live dot in the time slot */
+.picker-running-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--st-ready-bg); font-weight: 600; }
+.picker-run-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--st-ready-bg); flex: 0 0 auto; }
+/* Running / Recent section headers in the + picker; hidden while a search flattens the list into one result set */
+.picker-group-label {
+  padding: 7px 14px 3px; color: var(--dim); font-size: 0.72em; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.picker-list.searching .picker-group-label { display: none; }
 .picker-summary {
   color: var(--dim); font-size: 0.85em; margin-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

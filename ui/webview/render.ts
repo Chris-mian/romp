@@ -3173,11 +3173,17 @@ function pickerKey(e: KeyboardEvent) {
 // The kernel's real default new-session directory (its serve cwd, ~-ified), from the sessionList payload —
 // prefilled into the dir field when there's no gear default, so "the default path is written in there".
 let kernelDefaultDir = "";
+// Is this session already an open tab in THIS dashboard? (loaded session, or a not-yet-loaded placeholder tab
+// the kernel's order carries.) The + picker uses it to hide sessions you can already reach by a tab-click.
+function isOpenTab(id: string): boolean {
+  return sessions.has(id) || order.includes(id) || tabMeta.has(id);
+}
+
 function renderPicker(items: any[]) {
   const list = document.getElementById("picker-list");
   if (!list) return;
   list.replaceChildren();
-  for (const it of items) {
+  const mkRow = (it: any): HTMLElement => {
     const row = el("div", "picker-row" + (it.running ? " running" : ""));
     row.dataset.search = (it.name + " " + (it.summary || "")).toLowerCase();
     const top = el("div", "picker-row-top");
@@ -3185,7 +3191,12 @@ function renderPicker(items: any[]) {
     name.replaceChildren(...hostNameNodes(it.name, it.id));
     if (it.color && it.color.bg) name.style.color = it.color.bg;
     const time = el("span", "picker-time");
-    time.textContent = it.running ? "running" : it.time;
+    if (it.running) {   // a live session (SDK/tmux backend) whose tab is closed → a green "running" badge
+      time.classList.add("picker-running-badge");
+      time.append(el("span", "picker-run-dot"), document.createTextNode("running"));
+    } else {
+      time.textContent = it.time;
+    }
     top.appendChild(name);
     top.appendChild(time);
     row.appendChild(top);
@@ -3203,7 +3214,21 @@ function renderPicker(items: any[]) {
       }
       closePicker();
     });
-    list.appendChild(row);
+    return row;
+  };
+  const label = (txt: string): HTMLElement => { const l = el("div", "picker-group-label"); l.textContent = txt; return l; };
+  // In the + (open) flow, HIDE sessions you already have open as a tab — they're a tab-click away, so listing
+  // them is just noise (the user 2026-07-15). What's left splits into RUNNING (a live backend whose tab you
+  // closed — reopen it, shown first with a badge) then the closed/aged ones you can revive. In PICK mode
+  // (choosing a target session) nothing is hidden — you may well want an already-open one.
+  if (pickMode) {
+    for (const it of items) list.appendChild(mkRow(it));
+  } else {
+    const avail = items.filter((it) => !isOpenTab(it.id));
+    const running = avail.filter((it) => it.running);
+    const rest = avail.filter((it) => !it.running);
+    if (running.length) { list.appendChild(label("Running — reopen")); for (const it of running) list.appendChild(mkRow(it)); }
+    if (rest.length) { if (running.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
   }
   if (pickAllowNew) {
     const row = el("div", "picker-row picker-new");
@@ -3241,6 +3266,8 @@ function renderPicker(items: any[]) {
 
 function filterPicker(q: string) {
   const query = q.toLowerCase();
+  // a live search collapses the Running/Recent split into one flat result list — hide the group labels (CSS)
+  document.getElementById("picker-list")?.classList.toggle("searching", !!query);
   document.querySelectorAll("#picker-list .picker-row").forEach((r) => {
     const row = r as HTMLElement;
     const hit = !query || (row.dataset.search || "").includes(query);
