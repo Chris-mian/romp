@@ -4202,6 +4202,18 @@ GROUP_SYS = (
     "it — its live to-do link moves to the keeper automatically. Merge only true twins, the same work "
     "recorded twice; related-but-different goals get group, not merge, and never merge two lines that "
     "are both from the agent's own to-do list.\n"
+    '- {\"why\",\"do\":\"split\",\"goal\":<n>}: the inverse of group — promote indented step #n (its '
+    "whole subtree comes with it) to a top-level card of its own. Use it when a step has grown into a "
+    "**different effort** with its own finish line that its card's outcome does not need: a tangent "
+    "that drifted into the card (a side-investigation, a security scare, a new deliverable) and now "
+    "hides inside it. The tell is a card whose steps span two unrelated stories. Optionally add "
+    "\"retitle\":\"<new title ≤10 words>\" when #n's step-phrased title does not stand alone as a "
+    "card. #n must be an indented step, never a flush-left top. Split sparingly: steps that serve "
+    "their card's own outcome stay put, however many there are.\n"
+    '- {\"why\",\"do\":\"retitle\",\"goal\":<n>,\"text\":\"<new title ≤10 words>\"}: replace top '
+    "#n's own title. Use it when the card's title no longer covers what the thread inside it became — "
+    "it still names the first ask while the steps outgrew it. Tops only; pair it with split when "
+    "pulling a tangent out also leaves the remaining card mis-titled.\n"
     "Be aggressive about grouping a real shared purpose, since a few real trees beat a flat list of "
     "every request, but never group on look-alike wording alone, and leave a standalone goal as its "
     "own top. A top marked \"from the agent's own to-do list\" is a to-do mirror: it always starts "
@@ -4354,6 +4366,19 @@ def _parse_group(raw, menu_len):
             g, m = _int(o, "goal"), _int(o, "into")
             if g and m and 1 <= g <= menu_len and 1 <= m <= menu_len and g != m:
                 ops.append({"do": "merge", "why": why, "goal": g, "into": m})
+        elif do == "split":
+            g = _int(o, "goal")                        # promote step #goal to its own top card
+            retitle = " ".join(str(o.get("retitle", "")).split())[:120]
+            retitle = retitle if re.sub(r"[^A-Za-z]", "", retitle) else ""
+            if g and 1 <= g <= menu_len:
+                op = {"do": "split", "why": why, "goal": g}
+                if retitle:
+                    op["retitle"] = retitle
+                ops.append(op)
+        elif do == "retitle":
+            g = _int(o, "goal")                        # re-title card #goal in place (tops only, enforced
+            if g and 1 <= g <= menu_len and re.sub(r"[^A-Za-z]", "", text):   # by apply_group)
+                ops.append({"do": "retitle", "why": why, "goal": g, "text": text})
     return ops
 
 
@@ -4464,11 +4489,14 @@ def apply_group(store, menu, ops, t):
     """Apply the grouper's ORDERED ops over the session's `menu` (the pre-snapshot _group_menu list —
     tops each followed by their open steps — so indices are stable across the reply): mint umbrella
     tops, RELINK a top (its whole subtree comes with it) under another top or a same-reply umbrella
-    ("ref"), and MERGE a twin line into the line that already tracks the same work (_merge_nodes).
+    ("ref"), MERGE a twin line into the line that already tracks the same work (_merge_nodes), SPLIT a
+    step out to a top card of its own (the inverse of group — a drifted tangent stops hiding inside
+    the wrong card; the user 2026-07-14), and RETITLE a card whose title the thread outgrew.
     group stays top-only — a step child is skipped, a step parent walks up to its card — while merge
-    may target any menu line. Cycle- and depth-guarded; an op whose target a same-reply merge already
+    may target any menu line; split targets steps only, retitle tops only (each enforced by parentId).
+    Cycle- and depth-guarded; an op whose target a same-reply merge already
     deleted is skipped. A minted umbrella inherits its earliest grouped child's anchor (trail/t) so it
-    deep-links to where that work began. Returns the number of relinks + merges applied. There is no
+    deep-links to where that work began. Returns the number of relinks + merges + splits + retitles applied. There is no
     longer a never-move-an-everDone-node guard (the user 2026-07-06, removed to try): a reopened
     once-done top is live work again, so an erroneous split the user pushes back into Working can be
     re-merged; the candidate forests still keep the columns apart (the working grouper sees only OPEN
@@ -4501,6 +4529,23 @@ def apply_group(store, menu, ops, t):
         if o["do"] == "merge":                         # fold twin #goal into #into (_merge_nodes refuses
             relinks += _merge_nodes(store, menu[o["goal"] - 1]["id"],   # gone / double-mirror targets)
                                     menu[o["into"] - 1]["id"], t, o.get("why") or "")
+            continue
+        if o["do"] == "split":                         # promote step #goal (its whole subtree comes with
+            child = menu[o["goal"] - 1]["id"]          # it) to a top-level card of its own — the inverse
+            if child not in nodes or nodes[child].get("parentId") is None:
+                continue                               # merged away this reply, or already a top
+            nodes[child]["parentId"] = None            # of group: a drifted tangent gets its own card
+            if o.get("retitle"):                       # a step-phrased title may not stand alone as a card
+                nodes[child]["text"] = o["retitle"]
+            nodes[child]["mt"] = t
+            relinks += 1
+            continue
+        if o["do"] == "retitle":                       # re-title a drifted CARD in place: its first-ask
+            tgt = menu[o["goal"] - 1]["id"]            # title no longer covers what the thread became
+            if tgt in nodes and nodes[tgt].get("parentId") is None and o.get("text"):
+                nodes[tgt]["text"] = o["text"]
+                nodes[tgt]["mt"] = t
+                relinks += 1                           # counts as a change: the caller persists + re-rolls
             continue
         # group: relink top #goal under #under (a menu top) or a same-reply umbrella (ref)
         child = menu[o["goal"] - 1]["id"]
@@ -4536,20 +4581,52 @@ def apply_group(store, menu, ops, t):
     return relinks
 
 
+GROUP_SPLIT_MIN = 7                       # open direct steps at which a card counts OVERGROWN (split-eligible)
+
+
+def _overgrown_tops(store, tops):
+    """The split candidates: open tops carrying ≥ GROUP_SPLIT_MIN open direct steps — a card that big
+    usually holds a drifted thread (the user 2026-07-14: the nimbus card wore 12, half of them a
+    security tangent). {top id: sorted open direct-step ids}. Used twice by _group_store: an overgrown
+    card lets the grouper run even on a ONE-card board (nothing to group, something to split), and its
+    open-step set joins the event gate's signature, so new filings under it re-arm the pass — the
+    open-top set alone never changes while a single card accretes, which is exactly when drift happens."""
+    kids = {}
+    for nd in store["nodes"].values():
+        kids.setdefault(nd.get("parentId"), []).append(nd)
+    out = {}
+    for nd in tops:
+        steps = sorted(c["id"] for c in kids.get(nd["id"], [])
+                       if not c.get("nodeComplete") and not c.get("cleared"))
+        if len(steps) >= GROUP_SPLIT_MIN:
+            out[nd["id"]] = steps
+    return out
+
+
+def _group_sig(store, tops):
+    """The grouper gate's signature: the open-top id set, plus each OVERGROWN top's open-step set (so
+    a drifting single card re-arms the gate; see _overgrown_tops)."""
+    over = _overgrown_tops(store, tops)
+    return sorted([nd["id"] for nd in tops] +
+                  ["%s#steps:%s" % (tid, ",".join(steps)) for tid, steps in over.items()])
+
+
 def _group_store(store, fsid, now):
-    """Reorganize the open-top forest IN PLACE; return relinks applied (the CALLER persists the store).
-    EVENT-GATED by store["groupedSig"] (the open-top id set): it calls the grouper model only when that
-    set CHANGED since the last grouping, so a stable board is never re-grouped and the pass can't thrash.
-    Toggleable via GROUPER_ON. The planner calls this after EVERY placement (the user 2026-06-17: planner
-    + grouper are segment-level); run_group calls it once more at the pass level to catch courier-planted
-    tops the planner never saw."""
+    """Reorganize the open-top forest IN PLACE; return structural changes applied (the CALLER persists
+    the store). EVENT-GATED by store["groupedSig"] (_group_sig: the open-top id set + overgrown cards'
+    open-step sets): it calls the grouper model only when that signature CHANGED since the last
+    grouping, so a stable board is never re-grouped and the pass can't thrash. A one-card board runs
+    only when that card is overgrown (split-eligible). Toggleable via GROUPER_ON. The planner calls
+    this after EVERY placement (the user 2026-06-17: planner + grouper are segment-level); run_group
+    calls it once more at the pass level to catch courier-planted tops the planner never saw."""
     if not GROUPER_ON:
         return 0
     tops = _group_tops(store)
-    sig = sorted(nd["id"] for nd in tops)
-    if len(tops) < 2 or sig == store.get("groupedSig"):
-        store["groupedSig"] = sig                      # <2 tops / unchanged → record the set so we don't re-ask
-        return 0
+    sig = _group_sig(store, tops)
+    splittable = any("#steps:" in s for s in sig)      # an overgrown card is worth a look on its own
+    if (len(tops) < 2 and not splittable) or sig == store.get("groupedSig"):
+        store["groupedSig"] = sig                      # nothing to group/split / unchanged → record the
+        return 0                                       # signature so we don't re-ask
     menu = _group_menu(store, tops)
     raw = group_llm(_group_menu_text(store, menu))
     ops = _parse_group(raw, len(menu))
@@ -4562,7 +4639,7 @@ def _group_store(store, fsid, now):
         return 0                                       # under the cap the sig stays stale → retry next call
     _sig_fail_clear(store, "group")
     relinks = apply_group(store, menu, ops, now)
-    store["groupedSig"] = sorted(nd["id"] for nd in _group_tops(store))   # snapshot the NEW open-top set
+    store["groupedSig"] = _group_sig(store, _group_tops(store))   # snapshot the NEW signature
     return relinks
 
 
