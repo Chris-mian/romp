@@ -10464,7 +10464,11 @@ def _chat_body():
             '<div id="composer"><div id="composer-chips" style="display:none"></div>'   # click-to-cite chip strip (the user 2026-07-01)
             '<textarea id="composer-input" rows="1" '
             'placeholder="Message this session…"></textarea>'
-            '<button id="composer-attach" title="Attach a file — inserts its path">📎</button>'
+            '<button id="composer-attach" title="Attach a file — inserts its path">'
+            '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
+            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66'
+            'l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>'
             '<button id="composer-send" title="Send (Enter)" aria-label="Send">➤</button></div></div>')
 
 

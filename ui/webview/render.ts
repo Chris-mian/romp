@@ -1268,6 +1268,18 @@ function asFolderLink(elem: HTMLElement, cwd: string, sid?: string): void {
   elem.title = cwd + "  ·  click to open this folder";
 }
 
+// Small inline-SVG folder in the romp line-icon style (matches ctxIcon: 16-unit viewBox, currentColor, so it
+// inherits the dim statusline tint / brightens on the folder-link hover) — the monochrome replacement for the
+// 📁 emoji beside the statusline directory (the user 2026-07-15). Trusted constant markup.
+function folderIcon(): HTMLElement {
+  const span = el("span", "status-dir-icon");
+  span.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M2 6 V4.8 a0.8 0.8 0 0 1 0.8-0.8 H6 L7.5 6 H13.2 a0.8 0.8 0 0 1 0.8 0.8 V11.2 '
+    + 'a0.8 0.8 0 0 1-0.8 0.8 H2.8 a0.8 0.8 0 0 1-0.8-0.8 Z"/></svg>';
+  return span;
+}
+
 function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
   const turn = el("div", "turn turn-system");
   const key = renderingSid ? "sysctx:" + renderingSid : undefined;
@@ -5136,7 +5148,8 @@ function updateStatusline() {
   // right-justify margin so it anchors the cluster; empty (rare, no cwd) it's a zero-width spacer.
   const dir = el("span", "status-dir");
   if (s.cwd) {
-    dir.textContent = "📁 " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd);
+    dir.appendChild(folderIcon());
+    dir.appendChild(document.createTextNode(" " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd)));
     // Click → run the configured folder opener for this dir (default: the OS opener — Finder / xdg-open —
     // overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty). asFolderLink wires
     // the data-act caught by the document-level openFolder delegate, so the per-push rebuild can't drop it.

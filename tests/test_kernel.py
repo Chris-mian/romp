@@ -3439,6 +3439,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertLess(body.index("composer-attach"), body.index("composer-send"),
                         "send sits to the RIGHT of the 📎 attach button")
 
+    def test_chat_body_attach_is_a_monochrome_svg_icon_not_an_emoji(self):
+        # The 📎 attach glyph was replaced with a monochrome line-icon (currentColor SVG) in the romp style,
+        # to match the gear/network chrome (the user 2026-07-15). The kernel _chat_body is the SECOND copy of
+        # page-skeleton.chatBody the browser loads, so the icon must live HERE too, not only in page-skeleton.
+        body = km._chat_body()
+        attach = body[body.index('id="composer-attach"'):body.index('id="composer-send"')]
+        self.assertIn("<svg", attach, "the attach button renders an inline SVG icon")
+        self.assertIn('stroke="currentColor"', attach, "monochrome — inherits the button tint")
+        self.assertNotIn("\U0001F4CE", attach)   # the 📎 paperclip emoji is gone
+
     def test_chat_body_has_the_composer_resize_handle(self):
         # The web dashboard's HTML is a SECOND copy of page-skeleton.chatBody (this is the copy the browser
         # actually loads) — so the drag-to-resize handle must live HERE too, not only in page-skeleton, or the
