@@ -51,3 +51,18 @@ test("a pasted image's path is skipped by the strip while other mentioned images
   // no images on the turn → strip behavior unchanged
   assert.deepEqual(collect([other], []), [other]);
 });
+
+test("the image CAPTION (🖼 path ⧉) is skipped when the path is already in the message text (the user 2026-07-15)", () => {
+  // userImage takes pathInText and only adds the caption when the path ISN'T already a link in the bubble;
+  // the bubble computes it from ev.md so a dropped screenshot (path inserted into the text) shows the path once.
+  assert.match(RENDER, /function userImage\(im: \{ src: string; path\?: string \}, pathInText = false\): HTMLElement/);
+  assert.match(RENDER, /if \(im\.path && !pathInText\) fig\.appendChild\(imgCaption\(im\.path\)\);/);
+  assert.match(RENDER, /userImage\(im, !!\(im\.path && mdText\.includes\(im\.path\)\)\)/);
+
+  // executed replica of the caption decision: caption shown iff there's a path AND it's not in the text
+  const captionShown = (path: string | undefined, md: string) => !!path && !md.includes(path);
+  const p = "/Users/x/Screenshots/shot.png";
+  assert.equal(captionShown(p, "here: " + p + " what's going on?"), false, "path in text → caption dropped (no repeat)");
+  assert.equal(captionShown(p, "no path in this message"), true, "path NOT in text (inline paste) → caption kept");
+  assert.equal(captionShown(undefined, "text"), false, "no known path → no caption");
+});

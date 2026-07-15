@@ -563,7 +563,10 @@ function onImgData(p: string, url: string | null): void {
 // on-disk path is known, a caption line — the full absolute path (click → open),
 // ⧉ copies it. So both the rendered image AND its path stay accessible no matter
 // how the image arrived (pasted inline, referenced by path, typed as text).
-function userImage(im: { src: string; path?: string }): HTMLElement {
+// pathInText: the path is ALREADY visible (linkified) in the message text — a
+// dropped/pasted screenshot inserts it there — so a caption would just repeat it
+// (the user 2026-07-15). Skip the caption then; the in-text link already opens it.
+function userImage(im: { src: string; path?: string }, pathInText = false): HTMLElement {
   const fig = el("span", "user-img-wrap");
   if (im.src.startsWith("path:")) {
     fig.appendChild(buildPathImg(im.src.slice(5)));   // host reads it → real thumbnail; chip until then / on failure
@@ -571,7 +574,7 @@ function userImage(im: { src: string; path?: string }): HTMLElement {
     const img = document.createElement("img"); img.className = "user-img"; img.src = im.src; img.loading = "lazy";
     fig.appendChild(img);
   }
-  if (im.path) fig.appendChild(imgCaption(im.path));
+  if (im.path && !pathInText) fig.appendChild(imgCaption(im.path));   // caption only when the path isn't already in the text
   return fig;
 }
 function imgCaption(path: string): HTMLElement {
@@ -1158,7 +1161,8 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       // a literal path in the typed text becomes the same open-link inline.
       if (ev.images) {
         linkifyImgPaths(bubble, ev.images.map((im) => im.path).filter((p): p is string => !!p));
-        for (const im of ev.images) bubble.appendChild(userImage(im));
+        const mdText = ev.md || "";   // a path present here is already a link in the bubble → drop the caption's repeat
+        for (const im of ev.images) bubble.appendChild(userImage(im, !!(im.path && mdText.includes(im.path))));
       }
       turn.appendChild(bubble);
     }
