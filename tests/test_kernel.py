@@ -890,6 +890,66 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["awaiting"]["why"], "Waiting on the 3 research agents it dispatched.")
         self.assertIsNone(card["blocked"], "an awaiting goal is not a live block")
 
+    def _blocked_card_with_awaiting(self, await_since):
+        """A GENUINELY blocked top (ask at T0+100) on a session whose awaiting signal is live, with the
+        dispatch time stubbed to `await_since` — the blocked-vs-awaiting ordering fixture (nimbus)."""
+        top = SID + ":top"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "secure the network", "parentId": None,
+                            "nodeComplete": False, "blocked": True,
+                            "blockWhy": "bind to the Tailscale IP now, or wait?",
+                            "cleared": False, "trail": [], "t": T0, "mt": T0 + 100}},
+            "placements": {}, "status": {top: "blocked"}}))
+        saved = (km._session_awaiting, km._awaiting_since)
+        km._session_awaiting = lambda sid, path, idle: "waiting on a background task: campaign timer"
+        km._awaiting_since = lambda sid: await_since
+        try:
+            return next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        finally:
+            km._session_awaiting, km._awaiting_since = saved
+
+    def test_a_block_newer_than_the_dispatched_work_stays_needs_input(self):
+        # the user 2026-07-15 (nimbus): the turn ENDED by asking the user questions while a background
+        # timer (dispatched mid-turn, so OLDER than the ask) kept running — the unordered awaiting flip
+        # dressed the genuine needs-you as the straw awaiting badge. Event order now decides: the ask is
+        # newer than the dispatch, so the block stands.
+        card = self._blocked_card_with_awaiting(T0 + 50)
+        self.assertEqual(card["column"], "needs_input", "a live ask is never masked by older dispatched work")
+        self.assertIsNone(card["awaiting"], "no straw badge over a genuine needs-you")
+
+    def test_a_block_older_than_the_dispatched_work_still_yields_to_awaiting(self):
+        # the case the flip was BUILT for (the user 2026-06-22): a stale block from an earlier turn,
+        # then the session moved on and dispatched work — the session is in motion, not on the user.
+        card = self._blocked_card_with_awaiting(T0 + 200)
+        self.assertEqual(card["column"], "working", "work dispatched after the ask supersedes the stale block")
+        self.assertIsNotNone(card["awaiting"])
+
+    def test_an_untimed_awaiting_signal_never_outranks_a_timed_block(self):
+        # conservative default: when the dispatch time is underivable (None), the genuine block wins —
+        # a masked needs-you silently stalls the fleet, a straw badge merely understates motion.
+        card = self._blocked_card_with_awaiting(None)
+        self.assertEqual(card["column"], "needs_input")
+
+    def test_awaiting_since_prefers_live_sets_then_overlay(self):
+        # the helper itself: newest `since` across live subagents + bgTasks; overlay awaiting:true `t`
+        # only when no live set carries a time; None when nothing is derivable.
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {SID: {"subagents": [{"type": "explore", "since": 500}],
+                                           "bgTasks": [{"desc": "timer", "since": 900}]}}
+        try:
+            self.assertEqual(km._awaiting_since(SID), 900, "newest live-set dispatch wins")
+            km._tmux_sessions = lambda: {SID: {"subagents": [], "bgTasks": []}}
+            sdir = jd.STATE / "states"; sdir.mkdir(parents=True, exist_ok=True)
+            (sdir / (SID + ".jsonl")).write_text(
+                json.dumps({"t": 700, "awaiting": True, "why": "bg job"}) + "\n")
+            self.assertEqual(km._awaiting_since(SID), 700, "overlay awaiting:true time is the fallback")
+            (sdir / (SID + ".jsonl")).write_text(
+                json.dumps({"t": 700, "awaiting": False}) + "\n")
+            self.assertIsNone(km._awaiting_since(SID), "not awaiting → no dispatch time")
+        finally:
+            km._tmux_sessions = saved
+
     def test_stale_awaiting_overlay_superseded_by_a_later_work_turn(self):
         # the user 2026-06-26: open_mvv showed the yellow 'working' dot + badge + timer + interrupt button in
         # the chat off a STALE awaiting:true (the producer dropped the clearing false), while idle on the

@@ -4425,6 +4425,25 @@ def _session_awaiting(sid, path, idle):
     return None
 
 
+def _awaiting_since(sid):
+    """WHEN the awaiting state's work was dispatched: the newest `since` among the live subagent and
+    bg-task sets (backend snapshot), else the states overlay's awaiting:true record time; None when no
+    time is derivable. Mirrors _session_awaiting's sources. Order decides blocked-vs-awaiting on the
+    feed card (build_feed's floor, the user 2026-07-15, nimbus): work dispatched AFTER a block
+    supersedes it (the stale block the flip was built for), while a block that landed after the
+    dispatch is a GENUINE needs-you a live timer must not mask — None reads as oldest, so an
+    untimed signal never outranks a timed block."""
+    tm = _tmux_sessions().get(str(sid)) or {}
+    ts = [int(x.get("since") or 0) for x in (tm.get("subagents") or []) + (tm.get("bgTasks") or [])]
+    ts = [t for t in ts if t]
+    if ts:
+        return max(ts)
+    ov = _states_awaiting_overlay(sid)
+    if ov is not None and ov.get("awaiting"):
+        return int(ov.get("t") or 0) or None
+    return None
+
+
 def _awaiting_task_descs(sid):
     """The live background-task DESCRIPTIONS for a session (the CLI's task-lifecycle set, via the backend
     snapshot's bgTasks) — the feed's 'Waiting on task' pill expands them as a list (the user 2026-07-13).
@@ -7746,8 +7765,19 @@ def build_feed(now, tmux=None):
             # AFTER it can't be awaiting that answer (the user 2026-06-28). Scopes the stale session-level
             # wait off unrelated newer goals; if every pre-question goal is resolved, nothing floors.
             _peer_wait = (fsid in wmap and nodes[nid]["t"] <= wmap[fsid]["since"])
+            # A blocked top yields to the session-level awaiting signal ONLY when the dispatched work
+            # is NEWER than the block's own evidence (event order, the user 2026-07-15: nimbus ended
+            # its turn asking the user questions while a background timer ran — the unordered flip
+            # dressed a genuine needs-you as the straw awaiting badge, masking the very decision only
+            # the user could make). Work dispatched after the ask means the session moved past the
+            # question (the stale block the flip was built for); an ask newer than the dispatch is live.
+            _await_ok = bool(sess_awaiting_why)
+            if _await_ok and col == "blocked":
+                _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
+                              if nodes[x].get("blocked") and not _closure_done(x)] or [0])
+                _await_ok = (_awaiting_since(fsid) or 0) >= _blk_t
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
-                    sess_awaiting_why or (col == "blocked" and _peer_wait)):
+                    _await_ok or (col == "blocked" and _peer_wait)):
                 col = "awaiting"
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
