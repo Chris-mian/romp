@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prefixId, hostOf, bareId, prefixInbound, routeOutbound, mergeHostOrder, mergeHostFeeds,
-         prefixTimelineData, mergeHostTimelines, mergeHostBars, stitchMessages } from "./federation";
+         prefixTimelineData, mergeHostTimelines, mergeHostBars, stitchMessages,
+         FederationManager } from "./federation";
 
 const U = "11111111-2222-3333-4444-555555555555";
 const V = "99999999-8888-7777-6666-555555555555";
@@ -361,4 +362,35 @@ test("routeOutbound: openFolder ALWAYS stays local, with a remote id's host pref
   // no id at all (an older client / a session with none) still just goes local
   const bare = routeOutbound({ type: "openFolder", cwd: "/work/proj" });
   assert.deepEqual(bare, [{ host: "", msg: { type: "openFolder", cwd: "/work/proj" } }]);
+});
+
+test("manager: merged timeline emits HOLD until the local lanes snapshot arrives (remote-first race)", () => {
+  // The merges take `now` (the clock authority) from the LOCAL payload. When a remote host won the
+  // connect race, the manager emitted a merged payload with now:undefined — the panel's fitWindow
+  // latched a NaN window and every timeline x-coordinate stayed NaN for the page's lifetime (the
+  // Chrome "stub lane lines, no bars" bug, 2026-07-15). The manager must buffer remote snapshots
+  // and let the local arrival itself trigger the first emit (event-based, no timer).
+  const emitted: any[] = [];
+  const g: any = globalThis;
+  const hadWindow = "window" in g;
+  const prevWindow = g.window;
+  g.window = { dispatchEvent: (ev: any) => emitted.push(ev.data) };
+  try {
+    const fm = new FederationManager();
+    fm.inbound("jetty", { type: "data", data: { sessions: [{ id: V, name: "rem" }], turns: {}, messages: [], judging: [], now: 500 } });
+    fm.inbound("jetty", { type: "bars", turns: { [V]: [{ id: "e", start: 400, end: 450 }] }, messages: [], judging: [], now: 500 });
+    assert.equal(emitted.length, 0, "no emit before the local snapshot — it would carry now:undefined");
+    fm.inbound("", { type: "data", data: { sessions: [{ id: U, name: "loc" }], turns: {}, messages: [], judging: [], now: 1000 } });
+    assert.equal(emitted.length, 1, "the local arrival itself emits the merged lanes");
+    assert.equal(emitted[0].type, "data");
+    assert.equal(emitted[0].data.now, 1000, "the merged payload carries the local clock");
+    assert.deepEqual(emitted[0].data.sessions.map((s: any) => s.id), [U, "jetty:" + V],
+      "the buffered remote lanes ride the first emit");
+    fm.inbound("", { type: "bars", turns: {}, messages: [], judging: [], now: 1001 });
+    assert.equal(emitted.length, 2, "bars flow once the local lanes exist");
+    assert.equal(emitted[1].type, "bars");
+    assert.ok(("jetty:" + V) in emitted[1].turns, "the buffered remote bars merge in");
+  } finally {
+    if (hadWindow) g.window = prevWindow; else delete g.window;
+  }
 });

@@ -409,6 +409,12 @@ export class FederationManager {
   }
 
   private emitMergedTimeline(bars: boolean): void {
+    // HOLD until the LOCAL lanes snapshot exists. The merges take `now` (the clock authority) from the
+    // local payload, so a remote host winning the connect race would emit now:undefined — which the
+    // panel's fitWindow turned into a permanently-NaN window (every bar/axis x = NaN; the "stub lane
+    // lines, no bars" bug, 2026-07-15). The local kernel pushes on connect, so the hold is momentary,
+    // and the local arrival itself emits (event-based, no timer).
+    if (!(LOCAL in this.perHostTl)) return;
     const data = bars
       // the bars message carries no lanes — hand the merged lane list in for the connector stitch
       ? mergeHostBars(this.perHostTlBars, this.hostSeq, mergeHostTimelines(this.perHostTl, this.hostSeq).sessions)

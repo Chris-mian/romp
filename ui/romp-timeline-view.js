@@ -159,7 +159,9 @@ function reanchorEdge(baseSec, baseMs, nowMs, dataNow, wasLive) {
 // on every remote push and forward on every local one — the "jumps forward and then keeps going
 // backwards" oscillation (the user 2026-07-03, first remote host attached). Pure + exported for tests.
 function isFreshNowSample(newestSeen, incoming) {
-  return typeof incoming === 'number' && (newestSeen == null || incoming > newestSeen);
+  // Number.isFinite (not typeof): a NaN sample adopted as newestSeen would reject every later real
+  // sample (NaN compares false), freezing data.now at NaN for the page's lifetime.
+  return Number.isFinite(incoming) && (newestSeen == null || incoming > newestSeen);
 }
 
 // Right edge a work bar is DRAWN to. An OPEN ("still working") bar has its `end` baked to data.now at
@@ -727,7 +729,9 @@ class TimelinePanel {
   badgeWidth(s) { this._font(true); return this._mc.measureText(s || '').width; }
   ctxWidth(s) { this._mc.font = '600 11px ' + FONT; return this._mc.measureText(s || '').width; }
 
-  winSec() { const w = this._winSec != null ? this._winSec : Math.sqrt(MIN_W * MAX_W); return Math.round(Math.max(MIN_W, Math.min(MAX_W, w))); }
+  // Number.isFinite (not != null): the min/max clamp passes NaN straight through, and a NaN window
+  // makes every x() NaN — the whole plot vanishes. Non-finite → the same default as unset.
+  winSec() { const w = Number.isFinite(this._winSec) ? this._winSec : Math.sqrt(MIN_W * MAX_W); return Math.round(Math.max(MIN_W, Math.min(MAX_W, w))); }
   offSec() { return Math.round(Math.max(0, Math.min(MAX_OFFSET, this._offSec || 0))); }   // 0 at right (now) … 72h at left
 
   // keyboard lane selection: ↑/↓ move the cursor AND auto-open that session in the chat WITHOUT
@@ -1062,11 +1066,16 @@ class TimelinePanel {
   }
 
 
+  // Returns whether it actually fitted — callers latch `fitted` ONLY on true. Without a clock sample
+  // (data.now missing: a remote-first federation merge before the local snapshot) the math is NaN, and
+  // a latched NaN window blanked the plot for the page's lifetime (the Chrome stub-lines bug, 2026-07-15).
   fitWindow() {
+    if (!Number.isFinite(this.data && this.data.now)) return false;
     let e = this.data.now;
     this.data.messages.forEach((m) => { if (m.sent) e = Math.min(e, m.sent); });
     Object.values(this.data.turns).forEach((ts) => ts.forEach((t) => { if (t.start) e = Math.min(e, t.start); }));
     this._winSec = Math.min(12 * 3600, Math.max(3600, Math.round((this.data.now - e) * 1.15)));
+    return true;
   }
 
   // Tell the shell the dashboard has first content so it can drop the boot splash (the user 2026-06-26).
@@ -1112,7 +1121,7 @@ class TimelinePanel {
       this._nowBaseSec = data.now; this._nowBaseMs = _tMs;
     }
     this._wasLive = _live;
-    if (!this.fitted && Object.keys(this.data.turns || {}).length) { this.fitWindow(); this.fitted = true; }   // fit once bars exist (a skeleton-only first paint waits for applyBars)
+    if (!this.fitted && Object.keys(this.data.turns || {}).length && this.fitWindow()) this.fitted = true;   // fit once bars exist (a skeleton-only first paint waits for applyBars); no latch without a clock sample
     // first paint with a chat already open → seed the highlight from it (don't override a later local pick)
     if (this.selectedSid == null) { const sid = this._sidForActiveChat(data.activeChat); if (sid) this.selectedSid = sid; }
     // Feed→timeline HOVER from the FILE (timeline-hover.json — the cross-front-end broadcast channel,
@@ -1184,7 +1193,7 @@ class TimelinePanel {
       if (isFreshNowSample(this._newestNow, m.now)) this._newestNow = m.now;
       this.data.now = (this._newestNow != null) ? this._newestNow : m.now;
     }
-    if (!this.fitted && Object.keys(this.data.turns).length) { this.fitWindow(); this.fitted = true; }
+    if (!this.fitted && Object.keys(this.data.turns).length && this.fitWindow()) this.fitted = true;   // no latch without a clock sample (see fitWindow)
     // honor the same freeze-on-hover / click-hold guard update() uses (don't relayout under a held pointer/tip)
     if ((this.tip && this.tip.classList && this.tip.classList.contains('show')) || this._pointerHeld) { this._dirtyWhileTip = true; return; }
     this.draw();
