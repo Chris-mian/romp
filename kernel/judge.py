@@ -2182,6 +2182,18 @@ def rollup_status(store, session_closed, now=None):
         if nodes[nid].get("blocked") and is_complete(nid):
             record_verdict(store, nodes[nid], "romp", "unblock", latest_t,   # evented (2026-07-07): heal ONCE —
                            why="moot: the subtree is complete")   # the event materializes the clear
+            if nodes[nid].get("blocked"):
+                # A ROLLED-UP node's flags are the roll-down's display cache — record_verdict deliberately
+                # skips materializing them, so the evented heal above appended forever WITHOUT clearing the
+                # flag: every pass re-saw blocked+complete, re-appended, spammed the diary past LOG_CAP
+                # (truncating the real history out) while raw-flag readers kept showing ⏸ against a fold
+                # that said open — the card flapped Blocked↔Working on successive pushes (the user
+                # 2026-07-14, the demo-video card). This heal runs INSIDE rollup — the same owner as
+                # roll-down — so clearing the display cache here is that owner doing its job. Idempotent:
+                # next pass sees blocked falsy and the loop never re-fires.
+                with _authority():
+                    nodes[nid]["blocked"] = False
+                    nodes[nid].pop("blockWhy", None)
     store["status"] = status
 
 
