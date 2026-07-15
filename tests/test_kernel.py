@@ -163,6 +163,23 @@ class ViewBuilder(unittest.TestCase):
         c = km._parse(str(self.tpath), SID, NOW)
         self.assertIsNot(a, c, "changed transcript → re-parsed")
 
+    def test_fleet_view_sig_busts_on_a_session_order_change(self):
+        """A tab/lane reorder writes session-order.json; the feed orders its GROUPED cards by that list, so
+        the fleet-view sig MUST change when the order changes — else _cached_feed serves the stale order and
+        the reordered cards lag the tabs by up to a 5s bucket (the user 2026-07-15). The chat tab strip never
+        lagged because its tab_order is read fresh each push, not from the cached feed."""
+        tmux = {}
+        p = jd.STATE / "session-order.json"
+        km._write_session_order(["11111111-2222-3333-4444-555555555555"])
+        sig1 = km._fleet_view_sig(NOW, tmux)
+        self.assertIn("__order__", dict(sig1), "the sig must watch session-order.json")
+        self.assertEqual(dict(sig1)["__order__"], os.stat(p).st_mtime, "the sig tracks the order file's mtime")
+        # a reorder rewrites the file → new mtime → the sig changes → _cached_feed rebuilds with the new order.
+        # set a distinct mtime explicitly so the assertion never rides on sub-second write resolution.
+        os.utime(p, (NOW - 100, NOW - 100))
+        sig2 = km._fleet_view_sig(NOW, tmux)
+        self.assertNotEqual(sig1, sig2, "a session-order change must bust the fleet-view sig")
+
     def test_send_client_dedups_per_client(self):
         """A client gets a payload once; an identical re-push is skipped; a changed one is sent (the
         diff-push that stops the 4s pusher from re-sending unchanged chat sessions)."""

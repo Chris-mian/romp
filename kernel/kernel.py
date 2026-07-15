@@ -9945,12 +9945,15 @@ REBUILD_MIN_S = 2.0
 def _fleet_view_sig(now, tmux):
     """Cheap fingerprint of everything build_feed/build_timeline read. Busts on any transcript/names/states/
     postal change (_producer_sig), a judge pass (goal/caption via _judge_gen), a live tmux BADGE change
-    (state/model/ctx/effort — touches no file), a colormap or session-flags change, or a 5s time bucket so
-    'X ago'/elapsed keeps advancing when nothing else changes."""
+    (state/model/ctx/effort — touches no file), a colormap or session-flags change, a SESSION-ORDER change
+    (a tab/lane reorder writes session-order.json — the feed orders its grouped cards by it, so a reorder
+    must bust the cache or the reordered cards lag behind the tabs by up to a bucket; the user 2026-07-15),
+    or a 5s time bucket so 'X ago'/elapsed keeps advancing when nothing else changes."""
     sig = _producer_sig(True)
     sig["__judge__"] = _judge_gen[0]
     sig["__bucket__"] = now // 5
-    for p, k in ((jd.STATE / "colormap", "__cmap__"), (jd.STATE / "session-flags.json", "__flags__")):
+    for p, k in ((jd.STATE / "colormap", "__cmap__"), (jd.STATE / "session-flags.json", "__flags__"),
+                 (jd.STATE / "session-order.json", "__order__")):
         try:
             sig[k] = os.stat(p).st_mtime
         except OSError:
