@@ -1240,10 +1240,21 @@ class ViewBuilder(unittest.TestCase):
         km._parse_cache.pop(str(self.tpath), None)
         km._parse(str(self.tpath), SID, NOW)
 
-    def _goal_store(self, nodes, status, last=None, closed=None):
-        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": len(nodes), "lastNode": last, "closedTurns": closed or [],
-            "nodes": nodes, "placements": {}, "status": status}))
+    def _goal_store(self, nodes, status, last=None, closed=None, planned=True):
+        store = {"rompUuid": SID, "seq": len(nodes), "lastNode": last, "closedTurns": closed or [],
+                 "nodes": nodes, "placements": {}, "status": status}
+        if planned:
+            # mirror a caught-up planner: every currently-due unit is recorded (a skip records one too) —
+            # the nudge fire path requires the planner queue empty (the 2026-07-15 placement gate), so a
+            # fixture that means "the judges have ruled and left this store" must say so in placements.
+            # planned=False = the planner hasn't processed the transcript yet.
+            try:
+                turns = jd.parsed_session(SID, [str(self.tpath)], NOW)["turns"]
+                for u in jd.plan_units({"turns": turns}, store):
+                    store["placements"][jd._unit_key(u[0], u[1])] = None
+            except Exception:
+                pass                                     # no transcript on disk yet → nothing due
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
 
     def _working_tmux(self):
         km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "",
@@ -1258,7 +1269,7 @@ class ViewBuilder(unittest.TestCase):
         self._goal_store(
             {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
                   "blocked": False, "cleared": False, "trail": [], "t": T0}},
-            {g1: "completed"}, last=g1)
+            {g1: "completed"}, last=g1, planned=False)   # unplaced by premise: the provisional exists because the planner hasn't placed
         self._working_tmux()
         asks = km.build_feed(NOW)["asks"]
         prov = [a for a in asks if a.get("provisional")]
@@ -1628,7 +1639,7 @@ class ViewBuilder(unittest.TestCase):
         g1 = SID + ":g1"
         self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
                                "blocked": False, "cleared": False, "trail": [], "t": T0}},
-                         {g1: "completed"}, last=g1)
+                         {g1: "completed"}, last=g1, planned=False)   # unplaced by premise: the provisional exists because the planner hasn't placed
         self._working_tmux()
         first = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
         self.assertIn("empty space", first["text"], "no message caption yet → the raw prompt")
@@ -1647,7 +1658,7 @@ class ViewBuilder(unittest.TestCase):
         g1 = SID + ":g1"
         self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
                                "blocked": False, "cleared": False, "trail": [], "t": T0}},
-                         {g1: "completed"}, last=g1)
+                         {g1: "completed"}, last=g1, planned=False)   # unplaced by premise: the provisional exists because the planner hasn't placed
         self._write_msg_caption("trimming the empty space below the cards")
         p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
         self.assertEqual(p["text"], "Analyzing: trimming the empty space below the cards")
@@ -1870,10 +1881,11 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(after_two.count("B"), 1, "an unchanged BACKGROUND tab is NOT rebuilt on the 2nd push")
         self.assertEqual(calls.count("B"), 2, "the background tab rebuilds once its transcript actually changes")
 
-    def _orphaned_goal(self, idle=True, closer_done=True):
+    def _orphaned_goal(self, idle=True, closer_done=True, planned=True):
         # an idle (or still-open) session whose top goal still shows "working". closer_done puts the latest
         # turn's id in closedTurns, so the closer-verdict gate lets the nudge through (the realistic case: the
         # closer ran and left the goal working). closer_done=False = the closer hasn't classified it yet.
+        # planned=False = the planner hasn't placed the turn's units yet (the 2026-07-15 placement gate holds).
         self._open_turn_transcript(ended=idle); km._parse_cache.clear()
         g = SID + ":gw"
         closed = []
@@ -1884,7 +1896,7 @@ class ViewBuilder(unittest.TestCase):
                 closed = []
         self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
                               "blocked": False, "cleared": False, "trail": [], "t": T0}}, {g: "working"},
-                         last=g, closed=closed)
+                         last=g, closed=closed, planned=planned)
         return g
 
     def test_auto_nudge_fires_once_per_turn(self):
@@ -1904,6 +1916,29 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(len(sent), 1, "no second nudge on the same turn — one per turn")
             km._auto_nudge_tick(NOW, km._tmux_sessions())          # SAME turn again → still capped
             self.assertEqual(len(sent), 1, "a persistent stop does not re-fire each tick")
+        finally:
+            restore()
+
+    def test_auto_nudge_waits_for_the_planner_to_place_the_turn(self):
+        # THE 11:35/11:40 RESTATEMENT NUDGES (the user 2026-07-15): closer-settled alone is not "the judges
+        # have ruled" — an unplanned turn no-op-closes on an empty menu (_turn_menu derives from placements),
+        # so the old gate passed minutes before the planner's block verdict landed and the nudge fired on the
+        # opener's provisional 'working' card (bug g78: nudged 11:35:20, block landed 11:35:32; romp_docs g82:
+        # nudged 11:40:37, block 11:40:51 — each agent restated its own unanswered ask). The fire path must
+        # wait for the planner's own "processed" event: every due unit PLACED. Event-based — the placement's
+        # landing (not a timer) opens the gate on the next tick.
+        g = self._orphaned_goal(idle=True, planned=False)   # closer no-op-settled, planner still in queue
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 0, "no nudge while the planner hasn't placed the turn's units")
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 0, "the hold persists across ticks, not a one-shot skip")
+            self._orphaned_goal(idle=True, planned=True)    # the planner catches up (placements recorded)
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the placement landing opens the gate — the nudge fires")
+            self.assertIn("romp-goal-id: " + g, sent[0][1])
         finally:
             restore()
 
@@ -2158,10 +2193,13 @@ class ViewBuilder(unittest.TestCase):
             {g: "working"}, last=g)
         km._write_auto_nudge({"enabled": True, "nudged": {
             g: {"count": 1, "lastTurnId": "x"}}})
-        km._mark_nudge_failed(g)   # records the block verdict...
+        km._mark_nudge_failed(g)   # records the block verdict (ev = wall clock, its real stamp)...
         st = km.jd.load_goals(SID)
-        km.jd.record_verdict(st, st["nodes"][g], "agent", "done", NOW + 5,
-                             why="the agent crossed off the last item")   # ...then the agent finishes
+        # ...then the agent finishes AFTER it — the done's evidence must be newer than the block's
+        # wall-clock stamp, as it is live (a block as new as the completion survives instead — the
+        # 2026-07-15 fresh-block rule; NOW+5 here would invert the fixture's timeline)
+        km.jd.record_verdict(st, st["nodes"][g], "agent", "done", int(time.time()) + 5,
+                             why="the agent crossed off the last item")
         km.jd.rollup_status(st, True)
         km.jd.save_goals(SID, st)
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
@@ -2454,7 +2492,7 @@ class ViewBuilder(unittest.TestCase):
         self._goal_store(
             {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
                   "blocked": False, "cleared": False, "trail": [], "t": T0}},
-            {g1: "completed"}, last=g1)
+            {g1: "completed"}, last=g1, planned=False)   # unplaced by premise: the provisional exists because the planner hasn't placed
         self._working_tmux()
         prov = [a for a in km.build_feed(NOW)["asks"] if a.get("provisional")]
         self.assertEqual(len(prov), 1, "an ENDED but unplaced ask still shows the placeholder — no gap before the real card")

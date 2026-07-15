@@ -2002,8 +2002,11 @@ class PlanRollup(unittest.TestCase):
         s = _store()
         g = _mknode(s, "G")                                  # top: NOT explicitly nodeComplete...
         g["blocked"] = True; g["blockWhy"] = "owed a decision"   # ...but carrying a stale block
-        c1 = _mknode(s, "c1", parent=g["id"], complete=True)    # all children DONE → top complete bottom-up
-        c2 = _mknode(s, "c2", parent=g["id"], complete=True)
+        # children done AFTER the block (t=T0+50 > the block's T0 evidence): the staleness is what
+        # licenses the heal — a block as new as the completion evidence is the judges' LATEST ruling
+        # and survives instead (the user 2026-07-15; see test_judge_fresh_block.py)
+        c1 = _mknode(s, "c1", parent=g["id"], complete=True, t=T0 + 50)   # all children DONE → top complete bottom-up
+        c2 = _mknode(s, "c2", parent=g["id"], complete=True, t=T0 + 50)
         c2["blocked"] = True                                    # a DONE child also carrying a stale block
         s["lastNode"] = g["id"]
         jd.migrate_store(s)                                # legacy-shaped fixture: adopt diaries first

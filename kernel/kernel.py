@@ -1754,6 +1754,23 @@ def _auto_nudge_tick(now, tmux):
         # closer's own closedSig freshness check; no-op when the closer is off (2026-06-21, hardened 2026-06-27).
         if not _closer_settled(store, lt_id, len(lt.get("atoms") or [])):
             continue
+        # PLANNER-PLACEMENT GATE (the user 2026-07-15, the 11:35/11:40 restatement nudges): closer-settled
+        # alone is NOT "the judges have ruled". _turn_menu derives from PLACEMENTS, so a turn the planner
+        # hasn't processed yet no-op-closes on an EMPTY menu — the closer gate passes minutes before the
+        # planner's block/done verdict lands, while the opener's provisional card still reads 'working'
+        # (bug g78: nudged 11:35:20, its block landed 11:35:32; romp_docs g82: nudged 11:40:37, block
+        # 11:40:51 — each agent then restated its own unanswered ask). The planner's "processed" event is
+        # the unit's PLACEMENT (a skip records one too — key presence marks the phase processed), the same
+        # event the nudge-failed stamp below already waits on; require the queue empty before ANY fire.
+        # Event-based: the placement's landing opens the gate on the next tick.
+        try:
+            _live = {sg["id"] for tn in turns for sg in jd._segs(tn, store)}
+            _unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
+                             for u in jd.plan_units({"turns": turns}, store))
+        except Exception:
+            _unplanned = False                       # minimal/legacy turn shapes → the closer gate stands alone
+        if _unplanned:
+            continue
         nodes, status = store.get("nodes", {}), store.get("status", {})
         cleared = _cleared_ids()
         _kids = {}                                       # child map for the FORK-stalled check below

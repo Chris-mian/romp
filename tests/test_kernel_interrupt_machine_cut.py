@@ -176,11 +176,19 @@ class MachineCutFeedAndNudge(unittest.TestCase):
 
     def _goal(self):
         g = SID + ":gw"
-        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": 1, "lastNode": g, "closedTurns": [],
+        store = {"rompUuid": SID, "seq": 1, "lastNode": g, "closedTurns": [],
             "nodes": {g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
                           "blocked": False, "cleared": False, "trail": [], "t": T0}},
-            "placements": {}, "status": {g: "working"}}))
+            "placements": {}, "status": {g: "working"}}
+        # mirror a caught-up planner (the 2026-07-15 placement gate): the fire path requires every
+        # due unit placed, and these fixtures mean "the judges ruled and left the goal working"
+        try:
+            turns = jd.parsed_session(SID, [str(self.tpath)], NOW)["turns"]
+            for u in jd.plan_units({"turns": turns}, store):
+                store["placements"][jd._unit_key(u[0], u[1])] = None
+        except Exception:
+            pass
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         return g
 
     def _stub_send(self):

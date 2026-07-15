@@ -2098,6 +2098,14 @@ def rollup_status(store, session_closed, now=None):
         # open+blocked, and that block's answer is now moot. Without this short-circuit one stale
         # leftover block keeps a finished goal stuck on "blocked" (precedence puts blocked above
         # complete). Heals existing stuck stores on the next rollup. (the user, 2026-06-15.)
+        #
+        # FRESH-BLOCK OVERRIDE (the user 2026-07-15, g78/g86): a block AS NEW AS the completion
+        # evidence is the judges' LATEST ruling, not a stale leftover — the closer blocks a top
+        # "waiting on the user's word" and closes its only child (a born-done record sub) in the
+        # SAME reply, and the bottom-up all-children-complete path must not erase that verdict
+        # seconds after it landed (the card filed as done while the agent said "blocked on you").
+        if _fresh_block(nid):
+            return True
         if is_complete(nid):
             return False
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
@@ -2119,6 +2127,40 @@ def rollup_status(store, session_closed, now=None):
         if folds.get(nid, {}).get("held"):
             return False
         return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
+
+    def _own_ev(nid, kind):
+        # newest diary evidence of `kind` recorded ON this node itself (0 when none — an eventless
+        # roll-down fold, a legacy synth row without ev_t)
+        return max((e.get("ev_t") or 0 for e in (nodes[nid].get("log") or [])
+                    if e.get("kind") == kind), default=0)
+
+    def _subtree_done_ev(nid):
+        best = _own_ev(nid, "done")
+        for c in children.get(nid, []):
+            best = max(best, _subtree_done_ev(c))
+        return best
+
+    def _fresh_block(nid):
+        # Is this node's landed block the LATEST ruling — at least as new as every piece of completion
+        # evidence that would moot it? Two comparisons, with deliberate tie semantics (the user
+        # 2026-07-15, the g78 jetty card + the g86 diagnosis card):
+        #   • the SUBTREE's newest done (ties favor the BLOCK): the closer delivers "block the top on
+        #     the user + done its record subs" in one reply, all anchored to the same turn — the block
+        #     sits on the node itself and is not discharged by the records it arrived with;
+        #   • an ANCESTOR's own top-down done (ties favor the DONE): an explicit done on the ancestor
+        #     discharges this whole subtree, trailing same-turn child-blocks included (the roll-down
+        #     rule), so the moot heal must still clear those.
+        # A non-fresh block keeps the 2026-06-15 moot behavior. Eventless evidence reads 0, so an
+        # un-diaried block never blocks healing and a display-fold never moots a real one.
+        nd = nodes.get(nid) or {}
+        if not nd.get("blocked"):
+            return False
+        bev = _own_ev(nid, "block")
+        anc_ev, p = 0, nd.get("parentId")
+        while p is not None and p in nodes:
+            anc_ev = max(anc_ev, _own_ev(p, "done"))
+            p = nodes[p].get("parentId")
+        return bev >= _subtree_done_ev(nid) and bev > anc_ev
 
     focus = top_ancestor(store["lastNode"]) if store.get("lastNode") in nodes else None
     # settledAt = WHEN a top first entered the Completed column — the session's latest activity at the moment
@@ -2196,9 +2238,16 @@ def rollup_status(store, session_closed, now=None):
     # every complete node so the STORE self-heals — existing stuck stores too, on the next rollup. Runs AFTER
     # _roll_down so nodes just rolled up to nodeComplete are covered.
     for nid in nodes:
-        if nodes[nid].get("blocked") and is_complete(nid):
-            record_verdict(store, nodes[nid], "romp", "unblock", latest_t,   # evented (2026-07-07): heal ONCE —
-                           why="moot: the subtree is complete")   # the event materializes the clear
+        # _fresh_block (the user 2026-07-15): a block as new as the completion evidence is the judges'
+        # LATEST ruling — never moot. Without this the heal erased "blocked on the user" verdicts the
+        # same pass they landed (the closer's paired record-sub done made the subtree read complete),
+        # and the ineffective unblock re-appended every pass until LOG_CAP truncated the block verdict
+        # itself out of the diary (the g86 settle/unblock flood, ~30 pairs in 90s).
+        if nodes[nid].get("blocked") and is_complete(nid) and not _fresh_block(nid):
+            # ev floor: the unblock must fold AFTER the block it clears (same-ev ties break by append
+            # order), or a latest_t that trails the block's own evidence re-appends forever
+            record_verdict(store, nodes[nid], "romp", "unblock", max(latest_t, _own_ev(nid, "block")),
+                           why="moot: the subtree is complete")   # evented (2026-07-07): heal ONCE — the event materializes the clear
             if nodes[nid].get("blocked"):
                 # A ROLLED-UP node's flags are the roll-down's display cache — record_verdict deliberately
                 # skips materializing them, so the evented heal above appended forever WITHOUT clearing the
