@@ -2172,6 +2172,19 @@ def rollup_status(store, session_closed, now=None):
             _roll_down(nid, "cleared")
         elif status[nid] == "completed":
             _roll_down(nid, "nodeComplete")
+    # Fold INTERIOR done nodes' open descendants too (the sealed-open leak, the user 2026-07-14, the
+    # nimbus card): a landed done verdict on a SUB seals its subtree out of every judge menu —
+    # open_menu, _turn_menu, and _blocked_sub_candidates all skip nodes under a complete ancestor — so
+    # a child still open at that moment can never be judged again and sits "open" on the card forever
+    # (a zombie task). The top-level loop above only propagates when the whole CARD resolves; a done
+    # sub under a still-working card never did. Same roll-down treatment (display cache + rolledUp,
+    # eventless), gated the same way: an agentTask-open subtree is authoritative-open (is_complete
+    # already refuses the parent's done), and interior-only so a complete-but-unsettled TOP keeps the
+    # settle gate's timing. rolledUp parents skip — their subtree was folded by the same ancestral pass.
+    for nid, nd in nodes.items():
+        if (nd.get("parentId") is not None and nd.get("nodeComplete")
+                and not nd.get("rolledUp") and nid not in open_task):
+            _roll_down(nid, "nodeComplete")
     # Clear STALE blocks on completed work (the user 2026-06-24): a COMPLETE (sub)tree has no outstanding
     # work, so it can't be blocked — its block's answer is moot. `any_blocked` already enforces this for the
     # computed STATUS, but it never cleared the raw nd["blocked"] flag; the ledger + build_session render that
