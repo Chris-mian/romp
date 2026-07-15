@@ -75,5 +75,8 @@ test("the popup + selected-row accent + loader spin are styled", () => {
 });
 
 test("the composer placeholder hints that / opens commands (the user 2026-06-30)", () => {
-  assert.match(RENDER, /composer\.placeholder = closed \? "Session closed — read-only" : "Message this session…  \(⏎ send · ⇧⏎ newline · type \/ for commands\)";/);
+  // the resting placeholder now comes from composerRestingPlaceholder(); its DESKTOP form keeps the "type /
+  // for commands" hint (mobile drops the ⏎/⇧⏎ part — see the composer-send mobile test)
+  assert.match(RENDER, /composer\.placeholder = closed \? "Session closed — read-only" : composerRestingPlaceholder\(\);/);
+  assert.match(RENDER, /"Message this session…  \(⏎ send · ⇧⏎ newline · type \/ for commands\)"/);
 });

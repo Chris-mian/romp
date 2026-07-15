@@ -528,6 +528,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 #composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
 #composer-input::placeholder { color: var(--dim); }
+/* On a phone (coarse pointer) the resting placeholder still wraps to two lines on a narrow screen, and a
+   one-line box clipped its second line (the user 2026-07-15). Floor the empty box at two lines there so the
+   full hint is visible; growComposer's inline height still floors on this, and a real message grows past it. */
+@media (pointer: coarse) {
+  #composer-input { min-height: calc(2.8em + 18px); }
+}
 /* Cursor in the message box → a thin romp-blue border, exactly on the box edge — the same accent blue that
    marks the focused panel (the user 2026-06-26). It only fills in the existing 1px border (no glow, no layout
    shift), so the chat's two focus spots read clearly: the tabs, or the message box. */

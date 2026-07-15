@@ -3829,7 +3829,7 @@ function showActive() {
   if (composer) {
     const closed = s.status.state === "closed";
     composer.disabled = closed;
-    composer.placeholder = closed ? "Session closed — read-only" : "Message this session…  (⏎ send · ⇧⏎ newline · type / for commands)";
+    composer.placeholder = closed ? "Session closed — read-only" : composerRestingPlaceholder();
     const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
     if (sendBtn) sendBtn.disabled = closed;   // read-only session → the explicit send button is dead too
   }
@@ -4348,10 +4348,23 @@ let sendingTimer: ReturnType<typeof setTimeout> | undefined;
 let liveAskFocus = 0;
 let liveAskFocusKey = "";
 
+// True on a phone/tablet (a coarse pointer) — the mobile signal we gate touch affordances on. NOT viewport
+// width (desktop chat panes are narrow too). Reused by the composer's Enter behavior, its resting
+// placeholder, and the attach picker below.
+function isCoarsePointer(): boolean {
+  try { return window.matchMedia("(pointer:coarse)").matches; } catch { return false; }
+}
+
 // The composer's resting placeholder — mirrors chatBody()'s skeleton. Restored whenever no free-text
 // picker is active. (Kept here, not read from the DOM, so an "answering" placeholder never leaks back
-// as the default after a picker resolves.)
-const COMPOSER_PLACEHOLDER = "Message this session…  (⏎ send · ⇧⏎ newline)";
+// as the default after a picker resolves.) On a phone (coarse pointer) Enter makes a NEWLINE and the Send
+// button sends, so the ⏎/⇧⏎ hint is both wrong there and too long for the one-line box (it wrapped and got
+// clipped) — drop it on mobile (the user 2026-07-15).
+function composerRestingPlaceholder(): string {
+  return isCoarsePointer()
+    ? "Message this session…  (type / for commands)"
+    : "Message this session…  (⏎ send · ⇧⏎ newline · type / for commands)";
+}
 
 // How a message typed into the NORMAL composer should be routed while a live picker is up — the picker's
 // dropped inline "add your own" field, now served by the composer (the user 2026-07-09). null → no active
@@ -4379,7 +4392,7 @@ function setComposerAskMode() {
     ta.placeholder = "add your own answer…  (⏎ submit)";
     ta.classList.add("answering");
   } else {
-    ta.placeholder = COMPOSER_PLACEHOLDER;
+    ta.placeholder = composerRestingPlaceholder();
     ta.classList.remove("answering");
   }
 }
@@ -6017,7 +6030,11 @@ function setupComposer() {
       focusActiveTab();
       return;
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    // On a phone (coarse pointer) Enter is a NEWLINE, not send: mobile keyboards often can't produce
+    // Shift+Enter, and the software return key should just return. Mobile sends with the explicit Send
+    // button only (the user 2026-07-15). Desktop keeps ⏎ send / ⇧⏎ newline. The `!isCoarsePointer()` guard
+    // lets Enter fall through to the textarea's native newline on touch.
+    if (e.key === "Enter" && !e.shiftKey && !isCoarsePointer()) {
       e.preventDefault();
       sendComposer();
       focusActiveTab();   // jump focus to the tab bar after sending (the user 2026-06-25) so ←/→ switch
@@ -6092,7 +6109,7 @@ function setupComposer() {
   // (droppedPath) for insertion — a screenshot reaches the session with no
   // AirDrop/path gymnastics (the user 2026-06-17).
   const attach = document.getElementById("composer-attach") as HTMLButtonElement | null;
-  const isTouch = () => window.matchMedia("(pointer:coarse)").matches;
+  const isTouch = isCoarsePointer;
   const filePicker = document.createElement("input");
   filePicker.type = "file";
   filePicker.accept = "image/*";

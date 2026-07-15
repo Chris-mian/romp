@@ -19,10 +19,26 @@ test("the composer markup includes a send button to the right of 📎", () => {
 test("⏎ and the send button share ONE sendComposer() path", () => {
   assert.match(RENDER, /const sendComposer = \(\) => \{/);
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\)/);
-  // Enter calls it
-  assert.match(RENDER, /if \(e\.key === "Enter" && !e\.shiftKey\) \{\s*e\.preventDefault\(\);\s*sendComposer\(\);/);
+  // Enter calls it (desktop only — the mobile guard is asserted separately below)
+  assert.match(RENDER, /if \(e\.key === "Enter" && !e\.shiftKey && !isCoarsePointer\(\)\) \{\s*e\.preventDefault\(\);\s*sendComposer\(\);/);
   // the button calls it (mousedown keeps textarea focus)
   assert.match(RENDER, /sendBtn\?\.addEventListener\("mousedown", \(e\) => \{ e\.preventDefault\(\); sendComposer\(\); ta\.focus\(\); \}\)/);
+});
+
+test("on a phone (coarse pointer) Enter is a newline, not send — the Send button is the only send (the user 2026-07-15)", () => {
+  // mobile keyboards often can't do Shift+Enter, and the software return key should just return. The Enter-to-send
+  // path is gated on !isCoarsePointer(), so on touch Enter falls through to the textarea's native newline; sending
+  // is the explicit Send button (its mousedown handler is unguarded, so it still sends on touch).
+  assert.match(RENDER, /function isCoarsePointer\(\)/);
+  assert.match(RENDER, /matchMedia\("\(pointer:coarse\)"\)\.matches/);
+  assert.match(RENDER, /e\.key === "Enter" && !e\.shiftKey && !isCoarsePointer\(\)/);
+  // the resting placeholder drops the ⏎/⇧⏎ hint on mobile (it's wrong there and clipped the one-line box)
+  assert.match(RENDER, /function composerRestingPlaceholder\(\)/);
+  assert.match(RENDER, /isCoarsePointer\(\)\s*\?\s*"Message this session…  \(type \/ for commands\)"/);
+});
+
+test("the empty composer floors at two lines on a phone so the wrapped resting placeholder isn't clipped (the user 2026-07-15)", () => {
+  assert.match(CSS, /@media \(pointer: coarse\) \{\s*#composer-input \{ min-height: calc\(2\.8em \+ 18px\); \}/);
 });
 
 test("⏎ jumps focus to the tab bar after sending so ←/→ switch sessions (the user 2026-06-25)", () => {
