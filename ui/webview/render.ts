@@ -19,6 +19,7 @@ import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompS
 import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
+import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewThumb, canPreview } from "./preview";
@@ -2411,7 +2412,12 @@ function renderTabs() {
   for (const id of order) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
   for (const id of tabMeta.keys()) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }   // any pushed tab not yet in `order` (placeholder)
   auditTabOrder(ids);
-  for (const id of ids) {
+  // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name tabs; the
+  // real sessions keep running, just hidden from this view. No tag → visibleIds === ids (unchanged).
+  const only = onlyTag();
+  const nameOf = (id: string) => sessions.get(id)?.name ?? tabMeta.get(id)?.name ?? "";
+  const visibleIds = only ? ids.filter((id) => matchesOnly(nameOf(id), only)) : ids;
+  for (const id of visibleIds) {
     const s = sessions.get(id);
     if (!s) { bar.appendChild(makePlaceholderTab(id)); continue; }
     const tab = el("div", "tab" + (id === activeId ? " active" : ""));

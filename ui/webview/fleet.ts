@@ -6,6 +6,7 @@
 // so the colours are IDENTICAL to the ledger box.
 import { delegate } from "./actions";
 import { fleetVisibleRoots } from "./fleet-roots";
+import { onlyTag, matchesOnly } from "./only-filter";
 import { hostPrefix } from "./host-prefix";
 
 type Color = { bg: string; fg: string } | null;
@@ -452,7 +453,9 @@ function render() {
   const survivors: { ctx: SessCtx; visibleRoots: LedgerNode[] }[] = [];
   const sq = searchQuery.trim().toLowerCase();           // search (the user 2026-06-29): session NAME or goal CONTENT
   curSearch = sq;                                        // snapshot for renderFleetNode (highlight + force-expand)
+  const only = onlyTag();                                // demo/recording view filter (`#only=<tag>`, the user 2026-07-14)
   for (const s of sessions) {
+    if (only && !matchesOnly(s.name, only)) continue;    // hidden from this view; the real session keeps running
     const tree = s.ledger?.tree || [];
     // "Show completed" surfaces the FULLY-COMPLETED tops the compaction sweep archived out of the live tree
     // (the user 2026-06-27) — otherwise a finished+archived session has an empty live tree and vanishes, and

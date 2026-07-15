@@ -7,6 +7,7 @@
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
 import { distillText, applyDistillLine, distillPending } from "./distiller-line";
+import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes } from "./host-prefix";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
@@ -2670,7 +2671,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
     // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
     for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
-    asks = pendingCleared.size ? incomingAsks.filter((a) => !pendingCleared.has(a.itemId)) : incomingAsks;
+    // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
+    // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
+    const only = onlyTag();
+    const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
+    asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
     reconcileFollowMove(incomingAsks);   // confirm/clear optimistic follow-up moves against the authoritative payload
     // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
