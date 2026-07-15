@@ -7948,11 +7948,23 @@ def build_feed(now, tmux=None):
             # anchor forever while the real outcome landed later (the user 2026-07-01).
             _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
             if col == "completed":
-                _tr = nodes[nid].get("trail") or []
-                if _tr:
-                    _u, _sub, _ = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
-                    if _u and _sub:
-                        _sa_u = _u
+                # The newest trail TAIL across the SUBTREE, not just the top's own (the user 2026-07-15,
+                # the g91 click): a BOTTOM-UP-completed umbrella (all children done) has no done verdict
+                # of its own, so the DONE-ANCHOR never appended a completing segment to ITS trail —
+                # trail[-1] was still the MINT segment and the pin sent the summary click to the goal's
+                # oldest prose instead of the wrap-up the distiller correctly cited. A child's
+                # done-anchored tail IS its completing turn's segment, so the newest substantive tail is
+                # the completion recap for both shapes (an explicitly-done top's own tail stays newest).
+                _tail = None                             # (seg_t, uuid) of the newest substantive tail
+                for _x in _subtree(nid):
+                    _tr = nodes[_x].get("trail") or []
+                    if not _tr:
+                        continue
+                    _u, _sub, _t = seg_best.get(_seg_key(_tr[-1]), (None, False, 0))
+                    if _u and _sub and (_tail is None or _t > _tail[0]):
+                        _tail = (_t, _u)
+                if _tail:
+                    _sa_u = _tail[1]
             if _sa_u is None and _cited and _cited in cite_uuids:
                 _sa_u = _cited
             if _sa_u is None:

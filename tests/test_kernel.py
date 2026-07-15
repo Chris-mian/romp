@@ -3075,6 +3075,37 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["summaryAnchorUuid"], "aWrap",
                          "a completed goal pins its summary to the completion turn's wrap-up, over the citation")
 
+    def test_completed_pin_reads_the_subtrees_newest_tail_for_an_umbrella_top(self):
+        # the g91 click (the user 2026-07-15): a BOTTOM-UP-completed umbrella (all children done) has no
+        # done verdict of its own, so the DONE-ANCHOR never appended a completing segment to ITS trail —
+        # trail[-1] was still the MINT segment, and the pin sent the summary click to the goal's oldest
+        # prose (the diagnosis opener) instead of the wrap-up the distiller correctly cited. The pin must
+        # read the newest done-anchored tail across the SUBTREE: a child's tail IS its completing turn.
+        mint = ("Opening analysis of the whole thread: the nudges are firing because the verdicts race "
+                "the tick, and the details span two goals with several moving parts each.")
+        wrap = ("Both fixes are landed, tested, and merged; the race is gated on placements and the "
+                "moot heal now spares fresh blocks — full suites green on both sides.")
+        recs = [uline(T0, "investigate and fix", "u1", ps="typed"),
+                aline(T0 + 20, mint, "aMint", "u1", stop="end_turn"),
+                uline(T0 + 100, "proceed", "u2", "aMint", ps="typed"),
+                aline(T0 + 120, wrap, "aWrap", "u2", stop="end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        segs = [sg for turn in session["turns"] for sg in em.segments(turn)]
+        top, kid = SID + ":g51", SID + ":g52"
+        store = {"rompUuid": SID, "seq": 52, "nodes": {
+            top: {"id": top, "text": "The umbrella", "parentId": None, "nodeComplete": False, "blocked": False,
+                  "trail": [segs[0]["id"]], "t": NOW, "summary": "All done.",   # mint-time trail only
+                  "summaryAnchor": "aMint"},               # citation resolves too — the pin must still win with aWrap
+            kid: {"id": kid, "text": "The step that finished it", "parentId": top, "nodeComplete": True,
+                  "blocked": False, "trail": [sg["id"] for sg in segs], "t": NOW}},   # done-anchored tail = the wrap turn
+            "placements": {}, "status": {top: "completed"}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[top]
+        self.assertEqual(card["summaryAnchorUuid"], "aWrap",
+                         "an umbrella pins to the subtree's newest completing segment, not its own stale mint tail")
+
     def test_completed_pin_defers_to_the_citation_when_the_recap_has_no_prose(self):
         # a completed goal whose completion segment closed tool-only / one-liner (no substantive prose)
         # cannot pin — the distiller's citation stays the anchor (its purpose: name what informed the
