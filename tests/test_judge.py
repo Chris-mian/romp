@@ -2928,6 +2928,34 @@ class BlockCompletionCorrectness(unittest.TestCase):
         self.assertIn("is **not** done", done_clause, "the closer done rule itself defers the approval-ask to block")
         self.assertIn("is a block, not a done", jd.PLAN_SYS, "the planner done op defers the approval-ask to block")
 
+    def test_past_tense_record_subs_close_on_both_sides(self):
+        # the user 2026-07-14 (the nimbus card): past-tense record-subs ("Explained where the token
+        # is stored", "Gave two options…") were filed OPEN with no paired done, and the closer's
+        # when-in-doubt-omit default kept them open at their one audit — eight phantom "uncompleted
+        # tasks" on one card. Both judges now carry the past-tense tell: the planner must pair such a
+        # sub with a done (or block) in the same reply, and the closer's DONE side (not the omit
+        # default) closes a record-sub the turn shows delivered.
+        for phrase in ("title in the **past tense**", "phantom open work"):
+            self.assertIn(phrase, jd.PLAN_SYS, "planner: " + phrase)
+        done_clause = jd.CLOSER_SYS.split("- blocked:", 1)[0]
+        for phrase in ("records something already delivered", "close it rather than omit it"):
+            self.assertIn(phrase, done_clause, "closer: " + phrase)
+
+    def test_past_tense_sub_pairs_to_a_born_done_landing(self):
+        # mechanics: the pairing the planner is told to emit (sub + done ref) lands the record-sub
+        # already crossed off under a still-open card — never a new open task
+        s = _store()
+        card = _mknode(s, "Get the board connected")
+        jd.apply_plan(s, "seg-rec", T0 + 20,
+                      [{"do": "sub", "why": "user asked where the token lives", "under": 1,
+                        "text": "Explained where the auth token is stored"},
+                       {"do": "done", "why": "it lives in a file on the Mac", "ref": 1}],
+                      jd.open_menu(s))
+        nid = s["placements"]["seg-rec"]
+        self.assertEqual(s["nodes"][nid]["parentId"], card["id"])
+        self.assertTrue(s["nodes"][nid]["nodeComplete"], "the record-sub lands already crossed off")
+        self.assertFalse(card.get("nodeComplete"), "the card itself stays open")
+
     def test_answer_goal_completes_with_the_answer_as_donewhy(self):
         # mechanics: mint an answer-goal + done it via ref → it lands complete with the answer as doneWhy
         # (the inline reason the feed shows on the done card). No block needed.
