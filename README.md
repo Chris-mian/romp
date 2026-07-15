@@ -4,7 +4,7 @@
 
 AI agents like Claude Code can work autonomously for long stretches, so running several in parallel multiplies what you can accomplish. But it also means more to manage: keeping track of which agent is doing what, scrolling through transcripts to find the background a decision needs, checking in to see which agents are stuck, and coordinating handoffs of work and information between them.
 
-Romp provides the tools to make this management seamless, so you can stay focused on what you're trying to accomplish instead of how the work is happening. It does this by keeping track of every agent and the tasks it is working on, surfacing what needs you and keeping the rest moving on its own:
+Romp helps you do this management efficiently, so you can stay focused on what you're trying to accomplish instead of how the work is happening. It does this by keeping track of every agent and the tasks it is working on, surfacing what needs your attention and keeping the rest moving on its own:
 
 - **See the whole fleet at a glance.** One place shows every agent: who is
   working, who is stuck, and who is waiting on you.
