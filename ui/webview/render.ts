@@ -88,6 +88,7 @@ type ChatEvent = (
       color: { bg: string; fg: string } | null;
       body: string;
       summary?: string;  // incoming Haiku caption (≤9 words) — shown instead of the verbose body; body on hover
+      intent?: string;   // sender-declared kind (delegate|coordinate|question) → the interaction-type chip; body-token parse is the legacy fallback
       mid?: string;      // postal message id (joins feed-modal handoff hovers to this card)
       t?: number;        // epoch seconds (incoming)
       park?: boolean;
@@ -2032,8 +2033,10 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   head.appendChild(peer);
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
 
-  // interaction-type chip (delegation / coordination / ask / question / FYI), from the leading intent token
-  const intent = postalServiceIntent(ev.body);
+  // interaction-type chip (delegation / coordination / question). Prefer the sender's DECLARED kind
+  // (send_message's `kind` param, surfaced by the kernel) — the old leading-token parse of the body is
+  // only a legacy fallback now that the kind rides as an explicit field, not a "DELEGATE:" prefix.
+  const intent = (ev.intent && POSTAL_INTENTS[ev.intent.toUpperCase()]) || postalServiceIntent(ev.body);
   if (intent) {
     const ib = el("span", "postal-service-intent postal-service-intent-" + intent.cls);
     ib.textContent = intent.label;

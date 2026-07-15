@@ -24,6 +24,15 @@ test("intent token → ONE of three categories: delegation / coordination / ques
   assert.match(RENDER, /\^\\s\*\\\*\{0,2\}\(\[A-Za-z\]\{1,12\}\)/);
 });
 
+test("the DECLARED kind (ev.intent) drives the chip; the body-token parse is only a legacy fallback", () => {
+  // send_message moved the kind from a leading body token ("DELEGATE: …") to an explicit `kind` param
+  // (the user 2026-07-15: the chip vanished). The kernel surfaces it as ev.intent; the renderer must
+  // PREFER it (mapped through POSTAL_INTENTS), falling back to the body parse only when it's absent.
+  assert.match(RENDER, /ev\.intent && POSTAL_INTENTS\[ev\.intent\.toUpperCase\(\)\]/);
+  assert.match(RENDER, /\|\| postalServiceIntent\(ev\.body\)/);
+  assert.match(RENDER, /intent\?: string;/);   // the event carries the declared kind
+});
+
 test("the chip is rendered on the postal head and styled per type (three classes only)", () => {
   assert.match(RENDER, /el\("span", "postal-service-intent postal-service-intent-" \+ intent\.cls\)/);
   assert.match(CSS, /\.postal-service-intent \{/);

@@ -4301,6 +4301,36 @@ class ViewBuilder(unittest.TestCase):
         plain = {"kind": "assistant", "md": "just a reply", "uuid": "a1"}
         self.assertEqual(km._hydrate_postal([plain], {}), [plain], "a non-postal event is untouched")
 
+    def test_postal_cards_carry_declared_kind_as_intent(self):
+        """Every postal card surfaces the sender-declared kind as `intent`, so the chat can restore the
+        interaction-type chip (the user 2026-07-15: the chip vanished when send_message moved the kind from
+        a leading body token to an explicit `kind` param). Covers all three sources + the legacy marker."""
+        # outgoing via the MCP tool — kind from the tool input
+        mcp = {"kind": "tool", "name": "mcp__romp-postal__send_message",
+               "input": json.dumps({"to": "beta", "body": "please do X", "kind": "delegate"}),
+               "output": "Delivered to 'beta'.", "isError": False, "uuid": "t1", "ts": "x"}
+        self.assertEqual(km._hydrate_postal([mcp], {})[0]["intent"], "delegate")
+        # outgoing via the CLI — kind from --kind (the recipient/body groups shift past it)
+        cli = {"kind": "tool", "name": "Bash", "input": 'romp --mail send --kind question beta "when?"',
+               "output": "delivered to beta", "isError": False, "uuid": "t2", "ts": "x"}
+        c = km._hydrate_postal([cli], {})[0]
+        self.assertEqual((c["intent"], c["peer"], c["body"]), ("question", "beta", "when?"))
+        # incoming — kind from the log's x-kind on the index record
+        index = {"m1": {"id": "m1", "from": "alpha", "fromId": "", "toId": SID,
+                        "body": "heads up", "kind": "coordinate", "t": NOW - 5, "park": False}}
+        inc = {"kind": "user", "md": "x <!-- romp-msg-id: m1 -->", "uuid": "u1", "ts": "x", "human": False}
+        self.assertEqual(km._hydrate_postal([inc], index)[0]["intent"], "coordinate")
+        # legacy: no explicit kind, but the body carries the courier's marker → still derived
+        leg = {"kind": "tool", "name": "mcp__romp-postal__send_message",
+               "input": json.dumps({"to": "beta", "body": "do it\n<!-- romp-msg-kind: delegate -->"}),
+               "output": "Delivered to 'beta'.", "isError": False, "uuid": "t3", "ts": "x"}
+        self.assertEqual(km._hydrate_postal([leg], {})[0]["intent"], "delegate")
+        # no kind anywhere → empty intent (chip simply absent, not a bogus one)
+        bare = {"kind": "tool", "name": "mcp__romp-postal__send_message",
+                "input": json.dumps({"to": "beta", "body": "hello"}),
+                "output": "Delivered to 'beta'.", "isError": False, "uuid": "t4", "ts": "x"}
+        self.assertEqual(km._hydrate_postal([bare], {})[0]["intent"], "")
+
     def test_ordered_alive_is_stable_under_activity(self):
         """Lanes/tabs must not auto-shuffle when a session becomes active: a fresh session is appended
         once and keeps its slot even when its mtime later jumps ahead (the user 2026-06-15)."""

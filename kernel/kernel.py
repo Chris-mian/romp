@@ -4939,13 +4939,29 @@ def _injected_img_paths(text):
 # swap both for clean identity-coloured cards — and read the message BODY from the timeline log (not
 # the delivered text with its #### banner/footer), so a card shows the message, not the boilerplate.
 _SEND_TOOL_RE = re.compile(r"(?:^|__)send_message$")
-_CLI_SEND_RE = re.compile(   # optional --kind rides between send and the recipient (2026-07-08)
-    r"\bromp\s+--mail\s+send\s+(?:--kind\s+(?:delegate|coordinate|question)\s+)?([A-Za-z0-9._-]+)\s+([\s\S]+)$")
+_CLI_SEND_RE = re.compile(   # capture the optional --kind that rides between send and the recipient (2026-07-08)
+    r"\bromp\s+--mail\s+send\s+(?:--kind\s+(delegate|coordinate|question)\s+)?([A-Za-z0-9._-]+)\s+([\s\S]+)$")
+
+_POSTAL_KINDS = ("delegate", "coordinate", "question")
+
+
+def _postal_intent(kind, body=""):
+    """The sender-declared interaction kind for a postal card's chip: the explicit kind (send_message's
+    `kind` param / `--kind` flag / the log's x-kind), validated to delegate|coordinate|question; else the
+    `<!-- romp-msg-kind: X -->` marker the courier reads from the body. '' when neither is present. The
+    render layer maps this to the chip label; the old scheme (a leading DELEGATE:/Q: token in the body)
+    still works there as a legacy fallback (the user 2026-07-15: the chip vanished once send_message moved
+    the kind from a body token to an explicit param)."""
+    k = str(kind or "").strip().lower()
+    if k in _POSTAL_KINDS:
+        return k
+    m = em.POSTAL_KIND_RE.search(body or "")
+    return m.group(1) if m else ""
 
 
 def _postal_index():
-    """messages.jsonl 'sent' rows keyed by msg id → {id, from, fromId, toId, body, t, park}. The clean
-    body lives here, not in the delivered text. Mirrors postal-spec.ts loadPostalIndex."""
+    """messages.jsonl 'sent' rows keyed by msg id → {id, from, fromId, toId, body, kind, t, park}. The
+    clean body lives here, not in the delivered text. Mirrors postal-spec.ts loadPostalIndex."""
     idx = {}
     try:
         lines = (jd.STATE / "timeline" / "messages.jsonl").read_text(errors="replace").splitlines()
@@ -4958,7 +4974,7 @@ def _postal_index():
             continue
         if o.get("ev") == "sent" and o.get("id"):
             idx[o["id"]] = {"id": o["id"], "from": o.get("from", "?"), "fromId": o.get("from_id", ""),
-                            "toId": o.get("to_id", ""), "body": o.get("body", ""),
+                            "toId": o.get("to_id", ""), "body": o.get("body", ""), "kind": o.get("kind", ""),
                             "t": o["t"] if isinstance(o.get("t"), (int, float)) else 0, "park": bool(o.get("park"))}
     return idx
 
@@ -5003,7 +5019,8 @@ def _postal_out_card(ev):
     parked = "parked" in (ev.get("output") or "").lower()
     status = None if ev.get("isError") else ("parked" if parked else "delivered")
     return {"kind": "postal-service", "direction": "out", "peer": args["to"], "color": _name_color_by_name(args["to"]),
-            "body": args["body"], "status": status, "ts": ev.get("ts"), "uuid": ev.get("uuid")}
+            "body": args["body"], "intent": _postal_intent(args.get("kind"), args["body"]),
+            "status": status, "ts": ev.get("ts"), "uuid": ev.get("uuid")}
 
 
 def _cli_send_card(ev):
@@ -5012,14 +5029,15 @@ def _cli_send_card(ev):
     m = _CLI_SEND_RE.search(ev.get("input") or "")
     if not m:
         return None
-    body = _shell_unquote(m.group(2))
+    kind, peer, body = m.group(1), m.group(2), _shell_unquote(m.group(3))   # group(1) = optional --kind
     if not body or not body.strip():
         return None
     out = ev.get("output") or ""
     if ev.get("isError") or not re.search(r"delivered to|parked as a handoff", out, re.I):
         return None
-    return {"kind": "postal-service", "direction": "out", "peer": m.group(1), "color": _name_color_by_name(m.group(1)),
-            "body": body, "status": "parked" if re.search(r"parked", out, re.I) else "delivered",
+    return {"kind": "postal-service", "direction": "out", "peer": peer, "color": _name_color_by_name(peer),
+            "body": body, "intent": _postal_intent(kind, body),
+            "status": "parked" if re.search(r"parked", out, re.I) else "delivered",
             "ts": ev.get("ts"), "uuid": ev.get("uuid")}
 
 
@@ -5056,6 +5074,7 @@ def _hydrate_postal(events, index):
                     cards.append({"kind": "postal-service", "direction": "in", "peer": rec["from"] or "?",
                                   "color": _name_color(rec["fromId"]) if rec["fromId"] else None,
                                   "body": rec["body"], "summary": caption_for(rec["id"]),   # incoming caption (full body on expand)
+                                  "intent": _postal_intent(rec.get("kind"), rec.get("body")),
                                   "mid": rec["id"], "t": rec["t"] or None,
                                   "park": rec["park"], "ts": ev.get("ts"), "uuid": ev.get("uuid")})
             if len(cards) == len(ids):                   # all-or-nothing: a partial log never half-renders
