@@ -210,12 +210,14 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    mis-aligned once they wrapped on a narrow card. They now flow left-to-right in reading order, aligned, and
    wrap as a unit. Rare Retry/Revive (actions) still trail on the right. */
 .fask-row3 .fask-actions { margin-left: auto; }
-/* card body is clickable (single → modal, double → pin). Hover lights a white
-   ring + the timeline journey; pin persists it. Order matters: .focused after
-   .pinned so a pinned-AND-focused card shows the bright ring. */
+/* card body is clickable (single → modal, double → pin). Hover/pin no longer paints a WHITE ring — it BOLDS
+   the card's own session-colour border (the user 2026-07-15): that colour at 0.5α at rest (--card-r/g/b set
+   inline per card), 0.8α when pinned, full opacity when focused/hovered. Order matters: .focused after .pinned
+   so a pinned-AND-focused card shows the bright (full) border. */
 .fitem.ask { cursor: pointer; }
-.fitem.ask.pinned { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.45), 0 1px 2px rgba(0, 0, 0, 0.2); }   /* pinned: faint persistent ring */
-.fitem.ask.focused { box-shadow: 0 0 0 2px #fff, 0 1px 2px rgba(0, 0, 0, 0.2); }                          /* effective focus: bright white ring */
+.fitem.ask, .fitem.fgroup { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.5); }
+.fitem.ask.pinned  { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.8); }   /* pinned: bolded, persistent */
+.fitem.ask.focused { border-color: rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255)); }        /* effective focus: full-opacity same colour */
 
 /* decision sub-card — an OPEN question needing the user, rendered in the ask card */
 .fq { border: 1px solid rgba(30, 161, 235, 0.4); border-left: 3px solid var(--rel-decision); border-radius: 8px; padding: 8px 10px; background: rgba(30, 161, 235, 0.07); }
@@ -512,9 +514,9 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .kbd-focus { outline: 2px solid var(--accent, #9cd2ff); outline-offset: 1px; border-radius: 4px; }
 .fitem {
   display: flex; gap: 10px; align-items: flex-start;
-  /* 2px outline in the corresponding session's identity colour at 0.5 alpha, set inline per card as a plain
-     rgba (the user 2026-07-15) — was a faint 1px recency tint; the softer alpha keeps the 2px from reading as
-     jarring. Provisional/recheck ghosts override to a 1.5px dashed white below. */
+  /* 2px outline in the corresponding session's identity colour (the user 2026-07-15) — was a faint 1px recency
+     tint. Colour comes from the per-card --card-r/g/b channels via the .fitem.ask rules above (0.5α rest,
+     bolded on hover/pin). Provisional/recheck ghosts override to a 1.5px dashed white inline. */
   border: 2px solid transparent;
   border-radius: 11px;
   padding: 10px 12px 11px;

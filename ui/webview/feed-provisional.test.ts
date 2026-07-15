@@ -24,8 +24,8 @@ test("a provisional 'ghost' card gets a DASHED outline (distinct from a real car
   // the user 2026-06-19: a dashed border marks the placeholder as not-yet-real; reset to solid otherwise
   assert.match(FEED, /if \(it\.provisional\) \{[\s\S]*?card\.style\.borderStyle = "dashed";/);
   assert.match(FEED, /card\.style\.borderWidth = "1\.5px";/);
-  // a real card resets to a solid border coloured by its own session (recency tint only as the fallback)
-  assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?card\.style\.borderColor = \(it\.color && \(hexToRgba/);
+  // a real card resets to a solid border coloured by its own session (CSS-driven channels; recency fallback)
+  assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?setCardChannels\(card, \(it\.color && hexToRgb/);
 });
 
 test("a placeholder has no curation affordances — Clear is hidden", () => {

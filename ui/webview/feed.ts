@@ -257,15 +257,23 @@ function askColumn(it: AskItem): Column {
 // see-through wash of the hawaii color; the colormap itself darkens with age.
 const TINT_ALPHA = 0.22;
 
-// Session identity colours are 6-digit hex; turn one into an rgba() at a given alpha. Used for the card
-// outline so the border is a PLAIN rgba — not color-mix(), which a reused card node can silently reject
-// (leaving the previous solid colour stuck, so the alpha never appears — the user 2026-07-15). Returns null
-// for a non-hex value so the caller can fall back.
-function hexToRgba(hex: string, alpha: number): string | null {
+// Session identity colours are 6-digit hex; split one into [r,g,b] channels. The card border colour is
+// CSS-driven from these channels (--card-r/g/b) so the outline is a PLAIN rgba (not color-mix(), which a
+// reused card node can silently reject) AND the highlight can bold the SAME colour by just raising the alpha
+// in CSS (the user 2026-07-15). Returns null for a non-hex value so the caller can fall back to the recency
+// tint channels.
+function hexToRgb(hex: string): [number, number, number] | null {
   const m = /^#?([0-9a-fA-F]{6})$/.exec((hex || "").trim());
   if (!m) return null;
   const n = parseInt(m[1], 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+// Write the card's outline channels so CSS paints rest (0.5α) + a bolded .focused/.pinned in the SAME colour.
+function setCardChannels(card: HTMLElement, rgb: [number, number, number]) {
+  card.style.setProperty("--card-r", String(rgb[0]));
+  card.style.setProperty("--card-g", String(rgb[1]));
+  card.style.setProperty("--card-b", String(rgb[2]));
+  card.style.borderColor = "";   // CSS owns border-color now (rgba(var(--card-*), …)); clear any stale inline
 }
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -948,10 +956,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     card.style.borderStyle = "";
     card.style.borderWidth = "";
-    // outline the card in ITS session's identity colour at 0.5 alpha (the user 2026-07-15 — softer than solid
-    // so the 2px isn't jarring); fall back to the recency tint for the rare colourless session so the border
-    // never voids to transparent.
-    card.style.borderColor = (it.color && (hexToRgba(it.color.bg, 0.5) ?? it.color.bg)) || `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
+    // outline the card in ITS session's identity colour (the user 2026-07-15) — CSS paints it at 0.5α at rest
+    // and bolds the SAME colour on hover/pin. Fall back to the recency-tint channels for the rare colourless
+    // session so the border never voids to transparent.
+    setCardChannels(card, (it.color && hexToRgb(it.color.bg)) || [r, g, b]);
   }
   // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
   if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
@@ -1401,8 +1409,8 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
     + (fkey === eff ? " focused" : "") + (fkey === pinnedAskId ? " pinned" : "");
   const [r, gg, b] = g.trgb;
   card.style.background = `rgba(${r}, ${gg}, ${b}, ${TINT_ALPHA})`;
-  // outline in the group's session identity colour at 0.5 alpha (the user 2026-07-15), recency tint fallback
-  card.style.borderColor = (g.color && (hexToRgba(g.color.bg, 0.5) ?? g.color.bg)) || `rgba(${r}, ${gg}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
+  // outline in the group's session identity colour (the user 2026-07-15) — CSS: 0.5α rest, bolded on hover/pin
+  setCardChannels(card, (g.color && hexToRgb(g.color.bg)) || [r, gg, b]);
   a._title.textContent = g.title;
   a._name.replaceChildren(...hostNameNodes(g.name, g.sid));
   if (g.color) a._name.style.color = g.color.bg;
