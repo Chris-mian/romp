@@ -5193,10 +5193,25 @@ class ServeSecurity(unittest.TestCase):
     def test_healthz_exempt(self):
         self.assertEqual(self._code("/healthz", {"Origin": "http://evil.example"}), 200)
 
-    def test_nonlocal_host_needs_token(self):
+    def test_forged_host_header_is_ignored_for_locality(self):
+        # Locality is judged by the REAL TCP peer, never the client-settable Host
+        # header: this loopback connection forging a non-local Host must STILL be
+        # local (200, no token). The dangerous inverse — remote peer forging
+        # Host: localhost — is pinned unit-level in test_kernel_auth_hardening.py.
         h = {"Host": "100.64.1.2:%d" % self.port}
-        self.assertEqual(self._code("/feed", h), 403)
-        self.assertEqual(self._code("/feed?token=testtok", h), 200)
+        self.assertEqual(self._code("/feed", h), 200)
+
+    def test_nonlocal_peer_needs_token(self):
+        # The 403 path over a real request: a loopback socket can't present a
+        # non-local peer, so stub the locality verdict to "off-box client" and
+        # require the serve token end-to-end through _authorize.
+        orig = km.Handler._is_local_host
+        km.Handler._is_local_host = lambda self: False
+        try:
+            self.assertEqual(self._code("/feed", {}), 403)
+            self.assertEqual(self._code("/feed?token=testtok", {}), 200)
+        finally:
+            km.Handler._is_local_host = orig
 
 
 class HostSuspend(unittest.TestCase):
