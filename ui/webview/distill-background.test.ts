@@ -41,6 +41,13 @@ test("the buttons ARE the toggles: pressed state reads at a glance, mutually exc
   assert.doesNotMatch(FEED, /fask-less/, "the less control is gone");
 });
 
+test("hovering the SELECTED (.on) toggle gives it a reverse highlight — the accent fills in (the user 2026-07-15)", () => {
+  assert.match(CSS, /\.fask-secbtn\.on:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);
+  assert.match(CSS, /--accent-fg: #0c1a2e;/, "feed.css defines --accent-fg for text on the accent fill");
+  // the fill animates via a background transition on the base button
+  assert.match(CSS, /\.fask-secbtn \{[^}]*transition:[^}]*background 0\.12s ease/);
+});
+
 test("state: a single mutually-exclusive secChoice (bg | summary | subgoals | tasks | none); default follows Collapsed", () => {
   // Sub-goals joined Background/Summary as the THIRD mutually-exclusive section (the user 2026-07-08);
   // the "Waiting on task" list is the FOURTH (the user 2026-07-13)

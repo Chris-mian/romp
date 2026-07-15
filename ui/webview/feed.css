@@ -13,6 +13,7 @@
                        the await-paused outline rendered with NO border at all (the user 2026-07-02) */
   --accent: #9cd2ff;  /* the romp accent (CLAUDE.md Design) — feed.css has its OWN :root, so selected-state
                        chrome here needs it defined locally or var(--accent) silently falls back */
+  --accent-fg: #0c1a2e;  /* dark text ON the accent (CLAUDE.md) — for the reverse-highlight on a selected toggle */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
@@ -262,8 +263,11 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fask-secs { margin-top: 4px; }
 .fask-secbtn { flex: none; padding: 1px 9px; color: var(--dim); background: transparent;
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
-  cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
+  cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
 .fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
+/* the SELECTED (accent) toggle had no hover feedback — .on overrode the plain :hover, so mousing it read as
+   dead. Give it a REVERSE highlight: the accent fills in, the text flips to accent-fg (the user 2026-07-15). */
+.fask-secbtn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 /* a PRESSED toggle (its section is showing) wears the SELECTED look the rail's pane toggles use —
    accent-blue text + a faint accent wash + accent border, a touch bolder (the user 2026-07-02: one
    selected-state language across the whole app; gray = off, accent blue = on). Same wash alpha as the
