@@ -936,7 +936,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     card.style.borderStyle = "";
     card.style.borderWidth = "";
-    card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
+    // outline the card in ITS session's identity colour (the user 2026-07-15); fall back to the recency tint
+    // for the rare colourless session so the border never voids to transparent.
+    card.style.borderColor = it.color?.bg ?? `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
   }
   // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
   if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
@@ -1386,7 +1388,8 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
     + (fkey === eff ? " focused" : "") + (fkey === pinnedAskId ? " pinned" : "");
   const [r, gg, b] = g.trgb;
   card.style.background = `rgba(${r}, ${gg}, ${b}, ${TINT_ALPHA})`;
-  card.style.borderColor = `rgba(${r}, ${gg}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
+  // outline in the group's session identity colour (the user 2026-07-15), recency tint as the colourless fallback
+  card.style.borderColor = g.color?.bg ?? `rgba(${r}, ${gg}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
   a._title.textContent = g.title;
   a._name.replaceChildren(...hostNameNodes(g.name, g.sid));
   if (g.color) a._name.style.color = g.color.bg;

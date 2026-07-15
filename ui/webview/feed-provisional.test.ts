@@ -20,11 +20,12 @@ test("updateAskCard marks a provisional card dim + italic with a provisional cla
   assert.match(FEED, /a\._title\.style\.fontStyle = it\.provisional \? "italic" : "";/);
 });
 
-test("a provisional 'ghost' card gets a DASHED outline (distinct from a real card's solid tint border)", () => {
+test("a provisional 'ghost' card gets a DASHED outline (distinct from a real card's solid session-colour border)", () => {
   // the user 2026-06-19: a dashed border marks the placeholder as not-yet-real; reset to solid otherwise
   assert.match(FEED, /if \(it\.provisional\) \{[\s\S]*?card\.style\.borderStyle = "dashed";/);
   assert.match(FEED, /card\.style\.borderWidth = "1\.5px";/);
-  assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?card\.style\.borderColor = `rgba/);
+  // a real card resets to a solid border coloured by its own session (recency tint only as the fallback)
+  assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?card\.style\.borderColor = it\.color\?\.bg \?\? `rgba/);
 });
 
 test("a placeholder has no curation affordances — Clear is hidden", () => {
