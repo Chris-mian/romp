@@ -1617,13 +1617,16 @@ def _split_source(text):
     return text[:m.start()].strip(), m.group(1)
 
 
-def _node_warn(nd, kind, t, msg, detail):
+def _node_warn(nd, kind, t, msg, detail, surface=None):
     """Stamp a UI-visible WARNING on a goal node: the feed renders a yellow "warning" chip on the card,
     and clicking it opens `detail` — what happened and why it's unexpected — so an anomaly a judge would
     otherwise swallow silently is followable from the card (the user 2026-07-02). One live warn per kind
-    (a repeat replaces its predecessor), capped so a store never grows unbounded."""
+    (a repeat replaces its predecessor), capped so a store never grows unbounded. `surface` names the
+    card surface the warn annotates ("brief"/"summary") — rollup_status retires the warn with the state
+    that shows that surface (see _retire_surface_warns)."""
     ws = [w for w in nd.get("warns") or [] if isinstance(w, dict) and w.get("kind") != kind]
-    ws.append({"kind": kind, "t": int(t), "msg": msg, "detail": detail})
+    ws.append({"kind": kind, "t": int(t), "msg": msg, "detail": detail,
+               **({"surface": surface} if surface else {})})
     nd["warns"] = ws[-6:]
 
 
@@ -1637,6 +1640,23 @@ def _node_warn_clear(nd, kind):
         nd.pop("warns", None)
 
 
+def _warn_surface(w):
+    """Which card surface a warn annotates: "brief" (the blocked card's decision brief), "summary"
+    (the completed card's takeaway), or None (not surface-bound). The give-up/unreadable kinds encode
+    it in their name; cite-miss carries a `surface` field since 2026-07-16 — a legacy record without
+    one is classified by its user-facing msg (the only place the surface was named)."""
+    if not isinstance(w, dict):
+        return None
+    k = w.get("kind") or ""
+    if k.startswith("brief-"):
+        return "brief"
+    if k.startswith("summary-"):
+        return "summary"
+    if k == "cite-miss":
+        return w.get("surface") or ("brief" if "decision brief" in (w.get("msg") or "") else "summary")
+    return None
+
+
 def _warn_cite_miss(nd, judge, t):
     """Stamp this card's cite-miss WARNING — the concise, user-facing version (the user 2026-07-03: the old
     four-paragraph detail read as jargon with no clear takeaway). Says what it means for the reader (this
@@ -1647,7 +1667,8 @@ def _warn_cite_miss(nd, judge, t):
                "This %s's link may jump to the wrong message." % line,
                "Clicking this %s should take you to the message it was drawn from. This time it didn't "
                "record which message that was, so the link is a guess and may land in the wrong spot. "
-               "Minor link issue, not lost work: it clears the next time the source is recorded." % line)
+               "Minor link issue, not lost work: it clears the next time the source is recorded." % line,
+               surface=("summary" if judge == "distiller" else "brief"))
 
 
 # The FAILED kind (the user 2026-07-03): a distiller/brief GIVE-UP used to blank the card SILENTLY (settle to
@@ -2305,6 +2326,29 @@ def rollup_status(store, session_closed, now=None):
                 with _authority():
                     nodes[nid]["blocked"] = False
                     nodes[nid].pop("blockWhy", None)
+    # SURFACE-BOUND WARN RETIRE (the user 2026-07-16, quartz): a decision-brief warn (cite-miss,
+    # brief-failed, brief-unreadable) annotates the brief, which is the card's surface only while it
+    # sits in Needs-you — once the card unblocks, no new brief is ever written to clear it, so a healthy
+    # Working card wore the yellow "warning" chip indefinitely. Same for the summary family on a
+    # reopened completed card. Retire each warn with the state that shows its surface; a re-block /
+    # re-completion writes a fresh brief/summary, which re-warns if it fails again. Runs inside rollup —
+    # the status owner — so the store heals on its next touch, no display-side twin logic.
+    for nid, nd in nodes.items():
+        ws = nd.get("warns")
+        if not ws:
+            continue
+        st = status.get(nid)                           # tops only; a sub never carries a surface warn
+        dead = set()
+        if st != "blocked":
+            dead.add("brief")                          # the card left Needs-you → the brief isn't shown
+        if st != "completed":
+            dead.add("summary")                        # the card isn't completed → the takeaway isn't shown
+        keep = [w for w in ws if _warn_surface(w) not in dead]
+        if len(keep) != len(ws):
+            if keep:
+                nd["warns"] = keep
+            else:
+                nd.pop("warns", None)
     store["status"] = status
 
 
