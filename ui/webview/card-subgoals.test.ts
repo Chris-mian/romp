@@ -72,10 +72,36 @@ test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT str
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border-radius: 50%/);
 });
 
-test("the Sub-goals button leads with the WHOLE-tree count — every node, every depth (the user 2026-07-08)", () => {
+test("the Sub-goals button counts only DIRECT children — one level below (the user 2026-07-15)", () => {
   assert.match(FEED, /let subCount = 0;/);
-  assert.match(FEED, /const stack = \[\.\.\.\(root\.children \|\| \[\]\)\];/);   // full descent, not level 1
-  assert.match(FEED, /stack\.push\(\.\.\.\(n\.children \|\| \[\]\)\);/);
+  // a single pass over the root's OWN children — not a stack that descends into grandchildren
+  assert.match(FEED, /for \(const cid of \(root\.children \|\| \[\]\)\) \{/);
+  assert.doesNotMatch(FEED, /stack\.push\(\.\.\.\(n\.children \|\| \[\]\)\);/, "no longer descends the whole subtree for the count");
   assert.match(FEED, /const hasSubs = subCount > 0;/);
   assert.match(FEED, /subBtn\.textContent = subCount === 1 \? "1 sub-goal" : subCount \+ " sub-goals";/);
+});
+
+// executed replica: the headline count is the goal's immediate, non-handoff children — grandchildren don't
+// inflate it, though the tree still lets the user expand into them.
+test("direct-child count ignores grandchildren and delegation handoffs", () => {
+  type N = { id: string; kind?: string; children?: string[] };
+  const tree: N[] = [
+    { id: "root", children: ["a", "b", "h"] },
+    { id: "a", children: ["a1", "a2"] },   // grandchildren under a
+    { id: "b", children: [] },
+    { id: "h", kind: "handoff" },          // a delegation → excluded
+    { id: "a1" }, { id: "a2" },
+  ];
+  const byId = new Map(tree.map((n) => [n.id, n] as const));
+  const root = byId.get("root")!;
+  let subCount = 0;
+  const seenC = new Set<string>([root.id]);
+  for (const cid of (root.children || [])) {
+    if (seenC.has(cid)) continue;
+    seenC.add(cid);
+    const n = byId.get(cid);
+    if (!n || n.kind === "handoff") continue;
+    subCount++;
+  }
+  assert.equal(subCount, 2, "a + b only — not a1/a2 (grandchildren) and not h (handoff)");
 });

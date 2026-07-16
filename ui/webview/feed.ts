@@ -773,20 +773,19 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const tree = it.tree || [];
   const byId = new Map(tree.map((n) => [n.id, n] as const));
   const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  // whole-tree count, every depth (the user 2026-07-08): the button reads "5 sub-goals" so the size of
-  // what's underneath is glanceable without expanding. Distinct non-handoff descendants, repeats once.
+  // DIRECT sub-goals only — one level below (the user 2026-07-15): the button reads "3 sub-goals" for the
+  // goal's immediate children, matching what the tree first shows when opened; deeper levels aren't folded
+  // into this headline number — the user drills into them by expanding a child's ▶ triangle. Distinct
+  // non-handoff direct children, deduped once. (Was the whole-subtree count, every depth.)
   let subCount = 0;
   if (root) {
     const seenC = new Set<string>([root.id]);
-    const stack = [...(root.children || [])];
-    while (stack.length) {
-      const cid = stack.pop() as string;
+    for (const cid of (root.children || [])) {
       if (seenC.has(cid)) continue;
       seenC.add(cid);
       const n = byId.get(cid);
       if (!n || n.kind === "handoff") continue;
       subCount++;
-      stack.push(...(n.children || []));
     }
   }
   const hasSubs = subCount > 0;
