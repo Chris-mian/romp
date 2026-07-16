@@ -2132,6 +2132,36 @@ def _spawn_session(name, cwd=None):
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
+def _pick_identity_color(now=None):
+    """A NEW session's identity colour, picked to stand out from what you're WORKING ON right now (the user
+    2026-07-16). sdk_backend.pick_identity_color hashes the sid into the palette and never looks at what's in
+    use, so a fresh session could wear a colour a live one already had — while other colours sat free. (The
+    tmux launcher already does first-unused, but it only sees tmux sessions.)
+
+    Rank every palette colour by, in order:
+      1. how many LIVE sessions hold it — 0 wins, so an untaken colour is always taken first;
+      2. how recently its most recent holder was active — with every colour taken, the one whose sessions
+         you've touched LEAST recently is the least confusable to reuse;
+      3. palette order, which is colorblind-tuned most-distinct-first (see bin/romp).
+    LIVE is the whole point: a finished session's colour is free again, or after a week of work every colour
+    would look taken. A live session with no transcript yet is one you JUST made, so it counts as active now
+    and its colour is the last thing we'd hand out again."""
+    now = now or time.time()
+    pname = _palette_name()
+    bgs, fgs = pal.colors(pname), pal.fgs(pname)
+    mtimes = {s["sid"]: s["mtime"] for s in _sessions(now)}
+    held = {}                                     # bg -> [live holders, newest activity among them]
+    for sid in Sessions.live():
+        bg = _identity_of(sid)[0]
+        if not bg:
+            continue
+        e = held.setdefault(bg, [0, 0.0])
+        e[0] += 1
+        e[1] = max(e[1], mtimes.get(sid, now))    # no transcript = brand-new = active NOW
+    i = min(range(len(bgs)), key=lambda k: (*held.get(bgs[k], (0, 0.0)), k))
+    return bgs[i], fgs[i]
+
+
 def _create_sdk_session(nm, cwd):
     """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14: "why does it take so long
     to open a new SDK session?"). spawn() is file writes and connect() is threaded (~0.4s to a booting
@@ -2141,7 +2171,8 @@ def _create_sdk_session(nm, cwd):
     focus FIRST — setActive holds the sid client-side, so the tab lands already-selected whenever the
     pusher's build arrives — then the dirty-mark wake. Never a synchronous fleet build on this path
     (the push-architecture rule, 2026-07-05)."""
-    sid = _sdk().spawn(nm, cwd)
+    bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
+    sid = _sdk().spawn(nm, cwd, bg, fg)
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
     _set_hidden_tab(sid, False)
     _reveal_chat({"type": "focus", "id": sid})

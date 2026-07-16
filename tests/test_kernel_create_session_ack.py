@@ -27,13 +27,18 @@ class _FakeSdk:
     def __init__(self):
         self.calls = []
 
-    def spawn(self, nm, cwd):
+    # mirrors the real SdkBackend.spawn: the kernel now picks a fleet-aware identity colour and hands it
+    # down (test_kernel_color_pick.py), so the fake must accept it exactly like the real one does
+    def spawn(self, nm, cwd, bg="", fg="", sid=None):
         self.calls.append(("spawn", nm, cwd))
         return "11111111-2222-3333-4444-555555555555"
 
     def connect(self, sid):
         self.calls.append(("connect", sid))
         return True
+
+    def live_sessions(self):
+        return {}                     # no live SDK sessions → the colour pick sees an empty fleet
 
 
 class CreateSessionAckFast(unittest.TestCase):
