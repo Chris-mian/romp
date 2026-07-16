@@ -1348,12 +1348,17 @@ def _mark_nudge_failed(gid):
             return
     except Exception:
         pass
+    now = int(time.time())
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     rec = nudged.get(gid)
     if not rec or rec.get("failed"):
         return
-    nudged[gid] = dict(rec, failed=True)
+    # failedAt: the build_feed chip's retire fallback when the block row below goes missing — the two
+    # writes land in different files and only this one is guaranteed (g52, 2026-07-16: a planner pass's
+    # stale save erased the row, and the row-keyed retire left the chip saying "waiting on you" through
+    # the user's own follow-up).
+    nudged[gid] = dict(rec, failed=True, failedAt=now)
     d["nudged"] = nudged
     _write_auto_nudge(d)
     try:
@@ -1362,8 +1367,11 @@ def _mark_nudge_failed(gid):
         nd = store.get("nodes", {}).get(gid)
         why = ("romp followed up once and the response didn't resolve this; "
                "it won't be re-asked — it needs your direction")
-        if nd is not None and jd.record_verdict(store, nd, "nudge", "block", int(time.time()), why=why):
-            nd["mt"] = int(time.time())               # the event materialized blocked + blockWhy
+        if nd is not None and jd.record_verdict(store, nd, "nudge", "block", now, why=why):
+            nd["mt"] = now                            # the event materialized blocked + blockWhy
+            jd.append_block(sid, gid, "nudge", why, now)   # journal before the save it protects: a judge
+            #                                           pass holding this store across its model call
+            #                                           erases the row on save; replay re-records it
             jd.rollup_status(store, False)
             jd.save_goals(sid, store)
             _mark_views_dirty()
@@ -1396,9 +1404,12 @@ def _record_interrupt_block(sid):
         return None
     nd = store["nodes"][gid]
     why = "you stopped this session mid-turn — it's waiting on your next instruction"
-    if not jd.record_verdict(store, nd, "interrupt", "block", int(time.time()), why=why):
+    now = int(time.time())
+    if not jd.record_verdict(store, nd, "interrupt", "block", now, why=why):
         return None
-    nd["mt"] = int(time.time())                       # the event materialized blocked + blockWhy
+    nd["mt"] = now                                    # the event materialized blocked + blockWhy
+    jd.append_block(sid, gid, "interrupt", why, now)  # journal before the save it protects (a judge
+    #                                                   pass's stale save erases out-of-band rows)
     jd.rollup_status(store, False)
     jd.save_goals(sid, store)
     _mark_views_dirty()
@@ -1688,165 +1699,184 @@ def _auto_nudge_tick(now, tmux):
     waitfor = _wait_for_graph(now, {s["sid"] for s in alive})   # {sid:{peerSid,name,inCycle}} — the peer-wait gate
     fired = False
     for s in alive:
-        sid = s["sid"]
-        if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
-            continue                                     # feed feature, so opting out of the feed opts out of nudges (the user)
-        st = (tmux.get(sid) or {}).get("state", "")
-        # awaiting your input/approval / compacting → not orphaned. The tmux `st` is EMPTY for SDK sessions
-        # (no tmux), so the raw-state "compacting" check MISSES them — corroborate with _compacting_now (the
-        # same signal the chip/timeline/chat use), or a /compact on an SDK session gets nudged mid-compaction
-        # ("nudge got called after compact" — the user 2026-07-06).
-        if st in _NEEDS_INPUT_STATES or st == "compacting" or _compacting_now(sid):
-            continue
-        if _api_error(s["path"]):                        # stopped on an API error → not orphaned
-            continue
+        # PER-SESSION ISOLATION (2026-07-16): one session's failure — a bad backend snapshot, a
+        # malformed store — must not abort the whole tick and silence nudging fleet-wide. A
+        # TypeError in _session_awaiting (a subagents LIST fed to %d) killed 1333 consecutive
+        # ticks over two days before anyone noticed; every session after the bad one in the
+        # iteration lost its nudges. The failure still logs loudly, per session.
         try:
-            # Parse WITH states (idle atoms), exactly as the closer does — so this turn's id MATCHES what the
-            # closer wrote to closedTurns. A states-less parse (_parse) gives an idle-LED turn a different id
-            # (a synthesized leading idle opens it, vs the human prompt), so the closer-gate below would never
-            # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
-            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+            fired = _auto_nudge_session(s, now, tmux, nudged, waitfor) or fired
         except Exception:
-            continue
-        if not turns:
-            continue
-        lt = turns[-1]
-        if _session_working(turns):                      # still actively working (event model) → not orphaned
-            continue
-        if _interrupt_suppresses_nudge(turns):           # the user's LAST action was a GENUINE interrupt → they're
-            continue                                     # driving; suppressed until their NEXT message. The stopped
-            #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
-            #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
-        if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
-            continue                                     # queued intent; a nudge would jump their queue (the user 2026-07-05)
-        ls_val, ls_t = _last_state(sid)
-        if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
-            # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
-            # ResultMessage) says the session is actively progressing, so the event-model "not working" read
-            # above is a transient mid-turn lull, NOT a real stop. Nudging here fires MID-TURN, and that fire
-            # poisons the once-per-turn re-arm so the genuine post-stop stall never gets nudged (repro: obsidian
-            # read state-log 'working' continuously 17:51:36→17:54:14, yet a nudge fired at 17:52:10).
-            #
-            # The discriminator is the state record's TIME vs the parsed turn's END (the user 2026-06-29): a
-            # progressing record AT/AFTER the turn end means the session really is still going (a newer turn the
-            # parse hasn't caught up to) → skip. But a progressing record from BEFORE the turn end means the turn
-            # genuinely ended and the post-turn 'waiting' write was LOST (a kernel restart killed it before the
-            # ResultMessage handler) → the record is STALE and must NOT block the nudge forever (repro: bugsdk2
-            # finished its turn at 20:13:18 but its state log was stuck at 'working' 20:12:20, so its working card
-            # never got nudged). Two real-event timestamps, not a time window.
-            continue
-        if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched AGENT work (subagents / SDK overlay) →
-            continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here
-        lt_id = lt.get("id")
-        # ARMING TURN (the user 2026-07-06, business): arm/dedup off the newest ended turn with a GENUINE
-        # trigger (human/sdk/peer). A romp-injected turn — a nudge's own response, a kernel-restart resume
-        # banner, any romp injection — neither RE-ARMS a nudge (the 2026-07-01 runaway) nor BLOCKS a first
-        # one: the old `_turn_romp_injected(lt)` gate keyed on the LATEST turn, so a restart banner opening
-        # a session's last turn suppressed every future first-nudge until some genuine turn ended — a
-        # working card that could never be nudged (business, found idle+working with nudged=None).
-        arm = next((tn for tn in reversed(turns) if tn.get("ended") and not _turn_romp_injected(tn)), None)
-        arm_id = arm.get("id") if arm else None          # None (romp-only history) → never FIRE; an already-
-        #                                                  nudged goal still takes its nudge-failed stamp below
-        store = jd.load_goals(sid)
-        # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
-        # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
-        # blocked; nudging there is pointless (it's waiting on YOU) and churns. _closer_settled mirrors the
-        # closer's own closedSig freshness check; no-op when the closer is off (2026-06-21, hardened 2026-06-27).
-        if not _closer_settled(store, lt_id, len(lt.get("atoms") or [])):
-            continue
-        # PLANNER-PLACEMENT GATE (the user 2026-07-15, the 11:35/11:40 restatement nudges): closer-settled
-        # alone is NOT "the judges have ruled". _turn_menu derives from PLACEMENTS, so a turn the planner
-        # hasn't processed yet no-op-closes on an EMPTY menu — the closer gate passes minutes before the
-        # planner's block/done verdict lands, while the opener's provisional card still reads 'working'
-        # (bug g78: nudged 11:35:20, its block landed 11:35:32; romp_docs g82: nudged 11:40:37, block
-        # 11:40:51 — each agent then restated its own unanswered ask). The planner's "processed" event is
-        # the unit's PLACEMENT (a skip records one too — key presence marks the phase processed), the same
-        # event the nudge-failed stamp below already waits on; require the queue empty before ANY fire.
-        # Event-based: the placement's landing opens the gate on the next tick.
-        try:
-            _live = {sg["id"] for tn in turns for sg in jd._segs(tn, store)}
-            _unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
-                             for u in jd.plan_units({"turns": turns}, store))
-        except Exception:
-            _unplanned = False                       # minimal/legacy turn shapes → the closer gate stands alone
-        if _unplanned:
-            continue
-        nodes, status = store.get("nodes", {}), store.get("status", {})
-        cleared = _cleared_ids()
-        _kids = {}                                       # child map for the FORK-stalled check below
-        for _nid, _nd in nodes.items():
-            _kids.setdefault(_nd.get("parentId"), []).append(_nid)
-        # Nudge EVERY still-'working' TOP goal — not just the first (the user 2026-06-28): all of a session's
-        # working goals get nudged each time it stops, re-arming PER GOAL on each genuinely-new ended turn (one
-        # per turn, count climbing), until the session moves each to blocked/completed. Skip a top whose only
-        # open work is delegated to peers, or that's awaiting a pre-question peer reply. NO optimistic_followup:
-        # an auto-nudge must NOT paint the "Followed up"/re-checking chip — that's reserved for the user's OWN
-        # follow-ups (the user 2026-06-28).
-        for gid in list(nodes):
-            nd = nodes[gid]
-            if nd.get("parentId") is not None or nd.get("cleared") or gid in cleared:
-                continue                                 # top-level, live goals only
-            if status.get(gid, "working") != "working":
-                continue                                 # blocked/completed → the session resolved it; not orphaned
-            if _all_outstanding_delegated(nodes, gid):
-                continue                                 # all open work handed to peers → nothing for THIS session
-            if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
-                continue                                 # awaiting a live peer's reply to a question this goal predates
-            rec = nudged.get(gid) or {}
-            # Fire at most ONCE per GENUINE stall — keyed on arm_id, the newest genuinely-triggered ended
-            # turn. NEVER re-arm off romp's own turns: re-arming on the nudge-response was the ~5s runaway
-            # that burned tokens (the user 2026-07-01, track: count climbed to 82). A response either folds
-            # into the nudged turn or opens a new romp-injected turn — NEITHER moves arm_id, so
-            # lastTurnId==arm_id catches both. Re-arm ONLY on a genuine (human/sdk/peer-opened) NEW ended
-            # turn that re-stalls — a stall that persists WITHOUT genuine new work is surfaced as blocked +
-            # a "nudge failed" chip instead of being nudged forever (the user 2026-07-01, replacing the
-            # 2026-06-25 "keep nudging til resolved" rule, which was the loop).
-            if arm_id is None or rec.get("lastTurnId") == arm_id:   # already nudged this genuine stall (a romp
-                #                                          response turn doesn't move arm_id → can never re-fire),
-                #                                          or nothing genuine to arm off at all
-                # NUDGE FAILED (plans/stalled-open-todos-nudge.md): we already nudged, the agent's response
-                # turn has ENDED (the session-level gates above passed: not working, genuine stop, closer
-                # settled), yet the goal is STILL 'working' (the per-goal status gate above). The one ask
-                # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
-                # so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
-                if rec and not rec.get("failed"):
-                    # PLACEMENT GATE (the user 2026-07-09, the g143 phantom stall): closer-settled does NOT
-                    # imply the planner processed the nudge RESPONSE — the closer and planner gate on
-                    # different work, and on g143 this stamped 'failed' at 16:06 while the planner's
-                    # resolve landed at 16:10: a four-minute phantom "stalled". The planner's own
-                    # "processed" event is the response segment's PLACEMENT: while the parsed turns show
-                    # this goal's nudge segment still unplaced, the response is still in the judge's queue —
-                    # skip and re-check next tick (event-based, no timer). No visible nudge segment
-                    # (parse lag, pre-marker history) keeps the stamp-now behavior.
-                    try:
-                        resp = next((s2 for tn2 in reversed(turns[-4:]) for s2 in jd._segs(tn2, store)
-                                     if jd._seg_nudge(s2) and jd._seg_followup(s2) == gid), None)
-                    except Exception:
-                        resp = None                        # minimal/legacy turn shapes → stamp-now, as before
-                    if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
-                        continue                           # the planner hasn't ruled on the response yet
-                    _mark_nudge_failed(gid)
-                    nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
-                    fired = True                           # push so the chip/floor reaches the feed now
-                continue
-            count = rec.get("count", 0) + 1
-            # (the nudge-fire forensics side-log was retired with the P3.4 sweep, 2026-07-07 — the goal's
-            # verdict diary is the audit trail now)
-            # FORK vs regular text (plans/stalled-open-todos-nudge.md): a goal whose subtree holds an item
-            # the agent's OWN to-do list still marks open gets the STALLED fork — "continue these, or tell me
-            # which are blocked and what you need" — instead of the plain status check. The agent can't
-            # self-mark a to-do blocked (Claude Code has no such state), so the fork elicits the blocker the
-            # planner's nudge-mode note then applies as a block. _followup_body's quote already enumerates the
-            # goal's unfinished sub-nodes, naming the open items.
-            stalled = gid in _agent_open_set(nodes, _kids)
-            text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
-            Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
-            _mark_auto_nudged(gid, arm_id, count)   # {count, lastTurnId} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
-            _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
-            nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
-            fired = True
+            sys.stderr.write("auto-nudge (session %s): %s\n"
+                             % (s.get("sid") or "?", traceback.format_exc()))
     if fired:
         _push_all()
+
+
+def _auto_nudge_session(s, now, tmux, nudged, waitfor):
+    """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
+    walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
+    failures per session (see the tick's loop). Mutates `nudged` (the tick's in-memory mirror);
+    returns True when it fired a nudge or stamped a failure — the tick pushes once at the end."""
+    fired = False
+    sid = s["sid"]
+    if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
+        return False                                # feed feature, so opting out of the feed opts out of nudges (the user)
+    st = (tmux.get(sid) or {}).get("state", "")
+    # awaiting your input/approval / compacting → not orphaned. The tmux `st` is EMPTY for SDK sessions
+    # (no tmux), so the raw-state "compacting" check MISSES them — corroborate with _compacting_now (the
+    # same signal the chip/timeline/chat use), or a /compact on an SDK session gets nudged mid-compaction
+    # ("nudge got called after compact" — the user 2026-07-06).
+    if st in _NEEDS_INPUT_STATES or st == "compacting" or _compacting_now(sid):
+        return False
+    if _api_error(s["path"]):                        # stopped on an API error → not orphaned
+        return False
+    try:
+        # Parse WITH states (idle atoms), exactly as the closer does — so this turn's id MATCHES what the
+        # closer wrote to closedTurns. A states-less parse (_parse) gives an idle-LED turn a different id
+        # (a synthesized leading idle opens it, vs the human prompt), so the closer-gate below would never
+        # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
+        turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+    except Exception:
+        return False
+    if not turns:
+        return False
+    lt = turns[-1]
+    if _session_working(turns):                      # still actively working (event model) → not orphaned
+        return False
+    if _interrupt_suppresses_nudge(turns):           # the user's LAST action was a GENUINE interrupt → they're
+        return False                                # driving; suppressed until their NEXT message. The stopped
+        #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
+        #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
+    if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
+        return False                                # queued intent; a nudge would jump their queue (the user 2026-07-05)
+    ls_val, ls_t = _last_state(sid)
+    if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
+        # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
+        # ResultMessage) says the session is actively progressing, so the event-model "not working" read
+        # above is a transient mid-turn lull, NOT a real stop. Nudging here fires MID-TURN, and that fire
+        # poisons the once-per-turn re-arm so the genuine post-stop stall never gets nudged (repro: obsidian
+        # read state-log 'working' continuously 17:51:36→17:54:14, yet a nudge fired at 17:52:10).
+        #
+        # The discriminator is the state record's TIME vs the parsed turn's END (the user 2026-06-29): a
+        # progressing record AT/AFTER the turn end means the session really is still going (a newer turn the
+        # parse hasn't caught up to) → skip. But a progressing record from BEFORE the turn end means the turn
+        # genuinely ended and the post-turn 'waiting' write was LOST (a kernel restart killed it before the
+        # ResultMessage handler) → the record is STALE and must NOT block the nudge forever (repro: bugsdk2
+        # finished its turn at 20:13:18 but its state log was stuck at 'working' 20:12:20, so its working card
+        # never got nudged). Two real-event timestamps, not a time window.
+        return False
+    if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched AGENT work (subagents / SDK overlay) →
+        return False                                # in flight, not stalled (the user 2026-06-22); idle is True here
+    lt_id = lt.get("id")
+    # ARMING TURN (the user 2026-07-06, business): arm/dedup off the newest ended turn with a GENUINE
+    # trigger (human/sdk/peer). A romp-injected turn — a nudge's own response, a kernel-restart resume
+    # banner, any romp injection — neither RE-ARMS a nudge (the 2026-07-01 runaway) nor BLOCKS a first
+    # one: the old `_turn_romp_injected(lt)` gate keyed on the LATEST turn, so a restart banner opening
+    # a session's last turn suppressed every future first-nudge until some genuine turn ended — a
+    # working card that could never be nudged (business, found idle+working with nudged=None).
+    arm = next((tn for tn in reversed(turns) if tn.get("ended") and not _turn_romp_injected(tn)), None)
+    arm_id = arm.get("id") if arm else None          # None (romp-only history) → never FIRE; an already-
+    #                                                  nudged goal still takes its nudge-failed stamp below
+    store = jd.load_goals(sid)
+    # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
+    # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
+    # blocked; nudging there is pointless (it's waiting on YOU) and churns. _closer_settled mirrors the
+    # closer's own closedSig freshness check; no-op when the closer is off (2026-06-21, hardened 2026-06-27).
+    if not _closer_settled(store, lt_id, len(lt.get("atoms") or [])):
+        return False
+    # PLANNER-PLACEMENT GATE (the user 2026-07-15, the 11:35/11:40 restatement nudges): closer-settled
+    # alone is NOT "the judges have ruled". _turn_menu derives from PLACEMENTS, so a turn the planner
+    # hasn't processed yet no-op-closes on an EMPTY menu — the closer gate passes minutes before the
+    # planner's block/done verdict lands, while the opener's provisional card still reads 'working'
+    # (bug g78: nudged 11:35:20, its block landed 11:35:32; romp_docs g82: nudged 11:40:37, block
+    # 11:40:51 — each agent then restated its own unanswered ask). The planner's "processed" event is
+    # the unit's PLACEMENT (a skip records one too — key presence marks the phase processed), the same
+    # event the nudge-failed stamp below already waits on; require the queue empty before ANY fire.
+    # Event-based: the placement's landing opens the gate on the next tick.
+    try:
+        _live = {sg["id"] for tn in turns for sg in jd._segs(tn, store)}
+        _unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
+                         for u in jd.plan_units({"turns": turns}, store))
+    except Exception:
+        _unplanned = False                       # minimal/legacy turn shapes → the closer gate stands alone
+    if _unplanned:
+        return False
+    nodes, status = store.get("nodes", {}), store.get("status", {})
+    cleared = _cleared_ids()
+    _kids = {}                                       # child map for the FORK-stalled check below
+    for _nid, _nd in nodes.items():
+        _kids.setdefault(_nd.get("parentId"), []).append(_nid)
+    # Nudge EVERY still-'working' TOP goal — not just the first (the user 2026-06-28): all of a session's
+    # working goals get nudged each time it stops, re-arming PER GOAL on each genuinely-new ended turn (one
+    # per turn, count climbing), until the session moves each to blocked/completed. Skip a top whose only
+    # open work is delegated to peers, or that's awaiting a pre-question peer reply. NO optimistic_followup:
+    # an auto-nudge must NOT paint the "Followed up"/re-checking chip — that's reserved for the user's OWN
+    # follow-ups (the user 2026-06-28).
+    for gid in list(nodes):
+        nd = nodes[gid]
+        if nd.get("parentId") is not None or nd.get("cleared") or gid in cleared:
+            continue                                 # top-level, live goals only
+        if status.get(gid, "working") != "working":
+            continue                                 # blocked/completed → the session resolved it; not orphaned
+        if _all_outstanding_delegated(nodes, gid):
+            continue                                 # all open work handed to peers → nothing for THIS session
+        if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
+            continue                                 # awaiting a live peer's reply to a question this goal predates
+        rec = nudged.get(gid) or {}
+        # Fire at most ONCE per GENUINE stall — keyed on arm_id, the newest genuinely-triggered ended
+        # turn. NEVER re-arm off romp's own turns: re-arming on the nudge-response was the ~5s runaway
+        # that burned tokens (the user 2026-07-01, track: count climbed to 82). A response either folds
+        # into the nudged turn or opens a new romp-injected turn — NEITHER moves arm_id, so
+        # lastTurnId==arm_id catches both. Re-arm ONLY on a genuine (human/sdk/peer-opened) NEW ended
+        # turn that re-stalls — a stall that persists WITHOUT genuine new work is surfaced as blocked +
+        # a "nudge failed" chip instead of being nudged forever (the user 2026-07-01, replacing the
+        # 2026-06-25 "keep nudging til resolved" rule, which was the loop).
+        if arm_id is None or rec.get("lastTurnId") == arm_id:   # already nudged this genuine stall (a romp
+            #                                          response turn doesn't move arm_id → can never re-fire),
+            #                                          or nothing genuine to arm off at all
+            # NUDGE FAILED (plans/stalled-open-todos-nudge.md): we already nudged, the agent's response
+            # turn has ENDED (the session-level gates above passed: not working, genuine stop, closer
+            # settled), yet the goal is STILL 'working' (the per-goal status gate above). The one ask
+            # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
+            # so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
+            if rec and not rec.get("failed"):
+                # PLACEMENT GATE (the user 2026-07-09, the g143 phantom stall): closer-settled does NOT
+                # imply the planner processed the nudge RESPONSE — the closer and planner gate on
+                # different work, and on g143 this stamped 'failed' at 16:06 while the planner's
+                # resolve landed at 16:10: a four-minute phantom "stalled". The planner's own
+                # "processed" event is the response segment's PLACEMENT: while the parsed turns show
+                # this goal's nudge segment still unplaced, the response is still in the judge's queue —
+                # skip and re-check next tick (event-based, no timer). No visible nudge segment
+                # (parse lag, pre-marker history) keeps the stamp-now behavior.
+                try:
+                    resp = next((s2 for tn2 in reversed(turns[-4:]) for s2 in jd._segs(tn2, store)
+                                 if jd._seg_nudge(s2) and jd._seg_followup(s2) == gid), None)
+                except Exception:
+                    resp = None                        # minimal/legacy turn shapes → stamp-now, as before
+                if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
+                    continue                           # the planner hasn't ruled on the response yet
+                _mark_nudge_failed(gid)
+                nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
+                fired = True                           # push so the chip/floor reaches the feed now
+            continue
+        count = rec.get("count", 0) + 1
+        # (the nudge-fire forensics side-log was retired with the P3.4 sweep, 2026-07-07 — the goal's
+        # verdict diary is the audit trail now)
+        # FORK vs regular text (plans/stalled-open-todos-nudge.md): a goal whose subtree holds an item
+        # the agent's OWN to-do list still marks open gets the STALLED fork — "continue these, or tell me
+        # which are blocked and what you need" — instead of the plain status check. The agent can't
+        # self-mark a to-do blocked (Claude Code has no such state), so the fork elicits the blocker the
+        # planner's nudge-mode note then applies as a block. _followup_body's quote already enumerates the
+        # goal's unfinished sub-nodes, naming the open items.
+        stalled = gid in _agent_open_set(nodes, _kids)
+        text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
+        Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
+        _mark_auto_nudged(gid, arm_id, count)   # {count, lastTurnId} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
+        _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
+        nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
+        fired = True
+    return fired
 
 
 WORKING_DIR = jd.STATE / "working"     # backend-agnostic working-note store (working/<sid> files): the
@@ -8065,9 +8095,18 @@ def build_feed(now, tmux=None):
             _nlog = nodes[nid].get("log") or []
             _nblk_at = next(((e.get("at") or e.get("ev_t") or 0) for e in reversed(_nlog)
                              if e.get("kind") == "block" and e.get("src") == "nudge"), None)
-            _story_moved = _nblk_at is not None and any(
-                (e.get("at") or e.get("ev_t") or 0) > _nblk_at
-                and e.get("src") in ("planner", "closer", "courier", "user", "agent") for e in _nlog)
+            # The row is the retire anchor, but it's also the write most exposed to a judge pass's
+            # stale save (g52, 2026-07-16: the planner's held-store save erased it while `failed`
+            # survived in auto-nudge.json — with _nblk_at None the chip could never retire, and it
+            # said "waiting on you" straight through the user's own follow-up). Fall back to the
+            # failure stamp's own time (failedAt, written with `failed`); a legacy record carrying
+            # neither retires on any user event at all — of the two failure modes, a false
+            # "waiting on you" is the one that breaks flow.
+            _nfloor = _nblk_at if _nblk_at is not None else nrec.get("failedAt")
+            _story_moved = (any((e.get("at") or e.get("ev_t") or 0) > _nfloor
+                                and e.get("src") in ("planner", "closer", "courier", "user", "agent")
+                                for e in _nlog) if _nfloor is not None
+                            else any(e.get("src") == "user" for e in _nlog))
             nudge_failed = (bool(nrec.get("failed")) and not _story_moved
                             and (col == "working" or (col == "blocked" and _lastblk == "nudge")))
             # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as

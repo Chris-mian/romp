@@ -29,6 +29,9 @@ Covers:
   and replay defers to that)
 - followup/move (task #27): a clobbered optimistic reopen re-applies on the
   next load; a survived one is never doubled
+- block (2026-07-16): a kernel-side block verdict (nudge-failed / interrupt)
+  clobbered by a pass's stale save re-applies on the next load; a survived one
+  is never doubled; a user reply at/after the stamp supersedes the replay
 """
 import json
 import shutil
@@ -216,6 +219,74 @@ class FollowupMoveReplay(unittest.TestCase):
         healed = jd.load_goals(SID)
         self.assertFalse(healed["nodes"][NID].get("nodeComplete"))
         self.assertEqual(len(self._reopens(healed)), 1)
+
+
+class BlockOverrideReplay(unittest.TestCase):
+    """The kernel-side block journal op (2026-07-16, g52): _mark_nudge_failed's diary row was erased
+    by a planner pass's stale save while auto-nudge.json kept `failed` — the chip's retire path keyed
+    on the erased row. The block now rides the journal like every other out-of-band write."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = Path(tempfile.mkdtemp())
+        jd._rebind_state(self._td)
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _blocks(self, store, src="nudge"):
+        return [e for e in store["nodes"][NID].get("log", [])
+                if e.get("src") == src and e.get("kind") == "block"]
+
+    def test_clobbered_nudge_block_reapplies_on_the_next_load(self):
+        jd.save_goals(SID, _open_store())
+        judge_copy = jd.load_goals(SID)               # the pass loads BEFORE the kernel stamps
+        store = jd.load_goals(SID)                    # the kernel's write: verdict + journal + save
+        why = "romp followed up once and the response didn't resolve this"
+        self.assertTrue(jd.record_verdict(store, store["nodes"][NID], "nudge", "block", T0 + 100, why=why))
+        jd.append_block(SID, NID, "nudge", why, T0 + 100)
+        jd.save_goals(SID, store)
+        jd.save_goals(SID, judge_copy)                # the stale save lands last (the g52 race)
+        raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        self.assertFalse(raw["nodes"][NID].get("blocked"),
+                         "precondition: the stale save really erased the block on disk")
+        healed = jd.load_goals(SID)
+        self.assertTrue(healed["nodes"][NID].get("blocked"), "the journaled block re-applies")
+        self.assertEqual(len(self._blocks(healed)), 1)
+        self.assertIn("didn't resolve", healed["nodes"][NID].get("blockWhy") or "")
+
+    def test_survived_block_is_never_doubled(self):
+        # src "interrupt" here so both journaled srcs are covered by the suite
+        jd.save_goals(SID, _open_store())
+        store = jd.load_goals(SID)
+        why = "you stopped this session mid-turn"
+        self.assertTrue(jd.record_verdict(store, store["nodes"][NID], "interrupt", "block", T0 + 100, why=why))
+        jd.append_block(SID, NID, "interrupt", why, T0 + 100)
+        jd.save_goals(SID, store)
+        for _ in range(3):                            # every later load replays as a no-op
+            store = jd.load_goals(SID)
+            self.assertTrue(store["nodes"][NID].get("blocked"))
+            self.assertEqual(len(self._blocks(store, src="interrupt")), 1)
+
+    def test_a_user_reply_supersedes_the_replay(self):
+        # The interleave the guard exists for: the kernel stamps the block (journal + save), but the
+        # USER's reply handler was already holding a pre-stamp copy — its save lands last, carrying
+        # their reopen and not the block row. Replay must NOT re-block past the user's answer: the
+        # chip/card would pin back on needs-you over an already-answered ask.
+        jd.save_goals(SID, _open_store())
+        user_copy = jd.load_goals(SID)                # the reply handler's pre-stamp copy
+        store = jd.load_goals(SID)
+        jd.record_verdict(store, store["nodes"][NID], "nudge", "block", T0 + 100, why="the ask")
+        jd.append_block(SID, NID, "nudge", "the ask", T0 + 100)
+        jd.save_goals(SID, store)
+        jd.record_verdict(user_copy, user_copy["nodes"][NID], "user", "reopen", T0 + 150,
+                          why="Follow-up: answered.")
+        jd.save_goals(SID, user_copy)                 # the user's racing save erases the block row
+        healed = jd.load_goals(SID)
+        self.assertFalse(healed["nodes"][NID].get("blocked"),
+                         "replay must not re-block past the user's newer reply")
+        self.assertEqual(len(self._blocks(healed)), 0, "the superseded row stays out")
 
 
 if __name__ == "__main__":

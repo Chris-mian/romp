@@ -18,7 +18,10 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 kern = SourceFileLoader("romp_kernel_intrblk", os.path.join(BIN, "romp-kernel")).load_module()
 jd = kern.jd
 
-SID = "11111111-2222-3333-4444-555555555555"
+# A SID of this file's own: the judge module is process-shared across every kernel test copy (its
+# import is sys.modules-cached), so the append-only overrides journal is shared too — a same-SID,
+# same-gid block journaled by another test file would replay into this one's loads (and vice versa).
+SID = "11111111-2222-3333-4444-777777777777"
 GID = SID + ":g1"
 NOW = int(time.time())
 
@@ -37,6 +40,11 @@ def _seed(status="working"):
 class InterruptBlocks(unittest.TestCase):
     def setUp(self):
         kern._write_auto_nudge({"enabled": True, "nudged": {}})
+        # each test re-seeds the store from scratch; the append-only overrides journal would replay a
+        # previous test's journaled interrupt block into the fresh store as a phantom row
+        fp = jd._overrides_dir() / (SID + ".jsonl")
+        if fp.exists():
+            fp.unlink()
 
     def test_interrupt_blocks_the_focus_goal_via_the_diary(self):
         _seed()

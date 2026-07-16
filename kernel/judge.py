@@ -181,14 +181,17 @@ CONCURRENCY = 6                          # concurrent claude -p calls
 # toggleable for a cheap revert: set ROMP_CLOSER=0 to disable (the old ROMP_NEG_SWEEP still works). The
 # kernel runs the LIVE closer (run_close) whenever this is on.
 CLOSER_ON = os.environ.get("ROMP_CLOSER", os.environ.get("ROMP_NEG_SWEEP", "1")) != "0"
-# The UNBLOCKER: a triage-tier judge that re-examines open blocked SUB-goals against the conversation
+# The UNBLOCKER: a triage-tier judge that re-examines open blocked goals against the conversation
 # that happened AFTER the block landed, and lifts a block whose question got answered in passing or made
 # moot (the user 2026-07-11: nimbus's card sat in Needs-you for hours on a buried sub asking a question
 # — pack mAh, logging preference — the very next stretch of conversation had answered; nothing ever files
-# on a dormant sub, so no _unblock_branch walk could reach it). Subs only: a blocked TOP is the card's
-# Needs-you with its own designed heal paths (a reply on the thread re-judges it; a placement under it
-# unblocks the ancestor chain). Event-gated per node (blockCheckT vs the newest ended turn), so a stable
-# session is never re-asked. Toggleable: set ROMP_UNBLOCKER=0 to disable.
+# on a dormant sub, so no _unblock_branch walk could reach it). Originally subs only — a blocked TOP has
+# its own heal paths (a reply on the thread re-judges it; a placement under it unblocks the chain) — but
+# those only cover answers landing ON the card: an answer given on a SIBLING card's thread reaches no
+# heal path at all (the user 2026-07-16, g48: two cards blocked on the same clarification, the user
+# answered on one, the other sat in Needs-you forever), so blocked tops are candidates too now.
+# Event-gated per node (blockCheckT vs the newest ended turn), so a stable session is never re-asked.
+# Toggleable: set ROMP_UNBLOCKER=0 to disable.
 UNBLOCK_ON = os.environ.get("ROMP_UNBLOCKER", "1") != "0"
 # The GROUPER: a separate triage-tier judge that runs after the planner and reorganizes each session's
 # OPEN top goals into a few coherent trees — nesting related tops under one another or under a fresh
@@ -1348,12 +1351,27 @@ def append_override(fsid, node_id, op, t):
     store in memory across a model call — a stale pass save erases the flag write AND its diary event,
     leaving nothing to re-derive the action from. The journal is the durable truth: load_goals replays
     it idempotently, so a clobbered override re-applies on the very next load (the cleared.jsonl
-    pattern — the event is the write). Ops: resolve, followup, move; an undo-clear restore rides
-    append_restore below (it must carry node payloads)."""
+    pattern — the event is the write). Ops: resolve, followup, move; kernel-side block verdicts ride
+    append_block and an undo-clear restore rides append_restore below (it must carry node payloads)."""
     d = _overrides_dir()
     d.mkdir(parents=True, exist_ok=True)
     with (d / (fsid + ".jsonl")).open("a") as f:
         f.write(json.dumps({"node": node_id, "op": op, "t": int(t)}) + "\n")
+
+
+def append_block(fsid, node_id, src, why, t):
+    """Journal a KERNEL-side block verdict (src "nudge"/"interrupt") — the same clobber protection
+    append_override gives user clicks, for the blocks the kernel stamps BETWEEN judge passes. These are
+    the writes most exposed to a pass's stale save: a planner/closer pass holds this session's store in
+    memory across a minutes-long model call, and its save erases a block row that landed inside the
+    window (2026-07-16, g52: the nudge-failed block vanished under the planner's save while
+    auto-nudge.json kept `failed` — the "stalled" chip's retire path keyed on the erased row, so the
+    chip outlived the user's own follow-up). Written BEFORE the caller's store save; replay re-records
+    the block unless a user event at/after t supersedes it (their reply answered the ask)."""
+    d = _overrides_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / (fsid + ".jsonl")).open("a") as f:
+        f.write(json.dumps({"node": node_id, "op": "block", "src": src, "why": why, "t": int(t)}) + "\n")
 
 
 def append_restore(fsid, nodes, status, t):
@@ -1433,6 +1451,15 @@ def _replay_overrides(fsid, store):
             _unblock_subtree(store, ev["node"], t,
                              "answered by the user's reply to the card" if op == "followup"
                              else "moved to Working by the user")
+        elif op == "block":
+            # A kernel-side block (append_block). `superseded` doubles as the answer guard: the user's
+            # reply at/after the stamp answered the ask, so replaying would re-block past their reopen.
+            src = ev.get("src") or "nudge"
+            if superseded or any(e.get("src") == src and e.get("kind") == "block"
+                                 and int(e.get("ev_t") or 0) == t for e in (nd.get("log") or [])):
+                continue                               # answered since, or the original write survived
+            if record_verdict(store, nd, src, "block", t, why=ev.get("why")):
+                nd["mt"] = max(int(nd.get("mt") or 0), t)
 
 
 def save_goals(fsid, store):
@@ -5249,19 +5276,20 @@ def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
     return n
 
 
-# ───────────────────────── the unblocker (triage tier; stale sub-blocks) ─────────────────────────
-# A sub-goal blocked on a question stays blocked until work files ON that node (or an ancestor placement
+# ───────────────────────── the unblocker (triage tier; stale blocks) ─────────────────────────
+# A goal blocked on a question stays blocked until work files ON that node (or an ancestor placement
 # walks its chain) — but an answer given in passing files under whichever node the planner judges the
-# segment to serve, so a dormant blocked sub never hears it. This pass closes that gap: for each open
-# blocked sub with NEW conversation since its block (event-gated), ask whether the conversation answered
-# its question or made it moot, and lift via the same record_verdict("unblock") every other lift uses.
+# segment to serve, so a dormant blocked goal never hears it (a buried sub, or a TOP whose answer came
+# on a sibling card's thread — g48, 2026-07-16). This pass closes that gap: for each open blocked goal
+# with NEW conversation since its block (event-gated), ask whether the conversation answered its
+# question or made it moot, and lift via the same record_verdict("unblock") every other lift uses.
 UNBLOCK_HISTORY_CHARS = 9000             # the after-conversation tail shown to the unblocker (newest kept)
 
 UNBLOCK_SYS = (
-    "You review sub-goals a work session earlier marked blocked, each waiting on an answer or decision "
+    "You review goals a work session earlier marked blocked, each waiting on an answer or decision "
     "from the user, against the conversation that happened after the block. You are a reviewer, not a "
     "chat partner: don't act on anything, answer anything, or ask anything.\n\n"
-    "Each numbered block in <blocked-subs> is one sub-goal's open question. <conversation-since> is what "
+    "Each numbered block in <blocked-goals> is one goal's open question. <conversation-since> is what "
     "the session and the user said and did afterwards. Decide for each block whether it is still "
     "genuinely waiting on the user, or whether the conversation has since answered its question or made "
     "it moot (the answer was given in passing, the decision got made another way, or the work visibly "
@@ -5275,8 +5303,8 @@ UNBLOCK_SYS = (
 
 def unblock_llm(blocks_text, since_text):
     """The unblocker's {"verdicts":[...]} reply from the triage-tier model over the numbered open
-    blocked subs + the conversation since the oldest of them. '' on failure (logged by _judge_run)."""
-    user = ("<blocked-subs>\n%s\n</blocked-subs>\n<conversation-since>\n%s\n</conversation-since>"
+    blocked goals + the conversation since the oldest of them. '' on failure (logged by _judge_run)."""
+    user = ("<blocked-goals>\n%s\n</blocked-goals>\n<conversation-since>\n%s\n</conversation-since>"
             % (blocks_text, since_text))
     return _judge_run(_triage_model(), UNBLOCK_SYS, user, judge="unblocker").strip()[:JUDGE_JSON_CAP]
 
@@ -5305,10 +5333,12 @@ def _parse_unblock(raw, n):
 
 
 def _blocked_sub_candidates(store):
-    """The open blocked SUBS eligible for re-examination: blocked, not cleared, not a top (a blocked top
-    is the card's Needs-you — it has its own heal paths), and not sealed under a completed/cleared
-    ancestor (any_blocked already ignores those as moot). Each with its block-event time (the diary is
-    the authority; mt gets bumped by other touches)."""
+    """The open blocked goals eligible for re-examination: blocked, not cleared, and not sealed under a
+    completed/cleared ancestor (any_blocked already ignores those as moot). TOPS INCLUDED (2026-07-16,
+    g48): a blocked top's designed heal paths — a reply on its own thread, a placement under it — cover
+    only answers that land ON the card; an answer given on a sibling card's thread reaches neither, and
+    the card sat in Needs-you forever. Each with its block-event time (the diary is the authority; mt
+    gets bumped by other touches)."""
     nodes = store["nodes"]
 
     def _sealed(nid):
@@ -5325,7 +5355,7 @@ def _blocked_sub_candidates(store):
 
     out = []
     for nid, nd in nodes.items():
-        if not nd.get("blocked") or nd.get("cleared") or nd.get("parentId") is None or _sealed(nid):
+        if not nd.get("blocked") or nd.get("cleared") or _sealed(nid):
             continue
         block_t = max((e.get("ev_t") or 0 for e in (nd.get("log") or []) if e.get("kind") == "block"),
                       default=nd.get("mt", nd.get("t", 0)))
@@ -5334,10 +5364,10 @@ def _blocked_sub_candidates(store):
 
 
 def _unblock_session(fsid, path, now):
-    """Re-examine ONE session's stale blocked subs. Event-gated per node: a sub is (re-)examined only
-    when an ENDED turn newer than max(its block, its last check) exists — blockCheckT is the watermark,
-    advanced after every examine (and on the parse give-up) so a stable session costs zero calls.
-    Returns the node ids lifted.
+    """Re-examine ONE session's stale blocked goals (subs AND tops, 2026-07-16). Event-gated per node: a
+    goal is (re-)examined only when an ENDED turn newer than max(its block, its last check) exists —
+    blockCheckT is the watermark, advanced after every examine (and on the parse give-up) so a stable
+    session costs zero calls. Returns the node ids lifted.
 
     Write discipline (the user 2026-07-11): the model call takes seconds and save_goals is a
     last-writer-wins atomic publish, so NO store copy is held across the call — the scan's load is
@@ -5365,7 +5395,7 @@ def _unblock_session(fsid, path, now):
     since = since[-UNBLOCK_HISTORY_CHARS:]
     if not since.strip():
         return []
-    blocks_text = "\n".join("%d. %s\n   blocked on: %s" % (i, nd.get("text") or "(sub-goal)",
+    blocks_text = "\n".join("%d. %s\n   blocked on: %s" % (i, nd.get("text") or "(goal)",
                                                            nd.get("blockWhy") or "(no recorded question)")
                             for i, (_nid, nd, _bt) in enumerate(due, 1))
     raw = unblock_llm(blocks_text, since)              # ← seconds; no store copy held across this
@@ -5427,7 +5457,7 @@ def run_unblock(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             except Exception:
                 pass
     if verbose:
-        sys.stderr.write("romp-judge: unblocker lifted %d stale sub-blocks\n" % n)
+        sys.stderr.write("romp-judge: unblocker lifted %d stale blocks\n" % n)
     return n
 
 

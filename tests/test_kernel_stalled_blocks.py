@@ -20,12 +20,22 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 kern = SourceFileLoader("romp_kernel_stalledblk", os.path.join(BIN, "romp-kernel")).load_module()
 jd = kern.jd
 
-SID = "11111111-2222-3333-4444-555555555555"
+# A SID of this file's own: the judge module is process-shared across every kernel test copy (its
+# import is sys.modules-cached), so the append-only overrides journal is shared too — a same-SID,
+# same-gid block journaled by another test file would replay into this one's loads (and vice versa).
+SID = "11111111-2222-3333-4444-888888888888"
 GID = SID + ":g1"
 NOW = int(time.time())
 
 
 class StalledBlocks(unittest.TestCase):
+    def setUp(self):
+        # each test re-seeds the store from scratch; the append-only overrides journal would replay a
+        # previous test's journaled nudge block into the fresh store as a phantom row
+        fp = jd._overrides_dir() / (SID + ".jsonl")
+        if fp.exists():
+            fp.unlink()
+
     def test_failed_nudge_records_a_block_and_the_card_goes_needs_you(self):
         store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {},
                  "nodes": {GID: {"id": GID, "text": "Ship the widget", "parentId": None,

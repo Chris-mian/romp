@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""The UNBLOCKER (the user 2026-07-11): a sub-goal blocked on a question stays blocked forever unless
+"""The UNBLOCKER (the user 2026-07-11): a goal blocked on a question stays blocked forever unless
 work files on that exact node — an answer given in passing files wherever the planner judges it to
-serve, so a dormant blocked sub never hears it (nimbus: the card sat in Needs-you for hours on a
+serve, so a dormant blocked goal never hears it (nimbus: the card sat in Needs-you for hours on a
 buried sub whose mAh/logging question the very next conversation stretch had answered). The pass
-re-examines open blocked SUBS against the conversation since their block and lifts via the same
-record_verdict("unblock") every other lift uses. Event-gated per node (blockCheckT vs the newest ended
-turn), model stubbed. All fixtures SYNTHETIC (invented text, placeholder UUIDs).
+re-examines open blocked goals — subs AND, since 2026-07-16 (g48), tops, whose answer can land on a
+sibling card's thread that no other heal path reads — against the conversation since their block and
+lifts via the same record_verdict("unblock") every other lift uses. Event-gated per node (blockCheckT
+vs the newest ended turn), model stubbed. All fixtures SYNTHETIC (invented text, placeholder UUIDs).
 """
 import json
 import os
@@ -134,12 +135,29 @@ class Unblocker(UnblockerBase):
         jd._unblock_session(SID, path2, NOW)
         self.assertEqual(len(self.calls), 2, "new evidence → examined again")
 
-    def test_a_blocked_top_is_never_examined(self):
+    def test_a_blocked_top_is_examined_and_lifted(self):
+        # Flipped 2026-07-16 (g48): a blocked TOP's designed heal paths — a reply on its own thread, a
+        # placement under it — cover only answers landing ON the card. Two cards blocked on the same
+        # clarification, the user answered on the sibling's thread, and the other top sat in Needs-you
+        # with no mechanism able to reach it. Tops are unblocker candidates now.
         top, sub = self._store(block_t=T0 + 100, block_top_instead=True)
+        path = self._transcript([(T0 + 200, "the plan is confirmed, 10,000mAh", "proceeding")])
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "confirmed on the sibling thread"}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [top])
+        store = jd.load_goals(SID)
+        self.assertFalse(store["nodes"][top]["blocked"], "the answered top block is lifted")
+        self.assertIn("what is the pack's mAh rating?", self.calls[0][0], "the top's question was shown")
+
+    def test_a_cleared_blocked_top_is_not_examined(self):
+        top, sub = self._store(block_t=T0 + 100, block_top_instead=True)
+        store = jd.load_goals(SID)
+        with jd._authority():
+            store["nodes"][top]["cleared"] = True
+        jd.save_goals(SID, store)
         path = self._transcript([(T0 + 200, "the plan is confirmed", "proceeding")])
-        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "confirmed"}]}')
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "x"}]}')
         self.assertEqual(jd._unblock_session(SID, path, NOW), [])
-        self.assertEqual(self.calls, [], "a blocked TOP is the card's Needs-you — never lifted here")
+        self.assertEqual(self.calls, [], "a dismissed card is out of the candidate set")
 
     def test_a_block_under_a_completed_ancestor_is_skipped_as_moot(self):
         top, sub = self._store(block_t=T0 + 100, top_done=True)

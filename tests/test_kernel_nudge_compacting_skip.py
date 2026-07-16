@@ -39,7 +39,8 @@ class NudgeCompactingSkip(unittest.TestCase):
         self.td.cleanup()
 
     def test_guard_uses_the_corroborated_compacting_signal(self):
-        src = inspect.getsource(km._auto_nudge_tick)
+        # the per-session body lives in _auto_nudge_session since the 2026-07-16 isolation split
+        src = inspect.getsource(km._auto_nudge_session)
         self.assertIn("or _compacting_now(sid)", src,
                       "the compacting skip must corroborate, not trust the tmux-only state")
 

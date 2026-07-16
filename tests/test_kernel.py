@@ -2301,6 +2301,65 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["column"], "needs_input", "the ordinary soft-block path files it")
         self.assertEqual(km.jd.load_goals(SID)["nodes"][g]["blockWhy"], "needs the staging credentials")
 
+    def test_nudge_failed_chip_retires_on_user_action_even_without_its_block_row(self):
+        # The g52 shape (2026-07-16): _mark_nudge_failed stamped `failed` in auto-nudge.json but its
+        # paired diary block row was erased by a judge pass's stale save (the pass held the store
+        # across its model call). The retire path keyed exclusively on that row, so the chip said
+        # "waiting on you" straight through the user's own follow-up. A legacy record carrying
+        # neither the row nor failedAt retires on any USER diary event at all — of the two failure
+        # modes, a false "waiting on you" is the one that breaks flow.
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0,
+                              "log": [{"ev_t": T0 + 60, "src": "user", "kind": "reopen",
+                                       "why": "reopened (optimistic)", "at": T0 + 60}]}},
+                         {g: "working"}, last=g)
+        km._write_auto_nudge({"enabled": True, "nudged": {g: {"count": 1, "lastTurnId": "x", "failed": True}}})
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertFalse(card["nudgeFailed"], "the user's follow-up ended 'waiting on you' — row or no row")
+
+    def test_nudge_failed_chip_keys_on_the_failure_stamp_when_the_row_is_missing(self):
+        # A NEW-format record carries failedAt (stamped with `failed`): the chip shows while nothing
+        # real happened after the failure, and retires on the first real-actor event after it — the
+        # same event rule the block row anchors, riding the one write the failure path is actually
+        # guaranteed to leave.
+        g = SID + ":gw"
+        mint = {"ev_t": T0 + 10, "src": "planner", "kind": "reopen", "why": "reopened (nudge)", "at": T0 + 10}
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0, "log": [mint]}},
+                         {g: "working"}, last=g)
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            g: {"count": 1, "lastTurnId": "x", "failed": True, "failedAt": T0 + 50}}})
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertTrue(card["nudgeFailed"], "only pre-failure history → the failure is still the story")
+        st = km.jd.load_goals(SID)
+        km.jd.record_verdict(st, st["nodes"][g], "user", "reopen", T0 + 100, why="followed up")
+        km.jd.save_goals(SID, st)
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertFalse(card["nudgeFailed"], "a real-actor event after failedAt retires the chip")
+
+    def test_a_failing_session_does_not_abort_the_nudge_tick_for_the_fleet(self):
+        # 2026-07-16: a TypeError in one session's _session_awaiting aborted the WHOLE tick — 1333
+        # consecutive ticks over two days — so every session after the bad one in the iteration
+        # silently lost its nudges. The tick isolates per session now (the failure still logs).
+        km._write_auto_nudge({"enabled": True, "nudged": {}})
+        seen = []
+
+        def boom(s, now, tmux, nudged, waitfor):
+            if s["sid"] == "bad-session":
+                raise TypeError("%d format: a real number is required, not list")
+            seen.append(s["sid"])
+            return False
+        orig_one, orig_alive = km._auto_nudge_session, km._alive_sessions
+        km._auto_nudge_session = boom
+        km._alive_sessions = lambda now, tmux: [{"sid": "bad-session", "path": "x"},
+                                                {"sid": "good-session", "path": "y"}]
+        try:
+            km._auto_nudge_tick(NOW, {})
+        finally:
+            km._auto_nudge_session, km._alive_sessions = orig_one, orig_alive
+        self.assertEqual(seen, ["good-session"], "the session after the failing one still gets its pass")
+
     def _stall_transcript(self, recs):
         # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids
         # marked closer-classified (so the closer-gate always passes for the latest). Returns the goal id.
