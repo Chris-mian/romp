@@ -19,7 +19,8 @@ test("drafts are persisted to and reloaded from the webview's saved state", () =
 });
 
 test("typing captures the draft (and persists it) every keystroke — so a reload can restore it", () => {
-  assert.match(RENDER, /ta\.addEventListener\("input", \(\) => \{[\s\S]*if \(activeId\) \{ if \(ta\.value\) drafts\.set\(activeId, ta\.value\); else drafts\.delete\(activeId\); persistDrafts\(\); \}[\s\S]*\}\);/);
+  // the same set/delete-then-persist, now also stamping when THIS draft began (ask-draft-predates.test.ts)
+  assert.match(RENDER, /ta\.addEventListener\("input", \(\) => \{[\s\S]*if \(ta\.value\) \{ if \(!had\) draftStartedAt\.set\(activeId, Date\.now\(\)\); drafts\.set\(activeId, ta\.value\); \}\s*\n\s*else \{ draftStartedAt\.delete\(activeId\); drafts\.delete\(activeId\); \}\s*\n\s*persistDrafts\(\);[\s\S]*\}\);/);
 });
 
 test("the post-reload restore is one-shot and never clobbers live typing", () => {
@@ -34,8 +35,8 @@ test("the post-reload restore is one-shot and never clobbers live typing", () =>
 test("every draft mutation keeps the persisted copy in sync (switch / send / close)", () => {
   // tab switch stashes the leaving tab's draft (and renders the entering tab's citation chip) → persist
   assert.match(RENDER, /ta\.value = drafts\.get\(id\) \?\? "";\s*\n\s*growComposer\(ta\);\s*\n\s*renderComposerChips\(id\);[\s\S]*?persistDrafts\(\);/);
-  // sending clears the draft → persist
-  assert.match(RENDER, /drafts\.delete\(activeId\); persistDrafts\(\);\s*\/\/ sent/);
+  // sending clears the draft (and ends its start-stamp) → persist
+  assert.match(RENDER, /drafts\.delete\(activeId\); draftStartedAt\.delete\(activeId\); persistDrafts\(\);\s*\/\/ sent/);
   // closing a tab drops its draft AND its citation → persist
   assert.match(RENDER, /drafts\.delete\(id\); composerCitations\.delete\(id\); persistDrafts\(\);/);
 });

@@ -357,6 +357,14 @@ const views = new Map<string, View>();
 // unstructured screen (e.g. the free-text "type something" field) → a text input;
 // no entry at all = not awaiting → hidden.
 const liveAsks = new Map<string, ParsedAsk | null>();
+// When each session's live picker ARRIVED, and when the composer's current draft was STARTED (empty →
+// non-empty). A draft you were already writing when the question appeared CANNOT be an answer to a question
+// you hadn't seen yet, so Enter sends it as a normal MESSAGE — which a picker-blocked session necessarily
+// queues behind the answer — instead of silently becoming the answer (the user 2026-07-16: a queued message
+// got eaten as the reply to an AskUserQuestion). Two real event stamps compared, never a time heuristic.
+// Either stamp missing → we don't know it predates, so the picker keeps the box (the old behaviour).
+const askArrivedAt = new Map<string, number>();
+const draftStartedAt = new Map<string, number>();
 
 // Per-session rolling digest (headline + goal tree + Recent), feeding the tab tooltip and the
 // Fleet view. (The in-chat #ledger box and its bullets list are retired — 2026-07-07 payload audit.)
@@ -1834,7 +1842,12 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
     const head = el("div", "queued-head");
     head.appendChild(hourglassIcon());
-    const label = el("span"); label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}`;
+    // While a question is pending, say WHAT it's waiting on: a message you'd already written when the picker
+    // arrived is sent as a message, not eaten as the answer, and the session can't take it until the question
+    // is resolved — so the queue is really "after you answer" (the user 2026-07-16).
+    const pendingAsk = !!activeId && liveAsks.has(activeId);
+    const label = el("span");
+    label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}` + (pendingAsk ? " · sends after you answer" : "");
     head.appendChild(label);
     turn.appendChild(head);
   }
@@ -4550,10 +4563,12 @@ function renderBgTasks() {
 // ---- live "awaiting your input" widgets (structured: radio / checkbox / submit / text) ----
 
 function setLiveAsk(id: string, ask: ParsedAsk | null) {
+  if (!liveAsks.has(id)) askArrivedAt.set(id, Date.now());   // ARRIVED now — not a re-render of the same question
   liveAsks.set(id, ask);
   if (id === activeId) renderLiveAsk();
 }
 function clearLiveAsk(id: string) {
+  askArrivedAt.delete(id);
   if (liveAsks.delete(id) && id === activeId) renderLiveAsk();
 }
 
@@ -4590,11 +4605,20 @@ function composerRestingPlaceholder(): string {
 //   "text"   → a raw free-text prompt the panel couldn't structure (askText).
 function composerAnswersAsk(): "custom" | "text" | null {
   if (!activeId || !liveAsks.has(activeId)) return null;
+  if (draftPredatesAsk(activeId)) return null;   // already writing it when the question landed → it's a message
   const ask = liveAsks.get(activeId) ?? null;
   if (!ask) return "text";
   if ((ask.kind === "single" || ask.kind === "multi")
       && ask.options.some((o) => isTypeSomething(o.label))) return "custom";
   return null;
+}
+
+// True when the composer's draft was already under way before this session's question arrived — so it can't
+// be an answer to it. Both stamps are required: without them we can't claim it predates, and the picker keeps
+// the box (see askArrivedAt/draftStartedAt).
+function draftPredatesAsk(id: string): boolean {
+  const started = draftStartedAt.get(id), arrived = askArrivedAt.get(id);
+  return started != null && arrived != null && started < arrived;
 }
 
 // Put the composer into (or out of) "answer this picker" mode: a picker with a free-text path relabels the
@@ -6084,7 +6108,7 @@ function setupComposer() {
     const askRoute = composerAnswersAsk();
     if (askRoute) {
       if (askRoute === "custom") addCustomLiveAsk(text); else sendTextLiveAsk(text);
-      drafts.delete(activeId); persistDrafts();
+      drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();
       ta.value = ""; composerManualH = null; ta.style.height = "";
       return;
     }
@@ -6099,7 +6123,7 @@ function setupComposer() {
       renderComposerChips(activeId);
       const s = sessions.get(activeId);
       if (s) { reconcileRewind(s); appendActive(); }   // paint the overlay NOW (stale → window re-render)
-      drafts.delete(activeId); persistDrafts();
+      drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();
       ta.value = ""; composerManualH = null; ta.style.height = "";
       return;
     }
@@ -6117,10 +6141,13 @@ function setupComposer() {
       // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
     }
     if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
-    drafts.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
+    drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
     ta.value = "";
     composerManualH = null;   // a drag-expanded box snaps back to one line after a send (the user 2026-07-07)
     ta.style.height = "";
+    // The box is empty again, so a live picker re-takes it: send your pre-question draft, then just type the
+    // answer (the user 2026-07-16). Repaints the "answering" tint that draftPredatesAsk had suppressed.
+    setComposerAskMode();
   };
   // an explicit send button on the right of the box (touch devices have no easy ⏎; desktop gets a click
   // affordance too). mousedown, not click, so the textarea keeps focus and a follow-up keeps typing.
@@ -6325,7 +6352,16 @@ function setupComposer() {
     growComposer(ta);
     updateSlash();   // open/refresh/close the slash-command menu as the leading "/token" changes
     // keep the per-tab draft (and its persisted copy) current as you type, so a reload restores it
-    if (activeId) { if (ta.value) drafts.set(activeId, ta.value); else drafts.delete(activeId); persistDrafts(); }
+    if (activeId) {
+      const had = draftStartedAt.has(activeId);
+      // stamp the moment THIS draft began (empty → non-empty); emptying the box ends it, so the next
+      // keystroke starts a fresh one — that's what decides answer-vs-message against a live picker
+      if (ta.value) { if (!had) draftStartedAt.set(activeId, Date.now()); drafts.set(activeId, ta.value); }
+      else { draftStartedAt.delete(activeId); drafts.delete(activeId); }
+      persistDrafts();
+      // going empty↔non-empty can flip which way ⏎ goes → repaint the box's own cue (the "answering" tint)
+      if (had !== draftStartedAt.has(activeId)) setComposerAskMode();
+    }
   });
 
   // Drag a file onto the box → insert its PATH at the cursor. NOTE: VS Code's
