@@ -2337,7 +2337,7 @@ def _drive(msg, client):
     if not isinstance(msg, dict):
         return False
     t = msg.get("type")
-    ID_OPS = ("sendMessage", "rewindSend", "interrupt", "compactSession", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
+    ID_OPS = ("sendMessage", "rewindSend", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
               "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
@@ -2457,6 +2457,15 @@ def _drive(msg, client):
         # ✕ on a backend-queue message: pull it back out (drift-guarded by the bubble's body); the
         # webview already refilled the composer with its text
         _cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))
+        _push_soon()
+    elif t == "dismissDialog":
+        # Dismiss the CLI's spend-cap modal (the chat card's tmux-only affordance): the backend VERIFIES
+        # the dialog is actually up in the pane, then sends Esc — cancel, never a billing change. A
+        # refusal (already dismissed / SDK session) warn-toasts instead of pretending (fail loudly).
+        ok, derr = (be.dismiss_dialog(sid) if hasattr(be, "dismiss_dialog")
+                    else (False, "only tmux sessions show a terminal dialog to dismiss"))
+        if not ok:
+            client["send"](json.dumps({"type": "warn", "text": derr}))
         _push_soon()
     elif t == "apiRetry":
         # The GATE is for the AUTO-retry loop only (romp's 10s tick): a global pause or a thread the user
@@ -2847,6 +2856,21 @@ class TmuxBackend(sb.SessionBackend):
         _interrupt(_name_of(sid) or sid)                  # Esc to stop + clear the restored prompt
         _record_idle(str(sid), int(time.time()))          # Esc writes no end_turn → settle idle (was done in the
         return True                                       #   dispatch; here so tmux+SDK interrupt both settle idle)
+
+    def dismiss_dialog(self, sid):
+        """Dismiss the CLI's spend-cap modal with Esc — the ONLY unblock for a session parked on it
+        (see _spend_dialog_showing: the menu eats keystrokes, so Retry can never land there; the user
+        2026-07-16). VERIFIES the dialog is actually up first, so a stale click can't fire Esc into a
+        normal prompt (where it could wipe typed input). Esc CANCELS the dialog and changes no billing
+        setting — never Enter, which would confirm whatever menu row is selected (e.g. "Adjust monthly
+        spend limit: Unlimited", a real account change). tmux-only by nature: the SDK backend's CLI runs
+        headless print-mode and shows no menu (its spend-cap failure is a plain retryable-after-you-fix-it
+        error); the kernel gates the drive op on this method's presence, mirroring `unqueue`."""
+        name = _name_of(sid) or sid
+        if not _spend_dialog_showing(self.capture(name)):
+            return False, "no spend-limit dialog is showing in that terminal — it may already be dismissed"
+        self.send_keys(name, "Escape")
+        return True, ""
 
     def set_model(self, sid, value):
         _tmux_send(_name_of(sid) or sid, "/model " + value, model_cmd=True)   # /model opens a confirm → 2nd Enter
@@ -4834,6 +4858,17 @@ def _is_spend_limit(text):
     return ("spend limit" in low
             or ("raise" in low and "settings/usage" in low)
             or ("spending" in low and "limit" in low))
+
+
+def _spend_dialog_showing(pane):
+    """Is the CLI's spend-cap MODAL currently up in this pane capture? When a tmux session hits the
+    monthly cap MID-TURN the CLI drops into an interactive menu ("What do you want to do? / Adjust
+    monthly spend limit / Wait for limit to reset / …") that eats every keystroke as navigation — an
+    injected "retry" lands in the MENU and vanishes, which is why Retry could never unblock such a
+    session (the user 2026-07-16). Requires the menu TITLE plus a menu-chrome line, so conversation
+    text that merely MENTIONS the phrase can't match a dialog that isn't there."""
+    return ("Adjust monthly spend limit" in pane
+            and ("What do you want to do?" in pane or "Enter to confirm" in pane))
 
 
 def _api_error(path):
