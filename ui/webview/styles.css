@@ -889,6 +889,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   border-radius: 14px; padding: 9px 14px; color: #ffffff;
   display: flow-root;   /* contain inner floats (e.g. image captions) */
 }
+/* a just-sent message, shown optimistically before the kernel echoes it back (the user 2026-07-15): dimmed
+   so it reads as "sending", solidifying to full opacity the instant the kernel's real bubble supersedes it */
+.user-bubble.pending { opacity: 0.6; }
 /* white-on-blue legibility for inner markdown */
 .user-bubble a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
 .user-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.2); color: #fff; }

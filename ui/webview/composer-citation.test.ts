@@ -55,7 +55,7 @@ test("Backspace at the start of the box deletes the citation like a character", 
 test("sending with a GOAL citation routes as an askFollowUp (reopen) and consumes the chip", () => {
   assert.match(RENDER, /const cite = composerCitations\.get\(activeId\);/);
   assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
-  assert.match(RENDER, /else vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\);/);
+  assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\); registerOptimistic\(activeId, text\); \}/);
   assert.match(RENDER, /if \(cite\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
 });
 

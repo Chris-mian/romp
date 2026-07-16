@@ -56,7 +56,11 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
+  // `pending` = a CLIENT-side optimistic echo of a just-sent message, injected at the tail so it shows the
+  // instant you hit Enter and STAYS put across pushes — bridging the server-side echo→landed gap where the
+  // kernel's own provisional briefly vanished (the user 2026-07-15). Reconciled out once the kernel's payload
+  // carries the message (see reconcileOptimistic). Never sent to/from the kernel.
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[]; pending?: boolean }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -175,6 +179,47 @@ const expandedGroups = new Set<string>();      // compact mode: tool-group keys 
 
 const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
+
+// ── client-side optimistic echo (the user 2026-07-15) ── a composer send clears the box instantly, but the
+// message only reappears in the chat once the kernel round-trips it back (its own provisional). Sending to a
+// busy/slow thread, the kernel's provisional could briefly VANISH in the echo→landed gap — so a just-sent
+// message looked lost for a beat. We drop a local optimistic bubble at the tail the moment you hit Enter and
+// keep RE-injecting it on every push until the kernel's payload demonstrably carries the message, then let it
+// go — the immediacy is client-owned, independent of every server-side timing subtlety.
+const OPT_PREFIX = "optimistic:";
+const OPT_TTL_MS = 20_000;    // backstop: a real send always echoes within this; past it we stop asserting
+const OPT_TAIL_SCAN = 30;     // the kernel's version (user atom / queued bubble) always lands at the tail
+const pendingSent = new Map<string, { text: string; ts: number }[]>();   // sid → in-flight optimistic sends
+const isOptimistic = (e: ChatEvent): boolean => e.kind === "user" && !!e.uuid && e.uuid.startsWith(OPT_PREFIX);
+
+// Rebuild a session's optimistic tail: strip any bubbles we injected last push (kernel events are
+// authoritative), then re-append one per still-in-flight send — dropping those the kernel has now surfaced
+// (a landed user atom or a queued bubble whose text contains ours) or that have aged past the TTL backstop.
+// Optimistic bubbles are always tail-appended, so the stale ones pop cheaply off the end.
+function reconcileOptimistic(s: Session): void {
+  while (s.events.length && isOptimistic(s.events[s.events.length - 1])) s.events.pop();
+  const list = pendingSent.get(s.id);
+  if (!list || !list.length) return;
+  const now = Date.now();
+  const tail = s.events.slice(-OPT_TAIL_SCAN);
+  const landed = (t: string) => tail.some((e) =>
+    (e.kind === "user" && typeof e.md === "string" && e.md.includes(t)) ||
+    (e.kind === "queued" && Array.isArray(e.texts) && e.texts.some((x) => typeof x.md === "string" && x.md.includes(t))));
+  const keep = list.filter((p) => now - p.ts < OPT_TTL_MS && !landed(p.text));
+  if (keep.length) pendingSent.set(s.id, keep); else pendingSent.delete(s.id);
+  for (const p of keep) s.events.push({ kind: "user", md: p.text, human: true, pending: true, uuid: OPT_PREFIX + p.ts });
+}
+
+// Record a composer send as in-flight and show its optimistic bubble NOW (before any kernel push).
+function registerOptimistic(id: string, text: string): void {
+  const arr = pendingSent.get(id) || [];
+  arr.push({ text, ts: Date.now() });
+  pendingSent.set(id, arr);
+  const s = sessions.get(id);
+  if (!s) return;
+  reconcileOptimistic(s);
+  if (id === activeId) appendActive();
+}
 // Tab name+color from the kernel's tabOrder push (the user 2026-06-26): lets renderTabs paint the WHOLE
 // strip as placeholders BEFORE each session's build_session arrives, so tabs don't pop in one-by-one.
 const tabMeta = new Map<string, { name: string; color: Color | null }>();
@@ -1143,7 +1188,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }
-      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
+      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md" + (ev.pending ? " pending" : ""));
       // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
       // "/cmd" token as a monospace chip. Genuine human bubbles only (a romp/injected note is never a command).
       // paths this turn already renders as full in-bubble images (both the caption path and a
@@ -5527,6 +5572,7 @@ function upsert(msg: any) {
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
   };
   sessions.set(msg.id, s);
+  reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
   // on the SAME transcript — the common case) from a FORK (the tab re-pointed onto a NEW transcript,
   // events replaced wholesale, e.g. a /clear-style fork). Only a FORK drops the cached DOM and
@@ -5590,6 +5636,7 @@ function update(msg: any) {
   if (!s) return;
   s.events = msg.events || s.events;
   s.status = msg.status || s.status;
+  reconcileOptimistic(s);                // re-assert (or retire) any in-flight optimistic sends on this push
   renderTabs();                          // status/chip change only — repaint, never re-order (the user 2026-06-27)
   if (msg.id === activeId) {
     appendActive();
@@ -5615,6 +5662,7 @@ function chatTail(msg: any) {
   if (from < 0 || from > s.events.length) return;  // below the loaded head, or a gap → wait for the next full
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
+  reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (msg.status) s.status = msg.status;
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
@@ -5898,7 +5946,8 @@ function setupComposer() {
     if (vscodeApi) {
       if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
       else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text, cite.src) });
-      else vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
+      else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
+      // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
     }
     if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
     drafts.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
