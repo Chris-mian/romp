@@ -1929,27 +1929,49 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   const countdown = el("span", "apierror-countdown");
   countdown.textContent = "retrying soon…";
   head.appendChild(countdown);
-  const retry = el("button", "apierror-retry") as HTMLButtonElement;
-  retry.textContent = "Retry now";
-  retry.title = "send “retry” into this session right now (also resets the auto-retry countdown)";
-  retry.addEventListener("click", () => {
-    // manual:true → an explicit override that fires even when auto-retry is paused/suppressed for this thread
-    // (the kernel gate is for the auto-loop only); without it "Retry now" was a dead no-op on a suppressed
-    // session (the user 2026-07-06). Acknowledge the click AT ONCE — disable + "Retrying…" — so it never
-    // reads as unresponsive; the next render (a fresh error card, or the turn resuming) restores it.
-    if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId, manual: true });
-    if (activeId) apiRetryNext.set(activeId, Date.now() + API_RETRY_MS);   // restart the countdown
-    retry.disabled = true;
-    retry.textContent = "Retrying…";
-    setTimeout(() => { if (retry.isConnected) { retry.disabled = false; retry.textContent = "Retry now"; } }, 2500);
-  });
-  head.appendChild(retry);
+  // A SPEND-CAP block gets no Retry (the user 2026-07-16, mirroring the feed card's 2026-07-14 call):
+  // retrying can't lift a billing cap, and on a tmux session it's worse than useless — the CLI is parked
+  // on an interactive menu that eats the injected "retry" as navigation keystrokes. There the real
+  // unblock is dismissing that dialog, so the tmux card offers exactly that (the kernel verifies the
+  // menu is up, then sends Esc — cancel, never a billing change). An SDK spend-cap card names the fix
+  // (raise the cap) with no dead button at all.
+  const st = activeId ? sessions.get(activeId)?.status : undefined;
+  const spendCap = !!st?.apiSpendLimit;
+  if (!spendCap) {
+    const retry = el("button", "apierror-retry") as HTMLButtonElement;
+    retry.textContent = "Retry now";
+    retry.title = "send “retry” into this session right now (also resets the auto-retry countdown)";
+    retry.addEventListener("click", () => {
+      // manual:true → an explicit override that fires even when auto-retry is paused/suppressed for this thread
+      // (the kernel gate is for the auto-loop only); without it "Retry now" was a dead no-op on a suppressed
+      // session (the user 2026-07-06). Acknowledge the click AT ONCE — disable + "Retrying…" — so it never
+      // reads as unresponsive; the next render (a fresh error card, or the turn resuming) restores it.
+      if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId, manual: true });
+      if (activeId) apiRetryNext.set(activeId, Date.now() + API_RETRY_MS);   // restart the countdown
+      retry.disabled = true;
+      retry.textContent = "Retrying…";
+      setTimeout(() => { if (retry.isConnected) { retry.disabled = false; retry.textContent = "Retry now"; } }, 2500);
+    });
+    head.appendChild(retry);
+  } else if (st?.backend === "tmux") {
+    const dismiss = el("button", "apierror-retry") as HTMLButtonElement;   // same button chrome, different verb
+    dismiss.textContent = "Dismiss dialog";
+    dismiss.title = "the terminal is showing the spend-limit menu — send Esc to close it (cancels; changes no billing setting)";
+    dismiss.addEventListener("click", () => {
+      if (vscodeApi) vscodeApi.postMessage({ type: "dismissDialog", id: activeId });
+      dismiss.disabled = true;
+      dismiss.textContent = "Dismissing…";
+      setTimeout(() => { if (dismiss.isConnected) { dismiss.disabled = false; dismiss.textContent = "Dismiss dialog"; } }, 2500);
+    });
+    head.appendChild(dismiss);
+  }
   // Global auto-retry pause (the user 2026-06-30) — no per-session off-switch. "Retry now" + sending a message still work.
   const paused = globalRetryPaused;
   // Per-thread suppression (the user 2026-07-06): the user interrupted THIS thread's storm → its auto-retry is
   // held off until a successful turn re-arms it. Distinct from the global pause; "Retry now" + a message still work.
   const suppressed = activeId ? !!sessions.get(activeId)?.status.retrySuppressed : false;
-  if (paused) countdown.textContent = retryPausedText();   // a usage-limit pause counts down to the window reset
+  if (spendCap) countdown.textContent = "spend limit reached — raise it at claude.ai/settings/usage";   // never "retrying soon…": the tick skips spend-capped threads
+  else if (paused) countdown.textContent = retryPausedText();   // a usage-limit pause counts down to the window reset
   else if (suppressed) countdown.textContent = "auto-retry stopped for this session — send a message to resume";
   const stop = el("button", "apierror-stop") as HTMLButtonElement;
   stop.textContent = paused ? "Resume all auto-retries" : "Stop all auto-retries";
