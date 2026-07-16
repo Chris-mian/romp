@@ -137,6 +137,10 @@ type ChatEvent = (
   // A stalled api_retry turn RECOVERED — a persistent, rail-anchored "Recovered after N retries" note left
   // where output resumed, the historical counterpart of the transient element above (the user 2026-07-08).
   | { kind: "retried"; retries: number; ts?: string; uuid?: string }
+  // Durable "effort set to X" note (the user 2026-07-16): the /effort reconnect leaves no transcript atom,
+  // and the synthesized /effort chip prunes on the next message — so this rail-anchored note marks WHEN the
+  // new effort took effect, and stays. Kernel-interleaved by time, like `retried`. SDK-only.
+  | { kind: "effortApplied"; effort: string; ts?: string; uuid?: string }
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
@@ -1389,6 +1393,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "reconnecting") return renderReconnecting(ev);
   if (ev.kind === "retrying") return renderRetrying(ev);
   if (ev.kind === "retried") return renderRetried(ev);
+  if (ev.kind === "effortApplied") return renderEffortApplied(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -1748,6 +1753,22 @@ function renderRetried(ev: Extract<ChatEvent, { kind: "retried" }>): HTMLElement
   txt.textContent = `Recovered after ${n} ${n === 1 ? "retry" : "retries"}`;
   line.appendChild(txt);
   line.title = "the API returned a retryable error (rate-limit / overload); the CLI backed off and retried, then output resumed";
+  turn.appendChild(line);
+  return turn;
+}
+
+// A durable, rail-anchored "effort set to X" note at the moment an /effort change took effect (the user
+// 2026-07-16). Same slim treatment as renderRetried — the reconnect leaves no transcript atom, so this is the
+// only lasting record of when reasoning effort changed (the synthesized /effort chip self-destructs on the
+// next message). Kernel writes it at the reconnect landing, so its timestamp IS the apply moment.
+function renderEffortApplied(ev: Extract<ChatEvent, { kind: "effortApplied" }>): HTMLElement {
+  const turn = el("div", "turn turn-effort");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "effort-line");
+  const txt = el("span", "effort-text");
+  txt.textContent = `effort set to ${ev.effort}`;
+  line.appendChild(txt);
+  line.title = "reasoning effort is a connect-time setting; the session reconnected to apply it, and this marks when the new level took effect";
   turn.appendChild(line);
   return turn;
 }

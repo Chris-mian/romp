@@ -4620,6 +4620,31 @@ def _retry_recoveries(sid):
     return out
 
 
+def _effort_changes(sid):
+    """Durable effort-applied markers from states/<sid>.jsonl — {"t":…,"effortApplied":"high"} lines the SDK
+    backend writes when an /effort reconnect lands (append_effort_applied). Returns [{"t":epoch,"effort":str}, …]
+    oldest first, so build_session can interleave a persistent "effort set to X" note at the moment it took
+    effect. SDK-only — tmux applies /effort in-band (a real command turn), so it needs no synthetic marker."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    out = []
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"effortApplied"' not in line:          # cheap prefilter — most lines are plain state records
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                v = o.get("effortApplied")
+                if isinstance(v, str) and v and o.get("t"):
+                    out.append({"t": int(o["t"]), "effort": v})
+    except OSError:
+        return []
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
 # ── background-task box (the user 2026-06-26) ───────────────────────────────────────────────────────
 # Surface run_in_background tasks in the chat: a launch (a tool_use with run_in_background:true) paired with
 # its <task-notification> result. The harness folds those notifications into "system reminders" inline; this
@@ -6485,13 +6510,21 @@ def build_session(sid, now, tmux=None):
     # once the api_retry storm cleared. Anchored by time (retries leave no transcript atom of their own), so
     # they survive scroll-back like the compact divider. Any recovery on the still-open tail turn (t past the
     # last atom) is flushed after the loop.
+    # Persistent "effort set to X" notes (the user 2026-07-16): same time-anchored durable-note mechanism as
+    # the recovery markers — the /effort reconnect leaves no transcript atom, so this pins when the new effort
+    # took effect and survives scroll-back (and the next message, which pruned the ephemeral /effort chip).
     recoveries = _retry_recoveries(sid); _ri = 0
+    efforts = _effort_changes(sid); _ei = 0
     def _flush_recoveries(upto):
-        nonlocal _ri
+        nonlocal _ri, _ei
         while _ri < len(recoveries) and (upto is None or recoveries[_ri]["t"] <= upto):
             _r = recoveries[_ri]; _ri += 1
             events.append({"kind": "retried", "retries": _r["retries"], "ts": iso(_r["t"]),
                            "uuid": "retried:%d" % _r["t"]})
+        while _ei < len(efforts) and (upto is None or efforts[_ei]["t"] <= upto):
+            _e = efforts[_ei]; _ei += 1
+            events.append({"kind": "effortApplied", "effort": _e["effort"], "ts": iso(_e["t"]),
+                           "uuid": "effort:%d" % _e["t"]})
     for turn in session["turns"]:
         for a in turn["atoms"]:
             t = a.get("t"); ts = iso(t) if t else None

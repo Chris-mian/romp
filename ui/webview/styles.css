@@ -800,9 +800,10 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    (one size per information type), muted so the amber headline stays the signal */
 .retrying-err { margin-top: 2px; color: color-mix(in srgb, #e67e22 55%, var(--dim)); font-size: 0.9em; overflow-wrap: anywhere; }
 /* the persistent "Recovered after N retries" marker left where output resumed — muted, static, one line */
-.turn-retried { padding-top: 4px; padding-bottom: 4px; }
-.turn-retried .dot, .turn-retried .time-marker { top: 10px; }
-.retried-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; letter-spacing: 0.02em; }
+/* the durable "effort set to X" note shares the retried note's slim rail treatment (the user 2026-07-16) */
+.turn-retried, .turn-effort { padding-top: 4px; padding-bottom: 4px; }
+.turn-retried .dot, .turn-retried .time-marker, .turn-effort .dot, .turn-effort .time-marker { top: 10px; }
+.retried-line, .effort-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; letter-spacing: 0.02em; }
 /* compact-mode collapsed tool run → one line ("▸ 3 Edits, 2 Reads"); click to expand/collapse */
 .turn-toolgroup .dot, .turn-toolgroup .time-marker { top: 10px; }
 .toolgroup-line { color: var(--dim); font-size: 0.9em; line-height: 1.4; cursor: pointer; width: fit-content; padding-right: 6px; }

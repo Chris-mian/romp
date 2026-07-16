@@ -482,6 +482,20 @@ def append_retry_recovered(state_dir: Path, sid: str, retries: int, t: int | Non
         f.write(json.dumps(rec) + "\n")
 
 
+def append_effort_applied(state_dir: Path, sid: str, effort: str, t: int | None = None) -> None:
+    """Record that an /effort change TOOK EFFECT — written the instant the reconnect that carries --effort
+    lands (idle → at once; busy → at turn end), so it pins the moment the new effort is real, not when it was
+    asked for. A durable marker in states/<sid>.jsonl the kernel turns into a persistent "effort set to X"
+    chat note (the user 2026-07-16: the reconnect leaves no transcript record, so the synthesized /effort chip
+    self-destructs on the next message and history keeps no trace of when effort changed). Its own key
+    ("effortApplied") so the state/awaiting/recovery readers, which filter by their own keys, skip it."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()) if t is None else int(t), "effortApplied": str(effort)}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def append_awaiting(state_dir: Path, sid: str, awaiting: bool, why: str = "") -> None:
     """Append an "awaiting" OVERLAY record to states/<sid>.jsonl (interleaved with the state
     records; the kernel reader scans for the latest line carrying an "awaiting" key). "Awaiting" =
@@ -1240,6 +1254,12 @@ class SdkSession:
                     # the immediate (idle) reconnect, the deferred (turn-end) one, and a first connect that picked up
                     # a pending value from the reg. Event-based on the connect itself; pokes a push so it clears now.
                     if self._effort_pending:
+                        # a DURABLE "effort set to X" marker at the apply moment: the reconnect writes no
+                        # transcript record, so without this the only trace is the synthesized /effort chip,
+                        # which prunes on the next message (the user 2026-07-16). Written here, not at request
+                        # time, so it pins when the new effort became REAL — turn-end for a busy session, whose
+                        # in-flight turn ran at the OLD effort (recording at request would misdate it).
+                        append_effort_applied(self.state_dir, self.sid, self._effort_pending)
                         self._effort_pending = ""
                         self.backend._update_reg(self.sid, effortPending=False)
                         self.backend._poke()

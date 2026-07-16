@@ -61,5 +61,6 @@ test("the retrying element is tinted the amber retrying STATUS color (#e67e22), 
 });
 
 test("the recovered note is muted (dim), not amber — it's a resolved historical marker", () => {
-  assert.match(CSS, /\.retried-line \{[^}]*color: var\(--dim\)/);
+  // the effort note shares this rule now (grouped selector) — still muted, same treatment (2026-07-16)
+  assert.match(CSS, /\.retried-line, \.effort-line \{[^}]*color: var\(--dim\)/);
 });
