@@ -103,7 +103,12 @@ function collapseRepeat(s) {
   if (toks.length > 1 && toks.every((t) => t.toLowerCase() === toks[0].toLowerCase())) return toks[0] + ' ×' + toks.length;
   return s;
 }
-function reqText(prompt) { return esc(collapseRepeat(stripRompMarks(prompt)).slice(0, 120)); }
+// romp labels its own injected notices "[romp] …" for the chat's benefit. On the timeline the dot already
+// wears the romp logo + a 'romp' caption, so the prefix is pure redundancy in the tip (the user 2026-07-16) —
+// strip it, exactly as the chat's romp-system card does ("the chip already says who it's from"). Only romp's
+// own notices carry the label, so this never eats a human's words.
+function stripRompLabel(s) { return (s || '').replace(/^\s*\[romp\]\s*/i, ''); }
+function reqText(prompt) { return esc(collapseRepeat(stripRompLabel(stripRompMarks(prompt))).slice(0, 120)); }
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function clockS(t) { const d = new Date(t * 1000); return clock(t) + ':' + String(d.getSeconds()).padStart(2, '0'); }   // seconds precision for API call times
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }

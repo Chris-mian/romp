@@ -30,7 +30,7 @@ test("both hover bodies strip romp's HTML-comment markers from the raw prompt (t
   assert.equal(stripRompMarks("a plain user prompt"), "a plain user prompt");   // untouched
   // both the DOT (req) and the BAR (barBody) run the raw prompt through the SAME shared builder, which
   // strips the markers (then collapses a repeat) before escaping
-  assert.match(SRC, /function reqText\(prompt\) \{ return esc\(collapseRepeat\(stripRompMarks\(prompt\)\)\.slice\(0, 120\)\); \}/);
+  assert.match(SRC, /function reqText\(prompt\) \{ return esc\(collapseRepeat\(stripRompLabel\(stripRompMarks\(prompt\)\)\)\.slice\(0, 120\)\); \}/);
   assert.match(SRC, /req\(t\)[^\n]*reqText\(t\.prompt\)/);
   assert.match(SRC, /barBody[\s\S]*?const reqp = t\.prompt \? reqText\(t\.prompt\) : '';/);
 });
@@ -52,4 +52,19 @@ test("a request that is only ONE token repeated collapses to that token + its co
   assert.equal(reqText(RETRY), "retry ×14", "the exact storm from the screenshot");
   // a genuine prompt still rides through untouched (and still gets its markers stripped)
   assert.equal(reqText("<!-- romp-injected -->make the borders subtler"), "make the borders subtler");
+});
+
+// romp prefixes its own injected notices with a literal "[romp]" label. The dot now wears the romp logo + a
+// 'romp' caption, so the label is redundant IN the tip (the user 2026-07-16) — the chat's romp-system card
+// already strips it for the same reason ("the chip already says who it's from").
+test("the tip drops romp's own '[romp]' label — the dot's logo already says who it's from", () => {
+  const { reqText } = require(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  // the exact notice from the screenshot: markers + label both go, the sentence survives (esc() escapes
+  // only & < > — an apostrophe rides through as itself)
+  assert.equal(
+    reqText("<!-- romp-injected --><!-- romp-system -->[romp] The romp kernel restarted and cut this session's in-flight turn"),
+    "The romp kernel restarted and cut this session's in-flight turn");
+  // only a LEADING label is a label; the word elsewhere is content and stays
+  assert.equal(reqText("ask [romp] about it"), "ask [romp] about it");
+  assert.equal(reqText("a plain human prompt"), "a plain human prompt");
 });

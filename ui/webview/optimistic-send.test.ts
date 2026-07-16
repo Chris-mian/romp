@@ -27,13 +27,24 @@ test("every push entry point re-asserts (or retires) the optimistic tail", () =>
   assert.ok(calls.length >= 4, "reconcile wired into send + all three push paths, got " + calls.length);
 });
 
-test("an optimistic bubble is a tail-appended, kernel-invisible user event flagged pending", () => {
+test("an optimistic bubble is a tail-appended, kernel-invisible user event", () => {
   assert.match(RENDER, /const OPT_PREFIX = "optimistic:";/);
-  assert.match(RENDER, /s\.events\.push\(\{ kind: "user", md: p\.text, human: true, pending: true, uuid: OPT_PREFIX \+ p\.ts \}\)/);
+  assert.match(RENDER, /s\.events\.push\(\{ kind: "user", md: p\.text, human: true, uuid: OPT_PREFIX \+ p\.ts \}\)/);
   // stale ones pop cheaply off the end (always tail-appended)
   assert.match(RENDER, /while \(s\.events\.length && isOptimistic\(s\.events\[s\.events\.length - 1\]\)\) s\.events\.pop\(\);/);
-  // the pending bubble is dimmed via a CSS class, not a new glyph
-  assert.match(RENDER, /"user-bubble"\) \+ " md" \+ \(ev\.pending \? " pending" : ""\)/);
+});
+
+// The optimistic bubble first shipped dimmed (.pending, opacity 0.6), which invented a THIRD provisional look
+// next to the dashed .queued-bubble and made every send flicker dim→solid as the kernel's copy superseded it
+// (the user 2026-07-16). It now renders EXACTLY like the landed message it's replaced by.
+test("a just-sent bubble carries NO distinguishing flag or styling — it looks like what replaces it", () => {
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+  assert.match(RENDER, /const bubble = el\("div", \(romp \? "romp-bubble" : injected \? "user-note" : "user-bubble"\) \+ " md"\);/);
+  assert.doesNotMatch(RENDER, /ev\.pending/, "no pending flag is read when rendering");
+  assert.doesNotMatch(RENDER, /pending: true/, "and none is written onto the optimistic event");
+  assert.doesNotMatch(CSS, /\.user-bubble\.pending \{/, "the dim rule is gone");
+  // the ONE provisional idiom the chat has stays exactly as it was: dashed = queued behind a busy turn
+  assert.match(CSS, /\.queued-bubble \{[\s\S]*?border: 1px dashed/);
 });
 
 // executed replica of reconcileOptimistic's keep/retire decision: a send survives until the kernel's payload

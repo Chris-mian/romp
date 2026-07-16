@@ -889,9 +889,13 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   border-radius: 14px; padding: 9px 14px; color: #ffffff;
   display: flow-root;   /* contain inner floats (e.g. image captions) */
 }
-/* a just-sent message, shown optimistically before the kernel echoes it back (the user 2026-07-15): dimmed
-   so it reads as "sending", solidifying to full opacity the instant the kernel's real bubble supersedes it */
-.user-bubble.pending { opacity: 0.6; }
+/* A just-sent message, shown optimistically before the kernel echoes it back, renders EXACTLY like a landed
+   one — no dim, no distinct state (the user 2026-07-16). It first shipped dimmed-to-0.6, which invented a
+   THIRD provisional look next to the dashed .queued-bubble and made every send flicker dim→solid as the
+   kernel's copy superseded it. The chat already has one provisional idiom (dashed = queued behind a busy
+   turn); a plain send isn't that, and a fake "sending" state would only lie on an idle session. So the
+   optimistic bubble is visually identical to its replacement: the message simply appears and stays. If it
+   really is queued, the kernel's dashed bubble takes over a beat later — that flip is real information. */
 /* white-on-blue legibility for inner markdown */
 .user-bubble a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
 .user-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.2); color: #fff; }

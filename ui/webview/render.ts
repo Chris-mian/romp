@@ -56,11 +56,13 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  // `pending` = a CLIENT-side optimistic echo of a just-sent message, injected at the tail so it shows the
-  // instant you hit Enter and STAYS put across pushes — bridging the server-side echo→landed gap where the
-  // kernel's own provisional briefly vanished (the user 2026-07-15). Reconciled out once the kernel's payload
-  // carries the message (see reconcileOptimistic). Never sent to/from the kernel.
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[]; pending?: boolean }
+  // A CLIENT-side optimistic echo of a just-sent message is one of these, injected at the tail (uuid
+  // OPT_PREFIX) so it shows the instant you hit Enter and STAYS put across pushes — bridging the server-side
+  // echo→landed gap where the kernel's own provisional briefly vanished (the user 2026-07-15). It carries NO
+  // distinguishing field or styling: it renders exactly like the landed message that replaces it, so a send
+  // never flickers between two looks (the user 2026-07-16). Reconciled out once the kernel's payload carries
+  // the message (see reconcileOptimistic). Never sent to/from the kernel.
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -207,7 +209,7 @@ function reconcileOptimistic(s: Session): void {
     (e.kind === "queued" && Array.isArray(e.texts) && e.texts.some((x) => typeof x.md === "string" && x.md.includes(t))));
   const keep = list.filter((p) => now - p.ts < OPT_TTL_MS && !landed(p.text));
   if (keep.length) pendingSent.set(s.id, keep); else pendingSent.delete(s.id);
-  for (const p of keep) s.events.push({ kind: "user", md: p.text, human: true, pending: true, uuid: OPT_PREFIX + p.ts });
+  for (const p of keep) s.events.push({ kind: "user", md: p.text, human: true, uuid: OPT_PREFIX + p.ts });
 }
 
 // Record a composer send as in-flight and show its optimistic bubble NOW (before any kernel push).
@@ -1188,7 +1190,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }
-      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md" + (ev.pending ? " pending" : ""));
+      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
       // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
       // "/cmd" token as a monospace chip. Genuine human bubbles only (a romp/injected note is never a command).
       // paths this turn already renders as full in-bubble images (both the caption path and a
