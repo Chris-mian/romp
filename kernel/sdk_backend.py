@@ -127,6 +127,64 @@ def _model_reflects_alias(live_pretty: str, alias: str) -> bool:
     return a in live_pretty.lower()
 
 
+# ── conversation rewind (the chat's edit-message branch) ──────────────────────
+# Editing a past user message rewinds the conversation to just before it and sends the edited
+# text as the next turn — the cloud-UI edit semantics. Mechanism (verified live 2026-07-16):
+# the CLI's designed `--resume-session-at <record uuid>` flag loads only messages up to and
+# including the target, and the next turn is appended to the SAME transcript file with
+# parentUuid=target — an IN-PLACE branch, same fsid, no lastSid churn. The event model's
+# leaf→root walk (FileAdapter) already drops the abandoned tail as a "rewind" line, so chat,
+# timeline and judge all heal from the same parse with no extra plumbing. A bogus/pre-compaction
+# target makes the CLI exit 1 with "No message found" BEFORE touching the transcript — the
+# failure mode is loud and lossless (see SdkSession._rewind_failed for how romp surfaces it).
+
+def transcript_path(cwd: str, fsid: str) -> str:
+    """The on-disk transcript for session `fsid` launched from `cwd` — Claude's projects layout.
+    Realpath first (a symlinked launch dir writes under the PHYSICAL path), then every
+    non-alphanumeric char becomes '-' (matches the CLI exactly; '_' and ' ' included)."""
+    proj = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(os.path.expanduser(cwd or "~")))
+    return os.path.join(os.path.expanduser("~/.claude/projects"), proj, fsid + ".jsonl")
+
+
+def last_record_uuid(path, tail_bytes: int = 262144) -> str:
+    """The uuid of the LAST uuid-bearing record in a transcript — the conversation's current
+    leaf. Reads only the file's tail (a transcript can be tens of MB; the leaf is always within
+    the last few records — uuid-less trailers like last-prompt/queue-operation are skipped).
+    '' when the file is missing, empty, or holds no uuid in the window."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            chunk = f.read()
+    except OSError:
+        return ""
+    for line in reversed(chunk.splitlines()):
+        if b'"uuid"' not in line:
+            continue
+        try:
+            u = json.loads(line).get("uuid")
+        except Exception:
+            continue        # a partial first line of the window / junk — keep scanning back
+        if u:
+            return u
+    return ""
+
+
+def rewind_disposition(rewind_to: str, rewind_leaf: str, leaf_now: str) -> str:
+    """Should a (re)connect apply a pending conversation rewind? ONE-SHOT and event-guarded:
+    "apply"  — a rewind is pending and the transcript's leaf is still the one recorded at
+               request time (nothing has landed since the user asked) → launch with
+               --resume-session-at.
+    "spent"  — a rewind is pending but the conversation MOVED past the recorded leaf: the
+               rewind turn itself landed (the normal case — e.g. a crash-heal resume mid-turn),
+               so re-applying would truncate real work. Drop the flag, resume plainly.
+    "none"   — no rewind pending."""
+    if not rewind_to:
+        return "none"
+    return "apply" if (leaf_now and leaf_now == rewind_leaf) else "spent"
+
+
 def _block_to_dict(b):
     """One SDK content block → the transcript/event-model block dict (by type name, so no SDK import)."""
     n = type(b).__name__
@@ -770,6 +828,15 @@ class SdkSession:
         #   "Reloading session…" notice until the reconnect completes (the user 2026-07-06). Cleared the instant the
         #   new client connects (reconnect loop) — event-based, mirroring _model_pending's dots.
         self.perm_mode = self.mode
+        # Pending conversation REWIND (the chat's edit-message branch): the target record uuid +
+        # the transcript leaf recorded at request time (the one-shot guard — see rewind_disposition).
+        # Seeded from the reg so a kernel death mid-rewind re-applies it iff nothing landed since.
+        # _rewind_armed = THIS connect was launched with --resume-session-at (set by _options), the
+        # event the input generator waits for before releasing the held edit turn — feeding it any
+        # earlier would land the edit on the un-rewound branch.
+        self._rewind_to = reg.get("rewindTo") or ""
+        self._rewind_leaf = reg.get("rewindLeaf") or ""
+        self._rewind_armed = False
         # reconnect machinery: effort changes (a connect-time flag) reconnect the client; _wake breaks the
         # receive loop cleanly for shutdown OR reconnect even when idle (a bare async-for would block forever).
         self._wake: asyncio.Event | None = None
@@ -923,7 +990,10 @@ class SdkSession:
         self.loop.call_soon_threadsafe(self._do_request_reconnect)
 
     def _do_request_reconnect(self):
-        if self.inflight == 0 and not self._pending:
+        # a rewind-HELD queue must not defer the reconnect: those turns can't start until the
+        # reconnect arms them (the input gate) — deferring on their account would deadlock the rewind
+        held = bool(self._rewind_to and not self._rewind_armed)
+        if self.inflight == 0 and (held or not self._pending):
             self._reconnect = True
             self._wake_set()
         else:
@@ -1103,6 +1173,10 @@ class SdkSession:
                 self._input_wake.clear()
                 with self._lock:
                     blocked = self.inflight > 0 and self._interrupted   # wedged turn → don't feed a stuck CLI
+                    # a pending REWIND holds the queue until a client launched with --resume-session-at is
+                    # up (_rewind_armed, set by _options) — feeding the edit turn to the CURRENT client
+                    # would land it on the un-rewound branch (the exact wrong-branch delivery this guards)
+                    blocked = blocked or bool(self._rewind_to and not self._rewind_armed)
                     item = self._pending.pop(0) if (self._pending and not blocked) else None
                     fresh = item is not None and self.inflight == 0     # starting from idle, not mid-turn
                 if item is None:
@@ -1156,45 +1230,82 @@ class SdkSession:
                 self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
             opts = self.backend._options(self, ClaudeAgentOptions)
-            async with ClaudeSDKClient(options=opts) as client:
-                self.client = client
-                # A pending /effort switch is APPLIED the instant this (re)connect lands (--effort rode _options
-                # above) → clear the switching-dots + "Reloading session…" notice (the user 2026-07-06). Covers
-                # the immediate (idle) reconnect, the deferred (turn-end) one, and a first connect that picked up
-                # a pending value from the reg. Event-based on the connect itself; pokes a push so it clears now.
-                if self._effort_pending:
-                    self._effort_pending = ""
-                    self.backend._update_reg(self.sid, effortPending=False)
-                    self.backend._poke()
-                # PRE-TURN PUBLISH (the user 2026-06-27): pull the live model + context % the INSTANT we
-                # connect — before any turn — so a freshly-created SDK session shows its model and context on
-                # OPEN, like a tmux session does on launch. The old path keyed model/ctx resolution off the
-                # `init` SystemMessage (see _on_message's init branch), but that message is NOT emitted on a
-                # turn-less streaming connection: it only arrives with the FIRST user turn (verified against the
-                # SDK — get_context_usage() answers pre-turn, but no init/system message streams until a turn is
-                # sent). That false assumption is why every prior fix left the model/context blank until the
-                # first message. get_context_usage() is the DESIGNED control request behind the CLI's /context
-                # and returns BOTH the live model id and the % pre-turn, so this one refresh fills both. Runs on
-                # every (re)connect; guarded + idempotent + pokes only on change.
-                asyncio.ensure_future(self._do_refresh_context())
-                feeder = asyncio.ensure_future(client.query(inputs()))
-                recv = asyncio.ensure_future(drain(client))
-                waker = asyncio.ensure_future(self._wake.wait())
-                try:
-                    await asyncio.wait({recv, waker}, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    for tk in (feeder, recv, waker):
-                        tk.cancel()
-                    for tk in (feeder, recv, waker):
-                        try:
-                            await tk
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception as e:                 # a genuine stream/transport error — surface it
-                            self.backend._log(f"sdk session {self.name}: {type(e).__name__}: {e}")
-                    self.client = None
+            connected = False
+            try:
+                async with ClaudeSDKClient(options=opts) as client:
+                    connected = True
+                    self.client = client
+                    # A pending /effort switch is APPLIED the instant this (re)connect lands (--effort rode _options
+                    # above) → clear the switching-dots + "Reloading session…" notice (the user 2026-07-06). Covers
+                    # the immediate (idle) reconnect, the deferred (turn-end) one, and a first connect that picked up
+                    # a pending value from the reg. Event-based on the connect itself; pokes a push so it clears now.
+                    if self._effort_pending:
+                        self._effort_pending = ""
+                        self.backend._update_reg(self.sid, effortPending=False)
+                        self.backend._poke()
+                    # PRE-TURN PUBLISH (the user 2026-06-27): pull the live model + context % the INSTANT we
+                    # connect — before any turn — so a freshly-created SDK session shows its model and context on
+                    # OPEN, like a tmux session does on launch. The old path keyed model/ctx resolution off the
+                    # `init` SystemMessage (see _on_message's init branch), but that message is NOT emitted on a
+                    # turn-less streaming connection: it only arrives with the FIRST user turn (verified against the
+                    # SDK — get_context_usage() answers pre-turn, but no init/system message streams until a turn is
+                    # sent). That false assumption is why every prior fix left the model/context blank until the
+                    # first message. get_context_usage() is the DESIGNED control request behind the CLI's /context
+                    # and returns BOTH the live model id and the % pre-turn, so this one refresh fills both. Runs on
+                    # every (re)connect; guarded + idempotent + pokes only on change.
+                    asyncio.ensure_future(self._do_refresh_context())
+                    feeder = asyncio.ensure_future(client.query(inputs()))
+                    recv = asyncio.ensure_future(drain(client))
+                    waker = asyncio.ensure_future(self._wake.wait())
+                    try:
+                        await asyncio.wait({recv, waker}, return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        for tk in (feeder, recv, waker):
+                            tk.cancel()
+                        for tk in (feeder, recv, waker):
+                            try:
+                                await tk
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception as e:                 # a genuine stream/transport error — surface it
+                                self.backend._log(f"sdk session {self.name}: {type(e).__name__}: {e}")
+                        self.client = None
+            except Exception as e:
+                # A REWIND-armed connect the CLI refused (a bad --resume-session-at target exits 1 with
+                # "No message found" BEFORE the handshake) must not crash-loop: the flag would re-apply on
+                # every heal (the leaf never moved — nothing was written) and brick the session. Fail LOUDLY
+                # once — drop the flag, pull the edited message off the queue (it must NOT quietly land on
+                # the un-rewound branch), toast the user — then reconnect plainly: the conversation is
+                # untouched. Everything else keeps the existing behavior (surface + crash-heal).
+                if self._rewind_armed and not connected:
+                    self._rewind_failed(e)
+                    continue
+                raise
             if self.ended or not self._reconnect:
                 break        # drain ended on its own (process exit) or we're shutting down → done
+
+    def _rewind_failed(self, exc):
+        """The CLI refused a rewind connect. Drop the one-shot flag (never re-offer a target the CLI just
+        refused), pull the held edit turn off the queue, and surface both a warn toast (with the message
+        text, so nothing is silently lost) and a kernel-log line. The session then reconnects plainly."""
+        self._rewind_to = self._rewind_leaf = ""
+        self._rewind_armed = False
+        with self._lock:
+            dropped = self._pending.pop(0) if self._pending else None
+        self._persist_queue()
+        try:
+            self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="")
+        except Exception:
+            pass
+        self.backend._log("rewind (%s): the CLI refused --resume-session-at (%s: %s) — flag dropped, "
+                          "edited message returned to the user" % (self.name, type(exc).__name__, exc))
+        try:
+            self.backend._notify("chat", {"type": "warn", "text":
+                "the rewind failed (the session's CLI refused it) — your edited message was NOT sent%s"
+                % ((": " + dropped) if dropped else "")})
+        except Exception:
+            pass
+        self.backend._poke()
 
     def _learn_model(self, pm):
         """Record a freshly-observed display model (from the init message or an assistant turn). Updates the
@@ -1338,6 +1449,15 @@ class SdkSession:
             # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
             # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
             self._compacting = False
+            if self._rewind_to:
+                # the rewind turn settled — the flag is CONSUMED (the leaf moved past the recorded one, so
+                # rewind_disposition would drop it on the next connect anyway; this just tidies the reg now)
+                self._rewind_to = self._rewind_leaf = ""
+                self._rewind_armed = False
+                try:
+                    self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="")
+                except Exception:
+                    pass
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
             self._mark("waiting")
             self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
@@ -2008,6 +2128,27 @@ class SdkBackend:
             kw["resume"] = sess.resume_sid
         else:
             kw["session_id"] = sess.sid
+        # A pending conversation REWIND (the chat's edit-message branch) rides --resume-session-at —
+        # the SDK has no typed field for it, so extra_args (the SDK's designed passthrough for exactly
+        # this) carries it. ONE-SHOT, event-guarded (rewind_disposition): applied only while the
+        # transcript's leaf is STILL the one recorded at request time; the moment any record lands past
+        # it (the rewind turn itself, normally) the flag is SPENT — re-applying would truncate real work
+        # (a crash-heal resume mid-rewind-turn must not re-rewind). _rewind_armed releases the held edit
+        # turn to THIS client (the inputs() gate).
+        sess._rewind_armed = False
+        disp = rewind_disposition(sess._rewind_to, sess._rewind_leaf,
+                                  last_record_uuid(transcript_path(sess.cwd, sess.resume_sid or sess.sid)))
+        if disp == "apply":
+            kw["extra_args"] = {"resume-session-at": sess._rewind_to}
+            sess._rewind_armed = True
+        elif disp == "spent":
+            sess._rewind_to = sess._rewind_leaf = ""
+            try:
+                self._update_reg(sess.sid, rewindTo="", rewindLeaf="")
+            except Exception:
+                pass
+            self._log("rewind (%s): conversation moved since the request — flag spent, resuming plainly"
+                      % sess.name)
         if self.mcp_config:
             kw["mcp_servers"] = self.mcp_config
         return ClaudeAgentOptions(**kw)
@@ -2139,6 +2280,36 @@ class SdkBackend:
         self._live.setdefault(sid, {})[key] = echo
         self._wake_push()
         return True
+
+    def rewind(self, sid: str, target_uuid: str, text: str) -> "tuple[bool, str]":
+        """Rewind the conversation to `target_uuid` (a transcript record uuid the KERNEL has validated:
+        on the active chain, newer than the last compaction) and send `text` as the next turn — the
+        chat's edit-message branch. In-place: the CLI appends the new turn to the SAME transcript with
+        parentUuid=target (same fsid, no lastSid churn) and the event model's leaf walk drops the
+        abandoned tail on every surface. Sequence: persist the one-shot flag (reg FIRST, so a fresh
+        thread seeds it), enqueue the edit (HELD by the inputs() gate until a rewound client is up),
+        reconnect. Refused while busy/compacting or with messages queued — a rewind under a running
+        turn is a data-loss hazard, and queued strangers would ride the new branch unasked."""
+        reg = read_reg(self.state_dir, sid)
+        if not reg or not reg.get("alive"):
+            return False, "the session is not running — revive it first"
+        if self.busy(sid) or self.compacting(sid):
+            return False, "the session is busy — wait for the current turn to finish, then edit"
+        if any(t for t in (reg.get("queue") or []) if isinstance(t, str) and t):
+            return False, "messages are queued for this session — send or cancel them first"
+        leaf = last_record_uuid(transcript_path(reg.get("cwd") or "~", reg.get("lastSid") or sid))
+        if not leaf:
+            return False, "no conversation on disk to rewind"
+        self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf)
+        s = self._ensure(sid)
+        if not s:
+            self._update_reg(sid, rewindTo="", rewindLeaf="")
+            return False, "the session could not start"
+        s._rewind_leaf, s._rewind_to = leaf, target_uuid   # already-running thread: the reg seed didn't apply
+        s.enqueue(text)
+        s.request_reconnect()   # idle → reconnects now; a fresh thread's FIRST connect applies the flag
+        self._poke()
+        return True, ""
 
     def deliver(self, sid: str, text: str) -> bool:
         """Deliver-time wake for an SDK session: enqueue the postal banner so the session processes it on its

@@ -2276,7 +2276,7 @@ def _drive(msg, client):
     if not isinstance(msg, dict):
         return False
     t = msg.get("type")
-    ID_OPS = ("sendMessage", "interrupt", "compactSession", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
+    ID_OPS = ("sendMessage", "rewindSend", "interrupt", "compactSession", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
               "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
@@ -2297,6 +2297,16 @@ def _drive(msg, client):
     if t == "sendMessage" and msg.get("text"):
 
         _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_soon()  # idle → instant echo; busy → a queued bubble, delivered in press order
+    elif t == "rewindSend" and msg.get("uuid") and msg.get("text"):
+        # Edit a past message (SDK sessions): rewind the conversation to just before it and send the
+        # edited text as the branch's next turn. NO optimistic kernel echo — the edit lands mid-chat
+        # (at the branch point), not at the tail, and the client's own pending-rewind overlay + the
+        # backend queued chip cover the gap. A refusal warn-toasts (fail loudly, nothing sent).
+        err = _rewind_send(sid, str(msg["uuid"]), str(msg["text"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+        else:
+            _push_soon()
     elif t == "interrupt":
         be.interrupt(sid)                                 # Esc/stop AND settle idle (in the backend)
         _interrupt_clicked[str(sid)] = time.time()        # chip → "interrupting" NOW (event-cleared on settle)
@@ -5353,6 +5363,70 @@ def _parse(path, sid, now):
             _parse_cache.clear()
         _parse_cache[path] = (key, session)
     return session
+
+
+def _rewind_target(path, sid, user_uuid):
+    """(target_uuid, error) — where a conversation rewind that EDITS user record `user_uuid` should
+    cut: its nearest user/assistant ancestor (the record types the CLI addresses as messages;
+    attachments and system records are spine nodes but not --resume-session-at targets). Guards, in
+    order: the record must exist, sit on the ACTIVE chain (not an already-abandoned branch — a stale
+    window can click an old bubble), be NEWER than the last compaction (the CLI only loads
+    post-boundary records; a pre-boundary target exits 1 with "No message found" — verified live
+    2026-07-16), and have a real message ancestor (the conversation's first message has nothing
+    before it to rewind to). Validating HERE keeps the backend's failure path (a refused reconnect)
+    for genuine races only."""
+    cands = [path]
+    anchor = os.path.join(os.path.dirname(path), sid + ".jsonl")
+    if os.path.basename(path) != sid + ".jsonl" and os.path.exists(anchor):
+        cands.append(anchor)
+    ad = em.FileAdapter(cands, path)
+    if user_uuid not in ad.by_uuid:
+        return None, "that message isn't in the transcript yet — try again in a moment"
+    is_boundary = lambda r: r is not None and r.get("type") == "system" and r.get("subtype") == "compact_boundary"
+    # leaf → root: the edited record must appear BEFORE any compact boundary on the active chain
+    u, hops, on_active = ad.leaf_uuid, 0, False
+    while u is not None and hops < 500000:
+        if u == user_uuid:
+            on_active = True
+            break
+        if is_boundary(ad.by_uuid.get(u)):
+            return None, "that message predates the last context compaction — only newer messages can be edited"
+        u = ad.parent_of.get(u); hops += 1
+    if not on_active:
+        return None, "that message is on a branch that was already rewound away"
+    # nearest MESSAGE ancestor = the cut point
+    u, hops = ad.parent_of.get(user_uuid), 0
+    while u is not None and hops < 500000:
+        r = ad.by_uuid.get(u)
+        if r is None or is_boundary(r):
+            break                                    # dangling parent / nothing addressable before the boundary
+        if r.get("type") in ("user", "assistant"):
+            return u, None
+        u = ad.parent_of.get(u); hops += 1
+    return None, "that's the conversation's first message — start a new session to redo it"
+
+
+def _rewind_send(sid, user_uuid, text, now=None):
+    """The chat's edit-message rewind (the cloud-UI semantics: edit a past message → the conversation
+    branches from just before it, the old tail is abandoned). Validates against the transcript
+    (_rewind_target), then hands the cut point + edited text to the SDK backend, whose one-shot
+    --resume-session-at reconnect does the rest. Returns an error string for the warn toast, or None.
+    SDK sessions only: the tmux CLI owns its own rewind UI (Esc Esc), and driving it by keystroke
+    injection is exactly the fragility the backend seam exists to avoid."""
+    be = Sessions.backend_for(sid)
+    if not hasattr(be, "rewind"):
+        return "editing past messages needs the SDK backend — this session runs in tmux (use Esc Esc in its terminal)"
+    if _ops_gate(sid):
+        return "the session is busy — wait for the current turn to finish, then edit"
+    now = now or time.time()
+    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if not sess:
+        return "no transcript for this session yet"
+    target, err = _rewind_target(sess["path"], sid, str(user_uuid))
+    if err:
+        return err
+    ok, berr = be.rewind(sid, target, str(text))
+    return None if ok else (berr or "the rewind could not be applied")
 
 
 def _parse_cached(path):
