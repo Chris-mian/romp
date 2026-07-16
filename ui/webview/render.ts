@@ -3219,7 +3219,9 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   // editable: clear it to launch outside the filter on purpose. Only when creating is possible here (the
   // New-session button in create mode, or the New-session row when pickAllowNew), never in pure resume.
   const only = (!pick || pickAllowNew) ? onlyTag() : null;
-  const seed = only ? only + "-" : "";
+  // Seed the name box ONLY for a single-prefix filter: with a list (`#only=api,tests`) there is no
+  // one prefix a new session must wear, and "api,tests-" would be nonsense (the user 2026-07-16).
+  const seed = only && !only.includes(",") ? only + "-" : "";
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
   if (s) {
     s.value = seed;

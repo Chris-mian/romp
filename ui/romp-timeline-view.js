@@ -22,7 +22,13 @@ function _rompOnlyTag() {
   try { return read((window.top || window).location); } catch (e) { /* cross-origin top */ }
   try { return read(window.location); } catch (e) { return null; }
 }
-function _rompMatchesOnly(name, tag) { return !tag || (name || "").toLowerCase().indexOf(tag) === 0; }
+// <tag> may be a comma-separated LIST (`#only=api,tests,web`) so demo sessions need no shared
+// on-camera prefix (the user 2026-07-16). Mirrors ui/webview/only-filter.ts's matchesOnly.
+function _rompMatchesOnly(name, tag) {
+  if (!tag) return true;
+  const n = (name || "").toLowerCase();
+  return tag.split(",").map((t) => t.trim()).filter(Boolean).some((t) => n.indexOf(t) === 0);
+}
 // Each directed flow (A→B) is ONE line; its thickness = MSG_W0 + (count-1)*MSG_GROW
 // — linear in message count, no max cap (BAR_H=8 is the work-bar reference: a flow
 // passes that around ~5-6 messages and keeps growing). Drawn at alpha .5 so

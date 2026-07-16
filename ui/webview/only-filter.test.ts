@@ -5,7 +5,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { onlyTag, matchesOnly } from "./only-filter";
+import { onlyTag, matchesOnly, onlyTags } from "./only-filter";
 
 const read = (p: string) => fs.readFileSync(path.resolve(process.cwd(), "..", p), "utf8");
 const RENDER = read("ui/webview/render.ts");
@@ -22,6 +22,23 @@ test("matchesOnly: no tag passes everything; otherwise case-insensitive PREFIX",
   assert.equal(matchesOnly("bug", "demo"), false);
   assert.equal(matchesOnly("", "demo"), false);
   assert.equal(matchesOnly("predemo", "demo"), false);    // prefix, not substring
+});
+
+test("matchesOnly: a COMMA-SEPARATED tag keeps any session matching ANY prefix", () => {
+  // demo sessions shouldn't have to wear a shared `demo-` prefix on camera (the user 2026-07-16)
+  const tag = "api,tests,web";
+  for (const n of ["api", "tests", "web", "API", "tests-e2e"]) assert.equal(matchesOnly(n, tag), true);
+  for (const n of ["romp_docs", "nimbus", "biz", "webhook".slice(3)]) assert.equal(matchesOnly(n, tag), false);
+  assert.equal(matchesOnly("web", "api, tests , web"), true);   // tolerates spaces around entries
+  assert.equal(matchesOnly("api", "api"), true);                // a single tag still behaves as before
+  assert.equal(matchesOnly("bug", "api,tests,web"), false);
+  assert.equal(matchesOnly("anything", ",, ,"), false);         // all-empty list → nothing matches
+});
+
+test("onlyTags splits a tag into its prefixes", () => {
+  assert.deepEqual(onlyTags("demo"), ["demo"]);
+  assert.deepEqual(onlyTags("api, tests ,web"), ["api", "tests", "web"]);
+  assert.deepEqual(onlyTags(" , "), []);
 });
 
 test("onlyTag reads #only= / ?only= from the shell URL (window.top), lowercased", () => {
@@ -41,7 +58,11 @@ test("onlyTag reads #only= / ?only= from the shell URL (window.top), lowercased"
 test("the helper: case-insensitive prefix + reads the shell URL via window.top", () => {
   assert.match(ONLY, /export function onlyTag\(\)/);
   assert.match(ONLY, /window\.top \|\| window/);
-  assert.match(ONLY, /\.toLowerCase\(\)\.startsWith\(tag\)/);
+  assert.match(ONLY, /onlyTags\(tag\)\.some\(\(t\) => n\.startsWith\(t\)\)/);
+});
+
+test("the timeline's standalone helper splits the tag the same way", () => {
+  assert.match(TL, /tag\.split\(","\)\.map\(\(t\) => t\.trim\(\)\)\.filter\(Boolean\)\.some\(\(t\) => n\.indexOf\(t\) === 0\)/);
 });
 
 test("chat tabs filter by the #only tag", () => {
@@ -65,7 +86,7 @@ test("the new-session picker seeds the name box with the tag prefix in a filtere
   // launching from `#only=demo` prefills `demo-` so a new session stays in view (the user 2026-07-15);
   // only when creating is possible (create mode or pickAllowNew), and the cursor lands after the prefix
   assert.match(RENDER, /const only = \(!pick \|\| pickAllowNew\) \? onlyTag\(\) : null;/);
-  assert.match(RENDER, /const seed = only \? only \+ "-" : "";/);
+  assert.match(RENDER, /const seed = only && !only\.includes\(","\) \? only \+ "-" : "";/);
   assert.match(RENDER, /s\.value = seed;/);
   assert.match(RENDER, /if \(seed\) s\.setSelectionRange\(seed\.length, seed\.length\);/);
   assert.match(RENDER, /filterPicker\(seed\);/);
