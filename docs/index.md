@@ -35,7 +35,7 @@ its own:
 
     **Context where you need it**
 
-    What the agent did and why, without endless scrolling.
+    What the agent did and why, without having to scroll through transcripts.
 
 -   ![A one-line summary expanding to the full exchange](assets/tile-detail.png)
 

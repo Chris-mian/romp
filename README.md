@@ -27,7 +27,7 @@ Romp provides the tools to make this management seamless, so you can stay focuse
     <td width="50%" valign="top">
       <img src="docs/assets/tile-context.png" alt="A task card showing its summary and background" width="100%">
       <p><b>Context where you need it</b><br>
-      What the agent did and why, without endless scrolling.</p>
+      What the agent did and why, without having to scroll through transcripts.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/tile-detail.png" alt="A one-line summary expanding to the full exchange" width="100%">
