@@ -200,6 +200,31 @@ class ViewBuilder(unittest.TestCase):
         f3 = km._cached_feed(now, tmux, km._fleet_view_sig(now, tmux))
         self.assertEqual(f3["order"], [other, SID], "dirty mark → immediate rebuild with the fresh order")
 
+    def test_resolving_a_picker_marks_views_dirty_so_the_card_leaves_needs_you_at_once(self):
+        """Resolving a live picker retires it from the backend's IN-MEMORY ask set — the very thing that makes
+        the card say "needs you". No file-mtime sig sees that change, so without a dirty mark _cached_feed
+        serves the pre-answer build for the rest of REBUILD_MIN_S and the card took ~a second to fly to
+        Working (the user 2026-07-16). Every OTHER drive op already woke the pusher; the ask family answered
+        into silence. nav/toggle stay unmarked on purpose — a fleet rebuild per arrow-key is waste."""
+        seen = []
+        fake = types.SimpleNamespace(on_ask=lambda sid, op, *a: seen.append(op))
+        saved = km.Sessions.backend_for
+        km.Sessions.backend_for = staticmethod(lambda sid: fake)
+        try:
+            for op, extra in (("answerAsk", {"target": 0}), ("submitAsk", {}), ("cancelAsk", {}),
+                              ("addCustomAsk", {"text": "go"}), ("askText", {"text": "go"})):
+                km._views_dirty[0] = 0.0
+                self.assertTrue(km._drive({"type": op, "id": SID, **extra}, {}), op + " must route as a drive op")
+                self.assertGreater(km._views_dirty[0], 0.0, op + " resolves the picker → must mark views dirty")
+            for op in ("navAsk", "toggleAsk"):
+                km._views_dirty[0] = 0.0
+                km._drive({"type": op, "id": SID, "target": 1}, {})
+                self.assertEqual(km._views_dirty[0], 0.0, op + " only moves within an OPEN picker → no rebuild")
+            self.assertEqual(seen, ["answer", "submit", "cancel", "custom", "text", "focus", "toggle"],
+                             "every op still reaches the backend unchanged")
+        finally:
+            km.Sessions.backend_for = saved
+
     def test_send_client_dedups_per_client(self):
         """A client gets a payload once; an identical re-push is skipped; a changed one is sent (the
         diff-push that stops the 4s pusher from re-sending unchanged chat sessions)."""

@@ -253,6 +253,56 @@ function registerOptimistic(id: string, text: string): void {
   reconcileOptimistic(s);
   if (id === activeId) appendActive();
 }
+
+// ── conversation rewind (edit a past message, SDK sessions) ──────────────────────────────────────
+// Editing a user bubble rewinds the conversation to just before it and sends the edited text as the
+// branch's next turn (the kernel's rewindSend op → the SDK backend's --resume-session-at reconnect).
+// The kernel's payload only reflects the branch once the rewound turn's records land (~seconds of CLI
+// reconnect), so the CLICKING client overlays the outcome locally in the gap: the edited bubble wears
+// the NEW text, everything after it dims as abandoned, and the backend's queued chip for the same
+// text is suppressed (the overlay already shows it in place). Retired the moment the old bubble's
+// uuid leaves the payload (the branch arrived) — plus a TTL backstop so a failed rewind (the kernel
+// warn-toasts it) can't dim the tail forever.
+const REWIND_TTL_MS = 30_000;
+const pendingRewind = new Map<string, { uuid: string; text: string; ts: number }>();
+
+// Re-apply (or retire) the pending-rewind overlay on a fresh payload, and recompute which user
+// bubbles are EDITABLE: genuine human messages with a transcript uuid, AFTER the last compaction —
+// the CLI only addresses post-boundary records, so older bubbles get no edit affordance (the kernel
+// re-validates regardless). Runs beside reconcileOptimistic on every ingest path; the rewound flags
+// are stripped first because a chatTail delta REUSES prefix event objects across pushes.
+function reconcileRewind(s: Session): void {
+  for (const e of s.events) if ((e as any).rewound) delete (e as any).rewound;
+  let lastCompact = -1;
+  for (let i = 0; i < s.events.length; i++) if (s.events[i].kind === "compact") lastCompact = i;
+  const editable = new Set<string>();
+  if (s.status?.backend === "sdk") {
+    for (let i = lastCompact + 1; i < s.events.length; i++) {
+      const e = s.events[i] as any;
+      if (e.kind === "user" && e.human && e.uuid && !e.romp && !e.interruptMarker && !e.pending
+          && !e.uuid.startsWith(OPT_PREFIX)) editable.add(e.uuid);
+    }
+  }
+  (s as any)._editable = editable;
+  const pr = pendingRewind.get(s.id);
+  if (!pr) return;
+  const idx = s.events.findIndex((e) => e.kind === "user" && (e as any).uuid === pr.uuid);
+  if (idx < 0 || Date.now() - pr.ts > REWIND_TTL_MS) {
+    pendingRewind.delete(s.id);          // the branch landed (old uuid gone) — or the backstop expired
+    return;
+  }
+  s.events[idx] = { ...(s.events[idx] as any), md: pr.text, pending: true, images: undefined };
+  for (let j = idx + 1; j < s.events.length; j++) (s.events[j] as any).rewound = true;
+  for (let j = s.events.length - 1; j > idx; j--) {
+    const e = s.events[j] as any;
+    if (e.kind === "queued" && Array.isArray(e.texts)) {
+      e.texts = e.texts.filter((t: any) => t.md !== pr.text);
+      if (!e.texts.length) s.events.splice(j, 1);
+    }
+  }
+  const v = views.get(s.id);
+  if (v) v.stale = true;                 // the overlay touches MID-window turns — the append fast path won't repaint them
+}
 // Tab name+color from the kernel's tabOrder push (the user 2026-06-26): lets renderTabs paint the WHOLE
 // strip as placeholders BEFORE each session's build_session arrives, so tabs don't pop in one-by-one.
 const tabMeta = new Map<string, { name: string; color: Color | null }>();
@@ -802,6 +852,9 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
 
 function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number | null): HTMLElement {
   const turn = renderEventInner(ev);
+  // pending-rewind overlay (reconcileRewind): this turn sits AFTER an edited message — it belongs to
+  // the branch being abandoned, so it dims until the kernel's rewound payload replaces it
+  if ((ev as any).rewound) turn.classList.add("rewound");
   // Deep-link anchor. An AskUserQuestion widget carries the ANSWER-line (tool_result
   // user line) uuid — that's the uuid the timeline emits for the decision, and the
   // answer line produces no standalone event/DOM node of its own. Everything else
@@ -1243,6 +1296,21 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         for (const im of ev.images) bubble.appendChild(userImage(im, !!(im.path && mdText.includes(im.path))));
       }
       turn.appendChild(bubble);
+      // EDIT affordance (SDK sessions): rewind the conversation to just before this message and take a
+      // new branch with an edited version — the cloud-UI edit semantics. Shown on genuine human bubbles
+      // the backend can address (reconcileRewind's _editable set: has a transcript uuid, newer than the
+      // last compaction); the kernel re-validates on click and warn-toasts a refusal (e.g. mid-turn).
+      const editSid = renderingSid;
+      if (!romp && !injected && ev.uuid && editSid
+          && (sessions.get(editSid) as any)?._editable?.has(ev.uuid)) {
+        const edit = el("button", "msg-edit") as HTMLButtonElement;
+        edit.type = "button";
+        edit.textContent = "edit";
+        edit.title = "Edit this message — sending rewinds the conversation to this point and continues on a new branch (later turns are abandoned)";
+        const uuid = ev.uuid, orig = ev.md || "";
+        edit.addEventListener("click", (e) => { e.stopPropagation(); beginComposerEdit(editSid, uuid, orig); });
+        turn.appendChild(edit);
+      }
     }
     if (ev.reminders && ev.reminders.length) {
       // A backgrounded agent's <task-notification> gets its OWN informative card (name + status + result);
@@ -5354,6 +5422,29 @@ try {
     }
 } catch { /* ignore */ }
 
+// Composer EDIT mode (per session): set when the user clicks a bubble's edit affordance — the composer
+// then sends a rewindSend (branch from just before that message) instead of a plain message. The chip
+// strip shows an "Editing message" pill whose ✕ (or Esc in the box) cancels back to normal sending.
+const composerEdits = new Map<string, { uuid: string; orig: string }>();
+
+function beginComposerEdit(sid: string, uuid: string, orig: string): void {
+  composerEdits.set(sid, { uuid, orig });
+  composerCitations.delete(sid);   // an edit replaces the message wholesale — mixed goal/quote context would mislead
+  if (sid !== activeId) return;
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (ta) { ta.value = orig; growComposer(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  renderComposerChips(sid);
+}
+
+function cancelComposerEdit(sid: string): void {
+  if (!composerEdits.delete(sid)) return;
+  if (sid !== activeId) return;
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (ta) { ta.value = ""; composerManualH = null; ta.style.height = ""; }
+  drafts.delete(sid); persistDrafts();
+  renderComposerChips(sid);
+}
+
 // Render (or clear) the citation chip strip for a session's composer. The chip is a pill in the romp accent
 // with the cited title + an ✕; clicking the ✕ dismisses it, clicking the pill itself opens an AUDIT preview
 // of the exact prompt romp will send (the user 2026-07-01). It lives ABOVE the textarea (a textarea can't
@@ -5363,6 +5454,22 @@ function renderComposerChips(id: string | null): void {
   if (!strip) return;
   closeCitePreview();   // the chip is being rebuilt (or removed) → drop any open audit popover for the old chip
   strip.replaceChildren();
+  // an EDIT pill outranks a citation chip (beginComposerEdit clears citations; this is the belt-and-braces)
+  const edit = id ? composerEdits.get(id) : undefined;
+  if (edit && id) {
+    strip.style.display = "flex";
+    const chip = el("div", "composer-chip composer-chip-edit");
+    chip.title = "sending rewinds the conversation to this message and continues on a new branch — ✕ (or Esc) cancels";
+    const mark = el("span", "composer-chip-mark"); mark.textContent = "✎"; chip.appendChild(mark);
+    const label = el("span", "composer-chip-label");
+    label.textContent = "Editing message — send rewinds the conversation here";
+    chip.appendChild(label);
+    const x = el("button", "composer-chip-x"); x.setAttribute("aria-label", "Cancel edit"); x.textContent = "✕";
+    x.addEventListener("click", (e) => { e.stopPropagation(); cancelComposerEdit(id); });
+    chip.appendChild(x);
+    strip.appendChild(chip);
+    return;
+  }
   const cite = id ? composerCitations.get(id) : undefined;
   if (!cite) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
@@ -5614,6 +5721,7 @@ function upsert(msg: any) {
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
   };
   sessions.set(msg.id, s);
+  reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
   // on the SAME transcript — the common case) from a FORK (the tab re-pointed onto a NEW transcript,
@@ -5678,6 +5786,7 @@ function update(msg: any) {
   if (!s) return;
   s.events = msg.events || s.events;
   s.status = msg.status || s.status;
+  reconcileRewind(s);                    // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileOptimistic(s);                // re-assert (or retire) any in-flight optimistic sends on this push
   renderTabs();                          // status/chip change only — repaint, never re-order (the user 2026-06-27)
   if (msg.id === activeId) {
@@ -5704,6 +5813,7 @@ function chatTail(msg: any) {
   if (from < 0 || from > s.events.length) return;  // below the loaded head, or a gap → wait for the next full
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
+  reconcileRewind(s);                              // pending-rewind overlay + the editable-bubble set
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (msg.status) s.status = msg.status;
@@ -5978,6 +6088,21 @@ function setupComposer() {
       ta.value = ""; composerManualH = null; ta.style.height = "";
       return;
     }
+    // EDIT mode → a rewindSend: branch the conversation from just before the edited message. No
+    // registerOptimistic (the edit lands MID-chat at the branch point, not at the tail) — the
+    // pending-rewind overlay shows the outcome in place until the kernel's rewound payload arrives.
+    const editing = composerEdits.get(activeId);
+    if (editing) {
+      vscodeApi?.postMessage({ type: "rewindSend", id: activeId, uuid: editing.uuid, text });
+      pendingRewind.set(activeId, { uuid: editing.uuid, text, ts: Date.now() });
+      composerEdits.delete(activeId);
+      renderComposerChips(activeId);
+      const s = sessions.get(activeId);
+      if (s) { reconcileRewind(s); appendActive(); }   // paint the overlay NOW (stale → window re-render)
+      drafts.delete(activeId); persistDrafts();
+      ta.value = ""; composerManualH = null; ta.style.height = "";
+      return;
+    }
     lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
     // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
     // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
@@ -6176,9 +6301,11 @@ function setupComposer() {
       return;
     }
     if (e.key === "Escape") {
-      // Escape leaves the chat box for "tab mode" — focus the active tab so ←/→ switch sessions (the user
-      // 2026-06-25). Enter on a tab drops back in (onTabKey). Any draft text stays in the box, untouched.
+      // An active EDIT chip cancels first (back to normal sending); otherwise Escape leaves the chat box
+      // for "tab mode" — focus the active tab so ←/→ switch sessions (the user 2026-06-25). Enter on a
+      // tab drops back in (onTabKey). Any draft text stays in the box, untouched.
       e.preventDefault();
+      if (activeId && composerEdits.has(activeId)) { cancelComposerEdit(activeId); return; }
       focusActiveTab();
       return;
     }

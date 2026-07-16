@@ -63,6 +63,26 @@ All of the following was confirmed empirically, not inferred:
   event-based (user message written → working; `ResultMessage` → waiting), per
   the repo's "events over heuristics" rule — and the pane-scrape diagnostics
   (stuck-working, compaction-% OCR) disappear.
+- **Conversation rewind / edit-message branch** (probed live against claude
+  2.1.210, 2026-07-16). The CLI's `--resume-session-at <record uuid>` (no typed
+  SDK field → `extra_args` passthrough) resumes loading only messages up to and
+  including the target, and the next turn appends to the **same** transcript
+  file with `parentUuid=target` — an in-place branch, same fsid, no lastSid
+  churn. User-record uuids are valid targets too (not just assistant ones), so
+  the cut point for editing message U is simply U's nearest user/assistant
+  ancestor. Records at/before the last `compact_boundary` are NOT addressable
+  ("No message found", exit 1 — loud, nothing written); post-boundary replayed
+  records are. The event model's leaf→root walk already drops the abandoned
+  tail ("rewound branches are non-ancestors"), so chat/timeline/judge heal from
+  the parse with no extra plumbing. romp's write side: the chat's edit
+  affordance → kernel `rewindSend` (validates via `_rewind_target`) → 
+  `SdkBackend.rewind()` — a ONE-SHOT flag (`reg.rewindTo` + the leaf recorded
+  at request time) applied on reconnect only while the transcript's leaf is
+  unmoved (`rewind_disposition`), with the edit turn HELD by the input gate
+  until the rewound client is up. A refused connect drops flag + held turn and
+  warn-toasts (never a crash loop). Claude's own task store is NOT rewound —
+  to-dos created on the abandoned branch survive, exactly as the interactive
+  CLI behaves.
 
 ## Architecture
 
