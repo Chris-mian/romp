@@ -85,6 +85,18 @@ CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-
 COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")           # the slash command itself, e.g. "/usage"
 COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")            # its arguments (often empty)
 LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")   # the command's output
+# A slash command's stdout is captured from the TUI VERBATIM, so it can carry ANSI SGR color codes
+# (e.g. /rate-limit-options prints "\x1b[38;5;114mRemoved monthly spend limit\x1b[39m" in green). The
+# ESC byte is invisible but the "[38;5;114m…[39m" renders as LITERAL text in the chat (the user
+# 2026-07-16). Strip the full CSI/SGR family at the atom source — the one place both the chat and the
+# timeline read — so the codes never reach any renderer. Only local-command-stdout needs this; model
+# API text never contains ANSI.
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(s: str) -> str:
+    """Remove ANSI CSI/SGR escape sequences (color, cursor) from captured terminal output."""
+    return ANSI_RE.sub("", s) if s else s
 # The Skill tool's INSTRUCTIONS record (the user 2026-07-08): after a `Skill` tool_use + its "Launching
 # skill: X" tool_result, the CLI writes the skill's full markdown as an isMeta user record opening with
 # this line. It's the ONE isMeta payload worth keeping — surfaced as a flagged, content-EMPTY atom (the
@@ -580,7 +592,7 @@ class FileAdapter:
                     out.append({"type": "assistant", "uuid": u, "session_id": rompuuid, "t": ts,
                                 "fsid": fsid, "parentUuid": r.get("parentUuid"), "_seq": seq, "command": True,
                                 "message": {"role": "assistant",
-                                            "content": [{"type": "text", "text": mout.group(1).strip()}],
+                                            "content": [{"type": "text", "text": strip_ansi(mout.group(1)).strip()}],
                                             "stop_reason": "end_turn"}})
                     continue
                 has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result"
