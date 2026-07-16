@@ -2632,6 +2632,16 @@ function renderTabs() {
   const only = onlyTag();
   const nameOf = (id: string) => sessions.get(id)?.name ?? tabMeta.get(id)?.name ?? "";
   const visibleIds = only ? ids.filter((id) => matchesOnly(nameOf(id), only)) : ids;
+  // ...and it must govern the CHAT BODY too, not just the bar (the user 2026-07-16). Hiding a
+  // non-matching TAB while its transcript keeps rendering leaks precisely what the filter exists to
+  // hide: a real session's chat sitting on screen under `#only=api,tests,web`, statusline and all —
+  // found while shooting the demo, with nimbus's transcript filling a "filtered" frame. Re-point the
+  // selection at the first visible session. Deferred so we never re-enter the render we're inside;
+  // setActive is a no-op once activeId is visible, so this settles in one pass.
+  if (only && activeId && !visibleIds.includes(activeId) && visibleIds.length) {
+    const next = visibleIds[0];
+    setTimeout(() => { if (activeId !== next) setActive(next); }, 0);
+  }
   for (const id of visibleIds) {
     const s = sessions.get(id);
     if (!s) { bar.appendChild(makePlaceholderTab(id)); continue; }

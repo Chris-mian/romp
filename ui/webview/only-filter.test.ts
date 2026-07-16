@@ -71,6 +71,14 @@ test("chat tabs filter by the #only tag", () => {
   assert.match(RENDER, /for \(const id of visibleIds\)/);
 });
 
+test("a filtered view re-points the CHAT BODY, not just the tab bar", () => {
+  // the filter hid a non-matching TAB but left its transcript rendering — a real session's chat
+  // (nimbus) sat in a `#only=api,tests,web` frame, statusline and all (the user 2026-07-16). The
+  // whole point of the filter is a clean recording frame, so the selection must follow it.
+  assert.match(RENDER, /if \(only && activeId && !visibleIds\.includes\(activeId\) && visibleIds\.length\)/);
+  assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId !== next\) setActive\(next\); \}, 0\);/);
+});
+
 test("feed cards filter by the #only tag; clear bookkeeping still uses the FULL payload", () => {
   assert.match(FEED, /import \{ onlyTag, matchesOnly \} from "\.\/only-filter";/);
   assert.match(FEED, /const visible = only \? incomingAsks\.filter\(\(a\) => matchesOnly\(a\.name, only\)\) : incomingAsks;/);
