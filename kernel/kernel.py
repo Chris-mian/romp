@@ -6687,9 +6687,14 @@ def build_session(sid, now, tmux=None):
         cn = gnodes.get(cid)
         return bool(cn) and (cn.get("cleared") or cid in gcleared or gstatus.get(cid) == "cleared")
 
-    # Completion rolls UP (the user 2026-06-16): a node counts as done if it's explicitly nodeComplete, if
-    # it's been CLEARED (dismissed → shown FADED), or if ALL its children are done. The derived/cleared
-    # cases render as a DIMMED ✓ disc. Memoised; the goal graph is a parentId tree (no cycle guard needed).
+    # VERDICTS ONLY (the user 2026-07-15; was roll-UP since 2026-06-16): a node shows done if it's
+    # explicitly nodeComplete (a judge/agent/user verdict, or the roll-down cache under a verdicted
+    # ancestor) or CLEARED (dismissed → shown FADED, dimmed ✓). The old derived arm — all children done
+    # ⇒ dimmed ✓ on the parent — painted an authored-looking check on a goal nobody ruled done (children
+    # are filed prerequisites/retries, not a promised breakdown: the load-testing card's unrun
+    # experiment wore a ✓ because its "retry the connection" child closed). The judge-side twin
+    # (rollup_status is_complete's bottom-up arm) is gone the same way; the closer now RULES such nodes
+    # via _subtree_done_candidates, so an honest check appears when the verdict lands.
     _dmemo = {}
     def _subtree_done(nid):
         if nid in _dmemo:
@@ -6698,11 +6703,10 @@ def build_session(sid, now, tmux=None):
         if not nd:
             _dmemo[nid] = False
             return False
-        if nd.get("nodeComplete") or _cleared(nid):
-            _dmemo[nid] = True
-            return True
-        kids = list(gkids.get(nid, []))
-        res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
+        res = bool(nd.get("nodeComplete") or _cleared(nid))
+        if not res and nd.get("umbrella"):             # a grouper container completes structurally — the
+            kids = list(gkids.get(nid, []))            # mint asserted "this node IS its children"
+            res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
         _dmemo[nid] = res
         return res
 
@@ -7641,11 +7645,12 @@ def build_feed(now, tmux=None):
                 x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
             return acc
 
-        # Completion propagates BOTH ways for a transparent checklist (the user 2026-06-16): a node is
-        # "done" if it's explicitly nodeComplete, if ALL its children are done (roll-UP), OR if a done
-        # ancestor checks it off (roll-DOWN). Explicit done → render shows a FULL ✓ disc; either derived
-        # case → a DIMMED disc. _closure_done is the pure roll-up (memoised); flatten threads the roll-down
-        # through ancestor_done.
+        # VERDICTS ONLY (the user 2026-07-15; roll-UP removed — it painted an authored-looking ✓ on a
+        # goal nobody ruled done, see build_session's _subtree_done twin): a node is "done" if it's
+        # explicitly nodeComplete (verdict or roll-down cache), OR if a done ancestor checks it off
+        # (roll-DOWN, threaded by flatten through ancestor_done — dimmed disc). All-children-done alone
+        # no longer checks a parent; the closer rules those (_subtree_done_candidates) and the check
+        # appears when its verdict lands.
         _cdone = {}
         def _closure_done(nid):
             if nid in _cdone:
@@ -7654,11 +7659,10 @@ def build_feed(now, tmux=None):
             if not nd:
                 _cdone[nid] = False
                 return False
-            if nd.get("nodeComplete"):
-                _cdone[nid] = True
-                return True
-            kids = [c for c in children.get(nid, []) if not nodes[c].get("cleared")]
-            res = bool(kids) and all(_closure_done(c) for c in kids)
+            res = bool(nd.get("nodeComplete"))
+            if not res and nd.get("umbrella"):         # a grouper container completes structurally — the
+                kids = [c for c in children.get(nid, []) if not nodes[c].get("cleared")]
+                res = bool(kids) and all(_closure_done(c) for c in kids)
             _cdone[nid] = res
             return res
 

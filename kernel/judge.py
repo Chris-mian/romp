@@ -2114,19 +2114,37 @@ def rollup_status(store, session_closed, now=None):
         # AUTHORITY OVERRIDE FIRST (the user 2026-07-01): a node with an agentTask-OPEN self-or-descendant
         # is never complete — the agent says this work is still owed, and that outranks nodeComplete + any
         # roll-up. Checked before the nodeComplete short-circuit so a top the closer flat-DONE'd still reads
-        # working while a live to-do hangs under it. Then: complete if explicitly nodeComplete (TOP-DOWN —
-        # the closer / a DONE marks the top, the common driver) OR it has children and they are ALL
-        # recursively complete (BOTTOM-UP backstop). A childless node needs its own nodeComplete.
+        # working while a live to-do hangs under it.
         if nid in open_task:
             return False
-        kids = children.get(nid, [])
         # HELD OPEN (P3.4 follow-through, the user 2026-07-07): an unanswered USER reopen on this node
-        # ("move to Working", a typed follow-up) means the user asserted it is NOT done — bottom-up
-        # completion from its still-done children must not overrule that; only a LANDED judge verdict
-        # (which ends the held state in the fold) re-completes it. Replaces the provisional stub node.
+        # ("move to Working", a typed follow-up) means the user asserted it is NOT done — only a LANDED
+        # judge verdict (which ends the held state in the fold) re-completes it.
         if folds.get(nid, {}).get("held"):
             return False
-        return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
+        # VERDICTS ONLY (the user 2026-07-15, the load-testing card): completion needs an AUTHOR —
+        # its own nodeComplete (a closer/planner/agent/user verdict, or the roll-down's display cache
+        # under a verdicted ancestor). The old BOTTOM-UP arm ("children all complete ⇒ complete") was
+        # the one completion with no verdict, no evidence, and no diary row: it assumed children
+        # enumerate the parent's work, but the planner files prerequisites/retries as children, so
+        # "Run the experiment" auto-completed when its "retry the connection" child closed. All-children-
+        # done is now a TRIGGER, not a rule: _subtree_done_candidates surfaces such nodes to the CLOSER,
+        # which rules done (a real diary verdict) or leaves them honestly open.
+        # Two carve-outs keep a DERIVED (children-based) completion, both re-checked live so a child
+        # reopen still reverts them:
+        #   - UMBRELLA nodes (grouper/consolidator mints, umbrella:True): pure containers over existing
+        #     goals — the mint itself is the author asserting "this node IS these children, nothing
+        #     more", so all-children-done is their honest completion (and they often live on idle
+        #     sessions no closer will ever revisit).
+        #   - `settledDone` grandfathers stores from the bottom-up era: their settle EVENT is in the
+        #     diary, and a new settle can only ever FOLLOW a verdict now, so this adds nothing going
+        #     forward — it only keeps historically-completed cards from waking up as Working.
+        nd = nodes[nid]
+        if nd.get("nodeComplete"):
+            return True
+        kids = children.get(nid, [])
+        return bool((nd.get("umbrella") or nd.get("settledDone"))
+                    and kids and all(is_complete(c) for c in kids))
 
     def _own_ev(nid, kind):
         # newest diary evidence of `kind` recorded ON this node itself (0 when none — an eventless
@@ -4884,6 +4902,12 @@ CLOSER_SYS = (
     "the change; want me to build it?\": that is blocked (the next step is clear and the go-ahead is owed "
     "by the user), **not** done, even though the phase itself got completed.\n"
     "- otherwise omit it, and it stays working. When in doubt, omit.\n"
+    "Steps-finished rule: a note under the goal list may flag goals whose every recorded step is "
+    "finished. Judge each flagged goal from its goal history rather than this turn alone: done only if "
+    "the goal's **own ask** is fully discharged by the finished steps; blocked if what remains needs the "
+    "user; omit it (leave it open) if the goal names real work its steps never covered — an experiment "
+    "not yet run, a deliverable not yet produced, a change not yet made. Steps-all-finished is by itself "
+    "**not** done: steps are filed work, not a promised breakdown of the goal.\n"
     "Reply with only a JSON object (no prose, no markdown fences):\n"
     '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ]}\n'
     "Each goal appears in at most one list; omit the goals still working. goal is the goal's number. "
@@ -4975,6 +4999,68 @@ def _turn_menu(turn, store):
     return out
 
 
+def _umb_sig(nodes, children, nid):
+    """The completion-set signature a subtree-done candidate is stamped with once the closer has looked:
+    the sorted ids of its (all-complete) children. The set changing — a new child filed, a child's state
+    flipped — is the EVENT that re-arms the ask; an unchanged set never re-badgers the closer."""
+    return ",".join(sorted(children.get(nid, [])))
+
+
+def _subtree_done_candidates(store):
+    """OPEN nodes whose every direct child is complete/cleared but which carry NO verdict of their own —
+    the trigger population for the closer's steps-finished ruling (the user 2026-07-15, the
+    load-testing card). Bottom-up completion used to be a RULE here (rollup_status is_complete's old
+    backstop arm): a goal auto-completed when its children did, though children are filed prerequisites/
+    retries, not a promised decomposition — "Run the experiment" completed when its "retry the
+    connection" child closed, with no author, no evidence, no diary row. Now all-children-done only
+    NOMINATES the node to the closer, whose done (a real verdict) or considered omission is the ruling.
+
+    Skips: nodes already ruled (complete/blocked/cleared), childless nodes, sealed subtrees (a complete/
+    cleared ancestor — the fold's job), agentTask-open subtrees (the authoritative tier: the agent says
+    work is owed), and nodes whose completion-set signature is already stamped (`store["umbSig"]` — the
+    closer looked and left it open; only the set CHANGING re-arms, see _umb_sig)."""
+    nodes = store["nodes"]
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    sigs = store.get("umbSig") or {}
+
+    def _sealed_above(nid):
+        x, seen = nodes.get(nid, {}).get("parentId"), set()
+        while x and x not in seen:
+            seen.add(x)
+            nd = nodes.get(x)
+            if not nd:
+                return False
+            if nd.get("nodeComplete") or nd.get("cleared"):
+                return True
+            x = nd.get("parentId")
+        return False
+
+    def _task_open(nid):
+        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
+            return True
+        return any(_task_open(c) for c in children.get(nid, []))
+
+    out = []
+    for nid, nd in nodes.items():
+        if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
+            continue
+        if nd.get("umbrella"):
+            continue                                   # a pure container completes structurally (is_complete's
+            #                                            umbrella carve-out) — nothing to ask the closer
+        kids = children.get(nid, [])
+        if not kids or not all(nodes[c].get("nodeComplete") or nodes[c].get("cleared") for c in kids):
+            continue
+        if _sealed_above(nid) or _task_open(nid):
+            continue
+        if sigs.get(nid) == _umb_sig(nodes, children, nid):
+            continue                                   # the closer already looked at exactly this set
+        out.append(nd)
+    out.sort(key=lambda nd: nd.get("t", 0))
+    return out
+
+
 def _menu_history_text(store, seg_by_id, menu, char_cap):
     """Each menu goal's own raw work-so-far (see _goal_work_text), labeled by its menu number, for the
     closer's <goal-history> block. subtree=False here (unlike the planner's single-target case): the
@@ -5024,12 +5110,30 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
 
     DONE-ANCHOR (the user 2026-06-17): a top resolved at turn-end deep-links to the turn's FINAL segment
     (the rich recap), not an intermediate tool-narration step — so we append that segment to each resolved
-    node's trail (the read side anchors a done/blocked card to trail[-1]). The latest close wins."""
+    node's trail (the read side anchors a done/blocked card to trail[-1]). The latest close wins.
+
+    STEPS-FINISHED CANDIDATES (the user 2026-07-15): nodes whose every child is complete but which carry
+    no verdict of their own ride ALONG with the touched menu — bottom-up completion is a nomination to
+    this closer now, not a rollup rule (see _subtree_done_candidates). The closer rules each from its
+    goal history (done / blocked / considered omission); a landed reply stamps the candidate's
+    completion-set signature so an unchanged set is never re-asked (event re-arm: the set changing)."""
     menu = _turn_menu(turn, store)
+    seen_ids = {nd["id"] for nd in menu}
+    cands = [nd for nd in _subtree_done_candidates(store) if nd["id"] not in seen_ids]
+    menu = menu + cands
     if not menu:
         return []
     hist = _menu_history_text(store, seg_by_id, menu, CLOSE_HISTORY_CHARS) if seg_by_id is not None else ""
-    raw = closer_llm(_unit_text(turn["atoms"]), _menu_text(store, menu), hist)
+    menu_text = _menu_text(store, menu)
+    cand_ids = {c["id"] for c in cands}
+    flagged = [i for i, nd in enumerate(menu, 1) if nd["id"] in cand_ids]
+    if flagged:
+        menu_text += ("\n\nEvery recorded step under goal%s %s is finished. Judge %s by the "
+                      "steps-finished rule, from goal history rather than this turn alone."
+                      % ("s" if len(flagged) > 1 else "",
+                         ", ".join("#%d" % i for i in flagged),
+                         "each" if len(flagged) > 1 else "it"))
+    raw = closer_llm(_unit_text(turn["atoms"]), menu_text, hist)
     out = _parse_close(raw, len(menu))
     if out is None:
         if not raw:
@@ -5049,6 +5153,16 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
             #                                            changes the size signature and re-judges (event re-arm)
         return None                                    # under the cap → leave unswept, retry next pass
     store.get("closeFails", {}).pop(turn["id"], None)  # a clean reply clears the turn's strike count
+    if cands:
+        # The reply LANDED → the closer has considered every candidate (a verdict or a considered
+        # omission). Stamp each one's completion-set signature so an unchanged set is never re-asked;
+        # a verdicted candidate's stamp is harmless (the ruled/sealed filters exclude it anyway).
+        sigs = store.setdefault("umbSig", {})
+        kidmap = {}
+        for _nid, _nd in store["nodes"].items():
+            kidmap.setdefault(_nd.get("parentId"), []).append(_nid)
+        for nd in cands:
+            sigs[nd["id"]] = _umb_sig(store["nodes"], kidmap, nd["id"])
     newly = apply_close(store, menu, out, t=turn.get("t"))
     segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
     if segs:                                           # anchor each resolved (done/blocked) top to the recap

@@ -734,62 +734,80 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(byid["pick a db"]["blockSummary"], "Postgres vs SQLite — needs your call on scale.",
                          "a blocked node carries the block-distiller's decision brief")
 
-    def test_ledger_tree_derives_done_when_all_children_complete(self):
-        # Completion propagates UP (the user 2026-06-16): a parent that ISN'T explicitly nodeComplete but
-        # whose children are ALL done is "derived done" — done=True + derived=True (render dims its ✓
-        # disc). The full tree is emitted (the render folds, the kernel doesn't prune). A parent with an
-        # open child is NOT derived; a blocked parent is never auto-completed.
-        dp, dc1, dc2 = (SID + ":dp", SID + ":dc1", SID + ":dc2")   # derived parent, both children done
-        mp, mc1, mc2 = (SID + ":mp", SID + ":mc1", SID + ":mc2")   # mixed parent, one child still open
-        bp, bc = (SID + ":bp", SID + ":bc")                        # blocked parent, child done
-        def gn(nid, text, parent, done, blocked=False):
-            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
-                    "blocked": blocked, "cleared": False, "trail": [], "t": T0}
+    def test_ledger_tree_derives_done_only_for_umbrella_containers(self):
+        # Derived (children-based) completion is UMBRELLA-only now (the user 2026-07-15, the
+        # load-testing card): a grouper container's whole identity is its children, so it derives a
+        # dimmed ✓ when they're all done — but a PLAIN parent stays honestly unchecked until a judge
+        # rules it (children are filed prerequisites/retries, not a promised breakdown). A parent with
+        # an open child is never derived; a blocked umbrella is never auto-completed.
+        dp, dc1, dc2 = (SID + ":dp", SID + ":dc1", SID + ":dc2")   # UMBRELLA, both children done
+        pp, pc = (SID + ":pp", SID + ":pc")                        # plain parent, child done
+        mp, mc1, mc2 = (SID + ":mp", SID + ":mc1", SID + ":mc2")   # umbrella, one child still open
+        bp, bc = (SID + ":bp", SID + ":bc")                        # blocked umbrella, child done
+        def gn(nid, text, parent, done, blocked=False, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                 "blocked": blocked, "cleared": False, "trail": [], "t": T0}
+            d.update(kw); return d
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 9, "lastNode": None,
-            "nodes": {dp: gn(dp, "derived parent", None, False), dc1: gn(dc1, "dc one", dp, True), dc2: gn(dc2, "dc two", dp, True),
-                      mp: gn(mp, "mixed parent", None, False), mc1: gn(mc1, "mc done", mp, True), mc2: gn(mc2, "mc open", mp, False),
-                      bp: gn(bp, "blocked parent", None, False, blocked=True), bc: gn(bc, "bc done", bp, True)},
+            "nodes": {dp: gn(dp, "derived parent", None, False, umbrella=True),
+                      dc1: gn(dc1, "dc one", dp, True), dc2: gn(dc2, "dc two", dp, True),
+                      pp: gn(pp, "plain parent", None, False), pc: gn(pc, "pc done", pp, True),
+                      mp: gn(mp, "mixed parent", None, False, umbrella=True),
+                      mc1: gn(mc1, "mc done", mp, True), mc2: gn(mc2, "mc open", mp, False),
+                      bp: gn(bp, "blocked parent", None, False, blocked=True, umbrella=True),
+                      bc: gn(bc, "bc done", bp, True)},
             "placements": {}, "status": {}}))
         tree = km.build_session(SID, NOW)["ledger"]["tree"]
         byid = {n["text"]: n for n in tree}
-        # derived parent: done by virtue of its children, flagged derived; its children are still emitted
+        # umbrella container: done by virtue of its children, flagged derived; children still emitted
         self.assertTrue(byid["derived parent"]["done"])
-        self.assertTrue(byid["derived parent"]["derived"], "all children done → derived done")
+        self.assertTrue(byid["derived parent"]["derived"], "an umbrella derives done from its children")
         self.assertIn("dc one", byid, "the full tree is emitted (the render folds, the kernel doesn't prune)")
         self.assertFalse(byid["dc one"]["derived"], "an explicitly-done child stays a full disc")
-        # mixed parent: one child still open → not done, not derived, children shown
+        # plain parent: no verdict → never derived, even with every child done
+        self.assertFalse(byid["plain parent"]["done"], "a plain parent never derives done from its children")
+        self.assertFalse(byid["plain parent"]["derived"])
+        # mixed umbrella: one child still open → not done, not derived, children shown
         self.assertFalse(byid["mixed parent"]["done"])
         self.assertFalse(byid["mixed parent"]["derived"])
         self.assertIn("mc open", byid, "an open child keeps its parent expanded")
-        # blocked parent: never derived-done, even with all children done
+        # blocked umbrella: never derived-done, even with all children done
         self.assertFalse(byid["blocked parent"]["derived"], "a blocked node is not auto-completed")
         self.assertFalse(byid["blocked parent"]["done"])
 
-    def test_feed_tree_propagates_completion_both_ways(self):
-        # In the FEED card tree completion rolls UP and DOWN (the user 2026-06-16): a done parent checks
-        # off its children (roll-down), and all-children-done makes the parent done (roll-up). Explicit
-        # done → derived False (full ✓ disc); a derived case → derived True (dimmed disc). Unlike the
-        # ledger, the feed does NOT prune, so the rolled-off children stay VISIBLE (dimmed).
+    def test_feed_tree_rolls_down_and_derives_up_only_for_umbrellas(self):
+        # In the FEED card tree a done parent still checks off its children (roll-DOWN, dimmed disc),
+        # but the roll-UP arm is verdicts-only now (the user 2026-07-15, the load-testing card):
+        # all-children-done paints a derived ✓ ONLY on an umbrella container (a grouper mint whose whole
+        # identity is its children) — a plain parent stays honestly unchecked until a judge rules it
+        # (children are filed prerequisites/retries, not a promised breakdown).
         ta, ca = (SID + ":ta", SID + ":ca")                        # done parent, open child (roll-DOWN)
-        tb, cb1, cb2 = (SID + ":tb", SID + ":cb1", SID + ":cb2")    # open parent, both children done (roll-UP)
-        def gn(nid, text, parent, done):
-            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
-                    "blocked": False, "cleared": False, "trail": [], "t": T0}
+        tb, cb1, cb2 = (SID + ":tb", SID + ":cb1", SID + ":cb2")    # open UMBRELLA, both children done
+        tp, cp = (SID + ":tp", SID + ":cp")                        # open PLAIN parent, child done
+        def gn(nid, text, parent, done, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0}
+            d.update(kw); return d
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 3, "lastNode": "other",
             "nodes": {ta: gn(ta, "done top", None, True), ca: gn(ca, "open child", ta, False),
-                      tb: gn(tb, "rollup top", None, False), cb1: gn(cb1, "kid one", tb, True), cb2: gn(cb2, "kid two", tb, True)},
+                      tb: gn(tb, "umbrella top", None, False, umbrella=True),
+                      cb1: gn(cb1, "kid one", tb, True), cb2: gn(cb2, "kid two", tb, True),
+                      tp: gn(tp, "plain parent", None, False), cp: gn(cp, "its done step", tp, True)},
             "placements": {}, "status": {}}))
         nodes = {n["text"]: n for a in km.build_feed(NOW)["asks"] for n in a["tree"]}
         # roll-DOWN: a done parent checks off its child → the child is done + derived (dimmed), still shown
         self.assertEqual(nodes["open child"]["status"], "done")
         self.assertTrue(nodes["open child"]["derived"], "a done ancestor rolls down → derived done")
         self.assertFalse(nodes["done top"]["derived"], "the explicitly-done parent is a full disc")
-        # roll-UP: all children done → parent derived-done; the explicit children stay explicit (full disc)
-        self.assertEqual(nodes["rollup top"]["status"], "done")
-        self.assertTrue(nodes["rollup top"]["derived"], "all children done → derived done")
+        # umbrella roll-UP: the container derives done from its children; they stay explicit (full disc)
+        self.assertEqual(nodes["umbrella top"]["status"], "done")
+        self.assertTrue(nodes["umbrella top"]["derived"], "an umbrella container derives from its children")
         self.assertFalse(nodes["kid one"]["derived"])
+        # plain parent: no verdict → no derived check, even with every child done
+        self.assertNotEqual(nodes["plain parent"]["status"], "done",
+                            "a plain parent never derives done from its children")
 
     def test_feed_surfaces_planner_rationales(self):
         # The planner's one-sentence rationales reach the feed (the user 2026-06-16): a blocked CARD

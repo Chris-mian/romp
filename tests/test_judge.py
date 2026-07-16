@@ -1931,24 +1931,26 @@ class PlanRollup(unittest.TestCase):
         self.assertEqual(s["status"][g], "working", "a reopened (incomplete) goal stays Working with the chip")
         self.assertTrue(s["nodes"][g].get("followupPending"))
 
-    def test_bottom_up_completed_top_is_sealed_so_new_work_mints_a_card(self):
-        # The bug (the user 2026-06-18): a top that rolled up to "completed" via the BOTTOM-UP path — its
-        # only child got DONE'd so is_complete holds, but the top's OWN nodeComplete was never set — stayed
-        # in open_menu, because the seal predicate only checked nodeComplete/cleared. So the planner kept
-        # burying new, unrelated asks UNDER the already-done goal instead of minting a fresh card (no goal
-        # surfaced). open_menu must seal it on the settledDone marker the rollup stamps for "completed".
+    def test_settled_done_top_is_sealed_so_new_work_mints_a_card(self):
+        # The bug (the user 2026-06-18): a "completed" top whose OWN nodeComplete was never set stayed in
+        # open_menu (the seal predicate only checked nodeComplete/cleared), so the planner kept burying
+        # new, unrelated asks UNDER the already-done goal instead of minting a fresh card. open_menu must
+        # seal on the settledDone marker too. Since the 2026-07-15 flip that shape only arises as the
+        # GRANDFATHER for bottom-up-era stores (a settle event with no done verdict — new settles always
+        # follow a verdict), so the fixture builds it directly from the diary.
         s = _store()
         self._mint(s, "s1", T0, "G1")                                        # the top
         jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "the only step"}],
                       jd.open_menu(s))
         ci = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["text"] == "the only step")
-        self._done(s, "s3", T0 + 20, ci)                                     # DONE the child -> G1 completes BOTTOM-UP
-        self._mint(s, "s4", T0 + 30, "G2")                                   # focus moves to G2 -> G1 settles
+        self._done(s, "s3", T0 + 20, ci)                                     # DONE the child
+        self._mint(s, "s4", T0 + 30, "G2")                                   # focus moves on
         g1 = s["placements"]["s1"]
+        jd.record_verdict(s, s["nodes"][g1], "romp", "settle", T0 + 30)      # the bottom-up era's settle event
         jd.rollup_status(s, session_closed=False)
-        self.assertFalse(s["nodes"][g1].get("nodeComplete"), "G1 completed bottom-up: its OWN nodeComplete is never set")
-        self.assertTrue(s["nodes"][g1].get("settledDone"), "settled-completed -> the durable marker is stamped")
-        self.assertEqual(s["status"][g1], "completed")
+        self.assertFalse(s["nodes"][g1].get("nodeComplete"), "no done verdict of its own (the grandfathered shape)")
+        self.assertTrue(s["nodes"][g1].get("settledDone"), "the settle event materializes the durable marker")
+        self.assertEqual(s["status"][g1], "completed", "grandfathered: the old completion is preserved")
         menu_ids = {nd["id"] for nd in jd.open_menu(s)}
         self.assertNotIn(g1, menu_ids,
                          "a settled-completed top is sealed out of the menu -> a new ask mints a fresh card, not a sub")
@@ -2000,12 +2002,13 @@ class PlanRollup(unittest.TestCase):
         render the RAW nd["blocked"] flag, so the finished goal showed ⏸ sitting over ✓ children. rollup_status
         must CLEAR the raw flag on every complete node so the store self-heals."""
         s = _store()
-        g = _mknode(s, "G")                                  # top: NOT explicitly nodeComplete...
-        g["blocked"] = True; g["blockWhy"] = "owed a decision"   # ...but carrying a stale block
-        # children done AFTER the block (t=T0+50 > the block's T0 evidence): the staleness is what
-        # licenses the heal — a block as new as the completion evidence is the judges' LATEST ruling
-        # and survives instead (the user 2026-07-15; see test_judge_fresh_block.py)
-        c1 = _mknode(s, "c1", parent=g["id"], complete=True, t=T0 + 50)   # all children DONE → top complete bottom-up
+        # the top is EXPLICITLY done, done later than its stale block (t=T0+50 > the block's T0
+        # evidence): staleness licenses the heal — a block as new as the completion evidence is the
+        # judges' latest ruling and survives instead (2026-07-15, test_judge_fresh_block.py); and since
+        # the same day's verdicts-only flip, only a ruled top completes at all (no bottom-up arm)
+        g = _mknode(s, "G", complete=True, t=T0 + 50)
+        g["blocked"] = True; g["blockWhy"] = "owed a decision"   # carrying a stale block under the done
+        c1 = _mknode(s, "c1", parent=g["id"], complete=True, t=T0 + 50)
         c2 = _mknode(s, "c2", parent=g["id"], complete=True, t=T0 + 50)
         c2["blocked"] = True                                    # a DONE child also carrying a stale block
         s["lastNode"] = g["id"]
@@ -2996,8 +2999,13 @@ class BlockCompletionCorrectness(unittest.TestCase):
         jd.apply_plan(s, "s3", T0 + 2, [{"do": "done", "why": "x", "goal": n}], menu)
         self.assertFalse(sub["blocked"], "completing the parent clears the descendant's block")
 
-    def test_bottom_up_completion_when_all_children_done(self):
-        # #4: a top whose children are ALL complete rolls up complete even if the top was never DONE'd.
+    def test_all_children_done_no_longer_completes_an_unruled_top(self):
+        # #4, INVERTED (the user 2026-07-15, the load-testing card): the bottom-up arm was the one
+        # completion with no author, no evidence, and no diary row — children are filed prerequisites/
+        # retries, not a promised breakdown, so "Run the experiment" completed when its "retry the
+        # connection" child closed. All-children-done now only NOMINATES the top to the closer
+        # (_subtree_done_candidates, see test_judge_umbrella_completion.py); until that verdict lands
+        # the top stays honestly working.
         s = _store()
         self._mint(s, "s1", T0, "G")
         self._sub(s, "s2", T0 + 1, "G", "c1")
@@ -3006,9 +3014,11 @@ class BlockCompletionCorrectness(unittest.TestCase):
         kids = [nd for nd in s["nodes"].values() if nd["parentId"] == g]
         jd.apply_close(s, kids, {"done": {1: "did c1", 2: "did c2"}}, t=T0 + 2)   # REAL event-backed dones
         self.assertFalse(s["nodes"][g]["nodeComplete"], "the top itself was never DONE'd")
-        self._mint(s, "s4", T0 + 3, "G2")                 # a newer top is the focus → G settles
+        self._mint(s, "s4", T0 + 3, "G2")                 # a newer top is the focus → G would have settled
         jd.rollup_status(s, session_closed=False)
-        self.assertEqual(s["status"][g], "completed", "all children complete → the top rolls up complete")
+        self.assertEqual(s["status"][g], "working", "no verdict on the top → no completion, no settle")
+        self.assertEqual([nd["id"] for nd in jd._subtree_done_candidates(s)], [g],
+                         "…but the finished subtree nominates it to the closer")
 
     def test_childless_top_still_needs_its_own_done(self):
         # #4 guard: bottom-up must NOT complete a childless node that was never DONE'd.

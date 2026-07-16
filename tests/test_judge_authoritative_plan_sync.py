@@ -330,12 +330,17 @@ class BlockedAuthority(unittest.TestCase):
 
     def test_crossing_off_the_blocked_todo_heals_the_block(self):
         """Positive control: once the agent completes the item, the block's answer is moot — the sync
-        stamps authoritative-done and the rollup's stale-block heal clears the raw flag + blockWhy."""
+        stamps authoritative-done and the rollup's stale-block heal clears the raw flag + blockWhy.
+        The TOP no longer auto-completes off its finished child (the 2026-07-15 verdicts-only flip):
+        it stays working and is nominated to the closer instead."""
         store = self._blocked_open_todo()
         jd._sync_declared_plan(store, plan_session([("wire the adapter", "Wiring", [("completed",)])]),
                                "s2", T0 + 100)
         jd.rollup_status(store, True)
-        self.assertEqual(store["status"]["T"], "completed")
+        self.assertEqual(store["status"]["T"], "working",
+                         "the unruled top stays honestly open (no bottom-up completion)")
+        self.assertEqual([nd["id"] for nd in jd._subtree_done_candidates(store)], ["T"],
+                         "…and the finished subtree nominates it to the closer")
         self.assertFalse(store["nodes"]["C"]["blocked"], "a complete node can't stay blocked")
         self.assertNotIn("blockWhy", store["nodes"]["C"])
 

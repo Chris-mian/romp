@@ -81,20 +81,28 @@ class FreshBlockSurvivesSubtreeComplete(unittest.TestCase):
         self.assertEqual(s["status"][SID + ":g1"], "blocked", "and the status never flaps")
 
     def test_strictly_newer_completion_still_moots_the_block(self):
-        # the heal's original job is untouched: completion evidence NEWER than the block clears it
+        # the heal's original job is untouched: completion evidence newer than the block clears it.
+        # Since the verdicts-only flip (2026-07-15) a child's done can't complete the parent, so the
+        # newer completion here is an explicit done on the BLOCKED NODE'S PARENT — the roll-down then
+        # folds the child, and the heal clears its older block in the same pass.
         s = _store()
-        _ask_card(s, block_ev=T1, done_ev=T1 + 60)
+        s["nodes"] = {n["id"]: n for n in [
+            _node("g1", "the card", log=[_row("done", T1 + 60, why="whole ask discharged later")]),
+            _node("g2", "a step that asked something earlier", parent="g1",
+                  log=[_row("block", T1, why="want A or B?")]),
+        ]}
+        s["seq"] = 2
         jd.rollup_status(s, session_closed=True)
-        top = s["nodes"][SID + ":g1"]
-        self.assertFalse(top.get("blocked"), "newer completion evidence moots the older block")
+        kid = s["nodes"][SID + ":g2"]
+        self.assertFalse(kid.get("blocked"), "newer completion evidence moots the older block")
         self.assertEqual(s["status"][SID + ":g1"], "completed")
-        unblocks = [e for e in top["log"] if e.get("kind") == "unblock"]
+        unblocks = [e for e in kid["log"] if e.get("kind") == "unblock"]
         self.assertEqual(len(unblocks), 1, "the heal lands in ONE event")
         self.assertGreaterEqual(unblocks[0].get("ev_t") or 0, T1,
                                 "the unblock's evidence floors at the block's — it must fold AFTER it")
-        before = len(top["log"])
+        before = len(kid["log"])
         jd.rollup_status(s, session_closed=True)
-        self.assertEqual(len(s["nodes"][SID + ":g1"]["log"]), before, "idempotent: no re-append")
+        self.assertEqual(len(s["nodes"][SID + ":g2"]["log"]), before, "idempotent: no re-append")
 
     def test_ancestor_done_tie_moots_a_child_block(self):
         # a top-down done on the ancestor discharges the whole subtree, same-turn child-blocks
