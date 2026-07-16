@@ -27,24 +27,38 @@ test("every push entry point re-asserts (or retires) the optimistic tail", () =>
   assert.ok(calls.length >= 4, "reconcile wired into send + all three push paths, got " + calls.length);
 });
 
-test("an optimistic bubble is a tail-appended, kernel-invisible user event", () => {
+// The optimistic echo rides the QUEUED idiom (the user 2026-07-16): to the reader an unconfirmed send and a
+// queued one are the same state, so they wear the same dashed bubble — and the look then only ever moves
+// provisional→settled. It first shipped as a 0.6-opacity SOLID bubble, which invented a third look and made a
+// queued send flip solid→dashed (backwards, as if it had un-landed).
+test("an optimistic echo is a tail-appended, kernel-invisible QUEUED event — never a solid user bubble", () => {
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
   assert.match(RENDER, /const OPT_PREFIX = "optimistic:";/);
-  assert.match(RENDER, /s\.events\.push\(\{ kind: "user", md: p\.text, human: true, uuid: OPT_PREFIX \+ p\.ts \}\)/);
+  assert.match(RENDER, /const mk = \(p: \{ text: string \}\) => \(\{ md: p\.text, optimistic: true, cancelable: false \}\);/);
   // stale ones pop cheaply off the end (always tail-appended)
   assert.match(RENDER, /while \(s\.events\.length && isOptimistic\(s\.events\[s\.events\.length - 1\]\)\) s\.events\.pop\(\);/);
+  // the abandoned dim idiom is gone from both the render and the stylesheet
+  assert.doesNotMatch(RENDER, /ev\.pending/);
+  assert.doesNotMatch(CSS, /\.user-bubble\.pending \{/);
+  // it reuses the chat's ONE provisional look rather than adding CSS of its own
+  assert.match(CSS, /\.queued-bubble \{[\s\S]*?border: 1px dashed/);
 });
 
-// The optimistic bubble first shipped dimmed (.pending, opacity 0.6), which invented a THIRD provisional look
-// next to the dashed .queued-bubble and made every send flicker dim→solid as the kernel's copy superseded it
-// (the user 2026-07-16). It now renders EXACTLY like the landed message it's replaced by.
-test("a just-sent bubble carries NO distinguishing flag or styling — it looks like what replaces it", () => {
-  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
-  assert.match(RENDER, /const bubble = el\("div", \(romp \? "romp-bubble" : injected \? "user-note" : "user-bubble"\) \+ " md"\);/);
-  assert.doesNotMatch(RENDER, /ev\.pending/, "no pending flag is read when rendering");
-  assert.doesNotMatch(RENDER, /pending: true/, "and none is written onto the optimistic event");
-  assert.doesNotMatch(CSS, /\.user-bubble\.pending \{/, "the dim rule is gone");
-  // the ONE provisional idiom the chat has stays exactly as it was: dashed = queued behind a busy turn
-  assert.match(CSS, /\.queued-bubble \{[\s\S]*?border: 1px dashed/);
+test("nothing known-queued → a BARE dashed bubble (no 'N queued' header we can't back)", () => {
+  assert.match(RENDER, /s\.events\.push\(\{ kind: "queued", bare: true, texts: keep\.map\(mk\), uuid: OPT_PREFIX \+ keep\[0\]\.ts \}\);/);
+  assert.match(RENDER, /if \(!ev\.bare\) \{/, "renderQueued skips the header for a bare group");
+});
+
+test("something IS queued → ours merges into that group, counted under its header", () => {
+  assert.match(RENDER, /s\.events\[qj\] = \{ \.\.\.q, texts: \[\.\.\.q\.texts, \.\.\.keep\.map\(mk\)\] \};/);
+  // and the extension is undone before `landed` runs, so reconcile only ever reads kernel truth
+  assert.match(RENDER, /if \(q\.texts\.some\(\(t\) => t\.optimistic\)\) s\.events\[qi\] = \{ \.\.\.q, texts: q\.texts\.filter\(\(t\) => !t\.optimistic\) \};/);
+});
+
+test("an unconfirmed echo gets its own tooltip and never an ✕ (nothing confirmed to cancel)", () => {
+  assert.match(RENDER, /if \(t\.optimistic\) bubble\.title = "sent just now — romp hasn't confirmed the session has it yet";/);
+  // cancelable:false → the ✕ branch (which needs cancelable AND an idx/park handle) can't fire for ours
+  assert.match(RENDER, /if \(t\.cancelable && \(t\.idx !== undefined \|\| t\.park !== undefined\)\) \{/);
 });
 
 // executed replica of reconcileOptimistic's keep/retire decision: a send survives until the kernel's payload

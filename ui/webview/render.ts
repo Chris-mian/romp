@@ -56,12 +56,6 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  // A CLIENT-side optimistic echo of a just-sent message is one of these, injected at the tail (uuid
-  // OPT_PREFIX) so it shows the instant you hit Enter and STAYS put across pushes — bridging the server-side
-  // echo→landed gap where the kernel's own provisional briefly vanished (the user 2026-07-15). It carries NO
-  // distinguishing field or styling: it renders exactly like the landed message that replaces it, so a send
-  // never flickers between two looks (the user 2026-07-16). Reconciled out once the kernel's payload carries
-  // the message (see reconcileOptimistic). Never sent to/from the kernel.
   | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
@@ -109,7 +103,15 @@ type ChatEvent = (
   | { kind: "teammate"; blocks: { id: string; summary?: string; body: string }[]; ts?: string; uuid?: string }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; error?: string; ts?: string; uuid?: string }
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
+  // A CLIENT-side optimistic echo of a just-sent message is one of these (uuid OPT_PREFIX), injected at the
+  // tail so it shows the instant you hit Enter and STAYS put across pushes — bridging the server-side
+  // echo→landed gap where the kernel's own provisional briefly vanished (the user 2026-07-15). It rides the
+  // queued idiom because that IS what it is to the reader: sent, nothing's happened yet (the user 2026-07-16).
+  // `optimistic` marks a text romp has NOT confirmed the session received (→ its own tooltip, never an ✕ —
+  // there's nothing confirmed to cancel); `bare` drops the "N queued messages" header, since with nothing
+  // known-queued we can't claim that. Reconciled out once the kernel's payload carries the message (see
+  // reconcileOptimistic). Neither field is ever sent to/from the kernel.
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean }[]; ts?: string; uuid?: string; bare?: boolean }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -188,18 +190,37 @@ const order: string[] = [];           // positional tab order (for cycling)
 // message looked lost for a beat. We drop a local optimistic bubble at the tail the moment you hit Enter and
 // keep RE-injecting it on every push until the kernel's payload demonstrably carries the message, then let it
 // go — the immediacy is client-owned, independent of every server-side timing subtlety.
+// It rides the QUEUED idiom (the user 2026-07-16): to the reader an unconfirmed send and a queued one are the
+// same state — sent, nothing's happened yet — so they wear the same dashed bubble. That also means the look
+// only ever moves provisional→settled: dashed→solid when it lands, dashed→dashed (invisible) when it really
+// was queued. It first shipped as a 0.6-opacity solid bubble, which invented a THIRD look and made a queued
+// send flip solid→dashed — backwards, as if it had un-landed.
 const OPT_PREFIX = "optimistic:";
 const OPT_TTL_MS = 20_000;    // backstop: a real send always echoes within this; past it we stop asserting
 const OPT_TAIL_SCAN = 30;     // the kernel's version (user atom / queued bubble) always lands at the tail
 const pendingSent = new Map<string, { text: string; ts: number }[]>();   // sid → in-flight optimistic sends
-const isOptimistic = (e: ChatEvent): boolean => e.kind === "user" && !!e.uuid && e.uuid.startsWith(OPT_PREFIX);
+const isOptimistic = (e: ChatEvent): boolean => !!e.uuid && e.uuid.startsWith(OPT_PREFIX);
 
-// Rebuild a session's optimistic tail: strip any bubbles we injected last push (kernel events are
-// authoritative), then re-append one per still-in-flight send — dropping those the kernel has now surfaced
-// (a landed user atom or a queued bubble whose text contains ours) or that have aged past the TTL backstop.
-// Optimistic bubbles are always tail-appended, so the stale ones pop cheaply off the end.
+// The kernel's own queued group, if one is at the tail. Ours merges INTO it when present: the session is
+// provably holding messages, so this send will queue behind them — no reason to show it as a separate lone
+// bubble (the user 2026-07-16). Tail-scanned; a queued group only ever sits at the bottom.
+function tailQueuedIdx(evs: ChatEvent[]): number {
+  for (let i = evs.length - 1, n = 0; i >= 0 && n < 10; i--, n++) if (evs[i].kind === "queued") return i;
+  return -1;
+}
+
+// Rebuild a session's optimistic tail: strip what we injected last push (kernel events are authoritative),
+// then re-add one per still-in-flight send — dropping those the kernel has now surfaced (a landed user atom
+// or a queued bubble carrying our text) or that have aged past the TTL backstop.
 function reconcileOptimistic(s: Session): void {
+  // undo our own injections. A standalone bare group is tail-appended (pop it); a kernel group we EXTENDED is
+  // restored by dropping the optimistic texts off our clone — so `landed` below only ever sees kernel truth.
   while (s.events.length && isOptimistic(s.events[s.events.length - 1])) s.events.pop();
+  const qi = tailQueuedIdx(s.events);
+  if (qi >= 0) {
+    const q = s.events[qi] as Extract<ChatEvent, { kind: "queued" }>;
+    if (q.texts.some((t) => t.optimistic)) s.events[qi] = { ...q, texts: q.texts.filter((t) => !t.optimistic) };
+  }
   const list = pendingSent.get(s.id);
   if (!list || !list.length) return;
   const now = Date.now();
@@ -209,7 +230,17 @@ function reconcileOptimistic(s: Session): void {
     (e.kind === "queued" && Array.isArray(e.texts) && e.texts.some((x) => typeof x.md === "string" && x.md.includes(t))));
   const keep = list.filter((p) => now - p.ts < OPT_TTL_MS && !landed(p.text));
   if (keep.length) pendingSent.set(s.id, keep); else pendingSent.delete(s.id);
-  for (const p of keep) s.events.push({ kind: "user", md: p.text, human: true, uuid: OPT_PREFIX + p.ts });
+  if (!keep.length) return;
+  const mk = (p: { text: string }) => ({ md: p.text, optimistic: true, cancelable: false });
+  const qj = tailQueuedIdx(s.events);
+  if (qj >= 0) {
+    // something IS queued here → ours queues behind it: show it in that group, under its header, counted
+    const q = s.events[qj] as Extract<ChatEvent, { kind: "queued" }>;
+    s.events[qj] = { ...q, texts: [...q.texts, ...keep.map(mk)] };
+  } else {
+    // nothing known-queued → a BARE dashed bubble: no "N queued messages" header to claim what we can't back
+    s.events.push({ kind: "queued", bare: true, texts: keep.map(mk), uuid: OPT_PREFIX + keep[0].ts });
+  }
 }
 
 // Record a composer send as in-flight and show its optimistic bubble NOW (before any kernel push).
@@ -1725,17 +1756,26 @@ function renderSlashCmd(bubble: HTMLElement, text: string): boolean {
 // a "message" — the user 2026-07-01).
 function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const turn = el("div", "turn turn-queued");
-  const n = ev.texts.length;
-  const nCmd = ev.texts.filter((t) => SLASH_CMD_RE.test(t.md)).length;
-  const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
-  const head = el("div", "queued-head");
-  head.appendChild(hourglassIcon());
-  const label = el("span"); label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}`;
-  head.appendChild(label);
-  turn.appendChild(head);
+  // A BARE group is romp's own optimistic echo with nothing else known-queued: it gets the dashed bubble but
+  // NO header, because "N queued messages" is a claim we can't back for a send the session hasn't confirmed
+  // (the user 2026-07-16). Merged into a real queued group, the header returns and counts ours in — there the
+  // queueing IS established, so assuming this one joins it is honest.
+  if (!ev.bare) {
+    const n = ev.texts.length;
+    const nCmd = ev.texts.filter((t) => SLASH_CMD_RE.test(t.md)).length;
+    const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
+    const head = el("div", "queued-head");
+    head.appendChild(hourglassIcon());
+    const label = el("span"); label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}`;
+    head.appendChild(label);
+    turn.appendChild(head);
+  }
   for (const t of ev.texts) {
     if (t.followUp) turn.appendChild(followUpHeader(t.goal, t.fuCtx, t.idx !== undefined ? "q:" + t.idx : undefined));
     const bubble = el("div", "queued-bubble md" + (t.cancelable ? " cancelable" : ""));
+    // one phrase separating OUR unconfirmed echo from a real queued message, which the session has accepted
+    // and is holding (the user 2026-07-16)
+    if (t.optimistic) bubble.title = "sent just now — romp hasn't confirmed the session has it yet";
     const isCmd = renderSlashCmd(bubble, t.md);
     if (!isCmd) bubble.innerHTML = md(t.md);
     // CANCELABLE — an explicit ✕ on the bubble (the user 2026-07-08; the old whole-bubble click was

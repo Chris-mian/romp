@@ -11,7 +11,8 @@ const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("queued payload is per-message {md, followUp?, goal?, fuCtx?}, not raw strings", () => {
-  assert.match(SRC, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean \}\[\]/);
+  // `optimistic` (romp's own unconfirmed echo) rides along at the end — see optimistic-send.test.ts
+  assert.match(SRC, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean \}\[\]/);
 });
 
 test("renderQueued renders markdown (not raw text) + the follow-up header", () => {

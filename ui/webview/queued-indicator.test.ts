@@ -12,7 +12,8 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
   // idx = backend-queue position (SDK); park = _pending_ops position (compaction/model parking, any backend)
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean \}\[\]/);
+  // `optimistic` (romp's own unconfirmed echo) rides along at the end — see optimistic-send.test.ts
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean; optimistic\?: boolean \}\[\]/);
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
