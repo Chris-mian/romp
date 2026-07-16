@@ -2739,15 +2739,22 @@ class TimelinePanel {
         if (data.messages.some((mm) => mm.toId === s.id && !mm.pending && Math.abs(execAt(mm) - startAt(t)) <= 1)) return;
         const dx = x(startAt(t));
         if (dotLit(t, dagOrHover)) svg.appendChild(el('circle', { cx: dx, cy: y, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white focus ring: DAG journey node, a coarse card hover (whole-turn id), OR a prompt-atom hover (promptId) — never a work-only (workId) hover
-        // a romp AUTO-nudge prompt (t.nudgeAuto — the kernel's background nudge, NOT the user's Nudge button /
-        // retry / typed follow-up): caption it 'romp · nudge' with the swirl logo, not the session name, and
-        // mark its dot as a ROMP MESSAGE — a BLACK-filled dot with the romp favicon swirl inside (the user
-        // 2026-06-23, replacing the old white ⚡ bolt). A button/retry nudge renders as a normal prompt dot.
+        // A romp-AUTHORED prompt (t.romp — an auto-nudge, the Nudge button, or an auto-retry: anything romp
+        // injected rather than the human typing) is marked as a ROMP MESSAGE: a BLACK-filled dot with the romp
+        // favicon swirl inside (the user 2026-06-23, replacing the old white ⚡ bolt). Originally auto-nudges
+        // ONLY; widened to every romp message (the user 2026-07-16: an auto-retry "rendered as a user prompt
+        // instead of a ROMP logo thing"), mirroring the chat's 2026-07-05 supersession of the same rule — at
+        // the data level a retry and a nudge are both just romp-injected. The AUTO-nudge keeps its own caption
+        // ('romp · nudge' + "romp nudged <name>"); any other romp message says 'romp' and shows its request,
+        // so an auto-retry reads "romp / retry ×14" instead of masquerading as something the user asked for.
+        const isRomp = t.romp || t.nudgeAuto;
         const tip = t.nudgeAuto
           ? () => '<div class="r"><img src="' + mediaUrl('romp-swirl-glyph.svg') + '" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body('romp nudged ' + esc(s.name))
+          : isRomp
+          ? () => '<div class="r"><img src="' + mediaUrl('romp-swirl-glyph.svg') + '" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t))
           : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t));
-        dot(dx, y, t.nudgeAuto ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // auto-nudge → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
-        if (t.nudgeAuto) {                               // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
+        dot(dx, y, isRomp ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // romp message → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
+        if (isRomp) {                                    // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
           const sz = DOT_R * 1.9;
           svg.appendChild(el('image', { x: dx - sz / 2, y: y - sz / 2, width: sz, height: sz, href: mediaUrl('romp-swirl-glyph.svg'), 'pointer-events': 'none' }));
         }

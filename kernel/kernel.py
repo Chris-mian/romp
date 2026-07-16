@@ -9155,8 +9155,13 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                         "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap,
                         "src": src, "mids": _seg_mids(seg), "pending": False,
                         "tid": sid, "uuid": seg.get("trigger"),
-                        "nudgeAuto": bool((trig or {}).get("rompAuto")),   # ONLY an AUTO-nudge (not the Nudge button / retry) →
-                        #                                       the view marks it as a romp message (swirl on a black dot)
+                        "nudgeAuto": bool((trig or {}).get("rompAuto")),   # an AUTO-nudge specifically → the tip captions it 'romp · nudge'
+                        # ANY romp-authored prompt (auto-nudge, Nudge button, auto-retry — author 'romp' via
+                        # ROMP_INJECT_RE) wears the romp logo on its dot (the user 2026-07-16: an auto-retry
+                        # "rendered as a user prompt instead of a ROMP logo thing"). This mirrors the chat, where
+                        # the 2026-07-05 rule already superseded 2026-06-23's auto-only logo: at the data level a
+                        # retry and a nudge are both just romp-injected, and either way it wasn't the human typing.
+                        "romp": bool(author == "romp"),
                         "workUuid": work_uuid, "replyUuid": reply_uuid})
         if not with_bars and last_t is None:
             try:

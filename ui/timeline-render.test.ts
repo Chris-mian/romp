@@ -228,7 +228,10 @@ function whiteBoltPaths(panel: any): number {
   walk(panel.svg);
   return n;
 }
-test("an AUTO-nudge prompt draws the romp swirl in its dot; a button-nudge or normal prompt does not", () => {
+// Any romp-AUTHORED prompt draws the romp swirl in its dot. Originally auto-nudges only (the user
+// 2026-06-23); widened to every romp message (the user 2026-07-16: an auto-retry "rendered as a user prompt
+// instead of a ROMP logo thing"), mirroring the chat's 2026-07-05 supersession of the same rule.
+test("an AUTO-nudge prompt draws the romp swirl in its dot; a normal user prompt does not", () => {
   const base = new TimelinePanel(makeNode("div"));
   base.data = synthData();
   base.draw();
@@ -241,14 +244,28 @@ test("an AUTO-nudge prompt draws the romp swirl in its dot; a button-nudge or no
   assert.doesNotThrow(() => panel.draw());
   assert.equal(swirlImages(panel), before + 1, "exactly one romp swirl is added for the single AUTO-nudge");
   assert.equal(whiteBoltPaths(panel), 0, "the old white ⚡ bolt path is gone");
-  // a Nudge-BUTTON / retry nudge (romp-injected but NOT auto) → NO swirl, just a normal dot (the user 2026-06-23)
-  const btn = new TimelinePanel(makeNode("div"));
+  // a plain human prompt (neither flag) → NO swirl, a normal session-coloured dot
+  const plain = new TimelinePanel(makeNode("div"));
+  plain.data = synthData();
+  assert.doesNotThrow(() => plain.draw());
+  assert.equal(swirlImages(plain), before, "a typed human prompt draws NO swirl");
+});
+
+test("a romp-AUTHORED prompt (an auto-RETRY, not an auto-nudge) also draws the swirl (the user 2026-07-16)", () => {
+  const base = new TimelinePanel(makeNode("div"));
+  base.data = synthData();
+  base.draw();
+  const before = swirlImages(base);
+  // the exact case from the screenshot: romp's auto-retry — author 'romp' (romp-injected), but NOT romp-auto,
+  // so the old auto-only rule left it looking like something the human typed.
+  const retry = new TimelinePanel(makeNode("div"));
   const d2: any = synthData();
-  d2.turns.S1[0].nudge = true;          // romp-injected…
-  d2.turns.S1[0].nudgeAuto = false;     // …but user-triggered
-  btn.data = d2;
-  assert.doesNotThrow(() => btn.draw());
-  assert.equal(swirlImages(btn), before, "a button/retry nudge draws NO swirl");
+  d2.turns.S1[0].romp = true;           // romp-injected (the kernel's new author flag)…
+  d2.turns.S1[0].nudgeAuto = false;     // …but not an auto-nudge
+  d2.turns.S1[0].prompt = "retry";
+  retry.data = d2;
+  assert.doesNotThrow(() => retry.draw());
+  assert.equal(swirlImages(retry), before + 1, "a romp auto-retry now wears the romp logo, not a user-prompt dot");
 });
 
 // A segment that straddled a host sleep renders as several bars (kernel _awake_spans); only the FIRST
