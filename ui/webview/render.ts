@@ -3545,11 +3545,23 @@ function scrollToAnchor(uuid: string): boolean {
   // (No match anywhere → genuinely off the active path; stash for the next render pass.)
   if (!target && v && activeId) {
     const s = sessions.get(activeId);
-    const idx = s ? s.events.findIndex((e) => e.uuid === uuid || (e as { mid?: string }).mid === uuid) : -1;
+    // resultUuid too: an ANSWERED AskUserQuestion turn is anchored by its answer line's uuid
+    // (renderEvent's data-uuid — the uuid the timeline emits for the decision), which no event
+    // carries as its OWN uuid, so a uuid/mid-only lookup missed it and this recovery never ran.
+    const idx = s ? s.events.findIndex((e) => e.uuid === uuid || (e as { mid?: string }).mid === uuid
+                                       || (e as { resultUuid?: string }).resultUuid === uuid) : -1;
     if (s && idx >= 0) {
       const items = displayItems(s);
       let u = items.findIndex((it) => it.kind === "toolgroup" ? it.indices.includes(idx) : it.index === idx);
       if (u < 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
+      // The anchor can live INSIDE a collapsed tool run: the folded line carries only the run's FIRST
+      // uuid, so the re-render below could never surface a mid-run member — the click honest-failed
+      // "pointer-not-rendered" with the message sitting right behind the fold (the user 2026-07-16: a
+      // Blocked card anchored to its session's pending AskUserQuestion tool atom). The click asked to
+      // SEE that message: expand the run, so the re-render gives the member its own turn to land on.
+      const hit = items[u];
+      if (hit && hit.kind === "toolgroup" && hit.indices.includes(idx))
+        expandedGroups.add(toolGroupKey(s.events[hit.indices[0]]));
       const working = s.status.state === "working" || s.status.state === "compacting";
       renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), working);
       target = (v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
