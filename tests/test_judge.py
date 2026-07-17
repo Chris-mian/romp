@@ -574,6 +574,34 @@ class PlanParse(unittest.TestCase):
         raw = '{"ops":[{"why":"y","do":"mint","text":"A"}]}{not json {at all}}'
         self.assertEqual(jd._parse_plan(raw, 3)[0]["text"], "A")
 
+    def test_truncated_reply_missing_final_brace_repairs(self):
+        # The round-2 planner tally (07-09→07-17): 9 of 14 parse rejects were replies that closed the
+        # ops array and dropped the outer '}' — `…"do":"block","goal":1}]`. Intent unambiguous → repair.
+        raw = '{"ops": [{"why": "traced the failure to a stale cache, asking which fix to take", "do": "block", "goal": 1}]'
+        self.assertEqual(jd._parse_plan(raw, 3), [{"do": "block", "goal": 1,
+                         "why": "traced the failure to a stale cache, asking which fix to take"}])
+        raw2 = '{"ops":[{"why":"progress","do":"sub","under":2,"text":"Wired the retry path"}]'
+        self.assertEqual(jd._parse_plan(raw2, 3)[0]["under"], 2)
+        # braces/brackets INSIDE strings never count toward the balance
+        raw3 = '{"ops":[{"why":"see {goals[0]} for context","do":"skip"}]'
+        self.assertEqual(jd._parse_plan(raw3, 3)[0]["do"], "skip")
+
+    def test_truncation_mid_string_is_not_repaired(self):
+        # A reply cut inside a string value is NOT a clean truncation: appending closers would silently
+        # truncate the value. Stays None (the caller's skip/reject signal).
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"cut off mid sent', 3))
+        # mismatched closer (a ']' closing a '{') is corruption, not truncation — no repair
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x"]', 3))
+        # nothing left open → nothing to repair (plain junk stays junk)
+        self.assertIsNone(jd._parse_plan("no braces here at all", 3))
+
+    def test_bare_why_skip_is_a_skip(self):
+        # 2 of 14 planner rejects were exactly {"why": "skip"} — the verdict in the wrong field, no
+        # "do" at all. Unambiguous → a skip op.
+        self.assertEqual(jd._parse_plan('{"ops": [{"why": "skip"}]}', 3), [{"do": "skip", "why": ""}])
+        # …but a do-less op whose why merely STARTS with the word is still dropped, not guessed at
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"skipping the deploy until tests pass"}]}', 3))
+
     def test_retitle_parses_with_valid_goal_and_text(self):
         # retitle (the user 2026-07-01, narrower than the cut amend): a goal-number op, no "ref" (it only
         # ever targets a PRE-existing node, never a same-reply mint).
@@ -4377,6 +4405,17 @@ class SourceCitation(unittest.TestCase):
             self.assertIn("complete **only**", sys_prompt, "the line is required, not suggested")
             self.assertIn("never omit it while labels are present", sys_prompt)
             self.assertIn("never invent a label", sys_prompt)
+
+    def test_shape_sentence_admits_the_source_line(self):
+        # The round-2 cite-miss cluster (07-09→07-17: briefer 5/260, distiller 1/410, every one "no
+        # SOURCE line" on an otherwise-complete reply): the shape sentence said "two labeled sections
+        # and NOTHING ELSE", and the SOURCE paragraph three paragraphs later had to fight it. The shape
+        # sentence now names the trailing line(s) as part of the shape, so the two instructions agree.
+        for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
+            self.assertIn("plus, when required below", sys_prompt,
+                          "the shape sentence itself admits the final SOURCE line")
+            self.assertNotIn("two labeled sections and nothing else", sys_prompt,
+                             "the contradicting absolute shape claim is gone")
 
 
 class Distiller(unittest.TestCase):

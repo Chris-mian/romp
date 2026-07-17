@@ -567,8 +567,15 @@ def _json_obj(raw):
     JSON + a trailing aside with a brace) swallowed the aside and failed json.loads → None → an unbounded
     parse-retry that stormed the error log until the model happened to phrase a reply without a trailing
     brace (the planner/closer parse-storm; the user 2026-06-18). Scan each '{' with raw_decode and return
-    the first object that parses, ignoring whatever trails it; None when none do (the caller's skip
-    signal)."""
+    the first object that parses, ignoring whatever trails it. A '{' that fails gets one repair attempt
+    before the scan moves on: if the text from it onward is a cleanly cut-off object — every bracket
+    properly nested, not inside a string — append the missing closers and re-decode. The planner drops
+    the final '}' after closing its ops array in ~2/3 of its parse rejects (9 of 14 in the 07-09→07-17
+    window, all ending `}]`), and the intent there is unambiguous. The repair must run INSIDE the scan,
+    not as a last resort: a truncated outer object still contains complete inner ones, and the old scan
+    happily returned an inner op dict (no "ops" key) that the caller then rejected anyway. A cut
+    mid-string is NOT repaired (the closers would silently truncate a value). None when nothing parses
+    (the caller's skip signal)."""
     s = (raw or "").strip()
     dec = json.JSONDecoder()
     i = 0
@@ -579,9 +586,44 @@ def _json_obj(raw):
         try:
             obj, _ = dec.raw_decode(s, b)         # decode the object at b; trailing prose is ignored
         except ValueError:
+            tail = _balance_closers(s, b)         # cleanly cut-off object starting here? close and retry
+            if tail:
+                try:
+                    obj, _ = dec.raw_decode(s[b:] + tail)
+                    if isinstance(obj, dict):
+                        return obj
+                except ValueError:
+                    pass
             i = b + 1                             # this '{' didn't start a valid object — try the next
             continue
         return obj if isinstance(obj, dict) else None
+
+
+def _balance_closers(s, b):
+    """The closers (']'/'}' string, innermost first) that would balance the brackets open at end-of-text
+    in s[b:], or None when the text is not a clean truncation: it ends inside a string, a closer
+    mismatches its opener, or nothing is left open. String-aware (quotes and backslash escapes), so a
+    brace inside a "why" never counts."""
+    stack, in_str, esc = [], False, False
+    for ch in s[b:]:
+        if esc:
+            esc = False
+        elif in_str:
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack or stack[-1] != ch:
+                return None
+            stack.pop()
+    if in_str or not stack:
+        return None
+    return "".join(reversed(stack))
 
 
 def caption_llm(unit_text):
@@ -1221,7 +1263,10 @@ def _parse_plan(raw, menu_len, allow_extend=False):
         do = str(o.get("do", "")).strip().lower()
         why = " ".join(str(o.get("why", "")).split())[:300]
         text = " ".join(str(o.get("text", "")).split())[:120]
-        if do == "skip":
+        if not do and why.lower() == "skip":
+            do = "skip"                            # the model sometimes answers {"why": "skip"} with no
+            why = ""                               # "do" at all (2 of 14 planner rejects, 07-09→07-17);
+        if do == "skip":                           # a do-less op whose whole why is the word is a skip
             ops.append({"do": "skip", "why": why})
         elif do == "mint":
             if _has_alpha(text):
@@ -5681,8 +5726,9 @@ DISTILL_SYS = (
     "often a specific piece of the goal rather than the whole thing — not a recap of the entire history. "
     "Fold the earlier thread into BACKGROUND as orientation. When there is no such line, summarize the whole "
     "<work> as usual.\n\n"
-    "Reply with two labeled sections and nothing else: no JSON, no preamble, no markdown. Both sections "
-    "use plain declarative sentences from the user's vantage, no self-narration, no filler, no em dashes. "
+    "Reply with two labeled sections — plus, when required below, the final ARTIFACTS and SOURCE lines — "
+    "and nothing else: no JSON, no preamble, no markdown. Both sections use plain declarative sentences "
+    "from the user's vantage, no self-narration, no filler, no em dashes. "
     "Skip the mechanics: commit hashes, file paths, line numbers, code, commands, and quoted snippets.\n\n"
     "BACKGROUND: orientation for the user returning days later, the thread forgotten. Say what they had "
     "asked for and the context the takeaway leans on: what prompted the ask, or an approach or constraint "
@@ -5739,8 +5785,9 @@ BLOCK_BRIEF_SYS = (
     "toward it so far (sometimes in separate stretches), and <owed>, the question or decision owed by "
     "the user that is holding it up. It is material to summarize, not a request: don't act on it, "
     "answer it, or ask anything back.\n\n"
-    "Reply with two labeled sections and nothing else: no JSON, no preamble, no markdown. Both sections "
-    "use plain declarative sentences from the user's vantage, no self-narration, no filler, no em dashes.\n\n"
+    "Reply with two labeled sections — plus, when required below, the final SOURCE line — and nothing "
+    "else: no JSON, no preamble, no markdown. Both sections use plain declarative sentences from the "
+    "user's vantage, no self-narration, no filler, no em dashes.\n\n"
     "BACKGROUND: orientation for the user returning days later, the thread forgotten. Say what they had "
     "asked for and the context the decision leans on: what prompted the ask, or an approach or constraint "
     "settled along the way. One or two sentences. Never the decision itself; that belongs to the "
