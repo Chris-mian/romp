@@ -1387,6 +1387,16 @@ class SdkSession:
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
                 self.backend._update_reg(self.sid, lastSid=fsid)
+            cli_cwd = d.get("cwd")
+            if isinstance(cli_cwd, str) and cli_cwd and cli_cwd != self.cwd:
+                # The CLI's own cwd is the AUTHORITATIVE string: its projects-dir/transcript encoding
+                # is keyed on it (getcwd returns true on-disk casing), while romp's transcript_path is
+                # keyed on the registry string. A create-time variant (case, symlink) launches a real
+                # session whose transcript discovery then never finds (the silent wrong-case launch, the
+                # user 2026-07-17) — adopt the CLI's string the moment init reports it.
+                self.backend._log("sdk %s: adopting CLI cwd %r (registry had %r)" % (self.sid[:8], cli_cwd, self.cwd))
+                self.cwd = cli_cwd
+                self.backend._update_reg(self.sid, cwd=cli_cwd)
             self.backend._poke()   # publish the model + permission-mode from init promptly: the snapshot reads
                                    # self.model, but with no poke the new model would wait out the 3s producer
                                    # backstop. NB: this init branch fires only once the FIRST turn arrives — the

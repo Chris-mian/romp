@@ -2123,16 +2123,42 @@ def _set_default_dir(raw):
     return path, None
 
 
+def _true_case(path):
+    """`path` (absolute) with every component in its true on-disk casing. os.path.realpath resolves
+    symlinks but never case-corrects, and on macOS's case-insensitive filesystem a typed
+    '…/gitrepos/vault' passes isdir while the on-disk dir is '…/GitRepos/Vault'. The cwd STRING is
+    what matters downstream: the Claude CLI encodes its projects/transcript dir from its own getcwd
+    (true case), while romp's discovery encodes the registry string — a case variant launches a real
+    session whose transcript romp then never finds (the silent wrong-case launch, the user 2026-07-17).
+    Per component: keep it when the parent lists it verbatim; else substitute the unique
+    case-insensitive match; unreadable parent or ambiguous match keeps it as given (the caller's
+    isdir already vetted existence)."""
+    out = "/"
+    for comp in [c for c in path.split("/") if c]:
+        try:
+            names = os.listdir(out)
+        except OSError:
+            names = []
+        if comp not in names:
+            m = [e for e in names if e.lower() == comp.lower()]
+            if len(m) == 1:
+                comp = m[0]
+        out = os.path.join(out, comp)
+    return out
+
+
 def _resolve_create_dir(raw):
     """Resolve a UI-supplied new-session directory → (path, error). ~ and $VAR are expanded; the path must
     be an existing directory (the session's cwd is fixed at creation, so a bad path can't be fixed later —
-    reject it up front). Empty/None → the kernel default, no error."""
+    reject it up front), and it is canonicalized — symlinks and trailing slash via realpath, on-disk
+    casing via _true_case — because the string, not just the directory, is load-bearing (see
+    _true_case). Empty/None → the kernel default, no error."""
     if not raw or not str(raw).strip():
         return _default_create_dir(), None
     p = os.path.expanduser(os.path.expandvars(str(raw).strip()))
     if not os.path.isdir(p):
         return None, "directory not found: %s" % str(raw).strip()
-    return os.path.realpath(p), None
+    return _true_case(os.path.realpath(p)), None
 
 
 def _session_has_history(sid):
