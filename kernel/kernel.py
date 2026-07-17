@@ -4589,25 +4589,6 @@ def _session_awaiting(sid, path, idle):
     return None
 
 
-def _awaiting_since(sid):
-    """WHEN the awaiting state's work was dispatched: the newest `since` among the live subagent and
-    bg-task sets (backend snapshot), else the states overlay's awaiting:true record time; None when no
-    time is derivable. Mirrors _session_awaiting's sources. Order decides blocked-vs-awaiting on the
-    feed card (build_feed's floor, the user 2026-07-15, nimbus): work dispatched AFTER a block
-    supersedes it (the stale block the flip was built for), while a block that landed after the
-    dispatch is a GENUINE needs-you a live timer must not mask — None reads as oldest, so an
-    untimed signal never outranks a timed block."""
-    tm = _tmux_sessions().get(str(sid)) or {}
-    ts = [int(x.get("since") or 0) for x in (tm.get("subagents") or []) + (tm.get("bgTasks") or [])]
-    ts = [t for t in ts if t]
-    if ts:
-        return max(ts)
-    ov = _states_awaiting_overlay(sid)
-    if ov is not None and ov.get("awaiting"):
-        return int(ov.get("t") or 0) or None
-    return None
-
-
 def _awaiting_task_descs(sid):
     """The live background-task DESCRIPTIONS for a session (the CLI's task-lifecycle set, via the backend
     snapshot's bgTasks) — the feed's 'Waiting on task' pill expands them as a list (the user 2026-07-13).
@@ -4616,6 +4597,71 @@ def _awaiting_task_descs(sid):
     for t in (_tmux_sessions().get(str(sid)) or {}).get("bgTasks") or []:
         d = str((t or {}).get("desc") or "").strip()
         out.append(d or "background task")
+    return out
+
+
+_task_seg_cache = {}          # (fsid, toolUseId) -> seg id — a launch's segment never changes (positives only)
+
+
+def _seg_of_tool_uses(ps, store, tool_ids):
+    """{tool_use id: segment id} for the assistant tool_use blocks in `tool_ids` — which SEGMENT launched
+    each one. Newest turns first (a live task's launch is almost always recent) with an early exit once
+    every id is found; seam-aware (_segs_seam) so the ids match the judge's placement keys."""
+    found, want = {}, set(tool_ids)
+    for turn in reversed(ps.get("turns") or []):
+        if not want:
+            break
+        for seg in _segs_seam(turn, store):
+            for a in seg["atoms"]:
+                if a.get("type") != "assistant":
+                    continue
+                blocks = (a.get("message") or {}).get("content")
+                if not isinstance(blocks, list):
+                    continue
+                for b in blocks:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in want:
+                        found[b["id"]] = seg["id"]
+                        want.discard(b["id"])
+    return found
+
+
+def _bg_owner_tops(fsid, ps, store):
+    """Attribute each LIVE background task to the top goal card whose own subtree DISPATCHED it: the
+    task's launching tool_use id (bgTasks[].toolUseId) → the transcript segment holding that tool_use
+    (_seg_of_tool_uses, cached — a launch's segment never changes) → the store's placement for that
+    segment → the placed node's top ancestor. Returns {top node id: newest owned dispatch time}.
+
+    This is the OWNERSHIP the awaiting floor's blocked-yield needs (the user 2026-07-17, quartz):
+    the 2026-07-15 event-order guard (dispatch newer than block → the block is stale) compared times
+    ONLY, session-wide — so a watcher relaunched after a kernel restart (89s after an unrelated card's
+    block) re-dressed a genuine needs-you as the straw awaiting badge. Ownership makes the yield exact:
+    only a task dispatched from the blocked card's own thread can prove that card moved on. A task whose
+    launch can't be resolved to a placement (tmux, a pre-fork transcript, not yet placed) attributes to
+    NOTHING — the conservative failure: an unproven dispatch never masks a block (fail loudly beats a
+    silent wrong 'waiting'), while the judge's own unblock path retires genuinely stale blocks."""
+    out = {}
+    tasks = [t for t in (_tmux_sessions().get(str(fsid)) or {}).get("bgTasks") or []
+             if isinstance(t, dict) and t.get("toolUseId")]
+    nodes = (store or {}).get("nodes") or {}
+    if not tasks or not ps or not nodes:
+        return out
+    need = [t["toolUseId"] for t in tasks if (fsid, t["toolUseId"]) not in _task_seg_cache]
+    if need:
+        for tid, sgid in _seg_of_tool_uses(ps, store, need).items():
+            _task_seg_cache[(fsid, tid)] = sgid
+    placements = store.get("placements") or {}
+    for t in tasks:
+        sgid = _task_seg_cache.get((fsid, t["toolUseId"]))
+        if not sgid:
+            continue                                 # unresolvable launch → owns nothing (see docstring)
+        nid = next((v for v in (jd._placement_of(placements, sgid + suf)
+                                for suf in ("", "#live", "#p", "#d")) if v), None)
+        seen = set()                                 # placed node → its top ancestor (cycle-guarded)
+        while nid in nodes and nodes[nid].get("parentId") is not None and nid not in seen:
+            seen.add(nid)
+            nid = nodes[nid]["parentId"]
+        if nid in nodes:
+            out[nid] = max(out.get(nid, 0), int(t.get("since") or 0))
     return out
 
 
@@ -8089,6 +8135,9 @@ def build_feed(now, tmux=None):
         echo_send_t = _latest_human_send_t(fsid)     # a JUST-SENT reply still in the echo (not yet a turn)
         plain_user_t = max(plain_user_t, echo_send_t)  # → instant, not a push or two later (the user 2026-06-29)
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
+        # Which top cards OWN a live background task (launch tool_use → placement → top), for the
+        # blocked-yield below. Only consulted while the session-level awaiting signal is up.
+        owned_since = _bg_owner_tops(fsid, ps, store) if sess_awaiting_why else {}
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
@@ -8104,17 +8153,24 @@ def build_feed(now, tmux=None):
             # AFTER it can't be awaiting that answer (the user 2026-06-28). Scopes the stale session-level
             # wait off unrelated newer goals; if every pre-question goal is resolved, nothing floors.
             _peer_wait = (fsid in wmap and nodes[nid]["t"] <= wmap[fsid]["since"])
-            # A blocked top yields to the session-level awaiting signal ONLY when the dispatched work
-            # is NEWER than the block's own evidence (event order, the user 2026-07-15: nimbus ended
-            # its turn asking the user questions while a background timer ran — the unordered flip
-            # dressed a genuine needs-you as the straw awaiting badge, masking the very decision only
-            # the user could make). Work dispatched after the ask means the session moved past the
-            # question (the stale block the flip was built for); an ask newer than the dispatch is live.
+            # A blocked top yields ONLY to a background task ITS OWN subtree dispatched, and only when
+            # that dispatch is NEWER than the block's own evidence. Two guards, both exact:
+            #  - OWNERSHIP (the user 2026-07-17, quartz): the 07-15 time-only guard compared the
+            #    session-wide newest dispatch — a campaign watcher relaunched after a kernel restart
+            #    (89s after an UNRELATED card's block) re-dressed a genuine needs-you as the straw
+            #    awaiting badge. _bg_owner_tops resolves each live task's launch to its placed top;
+            #    a task owned elsewhere — or one whose launch can't be attributed (subagents, the
+            #    overlay, an unplaced launch) — never flips a blocked card. Genuinely stale blocks are
+            #    retired by the judge's own unblock path ("new work filed on this branch"), which is
+            #    placement-exact; this floor no longer approximates it session-wide.
+            #  - EVENT ORDER (the user 2026-07-15): even an owned task yields only when dispatched at/
+            #    after the block — an ask newer than the dispatch is live (nimbus ended its turn asking
+            #    the user questions while its own background timer ran).
             _await_ok = bool(sess_awaiting_why)
             if _await_ok and col == "blocked":
                 _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
                               if nodes[x].get("blocked") and not _closure_done(x)] or [0])
-                _await_ok = (_awaiting_since(fsid) or 0) >= _blk_t
+                _await_ok = owned_since.get(nid, -1) >= _blk_t
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
                     _await_ok or (col == "blocked" and _peer_wait)):
                 col = "awaiting"

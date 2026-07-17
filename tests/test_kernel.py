@@ -970,63 +970,102 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["awaiting"]["why"], "Waiting on the 3 research agents it dispatched.")
         self.assertIsNone(card["blocked"], "an awaiting goal is not a live block")
 
-    def _blocked_card_with_awaiting(self, await_since):
-        """A GENUINELY blocked top (ask at T0+100) on a session whose awaiting signal is live, with the
-        dispatch time stubbed to `await_since` — the blocked-vs-awaiting ordering fixture (nimbus)."""
-        top = SID + ":top"
+    def _blocked_card_with_bg_task(self, since, owner="blocked", second_top=False):
+        """A GENUINELY blocked top (ask at T0+100) on a session running a LIVE background task, end to
+        end through the REAL machinery: the task's toolUseId is the fixture transcript's actual launch
+        (tu_a1_0), and `owner` says where that launch's segment is PLACED — on the blocked top itself
+        ("blocked"), on a different top ("other"), or nowhere ("none": an unattributable launch).
+        _session_awaiting reads the same bgTasks, so no stubbing anywhere. Returns the blocked card
+        (and the other-top card too when second_top)."""
+        top, other = SID + ":top", SID + ":other"
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        launch_seg = em.segments(session["turns"][0])[0]["id"]     # the segment holding tu_a1_0
+        nodes = {top: {"id": top, "text": "secure the network", "parentId": None,
+                       "nodeComplete": False, "blocked": True,
+                       "blockWhy": "bind to the Tailscale IP now, or wait?",
+                       "cleared": False, "trail": [], "t": T0, "mt": T0 + 100}}
+        status = {top: "blocked"}
+        if owner == "other" or second_top:
+            nodes[other] = {"id": other, "text": "run the load campaign", "parentId": None,
+                            "nodeComplete": False, "blocked": False, "cleared": False,
+                            "trail": [], "t": T0, "mt": T0}
+            status[other] = "working"
+        placements = {} if owner == "none" else {launch_seg: top if owner == "blocked" else other}
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": 1, "lastNode": top,
-            "nodes": {top: {"id": top, "text": "secure the network", "parentId": None,
-                            "nodeComplete": False, "blocked": True,
-                            "blockWhy": "bind to the Tailscale IP now, or wait?",
-                            "cleared": False, "trail": [], "t": T0, "mt": T0 + 100}},
-            "placements": {}, "status": {top: "blocked"}}))
-        saved = (km._session_awaiting, km._awaiting_since)
-        km._session_awaiting = lambda sid, path, idle: "waiting on a background task: campaign timer"
-        km._awaiting_since = lambda sid: await_since
+            "rompUuid": SID, "seq": 2, "lastNode": top, "nodes": nodes,
+            "placements": placements, "status": status}))
+        km._task_seg_cache.clear()
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None,
+                                           "bgTasks": [{"desc": "campaign watcher", "type": "local_bash",
+                                                        "since": since, "toolUseId": "tu_a1_0",
+                                                        "lastTool": ""}]}}
         try:
-            return next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+            asks = km.build_feed(NOW)["asks"]
+            blocked = next(a for a in asks if a["itemId"] == top)
+            return (blocked, next(a for a in asks if a["itemId"] == other)) if second_top else blocked
         finally:
-            km._session_awaiting, km._awaiting_since = saved
+            km._tmux_sessions = saved
 
-    def test_a_block_newer_than_the_dispatched_work_stays_needs_input(self):
+    def test_a_block_newer_than_the_owned_dispatched_work_stays_needs_input(self):
         # the user 2026-07-15 (nimbus): the turn ENDED by asking the user questions while a background
         # timer (dispatched mid-turn, so OLDER than the ask) kept running — the unordered awaiting flip
-        # dressed the genuine needs-you as the straw awaiting badge. Event order now decides: the ask is
-        # newer than the dispatch, so the block stands.
-        card = self._blocked_card_with_awaiting(T0 + 50)
+        # dressed the genuine needs-you as the straw awaiting badge. Event order still decides for a
+        # task the card OWNS: the ask is newer than the dispatch, so the block stands.
+        card = self._blocked_card_with_bg_task(T0 + 50, owner="blocked")
         self.assertEqual(card["column"], "needs_input", "a live ask is never masked by older dispatched work")
         self.assertIsNone(card["awaiting"], "no straw badge over a genuine needs-you")
 
-    def test_a_block_older_than_the_dispatched_work_still_yields_to_awaiting(self):
-        # the case the flip was BUILT for (the user 2026-06-22): a stale block from an earlier turn,
-        # then the session moved on and dispatched work — the session is in motion, not on the user.
-        card = self._blocked_card_with_awaiting(T0 + 200)
-        self.assertEqual(card["column"], "working", "work dispatched after the ask supersedes the stale block")
+    def test_a_block_older_than_an_owned_dispatch_yields_to_awaiting(self):
+        # the case the flip was BUILT for (the user 2026-06-22): a stale block, then the SAME thread
+        # moved on and dispatched work — proven by the launch's placement resolving into the blocked
+        # card's own subtree. The session is in motion, not on the user.
+        card = self._blocked_card_with_bg_task(T0 + 200, owner="blocked")
+        self.assertEqual(card["column"], "working", "owned work dispatched after the ask supersedes the stale block")
         self.assertIsNotNone(card["awaiting"])
 
-    def test_an_untimed_awaiting_signal_never_outranks_a_timed_block(self):
-        # conservative default: when the dispatch time is underivable (None), the genuine block wins —
-        # a masked needs-you silently stalls the fleet, a straw badge merely understates motion.
-        card = self._blocked_card_with_awaiting(None)
+    def test_a_block_never_yields_to_a_task_another_card_dispatched(self):
+        # the user 2026-07-17 (quartz): a campaign watcher relaunched after a kernel restart —
+        # 89s NEWER than an unrelated card's block — re-dressed that genuine needs-you as "waiting on
+        # campaign 3 watcher events". Ownership now decides: the launch places on the OTHER top, so the
+        # blocked card keeps its block while the owning card floors to awaiting.
+        blocked, other = self._blocked_card_with_bg_task(T0 + 200, owner="other", second_top=True)
+        self.assertEqual(blocked["column"], "needs_input", "an unrelated dispatch never masks a needs-you")
+        self.assertIsNone(blocked["awaiting"], "no straw badge borrowed from another card's task")
+        self.assertEqual(other["column"], "working", "the owning card is the one in motion")
+        self.assertIsNotNone(other["awaiting"], "…and it wears the awaiting badge")
+
+    def test_a_block_never_yields_to_an_unattributable_dispatch(self):
+        # conservative failure: a launch that resolves to NO placement (not yet placed, a pre-fork
+        # transcript) proves nothing — the genuine block wins. A masked needs-you silently stalls the
+        # fleet; a straw badge merely understates motion. (Same rule keeps subagent/overlay-driven
+        # awaiting — which carries no launch id at all — from flipping a blocked card.)
+        card = self._blocked_card_with_bg_task(T0 + 200, owner="none")
         self.assertEqual(card["column"], "needs_input")
 
-    def test_awaiting_since_prefers_live_sets_then_overlay(self):
-        # the helper itself: newest `since` across live subagents + bgTasks; overlay awaiting:true `t`
-        # only when no live set carries a time; None when nothing is derivable.
+    def test_bg_owner_tops_resolves_a_launch_to_its_placed_top(self):
+        # the attribution helper itself, over the REAL fixture transcript: bgTasks' toolUseId (tu_a1_0)
+        # → the segment that launched it → the store's placement → that node's TOP ancestor; an unknown
+        # tool id resolves to nothing. The sub→top walk is what scopes the yield to whole cards.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        launch_seg = em.segments(session["turns"][0])[0]["id"]
+        top, sub = SID + ":top", SID + ":sub"
+        store = {"rompUuid": SID, "seq": 2, "lastNode": top,
+                 "nodes": {top: {"id": top, "text": "run the campaign", "parentId": None, "nodeComplete": False,
+                                 "blocked": False, "cleared": False, "trail": [], "t": T0},
+                           sub: {"id": sub, "text": "launch the watcher", "parentId": top, "nodeComplete": False,
+                                 "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                 "placements": {launch_seg: sub}, "status": {}}
+        km._task_seg_cache.clear()
         saved = km._tmux_sessions
-        km._tmux_sessions = lambda: {SID: {"subagents": [{"type": "explore", "since": 500}],
-                                           "bgTasks": [{"desc": "timer", "since": 900}]}}
+        km._tmux_sessions = lambda: {SID: {"bgTasks": [
+            {"desc": "campaign watcher", "since": T0 + 200, "toolUseId": "tu_a1_0"},
+            {"desc": "mystery task", "since": T0 + 300, "toolUseId": "tu_never_seen"}]}}
         try:
-            self.assertEqual(km._awaiting_since(SID), 900, "newest live-set dispatch wins")
-            km._tmux_sessions = lambda: {SID: {"subagents": [], "bgTasks": []}}
-            sdir = jd.STATE / "states"; sdir.mkdir(parents=True, exist_ok=True)
-            (sdir / (SID + ".jsonl")).write_text(
-                json.dumps({"t": 700, "awaiting": True, "why": "bg job"}) + "\n")
-            self.assertEqual(km._awaiting_since(SID), 700, "overlay awaiting:true time is the fallback")
-            (sdir / (SID + ".jsonl")).write_text(
-                json.dumps({"t": 700, "awaiting": False}) + "\n")
-            self.assertIsNone(km._awaiting_since(SID), "not awaiting → no dispatch time")
+            ps = km._parse(str(self.tpath), SID, NOW)
+            self.assertEqual(km._bg_owner_tops(SID, ps, store), {top: T0 + 200},
+                             "the launch attributes through the sub's placement to its TOP; the unknown id to nothing")
         finally:
             km._tmux_sessions = saved
 
