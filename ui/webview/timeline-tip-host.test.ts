@@ -25,6 +25,16 @@ test("adopting a foreign host carries the tip styles over from OUR stylesheets (
   assert.match(SRC, /r\.selectorText\.indexOf\('\.romp-tl-tip'\) === 0/, "copied by selector prefix, not duplicated literals");
 });
 
+test("the tip carries its OWN font, so the adopted host page can't restyle it", () => {
+  // the user 2026-07-17: hosted in the top document, the tip inherited THAT page's font and rendered
+  // differently from every other romp surface. It now declares the same stack THEME_CSS resolves to —
+  // an element that can live in a foreign document must carry its own font.
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-pane.css"), "utf8");
+  const tip = CSS.match(/\.romp-tl-tip\{[^}]*\}/);
+  assert.ok(tip, ".romp-tl-tip rule exists");
+  assert.match(tip![0], /font-family:var\(--vscode-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif\)/);
+});
+
 test("an iframe teardown removes the tip from the adopted host document", () => {
   assert.match(SRC, /if \(tipDoc !== document\) window\.addEventListener\('pagehide', \(\) => \{ try \{ this\.tip\.remove\(\); \} catch \(e\) \{\} \}\);/);
 });
