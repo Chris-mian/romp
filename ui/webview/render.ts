@@ -947,16 +947,17 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const hoverTarget = dot || turn;   // only the dot triggers the timeline highlight (turn fallback if no dot)
   hoverTarget.addEventListener("mouseenter", () => {
-    // ATOMIC local acknowledgement (the user 2026-07-17: the related lines lagged the dot by the debounce
-    // + a round-trip): the nearest complete inter-dot span lights synchronously, in the same frame as the
-    // dot's own :hover ring. The kernel's authoritative full-segment band replaces it on fan-back.
+    // ATOMIC local acknowledgement (the user 2026-07-17 ×2): the hovered turn's WHOLE segment lights
+    // synchronously, in the same frame as the dot's own :hover growth. The kernel's authoritative
+    // band replaces it on fan-back (usually identical geometry → no visible change).
+    cancelHoverClear();   // a glyph→glyph handoff must not blank the glow in the gap
     instantLocalBand(turn);
     timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
   });
   hoverTarget.addEventListener("mouseleave", () => {
     clearLocalBand();
     if (timer) { clearTimeout(timer); timer = undefined; return; } // never fired — nothing to clear
-    vscodeApi?.postMessage({ type: "dotHover" });
+    scheduleHoverClear();
   });
   if (dot) {
     dot.classList.add("dot-nav");
@@ -975,37 +976,83 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   rail.title = "hover: highlight on the timeline + feed";
   let railTimer: ReturnType<typeof setTimeout> | undefined;
   rail.addEventListener("mouseenter", () => {
+    cancelHoverClear();
     instantLocalBand(turn);
     railTimer = setTimeout(() => { railTimer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
   });
   rail.addEventListener("mouseleave", () => {
     clearLocalBand();
     if (railTimer) { clearTimeout(railTimer); railTimer = undefined; return; }
-    vscodeApi?.postMessage({ type: "dotHover" });
+    scheduleHoverClear();
   });
   turn.appendChild(rail);
 }
 
+// The cross-surface hover CLEAR is deferred a beat (the user 2026-07-17: moving along the rail blanked
+// the whole segment highlight between adjacent glyphs, then rebuilt it — a large→small→large flicker).
+// mouseleave schedules the clear; the very next mouseenter cancels it, so a handoff between glyphs of
+// the same (or a new) segment replaces the glow without ever passing through empty. Same grace idiom as
+// the timeline tooltip's deferred unfreeze. Left the rail entirely → the clear fires after the beat.
+let hoverClearTimer: ReturnType<typeof setTimeout> | undefined;
+function cancelHoverClear(): void {
+  if (hoverClearTimer) { clearTimeout(hoverClearTimer); hoverClearTimer = undefined; }
+}
+function scheduleHoverClear(): void {
+  cancelHoverClear();
+  hoverClearTimer = setTimeout(() => { hoverClearTimer = undefined; vscodeApi?.postMessage({ type: "dotHover" }); }, 60);
+}
+
 // Instant, purely-local hover acknowledgement — shared by the dot and the rail strip (the user
-// 2026-07-02 for the strip; 2026-07-17 extended to the dot so the response is atomic, not "dot now,
-// related lines a few hundred ms later"). A dot-to-dot band, never the old per-turn slice that flashed
-// an arbitrary-length chopped bit: the nearest dot at-or-above the hovered turn down to the nearest dot
-// below it, replaced by the kernel's full-segment band when the glow fan-back arrives (~a round-trip
-// later). Dots only (the user 2026-07-03): hovering past the last dot draws NOTHING locally — there is
-// no complete inter-dot span there (the cross-highlight still fires; the fan-back band renders
-// dot-clamped if the segment has one).
+// 2026-07-02 for the strip; 2026-07-17 extended to the dot, then widened from one inter-dot span to the
+// hovered turn's WHOLE SEGMENT: the dot-to-dot subset lit first and the rest followed on fan-back —
+// not atomic). The segment is approximated locally as the nearest PROMPT dot at-or-above (.dot.user /
+// .dot.romp — the dots that start a turn) down to the NEXT prompt dot below, else the transcript's last
+// dot (the kernel's own band clamps the same way). No prompt dot rendered above (a window cut) → the
+// old nearest-dot span. The fan-back band replaces this with the authoritative segment — usually
+// identical geometry, so nothing visibly changes. Dots only (the user 2026-07-03): no complete span →
+// nothing local. Entering a target also drops any PREVIOUS fan-back band + rings in the same frame, so
+// a segment→segment move swaps the highlight atomically instead of showing both.
 function instantLocalBand(turn: HTMLElement): void {
   const host = turn.parentElement;
   if (!host) return;
-  document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
+  document.querySelectorAll(".rail-band").forEach((n) => n.remove());   // -local AND the previous fan-back
+  clearRailRings();
   const hostR = host.getBoundingClientRect();
-  const top = railDotAbove(turn, hostR);
-  const bottom = railDotBelow(turn, hostR);
-  if (top != null && bottom != null) drawRailBand(host, hostR, turn, top, bottom, true);
+  const top = railPromptDotAbove(turn, hostR) ?? railDotAbove(turn, hostR);
+  const bottom = railPromptDotBelow(turn, hostR) ?? railLastDotFrom(turn, hostR);
+  if (top != null && bottom != null && bottom > top) drawRailBand(host, hostR, turn, top, bottom, true);
 }
 function clearLocalBand(): void {
   document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
   if (!document.querySelector(".rail-band")) clearRailRings();   // fan-back band may still own the rings
+}
+// Segment edges for the local band: prompts wear .dot.user (human, answered ask) or .dot.romp
+// (injected) — the dots that BEGIN a turn in the event model.
+function railPromptDotAbove(turn: HTMLElement, hostR: DOMRect): number | null {
+  for (let n: Element | null = turn; n; n = n.previousElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn")) continue;
+    const d = n.querySelector<HTMLElement>(".dot.user, .dot.romp");
+    if (d) { const r = d.getBoundingClientRect(); return r.top + r.height / 2 - hostR.top; }
+  }
+  return null;
+}
+function railPromptDotBelow(turn: HTMLElement, hostR: DOMRect): number | null {
+  for (let n: Element | null = turn.nextElementSibling; n; n = n.nextElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn")) continue;
+    const d = n.querySelector<HTMLElement>(".dot.user, .dot.romp");
+    if (d) { const r = d.getBoundingClientRect(); return r.top + r.height / 2 - hostR.top; }
+  }
+  return null;
+}
+// The live tail has no next prompt — the segment's band clamps to its own last dot, like the kernel's.
+function railLastDotFrom(turn: HTMLElement, hostR: DOMRect): number | null {
+  let y: number | null = null;
+  for (let n: Element | null = turn; n; n = n.nextElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn")) continue;
+    const d = n.querySelector<HTMLElement>(".dot");
+    if (d) { const r = d.getBoundingClientRect(); y = r.top + r.height / 2 - hostR.top; }
+  }
+  return y;
 }
 
 // Transient cross-highlight FROM the timeline (host fans a bar hover here as

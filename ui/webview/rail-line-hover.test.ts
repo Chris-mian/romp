@@ -18,8 +18,9 @@ test("every nav-able turn grows a rail hit strip, wired like the dot", () => {
   // the SAME dotHover payload + the same 120ms intent debounce as the dot hover
   assert.match(fn, /railTimer = setTimeout\(\(\) => \{ railTimer = undefined; if \(activeId\) vscodeApi\?\.postMessage\(\{ type: "dotHover", sid: activeId, uuid, t, tlId \}\); \}, 120\);/);
   // instant feedback is a dot-anchored band too — never the old per-turn slice that flashed an
-  // arbitrary chopped bit before the segment band landed (the user 2026-07-02 ×3)
-  assert.match(fn, /const top = railDotAbove\(turn, hostR\)/);
+  // arbitrary chopped bit before the segment band landed (the user 2026-07-02 ×3); segment-wide with a
+  // nearest-dot fallback since 2026-07-17
+  assert.match(fn, /\?\? railDotAbove\(turn, hostR\)/);
   assert.match(fn, /drawRailBand\(host, hostR, turn, top, bottom, true\);/);
   assert.doesNotMatch(fn, /rail-glow/, "the box-bounded slice glow is gone");
 });
@@ -30,12 +31,39 @@ test("the hover acknowledgement is ATOMIC on BOTH handles — dot and strip shar
   // BEFORE the debounced cross-surface message; the kernel's full-segment band still replaces it on
   // fan-back. mouseleave clears it through the shared helper too.
   const fn = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
-  const enters = fn.match(/addEventListener\("mouseenter", \(\) => \{\s*\n\s*(?:\/\/[^\n]*\n\s*)*instantLocalBand\(turn\);/g) || [];
-  assert.equal(enters.length, 2, "dot AND rail strip mouseenter both open with the instant local band");
+  const enters = fn.match(/addEventListener\("mouseenter", \(\) => \{\s*\n\s*(?:\/\/[^\n]*\n\s*)*cancelHoverClear\(\);[^\n]*\n\s*instantLocalBand\(turn\);/g) || [];
+  assert.equal(enters.length, 2, "dot AND rail strip mouseenter both cancel the pending clear, then draw the instant band");
   const leaves = fn.match(/addEventListener\("mouseleave", \(\) => \{\s*\n\s*clearLocalBand\(\);/g) || [];
   assert.equal(leaves.length, 2, "both mouseleave handlers clear through the shared helper");
   // the instant band precedes the debounce timer in source order within each enter handler
   assert.ok(fn.indexOf("instantLocalBand(turn);") < fn.indexOf("timer = setTimeout"), "local ack before the debounce");
+});
+
+test("the local band spans the hovered turn's WHOLE segment — prompt dot to next prompt dot", () => {
+  // the user 2026-07-17 ×2 (video): the dot-to-dot subset lit first, the rest followed on fan-back —
+  // not atomic. The local band now approximates the kernel's segment: nearest prompt dot at-or-above
+  // (.dot.user / .dot.romp) down to the next prompt dot below, clamped to the transcript's last dot on
+  // the live tail; a window cut with no prompt rendered falls back to the nearest-dot span.
+  assert.match(SRC, /const top = railPromptDotAbove\(turn, hostR\) \?\? railDotAbove\(turn, hostR\);/);
+  assert.match(SRC, /const bottom = railPromptDotBelow\(turn, hostR\) \?\? railLastDotFrom\(turn, hostR\);/);
+  assert.match(SRC, /\.dot\.user, \.dot\.romp/, "prompt dots = human/answered-ask (user) + injected (romp)");
+  // entering a target swaps the highlight atomically: any previous fan-back band + rings drop in the
+  // same frame the new local band paints
+  const ilb = SRC.slice(SRC.indexOf("function instantLocalBand"), SRC.indexOf("function clearLocalBand"));
+  assert.match(ilb, /querySelectorAll\("\.rail-band"\)\.forEach\(\(n\) => n\.remove\(\)\);/);
+  assert.match(ilb, /clearRailRings\(\);/);
+});
+
+test("the cross-surface clear is DEFERRED a beat and canceled by the next enter (no blank between glyphs)", () => {
+  // the user 2026-07-17 ×2 (video): moving along the rail blanked the whole segment highlight between
+  // adjacent glyphs then rebuilt it — large→small→large flicker. mouseleave now schedules the clear;
+  // the next mouseenter cancels it, so a glyph→glyph handoff never passes through empty.
+  assert.match(SRC, /function scheduleHoverClear\(\): void/);
+  assert.match(SRC, /function cancelHoverClear\(\): void/);
+  assert.match(SRC, /hoverClearTimer = setTimeout\(\(\) => \{ hoverClearTimer = undefined; vscodeApi\?\.postMessage\(\{ type: "dotHover" \}\); \}, 60\);/);
+  const fn = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
+  assert.equal((fn.match(/scheduleHoverClear\(\);/g) || []).length, 2, "both mouseleave handlers defer the clear");
+  assert.doesNotMatch(fn, /addEventListener\("mouseleave"[\s\S]{0,200}?postMessage\(\{ type: "dotHover" \}\)/, "no immediate clear remains in the leave handlers");
 });
 
 test("one hover language: thicken/expand IN OWN COLOR — no white rings anywhere on the rail", () => {
@@ -84,7 +112,7 @@ test("the hover strip exists only where the line does (the last turn's 16px stub
   assert.doesNotMatch(CSS, /\.turn:last-child::before/, "the fragile :last-child stub is gone");
   // local hover past the last dot draws nothing — there is no complete inter-dot span there
   const wire = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
-  assert.match(wire, /if \(top != null && bottom != null\) drawRailBand\(host, hostR, turn, top, bottom, true\);/);
+  assert.match(wire, /if \(top != null && bottom != null && bottom > top\) drawRailBand\(host, hostR, turn, top, bottom, true\);/);
 });
 
 test("the strip hugs the line and never steals the dot's hover", () => {
