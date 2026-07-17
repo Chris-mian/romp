@@ -602,6 +602,41 @@ class PlanParse(unittest.TestCase):
         # …but a do-less op whose why merely STARTS with the word is still dropped, not guessed at
         self.assertIsNone(jd._parse_plan('{"ops":[{"why":"skipping the deploy until tests pass"}]}', 3))
 
+    def test_zero_ref_poisons_the_whole_reply(self):
+        # The zero-based tell (the user 2026-07-17): menus count from 1, so an explicit 0 proves the
+        # reply is counting zero-based — and then a sibling "goal": 2 likely means the THIRD item.
+        # Keeping the "valid" siblings would misattribute goals silently; the whole reply is rejected
+        # so the call retries.
+        raw = ('{"ops":[{"why":"finished the parser","do":"done","goal":0},'
+               '{"why":"still owed a decision","do":"block","goal":2}]}')
+        self.assertIsNone(jd._parse_plan(raw, 3), "the off-base reply's sibling ops are suspect too")
+        # a lone zero ref (the observed 07-13 row, synthetic equivalent) rejects rather than drops
+        self.assertIsNone(jd._parse_plan(
+            '{"ops":[{"why":"nothing concrete to act on","do":"block","goal":0}]}', 3))
+        # negative refs are the same tell; so is a zero "under" on a sub (no mint fallback for it)
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"done","goal":-1}]}', 3))
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"sub","under":0,"text":"a step"}]}', 3))
+        # in-range refs with no zero anywhere still parse exactly as before
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"x","do":"done","goal":2}]}', 3),
+                         [{"do": "done", "why": "x", "goal": 2}])
+
+    def test_zero_ref_poisons_closer_grouper_unblocker(self):
+        # Same tell, same rule, in every menu-ref parser: reject the reply, never keep the siblings.
+        self.assertIsNone(jd._parse_close(
+            '{"done":[{"goal":0,"why":"x"}],"block":[{"goal":2,"why":"y"}]}', 3),
+            "a zero in either closer list rejects the reply (block #2 may mean the third goal)")
+        self.assertIsNone(jd._parse_close('{"done":[],"block":[{"goal":0,"why":"x"}]}', 3))
+        self.assertIsNone(jd._parse_group(
+            '{"ops":[{"why":"x","do":"merge","goal":0,"into":2}]}', 3))
+        self.assertIsNone(jd._parse_group(
+            '{"ops":[{"why":"x","do":"group","goal":2,"under":0}]}', 3))
+        self.assertIsNone(jd._parse_unblock(
+            '{"verdicts":[{"n":0,"do":"lift","why":"x"},{"n":2,"do":"lift","why":"y"}]}', 3))
+        # clean replies in each parser are untouched
+        self.assertEqual(jd._parse_close('{"done":[{"goal":2,"why":"x"}],"block":[]}', 3),
+                         {"done": {2: "x"}, "block": {}})
+        self.assertEqual(jd._parse_unblock('{"verdicts":[{"n":2,"do":"lift","why":"x"}]}', 3), {2: "x"})
+
     def test_retitle_parses_with_valid_goal_and_text(self):
         # retitle (the user 2026-07-01, narrower than the cut amend): a goal-number op, no "ref" (it only
         # ever targets a PRE-existing node, never a same-reply mint).
@@ -2819,6 +2854,14 @@ class PlanTuning(unittest.TestCase):
         # mint their own tops ("Get alternate shorter version of last paragraph").
         self.assertIn("decide by the finish line, never by topic overlap", jd.OPENER_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
+
+    def test_menu_prompts_state_the_numbering_base(self):
+        # The zero-based tell's prompt half (the user 2026-07-17): every menu-reading prompt says the
+        # numbering counts from 1 and there is no 0, so an off-base reply is a model slip the parsers
+        # reject (see _zero_based_tell), not an instruction gap.
+        for sys_prompt in (jd.PLAN_SYS, jd.OPENER_SYS, jd.GROUP_SYS, jd.CLOSER_SYS):
+            self.assertIn("counting from #1 (there is no #0", sys_prompt)
+        self.assertIn("numbered from 1 (there is no block 0)", jd.UNBLOCK_SYS)
 
     def test_user_message_must_be_placed_never_skipped(self):
         # a segment carrying a real user message can't be skipped: the prompt forbids it and plan_llm
