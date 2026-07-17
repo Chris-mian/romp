@@ -1,0 +1,34 @@
+/* Romp brand colors. The header (and other "primary" chrome) wears the romp
+   accent blue; text on it is the dark navy that reads on that blue. */
+:root {
+  --md-primary-fg-color: #9cd2ff;
+  --md-primary-fg-color--light: #c3e3ff;
+  --md-primary-fg-color--dark: #6fb8f5;
+  --md-primary-bg-color: #0c1a2e;            /* text/icons on the header */
+  --md-primary-bg-color--light: rgba(12, 26, 46, 0.72);
+  --md-accent-fg-color: #4aa8e8;
+  --md-accent-fg-color--transparent: rgba(74, 168, 232, 0.12);
+}
+
+/* Links in the body keep a readable blue in both schemes. */
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: #9cd2ff;
+}
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color: #1a7ec8;
+}
+
+/* The wordmark banner on the home page: a dark brand block that works on
+   both schemes. */
+.romp-wordmark {
+  display: block;
+  margin: 0 auto 1.2em;
+  max-width: 420px;
+  width: 70%;
+  border-radius: 14px;
+}
+
+/* Screenshots: soften edges so dark captures sit well on either scheme. */
+.md-typeset img {
+  border-radius: 6px;
+}

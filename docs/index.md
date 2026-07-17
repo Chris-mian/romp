@@ -1,4 +1,8 @@
-# Romp
+---
+title: Romp
+---
+
+# ![Romp](assets/brand/romp-wordmark.png){ .romp-wordmark }
 
 AI agents like Claude Code can work autonomously for long stretches, so
 running several in parallel multiplies what you can accomplish. But it also
@@ -53,17 +57,6 @@ Hover a work bar, open a summary, expand a tool call, and more.
 Romp works with Claude Code today. It adds all of this on top of the sessions
 you already run, without changing how you work.
 
-## Self-hosted, reachable from anywhere
-
-You run Romp yourself, on your laptop or a server, with no hosted service in
-between.
-
-- **On your phone.** Reach the full dashboard over Tailscale.
-- **Across machines.** Connect several over SSH and they federate into one
-  fleet whose agents message across the boundary.
-- **In your editor or a browser.** Open it as a VS Code / Cursor extension or a
-  plain browser tab.
-
 ## Quick start
 
 ```bash
@@ -73,6 +66,6 @@ cd romp
 export PATH="$PATH:$(pwd)/bin"   # add this to your shell rc
 ```
 
-Then open `http://127.0.0.1:7433/` in any browser and start a session. Full
-requirements, remote-host setup, and configuration are in
-[Getting started](getting-started.md).
+Then open `http://127.0.0.1:7433/` in any browser and start a session.
+[Getting started](getting-started.md) walks through the first session, and the
+Guide tours each capability from there.

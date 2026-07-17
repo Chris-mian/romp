@@ -1,4 +1,4 @@
-site_name: romp
+site_name: Romp
 site_description: Mission control for a fleet of AI coding agents.
 
 site_url: https://romp-on.github.io/romp/
@@ -7,6 +7,8 @@ repo_name: romp-on/romp
 
 theme:
   name: material
+  logo: assets/brand/romp-icon-swirl-glyph.svg
+  favicon: assets/brand/romp-icon-swirl-256.png
   features:
     - navigation.tabs
     - navigation.sections
@@ -18,21 +20,24 @@ theme:
     - content.code.copy
     - content.tabs.link
   palette:
-    # Brand colour is a placeholder — swap to match the romp wordmark.
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: deep purple
-      accent: deep purple
-      toggle:
-        icon: material/weather-night
-        name: Switch to dark mode
+    # Romp blue header (see docs/stylesheets/extra.css for the custom colors).
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep purple
-      accent: deep purple
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+
+extra_css:
+  - stylesheets/extra.css
 
 markdown_extensions:
   - admonition
@@ -59,14 +64,14 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Guide:
-      - A worked example (MNIST): guide/example-workflow.md
       - The fleet at a glance: guide/the-fleet.md
       - Tasks, not transcripts: guide/tasks.md
       - Keeping the fleet moving: guide/nudges.md
       - The postal service: guide/postal-service.md
       - Sessions and revival: guide/sessions.md
       - Self-hosted and remote access: guide/remote-access.md
-  - Architecture: architecture.md
+  - How Romp works: architecture.md
+  - Reference: reference.md
   - Internals:
       - Judges: judges.md
       - The judge pipeline: judge-pipeline.md

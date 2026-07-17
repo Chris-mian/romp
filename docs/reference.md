@@ -1,0 +1,73 @@
+# Reference
+
+The command surface and the knobs. Everything here runs on the machine that
+hosts the kernel.
+
+## The `romp` command
+
+| Command | What it does |
+|---|---|
+| `romp <name>` | Start or re-attach the terminal (tmux-backend) session `<name>` |
+| `romp -d` / `-f` / `-j` | Terminal views: dashboard, feed mirror, judge monitor |
+| `romp --on` / `--status` | Start the kernel manager / report its status |
+| `romp --refresh` | Restart the kernels (fleet-wide; running sessions reconnect) |
+| `romp --serve on\|off\|status` | Expose the kernel to your tailnet (token-gated), or revert to local-only |
+| `romp --mail …` | The postal service from the shell (below) |
+| `romp update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
+| `romp --version` | Version report across the moving parts |
+
+## Mail from the shell
+
+```bash
+romp --mail send [--kind delegate|coordinate|question] <name> "<text>"
+romp --mail inbox                 # read your messages
+romp --mail agents                # who is live, their branch and working-note
+romp --mail working "<note>"      # publish what this session is working on
+```
+
+## Mail inside a session (MCP tools)
+
+| Tool | What it does |
+|---|---|
+| `send_message(to, body, kind)` | Message a live session by name; `kind` declares delegate / coordinate / question |
+| `check_inbox()` | Read messages sent to you (also delivered at the end of each turn) |
+| `list_agents()` | The live fleet, each with its branch and working-note |
+| `set_working(text)` | Publish what you hold so peers steer clear |
+| `check_sent()` | Whether your sent messages were read yet |
+| `recall_message(to, id?)` | Unsend a message the recipient hasn't read |
+
+## Configuration
+
+### Folder click, in your terminal or editor
+
+The chat statusline shows the session's working directory; clicking it opens
+that folder. The default is the OS opener (`open` / `xdg-open`). To open it
+elsewhere, set a command via the env var `ROMP_OPEN_FOLDER` or the first
+non-comment line of `~/.config/romp/open-folder`; `{dir}` is replaced with
+the clicked path (omitted, the path is appended). The command runs on the
+kernel's machine.
+
+```bash
+# ~/.config/romp/open-folder  — pick ONE line
+open -a Ghostty {dir}               # macOS: a new Ghostty window there
+ghostty --working-directory={dir}   # Linux: Ghostty
+code {dir}                          # VS Code instead
+```
+
+### Install-time switches
+
+- `ROMP_NO_SERVICE=1 ./install.sh` skips the login service.
+- `ROMP_NO_EXT=1 ./install.sh` skips the VS Code / Cursor extension.
+
+## Where things live
+
+State is written under `${XDG_STATE_HOME:-~/.local/state}/romp/`. Transcripts
+are read in place from where Claude Code writes them (`~/.claude/projects/`)
+and never copied.
+
+## Kill switches
+
+`touch` to disable, `rm` to re-enable, effective immediately:
+
+- `~/.claude/romp-summarize-off`: the live tmux activity phrase
+- `~/.claude/romp-postal-off`: the postal service
