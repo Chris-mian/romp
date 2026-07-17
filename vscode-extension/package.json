@@ -2,7 +2,7 @@
   "name": "romp-chat-view",
   "displayName": "romp Chat View",
   "description": "Read-only, nicely-rendered live view of Claude Code (romp) sessions, styled like the official Claude Code panel.",
-  "version": "0.4.297",
+  "version": "0.4.298",
   "publisher": "romp",
   "private": true,
   "engines": {
