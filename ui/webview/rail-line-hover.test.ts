@@ -24,6 +24,20 @@ test("every nav-able turn grows a rail hit strip, wired like the dot", () => {
   assert.doesNotMatch(fn, /rail-glow/, "the box-bounded slice glow is gone");
 });
 
+test("the hover acknowledgement is ATOMIC on BOTH handles — dot and strip share instantLocalBand", () => {
+  // the user 2026-07-17: hovering a dot lit the dot at once but the related lines lagged by the 120ms
+  // intent debounce + a round-trip. The local band now draws SYNCHRONOUSLY in both mouseenter handlers,
+  // BEFORE the debounced cross-surface message; the kernel's full-segment band still replaces it on
+  // fan-back. mouseleave clears it through the shared helper too.
+  const fn = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
+  const enters = fn.match(/addEventListener\("mouseenter", \(\) => \{\s*\n\s*(?:\/\/[^\n]*\n\s*)*instantLocalBand\(turn\);/g) || [];
+  assert.equal(enters.length, 2, "dot AND rail strip mouseenter both open with the instant local band");
+  const leaves = fn.match(/addEventListener\("mouseleave", \(\) => \{\s*\n\s*clearLocalBand\(\);/g) || [];
+  assert.equal(leaves.length, 2, "both mouseleave handlers clear through the shared helper");
+  // the instant band precedes the debounce timer in source order within each enter handler
+  assert.ok(fn.indexOf("instantLocalBand(turn);") < fn.indexOf("timer = setTimeout"), "local ack before the debounce");
+});
+
 test("the band's glow is the dots' expanding white ring — one visual language", () => {
   assert.match(CSS, /\.dot\.dot-nav:hover \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); \}/);
   assert.match(CSS, /\.rail-band \{[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);

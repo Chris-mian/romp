@@ -929,9 +929,14 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const hoverTarget = dot || turn;   // only the dot triggers the timeline highlight (turn fallback if no dot)
   hoverTarget.addEventListener("mouseenter", () => {
+    // ATOMIC local acknowledgement (the user 2026-07-17: the related lines lagged the dot by the debounce
+    // + a round-trip): the nearest complete inter-dot span lights synchronously, in the same frame as the
+    // dot's own :hover ring. The kernel's authoritative full-segment band replaces it on fan-back.
+    instantLocalBand(turn);
     timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
   });
   hoverTarget.addEventListener("mouseleave", () => {
+    clearLocalBand();
     if (timer) { clearTimeout(timer); timer = undefined; return; } // never fired — nothing to clear
     vscodeApi?.postMessage({ type: "dotHover" });
   });
@@ -952,30 +957,37 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   rail.title = "hover: highlight on the timeline + feed";
   let railTimer: ReturnType<typeof setTimeout> | undefined;
   rail.addEventListener("mouseenter", () => {
-    // instant feedback is a dot-to-dot band too (the user 2026-07-02: the old per-turn slice flashed an
-    // arbitrary-length chopped bit before the segment band landed) — the nearest dot at-or-above the
-    // hovered turn down to the nearest dot below it, replaced by the kernel's full-segment band when the
-    // glow fan-back arrives (~a round-trip later).
-    const host = turn.parentElement;
-    if (host) {
-      document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
-      const hostR = host.getBoundingClientRect();
-      // dots only (the user 2026-07-03): hovering past the last dot draws NOTHING locally — there is no
-      // complete inter-dot span there (the cross-highlight still fires below; the fan-back band renders
-      // dot-clamped if the segment has one).
-      const top = railDotAbove(turn, hostR);
-      const bottom = railDotBelow(turn, hostR);
-      if (top != null && bottom != null) drawRailBand(host, hostR, turn, top, bottom, true);
-    }
+    instantLocalBand(turn);
     railTimer = setTimeout(() => { railTimer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
   });
   rail.addEventListener("mouseleave", () => {
-    document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
-    if (!document.querySelector(".rail-band")) clearRailRings();   // fan-back band may still own the rings
+    clearLocalBand();
     if (railTimer) { clearTimeout(railTimer); railTimer = undefined; return; }
     vscodeApi?.postMessage({ type: "dotHover" });
   });
   turn.appendChild(rail);
+}
+
+// Instant, purely-local hover acknowledgement — shared by the dot and the rail strip (the user
+// 2026-07-02 for the strip; 2026-07-17 extended to the dot so the response is atomic, not "dot now,
+// related lines a few hundred ms later"). A dot-to-dot band, never the old per-turn slice that flashed
+// an arbitrary-length chopped bit: the nearest dot at-or-above the hovered turn down to the nearest dot
+// below it, replaced by the kernel's full-segment band when the glow fan-back arrives (~a round-trip
+// later). Dots only (the user 2026-07-03): hovering past the last dot draws NOTHING locally — there is
+// no complete inter-dot span there (the cross-highlight still fires; the fan-back band renders
+// dot-clamped if the segment has one).
+function instantLocalBand(turn: HTMLElement): void {
+  const host = turn.parentElement;
+  if (!host) return;
+  document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
+  const hostR = host.getBoundingClientRect();
+  const top = railDotAbove(turn, hostR);
+  const bottom = railDotBelow(turn, hostR);
+  if (top != null && bottom != null) drawRailBand(host, hostR, turn, top, bottom, true);
+}
+function clearLocalBand(): void {
+  document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
+  if (!document.querySelector(".rail-band")) clearRailRings();   // fan-back band may still own the rings
 }
 
 // Transient cross-highlight FROM the timeline (host fans a bar hover here as
@@ -1030,18 +1042,20 @@ function railDotBelow(turn: HTMLElement, hostR: DOMRect): number | null {
 // the circle and go around", never crossing through it. 7px ≈ where the band ring's edge (±3px off the
 // line) meets the dot ring's outer circle (r 7.5) tangentially.
 const RAIL_DOT_CLEAR = 7;
-function railDotsBetween(host: HTMLElement, hostR: DOMRect, top: number, bottom: number): Array<{ el: HTMLElement; y: number }> {
-  const out: Array<{ el: HTMLElement; y: number }> = [];
+function railDotsBetween(host: HTMLElement, hostR: DOMRect, top: number, bottom: number): Array<{ el: HTMLElement; y: number; x: number }> {
+  const out: Array<{ el: HTMLElement; y: number; x: number }> = [];
   host.querySelectorAll<HTMLElement>(".turn .dot").forEach((d) => {
     const r = d.getBoundingClientRect();
     const y = r.top + r.height / 2 - hostR.top;
-    if (y >= top - 1 && y <= bottom + 1) out.push({ el: d, y });
+    const x = r.left + r.width / 2 - hostR.left;   // dot CENTER x — an indented tg-child dot sits on the sub-rail
+    if (y >= top - 1 && y <= bottom + 1) out.push({ el: d, y, x });
   });
   return out.sort((a, b) => a.y - b.y);
 }
 function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top: number, bottom: number, local: boolean): void {
   if (bottom <= top) return;
-  const left = `${xRef.getBoundingClientRect().left - hostR.left + 10.5}px`;   // hug the rail line (.turn::before x)
+  // fallback x when a run has no bounding dot to hug: the reference turn's rail line (.turn::before x)
+  const fallbackLeft = xRef.getBoundingClientRect().left - hostR.left + 10.5;
   const cls = "rail-band" + (local ? " rail-band-local" : "");
   const dots = railDotsBetween(host, hostR, top, bottom);
   // every dot along the band wears the ring — it IS the band's outline where the line meets a circle
@@ -1051,7 +1065,14 @@ function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top:
     const a = stops[i] + RAIL_DOT_CLEAR, b = stops[i + 1] - RAIL_DOT_CLEAR;
     if (b <= a) continue;                       // dots closer than the clearance → the rings alone carry it
     const band = el("div", cls);
-    band.style.left = left;
+    // The band FOLLOWS the rail's detour through an expanded tool-group (the user 2026-07-17: one fixed
+    // x couldn't highlight the branch properly): each inter-dot run hugs the x of the dot at its LOWER
+    // edge — the run descending INTO the branch sits on the sub-rail with the child dots, and the run
+    // leaving it sits back on the main rail (whose pass-through line runs behind the branch). stops[i+1]
+    // is dots[i].y whenever the lower edge is a dot; a dotless lower edge (clamped transcript ends)
+    // falls back to the last dot above, else the reference turn's rail.
+    const lower = dots[i] ?? dots[dots.length - 1];
+    band.style.left = `${lower ? lower.x - 1 : fallbackLeft}px`;   // band is 2px; center it on the dot's x
     band.style.top = `${a}px`;
     band.style.height = `${b - a}px`;
     host.appendChild(band);
