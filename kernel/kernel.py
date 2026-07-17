@@ -2121,13 +2121,43 @@ def _resolve_create_dir(raw):
     return os.path.realpath(p), None
 
 
+def _session_has_history(sid):
+    """True if this session was ever PROMPTED — the evidence that it is a real conversation, not a
+    just-opened shell an "Opening…" cue covers. Streams the transcript and stops at the first user
+    record, so an established session answers off its opening lines; a fresh spawn has no transcript
+    (or only system/init records). Unreadable → True (fail toward refusing a kill)."""
+    try:
+        path = _path_of(sid)
+        if not path or not os.path.isfile(path):
+            return False
+        with open(path) as f:
+            for line in f:
+                if '"type":"user"' in line or '"type": "user"' in line:
+                    return True
+        return False
+    except Exception:
+        return True
+
+
 def _end_pending_sid(sid):
     """Tear down a session whose "Opening…" cue the webview cancelled — kill it on its owning backend,
-    hide the tab, and prune it from the live view. Best-effort: a kill failure is logged, not raised."""
+    hide the tab, and prune it from the live view. Best-effort: a kill failure is logged, not raised.
+
+    HISTORY GUARD (the user 2026-07-16, the staged-demo teardowns): the cancel names a SESSION NAME,
+    and names are not identities — same-named generations coexist (api/tests/web reused across five
+    demo rebuilds in one day), so the name lookup can resolve to an ESTABLISHED conversation instead
+    of the just-opened spawn the ✕ meant, and the kill+hide erased someone's staged work with no
+    trace. A pending spawn has never been prompted; a session with a human turn in its transcript is
+    work — refuse loudly, and the cue still dismisses client-side."""
+    if _session_has_history(sid):
+        sys.stderr.write("kill: REFUSED for %s — cancelCreate's name lookup resolved to a session "
+                         "with conversation history, not a pending spawn\n" % sid)
+        return
     be = Sessions.backend_for(sid)
     if be:
         try:
             be.kill(sid)
+            sys.stderr.write("kill: %s via cancelCreate (Opening-cue teardown)\n" % sid)
         except Exception:
             sys.stderr.write("cancelCreate kill '%s': %s\n" % (sid, traceback.format_exc()))
     _set_hidden_tab(sid, True)
@@ -2500,6 +2530,7 @@ def _drive(msg, client):
     elif t == "setMode" and msg.get("value"):
         be.set_mode(sid, str(msg["value"])); _push_soon()
     elif t == "endSession":
+        sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
         be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()
     elif t == "renameSession" and msg.get("name"):
         new = str(msg["name"]).strip()
@@ -12085,6 +12116,7 @@ class Handler(BaseHTTPRequestHandler):
                     be.interrupt(sid)                           # Esc/stop AND settle idle (in the backend)
                     _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
                 else:
+                    sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
                     be.kill(sid)
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_all()

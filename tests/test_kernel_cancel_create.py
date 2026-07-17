@@ -7,6 +7,11 @@ ends it — a slow-but-successful open must not leave an orphan tab. If the sess
 the name is armed in _cancel_pending so the in-flight threaded tmux spawn is reaped the moment it lands.
 A remote cue ("host:name") is dismissed client-side only; the local kernel reaps nothing.
 
+HISTORY GUARD (the user 2026-07-16, the staged-demo teardowns): names are not identities — same-named
+generations coexist, so the cancel's name lookup can resolve to an ESTABLISHED conversation instead of
+the just-opened spawn, and the kill+hide erased staged work with no trace. A session whose transcript
+holds a user record refuses the teardown loudly; only a never-prompted session is torn down.
+
 Synthetic only: placeholder UUID, hostname TESTHOST, hermetic temp STATE.
 """
 import os
@@ -96,6 +101,46 @@ class CancelCreateTest(unittest.TestCase):
         self.assertEqual(self.be.killed, [], "a remote spawn is not torn down by the local kernel")
         self.assertNotIn(NAME, km._cancel_pending)
         self.assertNotIn("jetty:" + NAME, km._cancel_pending)
+
+    # ── the history guard (the user 2026-07-16) ──
+
+    def _transcript(self, records):
+        import json
+        p = os.path.join(tempfile.mkdtemp(), SID + ".jsonl")
+        with open(p, "w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+        return p
+
+    def test_an_established_conversation_refuses_the_teardown(self):
+        # the demo shape: a staged session wearing a REUSED name; the cancelled cue's lookup lands on it
+        path = self._transcript([
+            {"type": "system", "subtype": "init"},
+            {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "stage the demo board"}},
+            {"type": "assistant", "uuid": "a1"}])
+        self._saved["_path_of"] = km._path_of
+        km._path_of = lambda sid: path
+        self._live = {SID: {}}
+        self._cancel(NAME)
+        self.assertEqual(self.be.killed, [], "a session with a human turn is work, never a pending spawn")
+        self.assertEqual(self.hidden, [], "its tab stays visible")
+        self.assertEqual(self.sent, [], "and the live view is not told to prune it")
+
+    def test_a_fresh_spawn_with_only_init_lines_is_still_torn_down(self):
+        path = self._transcript([{"type": "system", "subtype": "init"}])
+        self._saved["_path_of"] = km._path_of
+        km._path_of = lambda sid: path
+        self._live = {SID: {}}
+        self._cancel(NAME)
+        self.assertEqual(self.be.killed, [SID], "only system/init lines → a genuine pending spawn")
+        self.assertIn((SID, True), self.hidden)
+
+    def test_an_unreadable_transcript_fails_toward_refusing(self):
+        self._saved["_path_of"] = km._path_of
+        km._path_of = lambda sid: (_ for _ in ()).throw(OSError("boom"))
+        self._live = {SID: {}}
+        self._cancel(NAME)
+        self.assertEqual(self.be.killed, [], "can't prove it's fresh → don't kill it")
 
 
 if __name__ == "__main__":
