@@ -170,6 +170,158 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         self.assertIn("_apply_pending_ops()", src, "the producer tick delivers the parked queue")
 
 
+class _FakeForwardBackend:
+    """An SDK-like backend: forwards_sends() True, and send() enqueues into an in-memory queue exposed by
+    pending_queued (the SDK's _pending). The actual mid-turn forward / fold happens inside the SDK, not here
+    — for the kernel gate what matters is that a working send is HANDED OVER (lands in send()/the queue),
+    not parked in the kernel FIFO."""
+
+    def __init__(self):
+        self.calls = []
+        self._q = []
+
+    def forwards_sends(self):
+        return True
+
+    def send(self, sid, text):
+        self.calls.append(("send", text))
+        self._q.append(text)
+        return True
+
+    def pending_queued(self, sid):
+        return list(self._q)
+
+    def set_model(self, sid, value):
+        self.calls.append(("model", value))
+        return True
+
+    def set_effort(self, sid, value):
+        self.calls.append(("effort", value))
+        return True
+
+
+class SdkForwardsAndBatch(unittest.TestCase):
+    """The user 2026-07-17: get typed messages in AS SOON AS POSSIBLE (no interrupt), and when a pile is
+    queued, send them ALL AT ONCE — the SDK folds them into one turn, tmux merges them. A backend that
+    forwards its own sends (forwards_sends) takes a composer send even MID-TURN, instead of the kernel
+    parking it until the turn ends; slash-command drive ops still park in press order. Synthetic only."""
+
+    def setUp(self):
+        self.be = _FakeBackend()                       # tmux-like (no forwards_sends)
+        self.fbe = _FakeForwardBackend()               # SDK-like
+        self.echoes = []
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+                       km._working_now)
+        km._push_all = lambda: None
+        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
+        km._compacting_now = lambda sid: False
+        km._working_now = lambda sid: False
+        km._pending_ops.clear()
+
+    def tearDown(self):
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+         km._working_now) = self._saved
+        km._pending_ops.clear()
+
+    def test_sdk_send_while_working_is_handed_over_not_parked(self):
+        km._working_now = lambda sid: True             # a turn IS in flight
+        km._send_or_park(self.fbe, SID, "mid-turn message", echo="human")
+        self.assertEqual(self.fbe.calls, [("send", "mid-turn message")],
+                         "the SDK takes the send mid-turn — the inputs() generator forwards it at the next boundary")
+        self.assertNotIn(SID, km._pending_ops, "not parked in the kernel FIFO")
+
+    def test_several_sdk_sends_while_working_all_forward_none_parked(self):
+        km._working_now = lambda sid: True
+        for t in ("one", "two", "three"):
+            km._send_or_park(self.fbe, SID, t, echo="human")
+        self.assertEqual(self.fbe.calls, [("send", "one"), ("send", "two"), ("send", "three")],
+                         "all three reach the SDK queue → its inputs() folds them into one turn")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_a_send_after_a_parked_drive_op_chains_behind_it_even_for_the_sdk(self):
+        # press-order beats mid-turn forwarding: once a /model is parked, a later message stays behind it
+        # (the user 2026-07-17: "be careful with that aspect"). The drive op parks (a queue exists), so the
+        # send parks too — it does NOT jump ahead by forwarding mid-turn.
+        km._working_now = lambda sid: True
+        km._set_model_or_park(self.fbe, SID, "opus")
+        km._send_or_park(self.fbe, SID, "after the model", echo="human")
+        self.assertEqual(self.fbe.calls, [], "nothing fires: model parked, the send chained behind it")
+        self.assertEqual(km._pending_ops.get(SID),
+                         [("model", "opus"), ("send", "after the model", "human")], "press order held")
+
+    def test_tmux_merges_a_run_of_queued_sends_into_one_message(self):
+        km.Sessions.backend_for = lambda sid: self.be
+        km._pending_ops[SID] = [("send", "alpha", None), ("send", "beta", None), ("send", "gamma", None)]
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [("send", "alpha\n\nbeta\n\ngamma")],
+                         "tmux has no fold → the run merges into a single blank-line-separated message")
+        self.assertNotIn(SID, km._pending_ops, "the whole run delivered at once")
+
+    def test_sdk_delivers_a_run_as_separate_sends_to_fold(self):
+        km.Sessions.backend_for = lambda sid: self.fbe
+        km._pending_ops[SID] = [("send", "a", None), ("send", "b", None), ("send", "c", None)]
+        km._apply_pending_ops()
+        self.assertEqual(self.fbe.calls, [("send", "a"), ("send", "b"), ("send", "c")],
+                         "the SDK enqueues each — its inputs() folds them into one turn, no merge")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_a_drive_op_then_a_run_applies_the_op_then_batches_the_sends(self):
+        km.Sessions.backend_for = lambda sid: self.fbe
+        km._pending_ops[SID] = [("model", "opus"), ("send", "a", None), ("send", "b", None)]
+        km._apply_pending_ops()
+        self.assertEqual(self.fbe.calls, [("model", "opus"), ("send", "a"), ("send", "b")],
+                         "the model applies, delivery continues, and the leading send run batches")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_compacting_still_parks_sdk_sends_then_batches_when_it_ends(self):
+        # mid-compaction a send must PARK (protect the 'compacting' cue), even for the SDK — then the whole
+        # parked run delivers together the instant compaction ends.
+        km._compacting_now = lambda sid: True
+        km._send_or_park(self.fbe, SID, "one", echo="human")
+        km._send_or_park(self.fbe, SID, "two", echo="human")
+        self.assertEqual(self.fbe.calls, [], "nothing fires mid-compaction — the cue would die")
+        self.assertEqual(km._pending_ops.get(SID),
+                         [("send", "one", "human"), ("send", "two", "human")], "parked in order")
+        km._compacting_now = lambda sid: False
+        km.Sessions.backend_for = lambda sid: self.fbe
+        km._apply_pending_ops()
+        self.assertEqual(self.fbe.calls, [("send", "one"), ("send", "two")],
+                         "compaction over → the parked run delivers all at once (folds)")
+
+
+class BackendQueuedNudgeGate(unittest.TestCase):
+    """The nudge-suppression consults the backend queue now that composer sends live in the SDK _pending
+    (the user 2026-07-17). _backend_queued must see them so a nudge never jumps the user's queued messages."""
+
+    def setUp(self):
+        self._saved = km.Sessions.backend_for
+
+    def tearDown(self):
+        km.Sessions.backend_for = self._saved
+
+    def test_backend_queued_true_when_the_backend_holds_messages(self):
+        be = _FakeForwardBackend()
+        be._q = ["a queued message"]
+        km.Sessions.backend_for = lambda sid: be
+        self.assertTrue(km._backend_queued(SID), "a non-empty backend queue is queued intent")
+
+    def test_backend_queued_false_when_empty(self):
+        km.Sessions.backend_for = lambda sid: _FakeForwardBackend()
+        self.assertFalse(km._backend_queued(SID), "empty backend queue → no queued intent")
+
+    def test_backend_queued_survives_a_backend_error(self):
+        def boom(sid):
+            raise RuntimeError("no such session")
+        km.Sessions.backend_for = boom
+        self.assertFalse(km._backend_queued(SID), "a backend hiccup reads as 'nothing queued', never crashes the nudge check")
+
+    def test_the_nudge_gate_consults_it(self):
+        import inspect
+        src = inspect.getsource(km._auto_nudge_session)
+        self.assertIn("_backend_queued(sid)", src,
+                      "the nudge-suppression gate checks the backend queue, not just the kernel FIFO")
+
+
 class SendPathsPark(unittest.TestCase):
     """Every drive path routes through a park helper, so no path can slip a mid-compaction op."""
 

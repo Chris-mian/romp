@@ -2353,6 +2353,13 @@ class SdkBackend:
         self._poke()
         return True
 
+    def forwards_sends(self) -> bool:
+        """True (see SessionBackend.forwards_sends): the SDK holds queued turns in _pending and its inputs()
+        generator forwards them at the next tool boundary, folds several into one turn, and holds them across
+        an interrupt. So the kernel hands composer sends straight to send() even mid-turn instead of parking
+        them; the reconciliation renders the still-waiting message as a queued bubble until it forwards."""
+        return True
+
     def busy(self, sid: str) -> "bool | None":
         """Authoritative in-flight signal (see SessionBackend.busy): a turn is running (inflight>0) OR one is
         queued and about to run (_pending). Either means a drive op pressed now must PARK to hold press-order,

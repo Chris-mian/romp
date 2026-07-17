@@ -29,6 +29,18 @@ class AbcContract(unittest.TestCase):
             self.assertTrue(hasattr(sb.SessionBackend, m), "the ABC declares %s (concrete default for now)" % m)
         self.assertNotIn("wake", ABSTRACT, "coordination methods are concrete defaults until P3")
 
+    def test_forwards_sends_capability(self):
+        # forwards_sends is a CONCRETE default (False) on the ABC — the kernel holds + merges a backend's
+        # sends when it can't forward them itself (tmux inherits this). The SDK overrides it True so the
+        # kernel hands it composer sends mid-turn (the user 2026-07-17). SDK checked at the source level.
+        self.assertNotIn("forwards_sends", ABSTRACT,
+                         "forwards_sends is a concrete default, not part of the abstract contract")
+        self.assertFalse(sb.SessionBackend.forwards_sends(object()),
+                         "the ABC default is False (hold + merge, like tmux)")
+        src = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        m = re.search(r"def forwards_sends\(self\)[\s\S]*?\n        return (\w+)", src)
+        self.assertTrue(m and m.group(1) == "True", "SdkBackend.forwards_sends returns True")
+
     def test_sdk_backend_honors_every_abstract_method(self):
         # SdkBackend is SDK-gated so it can't import the ABC when the dep is absent; it conforms by
         # duck-typing. Assert at the SOURCE level (no SDK dep needed) that it DEFINES each abstract method,

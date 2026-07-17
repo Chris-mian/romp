@@ -72,6 +72,18 @@ class SessionBackend(ABC):
         or the /compact turn's settle; tmux keeps the None default (its @claude-state path is unchanged)."""
         return None
 
+    def forwards_sends(self) -> bool:
+        """True if this backend accepts a plain composer send at ANY time — even mid-turn — and manages its
+        own delivery: forwarding the message to the model at the next tool boundary, folding several queued
+        sends into one turn, and holding them across an interrupt until the turn settles (SdkSession._pending
+        + its inputs() generator). The kernel then hands composer sends straight to send() the instant they
+        arrive (the user 2026-07-17: "get them in as soon as possible"), instead of parking them itself.
+        False (default) means the backend has no such queue, so the kernel holds sends while a turn runs and
+        merges them into one message at turn end (tmux). Slash-command drive ops (/compact, /model, /effort)
+        still park in the kernel FIFO on BOTH backends to preserve press-order — this flag governs plain text
+        sends only."""
+        return False
+
     @abstractmethod
     def set_model(self, sid: str, value: str) -> bool: ...
 

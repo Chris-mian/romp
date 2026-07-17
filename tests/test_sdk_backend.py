@@ -274,6 +274,47 @@ class LiveTail(unittest.TestCase):
         be._on_session_gone(s)
         self.assertNotIn(s.sid, be._live, "no stream left → no work atom may hold the turn open")
 
+    def test_forwards_sends_is_true_for_the_sdk(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        self.assertTrue(be.forwards_sends(),
+                        "the SDK forwards its own sends (mid-turn + fold + interrupt-hold) — the kernel hands "
+                        "composer sends straight over instead of parking them (the user 2026-07-17)")
+
+    def test_queued_turns_survive_an_interrupt_and_release_when_the_turn_settles(self):
+        """The user 2026-07-17: messages queued while working, then interrupt → interrupt AND THEN send them
+        all. An interrupted turn's ResultMessage still settles inflight to 0, and must leave the queued turns
+        intact and WAKE the input generator so they feed (inputs() holds the queue while inflight>0 AND
+        _interrupted, releasing at settle)."""
+        import asyncio
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        s.enqueue("first queued")
+        s.enqueue("second queued")
+        self.assertEqual(s.pending(), ["first queued", "second queued"], "held in _pending, not fed to the CLI yet")
+        s.inflight = 1                                  # a turn is in flight...
+        s._interrupted = True                          # ...and the user interrupted it
+        s._input_wake = asyncio.Event()                # inputs() owns this; stub it here to observe the release
+
+        async def run():
+            s._on_message(_ResultMessage(), _AssistantMessage, _ResultMessage, type("S", (), {}))
+            await asyncio.sleep(0)
+        asyncio.run(run())
+        self.assertEqual(s.pending(), ["first queued", "second queued"],
+                         "the interrupt did NOT drop the queue — the messages are still there to send")
+        self.assertEqual(s.inflight, 0, "the interrupted turn settled to idle")
+        self.assertFalse(s._interrupted, "settle cleared the interrupt flag → inputs() stops blocking the queue")
+        self.assertTrue(s._input_wake.is_set(),
+                        "settle woke the input generator to feed the held turns as a fresh turn")
+
+    def test_inputs_generator_holds_the_queue_while_interrupted(self):
+        # The hold half of the guarantee above: the input generator must NOT feed the next turn into a CLI
+        # whose current turn is interrupted/wedged (inflight>0 AND _interrupted); it releases only once the
+        # ResultMessage settles inflight to 0. Source-pinned because inputs() is a nested closure.
+        import inspect
+        src = inspect.getsource(sb.SdkSession)
+        self.assertIn("blocked = self.inflight > 0 and self._interrupted", src,
+                      "inputs() holds queued turns while a turn is interrupted/wedged")
+
     def test_image_echo_pruned_by_human_floor_when_text_cant_match(self):
         # The screenshots-piling-up bug (the user 2026-06-25): an image send's echo text is the raw composer
         # text (an image path), but the transcript extracts the path into an image block, so the echoed path

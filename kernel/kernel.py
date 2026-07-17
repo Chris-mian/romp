@@ -1713,6 +1713,19 @@ def _auto_nudge_tick(now, tmux):
         _push_all()
 
 
+def _backend_queued(sid):
+    """True if the session's backend holds queued-but-unstarted user turns (the SDK keeps them in _pending;
+    tmux folds them from the transcript's queue-op records). Composer sends now go straight to that queue
+    while a turn runs (_send_or_park), so 'the user has messages waiting' — the nudge-suppression guard —
+    must consult it, not just the kernel FIFO. Guarded: a backend hiccup reads as 'nothing queued' rather
+    than crashing the nudge check."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        return bool(be and be.pending_queued(str(sid)))
+    except Exception:
+        return False
+
+
 def _auto_nudge_session(s, now, tmux, nudged, waitfor):
     """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
     walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
@@ -1748,8 +1761,9 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
         return False                                # driving; suppressed until their NEXT message. The stopped
         #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
         #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
-    if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
-        return False                                # queued intent; a nudge would jump their queue (the user 2026-07-05)
+    if _pending_ops.get(str(sid)) or _backend_queued(sid):   # the user has messages queued — parked drive ops OR the
+        return False                                         # backend's own queue (SDK _pending, where composer sends now
+        #                                                      wait) → queued intent; a nudge would jump it (the user 2026-07-05)
     ls_val, ls_t = _last_state(sid)
     if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
         # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
@@ -2387,7 +2401,7 @@ def _drive(msg, client):
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
-        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_soon()  # idle → instant echo; busy → a queued bubble, delivered in press order
+        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_soon()  # idle → instant echo; SDK busy → queued bubble forwarded mid-turn + folded; tmux busy → held + merged at turn end
     elif t == "rewindSend" and msg.get("uuid") and msg.get("text"):
         # Edit a past message (SDK sessions): rewind the conversation to just before it and send the
         # edited text as the branch's next turn. NO optimistic kernel echo — the edit lands mid-chat
@@ -6025,13 +6039,34 @@ def _cancel_backend_queued(be, sid, idx, md):
     be.unqueue(sid, idx)
 
 
+def _forwards_sends(be):
+    """True if this backend forwards its own composer sends (SDK — see SessionBackend.forwards_sends), so the
+    kernel hands a send straight over even mid-turn instead of parking + merging it. getattr-guarded: a
+    backend / test fake without the capability reads as False (tmux-like: hold while a turn runs, merge on
+    delivery)."""
+    fn = getattr(be, "forwards_sends", None)
+    try:
+        return bool(fn()) if fn else False
+    except Exception:
+        return False
+
+
 def _send_or_park(be, sid, text, echo=None):
-    """Deliver `text` now — or PARK it while the session compacts (the user 2026-07-02: a mid-compaction
-    send rendered instantly as a landed bubble — no queued cue — and its live-tail echo opened a turn that
-    KILLED the 'compacting' indicator). Parked, no echo atom lands so 'compacting' stays, and the send
-    shows as a queued bubble in park order. `echo` is the _optimistic_echo author stamped when the send
-    actually fires (None = the backend echoes for itself)."""
-    if _ops_gate(sid):
+    """Deliver `text` now — or PARK it in the sid's FIFO. Park when: (a) the session is COMPACTING (the user
+    2026-07-02: a mid-compaction send's live-tail echo opened a turn that KILLED the 'compacting' cue — a
+    parked send lands no echo atom, so the cue stays and the send shows as a queued bubble in park order);
+    (b) a kernel FIFO already EXISTS for this sid (a parked drive op / earlier held send is ahead — stay
+    behind it in press order); or (c) the backend can't forward its own sends AND a turn is open (tmux: hold
+    while working, and _apply_pending_ops MERGES the held run into one message at turn end). Otherwise hand
+    it over NOW — a forwards_sends backend (SDK) takes a send even mid-turn and forwards it at the next tool
+    boundary, folds several queued sends into one turn, and holds them across an interrupt (the user
+    2026-07-17: "get user messages in as soon as possible; we don't have to interrupt but get them in"); the
+    still-waiting message renders as a queued bubble (its echo is suppressed) until it forwards. `echo` is
+    the _optimistic_echo author stamped when the send actually fires (None = the backend echoes for itself)."""
+    if _compacting_now(sid) or _pending_ops.get(sid):
+        _park_op(sid, ("send", text, echo))
+        return
+    if _working_now(sid) and not _forwards_sends(be):
         _park_op(sid, ("send", text, echo))
         return
     be.send(sid, text)
@@ -6060,13 +6095,36 @@ def _set_effort_or_park(be, sid, value):
         be.set_effort(sid, value)
 
 
+def _deliver_send_batch(be, sid, run):
+    """Deliver a run of consecutive parked ('send', text, echo) ops AT ONCE (the user 2026-07-17: a pile of
+    queued messages should all go in together, not one turn each). A backend that forwards its own sends
+    (SDK) enqueues each — its inputs() folds them into ONE turn; a backend that can't (tmux) has no fold, so
+    MERGE them into a single message (the user okayed merging for tmux). Each fired send stamps its optimistic
+    echo (a no-op on the SDK, which echoes inside send(); the kernel-side tmux echo otherwise)."""
+    if not run:
+        return
+    if _forwards_sends(be):
+        for op in run:
+            be.send(sid, op[1])
+            if op[2]:
+                _optimistic_echo(sid, op[1], author=op[2])
+        return
+    merged = "\n\n".join(op[1] for op in run)          # tmux: one message, blank-line separated between turns
+    be.send(sid, merged)
+    author = next((op[2] for op in run if op[2]), None)
+    if author:
+        _optimistic_echo(sid, merged, author=author)
+
+
 def _apply_pending_ops():
     """Producer tick: FIFO-deliver parked ops once the session is QUIET (neither compacting nor an open
     turn) — in exactly the order they were parked, which is exactly the order the chat rendered their
     queued bubbles (the user 2026-07-02: what you see is what runs). SEQUENTIAL by construction (the user
     2026-07-02, compact-mid-turn): settings ops (model/effort) apply instantly and delivery continues,
     but a SEND or /COMPACT ends the pass — its turn/compaction must finish before the next op fires, so
-    "compact, then two messages, then a model pick" lands as pressed. Event-gated throughout (_compacting
+    "compact, then two messages, then a model pick" lands as pressed. A leading RUN of consecutive sends
+    is delivered together, not one turn each (_deliver_send_batch — the user 2026-07-17: "send them all at
+    once"; the SDK folds the run into one turn, tmux merges it). Event-gated throughout (_compacting
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes); a dead
     session's queue is dropped (fails once, logged), never retried."""
     for sid, ops in list(_pending_ops.items()):
@@ -6080,11 +6138,11 @@ def _apply_pending_ops():
             while ops:
                 op = ops[0]
                 if op[0] == "send":
-                    be.send(sid, op[1])
-                    if op[2]:
-                        _optimistic_echo(sid, op[1], author=op[2])
-                    ops.pop(0)
-                    break                             # its turn must END before the next op fires
+                    run = []                          # coalesce the leading run of sends → deliver them AT ONCE
+                    while ops and ops[0][0] == "send":
+                        run.append(ops.pop(0))
+                    _deliver_send_batch(be, sid, run)
+                    break                             # the delivered turn must END before any op behind it fires
                 elif op[0] == "compact":
                     be.send(sid, "/compact")
                     _mark_compacting(sid)
