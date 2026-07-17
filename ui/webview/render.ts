@@ -1054,30 +1054,45 @@ function railDotsBetween(host: HTMLElement, hostR: DOMRect, top: number, bottom:
 }
 function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top: number, bottom: number, local: boolean): void {
   if (bottom <= top) return;
-  // fallback x when a run has no bounding dot to hug: centered on the reference turn's rail line
-  // (.turn::before spans x 10.5–12.5 → center 11.5; the 4px band's left edge sits at 9.5)
-  const fallbackLeft = xRef.getBoundingClientRect().left - hostR.left + 9.5;
+  // fallback CENTER x when a run has no bounding dot to hug: the reference turn's rail line
+  // (.turn::before spans x 10.5–12.5 → center 11.5)
+  const fallbackCx = xRef.getBoundingClientRect().left - hostR.left + 11.5;
   const cls = "rail-band" + (local ? " rail-band-local" : "");
   const dots = railDotsBetween(host, hostR, top, bottom);
   // every dot along the band EXPANDS in its own color (.rail-ring) — the thickened line runs to it and
   // the grown disc takes over (the user 2026-07-17: same thicken-in-color language as the timeline)
   for (const d of dots) d.el.classList.add("rail-ring");
+  // one 4px-wide piece of the thickened rail (or 4px-tall, for a run along a corner arm)
+  const put = (left: number, top_: number, w: number, h: number) => {
+    if (w <= 0 || h <= 0) return;
+    const band = el("div", cls);
+    band.style.left = `${left}px`; band.style.top = `${top_}px`;
+    band.style.width = `${w}px`; band.style.height = `${h}px`;
+    host.appendChild(band);
+  };
   const stops = [top, ...dots.map((d) => d.y), bottom];
   for (let i = 0; i < stops.length - 1; i++) {
     const a = stops[i] + RAIL_DOT_CLEAR, b = stops[i + 1] - RAIL_DOT_CLEAR;
     if (b <= a) continue;                       // dots closer than the clearance → the rings alone carry it
-    const band = el("div", cls);
-    // The band FOLLOWS the rail's detour through an expanded tool-group (the user 2026-07-17: one fixed
-    // x couldn't highlight the branch properly): each inter-dot run hugs the x of the dot at its LOWER
-    // edge — the run descending INTO the branch sits on the sub-rail with the child dots, and the run
-    // leaving it sits back on the main rail (whose pass-through line runs behind the branch). stops[i+1]
-    // is dots[i].y whenever the lower edge is a dot; a dotless lower edge (clamped transcript ends)
-    // falls back to the last dot above, else the reference turn's rail.
-    const lower = dots[i] ?? dots[dots.length - 1];
-    band.style.left = `${lower ? lower.x - 2 : fallbackLeft}px`;   // band is 4px (the thickened rail); center it on the dot's x
-    band.style.top = `${a}px`;
-    band.style.height = `${b - a}px`;
-    host.appendChild(band);
+    // The band FOLLOWS the rail's detour through an expanded tool-group (the user 2026-07-17 ×2: the
+    // rail goes in, down, and back — the band must trace the SAME path, never a straight run at one x
+    // beside indented dots). A run whose bounding dots sit at DIFFERENT x's crosses a corner: the arm
+    // hangs at the upper dot's turn-box bottom, so the run splits into an L — down the upper rail to
+    // the corner, along the arm, down the lower rail. Same-x runs (and dotless clamps) stay straight.
+    const upper = dots[i - 1] ?? null;          // stops[i] is dots[i-1].y whenever the upper edge is a dot
+    const lower = dots[i] ?? dots[dots.length - 1] ?? null;
+    const lx = lower ? lower.x : fallbackCx;
+    if (upper && lower && Math.abs(upper.x - lower.x) > 1) {
+      const turnBox = (upper.el.closest(".turn") as HTMLElement | null)?.getBoundingClientRect();
+      const cornerY = turnBox ? turnBox.bottom - hostR.top - 1 : null;   // center of the 2px arm at the box bottom
+      if (cornerY != null && cornerY > a && cornerY < b) {
+        put(upper.x - 2, a, 4, cornerY - a);                                              // down the upper rail
+        put(Math.min(upper.x, lower.x) - 2, cornerY - 2, Math.abs(upper.x - lower.x) + 4, 4);   // along the arm
+        put(lower.x - 2, cornerY, 4, b - cornerY);                                        // down the lower rail
+        continue;
+      }
+    }
+    put(lx - 2, a, 4, b - a);
   }
 }
 function clearRailRings(): void {

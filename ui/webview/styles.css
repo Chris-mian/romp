@@ -810,26 +810,25 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .toolgroup-line:hover { color: var(--fg); }
 .toolgroup-caret { display: inline-block; font-size: 1.3em; color: var(--vscode-foreground, #fff); line-height: 1; margin-right: 2px; }
 .toolgroup-tool { font-weight: 700; color: var(--vscode-foreground, #fff); }   /* matches .tool-name */
-/* An expanded tool-group's children BRANCH off the main rail (the user 2026-07-17: flat children didn't
-   read as a sub-thing — restore the indent): the rail takes a right turn (a horizontal arm under the open
-   arrow) onto a 24px-indented sub-rail (the children's own ::before) that runs down and ENDS at the last
-   child's dot — a 16px stub, the same termination idiom as the main rail. NO bottom return arm: that's
-   what read as a floating stub pre-2026-07-07. And the MAIN rail keeps running straight behind the branch
-   whenever the transcript continues below (.tg-child::after), so the hover-highlight band — drawn at the
-   main rail — still has a line to align with (the other 2026-07-07 complaint). */
+/* An expanded tool-group's children are a DETOUR of the main rail (the user 2026-07-17 ×2: the rail
+   goes IN, DOWN, and BACK — one path, never two parallel verticals): a right-turn arm under the open
+   arrow onto a 24px-indented sub-rail (the children's own ::before, full height so it reaches both
+   corners), then a return arm at the last child's bottom rejoining the main rail, which resumes on the
+   next turn's ::before. The main rail is ELIMINATED behind the branch — nothing draws at the main x
+   through the children, so the hover band unambiguously rides the sub-rail there. Every corner is
+   contiguous (arm y = the adjoining box edge where the verticals start/stop): the disconnected-looking
+   arm was the 2026-07-07 complaint, so the return arm only exists when the transcript continues below
+   — a group that ENDS the transcript keeps the last-turn 16px stub instead of a dangling arm. */
 .tg-child { margin-left: 24px; }
-/* the right turn: main rail (x 10.5) → sub-rail (x 34.5), hanging off the open "▾" line's bottom */
+/* the right turn IN: main rail (x 10.5) → sub-rail (x 34.5), hanging off the open "▾" line's bottom */
 .turn-toolgroup.expanded::after {
   content: ""; position: absolute; left: 10.5px; bottom: 0; width: 26px; height: 2px;
   background: var(--active-accent, var(--rail)); opacity: 0.7; pointer-events: none;
 }
-/* the sub-rail terminates at the last child's dot — no return arm */
-.tg-child.tg-last::before { bottom: auto; height: 16px; }
-/* the main rail continues straight behind the branch while the transcript continues below it
-   (structured like the last-turn stub selector: appended .rail-band divs aren't .turn, so hover
-   can't flip this match — the user 2026-07-03) */
-.tg-child:has(~ .turn:not(.tg-child))::after {
-  content: ""; position: absolute; left: -13.5px; top: 0; bottom: 0; width: 2px;
+/* the return arm BACK: sub-rail → main rail at the last child's bottom edge, gated on a following turn
+   (appended .rail-band divs aren't .turn, so hover can't flip this match — the user 2026-07-03) */
+.tg-child.tg-last:has(~ .turn)::after {
+  content: ""; position: absolute; left: -13.5px; bottom: 0; width: 26px; height: 2px;
   background: var(--active-accent, var(--rail)); opacity: 0.7; pointer-events: none;
 }
 /* …and their dots drop the same 5px so the label still centers on its dot */

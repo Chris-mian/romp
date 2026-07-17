@@ -1,9 +1,8 @@
-// The hover rail band FOLLOWS the rail's detour through an expanded tool-group (the user 2026-07-17:
-// with the branch indent restored, one fixed x couldn't highlight everything properly — band runs next
-// to indented children floated off their sub-rail). Each inter-dot run now hugs the x of the dot at its
-// LOWER edge: descending INTO the branch → the sub-rail x (with the child dots), leaving it → back to
-// the main rail x (whose pass-through line runs behind the branch). Source pins + an executed replica
-// of the per-run x selection.
+// The hover rail band TRACES the rail's detour through an expanded tool-group (the user 2026-07-17 ×2:
+// a straight run at one x beside indented dots read as confusion between the sub-rail and the main
+// rail). A run whose bounding dots sit at different x's crosses a corner — the arm at the upper dot's
+// turn-box bottom — and splits into an L: down the upper rail, along the arm, down the lower rail.
+// Same-x runs and dotless clamps stay straight. Source pins + an executed replica of the run splitting.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -17,54 +16,82 @@ test("railDotsBetween reports each dot's center x, not just y", () => {
   assert.match(fn, /const x = r\.left \+ r\.width \/ 2 - hostR\.left;/);
 });
 
-test("each band run centers on its lower-edge dot's x; dotless runs fall back to the reference rail", () => {
+test("a cross-x run splits into an L at the corner (the upper dot's turn-box bottom)", () => {
   const fn = SRC.slice(SRC.indexOf("function drawRailBand"), SRC.indexOf("function clearRailRings"));
-  assert.match(fn, /const lower = dots\[i\] \?\? dots\[dots\.length - 1\];/);
-  assert.match(fn, /band\.style\.left = `\$\{lower \? lower\.x - 2 : fallbackLeft\}px`;/);   // 4px band centered on the dot
-  assert.match(fn, /const fallbackLeft = xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 9\.5;/);   // rail center 11.5 - band width/2
-  // the old single-x band (every run at the reference turn's rail) is gone
-  assert.doesNotMatch(fn, /band\.style\.left = left;/);
+  assert.match(fn, /const upper = dots\[i - 1\] \?\? null;/);
+  assert.match(fn, /const lower = dots\[i\] \?\? dots\[dots\.length - 1\] \?\? null;/);
+  assert.match(fn, /if \(upper && lower && Math\.abs\(upper\.x - lower\.x\) > 1\)/);
+  assert.match(fn, /upper\.el\.closest\("\.turn"\)/, "the corner y comes from the upper dot's turn box");
+  assert.match(fn, /put\(upper\.x - 2, a, 4, cornerY - a\);/, "down the upper rail");
+  assert.match(fn, /put\(Math\.min\(upper\.x, lower\.x\) - 2, cornerY - 2, Math\.abs\(upper\.x - lower\.x\) \+ 4, 4\);/, "along the arm");
+  assert.match(fn, /put\(lower\.x - 2, cornerY, 4, b - cornerY\);/, "down the lower rail");
+  // straight runs center on the lower dot (else the reference rail)
+  assert.match(fn, /const lx = lower \? lower\.x : fallbackCx;/);
+  assert.match(fn, /put\(lx - 2, a, 4, b - a\);/);
 });
 
-// Executed replica of drawRailBand's run loop (stops/clearance/lower-dot selection verbatim), fed the
-// geometry of an expanded group: main dots at x 11.5, three indented children at x 35.5.
-function bandRuns(dots: Array<{ y: number; x: number }>, top: number, bottom: number, fallbackLeft: number) {
+// Executed replica of drawRailBand's run loop (stops/clearance/L-split verbatim; cornerY injected in
+// place of the DOM box lookup). Geometry of an expanded group: main rail center 11.5, sub-rail 35.5.
+type Dot = { y: number; x: number; boxBottom?: number };
+function bandRects(dots: Dot[], top: number, bottom: number, fallbackCx: number) {
   const CLEAR = 7;
+  const out: Array<{ left: number; top: number; w: number; h: number }> = [];
+  const put = (left: number, top_: number, w: number, h: number) => { if (w > 0 && h > 0) out.push({ left, top: top_, w, h }); };
   const stops = [top, ...dots.map((d) => d.y), bottom];
-  const out: Array<{ left: number; top: number; height: number }> = [];
   for (let i = 0; i < stops.length - 1; i++) {
     const a = stops[i] + CLEAR, b = stops[i + 1] - CLEAR;
     if (b <= a) continue;
-    const lower = dots[i] ?? dots[dots.length - 1];
-    out.push({ left: lower ? lower.x - 2 : fallbackLeft, top: a, height: b - a });
+    const upper = dots[i - 1] ?? null;
+    const lower = dots[i] ?? dots[dots.length - 1] ?? null;
+    const lx = lower ? lower.x : fallbackCx;
+    if (upper && lower && Math.abs(upper.x - lower.x) > 1) {
+      const cornerY = upper.boxBottom != null ? upper.boxBottom - 1 : null;
+      if (cornerY != null && cornerY > a && cornerY < b) {
+        put(upper.x - 2, a, 4, cornerY - a);
+        put(Math.min(upper.x, lower.x) - 2, cornerY - 2, Math.abs(upper.x - lower.x) + 4, 4);
+        put(lower.x - 2, cornerY, 4, b - cornerY);
+        continue;
+      }
+    }
+    put(lx - 2, a, 4, b - a);
   }
   return out;
 }
 
-test("executed: the band detours onto the sub-rail with the children and returns on the main rail", () => {
-  const MAIN = 11.5, CHILD = 35.5;
-  // toolgroup dot (main) → 3 children (sub-rail) → next main dot; top/bottom clamp to the boundary dots
-  const dots = [
-    { y: 0, x: MAIN },      // the group's own dot
-    { y: 40, x: CHILD },
-    { y: 80, x: CHILD },
-    { y: 120, x: CHILD },
-    { y: 160, x: MAIN },    // first dot after the group
+const MAIN = 11.5, CHILD = 35.5;
+
+test("executed: the band goes in, down, and back — L runs at both corners, sub-rail in between", () => {
+  // toolgroup dot (main, box ends at y 30 → the IN arm) → 3 children (sub-rail) → next main dot;
+  // the last child's box ends at y 150 (→ the BACK arm)
+  const dots: Dot[] = [
+    { y: 15, x: MAIN, boxBottom: 30 },
+    { y: 45, x: CHILD, boxBottom: 70 },
+    { y: 85, x: CHILD, boxBottom: 110 },
+    { y: 125, x: CHILD, boxBottom: 150 },
+    { y: 175, x: MAIN },
   ];
-  const runs = bandRuns(dots, 0, 160, MAIN - 2);
-  assert.equal(runs.length, 4);
-  assert.deepEqual(runs.map((r) => r.left), [CHILD - 2, CHILD - 2, CHILD - 2, MAIN - 2],
-    "runs into + along the branch hug the sub-rail; the run leaving it hugs the main rail");
+  const rects = bandRects(dots, 15, 175, MAIN);
+  // entry gap splits into 3 (upper vertical at MAIN, arm, lower vertical at CHILD)
+  assert.deepEqual(rects[0], { left: MAIN - 2, top: 22, w: 4, h: 7 });                       // main rail down to the IN corner (29)
+  assert.deepEqual(rects[1], { left: MAIN - 2, top: 27, w: CHILD - MAIN + 4, h: 4 });       // along the IN arm
+  assert.deepEqual(rects[2], { left: CHILD - 2, top: 29, w: 4, h: 38 - 29 });               // sub-rail to the first child dot
+  // the two mid-branch runs stay straight on the sub-rail
+  assert.deepEqual(rects[3], { left: CHILD - 2, top: 52, w: 4, h: 26 });
+  assert.deepEqual(rects[4], { left: CHILD - 2, top: 92, w: 4, h: 26 });
+  // exit gap splits at the BACK corner (149): sub-rail down, arm back, main rail on to the next dot
+  assert.deepEqual(rects[5], { left: CHILD - 2, top: 132, w: 4, h: 149 - 132 });
+  assert.deepEqual(rects[6], { left: MAIN - 2, top: 147, w: CHILD - MAIN + 4, h: 4 });
+  assert.deepEqual(rects[7], { left: MAIN - 2, top: 149, w: 4, h: 168 - 149 });
+  assert.equal(rects.length, 8);
 });
 
-test("executed: an all-main-rail span is unchanged — every run at the main x", () => {
-  const MAIN = 11.5;
-  const dots = [{ y: 0, x: MAIN }, { y: 50, x: MAIN }, { y: 100, x: MAIN }];
-  const runs = bandRuns(dots, 0, 100, MAIN - 2);
-  assert.deepEqual(runs.map((r) => r.left), [MAIN - 2, MAIN - 2]);
+test("executed: an all-main-rail span stays straight — every run at the main x", () => {
+  const dots: Dot[] = [{ y: 0, x: MAIN, boxBottom: 20 }, { y: 50, x: MAIN, boxBottom: 70 }, { y: 100, x: MAIN }];
+  const rects = bandRects(dots, 0, 100, MAIN);
+  assert.deepEqual(rects.map((r) => [r.left, r.w]), [[MAIN - 2, 4], [MAIN - 2, 4]]);
 });
 
 test("executed: no dots at all → the reference turn's rail x carries the run", () => {
-  const runs = bandRuns([], 0, 100, 9.5);
-  assert.deepEqual(runs.map((r) => r.left), [9.5]);
+  const rects = bandRects([], 0, 100, 11.5);
+  assert.deepEqual(rects.map((r) => r.left), [9.5]);
 });
