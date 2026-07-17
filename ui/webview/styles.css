@@ -1698,7 +1698,9 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 /* enlarge the hover/click hit-area of the small (11px) rail dot — a transparent pad so it's easy to
    aim at without the message text ever triggering the timeline highlight (the user 2026-06-15). */
 .dot.dot-nav::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; }
-.dot.dot-nav:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+/* hover = the dot EXPANDS in its own background color — the same thicken-in-color language the timeline
+   uses (the user 2026-07-17, replacing the white ring); z-index above the band so the grown disc reads whole */
+.dot.dot-nav:hover { transform: scale(1.45); z-index: 3; }
 /* the rail LINE is hoverable exactly like the dots (the user 2026-07-02): a slim invisible strip overlays
    each turn's rail segment (the line is .turn::before — a pseudo can't take pointer events); hovering it
    white-rings the SEGMENT (same expanding ring as the dots) and cross-highlights the timeline/feed. */
@@ -1707,24 +1709,27 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    shrinks to match, so only the drawn line is hoverable (the user 2026-07-03). Same "no .turn after me"
    match as the stub itself, immune to appended .rail-band siblings. */
 .turn:not(:has(~ .turn)) .rail-hit { bottom: auto; height: 16px; }
-/* a dot the glow band runs through: its ring IS the band's outline there (the capsule look) */
-.dot.rail-ring { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+/* a dot the glow band runs through EXPANDS in its own color (the user 2026-07-17, replacing the white
+   capsule ring) — grown, it covers the band's clearance gap so the thick line reads continuous */
+.dot.rail-ring { transform: scale(1.45); z-index: 3; }
 
 /* composer drop cue: dragging a file over the box shows it will be accepted
    (its path gets inserted at the cursor on drop) */
 #composer-input.drop-target { outline: 1.5px dashed var(--vscode-focusBorder, #4daafc); outline-offset: -2px; }
 
 /* ---- cross-highlight from the feed modal (glowTurns) ---- */
-/* Hovering a row in a feed-card modal white-rings the matching turns here: the
-   rail dot when the turn has one (same ring as .dot-nav:hover), the postal card
-   when a handoff message is hovered, and the bubble itself for dot-less user
-   turns. Transient — cleared when the hover ends. */
-.turn.ext-glow .dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+/* Hovering a row in a feed-card modal lights the matching turns here in the SAME thicken-in-color
+   language as everywhere else (the user 2026-07-17, replacing the white rings): the rail dot EXPANDS
+   in its own color when the turn has one; the postal card and dot-less bubbles keep their outline.
+   Transient — cleared when the hover ends. */
+.turn.ext-glow .dot { transform: scale(1.45); z-index: 3; }
 /* the hovered SEGMENT's stretch of rail lights as ONE measured band (.rail-band, paintRailBand) — from
    the segment's dot down to the next segment's dot. Replaces the per-turn ::before slice glow, whose
-   box-boundary edges + uuid-less-turn gaps read as arbitrary mid-line cuts (the user 2026-07-02 ×2). */
-.rail-band { position: absolute; width: 2px; border-radius: 2px; pointer-events: none; z-index: 2;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+   box-boundary edges + uuid-less-turn gaps read as arbitrary mid-line cuts (the user 2026-07-02 ×2).
+   The band is the rail itself THICKENED in the session's own rail color — 4px vs the rail's 2px, full
+   opacity vs its 0.7 (the user 2026-07-17, replacing the white capsule outline). */
+.rail-band { position: absolute; width: 4px; border-radius: 2px; pointer-events: none; z-index: 2;
+  background: var(--active-accent, var(--rail)); }
 .turn.ext-glow .postal-service-card { outline: 1.5px solid rgba(255, 255, 255, 0.75); outline-offset: 1px; }
 .turn.ext-glow:not(:has(.dot)) { outline: 1.5px solid rgba(255, 255, 255, 0.55); outline-offset: -1px; border-radius: 9px; }
 /* overview ruler (link_audit's #4, the user 2026-06-22): a fixed strip over the #content scrollbar gutter

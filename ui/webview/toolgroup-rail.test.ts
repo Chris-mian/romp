@@ -39,7 +39,7 @@ test("the main rail continues straight behind the branch while the transcript co
 });
 
 test("the hover-highlight band still hugs the reference turn's rail x", () => {
-  // drawRailBand pins the band at the reference turn's x + 10.5 (the .turn::before x); the main rail
-  // now runs continuously behind the branch, so a band at that x always has a line under it
-  assert.match(RENDER, /xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 10\.5/);
+  // drawRailBand's dotless fallback centers the 4px band on the reference turn's rail (center 11.5 →
+  // left 9.5); the main rail runs continuously behind the branch, so a band there always has a line under it
+  assert.match(RENDER, /xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 9\.5/);
 });

@@ -39,8 +39,10 @@ const GAP_MIN = 20 * 60;   // broken-axis: collapse idle gaps (no work on ANY la
                            // discrete niceStep), so the break width changes smoothly while zooming (no
                            // jumps), at a ~constant pixel width. (See _buildCompressMap.)
 const GAP_FRAC = 0.11;     // collapsed-gap compressed width = GAP_FRAC * winSec ≈ GAP_FRAC * plotW pixels
-const DAG_HL = '#ffffff';   // request-DAG "journey" highlight: thick white border/outline → reads as "focused" (matches the feed card's white focus border)
-const DAG_W = 3;            // its stroke width; outlines are offset by DAG_W/2 so the INNER edge hugs the element (no dark gap)
+// Cross-hover focus (feed-card hover, DAG journey, feed-modal line hover) draws EXACTLY like the
+// native glyph hover: the element THICKENS in its own color (bar → grown + opaque, connector → its
+// own-color highlight overlay, dot → grown radius). The old thick white border/outline language
+// (DAG_HL/DAG_W) is gone — one hover language everywhere (the user 2026-07-17).
 // idle >1h fade: blend the color toward the surface bg until its LUMINANCE hits a uniform low target,
 // so every hue lands at the same perceived dimness (plain opacity leaves bright hues looking brighter).
 // Shared algorithm with romp-chat-view so all surfaces match — keep FADE_TARGET in sync with it.
@@ -2228,9 +2230,10 @@ class TimelinePanel {
     // delegation messages). Each id matches either an event (turn → bar/dot) or a postal message
     // (connector/arrival dot), so the hover set feeds BOTH match helpers below.
     const hoverSet = (this._hover && this._hover.ids && this._hover.ids.length) ? new Set(this._hover.ids) : null;
-    // An event glyph (bar + start dot) / a message glyph (connector + arrival dot) gets the SAME white
-    // focus border whether it's part of the DAG journey (card hover) OR is in the hovered set — the user
-    // wants line-hover and card-hover identical (no separate faint glow). `dagOrHover(id)` = membership
+    // An event glyph (bar + start dot) / a message glyph (connector + arrival dot) gets the SAME
+    // native-hover treatment — thickened/grown in its OWN color — whether it's part of the DAG journey
+    // (card hover) OR is in the hovered set; the user wants line-hover and card-hover and cross-hover
+    // all identical (2026-07-17, replacing the white focus border). `dagOrHover(id)` = membership
     // in either; dotLit/barLit then split the event glyph by ATOM id, so a hover that carries the PROMPT
     // atom (promptId) lights only the start dot and one that carries the WORK atom (workId) lights only
     // the bar — the whole-turn id (DAG journey, coarse card hover) still lights both halves. (NB: name it
@@ -2276,13 +2279,12 @@ class TimelinePanel {
         // below). Only a new ASK (typed/queued/absorbed/drain) starts a new period. The bar's color
         // also backs the candy-stripe.
         const bx = x(a), bw = Math.max(2, x(b) - x(a)), eh = BAR_H + 5;
-        // White focus border HUGGING this work period — drawn for a DAG journey event (card hover) OR
-        // the single event hovered in the feed modal (same style for both, per the user). Offset by DAG_W/2
-        // so the stroke's inner edge sits exactly on the bar's edge (entirely outside, no dark gap).
-        if (barLit(t, dagOrHover)) {
-          svg.appendChild(el('rect', { x: bx - DAG_W / 2, y: y - BAR_H / 2 - DAG_W / 2, width: bw + DAG_W, height: BAR_H + DAG_W, rx: (BAR_H + DAG_W) / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));
-        }
-        const bar = el('rect', { x: bx, y: y - BAR_H / 2, width: bw, height: BAR_H, rx: BAR_H / 2, fill: s.color, opacity: 0.9 });
+        // Cross-hover focus on this work period — a DAG journey event (card hover) or the single event
+        // hovered in the feed modal — draws EXACTLY like the native bar hover below: the bar itself
+        // grown to eh and fully opaque, in its own color. No white outline (the user 2026-07-17).
+        const lit = barLit(t, dagOrHover);
+        const bh = lit ? eh : BAR_H;
+        const bar = el('rect', { x: bx, y: y - bh / 2, width: bw, height: bh, rx: bh / 2, fill: s.color, opacity: lit ? 1 : 0.9 });
         svg.appendChild(bar);
         const act = s.state === 'working' || s.state === 'permission' || s.state === 'awaiting' || s.state === 'awaitingBg' || s.state === 'compacting';
         const ongoing = s.live && act && t.end > t.start && (data.now - t.end) <= 5;
@@ -2291,7 +2293,7 @@ class TimelinePanel {
         const grow = (h) => { bar.setAttribute('y', y - h / 2); bar.setAttribute('height', h); bar.setAttribute('rx', h / 2); };
         hit.addEventListener('mouseenter', (e) => { grow(eh); bar.setAttribute('opacity', '1'); this.showTip(html(), e); this._emitHover(s.id, [t.id], t.start, t.end); });
         hit.addEventListener('mousemove', (e) => this.moveTip(e));
-        hit.addEventListener('mouseleave', () => { grow(BAR_H); bar.setAttribute('opacity', '0.9'); this.hideTip(); this._emitHover(null); });
+        hit.addEventListener('mouseleave', () => { grow(bh); bar.setAttribute('opacity', lit ? '1' : '0.9'); this.hideTip(); this._emitHover(null); });   // restore to the DRAWN state — a cross-lit bar stays grown
         // the BAR = the work/response: open the period's readable reply (workAnchorOf), with the
         // period's start as the by-time fallback. This was a bare lane-open with NO anchor, so every
         // work-bar click visibly did nothing while prompt-dot clicks worked (the user, 2026-06-12).
@@ -2741,32 +2743,32 @@ class TimelinePanel {
       const pts = (xc > xs + 0.5) ? [{ x: xs, y: ys }, { x: xc, y: ys }, { x: xc, y: track }, { x: xe, y: track }, { x: xe, y: ye }]
                                   : [{ x: xs, y: ys }, { x: xs, y: track }, { x: xe, y: track }, { x: xe, y: ye }];
       const d = roundedPath(pts, CORNER);
-      // White casing under a handoff connector that's part of the focused journey (DAG card hover) OR the
-      // hovered subtree's delegation messages — same style for both. Drawn first → the colored line sits
-      // centered on top, leaving a DAG_W-wide white border each edge.
-      if (dagOrHoverMsg(mm.id)) {
-        svg.appendChild(el('path', { d, fill: 'none', stroke: DAG_HL, 'stroke-width': MSG_W0 + 2 * DAG_W, opacity: 1, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none' }));
-      }
       const lineAttr = { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0, opacity: mm.pending ? 0.4 : 0.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
       if (mm.pending) lineAttr['stroke-dasharray'] = '1 4';
       svg.appendChild(el('path', lineAttr));
-      const hl = el('path', { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0 + 3, opacity: 0, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+      // A connector in the focused journey (DAG card hover) or the hovered subtree's delegation messages
+      // lights EXACTLY like its native hover: the own-color highlight overlay at full strength — no white
+      // casing (the user 2026-07-17). msgLit remembers the drawn state so a local mouseleave restores it.
+      const msgLit = dagOrHoverMsg(mm.id);
+      const hl = el('path', { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0 + 3, opacity: msgLit ? 0.95 : 0, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
       svg.appendChild(hl);
-      const u = (msgUI[i] = { hl, dot: null });
+      const u = (msgUI[i] = { hl, dot: null, lit: msgLit });
       const hit = el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(14, MSG_W0 + 6) }); hit.style.cursor = 'pointer';
       hit.addEventListener('mouseenter', (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); });
       hit.addEventListener('mousemove', (e) => this.moveTip(e));
-      hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', '0'); if (u.dot) u.dot.setAttribute('r', DOT_R); this.hideTip(); });
+      hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); });
       hit.addEventListener('click', msgNav(mm));
       svg.appendChild(hit);
     });
 
     // dot helper: optional onClick (deep-link) + optional linkedHl (co-light a connector on hover).
-    const dot = (cx, cy, color, html, onClick, linkedHl) => {
-      const c = el('circle', { cx, cy, r: DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 0.75 }); c.style.cursor = onClick ? 'pointer' : 'default';   // thinner white border on EVERY dot — romp + user (the user 2026-06-23)
+    // lit = cross-hover focus (feed-card hover / DAG journey): drawn GROWN in its own color — the same
+    // growth the native hover applies, no white ring (the user 2026-07-17) — and mouseleave restores it.
+    const dot = (cx, cy, color, html, onClick, linkedHl, lit) => {
+      const c = el('circle', { cx, cy, r: lit ? DOT_R + 2 : DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 0.75 }); c.style.cursor = onClick ? 'pointer' : 'default';   // thinner white border on EVERY dot — romp + user (the user 2026-06-23)
       c.addEventListener('mouseenter', (e) => { c.setAttribute('r', DOT_R + 2); if (linkedHl) linkedHl.setAttribute('opacity', '0.95'); this.showTip(html(), e); });
       c.addEventListener('mousemove', (e) => this.moveTip(e));
-      c.addEventListener('mouseleave', () => { c.setAttribute('r', DOT_R); if (linkedHl) linkedHl.setAttribute('opacity', '0'); this.hideTip(); });
+      c.addEventListener('mouseleave', () => { c.setAttribute('r', lit ? DOT_R + 2 : DOT_R); if (linkedHl) linkedHl.setAttribute('opacity', lit ? '0.95' : '0'); this.hideTip(); });
       if (onClick) c.addEventListener('click', onClick);
       svg.appendChild(c);
       return c;
@@ -2779,8 +2781,7 @@ class TimelinePanel {
       if (vidx[mm.toId] == null || !inWin(execAt(mm))) return;
       const col = colorOf(mm.fromId), cy = laneY(vidx[mm.toId]);
       const u = msgUI[i];
-      if (dagOrHoverMsg(mm.id)) svg.appendChild(el('circle', { cx: x(execAt(mm)), cy, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white ring: DAG journey node OR hovered delegation message → hugging the arrival dot
-      const c = dot(x(execAt(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl);
+      const c = dot(x(execAt(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl, dagOrHoverMsg(mm.id));
       if (u) u.dot = c;
     });
 
@@ -2793,7 +2794,8 @@ class TimelinePanel {
         if (!inWin(startAt(t))) return;
         if (data.messages.some((mm) => mm.toId === s.id && !mm.pending && Math.abs(execAt(mm) - startAt(t)) <= 1)) return;
         const dx = x(startAt(t));
-        if (dotLit(t, dagOrHover)) svg.appendChild(el('circle', { cx: dx, cy: y, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white focus ring: DAG journey node, a coarse card hover (whole-turn id), OR a prompt-atom hover (promptId) — never a work-only (workId) hover
+        // cross-hover focus (dot GROWN in place, via dot()'s lit param): DAG journey node, a coarse card
+        // hover (whole-turn id), OR a prompt-atom hover (promptId) — never a work-only (workId) hover
         // A romp-AUTHORED prompt (t.romp — an auto-nudge, the Nudge button, or an auto-retry: anything romp
         // injected rather than the human typing) is marked as a ROMP MESSAGE: a BLACK-filled dot with the romp
         // favicon swirl inside (the user 2026-06-23, replacing the old white ⚡ bolt). Originally auto-nudges
@@ -2808,7 +2810,7 @@ class TimelinePanel {
           : isRomp
           ? () => '<div class="r"><img src="' + mediaUrl('romp-swirl-glyph.svg') + '" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t))
           : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t));
-        dot(dx, y, isRomp ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // romp message → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
+        dot(dx, y, isRomp ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); }, null, dotLit(t, dagOrHover));   // romp message → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
         if (isRomp) {                                    // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
           const sz = DOT_R * 1.9;
           svg.appendChild(el('image', { x: dx - sz / 2, y: y - sz / 2, width: sz, height: sz, href: mediaUrl('romp-swirl-glyph.svg'), 'pointer-events': 'none' }));

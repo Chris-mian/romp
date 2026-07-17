@@ -112,12 +112,13 @@ test("an unrelated id lights neither glyph", () => {
   assert.equal(barLit(TURN, hit), false);
 });
 
-test("the bar rect uses barLit and the start-dot ring uses dotLit (not a shared check)", () => {
+test("the bar uses barLit and the start dot uses dotLit (not a shared check)", () => {
   const src = fs.readFileSync(viewPath, "utf8");
   // membership helper is `dagOrHover`, NOT `hit` — the bar/connector loops have a local `const hit`
   // rect, so a `const hit` here would TDZ-crash draw() on the first in-window bar (2026-06-12 regression).
-  assert.match(src, /if \(barLit\(t, dagOrHover\)\) \{/);
-  assert.match(src, /if \(dotLit\(t, dagOrHover\)\) svg\.appendChild\(el\('circle'/);
+  // (2026-07-17: lit no longer draws a white ring — the bar is drawn grown, the dot passes lit into dot().)
+  assert.match(src, /const lit = barLit\(t, dagOrHover\);/);
+  assert.match(src, /, null, dotLit\(t, dagOrHover\)\);/);
   assert.doesNotMatch(src, /const hit = \(id\) =>/, "membership helper must not be named `hit` (collides with the local hit-target rect)");
 });
 

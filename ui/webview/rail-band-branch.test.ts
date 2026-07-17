@@ -20,8 +20,8 @@ test("railDotsBetween reports each dot's center x, not just y", () => {
 test("each band run centers on its lower-edge dot's x; dotless runs fall back to the reference rail", () => {
   const fn = SRC.slice(SRC.indexOf("function drawRailBand"), SRC.indexOf("function clearRailRings"));
   assert.match(fn, /const lower = dots\[i\] \?\? dots\[dots\.length - 1\];/);
-  assert.match(fn, /band\.style\.left = `\$\{lower \? lower\.x - 1 : fallbackLeft\}px`;/);
-  assert.match(fn, /const fallbackLeft = xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 10\.5;/);
+  assert.match(fn, /band\.style\.left = `\$\{lower \? lower\.x - 2 : fallbackLeft\}px`;/);   // 4px band centered on the dot
+  assert.match(fn, /const fallbackLeft = xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 9\.5;/);   // rail center 11.5 - band width/2
   // the old single-x band (every run at the reference turn's rail) is gone
   assert.doesNotMatch(fn, /band\.style\.left = left;/);
 });
@@ -36,7 +36,7 @@ function bandRuns(dots: Array<{ y: number; x: number }>, top: number, bottom: nu
     const a = stops[i] + CLEAR, b = stops[i + 1] - CLEAR;
     if (b <= a) continue;
     const lower = dots[i] ?? dots[dots.length - 1];
-    out.push({ left: lower ? lower.x - 1 : fallbackLeft, top: a, height: b - a });
+    out.push({ left: lower ? lower.x - 2 : fallbackLeft, top: a, height: b - a });
   }
   return out;
 }
@@ -51,20 +51,20 @@ test("executed: the band detours onto the sub-rail with the children and returns
     { y: 120, x: CHILD },
     { y: 160, x: MAIN },    // first dot after the group
   ];
-  const runs = bandRuns(dots, 0, 160, MAIN - 1);
+  const runs = bandRuns(dots, 0, 160, MAIN - 2);
   assert.equal(runs.length, 4);
-  assert.deepEqual(runs.map((r) => r.left), [CHILD - 1, CHILD - 1, CHILD - 1, MAIN - 1],
+  assert.deepEqual(runs.map((r) => r.left), [CHILD - 2, CHILD - 2, CHILD - 2, MAIN - 2],
     "runs into + along the branch hug the sub-rail; the run leaving it hugs the main rail");
 });
 
 test("executed: an all-main-rail span is unchanged — every run at the main x", () => {
   const MAIN = 11.5;
   const dots = [{ y: 0, x: MAIN }, { y: 50, x: MAIN }, { y: 100, x: MAIN }];
-  const runs = bandRuns(dots, 0, 100, MAIN - 1);
-  assert.deepEqual(runs.map((r) => r.left), [MAIN - 1, MAIN - 1]);
+  const runs = bandRuns(dots, 0, 100, MAIN - 2);
+  assert.deepEqual(runs.map((r) => r.left), [MAIN - 2, MAIN - 2]);
 });
 
 test("executed: no dots at all → the reference turn's rail x carries the run", () => {
-  const runs = bandRuns([], 0, 100, 10.5);
-  assert.deepEqual(runs.map((r) => r.left), [10.5]);
+  const runs = bandRuns([], 0, 100, 9.5);
+  assert.deepEqual(runs.map((r) => r.left), [9.5]);
 });

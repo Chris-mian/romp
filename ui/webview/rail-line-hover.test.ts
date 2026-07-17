@@ -38,9 +38,16 @@ test("the hover acknowledgement is ATOMIC on BOTH handles — dot and strip shar
   assert.ok(fn.indexOf("instantLocalBand(turn);") < fn.indexOf("timer = setTimeout"), "local ack before the debounce");
 });
 
-test("the band's glow is the dots' expanding white ring — one visual language", () => {
-  assert.match(CSS, /\.dot\.dot-nav:hover \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); \}/);
-  assert.match(CSS, /\.rail-band \{[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);
+test("one hover language: thicken/expand IN OWN COLOR — no white rings anywhere on the rail", () => {
+  // the user 2026-07-17 (superseding the white-ring capsule): a hovered/lit dot EXPANDS with its own
+  // background color; the band is the rail itself THICKENED in the rail color. No white box-shadows.
+  assert.match(CSS, /\.dot\.dot-nav:hover \{ transform: scale\(1\.45\); z-index: 3; \}/);
+  assert.match(CSS, /\.dot\.rail-ring \{ transform: scale\(1\.45\); z-index: 3; \}/);
+  assert.match(CSS, /\.turn\.ext-glow \.dot \{ transform: scale\(1\.45\); z-index: 3; \}/);
+  assert.match(CSS, /\.rail-band \{[^}]*background: var\(--active-accent, var\(--rail\)\)/);
+  assert.doesNotMatch(CSS, /\.dot\.dot-nav:hover \{[^}]*box-shadow/);
+  assert.doesNotMatch(CSS, /\.dot\.rail-ring \{[^}]*box-shadow/);
+  assert.doesNotMatch(CSS, /\.rail-band \{[^}]*box-shadow/);
 });
 
 test("every band edge lands ON A DOT — and ONLY between dots (no lineless glow)", () => {
@@ -54,19 +61,19 @@ test("every band edge lands ON A DOT — and ONLY between dots (no lineless glow
   assert.match(fn, /const bottom = railDotBelow\(last, hostR\) \?\? railDotAbove\(last, hostR\);/);
   assert.match(fn, /if \(top == null \|\| bottom == null\) continue;/, "no dots → no band, never a box edge");
   assert.match(SRC, /paintRailBand\(\);\s*\/\/ one continuous measured band/, "painted with every glow application");
-  assert.match(CSS, /\.rail-band \{ position: absolute; width: 2px;[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);
+  assert.match(CSS, /\.rail-band \{ position: absolute; width: 4px;/, "the thickened-rail band (4px vs the rail's 2px)");
   assert.match(CSS, /\.rail-band \{[^}]*pointer-events: none/, "the band never intercepts the strip's hover");
   assert.doesNotMatch(CSS, /\.turn\.ext-glow::before|\.turn\.rail-glow::before/, "no per-turn slice glows remain");
 });
 
-test("the band is a CAPSULE outline: runs break at each dot's ring, nothing intersects", () => {
-  // the user 2026-07-03: the straight ring crossed THROUGH the circles' outlines. Sub-bands now stop
-  // tangentially short of every dot in range (RAIL_DOT_CLEAR) and the dot's own ring takes over.
+test("band runs still break at each dot, and the dot GROWS to take over the joint", () => {
+  // geometry kept from the capsule era (the user 2026-07-03: nothing may cross through a dot): runs stop
+  // RAIL_DOT_CLEAR short of every dot in range; the dot, scaled 1.45, covers the clearance gap so the
+  // thick line reads continuous into the grown disc.
   assert.match(SRC, /const RAIL_DOT_CLEAR = 7;/);
   assert.match(SRC, /function railDotsBetween\(host: HTMLElement, hostR: DOMRect, top: number, bottom: number\)/);
   assert.match(SRC, /const stops = \[top, \.\.\.dots\.map\(\(d\) => d\.y\), bottom\];/);
-  assert.match(SRC, /d\.el\.classList\.add\("rail-ring"\);/, "every dot along the band wears the ring");
-  assert.match(CSS, /\.dot\.rail-ring \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); \}/);
+  assert.match(SRC, /d\.el\.classList\.add\("rail-ring"\);/, "every dot along the band grows via .rail-ring");
 });
 
 test("the hover strip exists only where the line does (the last turn's 16px stub)", () => {

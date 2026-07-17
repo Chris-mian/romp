@@ -1054,11 +1054,13 @@ function railDotsBetween(host: HTMLElement, hostR: DOMRect, top: number, bottom:
 }
 function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top: number, bottom: number, local: boolean): void {
   if (bottom <= top) return;
-  // fallback x when a run has no bounding dot to hug: the reference turn's rail line (.turn::before x)
-  const fallbackLeft = xRef.getBoundingClientRect().left - hostR.left + 10.5;
+  // fallback x when a run has no bounding dot to hug: centered on the reference turn's rail line
+  // (.turn::before spans x 10.5–12.5 → center 11.5; the 4px band's left edge sits at 9.5)
+  const fallbackLeft = xRef.getBoundingClientRect().left - hostR.left + 9.5;
   const cls = "rail-band" + (local ? " rail-band-local" : "");
   const dots = railDotsBetween(host, hostR, top, bottom);
-  // every dot along the band wears the ring — it IS the band's outline where the line meets a circle
+  // every dot along the band EXPANDS in its own color (.rail-ring) — the thickened line runs to it and
+  // the grown disc takes over (the user 2026-07-17: same thicken-in-color language as the timeline)
   for (const d of dots) d.el.classList.add("rail-ring");
   const stops = [top, ...dots.map((d) => d.y), bottom];
   for (let i = 0; i < stops.length - 1; i++) {
@@ -1072,7 +1074,7 @@ function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top:
     // is dots[i].y whenever the lower edge is a dot; a dotless lower edge (clamped transcript ends)
     // falls back to the last dot above, else the reference turn's rail.
     const lower = dots[i] ?? dots[dots.length - 1];
-    band.style.left = `${lower ? lower.x - 1 : fallbackLeft}px`;   // band is 2px; center it on the dot's x
+    band.style.left = `${lower ? lower.x - 2 : fallbackLeft}px`;   // band is 4px (the thickened rail); center it on the dot's x
     band.style.top = `${a}px`;
     band.style.height = `${b - a}px`;
     host.appendChild(band);
