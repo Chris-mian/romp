@@ -23,12 +23,13 @@ test("a bare file:// URL becomes a clickable .file-uri-link that opens the file 
   assert.match(RENDER, /decodeURIComponent\(p\)/);
 });
 
-test("linkify runs on BOTH chat message bodies (assistant reply + user bubble) and nowhere else — never tool summaries", () => {
+test("linkify runs on chat message bodies (assistant reply + user bubble + nudge full text) and nowhere else — never tool summaries", () => {
   assert.match(RENDER, /linkifyFileUris\(body\)/);             // the assistant reply
-  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths\)/); // your own / a romp-injected bubble (in-bubble images don't re-thumb)
-  // exactly the definition + those two applications — so tool-use reports/summaries stay untouched
+  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths\)/); // your own bubble (in-bubble images don't re-thumb)
+  assert.match(RENDER, /linkifyFileUris\(full, imgPaths\)/);   // a compact nudge's expanded full text (2026-07-17)
+  // exactly the definition + those three applications — so tool-use reports/summaries stay untouched
   const uses = RENDER.match(/linkifyFileUris\(/g) || [];
-  assert.equal(uses.length, 3, "linkifyFileUris is defined once and applied to exactly the two chat bodies");
+  assert.equal(uses.length, 4, "linkifyFileUris is defined once and applied to exactly the three chat bodies");
 });
 
 test("linkify works inside INLINE backticks (agents backtick paths), skips only fenced code + existing links, trims trailing punctuation", () => {

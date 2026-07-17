@@ -959,6 +959,14 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .romp-bubble a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 .romp-bubble blockquote { margin: 0 0 6px; padding-left: 9px; border-left: 2px solid var(--box-border); color: var(--dim); }
 .romp-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.12); }
+/* Progressive disclosure on a nudge (the user 2026-07-17): the bubble defaults to a one-line GIST with
+   a caret; clicking swaps in the full text. Dim gist — it's bookkeeping, not the user's words. */
+.romp-bubble.nudge-collapsible { cursor: pointer; }
+.nudge-gist { color: var(--dim); }
+.nudge-caret { display: inline-block; margin-right: 5px; color: var(--dim); }
+.romp-bubble .nudge-full { display: none; }
+.romp-bubble.expanded .nudge-full { display: block; }
+.romp-bubble.expanded .nudge-gist { display: none; }
 /* QUEUED: the user's messages submitted while the session is still working — pending,
    not yet a turn. Right-aligned like his sent bubbles, but faint + dashed to read
    as "waiting", with a header count. (Mirrors the queue Claude Code shows.) */

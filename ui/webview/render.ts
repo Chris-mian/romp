@@ -1399,6 +1399,32 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         .filter((p): p is string => !!p);
       if (!romp && !injected && ev.md && renderSlashCmd(bubble, ev.md)) {
         /* rendered as a command chip */
+      } else if (romp && ev.md) {
+        // A romp-injected NUDGE (auto status-check, Nudge button, injected follow-up) is mechanical
+        // bookkeeping — progressive disclosure (the user 2026-07-17): default is a ONE-LINE gist with a
+        // caret; click the bubble for the full text. Keyed, so an expanded nudge survives re-renders.
+        const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
+        const firstLine = (raw.split("\n").find((l) => l.trim()) || raw).trim();
+        const gist = firstLine.length > 90 ? firstLine.slice(0, 88).replace(/\s+\S*$/, "") + "…" : firstLine;
+        const more = collapseWs(raw) !== collapseWs(gist);
+        const gistEl = el("div", "nudge-gist");
+        if (more) { const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c); }
+        gistEl.appendChild(document.createTextNode(gist));
+        bubble.appendChild(gistEl);
+        if (more) {
+          const full = el("div", "nudge-full md");
+          full.innerHTML = md(raw);
+          linkifyFileUris(full, imgPaths);
+          bubble.appendChild(full);
+          bubble.classList.add("nudge-collapsible");
+          // toggle rides the stable document.body delegate (data-act), NOT a per-render listener —
+          // the tail rebuilds every push and a rebuilt bubble eats a mid-press click (CLAUDE.md)
+          bubble.dataset.act = "nudgetoggle";
+          const nkey = ev.uuid ? "nudge:" + ev.uuid : undefined;
+          if (nkey) bubble.dataset.nkey = nkey;
+          applyFold(bubble, "expanded", nkey);
+          bubble.title = bubble.classList.contains("expanded") ? "click to collapse" : "click to expand";
+        }
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
         linkifyFileUris(bubble, imgPaths);   // bare file:// URLs in a message → clickable (open in the host's default app)
@@ -2234,22 +2260,29 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
     if (signal) {
-      // Subagent (Task/Agent) = a delegated mini-conversation. The PROMPT and the agent's REPORT each get their
-      // OWN nicely-rendered (markdown), collapsed-by-default caret box (the user 2026-07-08). Was a plain <pre>
-      // prompt + md report BOTH hidden behind one "running…" head toggle — but that toggle just duplicated the
-      // box it revealed (its only content while running WAS the prompt), so the prompt read twice, once in a
-      // worse font. The amber WORKING rail dot already signals "still going", so the head needs no toggle.
+      // Subagent (Task/Agent) = a delegated mini-conversation, disclosed PROGRESSIVELY (the user
+      // 2026-07-17: default compact, click to go deeper — everywhere). Level 0 is ONE head row (Task +
+      // its description, the amber/green rail dot carrying run-state); level 1 (the head's inline fold)
+      // reveals the PROMPT and REPORT as their own collapsed caret boxes; level 2 opens either box —
+      // each markdown-rendered (the user 2026-07-08; the prompt is the prompt field, not the tool JSON).
+      // Unlike the pre-07-08 head toggle this reveals fold LABELS, not the prompt itself, so nothing
+      // renders twice.
       const akey = fkey ? fkey + ":agent" : undefined;
+      const halves = el("div", "agent-folds");
       if (ev.input) {
         let promptText = ev.input;   // ev.input is the tool's full JSON; show just the prompt the agent was given
         try { const o = JSON.parse(ev.input); if (o && typeof o.prompt === "string") promptText = o.prompt; } catch { /* truncated JSON → show raw */ }
         const box = el("div", "agent-report md"); box.innerHTML = md(promptText); highlight(box);
-        turn.appendChild(foldable("prompt", box, akey ? akey + ":prompt" : undefined));
+        halves.appendChild(foldable("prompt", box, akey ? akey + ":prompt" : undefined));
       }
       if (ev.output) {
         // the report is the meatier half → its line count rides the fold label (else just "report")
         const box = el("div", "agent-report md"); box.innerHTML = md(ev.output); highlight(box);
-        turn.appendChild(foldable(`report · ${countLines(ev.output)} lines`, box, akey ? akey + ":report" : undefined));
+        halves.appendChild(foldable(`report · ${countLines(ev.output)} lines`, box, akey ? akey + ":report" : undefined));
+      }
+      if (halves.childElementCount) {
+        const label = ev.output ? `prompt + report · ${countLines(ev.output)} line${countLines(ev.output) === 1 ? "" : "s"}` : "prompt";
+        inlineFold(head, turn, label, halves, fkey);
       }
     } else if (!ev.output) {
       const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);
@@ -6698,6 +6731,13 @@ setupSettings();
       vscodeApi.postMessage(msg);
       if (qmd && el.dataset.qcmd !== "1") restoreToComposer(qmd);   // a message returns to the composer; a command just cancels
       el.closest(".queued-bubble")?.remove();   // optimistic; the next push rebuilds the queue without it
+    },
+    // gist↔full toggle on a compact nudge bubble (the user 2026-07-17: progressive disclosure) —
+    // delegated for the same reason as qx: the tail rebuilds every push, and a per-render bubble
+    // listener eats a mid-press click. State keys through openFolds so it survives the rebuild.
+    nudgetoggle: (el) => {
+      rememberFold(el, "expanded", el.dataset.nkey || undefined);
+      (el as HTMLElement).title = el.classList.contains("expanded") ? "click to collapse" : "click to expand";
     },
   });
 })();

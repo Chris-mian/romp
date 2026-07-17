@@ -79,6 +79,17 @@ Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is
 approximating and key on that event instead.
 
+### Progressive disclosure is the UI's organizing principle (user rule, 2026-07-17)
+Every surface defaults to its most COMPACT legible form, and you can always click
+to go one level deeper — gist → summary → full mechanics, each level a click. When
+adding or changing any UI element, ask "what is the one-line version?" and render
+that by default, with the rest behind a keyed expand (state survives re-renders —
+`openFolds` / `expandedGroups`). Never dead-end a compact view: if there is more
+underneath, it must be clickable. Existing examples: tool heads with inline folds,
+collapsed tool-group runs, notice cards, postal/teammate cards, nudge gists,
+Task/Agent prompt+report. This is the "Glanceable by default; mechanics one click
+away" bullet of the Philosophy, stated as the standing rule for every new surface.
+
 ### Font sizes: few, and consistent by information type (user rule, 2026-07-02)
 Do not multiply font sizes. Similar kinds of information wear the SAME size — labels
 match labels, times match the lines they annotate, section bodies match each other.
