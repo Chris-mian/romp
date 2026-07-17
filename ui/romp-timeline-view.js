@@ -644,7 +644,31 @@ class TimelinePanel {
     // each frame so there's no separate DOM element to keep current. (_lockBox/_lockIcon are gone; _setLock's
     // guards skip them.)
 
-    this.tip = document.body.createDiv({ cls: 'romp-tl-tip' });
+    // The tooltip ESCAPES the pane when it can (the user 2026-07-17): in the multi-pane web dashboard
+    // the timeline iframe can be short (few lanes), and a pane-local tip clips at the iframe edge even
+    // when the surrounding page has room. Adopt the topmost SAME-ORIGIN document as the tip's host, so
+    // the tip overlays the sibling panes (chat, feed). Cross-origin parents (the VS Code webview host)
+    // throw on access — the try/catch keeps the local document, and moveTip's viewport clamp still
+    // prevents cut-off there. Obsidian has no frame parent, so it stays local too.
+    this._tipWin = window;
+    try { while (this._tipWin.parent && this._tipWin.parent !== this._tipWin && this._tipWin.parent.document) this._tipWin = this._tipWin.parent; } catch (e) { /* cross-origin boundary — host at the last same-origin window */ }
+    const tipDoc = this._tipWin.document;
+    if (tipDoc !== document && !tipDoc.getElementById('romp-tl-tip-css')) {
+      // carry the tip's own styles over — the adopted host page doesn't load timeline-pane.css. Copied
+      // from OUR stylesheets at adopt time (selector prefix match), so timeline-pane.css stays the one
+      // source of truth and this can't drift.
+      let css = '';
+      try {
+        for (const sh of document.styleSheets) {
+          try { for (const r of sh.cssRules) if (r.selectorText && r.selectorText.indexOf('.romp-tl-tip') === 0) css += r.cssText + '\n'; } catch (e2) { /* foreign sheet */ }
+        }
+      } catch (e2) {}
+      const st = tipDoc.createElement('style'); st.id = 'romp-tl-tip-css'; st.textContent = css;
+      tipDoc.head.appendChild(st);
+    }
+    this.tip = tipDoc.createElement('div'); this.tip.className = 'romp-tl-tip'; tipDoc.body.appendChild(this.tip);
+    // an iframe teardown (pane close/reload) must not orphan the tip in the adopted host document
+    if (tipDoc !== document) window.addEventListener('pagehide', () => { try { this.tip.remove(); } catch (e) {} });
     this._tipOwner = null;   // the hit element that opened the current tip (see _onTipSweep)
     // The judging band (Debug) AND "collapse idle gaps" are both global romp:settings, toggled by the gear ⛭
     // in another same-origin iframe. React to that via the storage event so they apply live (no reload):
@@ -1677,9 +1701,29 @@ class TimelinePanel {
       this._frozeFromPin = true; this._pinned = false; this._holdReal = this.data.now; this._offDirty = false;
     }
   }
-  moveTip(ev) { const pad = 14; let lx = ev.clientX + pad, ly = ev.clientY + pad; const r = this.tip.getBoundingClientRect();
-    if (lx + r.width > innerWidth) lx = ev.clientX - r.width - pad; if (ly + r.height > innerHeight) ly = ev.clientY - r.height - pad;
-    this.tip.style.left = lx + 'px'; this.tip.style.top = ly + 'px'; }
+  // Position the tip beside the pointer IN ITS HOST document's viewport (the topmost same-origin one —
+  // see the adopt block in the constructor): the pointer's pane-local coords are translated by each intervening
+  // iframe's offset, the flip happens against the HOST viewport (so a tip near the pane's bottom edge
+  // overlays the pane below instead of flipping), and a final clamp pins it on-screen — a tip hugging
+  // an edge beats one cut off by it (the user 2026-07-17: tips popped too high/low and clipped).
+  moveTip(ev) {
+    const pad = 14;
+    let px = ev.clientX, py = ev.clientY, hw = innerWidth, hh = innerHeight;
+    if (this._tipWin && this._tipWin !== window) {
+      try {
+        for (let w = window; w !== this._tipWin && w.frameElement; w = w.parent) {
+          const fr = w.frameElement.getBoundingClientRect(); px += fr.left; py += fr.top;
+        }
+        hw = this._tipWin.innerWidth; hh = this._tipWin.innerHeight;
+      } catch (e) { /* host went cross-origin/away — position pane-locally */ }
+    }
+    const r = this.tip.getBoundingClientRect();
+    let lx = px + pad, ly = py + pad;
+    if (lx + r.width > hw) lx = px - r.width - pad;
+    if (ly + r.height > hh) ly = py - r.height - pad;
+    lx = Math.max(0, Math.min(lx, hw - r.width)); ly = Math.max(0, Math.min(ly, hh - r.height));
+    this.tip.style.left = lx + 'px'; this.tip.style.top = ly + 'px';
+  }
   hideTip() {
     this.tip.classList.remove('show'); this._tipOwner = null;   // tooltip hides at once…
     // …but DEFER the live-follow resume a beat: a quick move onto another glyph (bar→dot) fires its
