@@ -468,6 +468,61 @@ MOCK
     ! grep -q 'romp-postal-service called' "$MOCK_LOG"   # --status does not touch the bus
 }
 
+@test "--refresh appends a caller-attribution line to restart-audit.jsonl before restarting" {
+    # 2026-07-16: three staged-demo teardowns traced back to untraceable fleet-wide refreshes —
+    # kernel-downtime.jsonl records only {start,end}, and agents (Bash tool) leave no shell history.
+    # The audit line answers WHO (sid -> session name, parent argv, tty) before the restart runs.
+    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-manager called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-manager"
+    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+    cat > "$MOCK_DIR/romp-postal-service" << 'MOCK'
+#!/usr/bin/env bash
+exit 0
+MOCK
+    chmod +x "$MOCK_DIR/romp-postal-service"
+    export ROMP_POSTAL_BIN="$MOCK_DIR/romp-postal-service"
+
+    # an agent-shaped caller: CLAUDE_CODE_SESSION_ID set, resolvable through the names map
+    mkdir -p "$XDG_STATE_HOME/romp/names"
+    printf 'demo_agent\t/tmp\t#000000\twhite\n' \
+        > "$XDG_STATE_HOME/romp/names/11111111-2222-3333-4444-555555555555"
+    export CLAUDE_CODE_SESSION_ID="11111111-2222-3333-4444-555555555555"
+
+    run run_romp --refresh
+    [ "$status" -eq 0 ]
+    audit="$XDG_STATE_HOME/romp/restart-audit.jsonl"
+    [ -f "$audit" ]
+    grep -q '"sid": "11111111-2222-3333-4444-555555555555"' "$audit"
+    grep -q '"name": "demo_agent"' "$audit"          # sid resolved to the session's NAME
+    grep -q '"parent":' "$audit"                     # the caller's parent argv rides along
+    grep -q 'romp-manager called: restart-all' "$MOCK_LOG"   # ...and the restart still ran
+}
+
+@test "--refresh survives an unwritable audit dir (attribution is best-effort, never blocks)" {
+    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-manager called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-manager"
+    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+    cat > "$MOCK_DIR/romp-postal-service" << 'MOCK'
+#!/usr/bin/env bash
+exit 0
+MOCK
+    chmod +x "$MOCK_DIR/romp-postal-service"
+    export ROMP_POSTAL_BIN="$MOCK_DIR/romp-postal-service"
+
+    mkdir -p "$XDG_STATE_HOME/romp"
+    chmod 500 "$XDG_STATE_HOME/romp"                 # audit append will fail
+    run run_romp --refresh
+    chmod 700 "$XDG_STATE_HOME/romp"                 # restore for teardown
+    [ "$status" -eq 0 ]
+    grep -q 'romp-manager called: restart-all' "$MOCK_LOG"   # the restart went through regardless
+}
+
 @test "romp --on no longer forwards a restart sub-verb (romp --refresh replaces it)" {
     cat > "$MOCK_DIR/romp-manager" << 'MOCK'
 #!/usr/bin/env bash

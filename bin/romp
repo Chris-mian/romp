@@ -782,6 +782,32 @@ case "${1:-}" in
     --refresh) # restart EVERYTHING (the user 2026-06-29): the postal bus too, not just the kernels — the bus
                # is a separate long-lived singleton the manager doesn't own, so a kernel-only refresh left it
                # serving stale code. Bounce the bus first (best-effort), then exec the kernel restart.
+               #
+               # CALLER ATTRIBUTION (the user 2026-07-16): a refresh is fleet-wide (cuts SDK turns, kills
+               # pickers, sprays restart notices), and on 2026-07-16 three staged-demo teardowns were
+               # untraceable — kernel-downtime.jsonl has only {start,end}, agents leave no shell history.
+               # Append who/where/when to restart-audit.jsonl BEFORE acting, so "who restarted the
+               # kernel?" is one command (tail) instead of forensics. Best-effort: never blocks the
+               # restart itself.
+               {
+                   _ra_dir="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+                   mkdir -p "$_ra_dir"
+                   _ra_sid="${CLAUDE_CODE_SESSION_ID:-}"
+                   _ra_name=""
+                   [[ -n "$_ra_sid" && -f "$_ra_dir/names/$_ra_sid" ]] \
+                       && _ra_name="$(cut -f1 "$_ra_dir/names/$_ra_sid" 2>/dev/null | head -1)"
+                   RA_PPID="$PPID" \
+                   RA_PARENT="$(ps -o command= -p "$PPID" 2>/dev/null | head -1)" \
+                   RA_TTY="$(tty 2>/dev/null || true)" \
+                   RA_SID="$_ra_sid" RA_NAME="$_ra_name" \
+                   python3 - >> "$_ra_dir/restart-audit.jsonl" <<'PYEOF'
+import json, os, time
+print(json.dumps({"t": int(time.time()), "ppid": int(os.environ.get("RA_PPID") or 0),
+                  "parent": os.environ.get("RA_PARENT") or "", "sid": os.environ.get("RA_SID") or "",
+                  "name": os.environ.get("RA_NAME") or "", "tty": os.environ.get("RA_TTY") or "",
+                  "tmux": os.environ.get("TMUX_PANE") or ""}))
+PYEOF
+               } 2>/dev/null || true
                "${ROMP_POSTAL_BIN:-romp-postal-service}" restart >/dev/null 2>&1 || true
                exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
     --status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
