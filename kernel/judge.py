@@ -4423,7 +4423,10 @@ GROUP_SYS = (
     '- {\"why\",\"do\":\"retitle\",\"goal\":<n>,\"text\":\"<new title ≤10 words>\"}: replace top '
     "#n's own title. Use it when the card's title no longer covers what the thread inside it became — "
     "it still names the first ask while the steps outgrew it. Tops only; pair it with split when "
-    "pulling a tangent out also leaves the remaining card mis-titled.\n"
+    "pulling a tangent out also leaves the remaining card mis-titled. This applies to a card that "
+    "**receives** work too: after nesting tops under #m (or as a card quietly accretes steps), reread "
+    "#m's title against everything now inside it — a title that names one narrow fix while the tree "
+    "runs a whole campaign misleads, so retitle #m to the outcome that covers its steps.\n"
     "Be aggressive about grouping a real shared purpose, since a few real trees beat a flat list of "
     "every request, but never group on look-alike wording alone, and leave a standalone goal as its "
     "own top. A top marked \"from the agent's own to-do list\" is a to-do mirror: it always starts "
@@ -4793,25 +4796,29 @@ def apply_group(store, menu, ops, t):
     return relinks
 
 
-GROUP_SPLIT_MIN = 7                       # open direct steps at which a card counts OVERGROWN (split-eligible)
+GROUP_SPLIT_MIN = 7                       # direct steps (open OR done) at which a card counts OVERGROWN
 
 
 def _overgrown_tops(store, tops):
-    """The split candidates: open tops carrying ≥ GROUP_SPLIT_MIN open direct steps — a card that big
-    usually holds a drifted thread (the user 2026-07-14: the nimbus card wore 12, half of them a
-    security tangent). {top id: sorted open direct-step ids}. Used twice by _group_store: an overgrown
-    card lets the grouper run even on a ONE-card board (nothing to group, something to split), and its
-    open-step set joins the event gate's signature, so new filings under it re-arm the pass — the
-    open-top set alone never changes while a single card accretes, which is exactly when drift happens."""
+    """The split/retitle candidates: open tops carrying ≥ GROUP_SPLIT_MIN non-cleared DIRECT steps — a
+    card that big usually holds a drifted thread (the user 2026-07-14: the nimbus card wore 12, half
+    of them a security tangent). The threshold counts DONE steps too (the user 2026-07-17,
+    quartz: a cache-fix umbrella accreted 13 children — the whole 5-hour campaign — but only
+    5 were open, so the open-only count never re-armed the pass and the outgrown title stuck; a big
+    mostly-done card is exactly when a retitle is due). {top id: sorted OPEN direct-step ids} — the
+    value set stays open-only so the gate's signature flips both when work is FILED under the card and
+    when a step COMPLETES. Used twice by _group_store: an overgrown card lets the grouper run even on
+    a ONE-card board (nothing to group, something to split/retitle), and its open-step set joins the
+    event gate's signature — the open-top set alone never changes while a single card accretes, which
+    is exactly when drift happens."""
     kids = {}
     for nd in store["nodes"].values():
         kids.setdefault(nd.get("parentId"), []).append(nd)
     out = {}
     for nd in tops:
-        steps = sorted(c["id"] for c in kids.get(nd["id"], [])
-                       if not c.get("nodeComplete") and not c.get("cleared"))
-        if len(steps) >= GROUP_SPLIT_MIN:
-            out[nd["id"]] = steps
+        ks = [c for c in kids.get(nd["id"], []) if not c.get("cleared")]
+        if len(ks) >= GROUP_SPLIT_MIN:
+            out[nd["id"]] = sorted(c["id"] for c in ks if not c.get("nodeComplete"))
     return out
 
 

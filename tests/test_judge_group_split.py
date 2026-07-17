@@ -164,12 +164,74 @@ class OvergrownGate(unittest.TestCase):
         self.assertEqual(len(self.calls), 1, "post-split signature is current — no immediate re-ask")
 
 
+class OvergrownCountsDoneChildren(unittest.TestCase):
+    """The overgrown threshold counts DONE direct steps too (the user 2026-07-17, quartz): a
+    cache-fix umbrella accreted 13 children — the whole campaign — but only 5 were open, so the
+    open-only count never re-armed the pass and the outgrown title stuck. A big mostly-done card is
+    exactly when a retitle is due; the signature's step set stays OPEN-only, so a step completing
+    flips it and re-arms the pass."""
+
+    def setUp(self):
+        self._saved = jd.group_llm
+        self.calls = []
+
+    def tearDown(self):
+        jd.group_llm = self._saved
+
+    def _stub(self, reply='{"ops": []}'):
+        def f(menu_text, judge="grouper"):
+            self.calls.append(menu_text)
+            return reply
+        jd.group_llm = f
+
+    def _accreted_card(self, s, done, open_):
+        card = _mk(s, "Fix the cache-size detection")
+        for i in range(done):
+            _mk(s, "settled step %d" % i, parent=card, done=True, t=T0 + i)
+        for i in range(open_):
+            _mk(s, "live step %d" % i, parent=card, t=T0 + 100 + i)
+        return card
+
+    def test_mostly_done_card_is_overgrown_despite_few_open_steps(self):
+        s = _store()
+        card = self._accreted_card(s, done=jd.GROUP_SPLIT_MIN - 2, open_=2)
+        over = jd._overgrown_tops(s, jd._group_tops(s))
+        self.assertIn(card, over, "done + open direct steps together cross the threshold")
+        self.assertEqual(len(over[card]), 2, "…but the signature's step set stays open-only")
+
+    def test_mostly_done_single_card_reaches_the_model(self):
+        self._stub()
+        s = _store()
+        self._accreted_card(s, done=jd.GROUP_SPLIT_MIN - 2, open_=2)
+        jd._group_store(s, SID, T0 + 900)
+        self.assertEqual(len(self.calls), 1, "a big mostly-done one-card board runs the grouper (retitle chance)")
+
+    def test_a_step_completing_rearms_the_gate(self):
+        self._stub()
+        s = _store()
+        card = self._accreted_card(s, done=jd.GROUP_SPLIT_MIN - 2, open_=2)
+        jd._group_store(s, SID, T0 + 900)
+        open_step = next(nid for nid, nd in s["nodes"].items()
+                         if nd.get("parentId") == card and not nd["nodeComplete"])
+        s["nodes"][open_step]["nodeComplete"] = True   # the accretion event: another piece settled
+        jd._group_store(s, SID, T0 + 960)
+        self.assertEqual(len(self.calls), 2, "a completion changes the open-step set → the pass re-arms")
+
+
 class PromptPins(unittest.TestCase):
     def test_group_sys_documents_split_and_retitle(self):
         flat = jd.GROUP_SYS.replace("\n", " ")
         for phrase in ("the inverse of group", "promote indented step",
                        "different effort", "Split sparingly",
                        "replace top", "no longer covers what the thread inside it became"):
+            self.assertIn(phrase, flat, phrase)
+
+    def test_group_sys_tells_the_grouper_to_retitle_a_receiving_top(self):
+        # the user 2026-07-17 (quartz): grouping reinforced a narrow-titled umbrella over a whole
+        # campaign and never renamed it — the prompt now says to reread the RECEIVER's title too.
+        flat = jd.GROUP_SYS.replace("\n", " ")
+        for phrase in ("This applies to a card that **receives** work too",
+                       "reread ", "retitle #m to the outcome that covers its steps"):
             self.assertIn(phrase, flat, phrase)
 
 
