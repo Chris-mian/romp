@@ -1403,9 +1403,15 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         // A romp-injected NUDGE (auto status-check, Nudge button, injected follow-up) is mechanical
         // bookkeeping — progressive disclosure (the user 2026-07-17): default is a ONE-LINE gist with a
         // caret; click the bubble for the full text. Keyed, so an expanded nudge survives re-renders.
+        // The gist SAYS WHAT ROMP DID, not the message's first line (the user 2026-07-17 ×2: a follow-up
+        // opens with the goal-context "> …" quote, so the text gist read as the user's own words — pure
+        // confusion). Known flavors get a semantic label; the text fallback skips quoted "> " lines.
         const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
-        const firstLine = (raw.split("\n").find((l) => l.trim()) || raw).trim();
-        const gist = firstLine.length > 90 ? firstLine.slice(0, 88).replace(/\s+\S*$/, "") + "…" : firstLine;
+        const lines = raw.split("\n").map((l) => l.trim());
+        const firstLine = lines.find((l) => l && !l.startsWith(">")) || lines.find((l) => l) || raw;
+        const gist = ev.followUp ? "follow-up" + (ev.goal ? " · " + ev.goal : "")
+          : ev.rompAuto ? "nudged for a status update" + (ev.goal ? " · " + ev.goal : "")
+          : firstLine.length > 90 ? firstLine.slice(0, 88).replace(/\s+\S*$/, "") + "…" : firstLine;
         const more = collapseWs(raw) !== collapseWs(gist);
         const gistEl = el("div", "nudge-gist");
         if (more) { const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c); }

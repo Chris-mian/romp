@@ -13,8 +13,13 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("a romp bubble renders a one-line gist by default, full text behind a keyed click", () => {
   const fn = RENDER.slice(RENDER.indexOf('} else if (romp && ev.md) {'), RENDER.indexOf('} else if (ev.md) {'));
-  // gist = first line, truncated at a word boundary like the romp system notice's
-  assert.match(fn, /const gist = firstLine\.length > 90 \? firstLine\.slice\(0, 88\)\.replace\(\/\\s\+\\S\*\$\/, ""\) \+ "…" : firstLine;/);
+  // the gist SAYS WHAT ROMP DID (the user 2026-07-17 ×2: a follow-up's first line is the "> …"
+  // goal-context quote, which read as the user's own words): semantic labels for the known flavors,
+  // and the text fallback skips quoted lines before word-boundary truncation
+  assert.match(fn, /const gist = ev\.followUp \? "follow-up" \+ \(ev\.goal \? " · " \+ ev\.goal : ""\)/);
+  assert.match(fn, /: ev\.rompAuto \? "nudged for a status update" \+ \(ev\.goal \? " · " \+ ev\.goal : ""\)/);
+  assert.match(fn, /: firstLine\.length > 90 \? firstLine\.slice\(0, 88\)\.replace\(\/\\s\+\\S\*\$\/, ""\) \+ "…" : firstLine;/);
+  assert.match(fn, /lines\.find\(\(l\) => l && !l\.startsWith\(">"\)\)/, "the text gist never shows the quoted goal context");
   // the romp markers are stripped before the gist is cut (they'd read as literal comment text)
   assert.match(fn, /ev\.md\.replace\(\/<!--\[\\s\\S\]\*\?-->\/g, ""\)\.trim\(\);/);
   // collapsible ONLY when there is more than the gist; the caret marks it
