@@ -5061,6 +5061,12 @@ CLOSER_SYS = (
     "user; omit it (leave it open) if the goal names real work its steps never covered — an experiment "
     "not yet run, a deliverable not yet produced, a change not yet made. Steps-all-finished is by itself "
     "**not** done: steps are filed work, not a promised breakdown of the goal.\n"
+    "No-work-filed rule: a note may instead flag goals that have had no work filed since they were "
+    "created while other pieces of the same effort settled. Judge each from goal history and the other "
+    "goals' state: done if its outcome was in fact delivered under another goal, or the approach it "
+    "names was replaced by one that shipped — say which in the why; blocked if it genuinely awaits the "
+    "user; omit it (leave it open) if its work is simply still pending. Never close a flagged goal just "
+    "because it is old or quiet: the ruling needs the covering work, named.\n"
     "Reply with only a JSON object (no prose, no markdown fences):\n"
     '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ]}\n'
     "Each goal appears in at most one list; omit the goals still working. goal is the goal's number. "
@@ -5218,6 +5224,90 @@ def _subtree_done_candidates(store):
     return out
 
 
+def _starved_sig(nodes, children, nid):
+    """The settled-elsewhere signature a no-work-filed candidate is stamped with once the closer has
+    looked: the sorted ids of the COMPLETED nodes in its top's subtree that resolved at/after the
+    candidate's own mint. The set GROWING — another piece of the same effort settling — is the EVENT
+    that re-arms the ask ("was the starved card covered by that work?" just became answerable again);
+    an unchanged set never re-badgers the closer. Empty while nothing has settled since the mint."""
+    top = nid
+    seen = set()
+    while nodes.get(top, {}).get("parentId") is not None and top not in seen:
+        seen.add(top)
+        top = nodes[top]["parentId"]
+    t0 = nodes.get(nid, {}).get("t", 0)
+    out, stack = [], [top]
+    while stack:
+        x = stack.pop()
+        nd = nodes.get(x)
+        if not nd:
+            continue
+        if x != nid and nd.get("nodeComplete") and nd.get("mt", nd.get("t", 0)) >= t0:
+            out.append(x)
+        stack.extend(children.get(x, []))
+    return ",".join(sorted(out))
+
+
+def _starved_candidates(store):
+    """OPEN nodes that never received evidence after their mint — the trail holds at most the minting
+    segment and the diary is empty — nominated to the closer once OTHER work in their top's subtree has
+    settled. Without this they are UNREACHABLE by any verdict (the user 2026-07-17, quartz: two
+    born-done metric-trend cards, their approach superseded by the config-pin build, sat open forever): turn
+    menus only list placement-touched nodes, and subtree-done nomination needs all-children-done — a
+    childless open leaf, or a branch whose only child is open, qualifies for neither.
+
+    The nomination EVENT is a sibling settling (_starved_sig non-empty): that is when "was this stale
+    card's outcome delivered elsewhere / its approach replaced?" becomes answerable from goal history.
+    A landed closer reply stamps the signature (store["starvedSig"]); only the settled set growing
+    re-arms the ask, so a card the closer consciously left open costs one look per settle-event, not
+    one per pass. Skips mirror _subtree_done_candidates: ruled nodes (done/blocked/cleared/settledDone),
+    umbrellas (pure containers), sealed subtrees, and agentTask-open subtrees (the authoritative tier:
+    the agent's own list says the work is still owed)."""
+    nodes = store["nodes"]
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    sigs = store.get("starvedSig") or {}
+
+    def _sealed_above(nid):
+        x, seen = nodes.get(nid, {}).get("parentId"), set()
+        while x and x not in seen:
+            seen.add(x)
+            nd = nodes.get(x)
+            if not nd:
+                return False
+            if nd.get("nodeComplete") or nd.get("cleared"):
+                return True
+            x = nd.get("parentId")
+        return False
+
+    def _task_open(nid):
+        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
+            return True
+        return any(_task_open(c) for c in children.get(nid, []))
+
+    out = []
+    for nid, nd in nodes.items():
+        if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
+            continue
+        if nd.get("umbrella"):
+            continue
+        if len(nd.get("trail") or []) > 1 or nd.get("log"):
+            continue                                   # evidence landed after the mint → reachable normally
+        kids = children.get(nid, [])
+        if kids and all(nodes[c].get("nodeComplete") or nodes[c].get("cleared") for c in kids):
+            continue                                   # all-children-done → the subtree-done channel owns it
+            #                                            (umbSig gates its re-asks; never double-nominate)
+        if _sealed_above(nid) or _task_open(nid):
+            continue
+        sig = _starved_sig(nodes, children, nid)
+        if not sig or sigs.get(nid) == sig:
+            continue                                   # nothing settled since the mint, or already looked
+        out.append(nd)
+    out.sort(key=lambda nd: nd.get("t", 0))
+    return out
+
+
 def _menu_history_text(store, seg_by_id, menu, char_cap):
     """Each menu goal's own raw work-so-far (see _goal_work_text), labeled by its menu number, for the
     closer's <goal-history> block. subtree=False here (unlike the planner's single-target case): the
@@ -5277,7 +5367,9 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     menu = _turn_menu(turn, store)
     seen_ids = {nd["id"] for nd in menu}
     cands = [nd for nd in _subtree_done_candidates(store) if nd["id"] not in seen_ids]
-    menu = menu + cands
+    seen_ids |= {nd["id"] for nd in cands}
+    starved = [nd for nd in _starved_candidates(store) if nd["id"] not in seen_ids]
+    menu = menu + cands + starved
     if not menu:
         return []
     hist = _menu_history_text(store, seg_by_id, menu, CLOSE_HISTORY_CHARS) if seg_by_id is not None else ""
@@ -5290,6 +5382,16 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                       % ("s" if len(flagged) > 1 else "",
                          ", ".join("#%d" % i for i in flagged),
                          "each" if len(flagged) > 1 else "it"))
+    starved_ids = {c["id"] for c in starved}
+    sflagged = [i for i, nd in enumerate(menu, 1) if nd["id"] in starved_ids]
+    if sflagged:
+        menu_text += ("\n\nGoal%s %s ha%s had no work filed since creation while other pieces of the "
+                      "same effort settled. Judge %s by the no-work-filed rule, from goal history and "
+                      "the other goals' state rather than this turn alone."
+                      % ("s" if len(sflagged) > 1 else "",
+                         ", ".join("#%d" % i for i in sflagged),
+                         "ve" if len(sflagged) > 1 else "s",
+                         "each" if len(sflagged) > 1 else "it"))
     raw = closer_llm(_unit_text(turn["atoms"]), menu_text, hist)
     out = _parse_close(raw, len(menu))
     if out is None:
@@ -5310,16 +5412,19 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
             #                                            changes the size signature and re-judges (event re-arm)
         return None                                    # under the cap → leave unswept, retry next pass
     store.get("closeFails", {}).pop(turn["id"], None)  # a clean reply clears the turn's strike count
-    if cands:
+    if cands or starved:
         # The reply LANDED → the closer has considered every candidate (a verdict or a considered
-        # omission). Stamp each one's completion-set signature so an unchanged set is never re-asked;
-        # a verdicted candidate's stamp is harmless (the ruled/sealed filters exclude it anyway).
-        sigs = store.setdefault("umbSig", {})
+        # omission). Stamp each one's signature so an unchanged set is never re-asked; a verdicted
+        # candidate's stamp is harmless (the ruled/sealed filters exclude it anyway).
         kidmap = {}
         for _nid, _nd in store["nodes"].items():
             kidmap.setdefault(_nd.get("parentId"), []).append(_nid)
+        sigs = store.setdefault("umbSig", {})
         for nd in cands:
             sigs[nd["id"]] = _umb_sig(store["nodes"], kidmap, nd["id"])
+        ssigs = store.setdefault("starvedSig", {})
+        for nd in starved:                             # settled-elsewhere set as of THIS look (see _starved_sig)
+            ssigs[nd["id"]] = _starved_sig(store["nodes"], kidmap, nd["id"])
     newly = apply_close(store, menu, out, t=turn.get("t"))
     segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
     if segs:                                           # anchor each resolved (done/blocked) top to the recap

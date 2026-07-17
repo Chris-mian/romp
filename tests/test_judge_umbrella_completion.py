@@ -187,10 +187,123 @@ class CloserRulesTheCandidate(unittest.TestCase):
         self.assertNotIn(SID + ":g1", s.get("umbSig", {}), "no ruling landed → the candidate stays armed")
 
 
+class StarvedCandidates(unittest.TestCase):
+    """Evidence-starved open cards (the user 2026-07-17, quartz): minted, then never touched —
+    no placement, no diary — so neither the turn menu nor subtree-done nomination can ever reach them.
+    They ride the closer's menu once OTHER work in their top's subtree settles (the re-arm event), with
+    a no-work-filed note; a landed reply stamps store["starvedSig"] so an unchanged settled set never
+    re-badgers."""
+
+    def _board(self):
+        # the quartz shape: an umbrella whose campaign settled around two stale, never-touched cards
+        s = _store()
+        _node(s, "g1", "Fix the cache-size detection", umbrella=True)
+        _node(s, "g2", "Config misreads the cache as unbounded", parent="g1")          # starved branch
+        _node(s, "g3", "Deployed improved metric-trend detection fix", parent="g2")         # starved leaf
+        _node(s, "g4", "Deployed config-pin build for instant detection", parent="g1", done=True, mt=T1)
+        return s
+
+    def test_nomination_needs_a_settled_sibling_and_skips_the_reachable(self):
+        s = self._board()
+        _node(s, "g5", "watch the campaign data land", parent="g1",
+              log=[_row("unblock", T1, src="planner")])                   # diary row → reachable normally
+        _node(s, "g6", "mirror of the agent's own to-do", parent="g1",
+              agentTask={"key": "k", "status": "open"})                   # authoritative: still owed
+        _node(s, "g7", "needs the user's call", parent="g1", blocked=True)
+        cands = {nd["id"] for nd in jd._starved_candidates(s)}
+        self.assertEqual(cands, {SID + ":g2", SID + ":g3"},
+                         "only the untouched, unruled, unsettled-nowhere cards ride")
+
+    def test_all_children_done_shape_belongs_to_the_subtree_done_channel(self):
+        # the two nomination channels are exclusive: a node whose children are ALL done rides the
+        # umbSig (steps-finished) nomination — the starved channel must never re-badger it after that
+        # channel's stamp (caught live: the omission test's second look re-ran the closer).
+        s = _store()
+        _node(s, "g1", "Run long soak experiment")
+        _node(s, "g2", "Retried the connection", parent="g1", done=True, mt=T1)
+        self.assertEqual(jd._starved_candidates(s), [],
+                         "all-children-done is the subtree-done channel's shape")
+
+    def test_no_settled_sibling_no_nomination(self):
+        s = _store()
+        _node(s, "g1", "Fix the cache-size detection", umbrella=True)
+        _node(s, "g2", "Config misreads the cache as unbounded", parent="g1")
+        self.assertEqual(jd._starved_candidates(s), [],
+                         "nothing settled since the mint → nothing to judge the card against")
+
+    def test_sig_stamp_gates_and_a_new_settle_rearms(self):
+        s = self._board()
+        kidmap = {}
+        for nid, nd in s["nodes"].items():
+            kidmap.setdefault(nd.get("parentId"), []).append(nid)
+        s["starvedSig"] = {nid: jd._starved_sig(s["nodes"], kidmap, nid)
+                           for nid in (SID + ":g2", SID + ":g3")}
+        self.assertEqual(jd._starved_candidates(s), [],
+                         "a stamped, unchanged settled set is never re-asked")
+        _node(s, "g8", "Verified detection in offline mode", parent="g1", done=True, mt=T1 + 50)
+        self.assertEqual({nd["id"] for nd in jd._starved_candidates(s)},
+                         {SID + ":g2", SID + ":g3"}, "another piece settling re-arms the ask")
+
+
+class CloserRulesTheStarved(unittest.TestCase):
+    def setUp(self):
+        self._llm = jd.closer_llm
+        self.session = build_session([uline(T0, "check the detection campaign", "u1", ps="typed"),
+                                      aline(T0 + 20, "The config-pin build shipped; detection is authoritative now.",
+                                            "a1", "u1")])
+        self.turn = self.session["turns"][0]
+
+    def tearDown(self):
+        jd.closer_llm = self._llm
+
+    def _board(self):
+        s = _store()
+        _node(s, "g1", "Fix the cache-size detection", umbrella=True)
+        _node(s, "g2", "Deployed improved metric-trend detection fix", parent="g1")
+        _node(s, "g3", "Deployed config-pin build for instant detection", parent="g1", done=True, mt=T1)
+        return s
+
+    def test_starved_rides_the_menu_with_the_note_and_a_done_lands(self):
+        s = self._board()
+        seen = {}
+        jd.closer_llm = lambda tt, mt, *_a: (seen.update(mt=mt),
+                                             '{"done": [{"goal": 1, "why": "superseded by the shipped '
+                                             'config-pin build"}], "block": []}')[1]
+        newly = jd._close_turn(s, self.turn)
+        self.assertEqual(newly, [SID + ":g2"], "the closer's done on a starved card is a real completion")
+        nd = s["nodes"][SID + ":g2"]
+        self.assertTrue(nd["nodeComplete"])
+        self.assertEqual([e for e in nd["log"] if e.get("kind") == "done"][0].get("src"), "closer",
+                         "the completion has an author and a diary row")
+        self.assertIn("Deployed improved metric-trend detection fix", seen["mt"])
+        self.assertIn("no work filed since creation", seen["mt"], "the no-work-filed note rides the menu")
+        self.assertIn(SID + ":g2", s.get("starvedSig", {}), "the landed reply stamps the signature")
+
+    def test_considered_omission_stamps_and_never_reasks(self):
+        s = self._board()
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [], "block": []}'
+        self.assertEqual(jd._close_turn(s, self.turn), [])
+        self.assertFalse(s["nodes"][SID + ":g2"].get("nodeComplete"), "left open on purpose")
+        self.assertIn(SID + ":g2", s.get("starvedSig", {}))
+        jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(
+            AssertionError("an unchanged settled set must not re-run the closer"))
+        self.assertEqual(jd._close_turn(s, self.turn), [], "stamped + nothing new settled → no LLM call")
+
+    def test_failed_parse_does_not_stamp(self):
+        s = self._board()
+        jd.closer_llm = lambda tt, mt, *_a: ""                            # call failed → retry next pass
+        self.assertIsNone(jd._close_turn(s, self.turn))
+        self.assertNotIn(SID + ":g2", s.get("starvedSig", {}), "no ruling landed → the card stays armed")
+
+
 class PromptPins(unittest.TestCase):
     def test_closer_sys_carries_the_steps_finished_rule(self):
         self.assertIn("Steps-finished rule:", jd.CLOSER_SYS)
         self.assertIn("not a promised breakdown", jd.CLOSER_SYS)
+
+    def test_closer_sys_carries_the_no_work_filed_rule(self):
+        self.assertIn("No-work-filed rule:", jd.CLOSER_SYS)
+        self.assertIn("the ruling needs the covering work, named", jd.CLOSER_SYS)
 
 
 if __name__ == "__main__":
