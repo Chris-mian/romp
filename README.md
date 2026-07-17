@@ -48,7 +48,7 @@ Romp provides the tools to make this management seamless, so you can stay focuse
     <td colspan="2" valign="top">
       <img src="docs/assets/overview.gif" alt="Walkthrough: hovering work bars, opening summaries, expanding tool calls" width="100%">
       <p><b>Detail on demand</b><br>
-      Hover a work bar, open a summary, expand a tool call &mdash; everything opens up when you want more.</p>
+      Hover a work bar, open a summary, expand a tool call. Everything opens up when you want more.</p>
     </td>
   </tr>
 </table>

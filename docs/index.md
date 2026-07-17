@@ -31,23 +31,26 @@ its own:
 
 </div>
 
-**Context where you need it** &mdash; what the agent did and why, without having to
-scroll through transcripts.
+**Context where you need it**
+
+What the agent did and why, without having to scroll through transcripts.
 
 <div class="grid" markdown>
 ![A card's background: why the work is happening](assets/tile-context-background.png)
 ![A card's summary: what the agent did](assets/tile-context-summary.png)
 </div>
 
-**Coordination you can see** &mdash; agents asking each other questions and handing off
-tasks, through a mailbox Romp gives them.
+**Coordination you can see**
+
+Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.
 
 ![A message crossing between two sessions on the timeline](assets/tile-coordination-timeline.png)
 
 ![The same message, shown in the chat](assets/tile-coordination-chat.png)
 
-**Detail on demand** &mdash; hover a work bar, open a summary, expand a tool call:
-everything opens up when you want more.
+**Detail on demand**
+
+Hover a work bar, open a summary, expand a tool call. Everything opens up when you want more.
 
 <video src="assets/overview.mp4" autoplay loop muted playsinline width="100%"></video>
 
