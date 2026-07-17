@@ -1,8 +1,10 @@
-// An expanded tool group's children sit on the SAME main rail as every other turn — ONE continuous straight
-// line of dots that terminates at the last child's dot (the last-turn 16px ::before stub), NOT an indented
-// side-rail bracketed by horizontal connector arms (the user 2026-07-07): the bottom arm read as a floating
-// horizontal stub, and the hover-highlight band — drawn straight down the main rail — couldn't follow the
-// indent detour, so it sat off to the side of the children. No indent, no connectors. Source-level pin (no jsdom).
+// An expanded tool group's children BRANCH off the main rail: indented 24px onto their own sub-rail,
+// entered by a horizontal "right turn" arm under the open arrow, ending at the last child's dot (a 16px
+// ::before stub — the same termination idiom as the main rail). Restored 2026-07-17 (the user: flat
+// children didn't read as a sub-thing) with BOTH 2026-07-07 complaints designed out: NO bottom return
+// arm (it read as a floating horizontal stub), and the MAIN rail continues straight behind the branch
+// while the transcript continues below, so the hover-highlight band — drawn at the main rail — still
+// has a line to align with. Source-level pin (no jsdom).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -11,21 +13,33 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("expanded children share the MAIN rail — not indented onto a side-rail", () => {
-  assert.match(CSS, /\.tg-child \{ margin-left: 0; \}/);
+test("expanded children are indented onto a 24px sub-rail (the branch)", () => {
+  assert.match(CSS, /\.tg-child \{ margin-left: 24px; \}/);
 });
 
-test("the horizontal connector ARMS are gone (they read as a floating stub + broke the highlight alignment)", () => {
-  assert.doesNotMatch(CSS, /\.turn-toolgroup\.expanded::after \{/);
+test("the branch is entered by a right-turn arm hanging off the open arrow line", () => {
+  const arm = CSS.match(/\.turn-toolgroup\.expanded::after \{[^}]*\}/);
+  assert.ok(arm, "expanded toolgroup has a connector ::after");
+  assert.match(arm![0], /left: 10\.5px; bottom: 0; width: 26px; height: 2px;/);
+});
+
+test("NO bottom return arm — the sub-rail just ENDS at the last child's dot (16px stub)", () => {
+  // the pre-2026-07-07 bottom arm (a horizontal ::after bar on the last child) stays gone
   assert.doesNotMatch(CSS, /\.tg-child\.tg-last::after \{/);
-});
-
-test("the rail is one straight line that terminates at the LAST turn's dot (the 16px ::before stub)", () => {
+  // instead the last child's ::before is a top stub, mirroring the main rail's last-turn termination
+  assert.match(CSS, /\.tg-child\.tg-last::before \{ bottom: auto; height: 16px; \}/);
   assert.match(CSS, /\.turn:not\(:has\(~ \.turn\)\)::before \{ bottom: auto; height: 16px; \}/);
 });
 
-test("the hover-highlight band hugs the main rail — now aligned since children share it (no detour to miss)", () => {
-  // drawRailBand pins the band at the reference turn's x + 10.5 (the .turn::before x); with children on the
-  // main rail, every turn shares that x, so the band lines up with the rail through the whole group
+test("the main rail continues straight behind the branch while the transcript continues below", () => {
+  const thru = CSS.match(/\.tg-child:has\(~ \.turn:not\(\.tg-child\)\)::after \{[^}]*\}/);
+  assert.ok(thru, "pass-through main-rail ::after exists on branch children");
+  // -13.5px un-does the 24px indent back to the main rail x (10.5px), full height of each child
+  assert.match(thru![0], /left: -13\.5px; top: 0; bottom: 0; width: 2px;/);
+});
+
+test("the hover-highlight band still hugs the reference turn's rail x", () => {
+  // drawRailBand pins the band at the reference turn's x + 10.5 (the .turn::before x); the main rail
+  // now runs continuously behind the branch, so a band at that x always has a line under it
   assert.match(RENDER, /xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 10\.5/);
 });
