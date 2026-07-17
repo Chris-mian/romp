@@ -2,8 +2,9 @@
 // and open it"). The linkifier already handled file:// URIs; now it also linkifies absolute/anchored paths and
 // relative paths that carry a file extension — while leaving prose like "and/or", "TCP/IP", "24/7" alone. A
 // relative link posts the ACTIVE session id so the kernel resolves it against that session's cwd (the repo the
-// agent runs in), not the kernel's launch cwd. render.ts has no jsdom harness → source pins + an executed
-// replica of the precision predicate.
+// agent runs in), not the kernel's launch cwd. Slash-less BARE filenames (`power2_watts.pdf`) link too, but
+// ONLY inside inline <code> and only with a KNOWN extension (the user 2026-07-17) — so backticked dotted
+// identifiers (`np.array`) stay prose. render.ts has no jsdom harness → source pins + executed replicas.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -11,11 +12,11 @@ import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
-test("the linkifier matches file:// URIs AND bare paths, and gates bare tokens through looksLikeFilePath", () => {
-  // one finder covers both the file: scheme and the bare-path alternative
+test("the linkifier matches file:// URIs AND bare paths, and gates each token kind", () => {
+  // one finder covers the file: scheme, the slashed-path alternative, and the bare-filename alternative
   assert.ok(RENDER.includes("const CLICKABLE_PATH_RE = /file:"), "regex still handles file:// URIs");
-  assert.ok(RENDER.includes("[~.\\w\\-]"), "regex has the bare-path alternative");
-  assert.match(RENDER, /if \(!isUri && !looksLikeFilePath\(tok\)\) continue;/);
+  assert.ok(RENDER.includes("[~.\\w\\-]"), "regex has the slashed-path alternative");
+  assert.match(RENDER, /if \(!isUri && !looksLikeFilePath\(tok\) && !\(inCode && looksLikeBareFileName\(tok\)\)\) continue;/);
   assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, tok, true\)\);/);
 });
 
@@ -25,8 +26,9 @@ test("a relative path click carries the active session id so the kernel resolves
   assert.match(RENDER, /\{ type: "openFile", path: open \}/);                 // absolute/file:// → no id needed
 });
 
-test("the cheap pre-filter now keys on a slash (not the file: scheme), so bare paths are considered", () => {
-  assert.match(RENDER, /if \(!text\.includes\("\/"\)\) continue;/);
+test("the cheap pre-filter keys on a slash — or, inside inline code, a dot", () => {
+  assert.match(RENDER, /if \(!text\.includes\("\/"\) && !\(inCode && text\.includes\("\."\)\)\) continue;/);
+  assert.match(RENDER, /const inCode = !!tn\.parentElement\?\.closest\("code"\);/);
 });
 
 // executed: mirror looksLikeFilePath EXACTLY to guard its precision (accept real paths, reject prose)
@@ -48,9 +50,35 @@ test("looksLikeFilePath accepts real paths and rejects prose fractions/idioms", 
   }
 });
 
-// executed: the finder regex actually pulls the path out of a sentence
-test("CLICKABLE_PATH_RE finds the path token inside a sentence", () => {
-  const re = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]/gi;
-  const m = "see design/judge-simplification-plan.md for details".match(re);
-  assert.deepEqual(m, ["design/judge-simplification-plan.md"]);
+// executed: mirror looksLikeBareFileName — a slash-less filename links only with a KNOWN extension
+test("looksLikeBareFileName accepts real filenames and rejects identifiers/versions", () => {
+  assert.match(RENDER, /function looksLikeBareFileName\(tok: string\): boolean/);
+  assert.match(RENDER, /BARE_FILE_EXTS\.has\(tok\.slice\(dot \+ 1\)\.toLowerCase\(\)\)/);
+  const EXTS = new Set(["md", "py", "pdf", "csv", "png", "ts", "json", "sh"]);   // subset of BARE_FILE_EXTS
+  const bare = (tok: string): boolean => {
+    if (tok.includes("/") || tok.includes(":")) return false;
+    const dot = tok.lastIndexOf(".");
+    if (dot <= 0) return false;
+    return EXTS.has(tok.slice(dot + 1).toLowerCase());
+  };
+  // accept — the user's exact screenshot cases
+  for (const p of ["power2_watts.pdf", "power2_table.csv", "kernel.py", "notes.md", "data.json"]) {
+    assert.equal(bare(p), true, p);
+  }
+  // reject — dotted identifiers, settings keys, versions, dotfiles, slashed paths (other rule's job)
+  for (const p of ["np.array", "romp.kernelPort", "0.4.293", "e.g", ".gitignore", "analysis/foo.py", "a:b.md"]) {
+    assert.equal(bare(p), false, p);
+  }
+  // the real BARE_FILE_EXTS covers the screenshot's extensions
+  const exts = RENDER.slice(RENDER.indexOf("const BARE_FILE_EXTS"), RENDER.indexOf("function looksLikeBareFileName"));
+  for (const e of ['"pdf"', '"csv"', '"py"', '"md"', '"png"']) assert.ok(exts.includes(e), e);
+});
+
+// executed: the finder regex actually pulls tokens out of a sentence
+test("CLICKABLE_PATH_RE finds slashed paths in prose and bare filenames", () => {
+  const re = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|[\w\-][\w\-.]*\.[A-Za-z0-9]{1,8}/gi;
+  assert.deepEqual("see design/judge-simplification-plan.md for details".match(re),
+    ["design/judge-simplification-plan.md"]);
+  // a bare filename (as the sole content of an inline-code node) is matched — the inCode gate decides
+  assert.deepEqual("power2_watts.pdf".match(re), ["power2_watts.pdf"]);
 });

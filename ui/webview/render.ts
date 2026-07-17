@@ -805,13 +805,30 @@ function looksLikeFilePath(tok: string): boolean {
   if (/^(?:~\/|\.{1,2}\/|\/)/.test(tok)) return true;                        // absolute or anchored (/, ~/, ./, ../)
   return /\.[A-Za-z0-9]{1,8}$/.test(tok.slice(tok.lastIndexOf("/") + 1));    // relative → the last segment has an extension
 }
+// A BARE filename (no slash — `power2_watts.pdf`) is linkified ONLY inside inline <code> (the user
+// 2026-07-17: a reply listing its output files wasn't clickable). Backticks are where agents put
+// filenames, and the KNOWN-extension gate keeps backticked dotted identifiers (`np.array`, `s.color`,
+// `romp.kernelPort`) and version numbers (`0.4.293`) reading as prose — an unknown extension stays text.
+const BARE_FILE_EXTS = new Set([
+  "md", "txt", "rst", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonl", "csv", "tsv",
+  "pdf", "png", "jpg", "jpeg", "gif", "svg", "webp", "html", "htm", "css", "scss", "sh", "bash", "zsh",
+  "bats", "yaml", "yml", "toml", "ini", "cfg", "conf", "xml", "ipynb", "rs", "go", "java", "c", "h",
+  "cpp", "hpp", "cc", "rb", "php", "sql", "log", "lock", "tex", "bib", "zip", "tar", "gz", "tgz",
+  "mp4", "mov", "mp3", "wav", "vsix", "plist", "diff", "patch",
+]);
+function looksLikeBareFileName(tok: string): boolean {
+  if (tok.includes("/") || tok.includes(":")) return false;
+  const dot = tok.lastIndexOf(".");
+  if (dot <= 0) return false;                                                // needs a name before the extension
+  return BARE_FILE_EXTS.has(tok.slice(dot + 1).toLowerCase());
+}
 // Make bare file:// URLs AND bare file paths inside a rendered CHAT message clickable (assistant replies +
 // your own bubbles) — a relative `design/foo.md` opens too, resolved against the session's cwd (the user
 // 2026-07-06). marked doesn't autolink these and DOMPurify strips the file: scheme, so without this they read
 // as dead text. Deliberately NOT applied to tool-use summaries. Linkifies inside INLINE <code> too — agents
 // routinely wrap a path in backticks; only FENCED <pre> blocks and text already inside a link are skipped.
 // Trailing sentence punctuation is left out, not swallowed.
-const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]/gi;
+const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|[\w\-][\w\-.]*\.[A-Za-z0-9]{1,8}/gi;
 // `skipThumbs`: paths this turn ALREADY renders as full in-bubble images (a pasted screenshot's
 // ev.images) — they stay clickable links but are excluded from the mentioned-path thumbnail strip,
 // otherwise the same picture renders twice (the user 2026-07-10).
@@ -823,8 +840,9 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
   const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
   for (const tn of nodes) {
     if (tn.parentElement?.closest("a, .file-uri-link, pre")) continue;   // already a link, or a fenced code block
+    const inCode = !!tn.parentElement?.closest("code");                  // inline code — where bare filenames may link
     const text = tn.data;
-    if (!text.includes("/")) continue;                                   // cheap pre-filter: no slash → nothing here
+    if (!text.includes("/") && !(inCode && text.includes("."))) continue;   // cheap pre-filter: no slash (and, in code, no dot) → nothing here
     const re = new RegExp(CLICKABLE_PATH_RE.source, "gi");
     const frag = document.createDocumentFragment();
     let last = 0, any = false, m: RegExpExecArray | null;
@@ -834,7 +852,7 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
       if (trail) tok = tok.slice(0, tok.length - trail[0].length);
       if (!tok) continue;
       const isUri = /^file:\/\//i.test(tok);
-      if (!isUri && !looksLikeFilePath(tok)) continue;                   // a bare "and/or" etc. — leave as prose
+      if (!isUri && !looksLikeFilePath(tok) && !(inCode && looksLikeBareFileName(tok))) continue;   // "and/or", `np.array` etc. — leave as prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, tok, true));
       const open = isUri ? fileUriToPath(tok) : tok;
