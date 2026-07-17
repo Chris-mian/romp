@@ -13,10 +13,8 @@ happening. It does this by keeping track of every agent and the tasks it is
 working on, surfacing what needs your attention and keeping the rest moving on
 its own:
 
-<!-- Feature grid. Images are placeholders in docs/assets/ — replace each file in
-     place (keep the name) as the real capture is recorded; the README grid
-     points at the same files. Swapping a .png for a .gif means updating the
-     src in both. -->
+<!-- Feature grid. Real captures live in docs/assets/; the README grid points at the same files.
+     The docs home embeds the MP4 in a <video> for the last tile; the README embeds the GIF. -->
 <div class="grid cards" markdown>
 
 -   ![Every session with its status in one view](assets/tile-glance.png)
@@ -31,26 +29,27 @@ its own:
 
     Automatically inferred from the transcripts, so nothing gets lost.
 
--   ![A task card showing its summary and background](assets/tile-context.png)
-
-    **Context where you need it**
-
-    What the agent did and why, without having to scroll through transcripts.
-
--   ![A one-line summary expanding to the full exchange](assets/tile-detail.png)
-
-    **Detail on demand**
-
-    From a one-line summary to the full exchange.
-
 </div>
 
-![Agents exchanging messages, shown in the timeline and in the chat](assets/tile-coordination.png)
+**Context where you need it** &mdash; what the agent did and why, without having to
+scroll through transcripts.
 
-**Coordination you can see**
+<div class="grid" markdown>
+![A card's background: why the work is happening](assets/tile-context-background.png)
+![A card's summary: what the agent did](assets/tile-context-summary.png)
+</div>
 
-Agents asking each other questions and handing off tasks, through a mailbox Romp
-gives them.
+**Coordination you can see** &mdash; agents asking each other questions and handing off
+tasks, through a mailbox Romp gives them.
+
+![A message crossing between two sessions on the timeline](assets/tile-coordination-timeline.png)
+
+![The same message, shown in the chat](assets/tile-coordination-chat.png)
+
+**Detail on demand** &mdash; hover a work bar, open a summary, expand a tool call:
+everything opens up when you want more.
+
+<video src="assets/overview.mp4" autoplay loop muted playsinline width="100%"></video>
 
 Romp adds all of this on top of the agents you already run, whatever they are
 and whatever tools they use, without changing how you work.
@@ -81,13 +80,6 @@ requirements, remote-host setup, and configuration are in
 
 Romp presents the fleet through four views: the feed (work as task cards), the
 fleet (every session with its open tasks), the timeline (sessions over time and
-where they interact), and the chat you already know.
-
-<!-- TODO: screenshots / short GIFs go here. The five feature captures live in the
-     grid above (docs/assets/tile-*.png); these are the ones still unshot:
-     - The four views side by side: feed, fleet, timeline, chat.
-     - Reviving a closed session with its history intact.
-     - Reaching the dashboard from a phone over Tailscale.
-     - The VS Code / Cursor extension panel beside a browser tab (same fleet, two surfaces).
--->
+where they interact), and the chat you already know. The walkthrough above runs
+through all four.
 

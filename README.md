@@ -6,10 +6,9 @@ AI agents like Claude Code can work autonomously for long stretches, so running 
 
 Romp provides the tools to make this management seamless, so you can stay focused on what you're trying to accomplish instead of how the work is happening. It does this by keeping track of every agent and the tasks it is working on, surfacing what needs your attention and keeping the rest moving on its own:
 
-<!-- Feature grid. Images are placeholders in docs/assets/ — replace each file in
-     place (keep the name) as the real capture is recorded; both this grid and
-     docs/index.md point at the same files. Swapping a .png for a .gif means
-     updating the src in both. -->
+<!-- Feature grid. Real captures live in docs/assets/; this grid and docs/index.md point at the
+     same files. The README embeds the GIF for the last tile (GitHub autoplays it in <img>);
+     docs/index.md embeds the MP4 in a <video>. -->
 <table>
   <tr>
     <td width="50%" valign="top">
@@ -25,21 +24,31 @@ Romp provides the tools to make this management seamless, so you can stay focuse
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/tile-context.png" alt="A task card showing its summary and background" width="100%">
-      <p><b>Context where you need it</b><br>
-      What the agent did and why, without having to scroll through transcripts.</p>
+      <img src="docs/assets/tile-context-background.png" alt="A card's background: why the work is happening" width="100%">
     </td>
     <td width="50%" valign="top">
-      <img src="docs/assets/tile-detail.png" alt="A one-line summary expanding to the full exchange" width="100%">
-      <p><b>Detail on demand</b><br>
-      From a one-line summary to the full exchange.</p>
+      <img src="docs/assets/tile-context-summary.png" alt="A card's summary: what the agent did" width="100%">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <img src="docs/assets/tile-coordination.png" alt="Agents exchanging messages, shown in the timeline and in the chat" width="100%">
+      <p><b>Context where you need it</b><br>
+      What the agent did and why, without having to scroll through transcripts.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/assets/tile-coordination-timeline.png" alt="A message crossing between two sessions on the timeline" width="100%">
+      <img src="docs/assets/tile-coordination-chat.png" alt="The same message, shown in the chat" width="100%">
       <p><b>Coordination you can see</b><br>
       Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/assets/overview.gif" alt="Walkthrough: hovering work bars, opening summaries, expanding tool calls" width="100%">
+      <p><b>Detail on demand</b><br>
+      Hover a work bar, open a summary, expand a tool call &mdash; everything opens up when you want more.</p>
     </td>
   </tr>
 </table>
@@ -60,16 +69,8 @@ machine is the `claude` CLI you already use.
 
 Romp presents the fleet through four views: the feed (work as task cards), the
 fleet (every session with its open tasks), the timeline (sessions over time and
-where they interact), and the chat you already know.
-
-<!-- TODO: screenshots / short GIFs go here. The five feature captures live in the
-     grid above (docs/assets/tile-*.png); these are the ones still unshot:
-     - The four views side by side: feed, fleet, timeline, chat.
-     - Reviving a closed session with its history intact.
-     - Reaching the dashboard from a phone over Tailscale.
-     - The VS Code / Cursor extension panel beside a browser tab (same fleet, two surfaces).
--->
-
+where they interact), and the chat you already know. The walkthrough above runs
+through all four.
 
 ## Components
 
