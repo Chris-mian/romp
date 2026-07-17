@@ -30,9 +30,32 @@ test("both hover bodies strip romp's HTML-comment markers from the raw prompt (t
   assert.equal(stripRompMarks("a plain user prompt"), "a plain user prompt");   // untouched
   // both the DOT (req) and the BAR (barBody) run the raw prompt through the SAME shared builder, which
   // strips the markers (then collapses a repeat) before escaping
-  assert.match(SRC, /function reqText\(prompt\) \{ return esc\(collapseRepeat\(stripRompLabel\(stripRompMarks\(prompt\)\)\)\.slice\(0, 120\)\); \}/);
+  assert.match(SRC, /const s = collapseRepeat\(stripRompLabel\(stripRompMarks\(prompt\)\)\);/);
   assert.match(SRC, /req\(t\)[^\n]*reqText\(t\.prompt\)/);
   assert.match(SRC, /barBody[\s\S]*?const reqp = t\.prompt \? reqText\(t\.prompt\) : '';/);
+});
+
+// The tip's request line is a GIST (the user 2026-07-17: a kernel-restart notice filled the tooltip and
+// hard-cut mid-word — "…history intact. R"). Same idiom as the chat's nudge/romp-system gists: first
+// non-empty line only; over 90 chars → truncate at a WORD boundary with an ellipsis.
+test("reqText is a gist: first line, word-boundary truncation, ellipsis — never a mid-word 120-char cut", () => {
+  const { reqText } = require(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  // pin the gist shape at the source level too
+  assert.match(SRC, /const first = \(s\.split\('\\n'\)\.find\(\(l\) => l\.trim\(\)\) \|\| s\)\.trim\(\);/);
+  assert.match(SRC, /first\.length > 90 \? first\.slice\(0, 88\)\.replace\(\/\\s\+\\S\*\$\/, ''\) \+ '…' : first/);
+  // the exact notice from the screenshot: long single line → clean word-boundary prefix + ellipsis
+  const CLEAN = "The romp kernel restarted and cut this session's in-flight turn; the session has been resumed with its history intact. Re-read the tail of the conversation and pick the work back up where it stopped.";
+  const out = reqText("<!-- romp-injected --><!-- romp-system -->[romp] " + CLEAN);
+  assert.ok(out.endsWith("…"), "truncated with an ellipsis, not a hard cut");
+  assert.ok(out.length <= 89, "gist-sized (was a 120-char dump)");
+  const stem = out.slice(0, -1);
+  assert.ok(CLEAN.startsWith(stem), "the gist is a clean prefix of the message");
+  assert.match(stem, /\S$/, "no trailing space before the ellipsis");
+  assert.equal(CLEAN.charAt(stem.length), " ", "the cut lands on a word boundary");
+  // a multi-line prompt shows its FIRST line only — the rest is a click away in the chat
+  assert.equal(reqText("first line summary\nsecond line detail\nthird"), "first line summary");
+  // a short prompt rides through whole, no ellipsis
+  assert.equal(reqText("make the borders subtler"), "make the borders subtler");
 });
 
 // An API-error storm auto-retries ("retry", romp-injected). Those sends can COALESCE into ONE delivered user
