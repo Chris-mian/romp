@@ -13,6 +13,7 @@ theme:
     - navigation.tabs
     - navigation.sections
     - navigation.top
+    - toc.integrate
     - navigation.instant
     - navigation.footer
     - search.suggest
@@ -20,21 +21,11 @@ theme:
     - content.code.copy
     - content.tabs.link
   palette:
-    # Romp blue header (see docs/stylesheets/extra.css for the custom colors).
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/weather-sunny
-        name: Switch to light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/weather-night
-        name: Switch to dark mode
+    # Dark only — romp is a dark UI and every capture is dark. The header blue
+    # is the session blue #1EA1EB (see docs/stylesheets/extra.css).
+    scheme: slate
+    primary: custom
+    accent: custom
 
 extra_css:
   - stylesheets/extra.css

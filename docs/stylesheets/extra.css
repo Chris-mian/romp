@@ -1,25 +1,22 @@
-/* Romp brand colors. The header (and other "primary" chrome) wears the romp
-   accent blue; text on it is the dark navy that reads on that blue. */
+/* Romp brand colors, dark-only site. The header (and other "primary" chrome)
+   wears the romp session blue (#1EA1EB, the logo's blue arm). The pale in-app
+   accent (#9cd2ff) is deliberately NOT used here, so docs chrome never looks
+   like part of the romp UI in the screenshots. */
 :root {
-  --md-primary-fg-color: #9cd2ff;
-  --md-primary-fg-color--light: #c3e3ff;
-  --md-primary-fg-color--dark: #6fb8f5;
-  --md-primary-bg-color: #0c1a2e;            /* text/icons on the header */
-  --md-primary-bg-color--light: rgba(12, 26, 46, 0.72);
-  --md-accent-fg-color: #4aa8e8;
-  --md-accent-fg-color--transparent: rgba(74, 168, 232, 0.12);
+  --md-primary-fg-color: #1ea1eb;
+  --md-primary-fg-color--light: #56b8f1;
+  --md-primary-fg-color--dark: #1683c4;
+  --md-primary-bg-color: #ffffff;            /* text/icons on the header */
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.72);
+  --md-accent-fg-color: #56b8f1;
+  --md-accent-fg-color--transparent: rgba(86, 184, 241, 0.12);
 }
 
-/* Links in the body keep a readable blue in both schemes. */
 [data-md-color-scheme="slate"] {
-  --md-typeset-a-color: #9cd2ff;
-}
-[data-md-color-scheme="default"] {
-  --md-typeset-a-color: #1a7ec8;
+  --md-typeset-a-color: #4db8f5;
 }
 
-/* The wordmark banner on the home page: a dark brand block that works on
-   both schemes. */
+/* The wordmark banner on the home page. */
 .romp-wordmark {
   display: block;
   margin: 0 auto 1.2em;
@@ -28,7 +25,7 @@
   border-radius: 14px;
 }
 
-/* Screenshots: soften edges so dark captures sit well on either scheme. */
+/* Screenshots: soften edges. */
 .md-typeset img {
   border-radius: 6px;
 }
