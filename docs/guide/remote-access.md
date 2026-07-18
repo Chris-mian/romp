@@ -8,11 +8,22 @@ The kernel runs on your machine and serves the dashboard on
 Everything Romp stores stays local; the only external traffic is the `claude`
 CLI you already use.
 
-Machines federate into one fleet, and your phone reaches the same dashboard:
+## More machines, one fleet
+
+Federation is the heart of remote access: every machine runs its own kernel,
+and attached machines present as a single fleet.
 
 ![One fleet across your phone, your laptop, and a remote host](../assets/guide/federation.png){ width="100%" }
 
-## More machines, one fleet
+Once a host is attached:
+
+- Its sessions appear as `host:name` tabs and timeline lanes next to your
+  local ones, and you drive them from the same chat.
+- Its task cards share the feed, so one glance covers every machine.
+- Sessions message each other across machines through the same postal
+  service, so an agent on your desktop can hand work to one on the server.
+
+Setup is one install and one click:
 
 1. On the remote machine: clone romp and run `./install.sh`
    (`ROMP_NO_EXT=1` skips the editor extension on a headless box). Make sure
@@ -21,9 +32,7 @@ Machines federate into one fleet, and your phone reaches the same dashboard:
    host.
 
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
-starts the remote kernel if it isn't running. Sessions there appear as
-`host:name` tabs and timeline lanes, and sessions message across machines the
-same way they do locally.
+starts the remote kernel if it isn't running.
 
 ## Your phone
 

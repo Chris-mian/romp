@@ -56,9 +56,9 @@ nav:
   - Getting started: getting-started.md
   - Guide:
       - The fleet at a glance: guide/the-fleet.md
-      - Tasks, not transcripts: guide/tasks.md
-      - Keeping the fleet moving: guide/nudges.md
-      - The postal service: guide/postal-service.md
+      - Task management: guide/tasks.md
+      - Automatic nudges: guide/nudges.md
+      - Messaging between agents: guide/postal-service.md
       - Sessions and revival: guide/sessions.md
       - Self-hosted and remote access: guide/remote-access.md
   - How Romp works: architecture.md

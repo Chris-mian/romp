@@ -15,18 +15,11 @@ Type a closed session's name into the picker and it offers to revive it: the
 session comes back live with its history intact. Stepping away, or shutting
 the laptop, costs nothing.
 
-The judges also keep a short archive per session (a headline and abstract of
-what it did), so a fleet of many sessions stays navigable months later.
+## Search
 
-## Two backends
+The session picker matches against every session, live or closed. The judges
+index each one with a headline and abstract of what it did, so a fleet of
+many sessions stays navigable months later.
 
-Sessions run on one of two backends, chosen per session:
-
-- **Agent SDK (the default).** The kernel drives the session through the
-  Claude Agent SDK. Sessions started from the dashboard use this; it is the
-  most robust path, with native pickers, queued sends, and model switching.
-- **tmux.** A regular Claude Code terminal session running inside tmux. Romp
-  reads the same transcript, and delivers messages and nudges by injecting
-  text into the terminal. Injection is inherently less robust than the SDK,
-  but it lets Romp ride along with the terminal Claude Code you already use:
-  run `romp <name>` and the session shows up on the dashboard like any other.
+Which backend a session runs on (Agent SDK or tmux) is a per-session choice;
+[Session backends](../reference.md#session-backends) covers the difference.

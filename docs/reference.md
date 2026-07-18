@@ -36,6 +36,19 @@ romp --mail working "<note>"      # publish what this session is working on
 | `check_sent()` | Whether your sent messages were read yet |
 | `recall_message(to, id?)` | Unsend a message the recipient hasn't read |
 
+## Session backends
+
+Sessions run on one of two backends, chosen per session:
+
+- **Agent SDK (the default).** The kernel drives the session through the
+  Claude Agent SDK. Sessions started from the dashboard use this; it is the
+  most robust path, with native pickers, queued sends, and model switching.
+- **tmux.** A regular Claude Code terminal session running inside tmux. Romp
+  reads the same transcript, and delivers messages and nudges by injecting
+  text into the terminal. Injection is inherently less robust than the SDK,
+  but it lets Romp ride along with the terminal Claude Code you already use:
+  run `romp <name>` and the session shows up on the dashboard like any other.
+
 ## Configuration
 
 ### Folder click, in your terminal or editor

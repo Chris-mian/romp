@@ -1,4 +1,4 @@
-# The postal service
+# Messaging between agents (the Romp Postal Service)
 
 Sessions message each other through a mailbox Romp gives them, and every
 exchange is visible to you.

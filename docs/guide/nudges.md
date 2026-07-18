@@ -1,4 +1,4 @@
-# Keeping the fleet moving
+# Automatic nudges
 
 An agent that goes idle with open work gets nudged back to it, so progress
 does not wait on you noticing a stall.
