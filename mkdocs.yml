@@ -8,7 +8,7 @@ repo_name: romp-on/romp
 theme:
   name: material
   logo: assets/brand/romp-icon-swirl-glyph.svg
-  favicon: assets/brand/romp-icon-swirl-256.png
+  favicon: assets/brand/romp-icon-swirl-glyph.svg
   features:
     - navigation.tabs
     - navigation.sections
