@@ -14,9 +14,6 @@ say what blocks the rest.
 
 Either way you only get pulled in when you are the bottleneck.
 
-A nudge is also a button: every card has one, so you can prod a single
-session yourself without typing a message.
-
 Auto-nudge holds off while you are actively driving a session, and it re-arms
 only after a real turn ends, so it never talks over you and never loops on
 its own messages.
