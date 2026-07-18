@@ -25,6 +25,8 @@ login service that keeps the kernel up (`ROMP_NO_SERVICE=1` opts out).
 
 ## Your first session
 
+![Opening the dashboard, naming a session, and creating it](assets/guide/first-session.gif){ width="100%" }
+
 1. Open `http://127.0.0.1:7433/` in any browser.
 2. Type a name into the session picker and choose **New session**.
 3. Give the agent some work in the chat.
