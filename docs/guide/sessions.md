@@ -12,8 +12,8 @@ own color on every surface, so `api` is the same `api` wherever you see it.
 ## Revival
 
 Type a closed session's name into the picker and it offers to revive it: the
-session comes back live with its history intact, ready to continue. Stepping
-away, or shutting the laptop, costs nothing.
+session comes back live with its history intact. Stepping away, or shutting
+the laptop, costs nothing.
 
 The judges also keep a short archive per session (a headline and abstract of
 what it did), so a fleet of many sessions stays navigable months later.

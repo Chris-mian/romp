@@ -9,7 +9,7 @@ agent, item by item, where each open piece stands: continue what it can, and
 say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
-- If something needs you, the card flips to **Blocked**, naming exactly
+- If something needs you, the card flips to **Blocked** and names exactly
   what it needs.
 
 Either way you only get pulled in when you are the bottleneck.

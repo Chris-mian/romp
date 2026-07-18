@@ -31,7 +31,7 @@ login service that keeps the kernel up (`ROMP_NO_SERVICE=1` opts out).
 4. Open the **feed**. Within a few turns a task card appears, tracking what
    the agent is doing and what needs you.
 
-That card is Romp working. [Tasks, not transcripts](guide/tasks.md) explains
+That card is Romp at work: [Tasks, not transcripts](guide/tasks.md) explains
 what it tracks, and [The fleet at a glance](guide/the-fleet.md) tours the
 views around it.
 

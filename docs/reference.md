@@ -1,7 +1,7 @@
 # Reference
 
-The command surface and the knobs. Everything here runs on the machine that
-hosts the kernel.
+This page lists every command and knob. Everything here runs on the machine
+that hosts the kernel.
 
 ## The `romp` command
 
@@ -48,7 +48,7 @@ the clicked path (omitted, the path is appended). The command runs on the
 kernel's machine.
 
 ```bash
-# ~/.config/romp/open-folder  — pick ONE line
+# ~/.config/romp/open-folder: pick one line
 open -a Ghostty {dir}               # macOS: a new Ghostty window there
 ghostty --working-directory={dir}   # Linux: Ghostty
 code {dir}                          # VS Code instead

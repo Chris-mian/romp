@@ -8,6 +8,8 @@ The kernel runs on your machine and serves the dashboard on
 Everything Romp stores stays local; the only external traffic is the `claude`
 CLI you already use.
 
+Machines federate into one fleet, and your phone reaches the same dashboard:
+
 ![One fleet across your phone, your laptop, and a remote host](../assets/guide/federation.png){ width="100%" }
 
 ## More machines, one fleet
