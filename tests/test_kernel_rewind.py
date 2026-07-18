@@ -199,6 +199,13 @@ class ParseCut(unittest.TestCase):
         # the never-parsing feed reader compares the file identity prefix only
         self.assertIn("tuple(hit[0][:2]) == key", inspect.getsource(km._parse_cached))
 
+    def test_the_built_chat_cache_sig_carries_the_cut_too(self):
+        # same lesson one level up: the BUILT payload cache would otherwise keep pushing a
+        # background tab's uncut payload until the transcript next changes (verified live 07-17:
+        # active tabs rebuild and cut correctly; the sig closes the background-tab hole)
+        src = inspect.getsource(km._chat_build_sig)
+        self.assertIn('sig.append(_be.pending_cut(sess.get("sid") or "") if _be else "")', src)
+
 
 if __name__ == "__main__":
     unittest.main()

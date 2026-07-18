@@ -5583,6 +5583,11 @@ def _chat_build_sig(sess):
         sig += [0, 0]
     sig.append(_judge_gen[0])     # a judge pass (goal/caption change) busts every tab's cache once
     sig.append(_task_store_fp(fsid))   # a store update (incl. a subagent completing a task) refreshes the to-do card
+    # a pending DELETE rollback changes the payload with NO transcript write (the parse-cache lesson,
+    # one level up): without this a BACKGROUND tab's cached, uncut payload keeps pushing the deleted
+    # tail until the file next changes. Cheap: live SDK sessions answer from memory, no I/O.
+    _be = _sdk()
+    sig.append(_be.pending_cut(sess.get("sid") or "") if _be else "")
     return tuple(sig)
 
 
