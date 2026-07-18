@@ -128,5 +128,77 @@ class DriveOpPins(unittest.TestCase):
         self.assertNotIn("_send_or_park", arm)
 
 
+class DeleteRollback(unittest.TestCase):
+    """The chat's DELETE button: rewindDelete rolls the conversation back to just before the
+    deleted message — the edit rewind's validation and cut point, with nothing sent."""
+
+    def test_rewind_delete_is_a_drive_op_that_sends_nothing(self):
+        src = inspect.getsource(km._drive)
+        self.assertIn('"rewindDelete"', src)          # in ID_OPS → routed by session id
+        self.assertIn('elif t == "rewindDelete" and msg.get("uuid"):', src)
+        arm = src[src.index('elif t == "rewindDelete"'):src.index('elif t == "interrupt"')]
+        self.assertIn('err = _rewind_rollback(sid, str(msg["uuid"]))', arm)
+        self.assertIn('client["send"](json.dumps({"type": "warn", "text": err}))', arm)
+        self.assertNotIn("_send_or_park", arm)
+
+    def test_rollback_gates_match_the_edit_rewind(self):
+        src = inspect.getsource(km._rewind_rollback)
+        self.assertIn('if not hasattr(be, "rollback"):', src)    # SDK-only (tmux has Esc Esc natively)
+        self.assertIn("if _ops_gate(sid):", src)                 # busy/compacting/parked-queue → refuse
+        self.assertIn("target, err = _rewind_target(", src)      # the SAME cut point as an edit
+        self.assertIn("be.rollback(sid, target)", src)
+
+
+class ParseCut(unittest.TestCase):
+    """While a bare rollback is pending, the kernel parse starts its walk at the cut — every
+    surface renders the rolled-back conversation immediately, instead of showing the doomed
+    tail until the user's next message finally lands past the recorded leaf."""
+
+    def _transcript(self, recs):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, SID + ".jsonl")
+        with open(p, "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        return p
+
+    def _base(self):
+        return [
+            _rec("user", "u1", None, "first ask"),
+            _rec("assistant", "a1", "u1", "first reply"),
+            _rec("user", "u2", "a1", "second ask"),
+            _rec("assistant", "a2", "u2", "second reply"),
+        ]
+
+    def test_leaf_override_truncates_the_active_chain(self):
+        p = self._transcript(self._base())
+        ad = km.em.FileAdapter([p], p, leaf_override="a1")
+        self.assertEqual(ad.active_path(), {"u1", "a1"})
+
+    def test_a_stale_override_falls_back_to_the_true_leaf(self):
+        # a raced clear / wrong file: an override absent from the graph must NEVER empty the parse
+        p = self._transcript(self._base())
+        ad = km.em.FileAdapter([p], p, leaf_override="99999999-aaaa-bbbb-cccc-dddddddddddd")
+        self.assertEqual(ad.active_path(), {"u1", "a1", "u2", "a2"})
+
+    def test_parse_session_threads_the_override(self):
+        p = self._transcript(self._base())
+        cut = km.em.parse_session(p, leaf_override="a1")
+        full = km.em.parse_session(p)
+        texts = lambda sess: json.dumps([a.get("message") for t in sess["turns"] for a in t["atoms"]])
+        self.assertNotIn("second ask", texts(cut))
+        self.assertIn("second ask", texts(full))
+        self.assertIn("first reply", texts(cut))   # everything up to the cut point survives
+
+    def test_kernel_parse_keys_the_cache_on_the_cut(self):
+        # arming and clearing both change the parse with NO file change — the cut must ride the key
+        src = inspect.getsource(km._parse)
+        self.assertIn("cut = _be.pending_cut(sid) if _be else \"\"", src)
+        self.assertIn("key = (st.st_mtime, st.st_size, cut)", src)
+        self.assertIn("leaf_override=cut or None", src)
+        # the never-parsing feed reader compares the file identity prefix only
+        self.assertIn("tuple(hit[0][:2]) == key", inspect.getsource(km._parse_cached))
+
+
 if __name__ == "__main__":
     unittest.main()

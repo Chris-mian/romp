@@ -268,7 +268,9 @@ function registerOptimistic(id: string, text: string): void {
 // uuid leaves the payload (the branch arrived) — plus a TTL backstop so a failed rewind (the kernel
 // warn-toasts it) can't dim the tail forever.
 const REWIND_TTL_MS = 30_000;
-const pendingRewind = new Map<string, { uuid: string; text: string; ts: number }>();
+// `bare` marks a DELETE rollback (rewindDelete): no replacement text — the deleted bubble itself dims
+// with the tail, and the kernel's pending-cut payload (not a landed turn) is what retires the overlay.
+const pendingRewind = new Map<string, { uuid: string; text: string; ts: number; bare?: boolean }>();
 
 // Re-apply (or retire) the pending-rewind overlay on a fresh payload, and recompute which user
 // bubbles are EDITABLE: genuine human messages with a transcript uuid, AFTER the last compaction —
@@ -295,13 +297,19 @@ function reconcileRewind(s: Session): void {
     pendingRewind.delete(s.id);          // the branch landed (old uuid gone) — or the backstop expired
     return;
   }
-  s.events[idx] = { ...(s.events[idx] as any), md: pr.text, pending: true, images: undefined };
-  for (let j = idx + 1; j < s.events.length; j++) (s.events[j] as any).rewound = true;
-  for (let j = s.events.length - 1; j > idx; j--) {
-    const e = s.events[j] as any;
-    if (e.kind === "queued" && Array.isArray(e.texts)) {
-      e.texts = e.texts.filter((t: any) => t.md !== pr.text);
-      if (!e.texts.length) s.events.splice(j, 1);
+  if (pr.bare) {
+    // DELETE rollback: the deleted bubble goes too — dim from it onward. No text replacement and no
+    // queued-chip suppression (nothing was sent; the kernel's cut payload retires this in a beat).
+    for (let j = idx; j < s.events.length; j++) (s.events[j] as any).rewound = true;
+  } else {
+    s.events[idx] = { ...(s.events[idx] as any), md: pr.text, pending: true, images: undefined };
+    for (let j = idx + 1; j < s.events.length; j++) (s.events[j] as any).rewound = true;
+    for (let j = s.events.length - 1; j > idx; j--) {
+      const e = s.events[j] as any;
+      if (e.kind === "queued" && Array.isArray(e.texts)) {
+        e.texts = e.texts.filter((t: any) => t.md !== pr.text);
+        if (!e.texts.length) s.events.splice(j, 1);
+      }
     }
   }
   const v = views.get(s.id);
@@ -1456,7 +1464,27 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         edit.title = "Edit this message — sending rewinds the conversation to this point and continues on a new branch (later turns are abandoned)";
         const uuid = ev.uuid, orig = ev.md || "";
         edit.addEventListener("click", (e) => { e.stopPropagation(); beginComposerEdit(editSid, uuid, orig); });
-        turn.appendChild(edit);
+        // DELETE affordance: roll the conversation back to just before this message — nothing is sent;
+        // this message and everything after become the abandoned branch. Two-click arm (the second
+        // click confirms); leaving or de-focusing the button disarms it, and a re-render rebuilding
+        // the node disarms too — every miss fails toward "not deleted".
+        const del = el("button", "msg-del") as HTMLButtonElement;
+        del.type = "button";
+        del.textContent = "delete";
+        del.title = "Delete this message — rolls the conversation back to just before it (this message and everything after are abandoned)";
+        const disarm = () => { del.classList.remove("armed"); del.textContent = "delete"; };
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!del.classList.contains("armed")) { del.classList.add("armed"); del.textContent = "roll back?"; return; }
+          disarm();
+          fireRewindDelete(editSid, uuid);
+        });
+        del.addEventListener("blur", disarm);
+        del.addEventListener("pointerleave", disarm);
+        const acts = el("div", "msg-acts");   // one row under the bubble (the turn is a column flex)
+        acts.appendChild(edit);
+        acts.appendChild(del);
+        turn.appendChild(acts);
       }
     }
     if (ev.reminders && ev.reminders.length) {
@@ -5667,6 +5695,18 @@ function beginComposerEdit(sid: string, uuid: string, orig: string): void {
   const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (ta) { ta.value = orig; growComposer(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   renderComposerChips(sid);
+}
+
+// Fire a DELETE rollback (the bubble's armed second click): post rewindDelete and overlay the outcome
+// locally — the deleted bubble + tail dim as abandoned — until the kernel's cut payload arrives (it
+// truncates the parse the moment the backend flag is set, so this bridges roughly one push).
+function fireRewindDelete(sid: string, uuid: string): void {
+  vscodeApi?.postMessage({ type: "rewindDelete", id: sid, uuid });
+  pendingRewind.set(sid, { uuid, text: "", ts: Date.now(), bare: true });
+  const ce = composerEdits.get(sid);
+  if (ce && ce.uuid === uuid) cancelComposerEdit(sid);   // the message being edited was just deleted
+  const s = sessions.get(sid);
+  if (s) { reconcileRewind(s); appendActive(); }   // paint the overlay NOW (stale → window re-render)
 }
 
 function cancelComposerEdit(sid: string): void {
