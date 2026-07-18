@@ -17,8 +17,8 @@ append-only record, and plain code does the rest. No judge owns state: a
 wrong verdict is one bad event in a log, outvoted by later evidence, never a
 corrupted fact.
 
-The thirteen judges run in two tiers. The index tier (Haiku, cheap) writes
-text only and never touches goals. The triage tier (Sonnet) maintains the
+The thirteen judges run in two tiers. The index tier (cheap, fast models) writes
+text only and never touches goals. The triage tier (a stronger model) maintains the
 board. Both run continuously from the kernel producer and are event-gated,
 so an idle fleet costs file stats, not model calls.
 
@@ -26,10 +26,10 @@ so an idle fleet costs file stats, not model calls.
 
 | Judge | Tier | Prompt | Fires when |
 |---|---|---|---|
-| captioner | index (Haiku) | `CAPTION_SYS` | a segment or turn's work ends |
-| gister | index (Haiku) | `GIST_SYS` | a user message lands |
-| archiver | index (Haiku) | `ARCHIVE_SYS` | a session gains a turn |
-| opener | triage (Sonnet) | `OPENER_SYS` | a message lands, work still running |
+| captioner | index | `CAPTION_SYS` | a segment or turn's work ends |
+| gister | index | `GIST_SYS` | a user message lands |
+| archiver | index | `ARCHIVE_SYS` | a session gains a turn |
+| opener | triage | `OPENER_SYS` | a message lands, work still running |
 | planner | triage | `PLAN_SYS` | a segment's work ends |
 | placer | triage | `PLACE_SYS` | the planner filed under a card with open sub-goals |
 | closer | triage | `CLOSER_SYS` | a turn ends |
@@ -71,7 +71,7 @@ detail.
 
 ## The index tier: the text record
 
-Three Haiku judges write the words you read in the chat, the timeline, and
+Three index-tier judges write the words you read in the chat, the timeline, and
 search. They are write-only: nothing they emit changes a card's state.
 
 **captioner.** The readable activity log. Per finished segment or turn, one

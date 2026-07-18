@@ -66,3 +66,13 @@
 .md-typeset img {
   border-radius: 6px;
 }
+
+/* The header always says Romp: no swap to the page heading on scroll (the
+   sidebar already shows where you are). */
+.md-header__topic + .md-header__topic {
+  display: none;
+}
+.md-header__title--active .md-header__topic:first-child {
+  transform: none;
+  opacity: 1;
+}

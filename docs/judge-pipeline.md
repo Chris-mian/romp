@@ -52,7 +52,7 @@ window is exhausted, turns an API error reply into a logged call failure
 (never parser input), and logs cost per judge, one name per distinct prompt.
 Every judge gives up loudly after three rejected replies on the same work
 item and re-arms on its own event (judges.md, "When a judge fails"). A
-separate Haiku tier (captioner, gister, archiver) writes the chat and
+separate index tier (captioner, gister, archiver) writes the chat and
 timeline captions; it never touches goals.
 
 ## When each judge runs
