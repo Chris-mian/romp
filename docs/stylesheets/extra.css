@@ -1,7 +1,6 @@
-/* Romp brand colors, dark-only site. The header (and other "primary" chrome)
-   wears the romp session blue (#1EA1EB, the logo's blue arm). The pale in-app
-   accent (#9cd2ff) is deliberately NOT used here, so docs chrome never looks
-   like part of the romp UI in the screenshots. */
+/* Romp brand colors, dark-only site. The pale in-app accent (#9cd2ff) is
+   deliberately NOT used for docs chrome, so it never looks like part of the
+   romp UI in the screenshots. */
 :root {
   --md-primary-fg-color: #1ea1eb;
   --md-primary-fg-color--light: #56b8f1;
@@ -16,13 +15,51 @@
   --md-typeset-a-color: #4db8f5;
 }
 
-/* The wordmark banner on the home page. */
+/* Quiet header: a near-black bar the swirl logo reads on, with the blue kept
+   for accents (active tab, links, focus) instead of the whole banner. */
+.md-header,
+.md-tabs {
+  background-color: #12171e;
+}
+.md-tabs {
+  border-bottom: 1px solid #262d36;
+}
+
+/* The wordmark banner on the home page: no permalink icon, small gap below. */
+.md-typeset h1 .headerlink {
+  display: none;
+}
+.md-typeset h1:has(.romp-wordmark) {
+  margin: 0 0 0.4em;
+}
 .romp-wordmark {
   display: block;
-  margin: 0 auto 1.2em;
+  margin: 0 auto;
   max-width: 420px;
   width: 70%;
   border-radius: 14px;
+}
+
+/* Side-by-side pair of captures (home: a card's background + summary). */
+.md-typeset .romp-pair {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: center;
+}
+.md-typeset .romp-pair p {
+  width: 44%;
+  margin: 0;
+}
+.md-typeset .romp-pair img {
+  width: 100%;
+}
+
+/* A capture that shouldn't span the page. */
+.md-typeset img.romp-narrow {
+  display: block;
+  width: 72%;
+  margin: 0.6em auto;
 }
 
 /* Screenshots: soften edges. */
