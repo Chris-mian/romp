@@ -340,7 +340,7 @@ class FileAdapter:
     ancestors and drop out for free; `/clear` leaves no parent link so the walk
     stops there and pre-clear history drops out naturally."""
 
-    def __init__(self, candidate_files, leaf_path):
+    def __init__(self, candidate_files, leaf_path, leaf_override=None):
         self.by_uuid = {}        # uuid -> record
         self.fsid_of = {}        # uuid -> transcript file stem (provenance / click-to-open)
         self.seq_of = {}         # uuid -> global read order (tie-break for equal timestamps)
@@ -380,6 +380,12 @@ class FileAdapter:
                         ptext = a["prompt"] if isinstance(a["prompt"], str) else _text_of(a["prompt"])
                         self.qatts.append({"uuid": u, "ts": parse_z(r.get("timestamp")),
                                            "text": ptext, "seq": seq})
+        # A PENDING bare rollback (chat delete): the kernel passes the cut point as leaf_override so
+        # the walk starts there and the not-yet-abandoned tail drops exactly as it will once the CLI's
+        # --resume-session-at branch takes. Applied only when the uuid is really in this graph — a
+        # stale override (wrong file, raced clear) falls back to the true file leaf, never an empty parse.
+        if leaf_override and leaf_override in self.by_uuid:
+            self.leaf_uuid = leaf_override
         self._repair_compaction_stitches()
 
     def _repair_compaction_stitches(self):
@@ -940,7 +946,8 @@ def _load_states(states):
 
 
 def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None,
-                  candidate_files=None, states=None, postal_log=None, now=None, sdk_human=False):
+                  candidate_files=None, states=None, postal_log=None, now=None, sdk_human=False,
+                  leaf_override=None):
     """Build one session's Session -> Turn -> Atom tree from the on-disk transcript graph.
 
     leaf_path        the newest (leaf) transcript file; the walk's start pointer.
@@ -954,6 +961,8 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
                      higher-layer concern, not the parser's.
     states           states/<sid>.jsonl path or rows -> idle atoms.
     postal_log       timeline/messages.jsonl path or rows -> peer rompUuid.
+    leaf_override    start the walk at this record instead of the file's last (a PENDING
+                     bare rollback — the kernel's pending_cut); ignored if absent from the graph.
     """
     leaf_path = Path(leaf_path)
     if dir is None:
@@ -963,7 +972,7 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     if candidate_files is None:
         candidate_files = [str(leaf_path)]
     postal_index = _load_postal_index(postal_log)
-    adapter = FileAdapter(candidate_files, leaf_path)
+    adapter = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override)
     adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
     atoms += synthesize_idle(_load_states(states), atoms, now)

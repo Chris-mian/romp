@@ -850,6 +850,7 @@ class SdkSession:
         # earlier would land the edit on the un-rewound branch.
         self._rewind_to = reg.get("rewindTo") or ""
         self._rewind_leaf = reg.get("rewindLeaf") or ""
+        self._rewind_bare = bool(reg.get("rewindBare"))   # a DELETE rollback: no replacement turn enqueued
         self._rewind_armed = False
         # reconnect machinery: effort changes (a connect-time flag) reconnect the client; _wake breaks the
         # receive loop cleanly for shutdown OR reconnect even when idle (a bare async-for would block forever).
@@ -1307,22 +1308,30 @@ class SdkSession:
     def _rewind_failed(self, exc):
         """The CLI refused a rewind connect. Drop the one-shot flag (never re-offer a target the CLI just
         refused), pull the held edit turn off the queue, and surface both a warn toast (with the message
-        text, so nothing is silently lost) and a kernel-log line. The session then reconnects plainly."""
+        text, so nothing is silently lost) and a kernel-log line. The session then reconnects plainly.
+        A BARE rollback (delete) enqueued nothing — the queue's head, if any, is an unrelated held
+        message (postal etc.) that must survive and ride the un-rewound branch."""
+        bare = self._rewind_bare
         self._rewind_to = self._rewind_leaf = ""
+        self._rewind_bare = False
         self._rewind_armed = False
-        with self._lock:
-            dropped = self._pending.pop(0) if self._pending else None
-        self._persist_queue()
+        dropped = None
+        if not bare:
+            with self._lock:
+                dropped = self._pending.pop(0) if self._pending else None
+            self._persist_queue()
         try:
-            self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="")
+            self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="", rewindBare=False)
         except Exception:
             pass
         self.backend._log("rewind (%s): the CLI refused --resume-session-at (%s: %s) — flag dropped, "
-                          "edited message returned to the user" % (self.name, type(exc).__name__, exc))
+                          "%s" % (self.name, type(exc).__name__, exc,
+                                  "the rollback did not happen" if bare else "edited message returned to the user"))
         try:
             self.backend._notify("chat", {"type": "warn", "text":
-                "the rewind failed (the session's CLI refused it) — your edited message was NOT sent%s"
-                % ((": " + dropped) if dropped else "")})
+                ("the rollback failed (the session's CLI refused it) — the conversation is unchanged" if bare else
+                 "the rewind failed (the session's CLI refused it) — your edited message was NOT sent%s"
+                 % ((": " + dropped) if dropped else ""))})
         except Exception:
             pass
         self.backend._poke()
@@ -1481,11 +1490,13 @@ class SdkSession:
             self._compacting = False
             if self._rewind_to:
                 # the rewind turn settled — the flag is CONSUMED (the leaf moved past the recorded one, so
-                # rewind_disposition would drop it on the next connect anyway; this just tidies the reg now)
+                # rewind_disposition would drop it on the next connect anyway; this just tidies the reg now).
+                # A bare rollback consumes here too: the settled turn IS the branch's first (leaf moved).
                 self._rewind_to = self._rewind_leaf = ""
+                self._rewind_bare = False
                 self._rewind_armed = False
                 try:
-                    self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="")
+                    self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="", rewindBare=False)
                 except Exception:
                     pass
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
@@ -2173,8 +2184,9 @@ class SdkBackend:
             sess._rewind_armed = True
         elif disp == "spent":
             sess._rewind_to = sess._rewind_leaf = ""
+            sess._rewind_bare = False
             try:
-                self._update_reg(sess.sid, rewindTo="", rewindLeaf="")
+                self._update_reg(sess.sid, rewindTo="", rewindLeaf="", rewindBare=False)
             except Exception:
                 pass
             self._log("rewind (%s): conversation moved since the request — flag spent, resuming plainly"
@@ -2320,26 +2332,63 @@ class SdkBackend:
         thread seeds it), enqueue the edit (HELD by the inputs() gate until a rewound client is up),
         reconnect. Refused while busy/compacting or with messages queued — a rewind under a running
         turn is a data-loss hazard, and queued strangers would ride the new branch unasked."""
+        return self._arm_rewind(sid, target_uuid, text)
+
+    def rollback(self, sid: str, target_uuid: str) -> "tuple[bool, str]":
+        """The chat's delete-message rollback: the edit rewind with NO replacement turn. The one-shot
+        flag arms the same --resume-session-at reconnect, but nothing is enqueued — the conversation
+        just stands at `target_uuid`, and the user's NEXT message (whenever it comes) takes the branch.
+        Until then no record lands past the recorded leaf, so the flag stays pending (rewindBare) and
+        the kernel parse renders the cut (pending_cut) instead of the abandoned tail."""
+        return self._arm_rewind(sid, target_uuid, None)
+
+    def _arm_rewind(self, sid, target_uuid, text):
         reg = read_reg(self.state_dir, sid)
         if not reg or not reg.get("alive"):
             return False, "the session is not running — revive it first"
         if self.busy(sid) or self.compacting(sid):
-            return False, "the session is busy — wait for the current turn to finish, then edit"
+            return False, "the session is busy — wait for the current turn to finish"
         if any(t for t in (reg.get("queue") or []) if isinstance(t, str) and t):
             return False, "messages are queued for this session — send or cancel them first"
         leaf = last_record_uuid(transcript_path(reg.get("cwd") or "~", reg.get("lastSid") or sid))
         if not leaf:
             return False, "no conversation on disk to rewind"
-        self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf)
+        bare = text is None
+        self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf, rewindBare=bare)
         s = self._ensure(sid)
         if not s:
-            self._update_reg(sid, rewindTo="", rewindLeaf="")
+            self._update_reg(sid, rewindTo="", rewindLeaf="", rewindBare=False)
             return False, "the session could not start"
         s._rewind_leaf, s._rewind_to = leaf, target_uuid   # already-running thread: the reg seed didn't apply
-        s.enqueue(text)
+        s._rewind_bare = bare
+        if not bare:
+            s.enqueue(text)
         s.request_reconnect()   # idle → reconnects now; a fresh thread's FIRST connect applies the flag
         self._poke()
         return True, ""
+
+    def pending_cut(self, sid: str) -> str:
+        """The uuid a PENDING bare rollback (rollback(), no replacement turn) truncates the conversation
+        at, or "". The kernel parse keys on this so every surface renders the rolled-back state the
+        moment the user deletes — without it the abandoned tail would keep rendering until the next
+        message finally lands past the recorded leaf (the event the one-shot flag is spent on). The
+        live session's in-memory flags are the fresh source; the reg covers a dead/unstarted session
+        (kernel restart mid-pending). Verified against the transcript leaf exactly like the connect
+        path (rewind_disposition), so the cut expires the instant any record lands."""
+        s = self.sessions.get(sid)
+        if s is not None and not s.ended:
+            to, leaf, bare = s._rewind_to, s._rewind_leaf, getattr(s, "_rewind_bare", False)
+            cwd, fsid = s.cwd, s.resume_sid or s.sid
+        else:
+            reg = read_reg(self.state_dir, sid)
+            if not reg:
+                return ""
+            to, leaf, bare = reg.get("rewindTo") or "", reg.get("rewindLeaf") or "", bool(reg.get("rewindBare"))
+            cwd, fsid = reg.get("cwd") or "~", reg.get("lastSid") or sid
+        if not to or not bare:
+            return ""
+        now_leaf = last_record_uuid(transcript_path(cwd, fsid))
+        return to if rewind_disposition(to, leaf, now_leaf) == "apply" else ""
 
     def deliver(self, sid: str, text: str) -> bool:
         """Deliver-time wake for an SDK session: enqueue the postal banner so the session processes it on its

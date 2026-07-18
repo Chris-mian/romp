@@ -2407,7 +2407,7 @@ def _drive(msg, client):
     if not isinstance(msg, dict):
         return False
     t = msg.get("type")
-    ID_OPS = ("sendMessage", "rewindSend", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
+    ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
               "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
@@ -2434,6 +2434,15 @@ def _drive(msg, client):
         # (at the branch point), not at the tail, and the client's own pending-rewind overlay + the
         # backend queued chip cover the gap. A refusal warn-toasts (fail loudly, nothing sent).
         err = _rewind_send(sid, str(msg["uuid"]), str(msg["text"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+        else:
+            _push_soon()
+    elif t == "rewindDelete" and msg.get("uuid"):
+        # Delete a past message (SDK sessions): roll the conversation back to just before it, sending
+        # nothing — the parse-side pending cut (backend pending_cut) drops the tail on the next push,
+        # so the client's overlay only bridges a beat. A refusal warn-toasts (fail loudly).
+        err = _rewind_rollback(sid, str(msg["uuid"]))
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
         else:
@@ -5464,7 +5473,7 @@ def _fold_tasks(session):
             for t in ordered]
 
 
-_parse_cache = {}                                # realpath → ((mtime, size), parsed session)
+_parse_cache = {}                                # realpath → ((mtime, size, pending-rollback cut), parsed session)
 
 # Built-chat cache (the user 2026-06-24, "the UI is sluggish"): the pusher rebuilt EVERY open chat tab on
 # every 0.5s poll — a full transcript reshape into ChatEvent[] AND a json.dumps of the whole chat, per tab,
@@ -5578,20 +5587,26 @@ def _chat_build_sig(sess):
 
 
 def _parse(path, sid, now):
-    """em.parse_session, CACHED by the transcript's (mtime, size). The build hot path re-parsed every
-    transcript on every push (4s); an unchanged transcript now returns the cached parse. Safe: the
-    kernel's parse is now-independent except the 48h window cutoff, which doesn't change a recent
-    session's atoms. (postal_log resolution lags at most one cycle — a delivery appends to the
-    transcript anyway, busting the cache.)"""
+    """em.parse_session, CACHED by the transcript's (mtime, size, pending-rollback cut). The build hot
+    path re-parsed every transcript on every push (4s); an unchanged transcript now returns the cached
+    parse. Safe: the kernel's parse is now-independent except the 48h window cutoff, which doesn't
+    change a recent session's atoms. (postal_log resolution lags at most one cycle — a delivery appends
+    to the transcript anyway, busting the cache.) The cut (a chat DELETE's bare rollback, backend
+    pending_cut) rides the KEY because it changes the parse with no file change — arming and clearing
+    both must bust the cache, and its own spend event (a record landing) moves mtime/size anyway."""
+    _be = _sdk()
+    # pending_cut is hot-path safe: a LIVE SDK session is a dict hit + attr checks (no I/O);
+    # tmux/dormant fall to one small reg read; the transcript-leaf read happens only while
+    # a rollback is actually pending.
+    cut = _be.pending_cut(sid) if _be else ""
     try:
         st = os.stat(path)
-        key = (st.st_mtime, st.st_size)
+        key = (st.st_mtime, st.st_size, cut)
     except OSError:
         key = None
     hit = _parse_cache.get(path)
     if hit is not None and key is not None and hit[0] == key:
         return hit[1]
-    _be = _sdk()
     # A FORKED leaf (SDK /clear: discover hands the lastSid file under the stable romp sid) parses with
     # the session's anchor transcript among the candidates — a resume-style fork's cross-file chain keeps
     # its history via the FileAdapter walk; a /clear fork (parentUuid null) still starts fresh. Mirrors
@@ -5602,7 +5617,8 @@ def _parse(path, sid, now):
         cands.append(anchor)
     session = em.parse_session(path, rompuuid=sid, candidate_files=cands,
                                postal_log=str(jd.MESSAGES), now=now,
-                               sdk_human=bool(_be and _be.owns(sid)))   # SDK session: composer input is promptSource "sdk"
+                               sdk_human=bool(_be and _be.owns(sid)),   # SDK session: composer input is promptSource "sdk"
+                               leaf_override=cut or None)   # pending bare rollback → render the cut conversation NOW
     if key is not None:
         if len(_parse_cache) > 256:              # backstop: bounded by fleet size, but never unbounded
             _parse_cache.clear()
@@ -5635,7 +5651,7 @@ def _rewind_target(path, sid, user_uuid):
             on_active = True
             break
         if is_boundary(ad.by_uuid.get(u)):
-            return None, "that message predates the last context compaction — only newer messages can be edited"
+            return None, "that message predates the last context compaction — only newer messages can be rewound to"
         u = ad.parent_of.get(u); hops += 1
     if not on_active:
         return None, "that message is on a branch that was already rewound away"
@@ -5674,6 +5690,27 @@ def _rewind_send(sid, user_uuid, text, now=None):
     return None if ok else (berr or "the rewind could not be applied")
 
 
+def _rewind_rollback(sid, user_uuid, now=None):
+    """The chat's delete-message rollback: same validation and cut point as the edit rewind
+    (_rewind_target — the deleted message's nearest message ancestor), but NOTHING is sent — the
+    conversation just stands at the cut, and the user's next message takes the branch. Returns an
+    error string for the warn toast, or None."""
+    be = Sessions.backend_for(sid)
+    if not hasattr(be, "rollback"):
+        return "deleting past messages needs the SDK backend — this session runs in tmux (use Esc Esc in its terminal)"
+    if _ops_gate(sid):
+        return "the session is busy — wait for the current turn to finish, then delete"
+    now = now or time.time()
+    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if not sess:
+        return "no transcript for this session yet"
+    target, err = _rewind_target(sess["path"], sid, str(user_uuid))
+    if err:
+        return err
+    ok, berr = be.rollback(sid, target)
+    return None if ok else (berr or "the rollback could not be applied")
+
+
 def _parse_cached(path):
     """The CACHED parse for `path` (matching its (mtime,size)) or None — NEVER parses, so it adds no cold
     cost on the request path. build_feed reads it for the working-dots + deep-link anchors so its CARDS
@@ -5686,7 +5723,9 @@ def _parse_cached(path):
     except OSError:
         return None
     hit = _parse_cache.get(path)
-    return hit[1] if (hit is not None and hit[0] == key) else None
+    # prefix compare: _parse's key carries a third element (the pending-rollback cut) this NEVER-parsing
+    # reader can't cheaply recompute — dots/anchors from a cut parse are consistent with what chat shows
+    return hit[1] if (hit is not None and tuple(hit[0][:2]) == key) else None
 
 
 _warm_lock = threading.Lock()

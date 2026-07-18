@@ -103,7 +103,7 @@ class WiringPins(unittest.TestCase):
 
     def test_spent_flag_is_cleared_from_session_and_reg(self):
         self.assertIn('elif disp == "spent":', BACKEND_SRC)
-        self.assertIn('self._update_reg(sess.sid, rewindTo="", rewindLeaf="")', BACKEND_SRC)
+        self.assertIn('self._update_reg(sess.sid, rewindTo="", rewindLeaf="", rewindBare=False)', BACKEND_SRC)
 
     def test_input_gate_holds_the_edit_until_a_rewound_client_is_up(self):
         # feeding the edit turn to the un-rewound client is the wrong-branch delivery this kills
@@ -132,13 +132,113 @@ class WiringPins(unittest.TestCase):
     def test_rewind_persists_the_flag_before_ensuring_the_thread(self):
         # a fresh session thread seeds _rewind_to from the reg — writing after _ensure could race
         # the first connect and strand the held queue
-        i_reg = BACKEND_SRC.index("self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf)")
+        i_reg = BACKEND_SRC.index("self._update_reg(sid, rewindTo=target_uuid, rewindLeaf=leaf, rewindBare=bare)")
         i_ensure = BACKEND_SRC.index("s = self._ensure(sid)", i_reg - 2000)
         self.assertLess(i_reg, i_ensure)
 
     def test_session_seeds_rewind_state_from_the_reg(self):
         self.assertIn('self._rewind_to = reg.get("rewindTo") or ""', BACKEND_SRC)
         self.assertIn('self._rewind_leaf = reg.get("rewindLeaf") or ""', BACKEND_SRC)
+        self.assertIn('self._rewind_bare = bool(reg.get("rewindBare"))', BACKEND_SRC)
+
+
+SID = "11111111-2222-3333-4444-555555555555"
+
+
+class _StubSession:
+    """Just the attrs pending_cut reads off a live SdkSession."""
+    def __init__(self, **kw):
+        self.ended = False
+        self.resume_sid = ""
+        self.__dict__.update(kw)
+
+
+class _StubBackend:
+    """Just the attrs pending_cut reads off the backend (sessions map + reg dir)."""
+    def __init__(self, state_dir):
+        import pathlib
+        self.state_dir = pathlib.Path(state_dir)
+        self.sessions = {}
+
+
+class RollbackAndPendingCut(unittest.TestCase):
+    """The chat's DELETE rollback: the edit rewind armed with NO replacement turn (rewindBare).
+    pending_cut is the read side — the kernel parse truncates at the cut while the flag is
+    pending, because no record lands to move the leaf until the user's next message."""
+
+    def test_rollback_is_the_bare_arm_and_rewind_the_texted_one(self):
+        self.assertIn("def rollback(self, sid: str, target_uuid: str)", BACKEND_SRC)
+        self.assertIn("return self._arm_rewind(sid, target_uuid, None)", BACKEND_SRC)
+        self.assertIn("return self._arm_rewind(sid, target_uuid, text)", BACKEND_SRC)
+        self.assertIn("bare = text is None", BACKEND_SRC)
+        # nothing is enqueued for a bare rollback — the next real message takes the branch
+        self.assertIn("if not bare:\n            s.enqueue(text)", BACKEND_SRC)
+
+    def test_refused_connect_never_pops_the_queue_for_a_bare_rollback(self):
+        # the edit flow's queue head IS the held edit turn; a bare rollback enqueued nothing, so
+        # the head (a held postal delivery, say) must survive the failure
+        self.assertIn("bare = self._rewind_bare", BACKEND_SRC)
+        i_bare = BACKEND_SRC.index("bare = self._rewind_bare")
+        i_pop = BACKEND_SRC.index("dropped = self._pending.pop(0) if self._pending else None", i_bare)
+        seg = BACKEND_SRC[i_bare:i_pop]
+        self.assertIn("if not bare:", seg)
+        self.assertIn("the rollback failed (the session's CLI refused it)", BACKEND_SRC)
+
+    def test_settle_consume_clears_the_bare_flag_too(self):
+        i = BACKEND_SRC.index("the flag is CONSUMED")
+        seg = BACKEND_SRC[i:i + 600]
+        self.assertIn('rewindTo="", rewindLeaf="", rewindBare=False', seg)
+
+    def _fixture(self, tmp, bare=True, leaf_moved=False):
+        """A stub backend + live stub session whose transcript's HOME-relative path really exists."""
+        cwd = os.path.join(tmp, "proj")
+        os.makedirs(cwd, exist_ok=True)
+        tp = sb.transcript_path(cwd, SID)             # honors the patched HOME below
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        with open(tp, "w") as f:
+            f.write(json.dumps({"type": "user", "uuid": "l1"}) + "\n")
+            if leaf_moved:
+                f.write(json.dumps({"type": "assistant", "uuid": "l2"}) + "\n")
+        be = _StubBackend(os.path.join(tmp, "sdk"))
+        be.sessions[SID] = _StubSession(sid=SID, cwd=cwd, _rewind_to="t1", _rewind_leaf="l1",
+                                        _rewind_bare=bare)
+        return be
+
+    def test_pending_cut_applies_while_the_leaf_is_unmoved(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": tmp}):
+            be = self._fixture(tmp)
+            self.assertEqual(sb.SdkBackend.pending_cut(be, SID), "t1")
+
+    def test_pending_cut_expires_the_instant_a_record_lands(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": tmp}):
+            be = self._fixture(tmp, leaf_moved=True)
+            self.assertEqual(sb.SdkBackend.pending_cut(be, SID), "")
+
+    def test_pending_cut_ignores_an_edit_rewind(self):
+        # the edit flow's window is covered by the client overlay + the enqueued turn landing in
+        # seconds — only the BARE rollback needs the parse-side cut
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": tmp}):
+            be = self._fixture(tmp, bare=False)
+            self.assertEqual(sb.SdkBackend.pending_cut(be, SID), "")
+
+    def test_pending_cut_reads_the_reg_for_a_dead_session(self):
+        # kernel restart mid-pending: no live SdkSession, the reg carries the flag (crash-heal seam)
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": tmp}):
+            be = self._fixture(tmp)
+            reg = {"cwd": be.sessions[SID].cwd, "lastSid": "", "rewindTo": "t1",
+                   "rewindLeaf": "l1", "rewindBare": True}
+            del be.sessions[SID]
+            sb.write_reg(be.state_dir, SID, reg)
+            self.assertEqual(sb.SdkBackend.pending_cut(be, SID), "t1")
+
+    def test_pending_cut_is_empty_with_nothing_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            be = _StubBackend(os.path.join(tmp, "sdk"))
+            self.assertEqual(sb.SdkBackend.pending_cut(be, SID), "")
 
 
 if __name__ == "__main__":

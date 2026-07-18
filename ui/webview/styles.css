@@ -924,6 +924,21 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .turn-user:hover .msg-edit, .msg-edit:focus-visible { opacity: 0.9; }
 .msg-edit:hover { color: var(--fg); border-color: var(--accent); }
 @media (hover: none) { .msg-edit { opacity: 0.6; } }   /* touch: no hover state, so keep it visible */
+/* edit + delete share one row under the bubble (the turn is a column flex; the row is the flex item) */
+.msg-acts { display: flex; gap: 4px; align-self: flex-end; }
+/* the DELETE affordance wears the edit button's exact clothes (one size, one shape — labels differ) */
+.msg-del {
+  align-self: flex-end; margin-top: 3px;
+  font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
+  border: 1px solid var(--box-border); background: var(--code-bg); color: var(--dim);
+  cursor: pointer; opacity: 0; user-select: none;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.turn-user:hover .msg-del, .msg-del:focus-visible { opacity: 0.9; }
+.msg-del:hover { color: var(--fg); border-color: #ff6a6a; }
+/* armed = one click from rolling back: destructive red, holds until blur/pointerleave/re-render */
+.msg-del.armed { color: #ff6a6a; border-color: #ff6a6a; opacity: 0.95; }
+@media (hover: none) { .msg-del { opacity: 0.6; } }   /* touch: no hover state, so keep it visible */
 /* pending-rewind overlay: turns after an edited message belong to the branch being abandoned — they
    dim until the kernel's rewound payload replaces them (reconcileRewind retires the flag then). */
 .turn.rewound { opacity: 0.35; transition: opacity 0.2s ease; }
