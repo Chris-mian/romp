@@ -3552,10 +3552,17 @@ def _tunnel_argv(r):
         # (every machine runs one now) and ExitOnForwardFailure would kill the whole tunnel. Instead
         # the attacher forwards an ephemeral local port to the remote's bus and DIALS it; the peering
         # protocol (stage 2) is duplex over that one connection, so the remote never needs a path back.
-        return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
+        argv = ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
                 ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
-                 "-L", "%d:127.0.0.1:%d" % (r["bus_port"], BUS_PORT),
-                 r["host"]])
+                 "-L", "%d:127.0.0.1:%d" % (r["bus_port"], BUS_PORT)])
+        if r.get("checkin"):
+            # CHECK-IN (stage 3): the SAME outbound ssh also publishes this machine to the hub —
+            # reverse forwards land our kernel + bus on the hub's loopback, and the handshake
+            # (_checkin_handshake, once per tunnel incarnation) tells it the ports + hands over our
+            # token. All credentials flow OUTWARD: the hub never holds a way into this machine.
+            argv += ["-R", "%d:127.0.0.1:%d" % (r["rk_port"], PORT),
+                     "-R", "%d:127.0.0.1:%d" % (r["rb_port"], BUS_PORT)]
+        return argv + [r["host"]]
     return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
             ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
              "-R", "%d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT),
@@ -3576,6 +3583,113 @@ def _notify_bus_peer(host, port, up):
         return ok
     except Exception:
         return False
+
+
+# ── check-in (peer-bus stage 3, plans/postal-peer-buses.md; resolved decisions 1-3) ─────────────────
+# The MOBILE machine publishes itself to a hub over its own outbound ssh: checkin_set flags an attached
+# row, the tunnel gains -R forwards for our kernel + bus, and once the tunnel is up the handshake POSTs
+# {host, ports, token} to the hub's /checkin. The HUB records it like an attached remote (checkin_apply)
+# except it owns no ssh — the mobile supervises its own tunnel, so the attach supervisor's keep-alive IS
+# the keep-connected behavior. Unchecking = checkout: the hub forgets the row + token.
+
+def _self_host():
+    """This machine's name in a check-in handshake (the hub's key for us). Short hostname;
+    ROMP_HOST_NAME overrides (tests; unusual naming)."""
+    import socket
+    return os.environ.get("ROMP_HOST_NAME") or socket.gethostname().split(".")[0]
+
+
+def checkin_set(host, on):
+    """Flip CHECK-IN on an attached host (the popover's keep-connected checkbox drives this).
+    Enabling picks the reverse-forward ports and bounces the tunnel so the new argv takes effect;
+    disabling clears the flag, tells the hub to forget us (best-effort), and bounces back to plain
+    attach. Returns the public row, or None for an unknown host."""
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is None:
+            return None
+        r["checkin"] = bool(on)
+        if on:
+            r.setdefault("rk_port", _free_port())
+            r.setdefault("rb_port", _free_port())
+        r.pop("_handshook", None)
+        proc = r.get("proc")
+    if not on:
+        _checkin_stop_hub(r)
+    if proc:
+        try:
+            proc.terminate()               # the supervisor respawns with the new argv on its next pass
+        except Exception:
+            pass
+    _tunnel_wake.set()
+    _remotes_save()
+    with _remotes_lock:
+        return _remote_public(_remotes[host]) if host in _remotes else None
+
+
+def _checkin_payload(r):
+    return {"host": _self_host(), "kernelPort": r.get("rk_port"), "busPort": r.get("rb_port"),
+            "token": _load_token()}
+
+
+def _checkin_handshake(r):
+    """Tell the hub (through our own -L to its kernel) where our reverse forwards landed and hand it
+    our token — the PUSH that replaces the hub ever fetching credentials. True on ack; the caller
+    records success per tunnel incarnation and retries otherwise."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", r["local_port"], timeout=4)
+        conn.request("POST", "/checkin", json.dumps(_checkin_payload(r)),
+                     {"Content-Type": "application/json"})
+        ok = conn.getresponse().status == 200
+        conn.close()
+        return ok
+    except Exception:
+        return False
+
+
+def _checkin_stop_hub(r):
+    """Best-effort checkout notice while our tunnel still stands. A vanished tunnel needs none: the
+    hub's supervisor sees the dead forward and marks us down on its own."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", r["local_port"], timeout=3)
+        conn.request("POST", "/checkin/stop", json.dumps({"host": _self_host()}),
+                     {"Content-Type": "application/json"})
+        conn.getresponse()
+        conn.close()
+    except Exception:
+        pass
+
+
+def checkin_apply(body):
+    """The HUB side of a handshake: record the mobile machine like an attached remote — same registry,
+    same federation row, same stage-1 bus notify — except we own NO ssh (proc None; the mobile
+    supervises its tunnel; a dead forward reads down and the next handshake heals). An existing
+    ssh-attached row by the same name is refused: the two ownership models must never mix silently."""
+    host = str((body or {}).get("host") or "").strip()
+    kp, bp = (body or {}).get("kernelPort"), (body or {}).get("busPort")
+
+    def _bad(p):
+        return not isinstance(p, int) or isinstance(p, bool) or not (0 < p < 65536)
+    if not host or _bad(kp) or _bad(bp):
+        return {"ok": False, "error": "host, kernelPort, busPort required"}, 400
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is not None and not r.get("checkin_peer"):
+            return {"ok": False, "error": "host '%s' is already an ssh-attached remote here" % host}, 409
+        _remotes[host] = {"host": host, "checkin_peer": True, "kernel_port": kp, "local_port": kp,
+                          "bus_port": bp, "token": str((body or {}).get("token") or ""),
+                          "proc": None, "status": "connecting", "detail": "", "sids": []}
+    _remotes_save()
+    _tunnel_wake.set()                     # poll it now: the row reads up within one supervisor pass
+    return {"ok": True, "host": host}, 200
+
+
+def checkin_stop(host):
+    """Checkout: forget a checked-in host (only — never an ssh-attached row). detach_remote pops the
+    row, and with it the pushed token, and notifies the bus the peer is down."""
+    with _remotes_lock:
+        is_ci = bool(_remotes.get(host, {}).get("checkin_peer"))
+    return detach_remote(host) if is_ci else False
 
 
 # ── remote-kernel bootstrap ("install romp normally, then attach just works" — the user 2026-07-03) ──
@@ -3685,6 +3799,8 @@ def _remote_public(r):
     drift = _behind_info(r.get("kernel_sha") or "") if ood else {"behind": 0, "ahead": 0, "date": ""}
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
             "busPort": r.get("bus_port") or 0,   # peer-bus mode: a restarted bus reseeds its peer table from this
+            "checkin": bool(r.get("checkin")),           # we publish ourselves to this hub (stage 3)
+            "checkinPeer": bool(r.get("checkin_peer")),  # this host checked in to US (no ssh of ours)
             "token": r.get("token") or "", "status": r.get("status") or "down",
             "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
@@ -4139,7 +4255,10 @@ def _tunnel_supervisor():
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
-                    if not _tunnel_proc_alive(r):
+                    if not r.get("checkin_peer") and not _tunnel_proc_alive(r):
+                        # (A checked-in host owns NO ssh here — the mobile machine supervises its own
+                        # tunnel, so there is nothing to spawn or back off; its status comes purely
+                        # from polling the reverse-forwarded port below.)
                         # BACK OFF re-spawns (exponential, capped 5min) so an unreachable host isn't hammered
                         # every tick — repeated ssh attempts can trip the remote sshd's rate-limit (the user
                         # 2026-06-30). A healthy tunnel resets the backoff below.
@@ -4160,7 +4279,12 @@ def _tunnel_supervisor():
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
-                    st = _tunnel_status(_tunnel_proc_alive(r), up, sids is not None)
+                    if r.get("checkin_peer"):
+                        # the reverse forward IS the liveness: answering → up; port open but silent →
+                        # no-kernel; closed → down (the mobile left; its next handshake heals the row)
+                        st = "up" if (up and sids is not None) else ("no-kernel" if up else "down")
+                    else:
+                        st = _tunnel_status(_tunnel_proc_alive(r), up, sids is not None)
                     if not (st == "down" and r.get("status") == "error") and not r.get("booting"):
                         r["status"] = st                   # keep a richer spawn-error label over plain 'down';
                         #                                    a Start in flight (`booting`) owns the row's phase
@@ -4191,6 +4315,15 @@ def _tunnel_supervisor():
                         with _remotes_lock:
                             if r["host"] in _remotes:
                                 r["_peer_up"] = peer_up
+                if _postal_peers_on() and r.get("checkin") and peer_up:
+                    # CHECK-IN handshake, once per tunnel incarnation (keyed on the ssh pid): the hub
+                    # learns our reverse-forward ports + token the moment our tunnel answers. A failed
+                    # handshake retries every pass while the tunnel is up — the hub may be restarting.
+                    pid = r["proc"].pid if r.get("proc") else 0
+                    if r.get("_handshook") != pid and _checkin_handshake(r):
+                        with _remotes_lock:
+                            if r["host"] in _remotes:
+                                r["_handshook"] = pid
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
         _tunnel_wake.wait(15)
@@ -12672,6 +12805,35 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "detached": detach_remote(host)}), "application/json")
+            if u.path == "/tunnels/checkin":
+                # Flip CHECK-IN on an attached host (the keep-connected checkbox). Body: {"host", "on"}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                pub = checkin_set(host, bool((body or {}).get("on")))
+                if pub is None:
+                    return self._send(404, json.dumps({"ok": False, "error": "no attached host '%s' — attach it first" % host}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/checkin":
+                # A mobile machine's check-in handshake arriving through its own reverse forward.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                payload, status = checkin_apply(body if isinstance(body, dict) else {})
+                return self._send(status, json.dumps(payload), "application/json")
+            if u.path == "/checkin/stop":
+                # Checkout: the mobile machine asks to be forgotten (its tunnel is about to drop).
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                return self._send(200, json.dumps({"ok": True, "stopped": checkin_stop(host)}), "application/json")
             if u.path == "/tunnels/update":
                 # PUSH the local kernel's committed code to a remote (peer-to-peer, no GitHub) + restart it.
                 # Body: {"host": <ssh alias>}. The blocking ssh (git push + reset + restart) is fine on the

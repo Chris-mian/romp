@@ -6140,3 +6140,78 @@ class PostalPeerTunnels(unittest.TestCase):
                              "postal down → False, never an exception (the supervisor must survive)")
         finally:
             km.BUS_PORT = saved
+
+
+class CheckinMechanics(unittest.TestCase):
+    """Peer-bus stage 3a (plans/postal-peer-buses.md; resolved decisions 1-3): the mobile machine
+    publishes itself to a hub over its own OUTBOUND ssh — reverse forwards plus a token-PUSH
+    handshake — and the hub records it like an attached remote it owns no ssh for. All credentials
+    flow outward; the hub never holds a way into the mobile machine."""
+
+    def tearDown(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+        os.environ.pop("ROMP_HOST_NAME", None)
+        km._remotes.pop("TESTHOST", None)
+        km._remotes.pop("hubhost", None)
+
+    def test_checkin_argv_adds_the_reverse_forwards(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "1"
+        r = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002,
+             "checkin": True, "rk_port": 50003, "rb_port": 50004}
+        argv = km._tunnel_argv(r)
+        self.assertIn("50003:127.0.0.1:%d" % km.PORT, argv, "-R publishes our kernel on the hub")
+        self.assertIn("50004:127.0.0.1:%d" % km.BUS_PORT, argv, "-R publishes our bus on the hub")
+        self.assertEqual(argv.count("-R"), 2)
+
+    def test_plain_peer_attach_argv_has_no_reverse_forwards(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "1"
+        r = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002}
+        self.assertNotIn("-R", km._tunnel_argv(r))
+
+    def test_checkin_payload_pushes_ports_and_token(self):
+        os.environ["ROMP_HOST_NAME"] = "TESTHOST"
+        p = km._checkin_payload({"rk_port": 50003, "rb_port": 50004, "local_port": 50001})
+        self.assertEqual((p["host"], p["kernelPort"], p["busPort"]), ("TESTHOST", 50003, 50004))
+        self.assertTrue(p["token"], "the token is HANDED to the hub — it never fetches credentials")
+
+    def test_checkin_apply_records_a_sshless_row(self):
+        payload, status = km.checkin_apply({"host": "TESTHOST", "kernelPort": 50003,
+                                            "busPort": 50004, "token": "tok"})
+        self.assertEqual(status, 200)
+        r = km._remotes["TESTHOST"]
+        self.assertTrue(r["checkin_peer"])
+        self.assertIsNone(r["proc"], "the hub owns no ssh for a checked-in host")
+        self.assertEqual((r["local_port"], r["bus_port"], r["token"]), (50003, 50004, "tok"))
+
+    def test_checkin_apply_validates_and_refuses_hijack(self):
+        for bad in ({}, {"host": "x"}, {"host": "x", "kernelPort": 1},
+                    {"host": "x", "kernelPort": 0, "busPort": 5},
+                    {"host": "x", "kernelPort": True, "busPort": 5}):
+            payload, status = km.checkin_apply(bad)
+            self.assertEqual(status, 400, repr(bad))
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 1, "proc": None}
+        payload, status = km.checkin_apply({"host": "TESTHOST", "kernelPort": 50003, "busPort": 50004})
+        self.assertEqual(status, 409, "an ssh-attached row is never silently converted")
+
+    def test_checkin_set_flags_ports_and_checkout_clears(self):
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001,
+                                   "bus_port": 50002, "proc": None, "status": "up", "detail": "", "sids": []}
+        saved = km._checkin_stop_hub
+        km._checkin_stop_hub = lambda r: None
+        try:
+            pub = km.checkin_set("TESTHOST", True)
+            self.assertTrue(pub["checkin"])
+            self.assertTrue(km._remotes["TESTHOST"].get("rk_port"), "enable picks the reverse-forward ports")
+            pub = km.checkin_set("TESTHOST", False)
+            self.assertFalse(pub["checkin"], "checkout clears the flag")
+            self.assertIsNone(km.checkin_set("NOSUCH", True), "unknown host: attach it first")
+        finally:
+            km._checkin_stop_hub = saved
+
+    def test_checkin_stop_only_forgets_checked_in_rows(self):
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 1, "proc": None}
+        self.assertFalse(km.checkin_stop("TESTHOST"), "an ssh-attached row is not checkout-able")
+        km._remotes["hubhost"] = {"host": "hubhost", "checkin_peer": True, "kernel_port": 5,
+                                  "local_port": 5, "bus_port": 6, "proc": None}
+        self.assertTrue(km.checkin_stop("hubhost"))
+        self.assertNotIn("hubhost", km._remotes, "checkout forgets the row and the pushed token with it")
