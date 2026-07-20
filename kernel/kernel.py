@@ -2439,6 +2439,9 @@ def _commands_for_cwd(cwd):
 # The auto-retry / "Retry now" message romp injects into an API-error-blocked session (the apiRetry route).
 # The romp-injected marker makes author_of return 'romp' (gray bubble) and the planner skip a work-less retry.
 RETRY_MSG = "retry\n\n<!-- romp-injected -->"
+# sid → the error-record uuid its last retry was sent FOR (the one-retry-per-error-episode gate in the
+# apiRetry route). A new error record = a new episode = one more retry; recovery = no key = no retries.
+_auto_retried = {}
 
 
 def _predict_working(flavor, ids=None, sid=None):
@@ -2645,6 +2648,31 @@ def _drive(msg, client):
                     return
             except Exception:
                 pass                                          # a backend without a live queue → fall through, send
+        # ONE RETRY PER ERROR EPISODE (the user 2026-07-20, the retry-storm root cause): the queued check
+        # above goes blind the moment a retry FORWARDS into the CLI — pending_queued empties while the
+        # session still reads blocked (the same mid-turn-forward seam as the echo-durability fixes) — and
+        # the 10s tick runs PER OPEN VIEW, so every connected client stacked another "retry" into the
+        # CLI's belly each cycle; a wedged session collected hundreds, delivered as one flood when its
+        # turn finally opened. Event-based fix: the CURRENT error record's uuid IS the episode. An
+        # auto-retry fires once per episode; the next fires only when a NEW error record lands (the
+        # attempt actually ran and failed again) or the error cleared (then there is nothing to retry —
+        # a stale client tick into a recovered session sends nothing). A manual Retry-now always fires,
+        # and stamps the episode too, so the auto loop never stacks a second attempt behind the user's.
+        _rk = None
+        try:
+            _rerr = _api_error(_path_of(sid) or "")
+            _rk = (_rerr.get("uuid") or _rerr.get("text") or "") if _rerr else None
+        except Exception:
+            pass                                              # unreadable state → manual still fires below
+        if not msg.get("manual"):
+            if _rk is None:
+                return                                        # not api-blocked right now → nothing to retry
+            if _auto_retried.get(sid) == _rk:
+                return                                        # this episode already got its retry
+        if _rk is not None:
+            if len(_auto_retried) > 256:
+                _auto_retried.clear()
+            _auto_retried[sid] = _rk
         # ALWAYS mark the retry romp-injected → GRAY romp bubble on BOTH backends (the user 2026-06-30): an
         # auto-retry is romp's action, not the human's. Without the marker the SDK retry was authored 'human'
         # (promptSource 'sdk' + sdk_human → blue bubble) AND the planner mis-read each bare "retry" as a user
@@ -5165,6 +5193,9 @@ def _api_error(path):
                         # errors are transient (auto-retry recovers them) and stay in Working.
                         err = {"text": text, "status": o.get("apiErrorStatus"),
                                "category": o.get("error") or "unknown",
+                               # the error RECORD's identity — a new failed attempt writes a new record,
+                               # so this uuid IS the error episode (one auto-retry per episode, apiRetry)
+                               "uuid": o.get("uuid"),
                                "tooLong": "too long" in text.lower(),
                                # a spend cap is on YOU (raise it), like tooLong — but ALSO stops the
                                # auto-retry entirely (no reset to wait out); see _auto_pause_on_spend_limit
@@ -6924,6 +6955,17 @@ def build_session(sid, now, tmux=None):
         be = _sdk()
         if be and be.owns(sid):            # SDK session with no transcript on disk yet → build from live tail/empty
             sess = _sdk_sess(sid, now)
+    if not sess and sid in tmux:
+        # A LIVE tmux session discovery can't see yet — brand-new, the TUI hasn't written its first
+        # transcript record (a ~7s boot window). Returning None here left the session FRAMELESS: no
+        # session frame exists, so nothing can carry its input echo or queued bubble, and the first
+        # message typed into a just-created session was invisible until the transcript appeared (the
+        # user 2026-07-20: the UI must respond even when the kernel can't get the session going yet).
+        # Synthesize the same transcriptless entry the SDK path gets — the sentinel path never exists,
+        # _parse returns an empty session, the live-echo merge + queued indicator render onto it, and
+        # discovery takes over the moment the real transcript lands.
+        sess = {"sid": sid, "name": _name_of(sid) or sid[:8],
+                "path": str(jd.STATE / "boot-stub" / (sid + ".jsonl")), "mtime": now}
     if not sess:
         return None
     # Messages QUEUED in the TUI (submitted while busy/compacting) — folded EVENT-BASED by the owning backend:

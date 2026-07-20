@@ -69,12 +69,26 @@ class ApiRetryRendersAsRomp(unittest.TestCase):
 class ApiRetryIdempotency(unittest.TestCase):
     """Drive _drive({type:'apiRetry'}) with a stubbed backend + gate globals and observe what gets sent."""
     def setUp(self):
-        self._saved = (km.Sessions, km._retry_paused_on, km._session_retry_suppressed)
+        self._saved = (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
+                       km._api_error, km._path_of)
         km._retry_paused_on = lambda: False
         km._session_retry_suppressed = lambda sid: False
+        # the one-retry-per-error-episode gate (2026-07-20) reads the CURRENT error record; these tests
+        # exercise the queued-idempotency layer, so give each its own live error episode (fresh uuid per
+        # test via the counter) — episode semantics themselves are pinned by test_kernel_retry_episode.py
+        self._ep = {"n": 0}
+        def _aerr(path):
+            self._ep["n"] += 1
+            return {"text": "500", "status": 500, "category": "server_error",
+                    "uuid": "ep-%d" % self._ep["n"], "tooLong": False, "spendLimit": False}
+        km._api_error = _aerr
+        km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
+        km._auto_retried.clear()
 
     def tearDown(self):
-        km.Sessions, km._retry_paused_on, km._session_retry_suppressed = self._saved
+        (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
+         km._api_error, km._path_of) = self._saved
+        km._auto_retried.clear()
 
     def _drive_retry(self, be, **msg):
         km.Sessions = types.SimpleNamespace(backend_for=lambda sid: be)
