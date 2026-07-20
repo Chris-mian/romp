@@ -18,9 +18,11 @@ working on, surfacing what needs your attention and keeping the rest moving on
 its own.
 
 Romp is built on top of Claude Code: the agents it manages are ordinary
-Claude Code sessions, gathered into one live dashboard. Run it on your laptop
-or a server, and open the dashboard in a browser, on
-[your phone](guide.md#your-phone), or in the VS Code / Cursor extension.
+Claude Code sessions, gathered into one live dashboard. Run it on your laptop,
+on a server, or across several machines that
+[link into one fleet](guide.md#more-machines-one-fleet). You open that dashboard
+the same way from anywhere: a browser, [your phone](guide.md#your-phone), or the
+VS Code / Cursor extension.
 
 Its key features:
 
