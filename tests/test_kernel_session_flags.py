@@ -77,9 +77,23 @@ class AutoNudgeWiring(unittest.TestCase):
         jd.STATE = Path(td.name)
         km._autonudge_cache.clear()
         try:
-            self.assertFalse(km._version_info()["autoNudge"], "off by default")
+            self.assertTrue(km._version_info()["autoNudge"], "on by default (no state file)")
+            km._set_auto_nudge(False)
+            self.assertFalse(km._version_info()["autoNudge"], "an explicit off is respected")
             km._set_auto_nudge(True)
             self.assertTrue(km._version_info()["autoNudge"], "the gear reads the kernel's authoritative state")
+        finally:
+            jd.STATE = saved
+            td.cleanup()
+
+    def test_default_on_even_when_state_file_lacks_the_key(self):
+        saved = jd.STATE
+        td = tempfile.TemporaryDirectory()
+        jd.STATE = Path(td.name)
+        km._autonudge_cache.clear()
+        try:
+            (Path(td.name) / "auto-nudge.json").write_text('{"nudged": {}}')  # present, no "enabled" key
+            self.assertTrue(km._auto_nudge_on(), "a state file missing the enabled key still defaults on")
         finally:
             jd.STATE = saved
             td.cleanup()

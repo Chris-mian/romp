@@ -1015,7 +1015,8 @@ def _set_session_flag(sid, flag, value):
 # turn is nudged exactly ONCE: a stop that persists across several pusher ticks must NOT re-fire each tick
 # (the user 2026-06-26: that produced two nudges ~6s apart in one stop before the agent had consumed the
 # first — the 2nd landed as a type:attachment as the session resumed, so it rendered without the romp logo).
-# Off by default. State: auto-nudge.json {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each
+# On by default; an explicit {"enabled": false} in auto-nudge.json still turns it off. State: auto-nudge.json
+# {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
 AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anything blocked waiting on a decision from me?"   # the auto-nudge ask (the manual feed Nudge button was removed 2026-06-30); phrased like a person checking in, not a status form (g13)
 # The FORK nudge (plans/stalled-open-todos-nudge.md, the user 2026-07-01): sent INSTEAD of AUTO_NUDGE_TEXT
@@ -1035,7 +1036,7 @@ def _auto_nudge_data():
     try:
         st = p.stat(); key = (st.st_mtime_ns, st.st_size)
     except OSError:
-        return {"enabled": False, "nudged": {}}
+        return {"enabled": True, "nudged": {}}
     hit = _autonudge_cache.get(str(p))
     if hit is not None and hit[0] == key:
         return hit[1]
@@ -1045,7 +1046,7 @@ def _auto_nudge_data():
             d = {}
     except Exception:
         d = {}
-    d.setdefault("enabled", False)
+    d.setdefault("enabled", True)
     d.setdefault("nudged", {})         # {gid: {count, lastTurnId}} — re-arm per stall episode (replaces the one-shot "done" list)
     d.pop("done", None)                # drop the vestigial one-shot list (old code wrote it; nothing reads it now) →
     #                                    cleaned from the file on the next write (the user via business 2026-06-22)

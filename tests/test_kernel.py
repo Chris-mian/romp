@@ -2607,10 +2607,11 @@ class ViewBuilder(unittest.TestCase):
 
     def test_auto_nudge_is_a_noop_when_off(self):
         self._orphaned_goal(idle=True)
+        km._set_auto_nudge(False)                                  # explicitly turned off
         sent, restore = self._stub_nudge()
         try:
-            km._auto_nudge_tick(NOW, km._tmux_sessions())          # never enabled
-            self.assertEqual(sent, [], "off by default → no nudges")
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "explicitly off → no nudges")
         finally:
             restore()
 
@@ -2651,7 +2652,7 @@ class ViewBuilder(unittest.TestCase):
             restore()
 
     def test_auto_nudge_storage_round_trip(self):
-        self.assertFalse(km._auto_nudge_on(), "off by default")
+        self.assertTrue(km._auto_nudge_on(), "on by default")
         km._set_auto_nudge(True); self.assertTrue(km._auto_nudge_on())
         km._mark_auto_nudged(SID + ":g1", "turn-A", 1)
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"],
