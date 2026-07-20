@@ -22,7 +22,7 @@ import { reconcileTabOrder } from "./tab-order";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
-import { previewKind, previewThumb, canPreview } from "./preview";
+import { previewKind, previewFull, canPreview } from "./preview";
 import { hostNameNodes } from "./host-prefix";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip } from "./strip";
@@ -695,7 +695,9 @@ function buildPathImg(p: string): HTMLElement {
   fillPathImg(wrap, p);
   if (!imgUrlCache.has(p) && !imgFailed.has(p) && !imgRequested.has(p)) {
     imgRequested.add(p);
-    if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p });
+    // id → the kernel resolves a RELATIVE path against this session's cwd (assistant-mentioned
+    // "plots/out.png" renders too, not just absolute user-attachment paths — the user 2026-07-20)
+    if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: activeId });
   }
   return wrap;
 }
@@ -873,16 +875,24 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
     tn.replaceWith(frag);
   }
-  // A mentioned image/PDF also renders as a click-to-expand THUMBNAIL under the message (the user
-  // 2026-07-08: "I produced this plot" should SHOW the plot) — web dashboard only (canPreview; the
-  // VS Code webview keeps the plain click-to-open link). Each thumb removes itself when the kernel
-  // can't serve the file, so a stale or hallucinated mention costs nothing. Capped so a message that
-  // enumerates a directory of images doesn't wallpaper the chat; every path stays clickable regardless.
-  if (previewable.length && canPreview()) {
+  // A mentioned image/PDF renders FULL-SIZE under the message (the user 2026-07-20: "not even a
+  // thumbnail — a rendered image, like the user messages"; supersedes the 2026-07-08 thumbnail strip,
+  // which lives on in the feed's artifact strips). Absolute AND relative paths work — the kernel
+  // resolves a relative one against this session's cwd, same as click-to-open. Per surface:
+  //   web       — previewFull: the kernel serves the bytes straight into an <img> at the user-image
+  //               scale / a PDF's native inline viewer; a path the kernel can't serve removes itself.
+  //   VS Code   — the webview sandbox can't reach the kernel origin from an <img>, so an IMAGE rides
+  //               the same host data-URL flow the user-message pictures use (buildPathImg, imgRequest
+  //               now carrying the session id for relative resolution); a PDF keeps its click-to-open
+  //               link (no inline viewer in the sandbox).
+  // Capped so a message that enumerates a directory of images doesn't wallpaper the chat; every path
+  // stays clickable regardless.
+  if (previewable.length) {
     const strip = el("div", "path-thumbs");
     for (const p of previewable.slice(0, 4)) {
-      const th = previewThumb(p, activeId);   // a relative path resolves against the ACTIVE session's cwd, as openPathLink
-      if (th) strip.appendChild(th);
+      const full = canPreview() ? previewFull(p, activeId)
+        : previewKind(p) === "img" ? buildPathImg(p) : null;
+      if (full) strip.appendChild(full);
     }
     if (strip.childElementCount) root.appendChild(strip);
   }

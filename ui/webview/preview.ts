@@ -108,3 +108,37 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
   box.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
   return box;
 }
+
+// FULL-SIZE inline render for a mentioned image/PDF in the CHAT (the user 2026-07-20: "not even a
+// thumbnail — a rendered image, like the user messages"). Same self-verification as previewThumb —
+// a path the kernel can't serve removes itself — and an image click still opens the lightbox. Images
+// render at the user-image scale (.path-full-img mirrors .user-img's 320px cap, one size per
+// information type); a PDF renders its native inline viewer (web only — callers gate on canPreview
+// and fall back per surface). The feed's artifact strips deliberately KEEP previewThumb: cards stay
+// glanceable, the chat is where the full render was asked for.
+export function previewFull(path: string, sid?: string | null): HTMLElement | null {
+  const kind = previewKind(path);
+  if (!kind || !canPreview()) return null;
+  const box = document.createElement("span");
+  box.className = "path-full" + (kind === "pdf" ? " pdf" : "");
+  box.title = path;
+  if (kind === "pdf") {
+    const frame = document.createElement("iframe");
+    frame.className = "path-full-pdf";
+    frame.src = fileUrl(path, sid);
+    frame.title = path;
+    box.appendChild(frame);
+    // an iframe can't self-verify like an <img> — HEAD-probe so a missing PDF never leaves a dead frame
+    fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) box.remove(); }).catch(() => box.remove());
+  } else {
+    const img = document.createElement("img");
+    img.className = "path-full-img";
+    img.src = fileUrl(path, sid);
+    img.alt = path;
+    img.loading = "lazy";
+    img.onerror = () => box.remove();
+    img.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
+    box.appendChild(img);
+  }
+  return box;
+}

@@ -12978,8 +12978,13 @@ class Handler(BaseHTTPRequestHandler):
                 _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
         # ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel) ----
         elif msg and msg.get("type") == "imgRequest" and msg.get("path"):
-            p = str(msg["path"])                                  # path:<abs> image → a data: URL the <img> can show
-            _reply(client, {"type": "imgData", "path": p, "url": _img_data_url(p)})
+            p = str(msg["path"])                                  # image path → a data: URL the <img> can show
+            # resolve ~ AND a relative path against the session's cwd (msg.id), exactly like click-to-open
+            # and /file — so an assistant-mentioned "plots/out.png" renders in the VS Code webview too,
+            # not just absolute user-attachment paths (the user 2026-07-20). The reply keys on the RAW
+            # requested path: that's what the client's element cache is waiting on.
+            _reply(client, {"type": "imgData", "path": p,
+                            "url": _img_data_url(_resolve_open_path(p, msg.get("id")))})
         elif msg and msg.get("type") == "dropFile" and msg.get("name") and msg.get("b64"):
             fp = _save_dropped_file(str(msg["name"]), str(msg["b64"]))   # bytes → saved file → insert its path
             if fp:

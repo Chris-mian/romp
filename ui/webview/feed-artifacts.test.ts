@@ -38,12 +38,14 @@ test("preview.ts: lightbox is a singleton overlay — img or native-viewer ifram
   assert.match(PREVIEW, /wrap\.onclick = \(ev\) => \{ if \(ev\.target === wrap\) dismiss\(\); \};/, "backdrop closes; content clicks don't");
 });
 
-test("chat: a mentioned image/PDF grows a thumbnail strip under the message, deduped and capped", () => {
-  assert.match(RENDER, /import \{ previewKind, previewThumb, canPreview \} from "\.\/preview";/);
-  assert.match(RENDER, /if \(previewKind\(open\) && !previewable\.includes\(open\) && !\(skipThumbs && skipThumbs\.includes\(open\)\)\) previewable\.push\(open\);/, "collected while linkifying — same detection, no second regex pass; an in-bubble image never re-thumbs");
-  assert.match(RENDER, /if \(previewable\.length && canPreview\(\)\) \{/, "web dashboard only; VS Code keeps the plain link");
+test("chat: a mentioned image/PDF grows a FULL-render strip under the message, deduped and capped", () => {
+  // (the user 2026-07-20: full renders replaced the 2026-07-08 thumbnails in the CHAT — the feed's
+  // artifact strips below keep previewThumb; chat-inline-preview.test.ts pins the full-render shape)
+  assert.match(RENDER, /import \{ previewKind, previewFull, canPreview \} from "\.\/preview";/);
+  assert.match(RENDER, /if \(previewKind\(open\) && !previewable\.includes\(open\) && !\(skipThumbs && skipThumbs\.includes\(open\)\)\) previewable\.push\(open\);/, "collected while linkifying — same detection, no second regex pass; an in-bubble image never re-renders");
+  assert.match(RENDER, /if \(previewable\.length\) \{/, "both surfaces now — VS Code images ride the host data-URL flow");
   assert.match(RENDER, /previewable\.slice\(0, 4\)/, "capped so a directory listing doesn't wallpaper the chat");
-  assert.match(RENDER, /previewThumb\(p, activeId\)/, "relative paths resolve against the ACTIVE session's cwd, as openPathLink");
+  assert.match(RENDER, /previewFull\(p, activeId\)/, "relative paths resolve against the ACTIVE session's cwd, as openPathLink");
 });
 
 test("feed card: 'N artifacts' rides the bottom of the summary section and opens the modal", () => {
