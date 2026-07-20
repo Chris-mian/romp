@@ -27,7 +27,7 @@ Its key features:
 <!-- Feature sections. Real captures live in docs/assets/; the README points at the same files.
      The docs home embeds the MP4 in a <video> for the last feature; the README embeds the GIF. -->
 
-## Every session on one timeline
+## Every session, one timeline
 
 What's running, what's stuck, and what needs your attention.
 

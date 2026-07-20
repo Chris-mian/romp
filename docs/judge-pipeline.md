@@ -41,6 +41,7 @@ systems, so each gets its own figure.
 search — and never touches a card. Every arrow is unconditional.
 
 ```mermaid
+%%{init: {'theme':'dark'}}%%
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
     M --> GI["gister:<br/>topic phrase: the Analyzing<br/>card + the timeline dot"]:::idx
@@ -58,6 +59,7 @@ are deterministic checks, not model calls, and they are why nothing here
 follows the clock.
 
 ```mermaid
+%%{init: {'theme':'dark'}}%%
 flowchart LR
     M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det
     M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board right now<br/>(<code>mint</code> or <code>sub</code> only)"]:::llm
@@ -155,6 +157,7 @@ done without this work? No card qualifies, mint a new one. Everything after
 that answer is mechanical, including where inside the card the work lands.
 
 ```mermaid
+%%{init: {'theme':'dark'}}%%
 flowchart TD
     M["a segment's work"]:::det --> Q{"which card needs it?"}:::llm
     Q -->|none| MINT["mint a new card"]:::det
@@ -188,6 +191,7 @@ grouper and consolidator never appear as sources: they move whole subtrees,
 they never judge.
 
 ```mermaid
+%%{init: {'theme':'dark'}}%%
 stateDiagram-v2
     [*] --> Open : mint
     Open --> Done : done
@@ -232,6 +236,7 @@ reads the body for the receiving-side truth. Only a real handoff makes
 cards: one in each tree, linked, and the link checks itself off.
 
 ```mermaid
+%%{init: {'theme':'dark'}}%%
 flowchart TD
     S["send_message(to, body, kind)<br/>kind: delegate, coordinate, or question"]:::det --> C{"courier: did work<br/>actually change hands?"}:::llm
     C -->|yes| P["goal planted in the recipient's tree<br/>+ tracking node in the sender's"]:::det

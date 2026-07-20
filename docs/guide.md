@@ -1,49 +1,48 @@
 # Guide
 
-New to Romp? [Install it first](install.md), then come back here.
+Romp gathers a fleet of Claude Code sessions into a single dashboard you can
+watch and steer. You see it through four views, each answering a different
+question:
 
-Romp turns a fleet of Claude Code sessions into one thing you can watch and
-steer. It reads each session's transcript as it grows, groups the work into
-task cards, surfaces what needs a decision from you, and keeps everything else
-moving on its own. You see all of it through four views of the same live
-state, each answering a different question:
+- **The chat** is the normal way you talk to a coding agent, made easy to scan:
+  turns read as gists and tool calls fold away, with every detail one click
+  deeper.
+- **The feed** is the task layer: Romp finds the discrete tasks in each
+  session's work and shows them as cards. One session can produce several, and
+  a single task can run across sessions.
+- **The outline** lists every session with its tasks, for reviewing what a
+  session has done and searching across the whole fleet.
+- **The timeline** shows what each session has been doing over time, and how
+  they have been coordinating with one another.
 
-- **The chat** drives one agent: its transcript, condensed so you can scan it.
-- **The feed** is where you spend most of your time: the work as task cards,
-  sorted into moving on its own, needs you, and done.
-- **The outline** is for finding things: every session with its tasks, all
-  searchable.
-- **The timeline** shows coordination: the sessions over time and the messages
-  that pass between them.
+## The views
 
 ![The dashboard: chat, outline, and feed over one fleet](assets/guide/dashboard-annotated.png){ width="100%" }
 
-## The chat
+### The chat
 
 The transcript, condensed for scanning: turns read as gists, tool calls fold
-into runs, and every detail stays one click deeper. Expand a run for its
-calls, and a call for its full input and output.
+into runs, and every detail stays one click deeper. Expand a run for its calls,
+and a call for its full input and output.
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
-## The feed and task cards
+### The feed and task cards
 
-Romp organizes what the agents do into task cards, so you follow the work by
-outcome instead of scrolling transcripts. Cards land in three columns: moving
-on its own, waiting on you, and finished. A completed card carries its
-takeaway, so you read the outcome without opening anything.
+The feed is the one view without an everyday equivalent, so it is worth a
+moment. Instead of reading transcripts to track what each agent did, you read
+task cards: Romp's [judges](judges.md) watch each session's work, break it into
+discrete tasks, and keep every card current, with no reporting step for the
+agent and no filing step for you. Cards land in three columns: moving on its
+own, waiting on you, and finished. A completed card carries its takeaway, so
+you read the outcome without opening anything.
 
 ![The feed's three columns, with the cues on a card](assets/guide/feed-annotated.png){ width="100%" }
 
-The cards are generated automatically: Romp's judges read each session's
-transcript as it grows, group the work into tasks, and keep every card's
-status and summary current, with no reporting step for the agent and no filing
-step for you.
-
-The title is the gist. **Background** is why the work exists: what led to it
-and whose ask it is. **Summary** is what the agent did, written to stand on its
-own. Sub-tasks nest beneath when the work splits. Each level is one click, so
-you spend attention only where the work earns it.
+The title is the gist. **Background** is why the work exists: what led to it and
+whose ask it is. **Summary** is what the agent did, written to stand on its own.
+Sub-tasks nest beneath when the work splits. Each level is one click, so you
+spend attention only where the work earns it.
 
 ![The anatomy of a task card](assets/guide/card-anatomy.png){ width="100%" }
 
@@ -51,17 +50,18 @@ Cards follow the work rather than the session: a session that interleaves
 several efforts gets a card per effort, and one effort handed across sessions
 stays a single card, so a handoff never drops a thread. Summaries favor the
 latest stretch of work, and a card you return to after hours away tells you
-what changed since you last looked. When you're done with a card, **Clear** it
-(**Undo clear** brings it back); cleared cards are archived.
+what changed since you last looked. When you're done with a card, **Clear** it;
+cleared cards are archived.
 
-## The outline
+### The outline
 
 Every session with its task tree: open work stays up top, finished work folds
-beneath, and the search box reaches all of it.
+beneath. Open the outline to review what a session has worked through, or to
+find past work: the search box reaches every session, live or closed.
 
 ![The outline: each session's tasks as a tree](assets/guide/outline.png){ width="100%" }
 
-## The timeline
+### The timeline
 
 Each lane is one session; bars are stretches of work.
 
@@ -71,29 +71,20 @@ The story of any bar is a hover away:
 
 ![Hovering a bar pops what happened and when](assets/guide/timeline-hover.png){ width="100%" }
 
-### Status colors
+A session wears the same color for its state everywhere it appears: its tab, its
+timeline lane, its cards.
 
-A session wears the same color for the same state everywhere it appears: on its
-tab, its timeline lane, and its cards.
-
-![Session states and what each means](assets/guide/status-legend.png){ width="70%" }
-
-- **Working** (yellow): the agent is running.
-- **Ready** (blue): idle, waiting for your next message.
-- **Blocked** (red): a prompt or decision needs you.
-- **Awaiting** (straw): idle, waiting on background work it started.
-- **Compacting** (teal): compacting its context.
-- **API error** (bright red): the session stopped on an API error.
+![Each session state and what its color means](assets/guide/status-legend.png){ width="70%" }
 
 ## Automatic nudges
 
-An agent that goes idle with open work gets nudged back to it, so progress does
-not wait on you noticing a stall.
+To keep agents moving forward whenever your input isn't needed, Romp nudges a
+stalled session back to its open work: when it hit an API error, when it was
+interrupted, or when it simply stopped with a task still open and never said
+whether the task was done.
 
-Claude Code sessions routinely stop with to-dos still open. With auto-nudge on
-(the gear menu; off by default), Romp notices the stall and asks the agent,
-item by item, where each open piece stands: continue what it can, and say what
-blocks the rest.
+Romp asks the agent, item by item, where each open piece stands: continue what
+it can, and say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
 - If something needs you, the card flips to **Blocked** and names exactly what
@@ -101,21 +92,24 @@ blocks the rest.
 
 Either way you only get pulled in when you are the bottleneck.
 
-Auto-nudge holds off while you are actively driving a session, and it re-arms
-only after a real turn ends, so it never talks over you and never loops on its
-own messages.
+Nudging holds off while you are actively driving a session, and it re-arms only
+after a real turn ends, so it never talks over you and never loops on its own
+messages.
 
-## Messaging between agents
+## Messaging between agents (the Romp Postal Service)
 
 Sessions message each other through a mailbox Romp gives them, and every
 exchange is visible to you. Each session gets mail tools: send a message to a
 session by name, check the inbox, see who is live and what they hold. Agents
-use them to ask each other questions, hand off work, and announce results. You
-watch it happen on the timeline and in the chat.
+use them to ask each other questions, hand off work, and announce results.
+
+You can see which agents have been communicating on the timeline:
 
 ![A message hop between two sessions, with its gist on hover](assets/guide/postal-timeline.png){ width="100%" }
 
-![The same message as the recipient's chat shows it](assets/guide/postal-chat.png){ width="80%" }
+You can also see it in the chat:
+
+![The message as the recipient's chat shows it](assets/guide/postal-chat.png){ width="80%" }
 
 Every message declares what it is: **delegate** (the recipient owns the work
 now), **coordinate** (a heads-up; reply optional), or **question** (an answer
@@ -136,9 +130,6 @@ silently parking mail.
 
 ## Sessions, revival, and search
 
-Nothing gets lost: sessions are named and persistent, closed ones revive with
-their history, and old work stays findable.
-
 A Romp session is a name that outlives any one conversation. Its identity
 survives `/clear`, relaunches, and kernel restarts, and each name keeps its own
 color on every surface, so `api` is the same `api` wherever you see it.
@@ -157,18 +148,18 @@ Which backend a session runs on (Agent SDK or tmux) is a per-session choice;
 
 ## Self-hosted and remote access
 
-You run Romp yourself and reach it from wherever you are, with no hosted service
-in between. The kernel runs on your machine and serves the dashboard on
-`127.0.0.1:7433`, to a browser tab or the VS Code / Cursor extension. Everything
-Romp stores stays local; the only external traffic is the `claude` CLI you
-already use.
+You run Romp on your own machine; there is no hosted service in between. The
+kernel runs there and serves the dashboard on `127.0.0.1:7433`, to a browser
+tab or the VS Code / Cursor extension. Everything Romp stores stays local; the
+only traffic that leaves your machine is `claude` itself, both the agents' own
+model calls and the LLM calls in Romp's judge pipeline.
 
 ### More machines, one fleet
 
-Federation is the heart of remote access: every machine runs its own kernel,
-and attached machines present as a single fleet.
+Federation connects more than one machine: each runs its own kernel, and an
+attached machine's sessions join yours as a single fleet.
 
-![One fleet across your phone, your laptop, and a remote host](assets/guide/federation.png){ width="100%" }
+![One fleet across a phone, a laptop, and a remote server](assets/guide/federation.png){ width="100%" }
 
 Once a host is attached:
 

@@ -1,5 +1,9 @@
 # How Romp works
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp. The Internals section is here for
+    when you're curious how it works under the hood.
+
 Romp is one always-on **kernel**: a single Python process that reads each
 session's Claude Code transcript, builds an event tree, runs the **judges**
 that write the durable records, and serves the four views over HTTP +
@@ -24,6 +28,7 @@ green an LLM caption judge (writes only text), gray deterministic code, yellow
 data at rest, and pink you.
 
 ```mermaid
+%%{init: {'theme':'dark'}}%%
 flowchart LR
     TR[("transcripts")]:::data --> PARSE["parse:<br/>turns, segments"]:::det
     MAIL[("peer mail")]:::data --> PARSE

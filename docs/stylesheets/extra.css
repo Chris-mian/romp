@@ -76,3 +76,8 @@
   transform: none;
   opacity: 1;
 }
+
+/* The header title is clickable and goes home, like the logo. */
+.md-header__title {
+  cursor: pointer;
+}

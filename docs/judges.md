@@ -1,5 +1,9 @@
 # The judges: a field guide
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp. The Internals section is here for
+    when you're curious how the task layer works under the hood.
+
 > The picture first: [judge-pipeline.md](judge-pipeline.md) is the one-page
 > diagram map (when each judge runs, card-first filing, the state machine,
 > the postal flow). This page is the per-judge detail behind it, plus the
