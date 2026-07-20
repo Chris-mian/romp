@@ -164,3 +164,139 @@ class TwoBusExchange(unittest.TestCase):
         host, hit = pm.peer_route("srv:beta")
         self.assertEqual(host, "srv", "host:name breaks the tie")
         self.assertEqual(hit["id"], "sid-b")
+
+
+_C_STATE = tempfile.mkdtemp()
+os.environ["XDG_STATE_HOME"] = _C_STATE
+pmc = SourceFileLoader("romp_postal_peers_c", os.path.join(BIN, "romp-postal-service")).load_module()
+
+
+class ThreeBusRelay(unittest.TestCase):
+    """Spoke-to-spoke through a shared hub (plans/postal-peer-buses.md 3b): A and C each exchange only
+    with hub B. Presence gossips one hop with a `via` label; a relay for a far spoke forwards ONE hop
+    with end-to-end acks relayed backward, so the origin keeps mail parked until the FAR side delivers."""
+
+    def setUp(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "1"
+        self._saved = (pm.self_host, pmb.self_host, pmc.self_host,
+                       pm.local_agents, pmb.local_agents, pmc.local_agents)
+        pm.self_host = lambda: "hosta"
+        pmb.self_host = lambda: "hostb"
+        pmc.self_host = lambda: "hostc"
+        pm.local_agents = lambda: [{"name": "alpha", "id": "sid-a", "dir": ""}]
+        pmb.local_agents = lambda: [{"name": "beta", "id": "sid-b", "dir": ""}]
+        pmc.local_agents = lambda: [{"name": "carol", "id": "sid-c", "dir": ""}]
+        import shutil
+        for m in (pm, pmb, pmc):
+            m.PEER_STATE.clear()
+            m.PEERS.clear()
+            m._peer_pending.clear()
+            m._seen_ids = None
+            shutil.rmtree(m.OUTBOX, ignore_errors=True)
+            shutil.rmtree(m.MAILROOT, ignore_errors=True)
+            try:
+                m.PEER_SEEN.unlink()
+            except Exception:
+                pass
+            m.MAILROOT.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+        (pm.self_host, pmb.self_host, pmc.self_host,
+         pm.local_agents, pmb.local_agents, pmc.local_agents) = self._saved
+
+    def _xchg(self, dialer, dialed, alias):
+        req = dialer.build_exchange_request(alias, wait=False)
+        resp, status = dialed.peer_exchange_handle(req)
+        self.assertEqual(status, 200)
+        dialer.peer_exchange_apply(alias, req, resp)
+
+    def test_far_spoke_gossips_via_the_hub(self):
+        self._xchg(pmc, pmb, "hub")                  # B learns carol
+        self._xchg(pm, pmb, "hub")                   # A learns beta directly and carol via the hub
+        names = {(a.get("name"), a.get("via")) for a in pm.PEER_STATE["hub"]["presence"]}
+        self.assertIn(("beta", None), names)
+        self.assertIn(("carol", "hostc"), names, "the far spoke arrives labeled via, one hop only")
+
+    def test_relay_hops_once_with_end_to_end_acks(self):
+        self._xchg(pmc, pmb, "hub")
+        self._xchg(pm, pmb, "hub")
+        host, hit = pm.peer_route("carol")
+        self.assertEqual(host, "hub", "A reaches carol through the peer it can dial")
+        pm.outbox_put("hub", {"mid": "r1", "to": "carol", "frm": "alpha", "frm_id": "sid-a",
+                              "body": "over the hub", "kind": "delegate", "t": 1})
+        self._xchg(pm, pmb, "hub")                   # A→B: B forwards, does NOT ack yet
+        self.assertEqual(len(pm.outbox_list("hub")), 1,
+                         "the origin keeps it parked until the FAR side's ack (end-to-end)")
+        self.assertEqual(len(pmb.outbox_list("hostc")), 1, "the hub holds it forwarded for C")
+        self._xchg(pmc, pmb, "hub")                  # C→B: the response carries the relay → C delivers
+        box = pmc.read_box("sid-c", consume=True)
+        self.assertEqual(len(box), 1, "delivered on the far spoke")
+        self.assertIn("over the hub", box[0]["body"])
+        self._xchg(pmc, pmb, "hub")                  # C's next request acks → B routes it backward
+        self.assertEqual(pmb.outbox_list("hostc"), [], "C's ack cleared the hub's forward")
+        self._xchg(pm, pmb, "hub")                   # A's next exchange picks the relayed ack up
+        self.assertEqual(pm.outbox_list("hub"), [], "the end-to-end ack finally clears the origin")
+
+    def test_far_bounce_relays_backward_to_the_sender(self):
+        self._xchg(pmc, pmb, "hub")
+        self._xchg(pm, pmb, "hub")
+        pm.outbox_put("hub", {"mid": "r2", "to": "carol", "frm": "alpha", "frm_id": "sid-a",
+                              "body": "too late", "kind": "", "t": 1})
+        self._xchg(pm, pmb, "hub")                   # forwarded
+        pmc.local_agents = lambda: []                # carol died before delivery
+        self._xchg(pmc, pmb, "hub")                  # C receives the relay → bounces it
+        self._xchg(pmc, pmb, "hub")                  # C's bounce rides its next request → B routes backward
+        self._xchg(pm, pmb, "hub")                   # A picks the bounce up → sender gets the note
+        back = pm.read_box("sid-a", consume=True)
+        self.assertEqual(len(back), 1, "the far refusal came all the way back")
+        self.assertIn("undeliverable to 'carol'", back[0]["body"])
+        self.assertEqual(pm.outbox_list("hub"), [], "nothing left parked after a definitive refusal")
+
+    def test_a_hopped_message_never_hops_again(self):
+        m = {"mid": "r3", "to": "nobody-anywhere", "frm": "alpha", "frm_id": "sid-a",
+             "body": "x", "kind": "", "t": 1, "origin": "hosta"}
+        pmb.PEER_STATE["hostc"] = {"presence": [{"name": "nobody-anywhere", "id": "sid-x"}], "seenAt": 1}
+        verdict, bounce = pmb._relay_in("hosta", m)
+        self.assertEqual(verdict, "bounce", "one hop max: an already-hopped message bounces, never re-forwards")
+        self.assertIn("no live session", bounce["why"])
+
+
+class RecallAndReceipts(unittest.TestCase):
+    def setUp(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "1"
+        import shutil
+        shutil.rmtree(pm.OUTBOX, ignore_errors=True)
+        try:
+            (pm.TLDIR / "messages.jsonl").unlink()
+        except Exception:
+            pass
+
+    def tearDown(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+
+    def test_recall_reaches_the_outbox(self):
+        pm.outbox_put("srv", {"mid": "q1", "to": "beta", "frm": "alpha", "frm_id": "sid-a",
+                              "body": "changed my mind", "kind": "", "t": 1})
+        removed = pm._recall("sid-a", "", "q1")
+        self.assertEqual([r["id"] for r in removed], ["q1"], "a recall that beats the truck wins")
+        self.assertEqual(pm.outbox_list("srv"), [], "the parked message is gone")
+
+    def test_recall_never_touches_forwarded_mail(self):
+        pm.outbox_put("srv", {"mid": "q2", "to": "beta", "frm": "alpha", "frm_id": "sid-a",
+                              "body": "not mine to recall here", "kind": "", "t": 1, "origin": "hostz"})
+        self.assertEqual(pm._recall("sid-a", "", "q2"), [], "forwarded mail belongs to the origin's sender")
+        self.assertEqual(len(pm.outbox_list("srv")), 1)
+
+    def test_receipts_show_parked_then_relayed(self):
+        pm.outbox_put("srv", {"mid": "q3", "to": "beta", "frm": "alpha", "frm_id": "sid-a",
+                              "body": "hi", "kind": "", "t": 1})
+        pm._tl_append("messages.jsonl", {"t": 10, "ev": "sent", "id": "q3", "from": "alpha",
+                                         "from_id": "sid-a", "to_id": "peer:srv",
+                                         "toName": "srv:beta", "body": "hi", "kind": ""})
+        row = pm._sent_receipts("sid-a")[-1]
+        self.assertEqual((row["to"], row["parked"]), ("srv:beta", "srv"), "parked shows, honestly")
+        pm._ack_arrived("srv", "q3")                 # the end-to-end ack lands
+        row = pm._sent_receipts("sid-a")[-1]
+        self.assertEqual(row["parked"], None)
+        self.assertTrue(row["relayed"], "delivery confirmation replaces parked")

@@ -473,6 +473,31 @@ def _recall(from_id, to, mid):
             removed.append({"to": _name_for_id(rid), "id": f.name, "body": " ".join(body.split())[:120]})
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.name})
         _mark_pending(rid)         # recall may have emptied new/ -> reconcile the marker
+    if peers_on() and OUTBOX.is_dir():
+        # A recall that beats the truck always wins: parked cross-host mail is still local, so the
+        # sender can unsend it right up until the exchange carries it. Forwarded mail (origin set)
+        # belongs to a sender on another host — never touched here.
+        for hostdir in OUTBOX.iterdir():
+            if not hostdir.is_dir():
+                continue
+            for f in list(hostdir.glob("*.json")):
+                if mid and f.stem != mid:
+                    continue
+                try:
+                    msg = json.loads(f.read_text())
+                except Exception:
+                    continue
+                if msg.get("frm_id") != from_id or msg.get("origin"):
+                    continue
+                if to and (msg.get("to") or "") != to and "%s:%s" % (hostdir.name, msg.get("to") or "") != to:
+                    continue
+                try:
+                    f.unlink()
+                except Exception:
+                    continue
+                removed.append({"to": "%s:%s" % (hostdir.name, msg.get("to") or "?"), "id": f.stem,
+                                "body": " ".join((msg.get("body") or "").split())[:120]})
+                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.stem})
     return removed
 
 def _sent_receipts(mid):
@@ -482,7 +507,7 @@ def _sent_receipts(mid):
     log = TLDIR / "messages.jsonl"
     if not mid or not log.exists():
         return []
-    sent, execs, recalls = {}, {}, {}
+    sent, execs, recalls, relays, bounced = {}, {}, {}, {}, {}
     for line in log.read_text(errors="replace").splitlines():
         try: e = json.loads(line)
         except Exception: continue
@@ -493,8 +518,22 @@ def _sent_receipts(mid):
             execs[e["id"]] = e["t"]
         elif ev == "recall":
             recalls[e["id"]] = e["t"]
-    out = [{"to": _name_for_id(e.get("to_id", "")), "id": i, "sent": e["t"],
-            "exec": execs.get(i), "recalled": recalls.get(i)}
+        elif ev == "relayed":                        # peer-bus: the far host's end-to-end delivery ack
+            relays[e["id"]] = e["t"]
+        elif ev == "bounced":                        # peer-bus: definitively undeliverable, returned
+            bounced[e["id"]] = e["t"]
+
+    def _parked(i, e):                               # still in the outbox → honestly parked, not lost
+        tid = e.get("to_id", "")
+        if tid.startswith("peer:") and not relays.get(i) and not bounced.get(i) and not recalls.get(i):
+            h = tid[5:]
+            if outbox_get(h, i):
+                return h
+        return None
+
+    out = [{"to": e.get("toName") or _name_for_id(e.get("to_id", "")), "id": i, "sent": e["t"],
+            "exec": execs.get(i), "recalled": recalls.get(i),
+            "relayed": relays.get(i), "bounced": bounced.get(i), "parked": _parked(i, e)}
            for i, e in sent.items()]
     return sorted(out, key=lambda r: r["sent"])
 
@@ -843,8 +882,9 @@ class Handler(BaseHTTPRequestHandler):
                                        "t": int(time.time())})
                     _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "sent", "id": mid,
                                                   "from": frm, "from_id": frm_id,
-                                                  "to_id": "peer:%s" % phost, "body": body,
-                                                  "kind": kind})
+                                                  "to_id": "peer:%s" % phost,
+                                                  "toName": "%s:%s" % (phost, hit.get("name") or to),
+                                                  "body": body, "kind": kind})
                     if PEERS.get(phost, {}).get("up"):
                         return self._send({"ok": True, "id": mid,
                                            "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
@@ -1220,23 +1260,76 @@ def _bounce_apply(host, b):
                                   "to": msg.get("to") or "?", "host": host,
                                   "why": (b or {}).get("why") or "refused"})
 
+def fleet_presence(exclude_host):
+    """Presence for an exchange payload: local agents + ONE hop of gossip from our other peers, each
+    labeled `via` (plans/postal-peer-buses.md 3b) — so a spoke can address the far spoke through the
+    hub. A via-entry is never re-gossiped (one-hop reach only; a topology needing two hops should
+    check the second spoke in to the hub directly)."""
+    out = list(local_agents())
+    for h, st in PEER_STATE.items():
+        if h == exclude_host:
+            continue
+        for pa in st.get("presence") or []:
+            if pa.get("via"):
+                continue
+            out.append(dict(pa, via=h))
+    return out
+
 def _relay_in(host, m):
-    """Deliver one incoming relay locally. Returns (ackable, bounce-or-None)."""
+    """One incoming relay: deliver locally, FORWARD one hop to a peer that owns the recipient, or
+    bounce. Returns (verdict, bounce): 'ack' (delivered, or a dedupe re-ack), 'hold' (forwarded —
+    the END-TO-END ack comes back through us later; the sender keeps it parked meanwhile), 'bounce'
+    (definitive refusal), or 'drop' (unidentifiable: no mid to ack or bounce)."""
     mid = m.get("mid") or ""
     if not mid:
-        return False, None
+        return "drop", None
     if peer_seen_check(mid):
-        return True, None                            # duplicate → re-ack, deliver nothing
+        return "ack", None                           # duplicate → re-ack, deliver nothing
     to = m.get("to") or ""
     match = [a for a in local_agents() if a["name"] == to and not _postal_off(a["id"])]
-    if not match:
-        if any(a["name"] == to for a in local_agents()):
-            return False, {"mid": mid, "why": "recipient '%s' has its mailbox off (postal isolation)" % to}
-        return False, {"mid": mid, "why": "no live session named '%s' on %s" % (to, self_host())}
-    deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
-            kind=m.get("kind") or "")
-    peer_seen_add(mid)
-    return True, None
+    if match:
+        deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
+                kind=m.get("kind") or "")
+        peer_seen_add(mid)
+        return "ack", None
+    if any(a["name"] == to for a in local_agents()):
+        return "bounce", {"mid": mid, "why": "recipient '%s' has its mailbox off (postal isolation)" % to}
+    if not m.get("origin"):                          # one hop MAX: a message that already hopped never re-forwards
+        fh, hit = peer_route(to)
+        if fh and fh != host and not (hit or {}).get("via"):
+            if outbox_get(fh, mid) is None:          # a resend while we hold it forwards nothing twice
+                outbox_put(fh, dict(m, origin=host))
+            return "hold", None
+    return "bounce", {"mid": mid, "why": "no live session named '%s' on %s" % (to, self_host())}
+
+def _ack_arrived(host, mid):
+    """An end-to-end ack for outbox/<host>/<mid>: clear it. If we only FORWARDED it, relay the ack
+    backward to the origin host; if it was ours, log the delivered receipt."""
+    msg = outbox_get(host, mid)
+    outbox_del(host, mid)
+    if not msg:
+        return
+    if msg.get("origin"):
+        p = _pending(msg["origin"])
+        with _peer_lock:
+            p["acks"].append(mid)
+        _peer_wake(msg["origin"]).set()
+    else:
+        _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "relayed", "id": mid, "host": host})
+
+def _bounce_arrived(host, b):
+    """A bounce for outbox/<host>/<mid>: relay it backward if we only forwarded the message, else
+    return it to our local sender."""
+    mid = (b or {}).get("mid") or ""
+    msg = outbox_get(host, mid)
+    if msg and msg.get("origin"):
+        outbox_del(host, mid)
+        p = _pending(msg["origin"])
+        with _peer_lock:
+            p["bounces"].append(b)
+        _peer_wake(msg["origin"]).set()
+    else:
+        _bounce_apply(host, b)
 
 def _pending(host):
     with _peer_lock:
@@ -1255,32 +1348,44 @@ def peer_exchange_handle(data):
                 % ((data or {}).get("proto"), PEER_PROTO), "proto": PEER_PROTO}, 409
     PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
                         "seenAt": int(time.time())}
-    for mid in data.get("acks") or []:               # the dialer confirmed our earlier relays landed
-        outbox_del(host, mid)
-    for b in data.get("bounces") or []:              # ...or refused them → return to our senders
-        _bounce_apply(host, b)
+    for mid in data.get("acks") or []:               # the dialer confirmed relays landed — end-to-end:
+        _ack_arrived(host, mid)                      # a forwarded one relays its ack back to the origin
+    for b in data.get("bounces") or []:              # ...or refused them → backward, or to our sender
+        _bounce_arrived(host, b)
     acks, bounces = [], []
     for m in data.get("relays") or []:
-        ok, bounce = _relay_in(host, m)
-        if ok:
+        verdict, bounce = _relay_in(host, m)
+        if verdict == "ack":
             acks.append(m.get("mid"))
-        elif bounce:
-            bounces.append(bounce)
+        elif verdict == "bounce" and bounce:
+            bounces.append(bounce)                   # 'hold': forwarded — its ack comes back later
+
+    def _drain_backflow():                           # acks/bounces relayed BACK through us for this host
+        p = _pending(host)
+        with _peer_lock:
+            a2, b2 = p["acks"], p["bounces"]
+            p["acks"], p["bounces"] = [], []
+        return a2, b2
+
+    a2, b2 = _drain_backflow()
+    acks, bounces = acks + a2, bounces + b2
     rel = outbox_list(host)
     if not rel and data.get("wait") and not acks and not bounces:
-        # nothing to hand back → park on the wake so mail we accept mid-wait crosses instantly
+        # nothing to hand back → park on the wake so anything we accept mid-wait crosses instantly
         _peer_wake(host).clear()
         _peer_wake(host).wait(EXCHANGE_WAIT)
         rel = outbox_list(host)
+        a2, b2 = _drain_backflow()
+        acks, bounces = acks + a2, bounces + b2
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
-            "presence": local_agents(), "relays": rel, "acks": acks, "bounces": bounces}, 200
+            "presence": fleet_presence(host), "relays": rel, "acks": acks, "bounces": bounces}, 200
 
 def build_exchange_request(host, wait=True):
     p = _pending(host)
     with _peer_lock:
         acks, bounces = list(p["acks"]), list(p["bounces"])
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
-            "presence": local_agents(), "relays": outbox_list(host),
+            "presence": fleet_presence(host), "relays": outbox_list(host),
             "acks": acks, "bounces": bounces, "wait": bool(wait)}
 
 def peer_exchange_apply(host, req_sent, resp):
@@ -1293,16 +1398,16 @@ def peer_exchange_apply(host, req_sent, resp):
     PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
                         "seenAt": int(time.time())}
     for mid in resp.get("acks") or []:
-        outbox_del(host, mid)
+        _ack_arrived(host, mid)
     for b in resp.get("bounces") or []:
-        _bounce_apply(host, b)
+        _bounce_arrived(host, b)
     for m in resp.get("relays") or []:
-        ok, bounce = _relay_in(host, m)
+        verdict, bounce = _relay_in(host, m)
         with _peer_lock:
-            if ok:
+            if verdict == "ack":
                 p["acks"].append(m.get("mid"))
-            elif bounce:
-                p["bounces"].append(bounce)
+            elif verdict == "bounce" and bounce:
+                p["bounces"].append(bounce)          # 'hold': forwarded — its ack comes back later
 
 def peer_route(to):
     """Where a non-local name lives: (host, agent) for exactly ONE peer match; (None, candidates) on
