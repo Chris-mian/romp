@@ -8,7 +8,7 @@ for talking to one agent, the **feed** for the work as task cards, the
 **outline** for every session with its open tasks, and the **timeline** for
 the sessions over time.
 
-![The dashboard: chat, feed, and timeline around one fleet](../assets/guide/dashboard-annotated.png){ width="100%" }
+![The dashboard: chat, outline, and feed over one fleet](../assets/guide/dashboard-annotated.png){ width="100%" }
 
 ## The chat
 
@@ -27,6 +27,13 @@ opening anything.
 ![The feed's three columns, with the cues on a card](../assets/guide/feed-annotated.png){ width="100%" }
 
 [Task management](tasks.md) covers what a card holds.
+
+## The outline
+
+Every session with its task tree: open work stays up top, finished work folds
+beneath, and the search box reaches all of it.
+
+![The outline: each session's tasks as a tree](../assets/guide/outline.png){ width="100%" }
 
 ## The timeline
 
