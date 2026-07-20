@@ -432,7 +432,9 @@ function clockHM(t: number): string {
 
 function relAge(sec: number): string {
   const s = Math.max(0, sec);
-  if (s < 60) return `${Math.round(s)}s ago`;
+  // Sub-minute ages all read "<1m ago" (the user 2026-07-20): a card the user just acted on stamps t=now,
+  // and a counting "0s ago"/"14s ago" label is churn without information — the tint already says "fresh".
+  if (s < 60) return `<1m ago`;
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
