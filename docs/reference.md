@@ -39,14 +39,21 @@ romp --mail working "<note>"      # publish what this session is working on
 
 Sessions run on one of two backends, chosen per session:
 
-- **Agent SDK (the default).** The kernel drives the session through the
-  Claude Agent SDK. Sessions started from the dashboard use this; it is the
-  most robust path, with native pickers, queued sends, and model switching.
+- **Agent SDK (the default, strongly recommended).** The kernel drives the
+  session through the Claude Agent SDK: a direct programmatic connection, with
+  native pickers, queued sends, and model switching. Sessions started from the
+  dashboard use this.
 - **tmux.** A regular Claude Code terminal session running inside tmux. Romp
-  reads the same transcript, and delivers messages and nudges by injecting
-  text into the terminal. Injection is inherently less robust than the SDK,
-  but it lets Romp ride along with the terminal Claude Code you already use:
-  run `romp <name>` and the session shows up on the dashboard like any other.
+  has no direct connection to it, so it works by reading what appears in the
+  terminal and on disk, and delivers messages and nudges by injecting
+  keystrokes. That makes it inherently less reliable and less responsive than
+  the SDK: scraping a terminal has edge cases a real API does not, and updates
+  wait on the transcript reaching disk.
+
+The tmux backend exists for when you want the session in an actual terminal:
+run `romp <name>` and that terminal session shows up on the dashboard like any
+other. The two interleave freely in one fleet, so a terminal session can sit
+alongside SDK sessions; it just won't be as smooth as they are.
 
 ## What the installer sets up
 

@@ -176,7 +176,10 @@ Setup is one install and one click:
 1. On the remote machine: clone romp and run `./install.sh` (`ROMP_NO_EXT=1`
    skips the editor extension on a headless box). Make sure `ssh <host>` works
    non-interactively.
-2. In your dashboard: open the network icon in the top bar and attach the host.
+2. In your dashboard: click the network button at the bottom right and attach
+   the host.
+
+![The network button, bottom right, is where machines attach](assets/guide/network-button.png){ width="100%" }
 
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
