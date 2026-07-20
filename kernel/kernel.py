@@ -3511,11 +3511,43 @@ def _fetch_remote_token(host):
         return ""
 
 
+def _postal_peers_on():
+    """Peer-bus mode (plans/postal-peer-buses.md): every machine runs its OWN bus and cross-host mail
+    is bus peering over kernel-owned tunnels. Read at call time — a staged-rollout flag and a test
+    seam, not a persisted setting."""
+    return bool(os.environ.get("ROMP_POSTAL_PEERS"))
+
+
 def _tunnel_argv(r):
+    if _postal_peers_on():
+        # Peer-bus mode: NO fixed-port -R. The old reverse forward collides with the remote's own bus
+        # (every machine runs one now) and ExitOnForwardFailure would kill the whole tunnel. Instead
+        # the attacher forwards an ephemeral local port to the remote's bus and DIALS it; the peering
+        # protocol (stage 2) is duplex over that one connection, so the remote never needs a path back.
+        return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
+                ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
+                 "-L", "%d:127.0.0.1:%d" % (r["bus_port"], BUS_PORT),
+                 r["host"]])
     return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
             ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
              "-R", "%d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT),
              r["host"]])
+
+
+def _notify_bus_peer(host, port, up):
+    """Tell the LOCAL bus about a peer bus endpoint (event: a tunnel transition, never a poll). True on
+    ack. Guarded: postal being down must never break the tunnel supervisor — the caller records success
+    and retries an unacked notify on the next pass. Stage 2's HELLO re-learns the table after a bus
+    restart; until then a restarted bus heals on the next tunnel transition or retry."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up)}),
+                     {"Content-Type": "application/json"})
+        ok = conn.getresponse().status == 200
+        conn.close()
+        return ok
+    except Exception:
+        return False
 
 
 # ── remote-kernel bootstrap ("install romp normally, then attach just works" — the user 2026-07-03) ──
@@ -3659,6 +3691,8 @@ def _remotes_load():
             r.setdefault("sids", [])
             r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
             r.setdefault("local_port", _free_port())
+            r.setdefault("bus_port", _free_port())   # peer-bus mode's -L to the remote's bus (allocated
+            #                                          unconditionally so a later flag flip needs no migration)
             _remotes[r["host"]] = r
 
 
@@ -3672,7 +3706,7 @@ def attach_remote(host, kernel_port=None):
         r = _remotes.get(host)
         if r is None:
             r = {"host": host, "kernel_port": int(kernel_port or _REMOTE_KERNEL_PORT),
-                 "local_port": _free_port(), "token": "", "proc": None,
+                 "local_port": _free_port(), "bus_port": _free_port(), "token": "", "proc": None,
                  # phase the browser popover surfaces: authorizing (ssh + token) → connecting
                  # (tunnel up, waiting for the port) → up. See _LANDING_REMOTES_JS's LBL map.
                  "status": "authorizing", "detail": "", "sids": []}
@@ -3725,6 +3759,8 @@ def detach_remote(host):
             r["proc"].terminate()
         except Exception:
             pass
+    if r and _postal_peers_on():
+        _notify_bus_peer(host, r.get("bus_port"), False)   # the peer is gone on purpose — tell the bus now
     _remotes_save()
     return bool(r)
 
@@ -4115,6 +4151,17 @@ def _tunnel_supervisor():
                         r["sids"] = sids
                     if rsha is not None:
                         r["kernel_sha"] = rsha
+                    peer_up, peer_known = (st == "up"), r.get("_peer_up")
+                    peer_port = r.get("bus_port")
+                if _postal_peers_on() and peer_up != peer_known:
+                    # Peer-bus mode: the tunnel TRANSITION is the event the local bus keys its peer table
+                    # on (reachable at 127.0.0.1:bus_port through the second -L). Outside the lock — it's
+                    # an HTTP round-trip. Success is recorded so only transitions notify; a failed notify
+                    # leaves _peer_up unset and retries next pass (the bus may have been mid-restart).
+                    if _notify_bus_peer(r["host"], peer_port, peer_up):
+                        with _remotes_lock:
+                            if r["host"] in _remotes:
+                                r["_peer_up"] = peer_up
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
         _tunnel_wake.wait(15)

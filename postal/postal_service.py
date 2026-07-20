@@ -768,6 +768,8 @@ class Handler(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/ping":
             return self._send({"ok": True})
+        if u.path == "/peers":                     # peer-bus mode introspection (tests + the popover later)
+            return self._send(peers_snapshot())
         if u.path == "/agents":
             me = (q.get("me") or [""])[0]
             agents = [a for a in all_agents() if not _postal_off(a["id"])]   # isolated sessions are invisible to peers
@@ -798,6 +800,9 @@ class Handler(BaseHTTPRequestHandler):
             data = self._body()
         except Exception:
             return self._send({"error": "bad json"}, 400)
+        if u.path == "/peer":                      # the kernel's tunnel-transition notify (peer-bus mode)
+            payload, status = peer_update(data)
+            return self._send(payload, status)
         if u.path == "/send":
             to = data.get("to", "")
             frm, frm_id = data.get("from", "unknown"), data.get("from_id", "")
@@ -1041,8 +1046,33 @@ def ping():
 
 CLIENT_ONLY = Path.home() / ".config/romp-postal/client-only"
 
+def peers_on():
+    """Peer-bus mode (plans/postal-peer-buses.md): every machine runs its OWN bus; cross-host mail is
+    bus peering over kernel-owned tunnels. Read at call time (staged-rollout flag + test seam)."""
+    return bool(os.environ.get("ROMP_POSTAL_PEERS"))
+
 def is_client_only():
+    if peers_on():
+        return False       # peer mode retires client-only: nobody relies on a forwarded singleton bus
     return bool(os.environ.get("ROMP_POSTAL_CLIENT_ONLY")) or CLIENT_ONLY.exists()
+
+# ── peer table (peer-bus mode, stage 1) ─────────────────────────────────────────
+# host -> {"port": int, "up": bool, "at": epoch}. Written ONLY by the local kernel's /peer notifies
+# (its tunnel supervisor owns link state; transitions are the events). Stage 2's peering protocol
+# reads it to dial RELAYs; until then it is inert bookkeeping, visible at GET /peers.
+PEERS = {}
+
+def peer_update(data):
+    """Apply one kernel notify. Returns (payload, status)."""
+    host = str(data.get("host") or "").strip()
+    port = data.get("port")
+    if not host or not isinstance(port, int) or isinstance(port, bool) or not (0 < port < 65536):
+        return {"error": "host and port required"}, 400
+    PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time())}
+    return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
+
+def peers_snapshot():
+    return {"peers": {h: dict(p) for h, p in PEERS.items()}}
 
 def looks_remote():
     # Heuristic: this shell reached the machine over SSH. Used only for advisory

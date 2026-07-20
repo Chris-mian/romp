@@ -6106,3 +6106,37 @@ def _gear_src():
 def _gear_css_src():
     import pathlib
     return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.css").read_text()
+
+
+class PostalPeerTunnels(unittest.TestCase):
+    """Peer-bus mode stage 1 (plans/postal-peer-buses.md): flag OFF keeps today's tunnel argv
+    untouched; flag ON drops the fixed-port -R (it collides with the remote's OWN bus, and
+    ExitOnForwardFailure would kill the whole tunnel) for a second ephemeral -L that dials the
+    remote's bus — stage 2's peering protocol is duplex over that one connection."""
+
+    R = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002}
+
+    def test_flag_off_keeps_the_reverse_forward(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+        argv = km._tunnel_argv(dict(self.R))
+        self.assertIn("-R", argv, "today's singleton scheme is untouched with the flag off")
+        self.assertIn("%d:127.0.0.1:%d" % (km.BUS_PORT, km.BUS_PORT), argv)
+
+    def test_flag_on_swaps_the_reverse_forward_for_a_bus_dial(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "1"
+        try:
+            argv = km._tunnel_argv(dict(self.R))
+        finally:
+            os.environ.pop("ROMP_POSTAL_PEERS", None)
+        self.assertNotIn("-R", argv, "no fixed-port reverse forward in peer mode")
+        self.assertIn("50002:127.0.0.1:%d" % km.BUS_PORT, argv, "the ephemeral -L dials the remote's bus")
+        self.assertIn("50001:127.0.0.1:7433", argv, "the kernel forward is unchanged")
+
+    def test_notify_bus_peer_is_guarded(self):
+        saved = km.BUS_PORT
+        km.BUS_PORT = 1                    # nothing listens here → refused instantly
+        try:
+            self.assertFalse(km._notify_bus_peer("TESTHOST", 50002, True),
+                             "postal down → False, never an exception (the supervisor must survive)")
+        finally:
+            km.BUS_PORT = saved
