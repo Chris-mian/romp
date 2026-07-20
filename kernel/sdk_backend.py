@@ -957,7 +957,11 @@ class SdkSession:
         if pid is None:
             self.backend._log("interrupt (%s): %s escalation found no CLI process — nothing to signal" % (self.name, action))
             return
-        self._interrupted = True
+        if self.inflight > 0:
+            # Latch only when a turn exists for this signal to stop: that turn's ResultMessage (or the
+            # kill's stream-death reconcile) clears the flag. On an idle session there is no such settle
+            # event, so latching would strand 'Interrupting…' (the 2026-07-20 strand, escalation flavor).
+            self._interrupted = True
         try:
             os.kill(pid, sig)
             self.backend._log("interrupt (%s): escalated to %s pid %d" % (self.name, action, pid))
@@ -1052,6 +1056,16 @@ class SdkSession:
                                  name=f"sdk-intr:{self.name}", daemon=True).start()
                 with self._lock:
                     self._intr_level = max(self._intr_level, 2)
+        # The completed control round-trip IS the settle when nothing is in flight. A stop can race the
+        # turn's own death (the user 2026-07-20: stop pressed one second after the turn died of its
+        # API-retry storm) — the ResultMessage had already settled inflight to 0 and cleared the flag,
+        # then the set above re-latched it with no turn left to emit a clearing event, so an IDLE session
+        # wore 'Interrupting…' until the next fed turn (or the kernel's 120s cap). With inflight==0 no
+        # ResultMessage is coming: drop the flag here, on the ack/failure event itself. A live turn
+        # (inflight>0) keeps it — its own ResultMessage clears it, as designed.
+        if self.inflight == 0 and self._interrupted:
+            self._interrupted = False
+            self.backend._poke()
 
     async def _do_set_model(self, model):
         try:

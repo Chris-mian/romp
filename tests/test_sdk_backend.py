@@ -1478,6 +1478,51 @@ class InterruptSettlesStall(unittest.TestCase):
                         "after interrupt the session is no longer 'working' even with no ResultMessage")
 
 
+class InterruptAckSettlesIdle(unittest.TestCase):
+    """A stop that races the turn's own death must not strand the 'Interrupting…' flag (the user
+    2026-07-20: stop pressed one second after the turn died of its API-retry storm — the ResultMessage
+    had already settled inflight to 0 and cleared _interrupted; _do_interrupt then re-latched it against
+    an idle CLI, and with no turn left there was no clearing event, so an idle session wore
+    'Interrupting…' until the next fed turn / the kernel's 120s cap). The completed control round-trip
+    is the settle when nothing is in flight; a live turn keeps the flag for its ResultMessage."""
+
+    def _session(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        return be, sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+
+    def test_ack_with_nothing_in_flight_clears_the_flag(self):
+        import asyncio
+        be, s = self._session()
+        class _Client:
+            async def interrupt(self): pass
+        s.client = _Client()
+        asyncio.run(s._do_interrupt())          # inflight == 0 throughout: the turn is already over
+        self.assertFalse(s._interrupted, "the ack settles the stop when there is no turn — no stranded flag")
+        self.assertFalse(s.snapshot()["interrupting"], "an idle session never wears 'Interrupting…'")
+
+    def test_failed_ack_with_nothing_in_flight_clears_too(self):
+        import asyncio
+        be, s = self._session()
+        class _Client:
+            async def interrupt(self): raise RuntimeError("no current client")
+        s.client = _Client()
+        asyncio.run(s._do_interrupt())          # idle-session refusal: logged, nothing to escalate...
+        self.assertFalse(s._interrupted, "...and nothing left in flight → the flag settles down")
+
+    def test_escalated_signal_on_an_idle_session_does_not_latch(self):
+        import types
+        be, s = self._session()
+        be._session_cli_pid = lambda sess: 4242          # a CLI process exists...
+        real_os = sb.os
+        sb.os = types.SimpleNamespace(kill=lambda pid, sig: None)   # ...and the signal lands
+        try:
+            s._signal_cli(sb.signal.SIGINT, "sigint")
+        finally:
+            sb.os = real_os
+        self.assertFalse(s._interrupted,
+                         "no turn in flight → nothing this signal stops → no settle event exists to clear a latch")
+
+
 class PendingQueue(unittest.TestCase):
     """The visible pending queue (no SDK / no loop needed) — enqueue holds turns in a list that
     pending_queued exposes, so the kernel can render the 'queued' indicator for SDK sessions."""
