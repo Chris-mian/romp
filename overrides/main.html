@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{#- The header shows the site name ("Romp"); only the BROWSER TAB says
+    "Romp docs", so a docs tab reads apart from a dashboard tab. -#}
+{% block htmltitle %}
+  {%- if page.is_homepage -%}
+    <title>Romp docs</title>
+  {%- elif page.title -%}
+    <title>{{ page.title | striptags }} - Romp docs</title>
+  {%- else -%}
+    <title>Romp docs</title>
+  {%- endif -%}
+{% endblock %}

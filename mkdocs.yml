@@ -1,4 +1,4 @@
-site_name: Romp docs
+site_name: Romp
 site_description: Mission control for a fleet of AI coding agents.
 
 site_url: https://romp-on.github.io/romp/
@@ -7,6 +7,7 @@ repo_name: romp-on/romp
 
 theme:
   name: material
+  custom_dir: overrides
   logo: assets/brand/romp-icon-swirl-glyph.svg
   favicon: assets/brand/romp-icon-swirl-glyph.svg
   features:
