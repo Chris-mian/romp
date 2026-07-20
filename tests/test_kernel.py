@@ -2286,6 +2286,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":gw"].get("armAtoms"), 2,
                          "the fire stamps the arming turn's atom count")
 
+    def test_auto_nudge_skips_a_session_with_an_armed_bare_rollback(self):
+        """The network g14 resurrection (the user 2026-07-20): a bare-rollback delete writes NOTHING to
+        the transcript, so the parse still shows the deleted turn and the goals minted from it; a nudge
+        fired in that window quotes the rolled-back content back into the thread AND spends the branch
+        cut as the new branch's first turn. While the backend holds an armed, unconsumed cut
+        (pending_cut), the tick must skip the session; once the cut is spent, nudging resumes."""
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW,
+                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": NOW}]}
+        cut = {"v": "11111111-2222-3333-4444-555555555555"}
+        fired = []                 # backend-owned sids fire via backend.send, not _tmux_send
+        fake = type("B", (), {"pending_cut": staticmethod(lambda sid: cut["v"]),
+                              "pending_queued": staticmethod(lambda sid: []),
+                              "send": staticmethod(lambda sid, body: fired.append(body))})()
+        saved_bf = km.Sessions.backend_for
+        km.Sessions.backend_for = staticmethod(lambda sid: fake)
+        try:
+            sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
+            self.assertEqual((sent, fired), ([], []),
+                             "an armed, unconsumed bare rollback holds the nudge — "
+                             "the parse still shows the deleted turn")
+            cut["v"] = ""          # the cut was spent: a record landed on the new branch
+            self._drive_nudge_over(turn, last_state=("waiting", NOW))
+            self.assertEqual(len(fired), 1, "cut consumed → the nudge flows again")
+        finally:
+            km.Sessions.backend_for = saved_bf
+
     def test_a_fresh_fire_resets_the_failed_flag(self):
         # a NEW genuine stall re-arms and fires; the fresh record must drop the previous episode's `failed`
         # (and its fork flavor) so the chip/floor reflect THIS episode, not a stale one.

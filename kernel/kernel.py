@@ -1731,6 +1731,19 @@ def _backend_queued(sid):
         return False
 
 
+def _backend_rewind_pending(sid):
+    """True while the session's backend holds an ARMED, unconsumed bare rollback (SDK pending_cut):
+    the user deleted a message and nothing has landed on the new branch yet. Backends without the
+    affordance (tmux) have no pending_cut and read False; a backend hiccup also reads False —
+    matching _backend_queued's posture, since the pre-gate status quo was 'nudge anyway'."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        fn = getattr(be, "pending_cut", None)
+        return bool(fn and fn(str(sid)))
+    except Exception:
+        return False
+
+
 def _auto_nudge_session(s, now, tmux, nudged, waitfor):
     """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
     walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
@@ -1769,6 +1782,13 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
     if _pending_ops.get(str(sid)) or _backend_queued(sid):   # the user has messages queued — parked drive ops OR the
         return False                                         # backend's own queue (SDK _pending, where composer sends now
         #                                                      wait) → queued intent; a nudge would jump it (the user 2026-07-05)
+    if _backend_rewind_pending(sid):     # an ARMED, unconsumed bare rollback: the tail is about to be rewritten,
+        return False                     # but the delete writes NOTHING to the transcript, so the parse still shows
+        #                                  the deleted turn and the goals minted from it. A nudge here quotes rolled-
+        #                                  back content back into the thread and spends the branch cut as the new
+        #                                  branch's first turn (the network g14 resurrection, the user 2026-07-20).
+        #                                  An EDIT rewind needs no gate of its own: its replacement turn sits in the
+        #                                  backend queue, which the check above already suppresses.
     ls_val, ls_t = _last_state(sid)
     if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
         # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
