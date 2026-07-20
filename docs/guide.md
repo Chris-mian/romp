@@ -4,9 +4,8 @@ Romp gathers a fleet of Claude Code sessions into a single dashboard you can
 watch and steer. You see it through four views, each answering a different
 question:
 
-- **The chat** is the normal way you talk to a coding agent, made easy to scan:
-  turns read as gists and tool calls fold away, with every detail one click
-  deeper.
+- **The chat** is the normal way of talking to a coding agent, but easier to
+  scan: tool calls fold away and expand only when you want them.
 - **The feed** is the task layer: Romp finds the discrete tasks in each
   session's work and shows them as cards. One session can produce several, and
   a single task can run across sessions.
@@ -21,9 +20,9 @@ question:
 
 ### The chat
 
-The transcript, condensed for scanning: turns read as gists, tool calls fold
-into runs, and every detail stays one click deeper. Expand a run for its calls,
-and a call for its full input and output.
+The transcript, condensed for scanning: tool calls fold into runs so a long
+session stays legible. Expand a run for its calls, and a call for its full input
+and output.
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
