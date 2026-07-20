@@ -63,8 +63,8 @@ All of the following was confirmed empirically, not inferred:
   event-based (user message written → working; `ResultMessage` → waiting), per
   the repo's "events over heuristics" rule — and the pane-scrape diagnostics
   (stuck-working, compaction-% OCR) disappear.
-- **Conversation rewind / edit-message branch** (probed live against claude
-  2.1.210, 2026-07-16). The CLI's `--resume-session-at <record uuid>` (no typed
+- **Conversation rewind / edit-message branch** (claude 2.1.210). The CLI's
+  `--resume-session-at <record uuid>` (no typed
   SDK field → `extra_args` passthrough) resumes loading only messages up to and
   including the target, and the next turn appends to the **same** transcript
   file with `parentUuid=target` — an in-place branch, same fsid, no lastSid

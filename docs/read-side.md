@@ -5,7 +5,7 @@ records written by the event model (`event-model.md`) and the summarizer
 layer (`docs/judges.md`) into the three web-UI panes the user actually looks at:
 the **feed**, the **chat**, and the **timeline**. Built fresh beside the existing
 `chat-view/` kernel + `obsidian/` timeline + `cli/feed.py`, which stay until the
-new one is proven. Started 2026-06-15.
+new one is proven.
 
 ## The governing principle
 
@@ -27,21 +27,17 @@ completed); the feed just paints columns. (Reflected back into `docs/judges.md`.
   *lifecycle* is owned by **`romp-manager`** — a durable, jupyter-lab-style supervisor
   you start with `romp on` that spawns + respawns the kernel (via `romp-serve` →
   `romp-kernel`) and stays up across kernel restarts. Front ends (browser, phone, VS
-  Code) ATTACH to the kernel; they never spawn it. (CORRECTION 2026-06-15: an earlier
-  draft said the kernel "auto-starts with the first session like the Romp Postal Service" —
-  wrong; the real, pre-existing design is the manager supervisor. `romp-serve` was
-  repointed at the new Python kernel so `romp --on` supervises it; runs on the manager's
-  port (7433) so the existing front-ends + tailscale serve attach unchanged.)
+  Code) ATTACH to the kernel; they never spawn it. `romp-serve` points at the
+  Python kernel so `romp --on` supervises it, on the manager's port (7433), so the
+  existing front ends and tailscale serve attach unchanged.
 - **The UI is served by the kernel.** The front-end (the three panes) is `ui/`
   (renamed from `chat-view/`). A browser hits the kernel's port and gets it.
 - **`romp --on` starts the supervisor.** It runs `romp-manager` (foreground, like
   `jupyter lab`); `romp --refresh` restarts the kernel(s), `romp --status` reports them.
   (The old standalone `romp --on` node UI server is superseded by the manager.)
   The kernel binds loopback only; tailnet/phone reach is `tailscale serve`
-  proxying to `127.0.0.1:7433` (CORRECTION 2026-07-19: the `romp --serve on|off`
-  persisted 0.0.0.0 opt-in was removed — a second, weaker door once the
-  tailscale proxy carried the phone path). The UI itself is just a URL the
-  kernel serves.
+  proxying to `127.0.0.1:7433` (there is no `0.0.0.0` opt-in door; the tailscale
+  proxy carries the phone path). The UI itself is just a URL the kernel serves.
 - **Clean break, no backwards compatibility.** The old record stores (`summaries/`,
   `requests/`, `decision-log`, `corrections/`, `digest/`, ...) are **disposable**.
   The new system does not read or migrate them. We need not delete them, but the
@@ -61,7 +57,7 @@ completed); the feed just paints columns. (Reflected back into `docs/judges.md`.
   stay consistent by construction. Keeping the WS protocol stable is the
   compatibility contract.
 - **Both judge tiers run continuously for any live session — no connection gate**
-  (the user 2026-06-19, dropping the old browser-connected gate on triage). The
+  (no browser-connected gate on triage). The
   kernel runs the index tier (captioner + archiver) AND the triage tier (planner →
   closer → courier → grouper → consolidator → distiller) in parallel, on a short
   event-driven backstop, whether or not a browser is attached — so the goal tree,
@@ -164,7 +160,7 @@ state comes from `states/` regardless.)
 
 ### Feed = top-level-goal cards, nothing else
 
-**The only cards are top-level goals** (the user 2026-06-16). One card per top-level
+**The only cards are top-level goals.** One card per top-level
 goal, bucketed into the three columns by the rolled-up status the producer already
 wrote (working / blocked / completed). A sub-goal never gets its own card: a block
 anywhere in the tree rolls UP, so the *top-level card* moves to BLOCKED and its modal

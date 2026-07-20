@@ -1,11 +1,9 @@
 # How a card gets its state
 
 The state model, the "constitution": what moves a card, every chip it can
-wear, and the edge-case rules. Current as of **2026-07-09**. Companions:
+wear, and the edge-case rules. Companions:
 [judge-pipeline.md](judge-pipeline.md) (the diagram map) and
-[judges.md](judges.md) (who the judges are); design history in
-`design/judge-simplification-plan.md` (git history — the plan shipped and the
-doc was removed).
+[judges.md](judges.md) (who the judges are).
 
 ## The five layers
 
@@ -48,7 +46,7 @@ Sort events by evidence time (`ev_t`; arrival `at` breaks ties) and replay:
   (the optimistic flip when you reply to a card) snapshots too, and a
   planner `dismiss` (the pivot verdict: that reply started its own thread)
   restores the original state and settle stamp. The pivot's new goal still
-  stays with the card it replied to (the follow-up tie, 2026-07-09): it
+  stays with the card it replied to (the follow-up tie): it
   groups under the cited card's umbrella, or a fresh one wearing its title —
   the judge picks the form of follow-up work, never whether it stays
   together.
@@ -88,8 +86,8 @@ Sort events by evidence time (`ev_t`; arrival `at` breaks ties) and replay:
 
 Judge rulings at segment/turn end · your reply (any column; reopens
 instantly, optimistically, and clears blocks across the card's whole
-subtree — you reply to the card, never to its blocked sub-goals,
-2026-07-09) · Move to Working (a reply without a message; same subtree
+subtree (you reply to the card, never to its blocked sub-goals) ·
+Move to Working (a reply without a message; same subtree
 floor) · Clear / Undo clear · Resolve · the agent checking off its to-dos ·
 a peer completing delegated work (courier link-back) · a failed auto-nudge
 (records a block) · the settle moment · the live floors below.
@@ -158,9 +156,8 @@ within a beat it reverts with a toast, never silently.
    only the new stretch (`deltaSince`).
 7. Identity: identical prompts in different turns are different work
    (twins); same-second identical bursts plan once; any seg-id-derivation
-   change ships a placements migration (`placementsV`, at v2 since
-   2026-07-09, when an unbumped hash change replayed cleared cards;
-   `tests/test_placements_canary.py` now pins the derivation).
+   change ships a placements migration (`placementsV`, currently v2);
+   `tests/test_placements_canary.py` pins the derivation.
 8. The auto-nudge fires once per genuine stall, never re-arms off romp's
    own turns, is suppressed while interrupted, and its failure becomes a
    block.
@@ -172,25 +169,3 @@ within a beat it reverts with a toast, never silently.
     no diary is frozen, never derived-and-wiped, and surfaces loudly in
     judge-errors.jsonl. Retired flags (`everDone`, `logBorn`) are popped
     by the sweep.
-
-## Open items
-
-1. **P4, one resolver?** The eager-done sampler (`eager-done-samples.jsonl`,
-   focusHeld rate) decides whether the closer absorbs the planner's
-   done/block (~40% fewer triage calls) or both stay. Review with a few
-   weeks of data (snoozed to ~2026-07-14).
-2. **Re-run the failure-rate numbers (decide ~July 16+).** The 2026-07-09
-   failure contract made judge-errors.jsonl trustworthy for the first time:
-   one name per prompt in both logs, call vs parse attributed correctly
-   (error envelopes can no longer masquerade as parse failures), and every
-   row carries its evidence. Rows before 07-09 conflate all of that, so
-   per-judge failure rates computed over them mislead. After a week of
-   normal use: tally rows per judge and kind against judge-usage.jsonl call
-   counts (ask any session). Expect well under 1% genuine parse rejects per
-   judge; a judge sitting meaningfully above that now has inspectable
-   evidence (reply tails, `romp --debug on` captures) — fix its prompt or
-   parser. Give-up rows should be near zero; any cluster means a cap is
-   too tight or a prompt drifted.
-3. Dated cleanups: order-audit instrumentation (~Aug 2026), the eager-done
-   sampler after P4's call, the boot sweep once judge-errors.jsonl shows no
-   unmigrated-node lines for a few weeks.

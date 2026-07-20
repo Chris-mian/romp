@@ -67,4 +67,4 @@ Open `http://127.0.0.1:7433/` in any browser and start a session.
 
 ## Docs
 
-Requirements, remote-host setup, a guide to each capability, and how Romp works under the hood are in the [documentation](docs/getting-started.md).
+Requirements, remote-host setup, a guide to each capability, and how Romp works under the hood are in the [documentation](docs/install.md).

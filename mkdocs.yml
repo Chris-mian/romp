@@ -54,17 +54,11 @@ plugins:
 
 nav:
   - Home: index.md
-  - Getting started: getting-started.md
-  - Guide:
-      - The fleet at a glance: guide/the-fleet.md
-      - Task management: guide/tasks.md
-      - Automatic nudges: guide/nudges.md
-      - Messaging between agents: guide/postal-service.md
-      - Sessions and revival: guide/sessions.md
-      - Self-hosted and remote access: guide/remote-access.md
-  - How Romp works: architecture.md
+  - Install: install.md
+  - Guide: guide.md
   - Reference: reference.md
   - Internals:
+      - How Romp works: architecture.md
       - Judges: judges.md
       - The judge pipeline: judge-pipeline.md
       - How a card gets its state: goal-state.md

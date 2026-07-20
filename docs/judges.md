@@ -6,8 +6,6 @@
 > failure contract. The state model itself (the diary, the fold, every chip)
 > lives in [goal-state.md](goal-state.md).
 
-Current as of **2026-07-11**.
-
 romp keeps two live artifacts per session without you curating either: a
 readable text record (chat captions, the session TOC, the timeline) and the
 goal board (the cards on the feed). Judges maintain both. A judge is one
@@ -44,10 +42,8 @@ Twelve prompts back the thirteen names: the consolidator reuses the
 grouper's prompt over a different column, under its own name. Usage and error logs
 carry one name per prompt; the timeline band keeps five family rows and
 folds the fine names onto them (`_JUDGE_FAMILY` in `kernel/kernel.py`).
-Naming history: log rows before 2026-07-08 use the family names, and the
-opener was "prompt-planner" for one day (07-08 to 07-09). Prompts are named
-by their constant in `kernel/judge.py`; grep the constant, line numbers
-drift.
+Prompts are named by their constant in `kernel/judge.py`; grep the constant,
+line numbers drift.
 
 ## A turn through the judges
 
@@ -96,7 +92,7 @@ answer it at different moments. The opener places your ask the instant it
 lands. The planner places the finished work and rules on it. The placer
 picks the depth inside a card when that is still open.
 
-All three file **card-first** (2026-07-08). The open-goal menu renders as a
+All three file **card-first**. The open-goal menu renders as a
 tree grouped under top-level cards, and filing names a card, never a nested
 line; the test is "can this card be called done without this work?", judged
 where you actually experience the board. Only the placer ever goes deeper
@@ -119,7 +115,7 @@ nudge resolution (resolve the named goal, done or block, no plain step),
 delegation follow-on (file the recipient's work under the courier's plant),
 and tagged follow-ups (file under the cited goal unless the reply starts a
 different thread — and even then the new goal groups with the cited card
-under one umbrella: the follow-up tie, 2026-07-09). A segment opened by an
+under one umbrella: the follow-up tie). A segment opened by an
 untargeted kernel notice (restart or resume) carries a housekeeping note:
 pure verification sweeps file nothing.
 
@@ -149,9 +145,9 @@ from evidence at or before your last reply loses.
 in passing. A sub-goal blocked on a question is only ever unblocked by
 work filed on that exact node — but the answer usually files wherever the
 planner judges the segment to serve, so a dormant blocked sub never hears
-it and holds its whole card in Needs you (the 2026-07-11 case: a card
-stuck for hours on a buried sub whose question the very next stretch of
-conversation had answered). Given each open blocked sub's question plus
+it and holds its whole card in Needs you (a card can otherwise sit for hours
+on a buried sub whose question the very next stretch of conversation already
+answered). Given each open blocked sub's question plus
 the conversation since its block, it verdicts lift or hold, "when unsure,
 hold"; a lift lands as a normal `unblock` diary event, why-prefixed
 "answered in passing". Subs only — a blocked top is the card's Needs you,
@@ -195,8 +191,7 @@ plan-sync) is explicitly the grouper's to nest.
 related all-completed sibling tops under a done umbrella. It exists because
 the grouper only ever sees open tops, so related goals that finish before
 they get grouped would pile up flat in Completed forever, and an umbrella
-minted over already-done tops adopts nothing (the 2026-06-19 empty-umbrella
-bug). Safe by construction: every child is done, so the umbrella rolls up
+minted over already-done tops adopts nothing. Safe by construction: every child is done, so the umbrella rolls up
 completed. Gated by its own signature, logged under its own name.
 
 ## Peer mail: the courier
@@ -213,7 +208,7 @@ the sender's tracker checks itself off through the origin pointer.
 ## When a judge fails
 
 Every failure logs one row to `judge-errors.jsonl` that answers who, where,
-what, and why on its own (2026-07-09): `judge` (the one-per-prompt name),
+what, and why on its own: `judge` (the one-per-prompt name),
 `fsid`, `err` (the kind), and `note` (the evidence: a reply tail, the API's
 own error message, an exception name, or a give-up's scope and re-arm
 event).

@@ -20,7 +20,7 @@ its own.
 Romp is built on top of Claude Code: the agents it manages are ordinary
 Claude Code sessions, gathered into one live dashboard. You reach that
 dashboard from a browser on your laptop or a server, from
-[your phone](guide/remote-access.md), or from the VS Code / Cursor extension.
+[your phone](guide.md#your-phone), or from the VS Code / Cursor extension.
 
 Its key features:
 
@@ -65,4 +65,4 @@ Hover a work bar, open a summary, expand a tool call, and more.
 
 <video src="assets/overview.mp4" autoplay loop muted playsinline width="100%"></video>
 
-Install and first run: [Getting started](getting-started.md).
+Install and first run: [Install](install.md).

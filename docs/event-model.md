@@ -1,8 +1,7 @@
 # Event model: the bottom-layer schema
 
 Architecture deep dive: the pinned schema for the rebuilt bottom layer of romp: how a session's
-transcript becomes a structured, queryable model of turns and atoms. Built
-during the bottom-up redesign, 2026-06-13.
+transcript becomes a structured, queryable model of turns and atoms.
 
 The guiding principle: **the data model is the Claude streaming protocol, made
 graph-aware.** An atom is a streaming message, a turn is the streaming protocol's
@@ -254,7 +253,7 @@ author: "human" | "sdk" | "system" | { peer: <rompUuid> }
 | (none) | a `tool_result`-only user atom | no | (decision is read from content) |
 
 `promptSource` values observed on disk (field/value extraction over the live
-transcript corpus, 2026-06-13):
+transcript corpus):
 
 | value | count | meaning |
 |---|---|---|
@@ -293,7 +292,7 @@ reconstructing them from the append-only graph on disk lives in the file adapter
 and only there.
 
 1. **Get the file set.** The caller provides the session's transcript file(s).
-   NOTE (verified against the corpus 2026-06-14): resume forks do NOT link
+   Resume forks do NOT link
    child→parent via `parentUuid` in real data (0/8 multi-file dirs stitch), so the
    parser CANNOT discover a session's files by walking `parentUuid` across files.
    "Which files belong to one session" is a DEFERRED higher-layer concern (see
@@ -329,7 +328,7 @@ in arrival order. Same `Session`/`Turn`/`Atom` out either way.
 
 The original spec assumed a resume fork's first line links to its parent via
 `parentUuid`, so a directed leaf→root walk would gather a session's files.
-VERIFIED FALSE against the corpus (2026-06-14): 0/8 multi-file dirs stitch that
+In practice that is false: 0/8 multi-file dirs stitch that
 way; the only cross-file `parentUuid` link was an aborted 0-turn fork. So the
 parser cannot resolve "which files are one session" from the transcript graph. The
 old `romp-events` did it a layer up (same `customTitle` + shared-node
