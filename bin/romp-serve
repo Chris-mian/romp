@@ -6,7 +6,10 @@
 # `exec` it, so the manager keeps supervising the same PID and the kernel self-builds
 # its UI bundles if stale.
 #   romp-serve [--port N] [--host H]
-# Host precedence: --host > the persisted serve-host opt-in (`romp serve on`) > local.
+# Host precedence: --host > local-only. The kernel stays bound to 127.0.0.1;
+# tailnet/phone reach goes through `tailscale serve` proxying to loopback
+# (docs/guide/remote-access.md), so there is no persisted off-loopback opt-in
+# (`romp --serve` removed 2026-07-19). --host remains as the manager's spawn seam.
 set -euo pipefail
 
 # Resolve the repo root through any symlink (matches the other bin/ consumers).
@@ -21,7 +24,6 @@ done
 ROMP_DIR="$(cd "$(dirname "$src")/.." && pwd)"
 # ROMP_KERNEL_BIN is the test seam (same pattern as ROMP_*_BIN elsewhere).
 KERNEL="${ROMP_KERNEL_BIN:-$ROMP_DIR/bin/romp-kernel}"
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
 
 # Port: the manager passes --port; fall back to ROMP_SERVE_PORT, then the kernel default.
 port="${ROMP_SERVE_PORT:-}"
@@ -34,13 +36,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Host: explicit --host wins; else the persisted serve-host opt-in (set once via
-# `romp serve on`, so tailnet serving survives restarts without a per-launch flag);
-# else local-only. This is the "serve to my phone, set once" knob.
-if [[ -z "$host" ]]; then
-    [[ -r "$STATE/serve-host" ]] && host="$(tr -d '[:space:]' < "$STATE/serve-host" 2>/dev/null || true)"
-    host="${host:-127.0.0.1}"
-fi
+# Host: explicit --host wins; else local-only. A leftover serve-host state file
+# from the removed `romp --serve` opt-in is deliberately IGNORED — a stale file
+# must never silently rebind the kernel off loopback.
+host="${host:-127.0.0.1}"
 
 [[ -x "$KERNEL" ]] || { echo "romp-serve: kernel not found/executable at $KERNEL" >&2; exit 1; }
 

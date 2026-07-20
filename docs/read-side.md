@@ -37,9 +37,11 @@ completed); the feed just paints columns. (Reflected back into `docs/judges.md`.
 - **`romp --on` starts the supervisor.** It runs `romp-manager` (foreground, like
   `jupyter lab`); `romp --refresh` restarts the kernel(s), `romp --status` reports them.
   (The old standalone `romp --on` node UI server is superseded by the manager.)
-  `romp --serve on|off` is the persisted tailnet opt-in the manager honors via
-  `romp-serve` (binds 0.0.0.0 for direct tailnet/phone reach). The UI itself is just
-  a URL the kernel serves.
+  The kernel binds loopback only; tailnet/phone reach is `tailscale serve`
+  proxying to `127.0.0.1:7433` (CORRECTION 2026-07-19: the `romp --serve on|off`
+  persisted 0.0.0.0 opt-in was removed — a second, weaker door once the
+  tailscale proxy carried the phone path). The UI itself is just a URL the
+  kernel serves.
 - **Clean break, no backwards compatibility.** The old record stores (`summaries/`,
   `requests/`, `decision-log`, `corrections/`, `digest/`, ...) are **disposable**.
   The new system does not read or migrate them. We need not delete them, but the
@@ -295,10 +297,13 @@ The new Python kernel (`kernel/kernel.py`) must close it from the start.
   beyond the validated local origin. Local clients auto-inject it (`?token=` once →
   `SameSite=Strict` cookie) so enabling a token never 401s them into a respawn loop
   (the old Node kernel's blocker). `healthz`/liveness must not break tokened clients.
-- **Token REQUIRED whenever serving beyond `127.0.0.1`** (tailscale serve/funnel,
-  `--host 0.0.0.0`). The Origin check is the always-on floor; the token is the gate
-  for non-local reach. Bake the token into how the kernel launches (env/autostart),
-  never a manual per-launch flag.
+- **Token REQUIRED whenever the kernel itself binds beyond `127.0.0.1`**
+  (`ROMP_SERVE_HOST=0.0.0.0` — a test seam, not a user path). The Origin check is
+  the always-on floor; the token is the gate for non-local reach. Bake the token
+  into how the kernel launches (env/autostart), never a manual per-launch flag.
+  NB `tailscale serve` traffic arrives over loopback and is trusted as local —
+  its gate is tailnet device auth, which is why funnel (public internet through
+  the same proxy) must never be enabled for this port.
 - Applies to the NEW Python kernel; the Node kernel is being retired. Regression
   test: a cross-site `/ws` upgrade with a foreign `Origin` must be rejected.
 

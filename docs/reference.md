@@ -11,7 +11,6 @@ that hosts the kernel.
 | `romp -d` / `-f` / `-j` | Terminal views: dashboard, feed mirror, judge monitor |
 | `romp --on` / `--status` | Start the kernel manager / report its status |
 | `romp --refresh` | Restart the kernels (fleet-wide; running sessions reconnect) |
-| `romp --serve on\|off\|status` | Expose the kernel to your tailnet (token-gated), or revert to local-only |
 | `romp --mail …` | The postal service from the shell (below) |
 | `romp update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
 | `romp --version` | Version report across the moving parts |

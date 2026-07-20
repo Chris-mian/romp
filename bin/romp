@@ -578,7 +578,6 @@ EOF
     _romp_cmd "romp -d"                    romp-dashboard "Live session monitor (dashboard)"
     _romp_cmd "romp -f"                    romp-feed    "Feed — terminal Working/Blocked/Completed board (mirrors the web feed)"
     _romp_cmd "romp -j"                    romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
-    _romp_cmd "romp --serve [on|off|status]" -          "Expose the kernel to the tailnet/phone (token-gated), or revert to local-only"
     _romp_cmd "romp --on"                  romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
     _romp_cmd "romp --refresh"             romp-manager "Restart the postal bus + all romp kernels (picks up new code — run after an update)"
     _romp_cmd "romp --status"              romp-manager "Show manager + kernel status"
@@ -710,33 +709,11 @@ if [[ "${1:-}" == "--default-dir" ]]; then
     exit 0
 fi
 
-# `romp --serve on|off|status` — persist the kernel's serve-host so the supervisor
-# (romp --on → romp-manager → romp-serve → romp-kernel) binds the tailnet WITHOUT a
-# per-launch flag. `on` exposes to the tailnet/phone (token-gated; the token is
-# already baked in ~/.local/state/romp/serve-token); `off` reverts to local-only.
-# Set it once; apply to a running kernel with `romp --refresh`.
-if [[ "${1:-}" == "--serve" ]]; then
-    shift
-    _serve_conf="${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-host"
-    case "${1:-status}" in
-        on|tailnet)
-            mkdir -p "$(dirname "$_serve_conf")"
-            printf '0.0.0.0\n' > "$_serve_conf"
-            echo "[romp] serve-host → 0.0.0.0 (tailnet/phone, token-gated). Apply now: romp --refresh" ;;
-        off|local)
-            rm -f "$_serve_conf"
-            echo "[romp] serve-host → 127.0.0.1 (local only). Apply now: romp --refresh" ;;
-        status)
-            if [[ -r "$_serve_conf" ]]; then
-                echo "serve-host: $(tr -d '[:space:]' < "$_serve_conf") (tailnet)"
-            else
-                echo "serve-host: 127.0.0.1 (local only)"
-            fi ;;
-        *)
-            echo "usage: romp --serve [on|off|status]" >&2; exit 2 ;;
-    esac
-    exit 0
-fi
+# NB: `romp --serve` (a persisted 0.0.0.0 opt-in for direct tailnet binding) was
+# REMOVED 2026-07-19: phone/tailnet reach goes through `tailscale serve` proxying
+# to the loopback-bound kernel instead — the kernel never leaves 127.0.0.1, and
+# access rides tailnet device auth + TLS rather than a token in a URL.
+# See docs/guide/remote-access.md.
 
 # ── romp --debug [on|off|status]: judge debug mode ──────────────────────────────
 # When on, every judge-failure row in judge-errors.jsonl carries the failing call's

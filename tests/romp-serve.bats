@@ -1,7 +1,9 @@
 #!/usr/bin/env bats
 
 # romp-serve maps the manager's spawn contract (--port / ROMP_SERVE_PORT) onto the
-# Python kernel's env and execs it; `romp --serve` persists the tailnet opt-in.
+# Python kernel's env and execs it. The kernel binds loopback only; tailnet reach
+# is `tailscale serve` proxying to loopback, so there is no persisted host opt-in
+# (`romp --serve` removed 2026-07-19).
 
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)"
 ROMP_SERVE="$BIN/romp-serve"
@@ -46,16 +48,17 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"HOST=127.0.0.1"* ]]
 }
 
-@test "romp-serve: honors the persisted serve-host opt-in (tailnet)" {
+@test "romp-serve: a stale serve-host file can NOT rebind the kernel off loopback" {
+    # The `romp --serve` opt-in is removed; a leftover state file must be ignored,
+    # never silently expose the kernel on 0.0.0.0.
     printf '0.0.0.0\n' > "$XDG_STATE_HOME/romp/serve-host"
     run "$ROMP_SERVE" --port 9999
-    [[ "$output" == *"HOST=0.0.0.0"* ]]
+    [[ "$output" == *"HOST=127.0.0.1"* ]]
 }
 
-@test "romp-serve: --host overrides the persisted opt-in" {
-    printf '0.0.0.0\n' > "$XDG_STATE_HOME/romp/serve-host"
-    run "$ROMP_SERVE" --port 9999 --host 127.0.0.1
-    [[ "$output" == *"HOST=127.0.0.1"* ]]
+@test "romp-serve: explicit --host still wins (the manager's spawn seam)" {
+    run "$ROMP_SERVE" --port 9999 --host 0.0.0.0
+    [[ "$output" == *"HOST=0.0.0.0"* ]]
 }
 
 @test "romp-serve: ROMP_SERVE_PORT fallback + forwards ROMP_MANAGER_PID" {
@@ -64,20 +67,10 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"MGRPID=4242"* ]]
 }
 
-@test "romp --serve: on writes the opt-in, status reports it, off clears it" {
-    run "$ROMP_SCRIPT" --serve status
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"127.0.0.1"* ]]
-
+@test "romp --serve: removed — rejected as unknown, writes no state" {
     run "$ROMP_SCRIPT" --serve on
-    [ "$status" -eq 0 ]
-    [ "$(cat "$XDG_STATE_HOME/romp/serve-host")" = "0.0.0.0" ]
-
-    run "$ROMP_SCRIPT" --serve status
-    [[ "$output" == *"tailnet"* ]]
-
-    run "$ROMP_SCRIPT" --serve off
-    [ "$status" -eq 0 ]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Unknown option"* ]]
     [ ! -f "$XDG_STATE_HOME/romp/serve-host" ]
 }
 

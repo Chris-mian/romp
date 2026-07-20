@@ -764,9 +764,10 @@ _resume_rows_fn() {   # writes the extracted function to $1
     local b; for b in romp-manager romp-version; do printf '#!/bin/sh\nexit 0\n' > "$td/$b"; chmod +x "$td/$b"; done
     run env PATH="$td:/usr/bin:/bin:/opt/homebrew/bin" bash "$td/romp" -h
     [ "$status" -eq 0 ]
-    # built-ins (no backing binary) always shown — incl. `--serve`, which the old static help omitted
-    [[ "$output" == *"romp --serve"* ]]
+    # built-ins (no backing binary) always shown
     [[ "$output" == *"romp --detach"* ]]
+    # `romp --serve` is removed (tailnet reach = tailscale serve to loopback) — must not resurface
+    [[ "$output" != *"romp --serve"* ]]
     # present backing → shown
     [[ "$output" == *"romp --on"* ]]
     [[ "$output" == *"romp --version"* ]]

@@ -36,10 +36,21 @@ starts the remote kernel if it isn't running.
 
 ## Your phone
 
+The kernel never listens beyond `127.0.0.1`. To reach it from your phone, let
+[Tailscale](https://tailscale.com) carry the traffic: `tailscale serve` proxies
+HTTPS at your machine's tailnet name to the loopback port, on the machine
+itself.
+
 ```bash
-romp --serve on      # expose the kernel to your tailnet, token-gated
-romp --serve off     # back to local-only
+tailscale serve --bg 7433     # https://<machine>.<tailnet>.ts.net -> 127.0.0.1:7433
+tailscale serve status        # show the active proxy
+tailscale serve reset         # back to local-only
 ```
 
-With [Tailscale](https://tailscale.com) on the phone, the full dashboard is
-in your pocket: check the feed, answer a blocked card, start a session.
+With Tailscale on the phone, the full dashboard is in your pocket: check the
+feed, answer a blocked card, start a session. Only devices signed into your
+tailnet can connect (WireGuard device identity plus TLS); nothing is opened to
+your LAN or the internet, and the proxy persists across restarts of both
+Tailscale and the kernel. Don't use `tailscale funnel` (the public-internet
+variant): the kernel trusts loopback-proxied connections as local, so a funnel
+would publish the dashboard unauthenticated.

@@ -33,7 +33,7 @@ MEDIA = CHAT_VIEW / "media"
 UI = ROOT / "ui"                             # the browser UI: timeline view + webview sources (served/built from here)
 NAMES = jd.STATE / "names"
 PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7433"))   # 7433 = the manager/extension default (the user 2026-06-16); env still overrides
-BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # set 0.0.0.0 to reach the kernel over the tailnet / a phone
+BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # loopback only; tailnet/phone reach = `tailscale serve` proxying to loopback (docs/guide/remote-access.md). Env override is a test seam, not a user knob.
 
 
 _STARTED = time.time()                       # this kernel process's start (for /version uptime)
