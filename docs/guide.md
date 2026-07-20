@@ -6,13 +6,13 @@ question:
 
 - **The chat** is the normal way of talking to a coding agent, but easier to
   scan: tool calls fold away and expand only when you want them.
-- **The feed** is the task layer: Romp finds the discrete tasks in each
-  session's work and shows them as cards. One session can produce several, and
-  a single task can run across sessions.
+- **The feed** shows Romp's task-management layer: Romp analyzes each session's
+  transcript, breaks the work into tasks, and shows each task as a card. One
+  session can produce several, and agents can hand tasks off to one another.
 - **The outline** lists every session with its tasks, for reviewing what a
   session has done and searching across the whole fleet.
-- **The timeline** shows what each session has been doing over time, and how
-  they have been coordinating with one another.
+- **The timeline** shows what each session has been doing over time and how they
+  have been coordinating; click any part to jump to that moment in the chat.
 
 ## The views
 
@@ -69,6 +69,9 @@ Each lane is one session; bars are stretches of work.
 The story of any bar is a hover away:
 
 ![Hovering a bar pops what happened and when](assets/guide/timeline-hover.png){ width="100%" }
+
+Click a bar or a message marker to jump straight to where it happened in the
+chat.
 
 A session wears the same color for its state everywhere it appears: its tab, its
 timeline lane, its cards.
