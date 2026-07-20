@@ -1532,6 +1532,43 @@ class PendingQueue(unittest.TestCase):
         self._sess("q2")
         self.assertEqual(self.be.pending_queued("q2"), [])             # session exists, nothing queued
 
+    def test_unqueue_expect_relocates_under_the_lock(self):
+        # the user 2026-07-20: the kernel's drift guard located the message in a SNAPSHOT, then popped
+        # by raw index — the input generator consuming entries in between could cancel the WRONG
+        # message. `expect` moves the verify inside the lock: a shifted index re-locates by exact text.
+        s = self._sess("qx1")
+        s.enqueue("alpha"); s.enqueue("beta")
+        s.unqueue(0)                                     # the queue shifts after the caller's snapshot
+        self.assertEqual(self.be.unqueue("qx1", 1, "beta"), "beta", "stale idx 1 re-locates to 'beta'")
+        self.assertEqual(s.pending(), [])
+
+    def test_unqueue_expect_missing_is_a_loud_miss_not_a_wrong_pop(self):
+        # the already-forwarded case (no recall exists once the CLI has the message): the exact text is
+        # gone from _pending → None, and the OTHER queued message is untouched — the caller turns the
+        # None into the 'too late' toast instead of the old silent fake-delete.
+        s = self._sess("qx2")
+        s.enqueue("survivor")
+        self.assertIsNone(self.be.unqueue("qx2", 0, "already forwarded"))
+        self.assertEqual(s.pending(), ["survivor"], "a miss never pops a different message")
+
+    def test_queue_recallable_only_while_a_recall_can_win(self):
+        # the ✕ affordance gate (the user 2026-07-20): during a running UN-HELD turn the input
+        # generator forwards a queued send into the CLI within milliseconds — a cancel there can only
+        # lose, so the bubble must not offer one. The two romp-side HOLDS (interrupt, pending rewind)
+        # and the idle/connecting states keep the queue genuinely recallable.
+        s = self._sess("qr1")
+        self.assertTrue(self.be.queue_recallable("qr1"), "idle → entries sit in _pending, recallable")
+        s.inflight = 1
+        self.assertFalse(self.be.queue_recallable("qr1"), "running un-held turn → forwards instantly")
+        s._interrupted = True
+        self.assertTrue(self.be.queue_recallable("qr1"), "interrupt hold → the queue is romp-held")
+        s._interrupted = False
+        s._rewind_to = "11111111-2222-3333-4444-555555555555"
+        self.assertTrue(self.be.queue_recallable("qr1"), "pending rewind holds the queue too")
+        s._rewind_armed = True
+        self.assertFalse(self.be.queue_recallable("qr1"), "armed rewind releases the hold")
+        self.assertTrue(self.be.queue_recallable("no-such-sid"), "unknown session fails toward the ✕")
+
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class PendingQueueLoop(unittest.TestCase):

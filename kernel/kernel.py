@@ -2553,12 +2553,22 @@ def _drive(msg, client):
     elif t == "askText" and msg.get("text"):
         be.on_ask(sid, "text", str(msg["text"])); _mark_views_dirty()
     elif t == "cancelQueued" and msg.get("park") is not None:
-        _cancel_parked(sid, int(msg["park"]), str(msg.get("md") or ""))   # ✕ on a PARKED op (compaction/model queue — romp-owned, any backend)
+        # ✕ on a PARKED op (compaction/model queue — romp-owned, any backend). The result frame is
+        # AUTHORITATIVE (the user 2026-07-20): ok:false means the op already ran/was delivered — the
+        # client toasts the 'too late' text and reverts its optimistic composer restore, instead of
+        # the old silent miss that read as a successful cancel.
+        err = _cancel_parked(sid, int(msg["park"]), str(msg.get("md") or ""))
+        client["send"](json.dumps({"type": "cancelResult", "ok": not err, "id": sid,
+                                   "md": str(msg.get("md") or ""), "text": err or ""}))
         _push_soon()
     elif t == "cancelQueued" and msg.get("idx") is not None and hasattr(be, "unqueue"):
         # ✕ on a backend-queue message: pull it back out (drift-guarded by the bubble's body); the
-        # webview already refilled the composer with its text
-        _cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))
+        # webview already refilled the composer with its text. ok:false = the message had already
+        # forwarded into the CLI, where NO recall exists — say so loudly (the user 2026-07-20: the
+        # silent miss showed the message as deleted while the CLI answered it anyway).
+        err = _cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))
+        client["send"](json.dumps({"type": "cancelResult", "ok": not err, "id": sid,
+                                   "md": str(msg.get("md") or ""), "text": err or ""}))
         _push_soon()
     elif t == "dismissDialog":
         # Dismiss the CLI's spend-cap modal (the chat card's tmux-only affordance): the backend VERIFIES
@@ -6143,29 +6153,47 @@ def _parked_md(op):
     return "/%s %s" % (op[0], op[1])
 
 
+def _cancel_miss_text(md):
+    """The user-facing 'too late' for a ✕ whose target already left the queue. Once a queued send is
+    handed to the session there is NO recall (the SDK control protocol has no queue-remove; the CLI
+    folds its queue into the running turn) — so the honest answer is loud, not a silent no-op that
+    reads as a successful delete while the message gets answered anyway (the user 2026-07-20)."""
+    body = (md or "").strip()
+    if body.startswith("/"):
+        return "too late to cancel %s — the session already has it" % body.split()[0]
+    return ("too late to cancel — the message already reached the session, "
+            "and will be answered in the current turn")
+
+
 def _cancel_parked(sid, park, md):
     """Remove ONE parked op — the queued bubble's ✕ (the user 2026-07-08). Verified by body text: if the
     park list shifted between the push and the click (ops applied / another cancel), the index alone
-    would remove the WRONG op — re-locate by md, and no-op when it's gone (it already ran; the next push
-    clears the bubble). Persists + wakes the pusher like every queue mutation."""
+    would remove the WRONG op — re-locate by md. Returns None on success; when the op is GONE (it
+    already ran / was delivered) returns the 'too late' text for the caller to toast — a silent miss
+    read as a successful cancel while the message got answered anyway (the user 2026-07-20). Persists +
+    wakes the pusher like every queue mutation."""
     sid = str(sid)
     ops = _pending_ops.get(sid) or []
     if not (0 <= park < len(ops)) or (md and _parked_md(ops[park]) != md):
         park = next((j for j, op in enumerate(ops) if _parked_md(op) == md), -1) if md else -1
         if park < 0:
-            return
+            return _cancel_miss_text(md)
     ops.pop(park)
     if not ops:
         _pending_ops.pop(sid, None)
     _save_pending_ops()
     _mark_views_dirty()
+    return None
 
 
 def _cancel_backend_queued(be, sid, idx, md):
     """unqueue with the same DRIFT GUARD as _cancel_parked: the click carries the bubble's body; if the
     backend queue moved between the push and the click (the input generator consumed the head), the raw
-    index would cancel the WRONG message — re-locate by body, no-op when it's gone. A client that sends
-    no md (older bundle) keeps the raw-index behavior."""
+    index would cancel the WRONG message — re-locate by body. A client that sends no md (older bundle)
+    keeps the raw-index behavior. Returns None on success; on a MISS — the message already forwarded to
+    the CLI, where no recall exists — returns the 'too late' text for the caller to toast (the user
+    2026-07-20). The exact text is re-verified INSIDE the backend's lock (unqueue's `expect`), so the
+    input generator racing this click can only turn it into a loud miss, never a wrong-message cancel."""
     try:
         pending = be.pending_queued(sid)
     except Exception:
@@ -6173,9 +6201,22 @@ def _cancel_backend_queued(be, sid, idx, md):
     if md:
         if not (0 <= idx < len(pending)) or _split_followup(pending[idx])[1] != md:
             idx = next((i for i, q in enumerate(pending) if _split_followup(q)[1] == md), -1)
-            if idx < 0:
-                return
-    be.unqueue(sid, idx)
+    if not (0 <= idx < len(pending)):
+        return _cancel_miss_text(md)
+    got = be.unqueue(sid, idx, pending[idx])
+    return None if got is not None else _cancel_miss_text(md)
+
+
+def _queue_recallable(be, sid):
+    """Whether a ✕ on this session's backend-queue bubble can still win (SdkBackend.queue_recallable —
+    False while a running un-held turn is forwarding sends straight into the CLI, where no recall
+    exists). getattr-guarded and fails toward True: a backend/fake without the signal keeps offering
+    the ✕, and the loud unqueue-miss toast covers the attempt (the user 2026-07-20)."""
+    fn = getattr(be, "queue_recallable", None)
+    try:
+        return bool(fn(sid)) if fn else True
+    except Exception:
+        return True
 
 
 def _forwards_sends(be):
@@ -7038,7 +7079,12 @@ def build_session(sid, now, tmux=None):
         # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
         # CANCELABLE only when romp OWNS the queue — the SDK backend holds _pending in memory (exposes
         # unqueue); tmux's queue lives inside Claude Code (no recall), so those bubbles aren't clickable.
-        cancelable = hasattr(Sessions.backend_for(sid), "unqueue")
+        # AND only while a recall can still WIN (queue_recallable, the user 2026-07-20): during a running
+        # un-held turn the SDK forwards a queued send into the CLI within milliseconds, and once it's
+        # there no recall exists — a ✕ on that bubble was a lie that ended in a silent fake-delete. The
+        # bubble stays (dashed, with a why-no-✕ tooltip client-side); only the false affordance goes.
+        _cbe = Sessions.backend_for(sid)
+        cancelable = hasattr(_cbe, "unqueue") and _queue_recallable(_cbe, sid)
         qmsgs = []
         for i, t in enumerate(queued):
             goal, body, fu, ctx = _split_followup(t)

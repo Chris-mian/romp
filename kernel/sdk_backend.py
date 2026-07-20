@@ -895,13 +895,18 @@ class SdkSession:
         with self._lock:
             return list(self._pending)
 
-    def unqueue(self, idx: int) -> str | None:
+    def unqueue(self, idx: int, expect: str | None = None) -> str | None:
         """Remove the queued turn at position `idx` (the chat's queued list is this same _pending order)
-        and return its raw text, or None if out of range. Lets the user CANCEL a message they queued
+        and return its raw text, or None if it's gone. Lets the user CANCEL a message they queued
         behind a busy turn — click it in the chat to pull it back out and re-edit (the user 2026-06-27).
         Only pending (not-yet-started) turns are cancelable; once the input generator has fed a turn to
-        the SDK it's gone from _pending and no longer listed, so there's nothing to mis-cancel."""
+        the CLI there is no recall (the control protocol has no queue-remove), so a miss here is the
+        caller's cue to say so loudly. `expect` is the exact text the click meant: verified (and, on a
+        shifted index, re-located) UNDER the lock, so the input generator consuming entries between the
+        caller's snapshot and this pop can never cancel the wrong message."""
         with self._lock:
+            if expect is not None and not (0 <= idx < len(self._pending) and self._pending[idx] == expect):
+                idx = next((i for i, q in enumerate(self._pending) if q == expect), -1)
             item = self._pending.pop(idx) if 0 <= idx < len(self._pending) else None
         if item is not None:
             self._persist_queue()
@@ -2268,10 +2273,13 @@ class SdkBackend:
             s = self.sessions.get(sid)
         return s.pending() if s else []
 
-    def unqueue(self, sid: str, idx: int) -> str | None:
+    def unqueue(self, sid: str, idx: int, expect: str | None = None) -> str | None:
         """Cancel the queued turn at `idx` for an SDK session (the kernel's cancelQueued route). Returns
-        its text, or None. tmux has no equivalent (its queue lives in Claude Code), so only SDK sessions
+        its text, or None on a MISS — the message already left the queue (handed to the CLI, no recall
+        exists), and the caller must surface that loudly rather than show a fake delete (the user
+        2026-07-20). tmux has no equivalent (its queue lives in Claude Code), so only SDK sessions
         expose this — the kernel gates the chat's cancel affordance on the backend having `unqueue`.
+        `expect` (the exact queued text the click meant) is re-verified under the session lock.
 
         ALSO drops the message's optimistic echo from the live tail: send() adds a blue 'you' bubble that
         normally prunes when the real user atom lands in the transcript — but a CANCELED message never
@@ -2281,7 +2289,7 @@ class SdkBackend:
             s = self.sessions.get(sid)
         if not s:
             return None
-        text = s.unqueue(idx)
+        text = s.unqueue(idx, expect)
         if text is not None:
             live = self._live.get(sid) or {}
             for k, a in list(live.items()):                # snapshot: the live-tail thread may mutate concurrently
@@ -2290,6 +2298,23 @@ class SdkBackend:
                     break
             self._wake_push()                              # repaint without the echo so it stops reading as sent
         return text
+
+    def queue_recallable(self, sid: str) -> bool:
+        """Can a ✕ on this session's queued bubble still win? False while a turn is running UN-HELD:
+        there the input generator forwards a queued send to the CLI within milliseconds, and once it's
+        inside the CLI no recall exists — so offering a cancel would be a lie that ends in "too late".
+        True when the queue is genuinely romp-held — the interrupt hold, the rewind hold — or when no
+        turn is in flight (idle/connecting: entries sit in _pending until the client drains them).
+        The kernel reads this to decide whether the queued bubble gets its ✕ at all; the loud
+        unqueue-miss toast covers the races this gate can't (a click on a just-stale push)."""
+        with self._lock:
+            s = self.sessions.get(sid)
+        if not s:
+            return True
+        with s._lock:
+            if s.inflight <= 0:
+                return True
+            return bool(s._interrupted or (s._rewind_to and not getattr(s, "_rewind_armed", False)))
 
     def send(self, sid: str, text: str) -> bool:
         s = self._ensure(sid)

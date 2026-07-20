@@ -2041,6 +2041,11 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     // one phrase separating OUR unconfirmed echo from a real queued message, which the session has accepted
     // and is holding (the user 2026-07-16)
     if (t.optimistic) bubble.title = "sent just now — romp hasn't confirmed the session has it yet";
+    // a queued entry with NO ✕ (the user 2026-07-20): the queue lives inside the session's own CLI —
+    // there is no recall — so instead of a cancel that would only ever say "too late", the tooltip says
+    // where the message actually is. (SDK mid-turn forwards and every tmux queued message land here.)
+    else if (!t.cancelable && t.idx !== undefined)
+      bubble.title = "queued in the session — it can't be recalled, and joins the conversation at the session's next step";
     const isCmd = renderSlashCmd(bubble, t.md);
     if (!isCmd) bubble.innerHTML = md(t.md);
     // CANCELABLE — an explicit ✕ on the bubble (the user 2026-07-08; the old whole-bubble click was
@@ -2076,6 +2081,13 @@ function restoreToComposer(text: string) {
   ta.focus();
   ta.setSelectionRange(ta.value.length, ta.value.length);
 }
+
+// The composer state around each ✕-click's optimistic restore, keyed `sid + " " + md`, so a FAILED
+// cancel (kernel cancelResult ok:false — the message had already reached the session) can put the
+// composer back exactly as it was IF the user hasn't touched it since (the user 2026-07-20: the
+// restored copy of an un-recallable message is a double-send waiting to happen). An edited draft is
+// never touched — the toast alone covers it.
+const pendingCancelRestores = new Map<string, { before: string; after: string }>();
 
 // The turn stopped on an API error — the session is BLOCKED until retried. A red-dot card at the bottom
 // (so it stands out, the user 2026-06-16) carrying the error text + a red "API error" badge and a Retry
@@ -6231,6 +6243,25 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "warn" && typeof m.text === "string" && m.text) warnToast(m.text);
+  // The AUTHORITATIVE answer to a ✕ on a queued bubble (the user 2026-07-20). ok:false = the message
+  // had already left romp's queue (handed to the CLI — no recall exists): toast the kernel's 'too late'
+  // and UNDO the optimistic composer restore if the draft is untouched — leaving the copy there invited
+  // re-sending a message that is already being answered. ok:true just drops the stash (restore stands).
+  else if (m.type === "cancelResult" && typeof m.id === "string") {
+    const key = m.id + " " + (typeof m.md === "string" ? m.md : "");
+    const stash = pendingCancelRestores.get(key);
+    pendingCancelRestores.delete(key);
+    if (!m.ok) {
+      if (typeof m.text === "string" && m.text) warnToast(m.text);
+      if (stash && m.id === activeId) {
+        const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+        if (ta && ta.value === stash.after) {
+          ta.value = stash.before;
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }
+    }
+  }
   // The identity palette changed (gear → Session colors): refresh the right-click menu's swatch set so a
   // menu opened after the switch offers the NEW palette (the kernel remaps + repaints sessions itself).
   else if (m.type === "palette" && Array.isArray(m.colors)) paletteColors = m.colors;
@@ -6775,7 +6806,14 @@ setupSettings();
       if (el.dataset.qidx !== undefined) msg.idx = Number(el.dataset.qidx);
       if (el.dataset.qpark !== undefined) msg.park = Number(el.dataset.qpark);
       vscodeApi.postMessage(msg);
-      if (qmd && el.dataset.qcmd !== "1") restoreToComposer(qmd);   // a message returns to the composer; a command just cancels
+      if (qmd && el.dataset.qcmd !== "1") {
+        // a message returns to the composer; a command just cancels. The restore is optimistic — stash
+        // the composer's before/after so the kernel's cancelResult ok:false can undo it (untouched only).
+        const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+        const before = ta ? ta.value : "";
+        restoreToComposer(qmd);
+        pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "" });
+      }
       el.closest(".queued-bubble")?.remove();   // optimistic; the next push rebuilds the queue without it
     },
     // gist↔full toggle on a compact nudge bubble (the user 2026-07-17: progressive disclosure) —

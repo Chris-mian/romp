@@ -63,12 +63,64 @@ test("the delegated qx handler cancels click-safely: kernel op + composer restor
   assert.match(RENDER, /if \(el\.dataset\.qidx !== undefined\) msg\.idx = Number\(el\.dataset\.qidx\);/);
   assert.match(RENDER, /if \(el\.dataset\.qpark !== undefined\) msg\.park = Number\(el\.dataset\.qpark\);/);
   // a MESSAGE returns to the composer to re-edit; a slash COMMAND (qcmd) just cancels
-  assert.match(RENDER, /if \(qmd && el\.dataset\.qcmd !== "1"\) restoreToComposer\(qmd\);/);
+  assert.match(RENDER, /if \(qmd && el\.dataset\.qcmd !== "1"\) \{/);
+  assert.match(RENDER, /restoreToComposer\(qmd\);/);
   assert.match(RENDER, /el\.closest\("\.queued-bubble"\)\?\.remove\(\)/, "optimistic removal before the next push");
   // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
   assert.match(RENDER, /function restoreToComposer\(text: string\)/);
   assert.match(RENDER, /getElementById\("composer-input"\)/);
   assert.match(RENDER, /dispatchEvent\(new Event\("input"/);
+});
+
+// ---- the loud already-delivered failure (the user 2026-07-20) ----------------------------------------
+// A ✕ whose target had already been HANDED TO THE CLI (the SDK forwards queued sends mid-turn; no recall
+// exists in the control protocol — the CLI folds its queue into the running turn) used to silently no-op
+// kernel-side while the client removed the bubble and restored the text: a fake delete, answered anyway.
+
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+const SDKBE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk_backend.py"), "utf8");
+
+test("the kernel answers every cancelQueued with an authoritative cancelResult frame", () => {
+  assert.equal(KERNEL.split('"type": "cancelResult"').length - 1, 2, "one reply per cancel arm (park + idx)");
+  assert.match(KERNEL, /"ok": not err/);
+  assert.match(KERNEL, /def _cancel_miss_text\(md\):/, "the 'too late' wording is built kernel-side");
+  assert.match(KERNEL, /too late to cancel — the message already reached the session/);
+});
+
+test("the ✕ only renders while a recall can still win (queue_recallable gates cancelable)", () => {
+  assert.match(KERNEL, /cancelable = hasattr\(_cbe, "unqueue"\) and _queue_recallable\(_cbe, sid\)/);
+  assert.match(SDKBE, /def queue_recallable\(self, sid: str\) -> bool:/);
+  assert.match(SDKBE, /def unqueue\(self, idx: int, expect: str \| None = None\)/,
+    "the pop re-verifies the exact text under the session lock — never a wrong-message cancel");
+});
+
+test("a queued bubble with no ✕ says where the message actually is", () => {
+  assert.match(RENDER, /else if \(!t\.cancelable && t\.idx !== undefined\)/);
+  assert.match(RENDER, /queued in the session — it can't be recalled, and joins the conversation at the session's next step/);
+});
+
+test("the qx click stashes the composer before/after so a failed cancel can undo the restore", () => {
+  assert.match(RENDER, /const pendingCancelRestores = new Map<string, \{ before: string; after: string \}>\(\);/);
+  assert.match(RENDER, /pendingCancelRestores\.set\(activeId \+ " " \+ qmd, \{ before, after: ta \? ta\.value : "" \}\);/);
+});
+
+test("cancelResult ok:false toasts the kernel's 'too late' and reverts an untouched composer restore", () => {
+  assert.match(RENDER, /m\.type === "cancelResult" && typeof m\.id === "string"/);
+  assert.match(RENDER, /pendingCancelRestores\.delete\(key\);/, "the stash is one-shot, ok or not");
+  assert.match(RENDER, /if \(typeof m\.text === "string" && m\.text\) warnToast\(m\.text\);/);
+  // the undo fires ONLY when the draft still exactly equals the post-restore value — an edited draft
+  // is the user's now; the toast alone covers it
+  assert.match(RENDER, /if \(ta && ta\.value === stash\.after\) \{[\s\S]*?ta\.value = stash\.before;/);
+});
+
+// Executed replica of the untouched-draft guard — the one branchy bit worth running, not just pinning.
+test("the revert guard: untouched drafts revert, edited drafts stay", () => {
+  const revert = (value: string, stash: { before: string; after: string }): string =>
+    value === stash.after ? stash.before : value;
+  const stash = { before: "", after: "forget the obsidian thing" };
+  assert.equal(revert("forget the obsidian thing", stash), "", "untouched → back to the pre-click draft");
+  assert.equal(revert("forget the obsidian thing, actually keep it", stash),
+    "forget the obsidian thing, actually keep it", "edited → the user owns it now");
 });
 
 test("the queued-header hourglass uses the accent blue, like the feed/mail toggle icons", () => {

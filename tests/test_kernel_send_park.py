@@ -358,12 +358,35 @@ class QueuedBubble(unittest.TestCase):
         self.assertIn('_cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))', src,
                       "the backend-queue cancel goes through the drift guard now")
 
+    def test_drive_answers_every_cancel_with_an_authoritative_result_frame(self):
+        # the user 2026-07-20: a ✕ whose target had already been handed to the CLI silently no-opped
+        # while the client showed the message as deleted — and the CLI answered it anyway. BOTH cancel
+        # arms now reply with a cancelResult frame (ok + the 'too late' text on a miss) so the client
+        # can toast and undo its optimistic composer restore.
+        import inspect
+        src = inspect.getsource(km._drive)
+        self.assertEqual(src.count('"type": "cancelResult"'), 2,
+                         "one authoritative reply per cancel arm (park + idx)")
+        self.assertIn('"ok": not err', src)
+        self.assertIn('"text": err or ""', src)
+
+    def test_the_backend_queue_bubble_cancelable_flag_rides_queue_recallable(self):
+        # the ✕ renders only while a recall can still WIN (the user 2026-07-20): during a running
+        # un-held turn the SDK forwards the send into the CLI within milliseconds, where no recall
+        # exists — so the affordance itself must go, not just fail loudly after the fact.
+        import inspect
+        src = inspect.getsource(km.build_session)
+        self.assertIn('cancelable = hasattr(_cbe, "unqueue") and _queue_recallable(_cbe, sid)', src)
+        gsrc = inspect.getsource(km._queue_recallable)
+        self.assertIn('getattr(be, "queue_recallable", None)', gsrc)
+        self.assertIn("return True", gsrc, "fails toward offering the ✕ — the loud miss covers it")
+
 
 class CancelParked(unittest.TestCase):
     """The queued bubble's X on a PARKED op (the user 2026-07-08): _cancel_parked removes exactly the op
     the user clicked — verified by the bubble's body (md), so a queue that shifted between the push and
-    the click (ops applied, another cancel) re-locates by text and a gone op is a silent no-op, never a
-    wrong-op removal."""
+    the click (ops applied, another cancel) re-locates by text; a GONE op returns the 'too late' text
+    instead of a silent miss (the user 2026-07-20), never a wrong-op removal."""
 
     def setUp(self):
         km._pending_ops.clear()
@@ -373,25 +396,27 @@ class CancelParked(unittest.TestCase):
 
     def test_removes_the_indexed_op(self):
         km._pending_ops[SID] = [("model", "opus"), ("send", "now do the thing", "human")]
-        km._cancel_parked(SID, 0, "/model opus")
+        self.assertIsNone(km._cancel_parked(SID, 0, "/model opus"), "a won cancel returns no error")
         self.assertEqual(km._pending_ops.get(SID), [("send", "now do the thing", "human")])
 
     def test_md_mismatch_relocates_by_body(self):
         # the head op fired while the click was in flight -> index 0 now holds a DIFFERENT op
         km._pending_ops[SID] = [("send", "first", "human"), ("send", "second", "human")]
-        km._cancel_parked(SID, 0, "second")
+        self.assertIsNone(km._cancel_parked(SID, 0, "second"))
         self.assertEqual(km._pending_ops.get(SID), [("send", "first", "human")],
                          "the clicked body wins over the stale index")
 
-    def test_gone_op_is_a_noop(self):
+    def test_gone_op_returns_the_too_late_text(self):
         km._pending_ops[SID] = [("send", "still here", "human")]
-        km._cancel_parked(SID, 0, "/compact")
+        err = km._cancel_parked(SID, 0, "/compact")
+        self.assertEqual(err, "too late to cancel /compact — the session already has it",
+                         "an already-applied op fails LOUDLY (the user 2026-07-20), never silently")
         self.assertEqual(km._pending_ops.get(SID), [("send", "still here", "human")],
-                         "an already-applied op cancels nothing (the next push clears the bubble)")
+                         "…and cancels nothing else")
 
     def test_last_op_removed_drops_the_key(self):
         km._pending_ops[SID] = [("compact",)]
-        km._cancel_parked(SID, 0, "/compact")
+        self.assertIsNone(km._cancel_parked(SID, 0, "/compact"))
         self.assertNotIn(SID, km._pending_ops)
 
     def test_parked_md_mirrors_the_bubble_rendering(self):
@@ -402,7 +427,8 @@ class CancelParked(unittest.TestCase):
 
 
 class _FakeQueueBackend:
-    """A backend that owns its queue (exposes unqueue), for the drift-guard tests."""
+    """A backend that owns its queue (exposes unqueue), for the drift-guard tests. Mirrors the real
+    SdkBackend.unqueue contract: `expect` re-verified (and re-located) at pop time, None on a miss."""
 
     def __init__(self, pending):
         self._p = list(pending)
@@ -411,37 +437,58 @@ class _FakeQueueBackend:
     def pending_queued(self, sid):
         return list(self._p)
 
-    def unqueue(self, sid, idx):
+    def unqueue(self, sid, idx, expect=None):
         self.unqueued.append(idx)
+        if expect is not None and not (0 <= idx < len(self._p) and self._p[idx] == expect):
+            idx = next((i for i, q in enumerate(self._p) if q == expect), -1)
         return self._p.pop(idx) if 0 <= idx < len(self._p) else None
 
 
 class CancelBackendQueued(unittest.TestCase):
     """The X on a backend-queue message: _cancel_backend_queued re-verifies the index against the
     bubble's body before unqueueing — the input generator consuming the head between push and click
-    must never make the X cancel the WRONG message."""
+    must never make the X cancel the WRONG message. A MISS (the message already forwarded into the
+    CLI, where no recall exists) returns the 'too late' text for the caller to toast — the old silent
+    no-op read as a successful delete while the CLI answered the message anyway (the user 2026-07-20)."""
 
     def test_exact_match_unqueues_the_index(self):
         be = _FakeQueueBackend(["alpha", "beta"])
-        km._cancel_backend_queued(be, SID, 1, "beta")
+        self.assertIsNone(km._cancel_backend_queued(be, SID, 1, "beta"), "a won cancel returns no error")
         self.assertEqual(be.unqueued, [1])
         self.assertEqual(be._p, ["alpha"])
 
     def test_drifted_index_relocates_by_body(self):
         # the push showed [consumed, alpha, beta]; by click time the head is gone -> idx 2 is stale
         be = _FakeQueueBackend(["alpha", "beta"])
-        km._cancel_backend_queued(be, SID, 2, "beta")
+        self.assertIsNone(km._cancel_backend_queued(be, SID, 2, "beta"))
         self.assertEqual(be.unqueued, [1], "re-located by body, not the stale index")
 
-    def test_gone_message_is_a_noop(self):
+    def test_gone_message_returns_the_too_late_text(self):
         be = _FakeQueueBackend(["alpha"])
-        km._cancel_backend_queued(be, SID, 0, "beta")
-        self.assertEqual(be.unqueued, [], "already sent -> nothing to cancel")
+        err = km._cancel_backend_queued(be, SID, 0, "beta")
+        self.assertEqual(err, "too late to cancel — the message already reached the session, "
+                              "and will be answered in the current turn")
+        self.assertEqual(be.unqueued, [], "already forwarded -> nothing recalled, nothing else touched")
 
     def test_no_md_keeps_raw_index_backcompat(self):
         be = _FakeQueueBackend(["alpha", "beta"])
-        km._cancel_backend_queued(be, SID, 0, "")
+        self.assertIsNone(km._cancel_backend_queued(be, SID, 0, ""))
         self.assertEqual(be.unqueued, [0])
+
+    def test_the_pop_itself_verifies_the_text_under_the_backend_lock(self):
+        # the TOCTOU the old two-step left open: the snapshot located 'beta' at idx 1, the generator
+        # consumed the head before the pop, and a raw-index pop would have canceled the WRONG message.
+        # The expect re-verify inside unqueue re-locates (or misses loudly) instead.
+        be = _FakeQueueBackend(["alpha", "beta"])
+        snap_idx = 1                                    # located from a snapshot listing [alpha, beta]
+        be._p = ["beta"]                                # the generator consumed 'alpha' mid-click
+        self.assertEqual(be.unqueue(SID, snap_idx, "beta"), "beta", "re-located, not wrong-popped")
+        self.assertEqual(be._p, [])
+
+    def test_miss_text_wording_splits_message_from_command(self):
+        self.assertIn("will be answered in the current turn", km._cancel_miss_text("do the thing"))
+        self.assertEqual(km._cancel_miss_text("/model opus"),
+                         "too late to cancel /model — the session already has it")
 
 
 if __name__ == "__main__":
