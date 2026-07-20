@@ -36,7 +36,7 @@ test("the Working column is the drop target, wired once on the stable col elemen
   assert.match(FEED, /col\.addEventListener\("drop", \(ev\) => \{/);
   // drop posts the SAME op as the modal button, with the same plain optimistic flip
   assert.match(FEED, /type: "cardMove", itemId: id, sid: dropped\.sid, to: "working"/);
-  assert.match(FEED, /optimisticFollowMove\(id, true\);\s*\/\/ same plain optimistic flip as the modal button/);
+  assert.match(FEED, /optimisticFollowMove\(id, "plain"\);\s*\/\/ same plain optimistic flip as the modal button/);
 });
 
 test("the landing slot opens at the BOTTOM of Working — the honest auto-sort landing spot", () => {

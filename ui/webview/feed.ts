@@ -155,31 +155,41 @@ function dropDismissed(ids: string[]): void {
 // show a transient toast, so a behavior change is apparent rather than silently masked. Mirrors pendingCleared.
 const FOLLOW_MOVE_MS = 4000;
 const pendingFollowMove = new Map<string, number>();   // card itemId → revert/toast timer id
-// ids whose pending move is a PLAIN recategorize (the "Move to Working" button, the user 2026-07-06):
-// same optimistic column flip, but no message is in flight, so the prediction must NOT wear the follow-up
-// styling (recheck dot + "Followed up" chip) and the revert toast says "move", not "follow-up".
-const pendingMovePlain = new Set<string>();
-function optimisticFollowMove(itemId: string, plain = false) {
+// What KIND of reply put each prediction in flight (the user 2026-07-20: EVERY context-carrying reply flips
+// its card to Working instantly, not just the feed composer's own follow-up):
+//  - "followup": a message rides along → the prediction wears the re-check styling ("Followed up" chip),
+//    and an unconfirmed prediction reverts WITH a toast (a silently-unheeded message must be apparent).
+//  - "plain": the "Move to Working" button / drag — no message in flight, so no chip; reverts with a toast.
+//  - "answer": a picker/permission answer resolved the session's live block — no chip, and the prediction
+//    YIELDS to the first authoritative payload (see reconcileFollowMove). The revert is SILENT: an unheeded
+//    answer re-shows the ⏸ blocked card, which IS the signal — unlike a message, nothing can be lost.
+type MoveKind = "followup" | "plain" | "answer";
+const pendingMoveKind = new Map<string, MoveKind>();
+function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
-  if (plain) pendingMovePlain.add(itemId); else pendingMovePlain.delete(itemId);
+  pendingMoveKind.set(itemId, kind);
   const timer = window.setTimeout(() => {
     if (!pendingFollowMove.has(itemId)) return;        // a push already confirmed the move → nothing to do
     pendingFollowMove.delete(itemId);                  // give the kernel authority: drop the prediction
-    feedToast(pendingMovePlain.delete(itemId)
-      ? "That move didn’t stick — the card didn’t reach Working. Check it."
-      : "That follow-up didn’t move the card to Working — the session may not have picked it up. Check it.");
+    const k = pendingMoveKind.get(itemId); pendingMoveKind.delete(itemId);
+    if (k === "plain") feedToast("That move didn’t stick — the card didn’t reach Working. Check it.");
+    else if (k !== "answer") feedToast("That follow-up didn’t move the card to Working — the session may not have picked it up. Check it.");
     render();                                          // fall back to the kernel-authoritative state
   }, FOLLOW_MOVE_MS);
   pendingFollowMove.set(itemId, timer);
 }
 // On a fresh authoritative payload: a predicted card the kernel now lists as working (or no longer lists at
-// all — cleared/absorbed) is CONFIRMED → drop the prediction + its timer. Else keep predicting (not caught up).
+// all — cleared/absorbed) is CONFIRMED → drop the prediction + its timer. Else keep predicting (not caught up)
+// — EXCEPT an "answer" prediction, which yields to the first payload either way: the kernel rebuilds the feed
+// right after retiring the picker (answerAsk → _mark_views_dirty), so a payload that still shows the card out
+// of Working is post-answer truth — a real remaining/renewed block (e.g. the next permission prompt of a
+// burst). Holding the prediction there would MASK a genuine "needs you"; dropping it re-shows the ⏸ card.
 function reconcileFollowMove(incoming: AskItem[]) {
   for (const id of Array.from(pendingFollowMove.keys())) {
     const a = incoming.find((x) => x.itemId === id);
-    if (!a || a.column === "working") {
+    if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
       const t = pendingFollowMove.get(id); if (t) clearTimeout(t);
-      pendingFollowMove.delete(id); pendingMovePlain.delete(id);
+      pendingFollowMove.delete(id); pendingMoveKind.delete(id);
     }
   }
 }
@@ -193,7 +203,7 @@ function applyFollowMove(list: AskItem[]) {
   const nowSec = Math.floor(Date.now() / 1000);
   for (const a of list) if (pendingFollowMove.has(a.itemId) && a.column !== "working") {
     a.column = "working";
-    if (!pendingMovePlain.has(a.itemId)) { a.recheck = true; a.followupPending = true; }   // plain move: no chip
+    if ((pendingMoveKind.get(a.itemId) ?? "followup") === "followup") { a.recheck = true; a.followupPending = true; }   // plain move / answer: no chip
     if (a.t < nowSec) a.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
   }
 }
@@ -2030,7 +2040,7 @@ function renderModal() {
       mvEl.onclick = () => {
         mvEl.disabled = true; mvEl.textContent = "Moving…";
         vscodeApi?.postMessage({ type: "cardMove", itemId: it.itemId, sid: it.sid, to: "working" });
-        optimisticFollowMove(it.itemId, true);
+        optimisticFollowMove(it.itemId, "plain");
         render();
       };
     }
@@ -2255,7 +2265,7 @@ function ensureCols(list: HTMLElement) {
           const dropped = asks.find((x) => x.itemId === id);
           if (!dropped || dropped.column === "working") return;
           vscodeApi?.postMessage({ type: "cardMove", itemId: id, sid: dropped.sid, to: "working" });
-          optimisticFollowMove(id, true);                  // same plain optimistic flip as the modal button
+          optimisticFollowMove(id, "plain");               // same plain optimistic flip as the modal button
           render();
         });
       }
@@ -2731,6 +2741,20 @@ window.addEventListener("message", (e: MessageEvent) => {
     // same options in-page; a choice goes back as keystrokes (transport only,
     // the user decides — the never-auto-answer rule holds).
     showPickerDialog(String(m.name), Array.isArray(m.options) ? m.options.map(String) : []);
+  } else if (m.type === "cardPredict" && Array.isArray(m.ids)) {
+    // kernel fan-back (the user 2026-07-20): a context-carrying reply just fired SOMEWHERE — the chat's
+    // citation follow-up, a picker/permission answer typed in the chat, another feed view's button — so
+    // flip the named card(s) to Working NOW instead of waiting out the rebuild+push round trip. Same
+    // prediction machinery as the local buttons (idempotent when this view initiated it); the kernel's
+    // next push stays authoritative. An id may name a SUB-goal (a per-sub follow-up target): resolve it
+    // to the visible top card that carries it in its tree.
+    const kind: MoveKind = m.flavor === "answer" ? "answer" : m.flavor === "plain" ? "plain" : "followup";
+    let moved = false;
+    for (const raw of m.ids.map(String)) {
+      const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
+      if (top && top.column !== "working") { optimisticFollowMove(top.itemId, kind); moved = true; }
+    }
+    if (moved) render();
   }
 });
 

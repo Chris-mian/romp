@@ -31,13 +31,13 @@ test("clicking posts cardMove and acknowledges BEFORE the kernel round-trip", ()
 });
 
 test("the optimistic flip is a PLAIN move — no follow-up chip styling, its own revert toast", () => {
-  assert.match(FEED, /optimisticFollowMove\(it\.itemId, true\);/);
+  assert.match(FEED, /optimisticFollowMove\(it\.itemId, "plain"\);/);
   // plain ids skip the recheck + followupPending prediction styling
-  assert.match(FEED, /if \(!pendingMovePlain\.has\(a\.itemId\)\) \{ a\.recheck = true; a\.followupPending = true; \}/);
+  assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ a\.recheck = true; a\.followupPending = true; \}/);
   // the revert toast names a move, not a follow-up
   assert.match(FEED, /That move didn’t stick/);
   // reconcile clears the plain marker with the prediction
-  assert.match(FEED, /pendingFollowMove\.delete\(id\); pendingMovePlain\.delete\(id\);/);
+  assert.match(FEED, /pendingFollowMove\.delete\(id\); pendingMoveKind\.delete\(id\);/);
 });
 
 test("kernel: cardMove routes to jd.user_move with 'working' as the only legal target", () => {

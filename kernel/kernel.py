@@ -2420,6 +2420,25 @@ def _commands_for_cwd(cwd):
 RETRY_MSG = "retry\n\n<!-- romp-injected -->"
 
 
+def _predict_working(flavor, ids=None, sid=None):
+    """Instant cross-view cue (the user 2026-07-20): a context-carrying reply just fired — a follow-up (feed
+    composer or chat citation chip), a Move to Working, or a picker/permission answer — so tell every FEED
+    client NOW to predict the named card(s) into Working, instead of leaving the other views to wait out the
+    rebuild+push round trip. Prediction only: the client runs the same optimistic machinery as its own
+    buttons (revert window included) and the next authoritative push reconciles it. An ANSWER names no card —
+    resolve the session's live-blocked card(s) from the LAST BUILT feed payload, the authoritative record of
+    which card(s) the live picker/permission floor sat on (pre-answer by definition: exactly the cards about
+    to unblock). apiError floors are excluded — an answer doesn't lift those."""
+    if ids is None:
+        feed = _built_feed[1] or {}
+        ids = [a.get("itemId") for a in (feed.get("asks") or [])
+               if a.get("sid") == sid and a.get("column") == "needs_input"
+               and (a.get("blocked") or {}).get("state") in _NEEDS_INPUT_STATES]
+    ids = [i for i in ids if i]
+    if ids:
+        _send_to_app("feed", {"type": "cardPredict", "ids": ids, "flavor": flavor})
+
+
 def _drive(msg, client):
     """Route a per-session DRIVE op — send / interrupt / compact / ask picker / model·effort·mode / rename /
     end / follow-up — to whichever backend OWNS the sid (Sessions.backend_for(sid)), and return True. UI /
@@ -2511,6 +2530,9 @@ def _drive(msg, client):
         _send_or_park(be, sid, body,
                       echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None)
         if iid:                                           # optimistic: reopen the card NOW, before the judge pass
+            _predict_working("followup", ids=[iid])       # instant cue to every feed view (chat-typed citation
+            #                                               follow-ups included) — the reopen below is what the
+            #                                               next push confirms it against
             try:
                 if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time())):
                     # (the reopen event holds the top open + wears the chip; stub nodes retired 2026-07-07)
@@ -2526,6 +2548,7 @@ def _drive(msg, client):
         # TO blocked/completed has no use case (the user 2026-07-06) — Clear covers retiring a card.
         iid = str(msg.get("itemId") or "")
         if iid and (msg.get("to") or "working") == "working":
+            _predict_working("plain", ids=[iid])          # other feed views flip in step with the clicked one
             try:
                 if jd.user_move(sid, iid, now=int(time.time())):
                     _mark_views_dirty()               # the store write is invisible to the fleet sig
@@ -2539,19 +2562,22 @@ def _drive(msg, client):
     # nav/toggle are deliberately NOT marked: they only move the cursor / tick a row inside a picker that is
     # still open (the client mirrors those optimistically), so a full fleet rebuild per arrow-key is waste.
     elif t == "answerAsk" and msg.get("target") is not None:
-        be.on_ask(sid, "answer", msg["target"]); _mark_views_dirty()
+        # …and an ANSWER is a context-carrying reply too (the user 2026-07-20): the card the live floor sat
+        # on flips to Working in every feed view the instant the answer fires, not a rebuild round-trip
+        # later. _predict_working resolves sid → card(s) from the last-built (pre-answer) feed payload.
+        be.on_ask(sid, "answer", msg["target"]); _predict_working("answer", sid=sid); _mark_views_dirty()
     elif t == "navAsk" and msg.get("target") is not None:
         be.on_ask(sid, "focus", msg["target"])            # cursor only, no select → ↑/↓ steps the preview
     elif t == "toggleAsk" and msg.get("target") is not None:
         be.on_ask(sid, "toggle", msg["target"])
     elif t == "submitAsk":
-        be.on_ask(sid, "submit"); _mark_views_dirty()
+        be.on_ask(sid, "submit"); _predict_working("answer", sid=sid); _mark_views_dirty()
     elif t == "addCustomAsk" and msg.get("text"):
-        be.on_ask(sid, "custom", str(msg["text"])); _mark_views_dirty()
+        be.on_ask(sid, "custom", str(msg["text"])); _predict_working("answer", sid=sid); _mark_views_dirty()
     elif t == "cancelAsk":
-        be.on_ask(sid, "cancel"); _mark_views_dirty()
+        be.on_ask(sid, "cancel"); _mark_views_dirty()     # a cancel answers nothing — no Working prediction
     elif t == "askText" and msg.get("text"):
-        be.on_ask(sid, "text", str(msg["text"])); _mark_views_dirty()
+        be.on_ask(sid, "text", str(msg["text"])); _predict_working("answer", sid=sid); _mark_views_dirty()
     elif t == "cancelQueued" and msg.get("park") is not None:
         # ✕ on a PARKED op (compaction/model queue — romp-owned, any backend). The result frame is
         # AUTHORITATIVE (the user 2026-07-20): ok:false means the op already ran/was delivered — the

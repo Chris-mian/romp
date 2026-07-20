@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""EVERY context-carrying reply flips its feed card to Working instantly (the user 2026-07-20). The feed
+composer's own follow-up was already optimistic, but the same reply fired from anywhere else — the chat's
+citation-chip follow-up, a picker/permission ANSWER typed in the chat, another feed view's button — waited
+out the kernel rebuild+push round trip. Now _drive fans a tiny "cardPredict" frame to every FEED client the
+instant the op arrives (_predict_working — the hover-glow fan-back pattern); the client runs its existing
+optimistic machinery and the authoritative push reconciles it. An ANSWER names no card, so the helper
+resolves sid → the live-blocked card(s) from the LAST BUILT feed payload (pre-answer by definition: exactly
+the cards about to unblock); apiError floors are excluded — an answer doesn't lift those. SYNTHETIC
+fixtures only."""
+import os
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel_cardpredict", os.path.join(BIN, "romp-kernel")).load_module()
+
+SID = "11111111-2222-3333-4444-555555555555"
+PEER = "66666666-7777-8888-9999-000000000000"
+
+
+def _ask(item_id, sid, column, blocked=None):
+    return {"itemId": item_id, "sid": sid, "column": column, "blocked": blocked}
+
+
+class _FakeBackend:
+    def __init__(self):
+        self.calls = []
+
+    def send(self, sid, text):
+        self.calls.append(("send", text))
+        return True
+
+    def on_ask(self, sid, action, target=None):
+        self.calls.append(("on_ask", action, target))
+        return True
+
+
+class PredictWorkingFanOut(unittest.TestCase):
+    def setUp(self):
+        self.frames = []
+        self.be = _FakeBackend()
+        self._saved = (km._send_to_app, list(km._built_feed), km.Sessions.backend_for,
+                       km._send_or_park, km.jd.optimistic_followup, km.jd.user_move)
+        km._send_to_app = lambda app, m: self.frames.append((app, m))
+        km.Sessions.backend_for = lambda sid: self.be
+        km._send_or_park = lambda *a, **k: None
+        km.jd.optimistic_followup = lambda *a, **k: False
+        km.jd.user_move = lambda *a, **k: False
+        # the last-built feed payload: the pre-answer map of which card the live floor sits on
+        km._built_feed[:] = [None, {"type": "feed", "asks": [
+            _ask(SID + ":g1", SID, "needs_input", {"state": "picker", "what": "…"}),
+            _ask(SID + ":g2", SID, "needs_input", {"state": "permission", "what": "…"}),
+            _ask(SID + ":g3", SID, "needs_input", {"state": "apiError", "what": "…"}),   # an answer lifts no API error
+            _ask(SID + ":g4", SID, "working"),                                           # not blocked at all
+            _ask(PEER + ":g9", PEER, "needs_input", {"state": "picker", "what": "…"}),   # someone else's block
+        ]}, 0.0]
+
+    def tearDown(self):
+        (km._send_to_app, built, km.Sessions.backend_for,
+         km._send_or_park, km.jd.optimistic_followup, km.jd.user_move) = self._saved
+        km._built_feed[:] = built
+
+    def _feed_frames(self):
+        return [m for app, m in self.frames if app == "feed" and m.get("type") == "cardPredict"]
+
+    def test_answer_resolves_sid_to_its_live_blocked_cards_only(self):
+        km._predict_working("answer", sid=SID)
+        fr = self._feed_frames()
+        self.assertEqual(len(fr), 1)
+        self.assertEqual(fr[0]["flavor"], "answer")
+        # picker + permission floors of THIS session; never the apiError card, a working card, or a peer's
+        self.assertEqual(sorted(fr[0]["ids"]), [SID + ":g1", SID + ":g2"])
+
+    def test_no_live_blocked_card_means_no_frame_at_all(self):
+        km._predict_working("answer", sid=PEER.replace("6", "5"))
+        self.assertEqual(self._feed_frames(), [])
+
+    def test_explicit_ids_fan_verbatim(self):
+        km._predict_working("followup", ids=[SID + ":g7"])
+        fr = self._feed_frames()
+        self.assertEqual(len(fr), 1)
+        self.assertEqual((fr[0]["flavor"], fr[0]["ids"]), ("followup", [SID + ":g7"]))
+
+    def test_every_answer_shaped_drive_op_fans_and_cancel_does_not(self):
+        client = {"send": lambda s: None}
+        for op in ({"type": "answerAsk", "id": SID, "target": 0},
+                   {"type": "submitAsk", "id": SID},
+                   {"type": "addCustomAsk", "id": SID, "text": "my own answer"},
+                   {"type": "askText", "id": SID, "text": "typed reply"}):
+            self.frames.clear()
+            self.assertTrue(km._drive(op, client))
+            fr = self._feed_frames()
+            self.assertEqual(len(fr), 1, op["type"])
+            self.assertEqual(fr[0]["flavor"], "answer", op["type"])
+        # a CANCEL answers nothing — the session is still waiting on you, so no Working prediction
+        self.frames.clear()
+        self.assertTrue(km._drive({"type": "cancelAsk", "id": SID}, client))
+        self.assertEqual(self._feed_frames(), [])
+
+    def test_followup_and_cardmove_fan_their_named_card(self):
+        client = {"send": lambda s: None}
+        self.assertTrue(km._drive({"type": "askFollowUp", "itemId": SID + ":g1", "text": "hi"}, client))
+        fr = self._feed_frames()
+        self.assertEqual(len(fr), 1)
+        self.assertEqual((fr[0]["flavor"], fr[0]["ids"]), ("followup", [SID + ":g1"]))
+        self.frames.clear()
+        self.assertTrue(km._drive({"type": "cardMove", "itemId": SID + ":g2", "to": "working"}, client))
+        fr = self._feed_frames()
+        self.assertEqual(len(fr), 1)
+        self.assertEqual((fr[0]["flavor"], fr[0]["ids"]), ("plain", [SID + ":g2"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

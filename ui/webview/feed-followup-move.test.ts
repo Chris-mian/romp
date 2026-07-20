@@ -23,7 +23,7 @@ test("a predicted card is kept in Working at render, styled like the kernel's re
   assert.match(FEED, /function applyFollowMove\(list: AskItem\[\]\)/);
   // a follow-up prediction wears the re-check styling; a PLAIN move (the Move to Working button,
   // the user 2026-07-06) flips the column only — no chip, nothing is in flight
-  assert.match(FEED, /if \(!pendingMovePlain\.has\(a\.itemId\)\) \{ a\.recheck = true; a\.followupPending = true; \}/);
+  assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ a\.recheck = true; a\.followupPending = true; \}/);
   // applied at the top of render so EVERY render (push, modal close) reflects the prediction — right
   // after the drag-in-flight deferral guard (feed-drag.test.ts), which must come first
   assert.match(FEED, /const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
@@ -45,8 +45,9 @@ test("the optimistic move also bumps the card's sort key to now so it lands at t
 test("the kernel is authoritative: a confirming push clears the prediction, an unconfirmed one is left predicting", () => {
   // reconcile runs against the authoritative incoming payload on every feed push
   assert.match(FEED, /reconcileFollowMove\(incomingAsks\);/);
-  // CONFIRMED = the kernel now lists the card as working, OR no longer lists it (cleared/absorbed)
-  assert.match(FEED, /if \(!a \|\| a\.column === "working"\) \{/);
+  // CONFIRMED = the kernel now lists the card as working, OR no longer lists it (cleared/absorbed).
+  // (An ANSWER-kind prediction additionally yields to the first payload either way — feed-card-predict.)
+  assert.match(FEED, /if \(!a \|\| a\.column === "working" \|\| pendingMoveKind\.get\(id\) === "answer"\) \{/);
 });
 
 test("an unconfirmed prediction reverts AND toasts after the window (so a behavior change is visible)", () => {
