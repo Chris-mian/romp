@@ -9840,7 +9840,6 @@ def _send_to_app(app, msg):
 # client on a fixed cadence (bypassing the dedup); the shim stamps lastRecv on every frame and force-reconnects
 # when the keepalive stops arriving (→ onclose → reconnect → reload-resync). 'ka' frames are ignored by bundles.
 KEEPALIVE_S = float(os.environ.get("ROMP_WS_KEEPALIVE", "10"))   # heartbeat cadence (s); the shim re-connects at ~3x this
-_last_keepalive = [0.0]
 
 def _keepalive_all():
     # `dv` = the current dist build token (the same value baked into every page's ?v= urls). Riding the
@@ -9856,6 +9855,23 @@ def _keepalive_all():
             c["send"](s)
         except Exception:
             c["alive"] = False
+
+
+def _heartbeat():
+    """The keepalive's OWN thread — deliberately NOT the pusher's loop. The beat used to be emitted
+    inline in _pusher after _push_all() + the tick jobs, so under load (GIL contention with the
+    producer's transcript parsing, a heavy fleet build) one loop iteration's wall-clock could exceed
+    the shim's STALE_MS watchdog and the client force-closed a perfectly healthy socket — the false
+    "disconnected / reconnecting" banner (the user 2026-07-20). A thread that only sleeps and sends a
+    ~40-byte frame is schedulable on time no matter how pegged the CPU-bound threads are, so the
+    watchdog now measures the SOCKET's health, not the kernel's load. Frame-safety: _ws_send holds the
+    per-client write lock, so beating concurrently with the pusher can't interleave frames."""
+    while True:
+        time.sleep(KEEPALIVE_S)
+        try:
+            _keepalive_all()
+        except Exception:
+            sys.stderr.write("heartbeat: %s\n" % traceback.format_exc())
 
 
 def _reveal_chat(focus_msg):
@@ -10628,10 +10644,7 @@ def _pusher():
             any_client = bool(_clients)
         if any_client:
             _push_all()
-        nowm = time.time()                    # WS heartbeat: a tiny frame to every client every KEEPALIVE_S, so a
-        if nowm - _last_keepalive[0] >= KEEPALIVE_S:   # silently half-open socket (no onclose, quiet fleet → no view
-            _last_keepalive[0] = nowm                  # frames) still arrives at the shim's watchdog (the user 2026-06-29)
-            _keepalive_all()
+        # (the WS keepalive lives on its own _heartbeat thread — NOT here — so a slow push can't starve it)
         try:                                  # Auto Nudge runs server-side even with no browser open (cheap when off)
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
@@ -13006,6 +13019,7 @@ def main():
     #                                                           boot, not on the first lazy touch
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
+    threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
     _remotes_load()                                            # re-attach remote kernels from a prior run

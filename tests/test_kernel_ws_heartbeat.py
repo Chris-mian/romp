@@ -51,10 +51,17 @@ class Keepalive(unittest.TestCase):
 class ShimWatchdogSourcePins(unittest.TestCase):
     # Source-level pins: the shim JS is embedded in the kernel and not unit-runnable here, so assert the
     # heartbeat/watchdog wiring is present (mirrors the chat-compacting-icon source-pin style).
-    def test_pusher_emits_a_periodic_keepalive(self):
+    def test_keepalive_lives_on_its_own_thread(self):
+        # 2026-07-20: the beat moved OFF the pusher loop. Inline, a heavy _push_all under GIL contention
+        # could stretch one pusher iteration past the shim's STALE_MS and the client force-closed a
+        # healthy socket — the false "disconnected / reconnecting" banner. Pin the new wiring: a
+        # dedicated _heartbeat thread, started at boot, and the pusher carrying NO inline beat.
+        # (Behavior — beats on cadence with no pusher at all — is covered in test_heartbeat_thread.py.)
         self.assertIn("KEEPALIVE_S", KSRC)
-        self.assertIn("_keepalive_all()", KSRC)
-        self.assertIn("_last_keepalive", KSRC)
+        self.assertIn("def _heartbeat", KSRC)
+        self.assertIn("threading.Thread(target=_heartbeat, daemon=True).start()", KSRC)
+        pusher_src = KSRC.split("def _pusher():", 1)[1].split("\ndef ", 1)[0]
+        self.assertNotIn("_keepalive_all", pusher_src, "the pusher must never grow the inline beat back")
 
     def test_the_one_shared_shim_stamps_lastrecv_and_watchdog_reconnects(self):
         # ONE shim serves every pane — the timeline's former hand-rolled copy (a second lastRecv/STALE_MS
