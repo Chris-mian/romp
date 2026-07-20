@@ -553,6 +553,22 @@ class FileAdapter:
                     if isinstance(b, dict) and b.get("type") == "tool_use" and \
                             b.get("name") == "Skill" and b.get("id"):
                         skill_tool_ids.add(b["id"])
+        # Bare invocation TWINS (CLI 2.1.215+, the user 2026-07-20): a typed slash command lands TWICE —
+        # a raw-text user record (the submitted prompt verbatim, carrying promptId) AND the
+        # <command-name> wrapper (same promptId). The wrapper becomes the tracked command atom below;
+        # the raw twin carries no wrapper, no isMeta, no isCompactSummary, so it would fall through as
+        # a genuine HUMAN atom — and the planner minted a feed card from a /compact ("Compact
+        # conversation context", the rescue thread). Collect wrapper promptIds so the twin drops as the
+        # invocation echo it is.
+        cmd_prompt_names = {}
+        for u in kept:
+            r = self.by_uuid.get(u) or {}
+            if r.get("type") == "user" and r.get("promptId"):
+                m = COMMAND_NAME_RE.match(_text_of(_content(r.get("message"))) or "")
+                if m:
+                    name = m.group(1).strip() or "/?"
+                    cmd_prompt_names.setdefault(r["promptId"], set()).add(
+                        name if name.startswith("/") else "/" + name)
         out = []
         for u in kept:
             r = self.by_uuid.get(u)
@@ -603,6 +619,11 @@ class FileAdapter:
                     continue
                 has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result"
                                       for b in (blocks or []))
+                twins = cmd_prompt_names.get(r.get("promptId") or "")
+                if twins and not has_tool_result and any(
+                        btext.strip() == n or btext.strip().startswith(n + " ") for n in twins):
+                    continue   # the raw-text TWIN of a slash invocation (see the pre-pass above) — the
+                               # wrapper is the one tracked command atom; this is its echo, not a message
                 if btext and not has_tool_result and u not in replay_uuids and \
                         (SKILL_CONTENT_RE.match(btext) or r.get("sourceToolUseID") in skill_tool_ids):
                     # a Skill invocation's INSTRUCTIONS payload — kept, but flagged and content-EMPTY:

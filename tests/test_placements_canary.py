@@ -108,7 +108,9 @@ class PlacementIdentityCanary(unittest.TestCase):
     def test_placements_v_is_current(self):
         # The pins above were recorded under this version; a bump without re-pinning (or re-pinning
         # without a bump) should both fail loudly.
-        self.assertEqual(jd.PLACEMENTS_V, 4, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=4 — "
+        # v5 (2026-07-20, the bare slash-invocation twin skip) changed the atom SET, not the id
+        # derivation — the pinned ids above still hold and were re-verified under v5.
+        self.assertEqual(jd.PLACEMENTS_V, 5, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=5 — "
                          "re-pin the ids and this version together, in the same commit")
 
 

@@ -51,8 +51,10 @@ test("judge: user_move reuses the follow-up machinery — reopen + followupAt fl
   assert.match(JUDGE, /def user_move\(fsid, gid, now=None\):/);
   assert.match(JUDGE, /_reopen\(store, gid, by="user-move", now=now\)/);
   // the same stamp drives the Working sort floor and BOTH staleness floors (block + done),
-  // routed through the fused gate+recorder since P3.1 (record_verdict, 2026-07-06)
-  assert.match(JUDGE, /def _done_is_stale\(nd, ev_t\):/);
+  // routed through the fused gate+recorder since P3.1 (record_verdict, 2026-07-06);
+  // subtree-scoped via _floor_of since 2026-07-20 (a reply on the card floors its children too)
+  assert.match(JUDGE, /def _done_is_stale\(store, nd, ev_t\):/);
+  assert.match(JUDGE, /def _floor_of\(store, nd\):/);
   assert.match(JUDGE, /record_verdict\(store, nodes\[t\], "planner", "done", seg_t/);   // planner done guard
   assert.match(JUDGE, /if not record_verdict\(store, nd, "closer", "done", t/);        // closer done guard
   // user_move itself never sets the followupPending chip

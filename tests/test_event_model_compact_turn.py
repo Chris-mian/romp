@@ -85,5 +85,82 @@ class CompactBoundaryTurn(unittest.TestCase):
         self.assertEqual(comp["end"], comp["t"], "zero span — the marker, not a bar")
 
 
+PID = "aaaaaaaa-1111-2222-3333-444444444444"
+
+
+def _twin_recs(now, bare_text="/usage", with_wrapper=True, name="/usage"):
+    """The CLI 2.1.215+ dual shape: a typed slash command lands TWICE — a raw-text user record (the
+    submitted prompt verbatim, carrying promptId) and the <command-name> wrapper (same promptId),
+    parent-chained straight through. Synthetic."""
+    t0, tc = now - 3600, now - 120
+    recs = [
+        {"type": "user", "timestamp": _iso(t0), "uuid": "u1", "parentUuid": None,
+         "message": {"role": "user", "content": "please do the thing"}},
+        {"type": "assistant", "timestamp": _iso(t0 + 30), "uuid": "a1", "parentUuid": "u1",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "done."}],
+                     "stop_reason": "end_turn"}},
+        {"type": "user", "timestamp": _iso(tc), "uuid": "u2", "parentUuid": "a1", "promptId": PID,
+         "message": {"role": "user", "content": bare_text}},
+    ]
+    if with_wrapper:
+        recs += [
+            {"type": "user", "timestamp": _iso(tc), "uuid": "u3", "parentUuid": "u2", "promptId": PID,
+             "message": {"role": "user", "content": "<command-name>%s</command-name>\n"
+                         "<command-message>%s</command-message>\n<command-args></command-args>"
+                         % (name, name.lstrip("/"))}},
+            {"type": "user", "timestamp": _iso(tc + 1), "uuid": "u4", "parentUuid": "u3",
+             "message": {"role": "user", "content": "<local-command-stdout>ok</local-command-stdout>"}},
+        ]
+    return recs
+
+
+def _atxt(a):
+    return " ".join(b.get("text", "") for b in (a.get("message") or {}).get("content", [])
+                    if isinstance(b, dict))
+
+
+class BareInvocationTwin(unittest.TestCase):
+    """CLI 2.1.215+ writes a typed slash command twice (see _twin_recs). The raw twin carries no
+    wrapper, no isMeta, no isCompactSummary — left in, it walks the whole user-atom path and becomes a
+    genuine HUMAN atom: a duplicate bubble in the chat, and a plannable human trigger the judges mint
+    from (the rescue thread's 'Compact conversation context' card, 2026-07-20 — its quote was literally
+    "/compact"). The wrapper is the one tracked command atom; its raw twin is invocation echo."""
+
+    def _atoms(self, recs):
+        return [a for t in _turns(recs) for a in t["atoms"]]
+
+    def test_the_bare_twin_never_becomes_a_human_atom(self):
+        atoms = self._atoms(_twin_recs(int(time.time())))
+        plain = [a for a in atoms if a.get("type") == "user" and not a.get("command")
+                 and _atxt(a).strip() == "/usage"]
+        self.assertEqual(plain, [], "the raw '/usage' twin surfaced as a human atom — a duplicate "
+                                    "bubble the judges also treat as a plannable prompt")
+
+    def test_the_wrapper_still_lands_as_the_one_command_atom(self):
+        atoms = self._atoms(_twin_recs(int(time.time())))
+        self.assertEqual(len([a for a in atoms if a.get("command") == "/usage"]), 1,
+                         "exactly one tracked command atom — the wrapper's")
+
+    def test_a_lone_slash_message_without_a_wrapper_stays_human(self):
+        # no wrapper anywhere on this promptId → the text is a genuine message, whatever it looks like
+        atoms = self._atoms(_twin_recs(int(time.time()), with_wrapper=False))
+        self.assertEqual(len([a for a in atoms if a.get("type") == "user" and not a.get("command")
+                              and _atxt(a).strip() == "/usage"]), 1,
+                         "without a <command-name> twin the record is the user's own words — keep it")
+
+    def test_a_twin_only_matches_its_own_invocation_text(self):
+        # same promptId as a wrapper, but the text is NOT the invocation → it stays a human atom
+        atoms = self._atoms(_twin_recs(int(time.time()), bare_text="see /usage docs for details"))
+        kept = [a for a in atoms if a.get("type") == "user" and not a.get("command")
+                and "see /usage docs" in _atxt(a)]
+        self.assertEqual(len(kept), 1, "only the invocation echo is dropped, never other text")
+
+    def test_args_ride_the_twin_match(self):
+        atoms = self._atoms(_twin_recs(int(time.time()), bare_text="/model opus", name="/model"))
+        plain = [a for a in atoms if a.get("type") == "user" and not a.get("command")
+                 and _atxt(a).strip() == "/model opus"]
+        self.assertEqual(plain, [], "an args-bearing invocation echo drops too")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -118,7 +118,7 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          model actually wrote. Closer / grouper / consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 4                         # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 5                         # placements-identity schema version (plan P2, the user 2026-07-06).
 #                                          v2 (2026-07-09): a 07-07/07-08 change to segment-text derivation
 #                                          stepped the text hash without this bump — dormant segments' old-hash
 #                                          placements stopped matching, and every restart/touch replayed them as
@@ -134,6 +134,10 @@ PLACEMENTS_V = 4                         # placements-identity schema version (p
 #                                          v4 (2026-07-13): a compact_boundary now opens its OWN turn (the
 #                                          phantom pre-compaction work bar fix) — every turn/seg id in a
 #                                          transcript with compactions shifts its t component.
+#                                          v5 (2026-07-20): the bare slash-invocation TWIN skip (CLI 2.1.215+
+#                                          writes a typed command as BOTH a raw-text record and the
+#                                          <command-name> wrapper) — a previously-emitted duplicate human atom
+#                                          drops out, shifting the seg set of transcripts that carry it.
 #                                          THE DEPLOY RULE: any change to seg-id DERIVATION (the t component or
 #                                          the text hash — em.segments, _seg_key, _unit_key) OR to WHICH ATOMS
 #                                          PARSE OUT of existing transcripts (em.FileAdapter emission) MUST bump
@@ -3032,7 +3036,9 @@ def plan_units(session, store=None):
                 continue                                  # peer segs never get a prompt-run or a normal work-run
             human, followup = _seg_human(seg), _seg_followup(seg)
             if is_open_final:                             # the IN-PROGRESS segment → PROMPT-run only (place the ask now)
-                if human and not followup:
+                if human and not followup and not _seg_slash_shaped(seg):
+                    # slash-shaped → DEFER to the close (the CLI 2.1.215+ raw-record window; see
+                    # _seg_slash_shaped): mid-window it may be a command whose wrapper hasn't landed
                     ptext = _prompt_text(seg["atoms"])
                     if ptext:
                         out.append((seg["id"], "prompt", seg["t"], ptext, human, followup, trig, vq))
@@ -3427,34 +3433,55 @@ def _unblock_subtree(store, gid, now, why):
         stack.extend(kids.get(x, []))
 
 
-def _block_is_stale(nd, ev_t):
+def _floor_of(store, nd):
+    """The followupAt evidence floor governing verdicts on `nd`: its OWN stamp joined with every
+    ANCESTOR's. A user reply/move lands on the CARD — the rollup — never on individual sub-goals, and
+    optimistic_followup/user_move already unblock the whole subtree on that gesture; the staleness
+    floor must reach exactly as far, or a judge pass re-imposes on a child the very ask the user just
+    answered (2026-07-20: a closer re-blocked a just-answered sub-goal 35s after the reply, from a
+    pre-reply segment — the child carried no floor of its own, so the per-node check waved it through
+    and the card flashed back to needs-input until the next pass healed it). Cycle-guarded; a missing
+    parent ends the walk."""
+    fa = nd.get("followupAt") or 0
+    nodes = (store or {}).get("nodes") or {}
+    seen, cur = set(), nd.get("parentId")
+    while cur and cur in nodes and cur not in seen:
+        seen.add(cur)
+        fa = max(fa, nodes[cur].get("followupAt") or 0)
+        cur = nodes[cur].get("parentId")
+    return fa or None
+
+
+def _block_is_stale(store, nd, ev_t):
     """True if a block verdict for this node was computed from evidence AT/BEFORE the user's last
-    follow-up on it (followupAt) — the user already ANSWERED that ask, so re-imposing the block would
-    clobber their reply's optimistic reopen and pin the card back on needs_input while the agent works
-    the answer (the user 2026-07-06: obsid/nimbus replied-to blocked cards snapped straight back to
-    blocked; a judge catch-up after a kernel restart replays exactly such stale segments). A verdict
-    from genuinely NEWER evidence — e.g. the turn that answers the reply ends by asking a new question
-    (its ev_t > followupAt) — still blocks, which is the correct end state. `<=` (not `<`): the reply
-    IS the segment's trigger, so a verdict stamped at exactly followupAt was computed from it."""
-    fa = nd.get("followupAt")
+    follow-up on it or on an ancestor card (_floor_of) — the user already ANSWERED that ask, so
+    re-imposing the block would clobber their reply's optimistic reopen and pin the card back on
+    needs_input while the agent works the answer (the user 2026-07-06: obsid/nimbus replied-to blocked
+    cards snapped straight back to blocked; a judge catch-up after a kernel restart replays exactly
+    such stale segments). A verdict from genuinely NEWER evidence — e.g. the turn that answers the
+    reply ends by asking a new question (its ev_t > the floor) — still blocks, which is the correct end
+    state. `<=` (not `<`): the reply IS the segment's trigger, so a verdict stamped at exactly the
+    floor was computed from it."""
+    fa = _floor_of(store, nd)
     return bool(fa) and ev_t is not None and ev_t <= fa
 
 
-def _done_is_stale(nd, ev_t):
-    """Mirror of _block_is_stale for DONE verdicts (the user 2026-07-06, "Move to Working"): followupAt is
-    the user's last assertion that this goal is NOT resolved — a card follow-up or a feed move back to
-    Working (user_move). A done verdict computed from evidence AT/BEFORE that stamp would snap the card
-    straight back to Completed on the next pass (a judge catch-up replays exactly such stale segments).
-    A verdict from genuinely NEWER evidence — fresh work on the reopened goal — completes it normally:
-    the user's action is a FLOOR on evidence time, never a pin.
+def _done_is_stale(store, nd, ev_t):
+    """Mirror of _block_is_stale for DONE verdicts (the user 2026-07-06, "Move to Working"): the floor
+    is the user's last assertion that this goal — or the card it files under (_floor_of) — is NOT
+    resolved: a card follow-up or a feed move back to Working (user_move). A done verdict computed from
+    evidence AT/BEFORE that stamp would snap the card straight back to Completed on the next pass (a
+    judge catch-up replays exactly such stale segments). A verdict from genuinely NEWER evidence —
+    fresh work on the reopened goal — completes it normally: the user's action is a FLOOR on evidence
+    time, never a pin.
 
     STRICT `<` where _block_is_stale keeps `<=`, and the asymmetry is the point (the user 2026-07-06):
-    the reply/nudge segment's own trigger time EQUALS followupAt (both stamp the same event), and for a
+    the reply/nudge segment's own trigger time EQUALS the floor (both stamp the same event), and for a
     BLOCK that equality means "computed from the ask the user just answered" → void; but for a DONE it
     means "the work that answered the follow-up resolved the goal" → must LAND, else the resolving turn
     itself is voided and the card wedges in Working. Genuinely replayed stale evidence always predates
     the user's action strictly, so the replay guard is intact."""
-    fa = nd.get("followupAt")
+    fa = _floor_of(store, nd)
     return bool(fa) and ev_t is not None and ev_t < fa
 
 
@@ -3464,10 +3491,12 @@ def may_apply(store, nd, src, kind, ev_t=None):
     change; the P3 verdict-log fold replaces these internals later):
 
       LADDER: user > agent > judges.
-      - A user action stamps followupAt — an EVIDENCE FLOOR on judge verdicts: a judge `done` needs
-        ev_t >= followupAt (equality LANDS — the resolving reply/nudge turn shares the stamp), a judge
-        `block` needs ev_t > followupAt (equality VOIDS — the block was computed from the very ask the
-        user just answered). See _done_is_stale/_block_is_stale for the asymmetry's rationale.
+      - A user action stamps followupAt — an EVIDENCE FLOOR on judge verdicts, reaching the stamped
+        node AND its whole subtree (_floor_of: a reply lands on the card, never on individual
+        sub-goals): a judge `done` needs ev_t >= the floor (equality LANDS — the resolving reply/nudge
+        turn shares the stamp), a judge `block` needs ev_t > the floor (equality VOIDS — the block was
+        computed from the very ask the user just answered). See _done_is_stale/_block_is_stale for the
+        asymmetry's rationale.
       - A view-cleared goal (the user crossed it off the feed) is SEALED: no `reopen` from ANY source
         may revive it — the caller places follow-on work as a fresh goal instead.
       - `agent` verdicts (the mirror of the agent's OWN to-do list) are never gated by judge evidence.
@@ -3481,9 +3510,9 @@ def may_apply(store, nd, src, kind, ev_t=None):
         return nd.get("id") not in _view_cleared()
     if src not in ("user", "agent"):               # judge-RANK: planner/closer/courier/grouper/nudge...
         if kind == "done":
-            return not _done_is_stale(nd, ev_t)
+            return not _done_is_stale(store, nd, ev_t)
         if kind == "block":
-            return not _block_is_stale(nd, ev_t)
+            return not _block_is_stale(store, nd, ev_t)
     return True
 
 
@@ -6408,6 +6437,26 @@ def _seg_command(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and trig.get("command"))
+
+
+BARE_SLASH_RE = re.compile(r"^/[A-Za-z][\w:-]*(?:[ \t][^\n]*)?$")   # one line, leading slash-word: "/compact",
+#                                                                     "/model opus" — but never "/Users/x/y.py"
+
+
+def _seg_slash_shaped(seg):
+    """True if this segment's trigger is a HUMAN atom whose whole text reads like a slash-command
+    invocation the CLI hasn't witnessed yet (BARE_SLASH_RE). CLI 2.1.215+ writes a typed command as a
+    raw-text record IMMEDIATELY but its <command-name> wrapper only later — for /compact, ~90s later,
+    after the compact_boundary — so mid-window the open segment's trigger looks like a genuine human
+    prompt and the prompt-run minted a card literally titled 'Compact conversation context' (the rescue
+    thread, 2026-07-20). plan_units DEFERS the prompt-run for such a segment — never suppresses: the
+    turn's close tells the truth (wrapper lands → command turn, _seg_command skips it; a real reply
+    lands → the work-run files it then, a few minutes late at worst)."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    if not trig or trig.get("author") != "human" or trig.get("command"):
+        return False
+    return bool(BARE_SLASH_RE.match(_atom_text(trig).strip()))
 
 
 def _seg_followup(seg):

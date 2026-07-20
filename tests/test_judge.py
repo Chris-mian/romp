@@ -759,6 +759,31 @@ class PlanParseStorm(unittest.TestCase):
         units = jd.plan_units(build_session(recs))
         self.assertEqual([u[1] for u in units], ["work"], "an ended segment is placed by its work-run alone")
 
+    def test_a_slash_shaped_open_prompt_defers_to_the_close(self):
+        # The CLI 2.1.215+ raw-record window (the rescue thread, 2026-07-20): a typed "/compact" lands
+        # as a bare-text user record ~90s before its <command-name> wrapper, so mid-window the open
+        # segment's trigger reads like a genuine human prompt — and the prompt-run minted a card
+        # literally titled 'Compact conversation context'. Slash-shaped → no prompt unit while open;
+        # the turn's close tells the truth (wrapper → command turn; a real reply → work-run files it).
+        recs = [uline(T0, "/compact", "u1", ps="typed")]                      # OPEN, no reply yet
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual(units, [], "a slash-shaped open prompt never mints mid-window")
+
+    def test_slash_deferral_ends_at_the_close(self):
+        # a genuine message that merely LOOKS like an invocation gets its card at close — deferred,
+        # never suppressed
+        recs = [uline(T0, "/tmp is full, clean it up", "u1", ps="typed"),
+                aline(T0 + 10, "Cleaned.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"], "the close files a slash-looking real message")
+
+    def test_a_path_prompt_is_not_slash_shaped(self):
+        # "/TESTDIR/build.log shows the error" starts with a slash but is no invocation — prompt-run fires
+        recs = [uline(T0, "/TESTDIR/build.log shows the error", "u1", ps="typed")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["prompt"],
+                         "a path-leading real prompt still places immediately")
+
     def test_units_carry_the_segments_trigger_uuid(self):
         # the user 2026-07-01, via bugs: plan_units' 7th field is the segment's OWN trigger atom uuid
         # (the human message that opened it), threaded through to apply_plan for node["promptUuid"].
@@ -6190,11 +6215,12 @@ class StaleBlockGuard(unittest.TestCase):
 
     def test_block_is_stale_semantics(self):
         nd = {"followupAt": 100}
-        self.assertTrue(jd._block_is_stale(nd, 100), "evidence AT the follow-up (the reply IS the segment trigger) is stale")
-        self.assertTrue(jd._block_is_stale(nd, 50), "older evidence is stale")
-        self.assertFalse(jd._block_is_stale(nd, 101), "newer evidence (the answering turn's own new ask) blocks")
-        self.assertFalse(jd._block_is_stale({}, 50), "no follow-up → nothing to protect")
-        self.assertFalse(jd._block_is_stale(nd, None), "no evidence time → fail open (block as before)")
+        s = {"nodes": {}}
+        self.assertTrue(jd._block_is_stale(s, nd, 100), "evidence AT the follow-up (the reply IS the segment trigger) is stale")
+        self.assertTrue(jd._block_is_stale(s, nd, 50), "older evidence is stale")
+        self.assertFalse(jd._block_is_stale(s, nd, 101), "newer evidence (the answering turn's own new ask) blocks")
+        self.assertFalse(jd._block_is_stale(s, {}, 50), "no follow-up → nothing to protect")
+        self.assertFalse(jd._block_is_stale(s, nd, None), "no evidence time → fail open (block as before)")
 
     def test_closer_block_older_than_the_followup_is_skipped(self):
         # the obsid replay: the closer sweeps the ASK turn after the user already replied — its verdict

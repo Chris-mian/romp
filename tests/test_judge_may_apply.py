@@ -120,5 +120,71 @@ class PlacementsMigration(unittest.TestCase):
         self.assertEqual(store["placements"], {})
 
 
+G2 = SID + ":g2"
+G3 = SID + ":g3"
+
+
+class TheSubtreeFloor(unittest.TestCase):
+    """A user reply/move lands on the CARD — the rollup — never on individual sub-goals, and
+    optimistic_followup/user_move already unblock the whole subtree on that gesture. The evidence floor
+    must match: a judge verdict on a DESCENDANT computed from evidence at/before the user's reply is
+    exactly as stale as the same verdict on the replied node itself. (2026-07-20: a closer pass
+    re-blocked a just-answered sub-goal 35 seconds after the reply, from a pre-reply segment — the child
+    carried no floor of its own, the per-node check waved the block through, and the card flashed back
+    to needs-input with nothing in Working until the next pass healed it.) Synthetic fixtures only."""
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self.td))
+        self.store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": {
+            G1: node(followupAt=FA),
+            G2: {"id": G2, "text": "step", "parentId": G1, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": FA - 400, "mt": FA - 200},
+            G3: {"id": G3, "text": "sub-step", "parentId": G2, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": FA - 400, "mt": FA - 200},
+        }}
+
+    def test_a_reply_on_the_card_floors_blocks_on_descendants(self):
+        for nid in (G2, G3):
+            nd = self.store["nodes"][nid]
+            self.assertFalse(jd.may_apply(self.store, nd, "closer", "block", FA - 300),
+                             "%s: pre-reply evidence re-imposes the ask the user just answered" % nid)
+            self.assertFalse(jd.may_apply(self.store, nd, "closer", "block", FA),
+                             "%s: computed from the answered ask itself — void" % nid)
+            self.assertTrue(jd.may_apply(self.store, nd, "closer", "block", FA + 1),
+                            "%s: a genuinely new ask still blocks" % nid)
+
+    def test_the_done_asymmetry_holds_through_ancestors(self):
+        nd = self.store["nodes"][G3]
+        self.assertFalse(jd.may_apply(self.store, nd, "closer", "done", FA - 1),
+                         "stale replay must not re-complete a replied thread's step")
+        self.assertTrue(jd.may_apply(self.store, nd, "closer", "done", FA),
+                        "the resolving turn shares the stamp: lands")
+
+    def test_no_floor_anywhere_flows(self):
+        self.store["nodes"][G1].pop("followupAt", None)
+        nd = self.store["nodes"][G3]
+        self.assertTrue(jd.may_apply(self.store, nd, "closer", "block", FA - 999))
+        self.assertTrue(jd.may_apply(self.store, nd, "closer", "done", FA - 999))
+
+    def test_a_parent_cycle_cannot_hang_the_gate(self):
+        self.store["nodes"][G2]["parentId"] = G3          # G2 <-> G3, no floor on either
+        self.store["nodes"][G1].pop("followupAt", None)
+        self.assertTrue(jd.may_apply(self.store, self.store["nodes"][G3], "closer", "block", FA - 1))
+
+    def test_the_incident_shape_refuses_at_the_record_seam(self):
+        # Replica of the 12:28:09 stale re-block: the child was blocked, the user's reply lifted it
+        # (user unblock, no floor stamped on the child), then a pass re-recorded the SAME block with
+        # its pre-reply segment time. record_verdict must refuse — nothing appended, nothing flipped.
+        nd = self.store["nodes"][G2]
+        nd["log"] = [
+            {"ev_t": FA - 300, "src": "closer", "kind": "block", "why": "approve the handshake", "at": FA - 250},
+            {"ev_t": FA, "src": "user", "kind": "unblock", "why": "answered by the user's reply to the card", "at": FA},
+        ]
+        ok = jd.record_verdict(self.store, nd, "closer", "block", ev_t=FA - 300, why="approve the handshake")
+        self.assertFalse(ok, "pre-reply evidence on a just-answered sub-goal must not re-enter the diary")
+        self.assertEqual(len(nd["log"]), 2, "the refused verdict left no event behind")
+
+
 if __name__ == "__main__":
     unittest.main()
