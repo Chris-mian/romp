@@ -11,7 +11,15 @@ set -euo pipefail
 #              write below is display-only and skipped.
 DISPLAY_TMUX=0
 session_name=""
-if [[ -n "${TMUX:-}" ]]; then
+# A headless/SDK session that inherited a STRAY $TMUX (e.g. the manager was launched from INSIDE a tmux
+# session, so every kernel + SDK child carries that $TMUX) would take the tmux branch below, resolve #S to
+# whatever session is ATTACHED, and clobber ITS @romp-session-id + display state with this foreign session's
+# fsid — flapping the attached session's anchor so the kernel can't see it live (the picker then offers a
+# bogus "revive"). Claude Code's own CLAUDE_CODE_ENTRYPOINT tags an SDK launch (sdk-py / sdk-*); such a
+# session is NEVER a tmux display session regardless of a leaked $TMUX — the SDK backend owns its identity
+# and state via its own registry. (kernel/judge.py scrubs $TMUX from judge subprocesses for this same reason;
+# the durable companion fix is to scrub it in the SDK session spawn / the manager env too.)
+if [[ -n "${TMUX:-}" && "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk* ]]; then
     session_name=$(tmux display-message -p '#S')
     # Only act on romp sessions — identified by the @romp flag, not the name.
     is_romp=$(tmux show -t "$session_name" -v @romp 2>/dev/null || true)

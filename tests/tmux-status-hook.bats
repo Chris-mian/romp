@@ -396,3 +396,27 @@ run_hook() {
     [ "$status" -eq 0 ]
     ! grep -q 'set -t test @romp-session-id' "$MOCK_LOG"
 }
+
+# ─── leaked-$TMUX guard: an SDK session must not hijack the attached tmux session (the user 2026-07-20) ──
+# When the manager is launched from INSIDE a tmux session (e.g. a manual `romp-manager up`), its kernels and
+# SDK-session children inherit that $TMUX. Without this guard, each SDK event's hook would take the tmux
+# branch, resolve #S to whatever session is ATTACHED, and clobber that session's @romp-session-id + display
+# state with the SDK session's own fsid — flapping the attached session's anchor so the kernel can't see it
+# live and the picker offers a bogus "revive". CLAUDE_CODE_ENTRYPOINT=sdk-* is Claude Code's own launch
+# marker; such a session is never a tmux display session, leaked $TMUX or not.
+
+@test "SDK session with a leaked \$TMUX touches the attached tmux session not at all" {
+    export CLAUDE_CODE_ENTRYPOINT="sdk-py"       # a Python-SDK-launched (headless) session
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    # TMUX is set (leaked) + MOCK_SESSION_NAME=test from setup, but the guard must divert it off the tmux path
+    run run_hook '{"hook_event_name":"PostToolUse","session_id":"sdk-fsid","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q 'tmux set -t' "$MOCK_LOG"           # no @romp-session-id / @claude-state clobber of 'test'
+}
+
+@test "an interactive (non-SDK) tmux session is unaffected by the guard" {
+    export CLAUDE_CODE_ENTRYPOINT="cli"           # not sdk* → normal tmux display path
+    run run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @claude-state working' "$MOCK_LOG"
+}
