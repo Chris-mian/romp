@@ -6609,6 +6609,44 @@ def _tmux_echo_prune(sid, tx_uuids, tx_texts):
         _tmux_echo.pop(sid, None)
 
 
+def _sendvis_diag(sid):
+    """Send-visibility snapshot for /diag/sendvis (the user 2026-07-20): the exact inputs the chat build
+    consults to render an in-flight send. When a sent message is invisible, this names the layer that
+    dropped it — routing (wrong backend), the backend queue, a parked kernel op, or a missing/evicted
+    echo — instead of another round of black-box probing. Read-only; failures report as strings so the
+    diagnostic itself can never mask state (fail loudly, not silently)."""
+    sid = str(sid or "")
+    out = {"sid": sid, "t": int(time.time())}
+    try:
+        sdk = _sdk()
+        be = Sessions.backend_for(sid)
+        out["backend"] = "sdk" if (sdk is not None and be is sdk) else "tmux"
+        out["sdkOwns"] = bool(sdk and sdk.owns(sid))
+    except Exception as e:
+        out["backend"] = "error: %s" % e
+        be = None
+    try:
+        out["pendingQueued"] = list(be.pending_queued(sid)) if be else []
+    except Exception as e:
+        out["pendingQueued"] = "error: %s" % e
+    out["pendingOps"] = [[op[0], (str(op[1])[:120] if len(op) > 1 else None)]
+                         for op in (_pending_ops.get(sid) or [])]
+    try:
+        out["liveAtoms"] = [{"uuid": a.get("uuid"), "t": a.get("t"),
+                             "echo": (a.get("_echo_text") or "")[:120] or None,
+                             "command": a.get("command") or None}
+                            for a in (be.live_atoms(sid) if be else [])]
+    except Exception as e:
+        out["liveAtoms"] = "error: %s" % e
+    out["tmuxEchoes"] = [{"t": a.get("t"), "echo": (a.get("_echo_text") or "")[:120]}
+                         for a in _tmux_echo_atoms(sid)]
+    try:
+        out["compacting"] = bool(_compacting_now(sid))
+    except Exception as e:
+        out["compacting"] = "error: %s" % e
+    return out
+
+
 def _merge_live_atoms(session, sid, shown_texts=()):
     """Merge in-memory LIVE-TAIL atoms into the parsed session, AHEAD of the transcript on disk, so messages
     appear instantly (the stream / a composer send leads the disk write). NON-MUTATING — `session` is the
@@ -12331,6 +12369,12 @@ class Handler(BaseHTTPRequestHandler):
                 text = (q.get("text") or [""])[0].strip()
                 body = _followup_body(iid, None, text or "‹your message will go here›") if iid else ""
                 return self._send(200, json.dumps({"body": body}), "application/json", cache="no-cache")
+            if p == "/diag/sendvis":                          # send-visibility diagnostics (the user 2026-07-20):
+                # everything the chat build consults to render an in-flight send — backend routing, the
+                # backend queue, parked kernel ops, live echoes/atoms — so an invisible message can be
+                # pinned to the layer that dropped it instead of black-box probing. Read-only.
+                return self._send(200, json.dumps(_sendvis_diag((q.get("sid") or [""])[0])),
+                                  "application/json", cache="no-cache")
             if p == "/file":                                  # preview bytes for a chat path-thumbnail / feed artifact
                 return self._file_preview(q)
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI

@@ -1808,6 +1808,39 @@ class SdkSession:
                 #   session waiting on a timer/watcher reads AWAITING, why = the task's description; [] when none
 
 
+LIVE_TAIL_CAP = 100
+
+# A path-looking token (absolute or ~-rooted): the one case where an echo's text-match against the
+# transcript can structurally FAIL — the transcript extracts an attached file's path out of the user
+# text (the user 2026-06-25) — so only these echoes stay eligible for the genuine-human-turn floor
+# retire in prune_live. Everything else prunes by its own text landing, or persists (a visible loss).
+_PATHY_RE = re.compile(r"(?:^|[\s'\"`(])(?:~/|/)[^\s'\"`)]+")
+
+
+def _path_bearing(text: str) -> bool:
+    return bool(_PATHY_RE.search(text or ""))
+
+
+def _evict_live_overflow(d: dict, cap: int = LIVE_TAIL_CAP) -> None:
+    """Bound a session's in-memory live tail when no client ever drains/prunes it — but never at the
+    cost of an INPUT ECHO or a command-feedback line. A stream WORK atom is disposable (the transcript
+    supersedes it by uuid within a second), but an echo is the ONLY record of a send the transcript
+    hasn't caught up on — evicting it makes an in-flight or dropped message silently invisible (the
+    user 2026-07-20: a reply vanished from the chat with no trace). Oldest work atoms go first; only
+    in the pathological all-echo case does the cap fall back to evicting oldest-regardless, because a
+    bounded store still beats an unbounded leak."""
+    if len(d) <= cap:
+        return
+    for k in list(d.keys()):
+        if len(d) <= cap:
+            return
+        a = d[k]
+        if not a.get("_echo_text") and not a.get("command"):
+            del d[k]
+    while len(d) > cap:
+        del d[next(iter(d))]
+
+
 # ---------------------------------------------------------------------------
 # The backend.
 # ---------------------------------------------------------------------------
@@ -1844,6 +1877,7 @@ class SdkBackend:
         for reg in regs:
             if reg.get("alive"):
                 self._heal_stale_awaiting(reg["sid"])
+        self._reseed_echoes(regs)   # unlanded input echoes survive the restart (reg['echoes'] mirror)
         # Boot reconcile (reconcile=True: the KERNEL passes it at boot; tests and ad-hoc constructions
         # opt in explicitly): recover what the previous kernel's death left behind — reap orphaned
         # CLIs, resume cut turns, deliver persisted queues. In a thread: it spawns claude processes
@@ -2310,6 +2344,7 @@ class SdkBackend:
                 if a.get("_echo_text") == text:
                     live.pop(k, None)                      # one echo per canceled message
                     break
+            self._persist_echoes(sid)                      # the canceled echo leaves the restart mirror too
             self._wake_push()                              # repaint without the echo so it stops reading as sent
         return text
 
@@ -2359,8 +2394,47 @@ class SdkBackend:
         if injected and "<!-- romp-auto -->" in text:
             echo["rompAuto"] = True                          # auto-nudge → romp-logo on the chat/timeline
         self._live.setdefault(sid, {})[key] = echo
+        self._persist_echoes(sid)                            # unlanded echoes survive a kernel restart (reg mirror)
         self._wake_push()
         return True
+
+    def _persist_echoes(self, sid: str) -> None:
+        """Mirror the sid's UNLANDED input echoes to the registry (reg['echoes']), the way _persist_queue
+        mirrors the not-yet-started queue — so a kernel restart re-seeds them instead of wiping the only
+        visible record of an in-flight send. The failure this closes (the user 2026-07-20): a message
+        forwarded into the CLI's stdin, then the kernel restarted — the CLI died holding it, the in-memory
+        echo died with the kernel, and the message vanished with NO trace anywhere. With the mirror, the
+        reseeded echo persists unanswered in the chat, so the LOSS is visible and the user can resend.
+        Command-feedback lines (/model etc.) are deliberately not mirrored — replaying a stale confirmation
+        after a restart would assert something that may no longer be true."""
+        d = self._live.get(sid) or {}
+        snap = [{"t": a.get("t", 0), "text": a["_echo_text"], "author": a.get("author") or "human",
+                 "rompAuto": bool(a.get("rompAuto"))}
+                for a in d.values() if a.get("_echo_text") and not a.get("command")]
+        try:
+            self._update_reg(sid, echoes=snap)
+        except Exception:
+            pass
+
+    def _reseed_echoes(self, regs: list[dict]) -> None:
+        """Kernel boot: re-create each alive session's persisted unlanded echoes in the live store, so a
+        send in flight across the restart stays visible until its real record lands (then the normal
+        text-prune retires it and the mirror empties)."""
+        for reg in regs:
+            if not (reg.get("alive") and reg.get("sid")):
+                continue
+            for e in reg.get("echoes") or []:
+                text = e.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+                key = "echo:" + uuid.uuid4().hex
+                atom = {"type": "user", "uuid": key, "session_id": reg["sid"],
+                        "t": int(e.get("t") or 0) or int(time.time()), "parentUuid": None,
+                        "author": e.get("author") or "human", "_echo_text": text,
+                        "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+                if e.get("rompAuto"):
+                    atom["rompAuto"] = True
+                self._live.setdefault(reg["sid"], {})[key] = atom
 
     def rewind(self, sid: str, target_uuid: str, text: str) -> "tuple[bool, str]":
         """Rewind the conversation to `target_uuid` (a transcript record uuid the KERNEL has validated:
@@ -2685,8 +2759,7 @@ class SdkBackend:
         _note_skill_tool_ids(atom, sess._skill_tool_ids)   # a Skill tool_use arms its payload's classification
         d = self._live.setdefault(sess.sid, {})
         d[atom["uuid"]] = atom
-        while len(d) > 100:                      # safety cap if no client ever drains/prunes
-            del d[next(iter(d))]
+        _evict_live_overflow(d)                  # safety cap if no client ever drains/prunes — never an echo
         # The stream is the AUTHORITATIVE busy signal: a genuine WORK atom (streamed assistant/tool
         # output — not an input echo, not a /model-style command line) means the CLI is producing RIGHT
         # NOW, so re-assert 'working' if a prior state write settled ahead of it (e.g. a separate turn
@@ -2712,30 +2785,38 @@ class SdkBackend:
         """Drop live atoms the transcript has now caught up on — by uuid (assistant/tool/user from the
         stream) or by text (the optimistic input echo, which has a synthetic uuid).
 
-        FIFO floor for echoes: an input echo whose text can't match — because the transcript EXTRACTED an
-        image path out of the user text, so `_atom_user_text` no longer contains the echoed path (the
-        screenshots-piling-up-at-the-bottom bug, the user 2026-06-25) — is also retired once the transcript's
-        newest GENUINE-HUMAN turn is at/after the echo's send time. SDK sends always enqueue and land in
-        submission order, so a human turn that recent means this (earlier or equal) echo's message has been
-        processed; a still-queued send keeps showing via the event-based `queued` indicator, so this never
-        hides a message. (Echo-only: real stream atoms have no _echo_text and prune by uuid as before.)"""
+        FIFO floor for echoes — PATH-BEARING ONLY (narrowed, the user 2026-07-20): an input echo whose text
+        can't match because the transcript EXTRACTED an image path out of the user text (`_atom_user_text`
+        no longer contains the echoed path — the screenshots-piling-up-at-the-bottom bug, the user
+        2026-06-25) is retired once the transcript's newest GENUINE-HUMAN turn is at/after the echo's send
+        time. The floor used to apply to EVERY echo, justified by "a still-queued send keeps showing via
+        the queued indicator" — but since queued sends FORWARD into the CLI mid-turn (2026-07-17) a message
+        can be neither queued nor landed, and the blanket floor hid exactly that in-flight message the
+        moment any other human record landed. A plain-text echo now prunes ONLY by its own text landing —
+        and a genuinely dropped send's echo PERSISTS, so the loss shows (the tmux echo's semantics).
+        (Echo-only: real stream atoms have no _echo_text and prune by uuid as before.)"""
         d = self._live.get(sid)
         if not d:
             return
+        echo_removed = False
         for k in list(d.keys()):
             a = d[k]
             et = a.get("_echo_text")
             landed = a.get("uuid") in tx_uuids or (et and et in tx_user_texts)
-            stale_echo = bool(et) and human_floor and a.get("t", 0) <= human_floor
+            stale_echo = (bool(et) and human_floor and a.get("t", 0) <= human_floor
+                          and not a.get("command") and _path_bearing(et))
             # A COMMAND atom (the CLI's streamed /model, /compact feedback) from a TURN-LESS control
             # request may never get a transcript record to land against — retire it once a genuine human
             # turn postdates it, so the stale confirmation line doesn't ride pinned inside every later
             # turn forever (the user 2026-07-02, with the live_work command exemption).
             stale_cmd = bool(a.get("command")) and human_floor and a.get("t", 0) <= human_floor
             if landed or stale_echo or stale_cmd:
+                echo_removed = echo_removed or bool(et and not a.get("command"))
                 del d[k]
         if not d:
             self._live.pop(sid, None)
+        if echo_removed:
+            self._persist_echoes(sid)   # keep the restart mirror in step (empty once everything landed)
 
     def retire_live_work(self, sid: str) -> None:
         """Drop the sid's live-tail WORK atoms (stream messages — not input echoes, not command feedback)
