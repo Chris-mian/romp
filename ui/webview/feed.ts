@@ -1166,6 +1166,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     dl.classList.add("fask-distill-link");
     dl.title = "jump to where this was written";
     dl.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
+  } else if (distillShown) {
+    // No anchor recorded (a card minted from a postal delegate, a completion turn not yet landed) — the
+    // line must still ACKNOWLEDGE the click instead of rendering as silently dead text (the user
+    // 2026-07-20: hovering the federation card offered nothing, with no error anywhere). Same
+    // affordance, honest outcome: the click says why the jump can't happen.
+    dl.classList.add("fask-distill-link");
+    dl.title = "no anchor recorded for this card";
+    dl.onclick = (ev: Event) => { ev.stopPropagation(); feedToast("couldn't locate this in the transcript — no anchor was recorded for this card"); };
   } else {
     dl.classList.remove("fask-distill-link");
     dl.onclick = null;

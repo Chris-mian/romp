@@ -37,3 +37,12 @@ test("the card summary hover lights the TEXT (brighten + underline), NOT a box b
   assert.match(CSS, /\.fask-distill-link:hover \{[^}]*opacity: 1;[^}]*text-decoration: underline/);
   assert.doesNotMatch(CSS, /\.fask-distill-link:hover \{[^}]*background/);   // no box fill on hover
 });
+
+test("an anchorless summary still acknowledges the click with a visible toast (the user 2026-07-20)", () => {
+  // A card minted from a postal delegate (or with a not-yet-landed completion turn) has no anchor uuid;
+  // the line used to render as silently dead text — no hover affordance, no click, no error anywhere.
+  // It must keep the link affordance and honestly say why the jump can't happen.
+  assert.match(FEED, /\} else if \(distillShown\) \{/);
+  assert.match(FEED, /dl\.title = "no anchor recorded for this card";/);
+  assert.match(FEED, /feedToast\("couldn't locate this in the transcript — no anchor was recorded for this card"\)/);
+});

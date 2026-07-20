@@ -2958,6 +2958,22 @@ def _session_closed(session):
     return bool(last.get("ended")) or any(a["type"] == "idle" for a in last["atoms"])
 
 
+def _seg_anchor(seg):
+    """The segment's landable anchor uuid: its trigger when the event model recognized one, else the
+    first non-idle atom's uuid. A peer/system segment has no recognized trigger, and every node minted
+    from it stored promptUuid None — an unlinkable card summary that silently dead-ended on the feed
+    (the user 2026-07-20, the g200 federation card). Every landed uuid is landable (scrollToAnchor
+    expands the run holding it), so the segment head is its honest anchor. None only for a segment
+    with no landed uuids at all."""
+    t = seg.get("trigger")
+    if t:
+        return t
+    for a in seg.get("atoms") or []:
+        if a.get("type") != "idle" and a.get("uuid"):
+            return a["uuid"]
+    return None
+
+
 def plan_units(session, store=None):
     """Ordered (seg_id, phase, t, text, human, followup, trigger) planner units for the TWO-RUN model (the
     user 2026-06-21, via link_audit), oldest-first. `trigger` (the user 2026-07-01, via bugs) is the
@@ -3008,7 +3024,7 @@ def plan_units(session, store=None):
                              "thread of work, mint a goal for it.\n\n" % ((seg.get("seamOf") or {}).get("text") or "?")
                              ) + work_text
             is_open_final = turn_open and si == len(segs) - 1
-            trig = seg.get("trigger")
+            trig = _seg_anchor(seg)      # trigger, else the segment head — a minted node always gets an anchor
             vq = _mint_quote(seg)
             if _seg_peer(seg):                            # POSTAL segment → DELEGATION work-run (files under the courier's goal)
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
@@ -6462,9 +6478,11 @@ def courier_llm(message_text, menu_text, declared=""):
     return _judge_run(_triage_model(), COURIER_SYS, user, judge="courier").strip()[:300]
 
 
-def apply_courier(store, seg_id, seg_t, text, origin):
+def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None):
     """Plant a top-level goal in the recipient's tree for a delegating message, with origin
-    provenance. Idempotent by seg_id and origin.msgId (one planted goal per message). Returns nid."""
+    provenance. Idempotent by seg_id and origin.msgId (one planted goal per message). Returns nid.
+    `prompt_uuid` (the user 2026-07-20, g200): the peer segment's anchor (its head record), so the
+    planted card's summary is landable like any other card — None left it silently unlinkable."""
     nodes, placements = store["nodes"], store["placements"]
     mid = origin.get("msgId")
     if mid:
@@ -6476,7 +6494,7 @@ def apply_courier(store, seg_id, seg_t, text, origin):
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
     nodes[nid] = GuardedNode({"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [seg_id], "t": seg_t, "origin": origin, "log": []})
+                  "trail": [seg_id], "t": seg_t, "origin": origin, "promptUuid": prompt_uuid, "log": []})
     placements[seg_id] = nid
     store["lastNode"] = nid                            # the delegation is now the active focus
     return nid
@@ -6561,10 +6579,10 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                 if not pm or not pm[0]:                # peer-triggered with a known sender only
                     continue
                 pending.append((seg["t"], fsid, seg["id"], _unit_text(seg["atoms"]), pm[1], pm[0],
-                                _seg_peer_kind(seg)))
+                                _seg_peer_kind(seg), _seg_anchor(seg)))
     pending.sort(key=lambda x: x[0])                  # global cross-session oldest-first
     placed = 0
-    for seg_t, fsid, seg_id, text, mid, sender, declared in pending:
+    for seg_t, fsid, seg_id, text, mid, sender, declared, anchor_uuid in pending:
         store = load_goals(fsid)
         if _placed_key(store["placements"], seg_id):  # drift-safe: never re-plant a t-shifted duplicate
             continue
@@ -6600,7 +6618,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             rollup_status(sender_store, False)
             save_goals(sender, sender_store)
             apply_courier(store, seg_id, seg_t, edit["text"],
-                          {"peer": sender, "goalId": track_id, "msgId": mid})
+                          {"peer": sender, "goalId": track_id, "msgId": mid}, prompt_uuid=anchor_uuid)
         else:
             store["placements"][seg_id] = "fyi"        # coordinating: no goal, but mark processed
         rollup_status(store, closed.get(fsid, False))

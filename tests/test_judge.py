@@ -2190,6 +2190,22 @@ class PostalDelegation(unittest.TestCase):
             finally:
                 (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.opener_llm, jd._group_store, jd._view_cleared) = saved
 
+    def test_courier_planted_goal_carries_the_segment_anchor(self):
+        """The g200 dead-summary bug (the user 2026-07-20): the courier planted the delegation goal with
+        NO promptUuid — the feed card's summary had nothing to link to and rendered as silently dead
+        text. apply_courier now stores the peer segment's anchor (its head record, threaded from
+        run_courier via _seg_anchor), so a courier-planted card is landable like any other."""
+        store = {"rompUuid": SID, "seq": 0, "placementsV": jd.PLACEMENTS_V,
+                 "nodes": {}, "placements": {}, "status": {}}
+        nid = jd.apply_courier(store, SID + ":100:aaaa", T0, "ship it",
+                               {"peer": "SENDERSID", "goalId": None, "msgId": "m9"}, prompt_uuid="p1")
+        self.assertEqual(store["nodes"][nid].get("promptUuid"), "p1",
+                         "the planted goal carries the peer segment's anchor")
+        import inspect
+        src = inspect.getsource(jd.run_courier)
+        self.assertIn("_seg_anchor(seg)", src, "run_courier collects the peer segment's anchor")
+        self.assertIn("prompt_uuid=anchor_uuid", src, "...and hands it to apply_courier")
+
     def test_delegation_files_work_under_G_with_full_expressivity(self):
         recs = [self._peer_msg(T0, "DELEGATE: build the export feature", "p1", "m1.1"),
                 aline(T0 + 30, "Built it; added tests.", "a1", "p1", tools=("Edit",), stop="end_turn")]
@@ -2197,6 +2213,12 @@ class PostalDelegation(unittest.TestCase):
         work = lambda *a, **k: ('{"ops":[{"why":"add export module","do":"mint","text":"export module"},'
                                 '{"why":"wrote tests","do":"sub","under":1,"text":"export tests"}]}')
         store, seg_id, gid = self._run(recs, "ship export feature", work)
+        # anchors ride along (the user 2026-07-20, g200): every node minted from the peer segment must
+        # carry a landable promptUuid (the segment head), never None
+        for nd in store["nodes"].values():
+            if nd["id"] != gid:
+                self.assertEqual(nd.get("promptUuid"), "p1",
+                                 "a peer segment's minted node anchors on the segment head, never None")
         tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
         self.assertEqual([t["id"] for t in tops], [gid], "no competing top — only the courier's goal G")
         under_g = [nd for nd in store["nodes"].values()
