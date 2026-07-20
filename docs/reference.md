@@ -48,6 +48,19 @@ Sessions run on one of two backends, chosen per session:
   but it lets Romp ride along with the terminal Claude Code you already use:
   run `romp <name>` and the session shows up on the dashboard like any other.
 
+## What the installer sets up
+
+`install.sh` registers the Claude Code hooks, the postal MCP config, and the
+`romp` skills; builds the editor extension; and installs a login service that
+keeps the kernel up. It is idempotent: re-running adds only what is missing,
+and it never touches hooks you registered yourself.
+
+It installs nothing into your Python. The kernel and CLI are standard library
+only; the one dependency of the [SDK backend](#session-backends)
+(`claude-agent-sdk`) lives in a dedicated venv under `~/.local/state/romp/`,
+built against the newest Python 3.10+ on the machine and rebuilt
+automatically when that Python changes.
+
 ## Configuration
 
 ### Folder click, in your terminal or editor

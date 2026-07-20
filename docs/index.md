@@ -17,18 +17,16 @@ happening. It does this by keeping track of every agent and the tasks it is
 working on, surfacing what needs your attention and keeping the rest moving on
 its own.
 
-Romp is a front end for Claude Code. It can layer onto the
-[terminal sessions you already run](reference.md#session-backends) or drive
-sessions of its own, and the dashboard opens in the browser,
-[from any of your devices](guide/remote-access.md), or as a VS Code / Cursor
-extension.
+Romp is built on top of Claude Code, and one dashboard follows you
+everywhere: the browser on your laptop or a server,
+[your phone](guide/remote-access.md), or the VS Code / Cursor extension.
 
 Its key features:
 
 <!-- Feature sections. Real captures live in docs/assets/; the README points at the same files.
      The docs home embeds the MP4 in a <video> for the last feature; the README embeds the GIF. -->
 
-## Everything at a glance
+## Every session on one timeline
 
 What's running, what's stuck, and what needs your attention.
 

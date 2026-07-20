@@ -1,18 +1,12 @@
 # Getting started
 
-## Requirements
+## Before you install
 
-- macOS or Linux
+Romp runs on macOS or Linux and needs three things installed:
+
 - [Claude Code](https://docs.claude.com/en/docs/claude-code): the `claude` CLI
-- Python 3.10+ and Node.js. macOS: `brew install python node`. Linux: your
-  distro's packages ([uv](https://docs.astral.sh/uv/) also works for Python:
-  `uv python install 3.13`). The kernel is a Python process; its supervisor
-  runs on Node.
-- [tmux](https://github.com/tmux/tmux), only if you want terminal sessions
-  (the [tmux backend](reference.md#session-backends))
-
-`install.sh` checks for these up front and names anything missing, with the
-command to fix it.
+- Python 3.10+ and Node.js: `brew install python node` on macOS, or your
+  distro's packages on Linux
 
 ## Install
 
@@ -23,15 +17,10 @@ cd romp
 export PATH="$PATH:$(pwd)/bin"   # add this line to your shell rc
 ```
 
-`install.sh` is idempotent. It registers the Claude Code hooks, the postal
-MCP config, and the `romp` skills; builds the editor extension; and installs a
-login service that keeps the kernel up (`ROMP_NO_SERVICE=1` opts out).
-
-It installs nothing into your Python. The kernel and CLI are standard library
-only; the one dependency of the [SDK backend](reference.md#session-backends)
-(`claude-agent-sdk`) lives in a dedicated venv under
-`~/.local/state/romp/`, built against the newest Python 3.10+ on the machine
-and rebuilt automatically when that Python changes.
+The installer names anything missing, with the command to fix it. It wires
+Romp into Claude Code and keeps the kernel running from login on;
+[what it sets up, exactly](reference.md#what-the-installer-sets-up) is in the
+Reference, along with the switches to skip pieces.
 
 ## Your first session
 

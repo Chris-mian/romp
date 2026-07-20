@@ -10,7 +10,7 @@ Romp provides the tools to make this management seamless, so you can stay focuse
      files. The README shows the GIF for the last feature (GitHub autoplays it in <img>);
      docs/index.md embeds the MP4 in a <video>. -->
 
-### Everything at a glance
+### Every session on one timeline
 
 What's running, what's stuck, and what needs your attention.
 
