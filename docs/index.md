@@ -1,5 +1,5 @@
 ---
-title: Romp
+title: Romp docs
 ---
 
 # ![Romp](assets/brand/romp-wordmark.png){ .romp-wordmark }

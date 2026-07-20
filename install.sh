@@ -10,6 +10,25 @@
 set -euo pipefail
 ROMP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Preflight — name anything missing up front, with the exact remedy, instead
+# of failing later at runtime. We deliberately do NOT auto-install system
+# packages (surprising, and the right package manager varies); we check and
+# tell. ROMP_SKIP_PREFLIGHT=1 bypasses; ROMP_NODE overrides the node binary.
+if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
+    preflight_missing=0
+    if ! command -v "${ROMP_NODE:-node}" >/dev/null 2>&1; then
+        echo "install.sh: Node.js not found — the kernel manager runs on it." >&2
+        echo "  macOS:  brew install node    Linux: your distro's nodejs package" >&2
+        preflight_missing=1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "install.sh: python3 not found — the kernel is a Python process." >&2
+        echo "  macOS:  brew install python@3.13    or:  uv python install 3.13" >&2
+        preflight_missing=1
+    fi
+    [[ "$preflight_missing" -eq 0 ]] || exit 1
+fi
+
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
 for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \

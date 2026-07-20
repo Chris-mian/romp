@@ -70,6 +70,8 @@ code {dir}                          # VS Code instead
 
 - `ROMP_NO_SERVICE=1 ./install.sh` skips the login service.
 - `ROMP_NO_EXT=1 ./install.sh` skips the VS Code / Cursor extension.
+- `ROMP_NO_SDK=1 ./install.sh` skips the SDK backend's venv (tmux sessions
+  still work).
 
 ## Where things live
 

@@ -55,6 +55,21 @@ PY
     [ -L "$HOME/.claude/skills/romp" ]
 }
 
+@test "install.sh: preflight fails clearly when node is missing" {
+    ROMP_NODE=romp-test-no-such-node run "$ROMP_DIR/install.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Node.js not found"* ]]
+    [[ "$output" == *"brew install node"* ]]
+    # nothing was installed: the preflight runs before any mutation
+    [ ! -e "$HOME/.claude/hooks/tmux-status.sh" ]
+}
+
+@test "install.sh: ROMP_SKIP_PREFLIGHT bypasses the checks" {
+    ROMP_NODE=romp-test-no-such-node ROMP_SKIP_PREFLIGHT=1 run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -L "$HOME/.claude/hooks/tmux-status.sh" ]
+}
+
 @test "install.sh: merges into an existing settings.json without clobbering the user's own config" {
     mkdir -p "$HOME/.claude"
     cat > "$HOME/.claude/settings.json" <<'JSON'
