@@ -1,7 +1,26 @@
 # Peer postal buses: store-and-forward, no master, check-in trust
 
-Status: DESIGN — awaiting the user's sign-off before implementation (approved in
-principle 2026-07-20; staged build follows sign-off of this document).
+Status: SIGNED OFF 2026-07-20 — the four open decisions were resolved with the
+user in chat; the staged build is a go.
+
+## Resolved decisions (the user, 2026-07-20)
+
+1. **Check-in is automatic, surfaced in the network popover.** No command
+   ritual: each known remote row gets a "keep connected" checkbox. Checked →
+   a supervisor holds the check-in up whenever connectivity allows (retrying
+   on network change), and the buses just stay peered; unchecked → checkout
+   (tunnel down, token invalidated). `romp checkin`/`checkout` remain as the
+   plumbing the checkbox drives. The persisted flag lives with the remotes
+   registry so it survives restarts.
+2. **Full drive for the hub.** While checked in, the hub (and the phone
+   through it) can fully drive the laptop's romp sessions — required for
+   answering a blocked laptop card from the phone. The trade-off (hub
+   compromise = laptop session drive, never shell) is accepted; scoped
+   view-only tokens stay a later hardening option.
+3. **Merged view everywhere.** The same check-in tunnel also carries the hub's
+   fleet back to the laptop, so whichever dashboard is open shows everything.
+4. **The phone keeps Tailscale** (phone + server only; the laptop no longer
+   needs Tailscale at all). No internet-exposed ingress.
 
 ## The problems this removes
 
@@ -102,12 +121,17 @@ Semantics preserved:
 
 ### 3. Check-in (stage 3)
 
-`romp checkin <host>` on the mobile machine opens ONE outbound ssh to the
-stable machine (same ssh option set as today's tunnels: BatchMode, keepalives,
-ExitOnForwardFailure, no ControlMaster) carrying:
+The user surface is the network popover's per-host "keep connected" checkbox
+(resolved decision 1); `romp checkin <host>` is the plumbing it drives. A
+check-in opens ONE outbound ssh to the stable machine (same ssh option set as
+today's tunnels: BatchMode, keepalives, ExitOnForwardFailure, no ControlMaster)
+carrying:
 
 - `-R` ephemeral: the mobile machine's kernel port → the hub can view/drive it.
 - `-R` ephemeral: the mobile machine's bus port → the hub's bus can peer.
+- `-L` ephemeral: the hub's kernel + bus → the mobile machine's dashboard shows
+  the merged fleet too, and its bus peers in both directions over the one
+  tunnel (resolved decision 3: merged view everywhere).
 - A handshake call to the hub kernel's `/checkin` endpoint through the same
   tunnel: `{host, kernelPort, busPort, token}` — the mobile machine *hands* its
   serve token to the hub, instead of the hub fetching it with credentials.
