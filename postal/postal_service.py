@@ -775,6 +775,16 @@ class Handler(BaseHTTPRequestHandler):
             agents = [a for a in all_agents() if not _postal_off(a["id"])]   # isolated sessions are invisible to peers
             for a in agents:                       # enrich with branch for display only
                 a["branch"] = _git_branch(a.get("dir", ""))
+            if peers_on():
+                # Peer-bus fleet view (DISPLAY only — all_agents() itself stays local so the delivery
+                # paths can never mistake a peer entry for a local maildir): each peer's last-gossiped
+                # presence, with honest staleness. Address cross-host with 'host:name' on collisions.
+                now = time.time()
+                for host, st in PEER_STATE.items():
+                    age = int(now - (st.get("seenAt") or 0))
+                    for pa in st.get("presence") or []:
+                        agents.append({"name": pa.get("name") or "?", "id": pa.get("id") or "",
+                                       "remote": True, "peer": host, "seenAgo": age})
             return self._send({"agents": agents, "me": me})
         if u.path == "/sent":
             sid = (q.get("id") or [""])[0]
@@ -803,6 +813,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/peer":                      # the kernel's tunnel-transition notify (peer-bus mode)
             payload, status = peer_update(data)
             return self._send(payload, status)
+        if u.path == "/peer-exchange":             # a peer bus dialing us through the kernel's -L forward
+            payload, status = peer_exchange_handle(data)
+            return self._send(payload, status)
         if u.path == "/send":
             to = data.get("to", "")
             frm, frm_id = data.get("from", "unknown"), data.get("from_id", "")
@@ -818,6 +831,30 @@ class Handler(BaseHTTPRequestHandler):
                                    "session's mailbox back on in the timeline, then retry. When you relay this, "
                                    "say it's YOUR mailbox that's off, not theirs."}, 403)
             match = [a for a in all_agents() if a["name"] == to and not _postal_off(a["id"])]
+            if not match and peers_on():
+                # Peer-bus relay: the name lives on a peer host → park in its outbox; the exchange
+                # (or the next reconnect) carries it, and a definitive refusal bounces back to the
+                # sender. 'host:name' addresses a specific host; a bare name must be fleet-unique.
+                phost, hit = peer_route(to)
+                if phost:
+                    mid = "px-" + _unique()
+                    outbox_put(phost, {"mid": mid, "to": hit.get("name") or to, "frm": frm,
+                                       "frm_id": frm_id, "body": body, "kind": kind,
+                                       "t": int(time.time())})
+                    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "sent", "id": mid,
+                                                  "from": frm, "from_id": frm_id,
+                                                  "to_id": "peer:%s" % phost, "body": body,
+                                                  "kind": kind})
+                    if PEERS.get(phost, {}).get("up"):
+                        return self._send({"ok": True, "id": mid,
+                                           "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
+                    return self._send({"ok": True, "id": mid, "parked": phost,
+                                       "note": "parked for %s (unreachable) — delivers on reconnect, "
+                                               "or bounces back to you" % phost})
+                if hit:                              # >1 candidate across hosts → make the sender choose
+                    cands = ", ".join(sorted({"%s:%s" % (h, (a.get("name") or "?")) for h, a in hit}))
+                    return self._send({"error": "ambiguous name '%s' across the fleet — address it as "
+                                       "host:name (one of: %s)" % (to, cands)}, 409)
             if not match:
                 # Addressing is LIVE-only: no dead-session resurrection. A live-but-
                 # isolated recipient says so; anything else is a typo -> 404.
@@ -991,6 +1028,8 @@ def serve():
     STATE.mkdir(parents=True, exist_ok=True)
     MAILROOT.mkdir(parents=True, exist_ok=True)
     _reconcile_markers()
+    if peers_on():
+        _seed_peers_from_kernel()          # a restarted bus re-learns its peers without waiting for a transition
     try:
         httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     except OSError as e:
@@ -1069,10 +1108,289 @@ def peer_update(data):
     if not host or not isinstance(port, int) or isinstance(port, bool) or not (0 < port < 65536):
         return {"error": "host and port required"}, 400
     PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time())}
+    _peer_threads_reconcile(host)                    # an up peer gets its dialer; a down one is woken to exit
     return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
 
 def peers_snapshot():
     return {"peers": {h: dict(p) for h, p in PEERS.items()}}
+
+# ── peering protocol (peer-bus mode, stage 2) ───────────────────────────────────
+# One EXCHANGE carries both directions (plans/postal-peer-buses.md): the dialer POSTs
+# {host, epoch, proto, presence, relays, acks, bounces, wait} to the peer's /peer-exchange
+# through the kernel's -L forward, and the response carries the peer's own presence, its
+# relays for the dialer, and acks/bounces for the dialer's relays. `wait` long-polls: an
+# empty-handed response parks on the per-host wake (set by outbox_put) up to EXCHANGE_WAIT,
+# so mail crosses the instant it exists in EITHER direction with no polling cadence.
+# Delivery is at-least-once (outbox until acked) + idempotent receipt (mid dedupe) —
+# effectively exactly-once. A relay whose recipient is dead/unknown/isolated BOUNCES back
+# to the sender as a bus-authored postal note: parking is only ever for a LINK being down,
+# never for a dead session (live-only at delivery, loudly).
+
+PEER_PROTO = 1
+BUS_EPOCH = int(time.time())               # this bus process's boot — peers key cached presence on it
+OUTBOX = STATE / "outbox"                  # outbox/<host>/<mid>.json — cross-host mail awaiting its ACK
+PEER_SEEN = STATE / "peer-seen.jsonl"      # append-only receipt log — the idempotence window
+_SEEN_CAP = 4000
+_seen_ids = None                           # lazy in-memory mirror of PEER_SEEN's tail
+EXCHANGE_WAIT = int(os.environ.get("ROMP_POSTAL_EXCHANGE_WAIT", "20"))
+PEER_STATE = {}                            # host -> {"presence": [...], "epoch": int, "seenAt": t, "drift": str}
+_peer_wakes = {}                           # host -> threading.Event (long-poll release + dialer poke)
+_peer_threads = {}                         # host -> Thread (one dialer loop per up peer)
+_peer_pending = {}                         # host -> {"acks": [mid], "bounces": [{mid, why}]} for the NEXT request
+_peer_lock = threading.Lock()
+
+def self_host():
+    """This machine's postal identity: short hostname (each side keys the OTHER by its own name for
+    it, so exact agreement across machines is not required). ROMP_POSTAL_HOST overrides (tests)."""
+    return os.environ.get("ROMP_POSTAL_HOST") or socket.gethostname().split(".")[0]
+
+def _peer_wake(host):
+    with _peer_lock:
+        ev = _peer_wakes.get(host)
+        if ev is None:
+            ev = _peer_wakes[host] = threading.Event()
+        return ev
+
+def _seen_load():
+    global _seen_ids
+    if _seen_ids is None:
+        try:
+            _seen_ids = set(PEER_SEEN.read_text().split()[-_SEEN_CAP:])
+        except Exception:
+            _seen_ids = set()
+    return _seen_ids
+
+def peer_seen_check(mid):
+    return mid in _seen_load()
+
+def peer_seen_add(mid):
+    _seen_load().add(mid)
+    try:
+        PEER_SEEN.parent.mkdir(parents=True, exist_ok=True)
+        with PEER_SEEN.open("a") as f:
+            f.write(mid + "\n")
+    except Exception as e:
+        _log("peer-seen append failed: %s" % e)     # dedupe degrades to the in-memory window
+
+def outbox_put(host, msg):
+    """Park one cross-host message for `host` and poke its exchange (long-poll release + dialer)."""
+    d = OUTBOX / host
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (msg["mid"] + ".json")).write_text(json.dumps(msg))
+    _peer_wake(host).set()
+
+def outbox_list(host):
+    try:
+        out = []
+        for f in sorted((OUTBOX / host).glob("*.json")):
+            try:
+                out.append(json.loads(f.read_text()))
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return []
+
+def outbox_get(host, mid):
+    try:
+        return json.loads((OUTBOX / host / (mid + ".json")).read_text())
+    except Exception:
+        return None
+
+def outbox_del(host, mid):
+    try:
+        (OUTBOX / host / (mid + ".json")).unlink()
+        return True
+    except Exception:
+        return False
+
+def _bounce_apply(host, b):
+    """A peer refused one of our parked messages — return it to the SENDER as a bus-authored note,
+    loudly, and drop it from the outbox. Parking never outlives a definitive refusal."""
+    mid = (b or {}).get("mid") or ""
+    msg = outbox_get(host, mid)
+    outbox_del(host, mid)
+    if not msg:
+        return
+    note = ("undeliverable to '%s' on %s: %s\n\n(your message follows)\n%s"
+            % (msg.get("to") or "?", host, (b or {}).get("why") or "refused", msg.get("body") or ""))
+    if msg.get("frm_id"):
+        deliver(msg["frm_id"], "romp-postal", "", note, kind="coordinate")
+    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": mid,
+                                  "to": msg.get("to") or "?", "host": host,
+                                  "why": (b or {}).get("why") or "refused"})
+
+def _relay_in(host, m):
+    """Deliver one incoming relay locally. Returns (ackable, bounce-or-None)."""
+    mid = m.get("mid") or ""
+    if not mid:
+        return False, None
+    if peer_seen_check(mid):
+        return True, None                            # duplicate → re-ack, deliver nothing
+    to = m.get("to") or ""
+    match = [a for a in local_agents() if a["name"] == to and not _postal_off(a["id"])]
+    if not match:
+        if any(a["name"] == to for a in local_agents()):
+            return False, {"mid": mid, "why": "recipient '%s' has its mailbox off (postal isolation)" % to}
+        return False, {"mid": mid, "why": "no live session named '%s' on %s" % (to, self_host())}
+    deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
+            kind=m.get("kind") or "")
+    peer_seen_add(mid)
+    return True, None
+
+def _pending(host):
+    with _peer_lock:
+        p = _peer_pending.get(host)
+        if p is None:
+            p = _peer_pending[host] = {"acks": [], "bounces": []}
+        return p
+
+def peer_exchange_handle(data):
+    """The DIALED side of one exchange. Returns (payload, status)."""
+    host = str((data or {}).get("host") or "").strip()
+    if not host:
+        return {"error": "host required"}, 400
+    if (data or {}).get("proto") != PEER_PROTO:
+        return {"error": "peer protocol drift (theirs %r, ours %r) — update romp on one side"
+                % ((data or {}).get("proto"), PEER_PROTO), "proto": PEER_PROTO}, 409
+    PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
+                        "seenAt": int(time.time())}
+    for mid in data.get("acks") or []:               # the dialer confirmed our earlier relays landed
+        outbox_del(host, mid)
+    for b in data.get("bounces") or []:              # ...or refused them → return to our senders
+        _bounce_apply(host, b)
+    acks, bounces = [], []
+    for m in data.get("relays") or []:
+        ok, bounce = _relay_in(host, m)
+        if ok:
+            acks.append(m.get("mid"))
+        elif bounce:
+            bounces.append(bounce)
+    rel = outbox_list(host)
+    if not rel and data.get("wait") and not acks and not bounces:
+        # nothing to hand back → park on the wake so mail we accept mid-wait crosses instantly
+        _peer_wake(host).clear()
+        _peer_wake(host).wait(EXCHANGE_WAIT)
+        rel = outbox_list(host)
+    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
+            "presence": local_agents(), "relays": rel, "acks": acks, "bounces": bounces}, 200
+
+def build_exchange_request(host, wait=True):
+    p = _pending(host)
+    with _peer_lock:
+        acks, bounces = list(p["acks"]), list(p["bounces"])
+    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
+            "presence": local_agents(), "relays": outbox_list(host),
+            "acks": acks, "bounces": bounces, "wait": bool(wait)}
+
+def peer_exchange_apply(host, req_sent, resp):
+    """The DIALER's half: fold one exchange response in. `req_sent` is the request that produced it —
+    its included acks/bounces are now delivered and leave the pending queue (kept on send failure)."""
+    p = _pending(host)
+    with _peer_lock:
+        p["acks"] = [a for a in p["acks"] if a not in (req_sent.get("acks") or [])]
+        p["bounces"] = [b for b in p["bounces"] if b not in (req_sent.get("bounces") or [])]
+    PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
+                        "seenAt": int(time.time())}
+    for mid in resp.get("acks") or []:
+        outbox_del(host, mid)
+    for b in resp.get("bounces") or []:
+        _bounce_apply(host, b)
+    for m in resp.get("relays") or []:
+        ok, bounce = _relay_in(host, m)
+        with _peer_lock:
+            if ok:
+                p["acks"].append(m.get("mid"))
+            elif bounce:
+                p["bounces"].append(bounce)
+
+def peer_route(to):
+    """Where a non-local name lives: (host, agent) for exactly ONE peer match; (None, candidates) on
+    ambiguity; (None, []) when unknown. Accepts the explicit 'host:name' form to break ties."""
+    want_host = None
+    if ":" in to:
+        want_host, to = to.split(":", 1)
+    hits = []
+    for host, st in PEER_STATE.items():
+        if want_host and host != want_host:
+            continue
+        for a in st.get("presence") or []:
+            if a.get("name") == to:
+                hits.append((host, a))
+    if len(hits) == 1:
+        return hits[0]
+    return None, hits
+
+def _peer_http(port, payload):
+    req = urllib.request.Request("http://127.0.0.1:%d/peer-exchange" % port,
+                                 data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=EXCHANGE_WAIT + 10) as r:
+        return json.loads(r.read().decode() or "{}")
+
+def _peer_loop(host):
+    """One dialer per up peer: exchange, fold the response in, repeat — the dialed side's long-poll
+    sets the pace, so a healthy loop is one parked request, not a poll. Exponential backoff (capped
+    30s) on connection errors only; exits when the kernel marks the peer down or the flag drops."""
+    fails = 0
+    while peers_on():
+        p = PEERS.get(host)
+        if not p or not p.get("up"):
+            break
+        req = build_exchange_request(host, wait=True)
+        try:
+            resp = _peer_http(p["port"], req)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                st = PEER_STATE.setdefault(host, {})
+                if st.get("drift") != "proto":
+                    st["drift"] = "proto"
+                    _log("peer %s: protocol drift — update romp on one side" % host)
+                _peer_wake(host).clear()
+                _peer_wake(host).wait(60)
+                continue
+            fails += 1
+            _peer_wake(host).clear()
+            _peer_wake(host).wait(min(30, 2 ** min(fails, 5)))
+            continue
+        except Exception:
+            fails += 1
+            _peer_wake(host).clear()
+            _peer_wake(host).wait(min(30, 2 ** min(fails, 5)))
+            continue
+        fails = 0
+        try:
+            peer_exchange_apply(host, req, resp)
+        except Exception as e:
+            _log("peer %s: apply failed: %s" % (host, e))
+    with _peer_lock:
+        _peer_threads.pop(host, None)
+
+def _peer_threads_reconcile(host):
+    """Called on every kernel notify: an UP peer gets a dialer loop if none runs; a DOWN one gets its
+    wake poked so the loop notices and exits."""
+    up = bool(PEERS.get(host, {}).get("up"))
+    with _peer_lock:
+        t = _peer_threads.get(host)
+        if up and (t is None or not t.is_alive()):
+            t = threading.Thread(target=_peer_loop, args=(host,), name="peer:%s" % host, daemon=True)
+            _peer_threads[host] = t
+            t.start()
+    if not up:
+        _peer_wake(host).set()
+
+def _seed_peers_from_kernel():
+    """A restarted bus starts with an empty peer table (the kernel notifies on TRANSITIONS). Best-effort
+    seed from the kernel's /tunnels so peering resumes without waiting for the next transition."""
+    try:
+        with urllib.request.urlopen(KERNEL_BASE + "/tunnels", timeout=3) as r:
+            rows = json.loads(r.read().decode() or "{}").get("tunnels") or []
+        for row in rows:
+            port = row.get("busPort")
+            if row.get("host") and isinstance(port, int) and port:
+                peer_update({"host": row["host"], "port": port, "up": row.get("status") == "up"})
+    except Exception:
+        pass                                         # no kernel yet → the notify path fills the table
 
 def looks_remote():
     # Heuristic: this shell reached the machine over SSH. Used only for advisory

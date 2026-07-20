@@ -3656,6 +3656,7 @@ def _remote_public(r):
     ood = _remote_out_of_date(r)
     drift = _behind_info(r.get("kernel_sha") or "") if ood else {"behind": 0, "ahead": 0, "date": ""}
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
+            "busPort": r.get("bus_port") or 0,   # peer-bus mode: a restarted bus reseeds its peer table from this
             "token": r.get("token") or "", "status": r.get("status") or "down",
             "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
