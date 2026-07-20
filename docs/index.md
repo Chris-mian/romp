@@ -17,9 +17,10 @@ happening. It does this by keeping track of every agent and the tasks it is
 working on, surfacing what needs your attention and keeping the rest moving on
 its own.
 
-Romp is built on top of Claude Code, and one dashboard follows you
-everywhere: the browser on your laptop or a server,
-[your phone](guide/remote-access.md), or the VS Code / Cursor extension.
+Romp is built on top of Claude Code: the agents it manages are ordinary
+Claude Code sessions, gathered into one live dashboard. You reach that
+dashboard from a browser on your laptop or a server, from
+[your phone](guide/remote-access.md), or from the VS Code / Cursor extension.
 
 Its key features:
 
