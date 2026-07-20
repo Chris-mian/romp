@@ -124,6 +124,27 @@ That is inherent in wanting the merged view from the hub. Mitigations staged
 for later if wanted: per-checkin scoped tokens (view-only), and a one-tap
 "check out" that kills the tunnel and invalidates the handed token.
 
+### 3b. Spoke-to-spoke relay through a shared peer (added after the user's
+### mechanics question, 2026-07-20)
+
+Peering as specified is per-link: two machines exchange mail over a tunnel one
+of them opened. Two spokes that both check in to the same hub have no direct
+link — so the hub's bus RELAYS: a message addressed to a session on host C,
+arriving at hub B from host A, is re-relayed by B over its own link to C, with
+the same park-in-outbox behavior when B↔C is down. Rules that keep this simple
+and loop-free:
+
+- A bus relays only for hosts in its OWN live peer table (one hop; no route
+  discovery, no flooding). With romp's hub-and-spoke shapes, one hop is always
+  enough; a topology that needs two is a sign to check the second spoke in to
+  the hub directly.
+- The `ACK` is end-to-end: A keeps the message in its outbox until C's bus
+  acks delivery (relayed back through B), so a hub crash mid-relay loses
+  nothing — A retries, C dedupes.
+- Presence gossip carries the one-hop reach too: A's `list_agents` shows C's
+  sessions labeled via B ("via <hub>"), staleness compounding honestly from
+  the oldest link in the chain.
+
 ### 4. What does not change
 
 - Dashboard federation (browser-side merge, `host:` prefixing) — unchanged; it
