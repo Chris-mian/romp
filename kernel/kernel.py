@@ -1308,19 +1308,23 @@ def _auto_resume_session_retry(now, tmux):
         _mark_views_dirty()      # the flag lives in a file the fleet sig doesn't watch → dirty-rebuild the chat status
 
 
-def _mark_auto_nudged(gid, turn_id, count):
-    """Record an auto-nudge of `gid`: {count, lastTurnId}. `count` is the TOTAL fired (the climbing
+def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None):
+    """Record an auto-nudge of `gid`: {count, lastTurnId, armAtoms}. `count` is the TOTAL fired (the climbing
     escalation alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and
     re-arms only on a genuinely NEW ended turn — and NEVER on the agent's own nudge-response turn (see the
     tick's _turn_romp_injected gate). A stall that persists without genuine new work becomes a real BLOCK
     (_mark_nudge_failed records the verdict, 2026-07-07) rather than being nudged forever. A fresh fire
     writes a fresh record, so any earlier `failed` flag resets with the new episode. Bounded to recent
     goals. (The old per-record `stalled` flag fed build_feed's needs-you floor; both retired 2026-07-07 —
-    the block verdict supersedes them.)"""
+    the block verdict supersedes them.) `armAtoms` is the arming turn's atom count at fire time — the
+    failed-stamp's response-arrival gate compares against it (the 2026-07-19 network g1 race)."""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     nudged.pop(gid, None)
-    nudged[gid] = {"count": count, "lastTurnId": turn_id}   # reinsert → most-recent
+    rec = {"count": count, "lastTurnId": turn_id}
+    if isinstance(arm_atoms, int):
+        rec["armAtoms"] = arm_atoms
+    nudged[gid] = rec                                       # reinsert → most-recent
     if len(nudged) > 3000:                                  # bounded; drop the oldest
         nudged = dict(list(nudged.items())[-3000:])
     d["nudged"] = nudged
@@ -1855,6 +1859,25 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
             # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
             # so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
             if rec and not rec.get("failed"):
+                # RESPONSE-ARRIVAL GATE (the user 2026-07-19, the network g1 manufactured block): the
+                # fire and this stamp are separate ticks, and the parse between them can lag the
+                # transcript — g1's stamp ran 16s after its fire against a parse that still ENDED AT
+                # THE ARMING TURN (the injected nudge, let alone the reply "All done — nothing is
+                # blocked on you", hadn't reached it), so the no-visible-segment fallback below
+                # recorded "the response didn't resolve this" against a response that resolved
+                # everything — blocking a finished card the closer was about to close. The response's
+                # ARRIVAL in the parse is the event to wait for: a turn newer than the arming turn
+                # (a romp-opened response) or the arming turn grown past its fire-time atom count
+                # (the SDK fold). armAtoms unchanged AND still the last turn = nothing has happened
+                # since the fire → skip, re-check next tick. Records without armAtoms (pre-gate
+                # fires) keep the stamp-now behavior.
+                _arm_atoms = rec.get("armAtoms")
+                if isinstance(_arm_atoms, int):
+                    _at = next((tn2 for tn2 in reversed(turns)
+                                if tn2.get("id") == rec.get("lastTurnId")), None)
+                    if _at is not None and _at is turns[-1] \
+                            and len(_at.get("atoms") or []) <= _arm_atoms:
+                        continue                       # the response isn't in the parse yet
                 # PLACEMENT GATE (the user 2026-07-09, the g143 phantom stall): closer-settled does NOT
                 # imply the planner processed the nudge RESPONSE — the closer and planner gate on
                 # different work, and on g143 this stamped 'failed' at 16:06 while the planner's
@@ -1886,7 +1909,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
         stalled = gid in _agent_open_set(nodes, _kids)
         text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
         Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
-        _mark_auto_nudged(gid, arm_id, count)   # {count, lastTurnId} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
+        _mark_auto_nudged(gid, arm_id, count, len(arm.get("atoms") or []))   # {count, lastTurnId, armAtoms} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
         _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
         nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
         fired = True

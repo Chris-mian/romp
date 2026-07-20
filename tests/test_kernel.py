@@ -2247,6 +2247,45 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(sent, [], "same turn id → no re-fire")
         self.assertTrue(km._auto_nudge_data()["nudged"][SID + ":gw"].get("failed"))
 
+    def test_auto_nudge_failed_stamp_waits_for_the_response_to_reach_the_parse(self):
+        # the network g1 manufactured block (the user 2026-07-19): the fire and the failed-stamp are
+        # separate ticks, and 16s after the fire the parse still ENDED AT THE ARMING TURN — the injected
+        # nudge (let alone the reply "All done — nothing is blocked on you") hadn't reached it — yet the
+        # no-visible-segment fallback stamped "the response didn't resolve this" against a response that
+        # resolved everything, manufacturing a block on a finished card. The response's ARRIVAL in the
+        # parse is the event to wait for: armAtoms (the arming turn's atom count at fire time) unchanged
+        # AND no newer turn = nothing has happened since the fire → skip, re-check next tick.
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW,
+                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": T0 + 10}]}
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            SID + ":gw": {"count": 1, "lastTurnId": SID + ":t1", "armAtoms": 2}}})
+        sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
+        self.assertEqual(sent, [], "no re-nudge while armed on the same turn")
+        self.assertFalse(km._auto_nudge_data()["nudged"][SID + ":gw"].get("failed"),
+                         "an unchanged arming turn means the response is NOT in the parse — no failed stamp")
+
+    def test_auto_nudge_failed_stamp_lands_once_the_folded_response_grows_the_turn(self):
+        # the same record once the fold DOES land: the arming turn grown past armAtoms is the arrival
+        # event, and the stamp proceeds — the designed fold path keeps working with the new gate.
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW,
+                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": T0 + 10},
+                          {"type": "user", "t": T0 + 20}, {"type": "assistant", "t": NOW}]}
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            SID + ":gw": {"count": 1, "lastTurnId": SID + ":t1", "armAtoms": 2}}})
+        sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
+        self.assertEqual(sent, [], "same turn id → no re-fire")
+        self.assertTrue(km._auto_nudge_data()["nudged"][SID + ":gw"].get("failed"),
+                        "atom growth past armAtoms = the response arrived — the stamp lands")
+
+    def test_auto_nudge_fire_records_the_arming_turns_atom_count(self):
+        # the arrival gate compares against fire-time state, so the fire must record it
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW,
+                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": NOW}]}
+        sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
+        self.assertEqual(len(sent), 1, "fresh goal on a genuine ended turn fires")
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":gw"].get("armAtoms"), 2,
+                         "the fire stamps the arming turn's atom count")
+
     def test_a_fresh_fire_resets_the_failed_flag(self):
         # a NEW genuine stall re-arms and fires; the fresh record must drop the previous episode's `failed`
         # (and its fork flavor) so the chip/floor reflect THIS episode, not a stale one.
