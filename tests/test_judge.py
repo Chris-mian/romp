@@ -3012,7 +3012,11 @@ class BlockCompletionCorrectness(unittest.TestCase):
         # tasks" on one card. Both judges now carry the past-tense tell: the planner must pair such a
         # sub with a done (or block) in the same reply, and the closer's DONE side (not the omit
         # default) closes a record-sub the turn shows delivered.
-        for phrase in ("title in the **past tense**", "phantom open work"):
+        for phrase in ("title in the **past tense**", "phantom open work",
+                       # the quartz g142 miss (the user 2026-07-20): a NOMINALIZED record
+                       # ("…default state verification") carries no past-tense verb, so the tell must
+                       # name noun-phrase records and ground the test in the segment's own evidence
+                       "noun phrase naming a finished act", "shows the outcome delivered"):
             self.assertIn(phrase, jd.PLAN_SYS, "planner: " + phrase)
         done_clause = jd.CLOSER_SYS.split("- blocked:", 1)[0]
         for phrase in ("records something already delivered", "close it rather than omit it"):
@@ -6197,3 +6201,76 @@ class StaleBlockGuard(unittest.TestCase):
         src = inspect.getsource(jd)
         self.assertIn('if t and record_verdict(store, nodes[t], "planner", "block", seg_t', src,
                       "the planner's block op must go through record_verdict exactly like the closer")
+
+
+class FollowupContinuationCarry(unittest.TestCase):
+    """The quartz g142 regression (the user 2026-07-20): a follow-up whose reply already
+    discharged the ask was force-filed as an OPEN sub — the continuation branch reopened the completed
+    card and DISCARDED the model's own done from the same call, so a born-done sub held the Done card at
+    Working for real, the auto-nudge fired into the gap, and the closer had to clean up ten seconds
+    later. The continuation now carries the model's done/block on the cited goal through the forced
+    filing: done closes the record-sub AND re-completes the card in the same pass; block lands the
+    pending ask so the card reads Needs-You, never a false Working."""
+
+    OPS_MINT_DONE = ('{"ops":[{"why":"asked for the control","do":"mint","text":"GUI control for deep-sleep window"},'
+                     '{"why":"built and verified on device","do":"done","ref":1}]}')
+
+    def _drive(self, followup_ops):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm = lambda *a, **k: followup_ops if k.get("followup") else self.OPS_MINT_DONE
+            jd.opener_llm = lambda *a, **k: ""
+            jd._group_store = lambda *a, **k: None
+            try:
+                recs1 = [uline(T0, "add a GUI control for the deep-sleep window", "u1", ps="typed"),
+                         aline(T0 + 10, "Built it, pushed, verified.", "a1", "u1", stop="end_turn")]
+                tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW)
+                store = jd.load_goals(SID)
+                gid = next(iter(store["nodes"]))
+                self.assertTrue(store["nodes"][gid]["nodeComplete"], "seed: the card starts completed")
+                fu = "does the toggle default to off?\n\n<!-- romp-goal-id: %s -->" % gid
+                recs2 = recs1 + [uline(T0 + 100, fu, "u2", "a1", ps="typed"),
+                                 aline(T0 + 110, "Confirmed: defaults to off, verified on device.",
+                                       "a2", "u2", stop="end_turn")]
+                tpath.write_text("\n".join(json.dumps(r) for r in recs2) + "\n")
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW + 200)
+                return jd.load_goals(SID), gid
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.opener_llm, jd._group_store) = saved
+
+    def test_followup_done_carries_through_the_forced_filing(self):
+        ops = ('{"ops":[{"why":"the reply confirmed it","do":"sub","under":1,'
+               '"text":"toggle default state verification"},'
+               '{"why":"confirmed default-off on device; nothing left for the user","do":"done","goal":1}]}')
+        store, gid = self._drive(ops)
+        kids = [n for n in store["nodes"].values() if n.get("parentId") == gid]
+        self.assertEqual(len(kids), 1, "the follow-up's work filed under the cited card")
+        self.assertTrue(kids[0]["nodeComplete"], "the record-sub lands already crossed off, not as open work")
+        self.assertTrue(store["nodes"][gid]["nodeComplete"],
+                        "the cited card returns to completed in the SAME pass — "
+                        "no Done-to-Working window for the nudge to fire into")
+
+    def test_followup_block_carries_the_pending_ask(self):
+        ops = ('{"ops":[{"why":"raised the untested window","do":"sub","under":1,'
+               '"text":"end-to-end sleep-window test"},'
+               '{"why":"Run the 2-minute attended test now?","do":"block","goal":1}]}')
+        store, gid = self._drive(ops)
+        self.assertTrue(store["nodes"][gid].get("blocked"),
+                        "the card goes straight to Needs-You with the ask, not a false Working")
+        kids = [n for n in store["nodes"].values() if n.get("parentId") == gid]
+        self.assertFalse(kids[0]["nodeComplete"], "the still-owed test stays open under it")
+
+    def test_followup_without_a_resolution_stays_open(self):
+        ops = ('{"ops":[{"why":"more work requested","do":"sub","under":1,'
+               '"text":"add a read-only display too"}]}')
+        store, gid = self._drive(ops)
+        kids = [n for n in store["nodes"].values() if n.get("parentId") == gid]
+        self.assertFalse(kids[0]["nodeComplete"], "genuinely-open follow-up work stays open")
+        self.assertFalse(store["nodes"][gid]["nodeComplete"],
+                         "and the card stays reopened — the designed continuation, unchanged")

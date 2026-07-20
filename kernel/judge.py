@@ -1161,7 +1161,10 @@ PLAN_SYS = (
     "delivered — must not sit open on the board: pair its sub with a done on it in this same reply "
     "(a \"done\" op with \"ref\":<k>), so it lands already crossed off. The tell is a step you would "
     "title in the **past tense** — \"Explained…\", \"Confirmed…\", \"Diagnosed…\", \"Gave two "
-    "options…\" — a record of something delivered, not work still owed. Every such sub needs its "
+    "options…\" — a record of something delivered, not work still owed. The same tell hides in a "
+    "**noun phrase naming a finished act** — \"…verification\", \"confirmation of…\", \"root-cause "
+    "of…\": grammar is only the hint, the test is whether this segment's turn already **shows the "
+    "outcome delivered**. Every such sub needs its "
     "paired done (or paired block, when what it delivered ends by asking the user to decide); an "
     "unpaired past-tense sub sits on the board forever as phantom open work.\n"
     "You place each segment's work; you do not reorganize the board (a separate grouper judge nests "
@@ -4227,8 +4230,8 @@ def _plan_session(fsid, path, now):
                     _group_store(store, fsid, now)
                     save_goals(fsid, store)
                     continue
-                # CONTINUATION (the strong default, behavior unchanged): reopen the target, force the work
-                # UNDER it, reusing the model's own description + optional retitle from the SAME call.
+                # CONTINUATION (the strong default): reopen the target, force the work UNDER it,
+                # reusing the model's own description + optional retitle from the SAME call.
                 _reopen(store, followup, by="followup", now=seg_t)
                 menu = open_menu(store)                # rebuilt: the reopen just unsealed the target
                 gi2 = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
@@ -4239,6 +4242,22 @@ def _plan_session(fsid, path, now):
                     step = (desc or {}).get("text") or _followup_title(fsid, seg_id, text)
                     why = (desc or {}).get("why") or "followed up on this goal"
                     forced = [{"do": "sub", "under": gi2, "text": step, "why": why}]
+                    # CARRY THE MODEL'S OWN RESOLUTION THROUGH (quartz g142, the user 2026-07-20):
+                    # this same call may have said done/block on the cited goal — the reply already
+                    # discharged the follow-up, or ended by asking the user. Discarding it force-filed a
+                    # BORN-DONE sub open, which held the just-reopened completed card at Working for
+                    # real, fired the auto-nudge into the gap, and left the closer to clean up ten
+                    # seconds later — a Done card visibly regressing. A done closes the record-sub AND
+                    # re-completes the reopened target in this same apply (the settled-gate outcome,
+                    # without the closer lag); a block lands the pending ask on the target, so the card
+                    # goes straight to Needs-You instead of a false Working.
+                    res = next((o for o in ops if o["do"] in ("done", "block")
+                                and (o.get("goal") == gi or o.get("ref"))), None)
+                    if res is not None and res["do"] == "done":
+                        forced.append({"do": "done", "ref": 1, "why": res["why"]})
+                        forced.append({"do": "done", "goal": gi2, "why": res["why"]})
+                    elif res is not None:
+                        forced.append({"do": "block", "goal": gi2, "why": res["why"]})
                     if retitle:
                         forced.append(dict(retitle, goal=gi2))   # the model may ALSO retitle the target itself
                         #                                          (re-pointed at the rebuilt menu's index)
