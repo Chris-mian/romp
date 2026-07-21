@@ -12033,6 +12033,10 @@ def _landing():
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
             ".rail-act svg{display:block}"
+            # the ↻ is a narrow TEXT glyph whose rendered size rides the browser's fallback font — at the
+            # shared 15px it drew visibly smaller than its 18px-svg network neighbor (the user 2026-07-20:
+            # "the restart kernel button got much smaller"). Size it to optically match the icon row.
+            "#rail-refresh{font-size:19px}"
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
             ".rail-act.on{color:var(--accent)}"   # the network icon glows accent-blue while a remote is connected
