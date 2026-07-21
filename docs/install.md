@@ -3,8 +3,6 @@
 Romp installs from source with one script. Three things need to be in place
 first.
 
-## Before you install
-
 - **[Claude Code](https://docs.claude.com/en/docs/claude-code), signed in.**
   Install it and run `claude` once to log in. Romp runs on your existing Claude
   Code login and adds no account of its own.
