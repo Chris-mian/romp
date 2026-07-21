@@ -1698,6 +1698,13 @@ class _CiteMarks:
         self.map[lab] = uuid
         return "[%s]" % lab
 
+    def newest(self):
+        """The LAST offered label's uuid — the newest substantive message the gather fed the call.
+        The write-time deterministic anchor when the model cites nothing usable (the user 2026-07-21):
+        every summary/brief then ships with a stored anchor grounded in its own input, instead of
+        leaning on the render ladder's last-resort tiers. None when nothing was citable."""
+        return self.map.get("m%d" % self._n)
+
 
 def _split_source(text):
     """(body, label) — split the model's final `SOURCE: mN` citation line off a distill/brief reply.
@@ -1749,20 +1756,6 @@ def _warn_surface(w):
     if k == "cite-miss":
         return w.get("surface") or ("brief" if "decision brief" in (w.get("msg") or "") else "summary")
     return None
-
-
-def _warn_cite_miss(nd, judge, t):
-    """Stamp this card's cite-miss WARNING — the concise, user-facing version (the user 2026-07-03: the old
-    four-paragraph detail read as jargon with no clear takeaway). Says what it means for the reader (this
-    card's summary/brief click may miss) and that it self-heals. The developer audit — which label, the
-    reply tail — goes to judge-errors.jsonl via _log_judge_error's note, not this modal."""
-    line = ("summary" if judge == "distiller" else "decision brief")
-    _node_warn(nd, "cite-miss", t,
-               "This %s's link may jump to the wrong message." % line,
-               "Clicking this %s should take you to the message it was drawn from. This time it didn't "
-               "record which message that was, so the link is a guess and may land in the wrong spot. "
-               "Minor link issue, not lost work: it clears the next time the source is recorded." % line,
-               surface=("summary" if judge == "distiller" else "brief"))
 
 
 # The FAILED kind (the user 2026-07-03): a distiller/brief GIVE-UP used to blank the card SILENTLY (settle to
@@ -4429,6 +4422,8 @@ def _plan_session(fsid, path, now):
                     ops = _restrict_retitle([o for o in ops if o["do"] != "skip"], gi)
                     ops = _card_route_subs(store, ops, menu)
                     apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
+                    if any(o.get("do") == "done" for o in ops):   # same post-closure re-look as the main work-run
+                        _invalidate_closure(store, session, seg_t)
                     pv = store["placements"].get(seg_id)
                     if isinstance(pv, str) and pv in store["nodes"]:   # provenance: the minted top remembers
                         ytop = _top_ancestor(store["nodes"], pv)
@@ -4535,6 +4530,8 @@ def _plan_session(fsid, path, now):
         ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
         ops = _card_route_subs(store, ops, menu)       # card-first: route subs to the card, then the placer
         apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
+        if any(o.get("do") == "done" for o in ops):    # a post-closure done → the closer re-looks before any nudge
+            _invalidate_closure(store, session, seg_t)
         placed += 1
         _group_store(store, fsid, now)                # regroup the forest after this placement (event-gated, no-op if tops unchanged)
         save_goals(fsid, store)                       # crash-safe: persist plan + group together
@@ -5694,6 +5691,27 @@ def _closed_turns(store):
     return set(store.get("closedTurns") or store.get("sweptTurns", []))
 
 
+def _invalidate_closure(store, session, seg_t):
+    """A work-run DONE landed AFTER the closer already classified the turn holding this segment: that
+    closure is stale — the closer judged the turn before the verdict existed, so its rollup (bottom-up
+    completion, nomination) never saw it. Live case (the user 2026-07-21, ui g139): the wrap-up's
+    work-run done'd the SUB seconds after the closer's pass, nothing re-rolled the top, and the
+    auto-nudge fired on a card the agent had already reported finished — the agent then restated its
+    own wrap-up. Dropping the turn from closedTurns re-enters it through the closer's own freshness
+    machinery (the same channel a grown turn re-judges through): the closer re-judges next pass and
+    rolls the completion up, and the auto-nudge's closer gate holds until that considered verdict
+    lands — nudges wait for the judges. Event-based: two real judge events ordered, no time window."""
+    turn = next((t for t in (session.get("turns") or [])
+                 if t.get("t", 0) <= seg_t <= t.get("end", t.get("t", 0))), None)
+    tid = turn.get("id") if turn else None
+    closed = _closed_turns(store)
+    if not tid or tid not in closed:
+        return
+    closed.discard(tid)
+    store["closedTurns"] = sorted(closed)
+    (store.get("closedSig") or {}).pop(tid, None)
+
+
 def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
     """Turn-end backstop for ONE session: for each end-known, not-yet-closed turn (oldest first,
     capped per pass), complete the open top-goals it touched that the model now calls fully done (each
@@ -6385,13 +6403,14 @@ def _distill_session(fsid, path, now):
             bg, out = _split_sections(out)
             nodes[top]["blockSummary"] = out            # full text — NEVER truncate a brief mid-word (the user 2026-07-06)
             nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
-            nodes[top]["summaryAnchor"] = marks.map.get(src)   # the brief's cited source (None → kernel's deterministic fallback)
-            if marks.map and marks.map.get(src) is None:   # labels offered, no usable citation → card warn + log
-                _warn_cite_miss(nodes[top], "brief", now)
+            # the brief's cited source, else the WRITE-TIME deterministic stamp: the newest labeled atom
+            # the gather fed this very call (the user 2026-07-21) — every brief ships a stored anchor
+            nodes[top]["summaryAnchor"] = marks.map.get(src) or marks.newest()
+            if marks.map and marks.map.get(src) is None:   # labels offered, no usable citation → log only:
+                # the stamp already grounded the anchor, so a card warn would be noise (the user 2026-07-21)
                 _log_judge_error("briefer", fsid, "cite-miss", goal=top, note="%s; %d labels offered; reply tail: %r" % (
                     ("cited unoffered label %s" % src) if src else "no SOURCE line", len(marks.map), (raw or "")[-160:]))
-            else:
-                _node_warn_clear(nodes[top], "cite-miss")  # cited (or nothing to cite) → the anomaly is over
+            _node_warn_clear(nodes[top], "cite-miss")      # anchored either way → any older warn is over
             nodes[top]["briefedMt"] = due
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             _node_warn_clear(nodes[top], "brief-failed")   # a brief landed → drop any earlier give-up warn
@@ -6437,13 +6456,14 @@ def _distill_session(fsid, path, now):
         nodes[top]["summary"] = out                 # full text — NEVER truncate a takeaway mid-word (the user 2026-07-06)
         nodes[top]["artifacts"] = arts or None      # files the work PRODUCED (paths as written in <work>) — the kernel existence-filters at feed build (the user 2026-07-08)
         nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
-        nodes[top]["summaryAnchor"] = marks.map.get(src)   # the takeaway's cited source (None → kernel's deterministic fallback)
-        if marks.map and marks.map.get(src) is None:       # labels offered, no usable citation → card warn + log
-            _warn_cite_miss(nodes[top], "distiller", now)
+        # the takeaway's cited source, else the WRITE-TIME deterministic stamp: the newest labeled atom
+        # this very call read (the user 2026-07-21) — every summary ships a stored anchor
+        nodes[top]["summaryAnchor"] = marks.map.get(src) or marks.newest()
+        if marks.map and marks.map.get(src) is None:       # labels offered, no usable citation → log only:
+            # the stamp already grounded the anchor, so a card warn would be noise (the user 2026-07-21)
             _log_judge_error("distiller", fsid, "cite-miss", goal=top, note="%s; %d labels offered; reply tail: %r" % (
                 ("cited unoffered label %s" % src) if src else "no SOURCE line", len(marks.map), (raw or "")[-160:]))
-        else:
-            _node_warn_clear(nodes[top], "cite-miss")      # cited (or nothing to cite) → the anomaly is over
+        _node_warn_clear(nodes[top], "cite-miss")          # anchored either way → any older warn is over
         nodes[top]["distilledMt"] = due
         nodes[top]["distillFails"] = 0                 # success → reset the counter
         _node_warn_clear(nodes[top], "summary-failed") # a summary landed → drop any earlier give-up warn

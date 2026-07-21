@@ -4630,12 +4630,11 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd["summary"], "Delivered without a citation.")
         self.assertIsNone(nd["summaryAnchor"], "no SOURCE line → no anchor (kernel falls back)")
 
-    def test_cite_miss_stamps_a_card_warn_and_logs(self):
-        # A reply that was OFFERED [mN] labels but returned no usable SOURCE line is an anomaly the
-        # pipeline used to swallow silently: summaryAnchor stayed null and the deep-link degraded to the
-        # heuristic fallback with no trace. Now it stamps a node WARN (yellow "warning" chip on the card;
-        # click shows what happened and why) AND logs err "cite-miss" to judge-errors.jsonl (the user
-        # 2026-07-02, after a live summary link landed on the goal's opening restatement).
+    def test_cite_miss_logs_and_stamps_the_newest_label(self):
+        # A reply that was OFFERED [mN] labels but returned no usable SOURCE line still logs err
+        # "cite-miss" for the audit — but the anchor no longer stays null: the WRITE-TIME stamp
+        # (the user 2026-07-21) grounds it in the newest labeled atom the call itself read, so the
+        # summary click works and no card warn is needed (the chip was noise once the stamp landed).
         records = [uline(T0, "do the thing", "u1", ps="typed"),
                    aline(T0 + 10, "Did the thing: wrapped up, shipped, and verified end to end against "
                                   "the acceptance list from the original ask.", "a1", "u1", stop="end_turn")]
@@ -4662,17 +4661,13 @@ class Distiller(unittest.TestCase):
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
         self.assertEqual(nd["summary"], "Delivered, but no citation line.", "the summary itself still lands")
-        ws = nd["warns"]
-        self.assertEqual([w["kind"] for w in ws], ["cite-miss"], "one live warn, stamped on the node")
-        self.assertEqual(ws[0]["t"], now)
-        # the card warn is the concise, user-facing copy: the takeaway, no pipeline jargon
-        self.assertIn("wrong message", ws[0]["msg"])
-        self.assertIn("clears the next time", ws[0]["detail"])
-        self.assertNotIn("SOURCE", ws[0]["detail"], "no jargon in the user modal")
+        self.assertEqual(nd["summaryAnchor"], "a1",
+                         "the write-time stamp grounds the anchor in the newest labeled atom")
+        self.assertNotIn("warns", nd, "the stamp makes the outcome whole — no card warn")
 
     def test_invented_label_counts_as_cite_miss(self):
-        # citing a label that was never offered (m99) is the same anomaly as omitting the line: nothing
-        # resolvable was stored, so the warn + error fire and summaryAnchor stays None.
+        # citing a label that was never offered (m99) is the same anomaly as omitting the line: the miss
+        # logs (naming the bogus label), and the write-time stamp grounds the anchor deterministically.
         records = [uline(T0, "do the thing", "u1", ps="typed"),
                    aline(T0 + 10, "Did the thing across both surfaces, with the regression pinned by a "
                                   "new golden fixture in the suite.", "a1", "u1", stop="end_turn")]
@@ -4695,9 +4690,8 @@ class Distiller(unittest.TestCase):
         finally:
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
-        self.assertIsNone(nd["summaryAnchor"])
-        self.assertEqual([w["kind"] for w in nd["warns"]], ["cite-miss"])
-        self.assertNotIn("m99", nd["warns"][0]["detail"], "the label stays out of the user modal")
+        self.assertEqual(nd["summaryAnchor"], "a1", "the stamp covers an unresolvable citation too")
+        self.assertNotIn("warns", nd, "stamped → whole → no card warn")
 
     def test_cite_success_clears_the_stale_warn(self):
         # the warn means "this anomaly is live" — a later re-distill that DOES cite takes the chip off
@@ -4721,9 +4715,10 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd["summaryAnchor"], "a1")
         self.assertNotIn("warns", nd, "a citing re-distill retires the warn — the chip comes off")
 
-    def test_brief_cite_miss_stamps_the_warn(self):
-        # the block-brief path is the distiller's twin — the same miss stamps the same warn kind (logged
-        # under tier "briefer", matching its other error records).
+    def test_brief_cite_miss_logs_and_stamps(self):
+        # the block-brief path is the distiller's twin — the same miss logs under tier "briefer" and the
+        # same write-time stamp grounds the brief's anchor (blocked cards have no completion pin, so the
+        # stamp matters most here).
         records = [uline(T0, "ship it", "u1", ps="typed"),
                    aline(T0 + 10, "Need your call on the approach before shipping: the two options differ "
                                   "in rollout risk and neither is reversible.", "a1", "u1", stop="end_turn")]
@@ -4746,9 +4741,8 @@ class Distiller(unittest.TestCase):
         finally:
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
-        self.assertEqual([w["kind"] for w in nd["warns"]], ["cite-miss"])
-        self.assertIn("decision brief", nd["warns"][0]["detail"],
-                      "the detail speaks in the brief's terms, not the distiller's")
+        self.assertEqual(nd["summaryAnchor"], "a1", "the brief's anchor is stamped from its own input")
+        self.assertNotIn("warns", nd, "stamped → whole → no card warn")
 
     def test_brief_stores_the_cited_source_as_summary_anchor(self):
         # the block-brief cites too (usually where the question and options were laid out), through the
@@ -6394,3 +6388,42 @@ class FollowupContinuationCarry(unittest.TestCase):
         self.assertFalse(kids[0]["nodeComplete"], "genuinely-open follow-up work stays open")
         self.assertFalse(store["nodes"][gid]["nodeComplete"],
                          "and the card stays reopened — the designed continuation, unchanged")
+
+
+class InvalidateClosure(unittest.TestCase):
+    """_invalidate_closure (the user 2026-07-21, ui g139): a work-run DONE that lands after the closer
+    already classified its turn re-opens that turn through the closer's own freshness machinery — the
+    closer re-judges next pass (rolling the completion up to the top) and the auto-nudge's closer gate
+    holds until that considered verdict lands, so a nudge can never fire on a card whose wrap-up the
+    judges are still digesting."""
+
+    def _session(self):
+        return {"turns": [{"t": 100, "end": 200, "id": "tid-1", "atoms": [], "ended": True}]}
+
+    def test_done_drops_the_containing_turn_from_closed(self):
+        store = {"closedTurns": ["tid-1", "tid-2"], "closedSig": {"tid-1": 7, "tid-2": 3}}
+        jd._invalidate_closure(store, self._session(), 150)
+        self.assertEqual(store["closedTurns"], ["tid-2"], "only the containing turn re-opens")
+        self.assertEqual(store["closedSig"], {"tid-2": 3}, "its sig drops with it, like a grown turn's")
+
+    def test_unclosed_turn_and_unmatched_seg_are_noops(self):
+        store = {"closedTurns": ["tid-2"], "closedSig": {"tid-2": 3}}
+        jd._invalidate_closure(store, self._session(), 150)   # containing turn was never closed
+        self.assertEqual(store["closedTurns"], ["tid-2"])
+        store2 = {"closedTurns": ["tid-1"]}
+        jd._invalidate_closure(store2, self._session(), 999)  # seg_t outside every turn
+        self.assertEqual(store2["closedTurns"], ["tid-1"])
+
+    def test_legacy_swept_turns_store_drops_through_the_same_path(self):
+        store = {"sweptTurns": ["tid-1"]}
+        jd._invalidate_closure(store, self._session(), 150)
+        self.assertEqual(store["closedTurns"], [])
+
+    def test_both_work_run_apply_sites_invalidate_on_done(self):
+        # source pin: the main work/nudge run AND the follow-up pivot branch both re-open the closure
+        # when their ops carry a done — and only on a done (a sub/mint changes no completion state).
+        src = open(jd.__file__).read()
+        calls = src.count("_invalidate_closure(store, session, seg_t)") - src.count("def _invalidate_closure")
+        self.assertEqual(calls, 2)
+        self.assertEqual(src.count('any(o.get("do") == "done" for o in ops)'), 2,
+                         "each call sits behind the done-ops guard")

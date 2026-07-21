@@ -1840,7 +1840,10 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
         _unplanned = any(not jd._placed_key(store.get("placements") or {}, jd._unit_key(u[0], u[1]), _live)
                          for u in jd.plan_units({"turns": turns}, store))
     except Exception:
-        _unplanned = False                       # minimal/legacy turn shapes → the closer gate stands alone
+        _unplanned = False                       # minimal/legacy turn shapes → the closer gate stands alone,
+        sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # but never SILENTLY (the user
+                         % (sid, traceback.format_exc()))                 #  2026-07-21: a mute gate error
+        #                                                                    would wave nudges through)
     if _unplanned:
         return False
     nodes, status = store.get("nodes", {}), store.get("status", {})
