@@ -29,6 +29,7 @@ def _ask(item_id, sid, column, blocked=None):
 class _FakeBackend:
     def __init__(self):
         self.calls = []
+        self.ask = None          # the live ask current_ask() reports (with optional {"progress": {"i","n"}})
 
     def send(self, sid, text):
         self.calls.append(("send", text))
@@ -37,6 +38,9 @@ class _FakeBackend:
     def on_ask(self, sid, action, target=None):
         self.calls.append(("on_ask", action, target))
         return True
+
+    def current_ask(self, sid):
+        return self.ask
 
 
 class PredictWorkingFanOut(unittest.TestCase):
@@ -100,6 +104,44 @@ class PredictWorkingFanOut(unittest.TestCase):
         self.frames.clear()
         self.assertTrue(km._drive({"type": "cancelAsk", "id": SID}, client))
         self.assertEqual(self._feed_frames(), [])
+
+    def test_multi_question_picker_suppresses_the_flip_until_the_final_answer(self):
+        # one AskUserQuestion with N questions holds the session in `picker` the whole time (the user
+        # 2026-07-21): a non-final sub-answer must NOT flip the card to Working, or it bounces out and back
+        # on every question. Event-based: the live ask carries "question i of n".
+        client = {"send": lambda s: None}
+        answer_ops = ({"type": "answerAsk", "id": SID, "target": 0},
+                      {"type": "submitAsk", "id": SID},
+                      {"type": "addCustomAsk", "id": SID, "text": "mine"},
+                      {"type": "askText", "id": SID, "text": "typed"})
+        # question 1 of 3 and 2 of 3 → mid-series → NO prediction
+        for i in (1, 2):
+            self.be.ask = {"progress": {"i": i, "n": 3}}
+            for op in answer_ops:
+                self.frames.clear()
+                self.assertTrue(km._drive(op, client))
+                self.assertEqual(self._feed_frames(), [], "i=%d of 3, %s should not flip" % (i, op["type"]))
+        # question 3 of 3 → the last answer DOES flip (the set is done, the session is really going to work)
+        self.be.ask = {"progress": {"i": 3, "n": 3}}
+        for op in answer_ops:
+            self.frames.clear()
+            self.assertTrue(km._drive(op, client))
+            self.assertEqual(len(self._feed_frames()), 1, "final answer %s should flip" % op["type"])
+        # a single-question ask (no progress) always flips — no regression
+        self.be.ask = {"someOtherField": True}
+        self.frames.clear()
+        self.assertTrue(km._drive({"type": "answerAsk", "id": SID, "target": 0}, client))
+        self.assertEqual(len(self._feed_frames()), 1)
+
+    def test_picker_mid_series_helper_reads_i_of_n(self):
+        self.be.ask = {"progress": {"i": 1, "n": 2}}
+        self.assertTrue(km._picker_mid_series(SID))
+        self.be.ask = {"progress": {"i": 2, "n": 2}}
+        self.assertFalse(km._picker_mid_series(SID))
+        self.be.ask = None                       # no live ask → not mid-series
+        self.assertFalse(km._picker_mid_series(SID))
+        self.be.ask = {"progress": {}}           # malformed progress → treated as single
+        self.assertFalse(km._picker_mid_series(SID))
 
     def test_followup_and_cardmove_fan_their_named_card(self):
         client = {"send": lambda s: None}

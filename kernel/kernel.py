@@ -2465,6 +2465,24 @@ def _predict_working(flavor, ids=None, sid=None):
         _send_to_app("feed", {"type": "cardPredict", "ids": ids, "flavor": flavor})
 
 
+def _picker_mid_series(sid):
+    """A multi-question AskUserQuestion answered mid-series (the user 2026-07-21): one tool call carries N
+    questions, and the SDK loop holds the session in the `picker` state across ALL of them (sdk_backend
+    _ask_user) — the card never really leaves needs_input until the last answer. So the optimistic Working
+    flip must NOT fire on a non-final sub-answer, or the card bounces to Working and back on every question.
+    Event, not a timer: the loop hands us the exact "question i of n" on the live ask (ask_question_to_live
+    stamps ask['progress'] = {i, n} only when n > 1). Read BEFORE answering — current_ask still holds the
+    sub-question being answered — and treat i < n as "more coming". None/absent progress (single question,
+    a permission Allow/Deny, tmux with no stored ask) → False, so the flip fires exactly as before."""
+    try:
+        ca = Sessions.backend_for(sid).current_ask(sid)
+    except Exception:
+        ca = None
+    pr = (ca or {}).get("progress") or {}
+    i, n = pr.get("i"), pr.get("n")
+    return isinstance(i, int) and isinstance(n, int) and i < n
+
+
 def _drive(msg, client):
     """Route a per-session DRIVE op — send / interrupt / compact / ask picker / model·effort·mode / rename /
     end / follow-up — to whichever backend OWNS the sid (Sessions.backend_for(sid)), and return True. UI /
@@ -2591,19 +2609,34 @@ def _drive(msg, client):
         # …and an ANSWER is a context-carrying reply too (the user 2026-07-20): the card the live floor sat
         # on flips to Working in every feed view the instant the answer fires, not a rebuild round-trip
         # later. _predict_working resolves sid → card(s) from the last-built (pre-answer) feed payload.
-        be.on_ask(sid, "answer", msg["target"]); _predict_working("answer", sid=sid); _mark_views_dirty()
+        # EXCEPT a non-final sub-answer of a multi-question picker (the user 2026-07-21): the session stays
+        # in `picker` across the whole set, so predicting Working would only bounce the card out and back —
+        # check BEFORE answering (current_ask still holds this sub-question), suppress the flip if more remain.
+        _mid = _picker_mid_series(sid)
+        be.on_ask(sid, "answer", msg["target"])
+        if not _mid: _predict_working("answer", sid=sid)
+        _mark_views_dirty()
     elif t == "navAsk" and msg.get("target") is not None:
         be.on_ask(sid, "focus", msg["target"])            # cursor only, no select → ↑/↓ steps the preview
     elif t == "toggleAsk" and msg.get("target") is not None:
         be.on_ask(sid, "toggle", msg["target"])
     elif t == "submitAsk":
-        be.on_ask(sid, "submit"); _predict_working("answer", sid=sid); _mark_views_dirty()
+        _mid = _picker_mid_series(sid)                     # mid-series multi-question submit → hold the card (see answerAsk)
+        be.on_ask(sid, "submit")
+        if not _mid: _predict_working("answer", sid=sid)
+        _mark_views_dirty()
     elif t == "addCustomAsk" and msg.get("text"):
-        be.on_ask(sid, "custom", str(msg["text"])); _predict_working("answer", sid=sid); _mark_views_dirty()
+        _mid = _picker_mid_series(sid)
+        be.on_ask(sid, "custom", str(msg["text"]))
+        if not _mid: _predict_working("answer", sid=sid)
+        _mark_views_dirty()
     elif t == "cancelAsk":
         be.on_ask(sid, "cancel"); _mark_views_dirty()     # a cancel answers nothing — no Working prediction
     elif t == "askText" and msg.get("text"):
-        be.on_ask(sid, "text", str(msg["text"])); _predict_working("answer", sid=sid); _mark_views_dirty()
+        _mid = _picker_mid_series(sid)
+        be.on_ask(sid, "text", str(msg["text"]))
+        if not _mid: _predict_working("answer", sid=sid)
+        _mark_views_dirty()
     elif t == "cancelQueued" and msg.get("park") is not None:
         # ✕ on a PARKED op (compaction/model queue — romp-owned, any backend). The result frame is
         # AUTHORITATIVE (the user 2026-07-20): ok:false means the op already ran/was delivered — the
