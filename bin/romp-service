@@ -116,8 +116,18 @@ case "${1:-status}" in
         ensure_romp_node
         if [[ -z "$NO_LOAD" ]]; then
             "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true   # drop any prior copy
-            # A bootstrap issued right after bootout races the old job's teardown —
-            # launchd rejects it ("Input/output error") until the drain finishes.
+            # bootout only STARTS the old job's teardown, and a manager draining live SDK
+            # sessions takes far longer than a blind retry window — every bootstrap issued
+            # while it drains is rejected ("Input/output error"), which is exactly how
+            # 2026-07-20 ended (twice) with NO agent loaded and a dead dashboard. So wait
+            # for the EVENT those retries were approximating: the old job actually
+            # disappearing from launchd. Bounded poll; the loud failure below still
+            # backstops a job that never finishes draining.
+            for _ in $(seq 1 100); do
+                "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+                sleep 0.3
+            done
+            # A bootstrap can still race launchd's bookkeeping right after the job drops.
             # Retry until launchd accepts, and fail LOUDLY if it never does:
             # swallowing this error once left NO agent loaded at all (no manager,
             # no kernel, dead dashboard) with nothing saying why.

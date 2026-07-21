@@ -112,6 +112,30 @@ EOF
     [[ "$output" == *"Installed launchd agent"* ]]
 }
 
+@test "install (macOS): no bootstrap while the old job is still draining" {
+    # bootout only STARTS the teardown; a manager draining live SDK sessions outlives any
+    # blind retry window (2026-07-20, twice: every bootstrap rejected mid-drain -> no agent
+    # loaded, dead dashboard). Install must WAIT for the job to actually leave launchd
+    # (print stops answering) and only then bootstrap.
+    unset ROMP_SERVICE_NO_LOAD
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo "\$1" >> "$calls"
+if [ "\$1" = print ]; then
+    [ "\$(grep -c print "$calls")" -ge 4 ] && exit 5   # the old job finally drains away
+    exit 0                                             # still tearing down
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ "$(grep -c print "$calls")" -ge 4 ]              # waited through the drain
+    [ "$(grep -c bootstrap "$calls")" -eq 1 ]          # then loaded cleanly, first try
+    [ "$(tail -1 "$calls")" = bootstrap ]              # and never bootstrapped mid-drain
+}
+
 @test "install (macOS): a bootstrap that never lands fails LOUDLY, not silently" {
     unset ROMP_SERVICE_NO_LOAD
     local stub="$TEST_DIR/launchctl-stub"

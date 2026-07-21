@@ -46,6 +46,12 @@ MESSAGES = STATE / "timeline" / "messages.jsonl"
 ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp -j`
 USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
 SDKDIR   = STATE / "sdk"                 # the SDK backend's per-session registry — lastSid tracks the CURRENT transcript fsid
+# Judge scratch cwd (the user 2026-07-20): every one-shot `claude -p` judge call writes a transcript
+# under the project dir of its CWD. With cwd=/tmp those piled into the SHARED -private-tmp project
+# dir (~4,600/day, 51k files) mixed with anything else ever run from /tmp — unprunable without
+# touching data romp doesn't own. A romp-owned scratch cwd isolates them so prune_judge_scratch can
+# sweep the whole project dir by age, safely.
+JUDGE_SCRATCH = "/tmp/romp-judge"
 
 
 def _rebind_state(path):
@@ -527,8 +533,9 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     rid = _active_begin(judge or tier, fsid, sent)    # live bar starts NOW (deregistered in finally below)
     try:
         try:
+            os.makedirs(JUDGE_SCRATCH, exist_ok=True)   # tmpfiles-cleaned /tmp: recreate per call
             p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
-                               capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
+                               capture_output=True, text=True, cwd=JUDGE_SCRATCH, env=env, timeout=50)
         except Exception as e:
             # _judge_run owns ALL call-level logging (this, the error envelope below, the rate gate above)
             # so callers never double-log: to a caller every failed call is just "", and "call" rows always
@@ -2642,6 +2649,28 @@ def _proj_dir(d):
     that exactly: an underscore/space in the path had us scanning a folder that doesn't exist, so
     the session's transcript was never found and it silently dropped out of the feed (no card ever)."""
     return PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(d))
+
+
+def prune_judge_scratch(max_age_s=24 * 3600, now=None):
+    """Delete judge scratch transcripts older than `max_age_s` from JUDGE_SCRATCH's project dir —
+    and ONLY that dir: it exists solely for romp's one-shot `claude -p` judge calls (cwd above), so
+    everything in it is romp-owned and disposable (nothing ever resumes a -p transcript). Returns
+    the count removed. Called at kernel boot (the diary-sweep spot); each restart keeps the pile
+    bounded. The age floor keeps any judge call still in flight (timeout 50s) untouched by miles."""
+    n = 0
+    now = now or time.time()
+    try:
+        with os.scandir(_proj_dir(JUDGE_SCRATCH)) as it:
+            for e in it:
+                try:
+                    if e.name.endswith(".jsonl") and now - e.stat().st_mtime > max_age_s:
+                        os.unlink(e.path)
+                        n += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass                                     # project dir not there yet — nothing to prune
+    return n
 
 
 def _custom_title(p):
