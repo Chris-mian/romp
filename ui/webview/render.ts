@@ -2341,7 +2341,17 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
         inlineFold(head, turn, label, halves, fkey);
       }
     } else if (!ev.output) {
-      const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);
+      // No result text yet, OR a command that finished with no output (mkdir, git add, …). Keep the command
+      // COLLAPSED behind the head fold from the VERY FIRST render (the user 2026-07-21) — it used to render
+      // the IN row expanded and only snap shut once a result landed, so a running command flashed its full
+      // text then collapsed. resultUuid (set by the kernel only when the tool_result arrives) tells the two
+      // apart: absent = still running; present = done-but-empty. Same fkey as the completed branch, so a
+      // user expand survives the running→done re-render.
+      if (ev.input) {
+        const io = el("div", "tool-io tool-io-fold");
+        io.appendChild(ioRow("IN", ev.input, false));
+        inlineFold(head, turn, ev.resultUuid ? "no output" : "running…", io, fkey);
+      }
     } else {
       // Bash/Grep/Glob/…: output line-count on the head line (right of the command);
       // the command + full output hang below, hidden until clicked.
