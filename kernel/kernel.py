@@ -10212,6 +10212,17 @@ def _ws_send(wfile, lock, text):
         wfile.flush()
 
 
+def _ws_pong(wfile, lock, payload):
+    """Answer a ping (RFC 6455 §5.5.3: a pong echoing the ping's payload). Browsers never ping, but
+    websocket LIBRARIES do by default and drop the link as dead when no pong ever comes back —
+    which made the kernel unusable from any standard non-browser client. Control-frame payloads
+    are ≤125 bytes by spec, so the single length byte is always enough."""
+    data = payload[:125]
+    with lock:
+        wfile.write(bytes([0x8A, len(data)]) + data)   # FIN + pong opcode
+        wfile.flush()
+
+
 def _ws_recv(rfile):
     """Read one client (masked) frame → (opcode, payload bytes), or (None, None) on close/EOF."""
     b = rfile.read(2)
@@ -11113,6 +11124,7 @@ def _shim(app, v=0):
     return """
 (function(){var queue=[],ws=null,everConnected=false;var wid=new URLSearchParams(location.search).get("wid")||"";
 var APP="%s";var LOADEDV=%d;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
+var connT=0;   // when the current socket's connect() attempt started — the progress watchdog's reference point
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
 // network drop used to blind-reload into a dead page, leaving the pane silently frozen with no explanation.
 function netState(s){try{if(window.parent!==window)window.parent.postMessage({romp:"wsState",app:APP,state:s},"*");}catch(e){}}
@@ -11140,7 +11152,8 @@ var buildRaised=false;
 function raiseBuild(){if(buildRaised)return;buildRaised=true;
 if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale",build:1},"*");}catch(e){}}
 else selfBar("A newer romp build is available.");}
-function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
+function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // one live attempt at a time — a lost timer + the watchdog can both call in
+connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
 ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):""));
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
@@ -11160,15 +11173,24 @@ var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI 
 window.acquireVsCodeApi=function(){return{postMessage:function(m){if(window.__rompFed){window.__rompFed.outbound(m);}else{send(m);}},
 getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
 setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();
-// staleness watchdog: a half-open socket fires no onclose, so poll lastRecv — if the keepalive (and all
-// frames) stopped arriving, force-close to trigger onclose → reconnect → reload-resync (the user 2026-06-29).
-setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);
+// progress watchdog (state-keyed, one per socket state): OPEN but silent past STALE_MS = half-open, no
+// onclose will ever fire — force-close (the user 2026-06-29). CONNECTING past its deadline = the browser is
+// holding the attempt (Firefox delays re-admitting a recently-failed endpoint, and a handshake can hang) and
+// no onclose fires for it either — abort it so the close→retry chain resumes (the user 2026-07-21: the
+// "Disconnected — reconnecting…" banner sat until a manual refresh). CLOSED with no fresh attempt = the 1.5s
+// retry timer was lost (throttled/killed) — re-dial directly; connect()'s own guard makes this idempotent.
+setInterval(function(){if(!ws)return;
+if(ws.readyState===1){if(everConnected&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}return;}
+if(ws.readyState===0&&Date.now()-connT>15000){try{ws.close();}catch(e){}return;}
+if(ws.readyState===3&&Date.now()-connT>8000){connect();}},5000);
 // visibility fast-path (the user 2026-07-05): a BACKGROUNDED tab has its timers throttled, so the 5s watchdog
 // above can lag and the browser may have quietly dropped the socket while it slept. The instant the tab is
 // foregrounded, if the socket isn't open or has gone quiet past the watchdog window, treat the view as stale —
 // prompt at once AND force a reconnect (which resyncs live), rather than leaving the user on a frozen frame.
 document.addEventListener("visibilitychange",function(){if(document.visibilityState!=="visible"||!everConnected)return;
-if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){raiseStale();try{if(ws&&ws.readyState===1)ws.close();}catch(e){}}});})();
+if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){raiseStale();
+try{if(ws&&ws.readyState<=1)ws.close();}catch(e){}   // OPEN or stuck-CONNECTING both die here → onclose retries
+if(!ws||ws.readyState===3)connect();}});})();
 """ % (app, int(v), app, app)
 
 
@@ -11643,7 +11665,10 @@ _LANDING_NET_JS = """
 function shown(k){return document.body.classList.contains('po-'+k);}
 function refresh(){var down=false;for(var k in st){if(st[k]==='down'&&shown(k)){down=true;break;}}bn.classList.toggle('show',down);}
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;st[m.app]=(m.state==='up')?'up':'down';refresh();});
-window.addEventListener('romp-panes',refresh);})();
+window.addEventListener('romp-panes',refresh);
+// never dead-end: the retries normally win, but a browser holding reconnects back (Firefox failure
+// backoff) leaves nothing to click — the user reloads by hand anyway, so put that action ON the banner.
+var rb=document.getElementById('ro-reload');if(rb)rb.addEventListener('click',function(){location.reload();});})();
 """
 
 
@@ -12363,6 +12388,11 @@ def _landing():
             "#romp-offline .ro-dot{width:8px;height:8px;border-radius:50%;background:#ff6b6b;"
             "animation:roPulse 1.1s ease-in-out infinite}"
             "@keyframes roPulse{0%,100%{opacity:.3}50%{opacity:1}}"
+            # the banner must not dead-end: retries normally recover on their own, but when the browser
+            # holds reconnects back (Firefox failure backoff) the user's one-click out is a reload.
+            "#ro-reload{font:inherit;cursor:pointer;border-radius:6px;padding:2px 10px;font-weight:600;"
+            "background:#7a3030;color:#ffd9d9;border:1px solid #9a4040}"
+            "#ro-reload:hover{background:#8a3838}"
             # usage-limit banner (the user 2026-07-01): amber, sits just below the offline slot so the two never
             # overlap; shown when a usage window hits 100% (kernel `limited`) — retries auto-pause until it resets.
             "#romp-limit{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9999;display:none;"
@@ -12386,7 +12416,8 @@ def _landing():
             "#romp-judge-degraded .rl-x:hover{opacity:1}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
-            "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span></div>"
+            "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span>"
+            "<button id=ro-reload title='Reload the dashboard now instead of waiting out the retries'>Reload</button></div>"
             "<div id=romp-limit><span class=rl-dot></span><span class=rl-msg>Usage limit reached — retries paused until it resets</span><span class=rl-x title='Dismiss until the limit changes'>×</span></div>"
             "<div id=romp-judge-degraded><span class=rl-dot></span><span class=rl-msg>Some cards couldn't be summarized</span><span class=rl-x title='Dismiss until this changes'>×</span></div>"
             "<div class=col>"
@@ -13386,7 +13417,8 @@ class Handler(BaseHTTPRequestHandler):
                 op, payload = _ws_recv(self.rfile)
                 if op is None or op == 0x8:           # EOF / close
                     break
-                if op == 0x9:                          # ping → we ignore (browsers rarely ping)
+                if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
+                    _ws_pong(self.wfile, lock, payload or b"")
                     continue
                 # webview→kernel messages: on "ready", push the initial state to this client
                 try:

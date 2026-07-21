@@ -344,6 +344,7 @@ interface Conn {
   ws: WebSocket | null;
   url: string;
   closed: boolean;
+  live: boolean; // kernel reports this tunnel "up" — the only state in which its port is dialed
 }
 
 export class FederationManager {
@@ -476,21 +477,34 @@ export class FederationManager {
       return;
     }
     const want = new Map<string, any>(tunnels.filter((t) => t.token && t.localPort).map((t) => [t.host, t]));
-    for (const [host, t] of want) if (!this.conns.has(host)) this.openRemote(host, t.localPort, t.token);
+    for (const [host, t] of want) if (!this.conns.has(host)) this.openRemote(host, t.localPort, t.token, t.status === "up");
     for (const host of [...this.conns.keys()]) if (!want.has(host)) this.closeRemote(host);
+    // The kernel's tunnel state gates dialing: it health-checks its own ssh tunnels, so "up" is
+    // authoritative for whether anything listens on the local port at all. Blind 2s retries against
+    // a dead tunnel port feed the browser's per-host WebSocket failure backoff (Firefox delays
+    // re-admission after failures), which then holds the LOCAL panes' reconnects hostage after a
+    // kernel restart — the stuck "Disconnected — reconnecting…" banner. A down tunnel is not
+    // dialed at all; this poll re-dials within one cycle of the kernel reporting it up.
+    for (const [host, t] of want) {
+      const c = this.conns.get(host);
+      if (!c) continue;
+      c.live = t.status === "up";
+      if (c.live && (!c.ws || c.ws.readyState === 3)) this.connect(c);
+    }
   }
 
-  private openRemote(host: string, port: number, token: string): void {
+  private openRemote(host: string, port: number, token: string, live: boolean): void {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const url = `${proto}127.0.0.1:${port}/ws?app=${encodeURIComponent(this.app)}&token=${encodeURIComponent(token)}`;
-    const conn: Conn = { host, ws: null, url, closed: false };
+    const conn: Conn = { host, ws: null, url, closed: false, live };
     this.conns.set(host, conn);
     this.ensureHost(host);
     this.connect(conn);
   }
 
   private connect(conn: Conn): void {
-    if (conn.closed) return;
+    if (conn.closed || !conn.live) return;
+    if (conn.ws && (conn.ws.readyState === 0 || conn.ws.readyState === 1)) return; // already connecting/open
     let ws: WebSocket;
     try {
       ws = new WebSocket(conn.url);

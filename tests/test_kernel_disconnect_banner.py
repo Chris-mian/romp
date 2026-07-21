@@ -43,6 +43,32 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn('document.addEventListener("visibilitychange"', js)
         self.assertIn("Date.now()-lastRecv>STALE_MS){raiseStale();", js)
 
+    def test_shim_reconnect_loop_cannot_die(self):
+        # The retry chain used to hang entirely off onclose, and the watchdog only ever closed OPEN
+        # sockets — so an attempt the browser held in CONNECTING (Firefox delays re-admitting a
+        # recently-failed endpoint after a kernel restart) had NOTHING driving it forward, and the
+        # "Disconnected — reconnecting…" banner sat until a manual refresh (the user 2026-07-21).
+        js = km._shim("chat")
+        # connect() is idempotent (one live attempt at a time) and stamps its start time
+        self.assertIn("function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;", js)
+        self.assertIn("connT=Date.now();", js)
+        # the watchdog handles EVERY socket state: half-open OPEN, stuck CONNECTING, and lost-timer CLOSED
+        self.assertIn("if(ws.readyState===1){if(everConnected&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}return;}", js)
+        self.assertIn("if(ws.readyState===0&&Date.now()-connT>15000){try{ws.close();}catch(e){}return;}", js)
+        self.assertIn("if(ws.readyState===3&&Date.now()-connT>8000){connect();}", js)
+        # the foregrounding fast-path tears down a stuck CONNECTING socket too, and re-dials a closed one
+        self.assertIn("if(ws&&ws.readyState<=1)ws.close();", js)
+        self.assertIn("if(!ws||ws.readyState===3)connect();", js)
+
+    def test_offline_banner_has_a_reload_button(self):
+        # never dead-end (progressive disclosure rule): when the browser holds reconnects back, the
+        # user's actual recovery action — reload — must be ON the banner, not a manual url-bar refresh.
+        land = inspect.getsource(km._landing)
+        self.assertIn("id=ro-reload", land, "the banner carries the button")
+        self.assertIn("#ro-reload{", land, "and its style")
+        self.assertIn("document.getElementById('ro-reload')", km._LANDING_NET_JS)
+        self.assertIn("location.reload();});})();", km._LANDING_NET_JS, "a click reloads — user-initiated, never automatic")
+
     def test_shell_rstale_banner_shows_on_ws_stale_message(self):
         # the #rstale reload banner (formerly build-drift only) now ALSO shows on a pane's wsStale post, with a
         # connection-specific message, latched so the /version poll can't clear it out from under the user.
