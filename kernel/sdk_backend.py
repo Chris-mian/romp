@@ -635,6 +635,15 @@ BOOT_RESUME_CONCURRENCY = max(1, int(os.environ.get("ROMP_BOOT_RESUME_CONCURRENC
 # forever and trap the whole sweep — after this long the sweep proceeds anyway, loudly.
 BOOT_RESUME_SLOT_S = float(os.environ.get("ROMP_BOOT_RESUME_SLOT_S", "180"))
 
+# Resume-gate (the user 2026-07-21): an AUTOMATIC mass resume (boot reconcile after a kernel/login
+# restart) would silently re-hydrate every cut/queued session's FULL transcript at once — a cold-cache
+# usage spike the user never chose. A session whose last-known context fill (reg['liveCtx']) is at/above
+# this % is NOT auto-resumed; instead it surfaces a decision card (Proceed / Compact on resume / Skip)
+# so the user spends the reload only where they mean to. Below the bar, or context unknown, resumes as
+# before (a small session's reload is cheap). Only the boot mass-resume is gated — a user-initiated drive
+# to a dormant session is a deliberate engagement and passes straight through.
+RESUME_GATE_CTX = float(os.environ.get("ROMP_RESUME_GATE_CTX", "50"))
+
 # Same recovery, different death: the session's OWN claude process died mid-turn (killed or crashed)
 # while the kernel stayed up, so the kernel itself resumes it (_heal_cut_session) instead of waiting
 # for the next boot's reconcile.
@@ -1900,6 +1909,8 @@ class SdkBackend:
         self._heal_attempts: dict[str, int] = {}  # sid -> crash-resume attempts since its last COMPLETED turn
         #                                           (bounds _heal_cut_session to one resume per cut; a completed
         #                                           turn resets it, so a crash LOOP can't respawn forever)
+        self._gated_resumes: dict[str, dict] = {}  # sid -> {ctx, reason, t}: high-context sessions boot reconcile
+        #                                            DEFERRED behind the resume-gate card (RESUME_GATE_CTX)
         # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
         # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
         # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
@@ -2035,6 +2046,24 @@ class SdkBackend:
             # boot's sweep picks the rest up). Spawns hold a semaphore slot until the session's CLI
             # is past its catch-up burst (init message) or its thread dies (_fire_boot_settled);
             # the acquire timeout is a loud BACKSTOP for a pre-init wedge, never the pacing itself.
+            # Resume-gate: hold back the high-context sessions (RESUME_GATE_CTX) — they surface a decision
+            # card instead of re-hydrating their full transcript unbidden. Their regs are already fixed
+            # above (queue persisted, heals applied), so a gated session loses nothing: resolve_resume_gate
+            # spawns it later (Proceed / Compact) or leaves it dormant (Skip). Only the boot MASS resume is
+            # gated here — _ensure from a user drive is untouched.
+            gated = []
+            for sid in list(to_start):
+                lc = self._gate_ctx(sid)
+                if lc is not None and lc >= RESUME_GATE_CTX:
+                    cut = last_state_value(self.state_dir, sid) == "working"
+                    self._gated_resumes[sid] = {"ctx": lc, "reason": "cut" if cut else "queued",
+                                                "t": int(time.time())}
+                    to_start.remove(sid)
+                    gated.append(sid)
+            if gated:
+                self._log("boot reconcile: gated %d high-context resume(s) behind the decision card "
+                          "(>= %g%% context): %s" % (len(gated), RESUME_GATE_CTX, ", ".join(s[:8] for s in gated)))
+                self._poke()
             sem = threading.Semaphore(BOOT_RESUME_CONCURRENCY)
             for sid in to_start:
                 if not sem.acquire(timeout=BOOT_RESUME_SLOT_S):
@@ -2048,6 +2077,56 @@ class SdkBackend:
                               % (sid, traceback.format_exc()))
         except Exception:
             self._log("boot reconcile failed: %s" % traceback.format_exc())
+
+    def _gate_ctx(self, sid: str):
+        """The session's last-known context fill % (reg['liveCtx']) — the cheap dormant signal the
+        resume-gate reads without waking the session. None when never measured (a small/new session);
+        the caller treats None as 'below the bar' and resumes normally."""
+        try:
+            reg = read_reg(self.state_dir, sid) or {}
+        except Exception:
+            reg = {}
+        lc = reg.get("liveCtx")
+        return lc if isinstance(lc, (int, float)) else None
+
+    # ---- resume-gate (kernel-thread API) ----
+    def gated_resumes(self) -> list[dict]:
+        """The sessions boot reconcile deferred behind the decision card. The kernel builds one needs_input
+        card per entry (Proceed / Compact on resume / Skip). ctx is the last-known % (stale but free)."""
+        out = []
+        for sid, g in list(self._gated_resumes.items()):
+            out.append({"sid": sid, "ctx": g.get("ctx"), "reason": g.get("reason"), "t": g.get("t")})
+        return out
+
+    def resolve_resume_gate(self, sid: str, choice: str) -> bool:
+        """The user decided on a gated resume (the user 2026-07-21). proceed → resume now (the persisted
+        queue delivers). compact → prepend '/compact' so the reload is spent once then the window shrinks,
+        then resume. skip → leave it dormant (its queue stays persisted for whenever it's next driven).
+        Idempotent: an unknown/already-resolved sid is a no-op. Returns True when the sid was gated."""
+        g = self._gated_resumes.pop(sid, None)
+        if g is None:
+            return False
+        if choice == "skip":
+            self._log("resume-gate: %s skipped — left dormant (%.0f%% context)" % (sid[:8], g.get("ctx") or 0))
+            self._poke()
+            return True
+        if choice == "compact":
+            # prepend to the PERSISTED queue so /compact is fed FIRST, ahead of the restored backlog
+            try:
+                with self._reg_lock:
+                    reg = read_reg(self.state_dir, sid) or {}
+                    q = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
+                    reg["queue"] = ["/compact"] + q
+                    write_reg(self.state_dir, sid, reg)
+            except Exception:
+                self._log("resume-gate: %s compact-prepend failed: %s" % (sid[:8], traceback.format_exc()))
+        self._log("resume-gate: %s resuming (%s, %.0f%% context)" % (sid[:8], choice, g.get("ctx") or 0))
+        try:
+            self._ensure(sid)
+        except Exception:
+            self._log("resume-gate: %s spawn failed: %s" % (sid[:8], traceback.format_exc()))
+        self._poke()
+        return True
 
     def drain(self, timeout: float = 2.0) -> dict:
         """Graceful-shutdown drain (the kernel's SIGTERM handler): stop every running session cleanly
