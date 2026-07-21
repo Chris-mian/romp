@@ -7168,16 +7168,24 @@ def _agent_open_set(nodes, children):
     return openset
 
 
-def _interrupt_settle(events, txt):
-    """True when an assistant text is the CLI's null settle-reply — "No response requested." — directly
-    closing an interrupted turn. An interrupt record needs SOME assistant text to settle the turn, and the
-    model's filler carries no content, so the chat renders it as part of the interrupt SEAM (a slim rail
-    marker) instead of a full assistant bubble that reads like the agent speaking (the user 2026-07-09:
-    every kernel-restart cut minted one per session). Tight by design: the exact filler string only, and
-    only when the nearest prior non-thinking event is the interrupt marker — a substantive reply after an
-    interrupt ("stopped; the partial edit is reverted") stays a normal bubble."""
+def _interrupt_settle(events, txt, atom=None):
+    """True when an assistant text is the CLI's null settle-reply — "No response requested." — closing an
+    interrupted turn. The filler carries no content, so the chat renders it as part of the interrupt SEAM
+    (a slim rail marker) instead of a full assistant bubble that reads like the agent speaking (the user
+    2026-07-09: every kernel-restart cut minted one per session). Two authoritative signals, either
+    suffices, both tight to the exact filler string:
+    - the record's own authorship: the CLI stamps message.model "<synthetic>" on the settle it writes
+      itself — a restart that cuts the turn before ANY output leaves no interrupt record at all (just
+      queue-operation bookkeeping), so adjacency can't see it (the user 2026-07-21: 'No response
+      requested.' bubbles all over the quartz thread);
+    - the nearest prior non-thinking event is the interrupt marker (the original arrangement, kept for
+      transcripts whose settle carries a real model id).
+    A substantive reply after an interrupt ("stopped; the partial edit is reverted") stays a normal
+    bubble either way."""
     if txt.strip() != "No response requested.":
         return False
+    if (((atom or {}).get("message") or {}).get("model")) == "<synthetic>":
+        return True
     for prev in reversed(events):
         if prev.get("kind") == "thinking":
             continue
@@ -7411,8 +7419,8 @@ def build_session(sid, now, tmux=None):
                                                              # output was ONLY notices + the "Compacted" confirmation),
                                                              # drop the atom — the compaction divider below covers it.
                         ev = {"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts}
-                        if _interrupt_settle(events, txt):   # the null settle-reply closing an interrupted
-                            ev["interruptSettle"] = True     # turn → rendered as seam marker, not a bubble
+                        if _interrupt_settle(events, txt, a):   # the null settle-reply closing an interrupted
+                            ev["interruptSettle"] = True        # turn → rendered as seam marker, not a bubble
                         events.append(ev)
                     elif b.get("type") == "tool_use":
                         if b.get("name") in ("TaskCreate", "TaskUpdate"):

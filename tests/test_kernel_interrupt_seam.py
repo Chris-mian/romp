@@ -42,6 +42,32 @@ class InterruptSettle(unittest.TestCase):
         self.assertFalse(km._interrupt_settle([], FILLER))
 
 
+class SyntheticSettle(unittest.TestCase):
+    """A restart that cuts the turn before ANY output leaves no interrupt record — the CLI writes the
+    settle directly, stamping message.model '<synthetic>' (the user 2026-07-21: 'No response requested.'
+    bubbles all over the quartz thread). The record's own authorship folds it, no adjacency needed."""
+
+    SYNTH = {"message": {"model": "<synthetic>"}}
+    REAL = {"message": {"model": "claude-opus-4-8"}}
+
+    def test_synthetic_settle_folds_without_a_marker(self):
+        evs = [{"kind": "user", "md": "Continue from where you left off."}]
+        self.assertTrue(km._interrupt_settle(evs, FILLER, self.SYNTH),
+                        "the CLI's own authorship declaration is the signal; no interrupt record needed")
+
+    def test_synthetic_settle_folds_even_on_an_empty_history(self):
+        self.assertTrue(km._interrupt_settle([], FILLER, self.SYNTH))
+
+    def test_a_real_model_id_still_needs_the_marker(self):
+        evs = [{"kind": "user", "md": "say nothing"}]
+        self.assertFalse(km._interrupt_settle(evs, FILLER, self.REAL),
+                         "a genuine model reply of the same words is content, not a seam")
+
+    def test_synthetic_authorship_never_folds_substantive_text(self):
+        self.assertFalse(km._interrupt_settle([], "API Error: overloaded", self.SYNTH),
+                         "only the exact null filler folds — other CLI-authored text keeps its rendering")
+
+
 class StampInterruptCauses(unittest.TestCase):
     def _events(self, notice=None, typed_first=False):
         evs = [dict(MARKER),
@@ -93,8 +119,8 @@ class BuildSessionWiring(unittest.TestCase):
     def test_the_settle_flag_rides_the_assistant_event(self):
         import inspect
         src = inspect.getsource(km.build_session)
-        self.assertIn("if _interrupt_settle(events, txt):", src)
-        self.assertIn('ev["interruptSettle"] = True', src)
+        self.assertIn("if _interrupt_settle(events, txt, a):", src)   # the atom rides along: its own
+        self.assertIn('ev["interruptSettle"] = True', src)            # <synthetic> stamp folds markerless settles
 
     def test_causes_are_stamped_after_hydration(self):
         import inspect
