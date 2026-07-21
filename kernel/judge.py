@@ -1109,10 +1109,11 @@ PLAN_SYS = (
     '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a new top-level request from the '
     "user. Be selective: only a real new ask mints a top-level goal — but a **distinct deliverable** "
     "always does: when the user asks for something with its own finish line (a new tool, widget, script, "
-    "feature, document, build), mint it even mid-conversation while other goals are in flight, and even "
-    "when it shares a project or theme with an open goal. Sharing context is not the test; sharing an "
-    "outcome is. Work filed as a sub disappears into its parent's card, so burying a separate "
-    "deliverable hides it from the user.\n"
+    "feature, document, build — or an **answer**: an explanation, comparison, or write-up the user asked "
+    "to read), mint it even mid-conversation while other goals are in flight, and even when it shares a "
+    "project or theme with an open goal. Sharing context is not the test; sharing an outcome is. Work "
+    "filed as a sub disappears into its parent's card, so burying a separate deliverable hides it from "
+    "the user — an explanation checked off as a sub of a big card is an answer the user never sees.\n"
     '- {\"why\",\"do\":\"sub\",\"under\":<n>,\"text\":\"<step ≤10 words>\"}: a step or progress under '
     "card #n, where #n must be a **top-level card** (a flush-left line in <open-goals>; the indented "
     "sub-goals are context and done/block targets, not filing spots — where inside the card the step "
@@ -1215,7 +1216,8 @@ OPENER_SYS = (
     "enough; ask: can card #n be called done without this? Scan the whole list, even an older or "
     "lower-numbered card; never default to the most recent.\n"
     '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a request with its **own** finish line '
-    "(a new tool, widget, script, feature, document, build) — mint it even mid-conversation and even in "
+    "(a new tool, widget, script, feature, document, build — or an **answer**: an explanation, "
+    "comparison, or write-up the user asked to read) — mint it even mid-conversation and even in "
     "the same project, whenever no open card's own outcome covers it. A deliverable filed as a sub "
     "disappears into its parent's card and never gets one of its own.\n"
     "When unsure whether this message extends an open card's outcome or starts its own, decide by the "

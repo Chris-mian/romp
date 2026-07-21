@@ -2896,6 +2896,11 @@ class PlanTuning(unittest.TestCase):
         self.assertIn("**distinct deliverable**", jd.PLAN_SYS)
         self.assertIn("whose **outcome** this work advances", jd.PLAN_SYS)
         self.assertIn("**own** finish line", jd.OPENER_SYS)
+        # explanations are deliverables too (the user 2026-07-20: an "explain this" ask filed as a sub of
+        # a 19-sub umbrella got checked off without ever surfacing — the answer was never seen). Both
+        # mint rules name the answer/explanation finish line explicitly.
+        for prompt in (jd.PLAN_SYS, jd.OPENER_SYS):
+            self.assertIn("an **answer**: an explanation, comparison, or write-up the user asked", prompt)
         # the mint-vs-sub tiebreak is SYMMETRIC (the user 2026-07-08, over-minting): decide by the finish
         # line, no standing thumb on the mint side — "prefer mint" caused follow-up-shaped messages to
         # mint their own tops ("Get alternate shorter version of last paragraph").
