@@ -184,6 +184,24 @@ Setup is one install and one click:
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
 
+### Your laptop, anywhere (check-in)
+
+A roaming machine can publish itself to an always-on hub over its own
+*outbound* ssh — the hub never holds credentials into it. Tick **keep
+connected** on the hub's row in the network popover (or run
+`romp checkin <hub>`): the attach tunnel gains reverse forwards for this
+machine's kernel and postal bus, and a handshake hands the hub its ports and
+dashboard token. From then on the hub's dashboard — and your phone through
+it — sees and drives this machine's sessions whenever it is online, from any
+network. The two postal buses peer over the same tunnel: messages flow both
+ways, and mail for an unreachable machine parks in an outbox and delivers on
+reconnect (or bounces back loudly if the recipient is gone). Untick the box
+(or `romp checkout <hub>`) and the hub forgets the machine and its token.
+
+Every machine runs its own postal bus, so a laptop off the network keeps full
+local messaging; connecting only ever adds reach. (Set `ROMP_POSTAL_PEERS=0`
+to select the legacy single-bus scheme.)
+
 ### Your phone
 
 The kernel never listens beyond `127.0.0.1`. To reach it from your phone, let

@@ -1126,9 +1126,14 @@ def ping():
 CLIENT_ONLY = Path.home() / ".config/romp-postal/client-only"
 
 def peers_on():
-    """Peer-bus mode (plans/postal-peer-buses.md): every machine runs its OWN bus; cross-host mail is
-    bus peering over kernel-owned tunnels. Read at call time (staged-rollout flag + test seam)."""
-    return bool(os.environ.get("ROMP_POSTAL_PEERS"))
+    """Peer-bus mode (plans/postal-peer-buses.md) — the DEFAULT since 2026-07-20 (the user's
+    activation call): every machine runs its OWN bus; cross-host mail is bus peering over
+    kernel-owned tunnels. ROMP_POSTAL_PEERS=0/off/false selects the legacy singleton scheme.
+    Read at call time (test seam). KEEP IN SYNC with the kernel's _postal_peers_on."""
+    v = os.environ.get("ROMP_POSTAL_PEERS")
+    if v is None:
+        return True
+    return v.strip().lower() not in ("0", "off", "false", "")
 
 def is_client_only():
     if peers_on():
@@ -1510,6 +1515,10 @@ def _unreachable_hint():
 def _remote_nudge():
     # On a remote machine not yet pointed at the laptop's bus, the local bus is
     # isolated; nudge toward `romp --mail remote` (advisory, on stderr only).
+    # Peer mode (the default): every machine runs its own bus and peering carries
+    # cross-host mail, so there is no laptop bus to point at — the nudge is moot.
+    if peers_on():
+        return
     if looks_remote() and not is_client_only():
         sys.stderr.write("[romp mail] you look like a remote machine on a local-only "
                          "Romp Postal Service — run `romp --mail remote` to reach your laptop's sessions.\n")

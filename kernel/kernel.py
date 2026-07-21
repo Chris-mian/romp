@@ -3540,10 +3540,13 @@ def _fetch_remote_token(host):
 
 
 def _postal_peers_on():
-    """Peer-bus mode (plans/postal-peer-buses.md): every machine runs its OWN bus and cross-host mail
-    is bus peering over kernel-owned tunnels. Read at call time — a staged-rollout flag and a test
-    seam, not a persisted setting."""
-    return bool(os.environ.get("ROMP_POSTAL_PEERS"))
+    """Peer-bus mode (plans/postal-peer-buses.md) — the DEFAULT since 2026-07-20 (the user's
+    activation call). ROMP_POSTAL_PEERS=0/off/false selects the legacy singleton scheme. Read at
+    call time (test seam). KEEP IN SYNC with postal_service.peers_on."""
+    v = os.environ.get("ROMP_POSTAL_PEERS")
+    if v is None:
+        return True
+    return v.strip().lower() not in ("0", "off", "false", "")
 
 
 def _tunnel_argv(r):
@@ -11693,7 +11696,7 @@ function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
 function paintIcon(up,busy){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
 var m=mnet();if(m){m.classList.toggle('on',up);m.classList.toggle('busy',busy);}}
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-var ts=(d&&d.tunnels)||[];var busy=ts.some(function(t){return busyStatus(t.status);});
+var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
 // glow accent-blue while a remote is connected; MARCH the connector dashes while one is mid-attach
 // (the user 2026-07-12: the icon should visibly move while it's connecting)
 paintIcon(ts.some(function(t){return t.status==='up';}),busy);
@@ -11726,10 +11729,17 @@ var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
 var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"Update '+t.host+' to this machine\\u2019s romp, then start its kernel\">Start</button>':'';
+// keep connected (peer-bus check-in, stage 3): publish THIS machine to that host over our own
+// outbound ssh. Only for hosts WE attach; a row that checked in to us is labeled instead.
+var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions, its bus peers with yours, and this attach auto-reconnects. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
+'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
+keep+upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
 list.appendChild(row);});
+list.querySelectorAll('input[data-k]').forEach(function(c){c.onchange=function(){var h=c.getAttribute('data-k');
+c.disabled=true;fetch('/tunnels/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,on:c.checked})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+c.disabled=false;refresh();}).catch(function(){c.checked=!c.checked;c.disabled=false;alert('keep-connected on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
 b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
 list.querySelectorAll('button[data-s]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-s');
@@ -12073,6 +12083,8 @@ def _landing():
             ".rnet-row .st{color:#999;font-size:11px}"
             ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
             ".rnet-row button:disabled{opacity:0.55;cursor:default}"
+            ".rnet-keep{display:flex;align-items:center;gap:4px;color:#999;font-size:11px;flex:0 0 auto;cursor:pointer;white-space:nowrap}"
+            ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
@@ -12560,7 +12572,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")
             if p == "/tunnels":                               # attached remote kernels + state (drives the federated dashboard)
-                return self._send(200, json.dumps({"tunnels": list_remotes()}),
+                return self._send(200, json.dumps({"tunnels": list_remotes(),
+                                                   "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).

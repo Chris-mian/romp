@@ -266,6 +266,7 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
 }
 
 @test "remote: nudge fires for an unconfigured remote, gone once configured" {
+    export ROMP_POSTAL_PEERS=0    # the nudge belongs to the LEGACY singleton scheme (peer mode silences it)
     export SSH_CONNECTION="1 2 3 4"
     run "$POSTAL" agents
     [[ "$output" == *"romp --mail remote"* ]]

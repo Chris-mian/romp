@@ -595,6 +595,7 @@ EOF
     _romp_cmd "romp --resume <id>"         -            "Resume a specific conversation by its UUID"
     _romp_cmd "romp --detach"              -            "Create the session without attaching (prints attach cmd)"
     _romp_cmd "romp --mail ..."            romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
+    _romp_cmd "romp checkin <host>"        -            "Publish this machine to an attached hub (peer-bus check-in; checkout withdraws)"
     exit 0
 fi
 
@@ -656,6 +657,26 @@ fi
 if [[ "${1:-}" == "update" || "${1:-}" == "--update" ]]; then
     shift
     exec romp-update "$@"
+fi
+
+# `romp checkin <host>` / `romp checkout <host>` — publish THIS machine to an attached hub over our
+# own outbound ssh (peer-bus check-in, plans/postal-peer-buses.md stage 3), or withdraw it. The
+# plumbing behind the network popover's keep-connected checkbox; the host must be attached first.
+if [[ "${1:-}" =~ ^(--)?(checkin|checkout)$ ]]; then
+    _verb="${1#--}"; shift
+    _host="${1:-}"
+    if [[ -z "$_host" ]]; then echo "usage: romp $_verb <host>" >&2; exit 2; fi
+    _kport="${ROMP_KERNEL_PORT:-7433}"
+    _on="false"; [[ "$_verb" == "checkin" ]] && _on="true"
+    _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/tunnels/checkin" \
+                  -H 'Content-Type: application/json' -d "{\"host\": \"$_host\", \"on\": $_on}")" \
+        || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+    if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
+        echo "romp $_verb: ok ($_host)"
+        exit 0
+    fi
+    echo "romp $_verb: kernel refused: $_resp" >&2
+    exit 1
 fi
 
 # `romp send|interrupt|end <session> [text]` — headless session control through the kernel HTTP API

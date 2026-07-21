@@ -6117,7 +6117,7 @@ class PostalPeerTunnels(unittest.TestCase):
     R = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002}
 
     def test_flag_off_keeps_the_reverse_forward(self):
-        os.environ.pop("ROMP_POSTAL_PEERS", None)
+        os.environ["ROMP_POSTAL_PEERS"] = "0"          # peer mode is the DEFAULT now; 0 = legacy scheme
         argv = km._tunnel_argv(dict(self.R))
         self.assertIn("-R", argv, "today's singleton scheme is untouched with the flag off")
         self.assertIn("%d:127.0.0.1:%d" % (km.BUS_PORT, km.BUS_PORT), argv)
@@ -6209,9 +6209,37 @@ class CheckinMechanics(unittest.TestCase):
             km._checkin_stop_hub = saved
 
     def test_checkin_stop_only_forgets_checked_in_rows(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "0"          # keep detach's bus notify away from the real bus
         km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 1, "proc": None}
         self.assertFalse(km.checkin_stop("TESTHOST"), "an ssh-attached row is not checkout-able")
         km._remotes["hubhost"] = {"host": "hubhost", "checkin_peer": True, "kernel_port": 5,
                                   "local_port": 5, "bus_port": 6, "proc": None}
         self.assertTrue(km.checkin_stop("hubhost"))
         self.assertNotIn("hubhost", km._remotes, "checkout forgets the row and the pushed token with it")
+
+
+class CheckinSurfaces(unittest.TestCase):
+    """Stage 3b: the keep-connected checkbox is real, wired, and honest."""
+
+    def test_popover_carries_the_keep_connected_checkbox(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("data-k=", js, "each attachable row gets the checkbox")
+        self.assertIn("/tunnels/checkin", js, "...wired to the checkin backend")
+        self.assertIn("checked in here", js, "a hub labels rows that checked in to it")
+        self.assertIn("keep-connected on ", js, "failures alert loudly, never silently revert")
+
+    def test_tunnels_payload_and_css_carry_the_surface(self):
+        import inspect
+        src = inspect.getsource(km)
+        self.assertIn('"peersMode": _postal_peers_on()', src,
+                      "/tunnels tells the popover whether to show the checkbox")
+        self.assertIn(".rnet-keep{", src, "the checkbox has its own style, font-size matching .st")
+
+    def test_peer_mode_is_the_default(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+        self.assertTrue(km._postal_peers_on(), "peer-bus mode is the default (the user's activation)")
+        os.environ["ROMP_POSTAL_PEERS"] = "off"
+        try:
+            self.assertFalse(km._postal_peers_on())
+        finally:
+            os.environ.pop("ROMP_POSTAL_PEERS", None)

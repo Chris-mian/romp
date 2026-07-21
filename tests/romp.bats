@@ -840,3 +840,15 @@ MOCK
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s j' "$MOCK_LOG"
 }
+
+@test "romp checkin/checkout: usage without a host, loud failure with no kernel" {
+    run "$ROMP_SCRIPT" checkin
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: romp checkin <host>"* ]]
+    run "$ROMP_SCRIPT" checkout
+    [ "$status" -eq 2 ]
+    # port 1 refuses instantly → the CLI must fail LOUDLY, never pretend the checkout happened
+    ROMP_KERNEL_PORT=1 run "$ROMP_SCRIPT" checkout somehost
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel not reachable"* ]]
+}

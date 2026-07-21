@@ -28,11 +28,18 @@ class PeerMode(unittest.TestCase):
             os.environ.pop("ROMP_POSTAL_CLIENT_ONLY", None)
 
     def test_flag_off_client_only_unchanged(self):
+        os.environ["ROMP_POSTAL_PEERS"] = "0"          # peer mode is the DEFAULT now; 0 = legacy scheme
         os.environ["ROMP_POSTAL_CLIENT_ONLY"] = "1"
         try:
-            self.assertTrue(pm.is_client_only(), "flag off: today's singleton scheme is untouched")
+            self.assertTrue(pm.is_client_only(), "legacy mode: the singleton scheme is untouched")
         finally:
             os.environ.pop("ROMP_POSTAL_CLIENT_ONLY", None)
+
+    def test_peers_on_is_the_default(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+        self.assertTrue(pm.peers_on(), "peer-bus mode is the default (the user's activation, 2026-07-20)")
+        os.environ["ROMP_POSTAL_PEERS"] = "0"
+        self.assertFalse(pm.peers_on(), "explicit 0 selects the legacy scheme")
 
     def test_peer_update_and_snapshot(self):
         payload, status = pm.peer_update({"host": "TESTHOST", "port": 50002, "up": True})
