@@ -37,8 +37,10 @@
   height: 1.5rem;
   width: auto;
 }
+/* Hide the site-name text but keep the element: its flex-grow is the spacer that
+   right-justifies the search box and repo link, so visibility (not display:none). */
 .md-header__title {
-  display: none;
+  visibility: hidden;
 }
 
 /* The wordmark banner on the home page: no permalink icon, small gap below. */
