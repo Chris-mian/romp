@@ -25,6 +25,22 @@
   border-bottom: 1px solid #262d36;
 }
 
+/* Header brand: the full wordmark stands in for the swirl glyph + "Romp" text,
+   sized to sit at about the height of the title text it replaces. The wordmark
+   itself reads "Romp", so the site-name text is hidden to avoid saying it twice.
+   Material hides the header logo below its tabs breakpoint (the drawer carries it
+   instead); keep it shown at every width so the wordmark is always the brand. */
+.md-header__button.md-logo {
+  display: block;
+}
+.md-header__button.md-logo img {
+  height: 1.5rem;
+  width: auto;
+}
+.md-header__title {
+  display: none;
+}
+
 /* The wordmark banner on the home page: no permalink icon, small gap below. */
 .md-typeset h1 .headerlink {
   display: none;
