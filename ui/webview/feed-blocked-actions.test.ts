@@ -21,13 +21,25 @@ test("(A) a non-done sub's 'Done' button crosses it off — posts nodeOverride o
   // a "Done" button (not the mark) carries the resolve override now
   assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-done"\)/);
   assert.match(FEED, /done\.textContent = "Done"/);
-  // Done rests in the neutral gray of .ftree-act-btn and lights up in the romp accent on hover (the user
-  // 2026-07-21) — Done / Status? / Follow up share one accent-hover rule, Drop stays red.
-  assert.match(CSS, /\.ftree-act-done:hover,\s*\n\s*\.ftree-act-status:hover,\s*\n\s*\.ftree-act-fup:hover \{[^}]*color: var\(--accent\)/);
-  assert.match(CSS, /\.ftree-act-drop:hover \{[^}]*color: var\(--err\)/);
+  // Every tree action button rests in the neutral gray of .ftree-act-btn and lights up in the ONE romp
+  // accent hover (the user 2026-07-21, part 2): Done / Status? / Follow up / Drop all share it — full
+  // uniformity, no red left on any action (only error/blocked STATUS keeps red elsewhere).
+  assert.match(CSS, /\.ftree-act-done:hover,\s*\n\s*\.ftree-act-status:hover,\s*\n\s*\.ftree-act-fup:hover,\s*\n\s*\.ftree-act-drop:hover \{[^}]*color: var\(--accent\)/);
+  assert.doesNotMatch(CSS, /\.ftree-act-drop:hover \{[^}]*var\(--err\)/);
   // no resting color tints on fup/status anymore — they inherit the gray base
   assert.doesNotMatch(CSS, /\.ftree-act-fup \{[^}]*color: #5aa2ff/);
   assert.doesNotMatch(CSS, /\.ftree-act-status \{[^}]*color: var\(--accent\)/);
+});
+
+test("(A) one accent hover across every action button — Clear/Move/Follow up hover accent, not red/blue (the user 2026-07-21)", () => {
+  // .fdismiss (Clear, Move to Working, Clear all, UndoClear) hovers the ONE accent highlight; the old
+  // red-fill and the Follow-up dark-blue override are gone. Only error/blocked STATUS keeps red.
+  assert.match(CSS, /\.fdismiss:hover \{[^}]*color: var\(--accent\)/);
+  assert.doesNotMatch(CSS, /\.fdismiss:hover \{[^}]*var\(--err/);
+  assert.doesNotMatch(CSS, /\.fdismiss\.ffollow:hover \{/);        // no separate dark-blue Follow-up hover
+  assert.doesNotMatch(CSS, /\.fq-send:hover \{[^}]*rel-decision/); // inline send hover unified to accent too
+  // the error/status reds survive on purpose (retry ties to an API error; the blocked chip is a status color)
+  assert.match(CSS, /\.fdismiss\.fretry:hover[^{]*\{[^}]*#e5484d/);
 });
 
 test("(A) Done/Drop/Status? are SUB-TASK-ONLY — the top-level goal (tree root) gets only 'Follow up' (the user 2026-06-30; Clear + the card-level sweep cover the root)", () => {

@@ -234,7 +234,7 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    line; the "✓ Done — I did it" button greens on hover (it's a check-off). */
 .fq-send { flex: 0 0 auto; font: inherit; font-size: 0.85em; cursor: pointer; color: var(--fg);
   background: rgba(255, 255, 255, 0.08); border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 12px; }
-.fq-send:hover { border-color: var(--rel-decision); }
+.fq-send:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 /* "didn't need me" — the false-awaiting teaching dismissal */
 
 /* drop-point lines on an asks-column card: where the work is currently parked */
@@ -427,13 +427,14 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   font: inherit; font-size: 0.72em; line-height: 1.4; padding: 1px 8px; border-radius: 6px;
   background: transparent; border: 1px solid var(--dim); color: var(--dim); cursor: pointer;
 }
-/* All four rest in the same neutral gray (.ftree-act-btn); hover reveals intent (the user 2026-07-21):
-   Done / Status? / Follow up light up in the romp accent, Drop stays red. No resting color tints — a
-   modal full of pre-colored buttons was busier than the glanceable row wants. */
+/* All four rest in the same neutral gray (.ftree-act-btn) and light up in ONE romp-accent hover (the
+   user 2026-07-21): every action button across the UI shares this single accent highlight, Drop included
+   (the user 2026-07-21, part 2: full uniformity — the only reds left anywhere are error/blocked STATUS).
+   No resting color tints — a modal full of pre-colored buttons was busier than the glanceable row wants. */
 .ftree-act-done:hover,
 .ftree-act-status:hover,
-.ftree-act-fup:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
-.ftree-act-drop:hover { border-color: var(--err); color: var(--err); }
+.ftree-act-fup:hover,
+.ftree-act-drop:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 .ftree-act-btn:disabled { opacity: 0.55; cursor: default; }
 /* a user-DROPPED sub (item-level clear, the user 2026-07-20): checked off + faded + struck —
    "no longer needed", visually distinct from the green done check. Modal tree + inline checklist. */
@@ -669,10 +670,9 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 }
 /* the expand toggle is a compact square showing "+" (collapsed) / "−" (open) */
 .fdismiss { padding: 2px 10px; }
-.fdismiss:hover { color: #fff; border-color: var(--err, #c74e39); background: var(--err, #c74e39); }
-/* "Follow up" reuses the action-button chrome but hovers BLUE (it reopens the
-   card to ASKS — a continuation, not the red destructive Clear) */
-.fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
+/* One accent hover for every action button (the user 2026-07-21): Clear, Move to Working, Follow up,
+   Clear all, UndoClear all share it — no red on any action, only on error/blocked STATUS. */
+.fdismiss:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 /* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. */
 /* The feed's DOCKED control bar (the user 2026-06-29): its own dedicated rectangle in normal flow at the
    bottom of the pane, NOT a floating overlay. The body is a column flex, so #feed-list flexes to fill above
@@ -684,8 +684,8 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   flex-wrap: wrap; row-gap: 5px;   /* a narrow pane folds buttons onto another row — never a horizontal scrollbar */
   border-top: 1px solid var(--card-border);
   background: var(--vscode-editorWidget-background, #252526); }   /* opaque panel so it reads as a dedicated bar */
-#feed-clearall { order: 10; margin-left: auto; }   /* destructive, red hover */
-#feed-undoclear { order: 11; }                     /* restorative, blue hover — far right */
+#feed-clearall { order: 10; margin-left: auto; }   /* accent hover like every action button */
+#feed-undoclear { order: 11; }                     /* restorative — far right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
 /* the "Newest first" / "Collapsed" MODE toggles: pressed (.on) wears the accent language (blue text + border
    + faint wash), the same selected-state look the card section toggles use (the user 2026-07-07) */
