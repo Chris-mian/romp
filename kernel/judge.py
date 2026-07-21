@@ -2537,7 +2537,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
 
 def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False,
              goal_history="", goal_num=None, agent_open_nums=None, followup=False,
-             live=False, cleared_context=""):
+             live=False, cleared_context="", lifted_blocks=None):
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
     '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
     (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
@@ -2573,6 +2573,18 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "of work, unrelated to #%d's, mint a new top-level goal for it instead — the user often "
                  "replies out of habit when starting something new. Never both for the same ask.</note>"
                  % (goal_num, goal_num, goal_num))
+    if followup and goal_num and lifted_blocks:
+        # the bulk-unblock leak (the user 2026-07-20): sending a reply to the card optimistically clears
+        # EVERY block in its subtree (_unblock_subtree), but a reply answering one of three asks does not
+        # answer the other two — without this ruling they silently degrade to quiet open subs nothing
+        # re-surfaces. The planner rules per lifted ask; the caller re-records the unanswered ones with
+        # the reply segment as fresh evidence (_reassert_blocks).
+        lifted = "; ".join('#%d "%s"' % (n, w) for n, w in lifted_blocks)
+        user += ("\n<note>Sending this reply optimistically cleared these earlier pending asks on the "
+                 "card: %s. Judge each one against the message: if the reply **answers or moots** that "
+                 "ask, leave it cleared; if the reply does **not** address it, emit a block op on that "
+                 "item re-asserting it (the why = what is still needed from the user, reworded to what "
+                 "remains). Never re-assert an ask the reply answered.</note>" % lifted)
     if live:
         if cleared_context:
             user += "\n<recently-cleared>\n%s\n</recently-cleared>" % cleared_context
@@ -2594,7 +2606,11 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "answer from the user (the why = that ask). Do **not** file a plain step that merely restates the "
                  "status — a finished-and-reported goal is done. **Exception**: only if the agent has genuinely "
                  "**resumed** real, still-unfinished work on the goal, keep it working — never force a false "
-                 "done/block.</note>")
+                 "done/block. When the nudge enumerated the goal's unfinished pieces and the reply reports on "
+                 "them, also resolve each reported piece on its **own** listed item: done where it is "
+                 "delivered, done with the why saying so where the reply calls it obsolete or no longer "
+                 "needed, block where it names something still needed from the user. A piece the reply does "
+                 "not mention keeps its state.</note>")
         if agent_open_nums:
             nums = ", ".join("#%d" % n for n in agent_open_nums)
             # the FORK-nudge blocked branch (plans/stalled-open-todos-nudge.md, the user 2026-07-02): these
@@ -3421,7 +3437,7 @@ def optimistic_followup(fsid, gid, text="", now=None):
     # Working (the g593 case: the closer's block sat on a grandchild, the reply reopened the cited node,
     # and the block never cleared). src user: a judge may re-block only from genuinely newer evidence —
     # the fold's evidence-time replay keeps any catch-up block older than this unblock from winning.
-    _unblock_subtree(store, gid, now, "answered by the user's reply to the card")
+    _unblock_subtree(store, gid, now, REPLY_UNBLOCK_WHY)
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     _journal_reopen(fsid, gid, store, "followup")      # journal before the save it protects (clobber race)
     save_goals(fsid, store)
@@ -3484,6 +3500,58 @@ def _unblock_subtree(store, gid, now, why):
         if x != gid and nodes[x].get("blocked"):
             record_verdict(store, nodes[x], "user", "unblock", now, why=why)
         stack.extend(kids.get(x, []))
+
+
+# The bulk-lift why (optimistic_followup): the ONE marker _lifted_by_reply joins on, so the two can't drift.
+REPLY_UNBLOCK_WHY = "answered by the user's reply to the card"
+
+
+def _lifted_by_reply(store, gid):
+    """Sub-goals of card `gid` still DANGLING from a card-reply's bulk unblock (the user 2026-07-20, the
+    leak): a reply to the card clears every block in its subtree (_unblock_subtree), but a reply answering
+    one of three asks does not answer the other two — those quietly lose their needs-you status and
+    nothing re-surfaces them. Dangling = the node's NEWEST log row is that reply-unblock (no verdict has
+    ruled since) and the node is still open. Older gestures' leftovers qualify too — the next processed
+    reply is a fresh chance to heal them. Returns [(nid, ask, ev_t)] oldest-first; `ask` = the lifted
+    block's own why (the question that was pending)."""
+    nodes = store.get("nodes", {})
+    kids = {}
+    for k, v in nodes.items():
+        kids.setdefault(v.get("parentId"), []).append(k)
+    out = []
+    stack = list(kids.get(gid, []))
+    while stack:
+        x = stack.pop()
+        nd = nodes.get(x) or {}
+        stack.extend(kids.get(x, []))
+        if nd.get("cleared") or nd.get("nodeComplete") or nd.get("blocked"):
+            continue
+        log = nd.get("log") or []
+        last = log[-1] if log else {}
+        if last.get("src") == "user" and last.get("kind") == "unblock" and last.get("why") == REPLY_UNBLOCK_WHY:
+            ask = next((r.get("why") for r in reversed(log) if r.get("kind") == "block" and r.get("why")), None)
+            out.append((x, ask or str(nd.get("text") or ""), last.get("ev_t") or 0))
+    out.sort(key=lambda r: (r[2], r[0]))               # oldest-first; node id breaks same-stamp ties (one gesture)
+    return out
+
+
+def _reassert_blocks(store, seg_id, seg_t, items):
+    """Re-record blocks a reply did NOT answer (`items` = [(nid, why)]) — the judged half of the bulk
+    unblock: the lift is optimistic, this ruling makes it stick or undoes it per ask. ev_t is clamped
+    STRICTLY past the node's floor: the floor exists to void blocks computed from evidence the user
+    already answered, but a reassertion is the judge ruling on the reply ITSELF — its evidence postdates
+    the floor by construction, which the integer-second clock cannot always express (the reply segment
+    can share the floor's very stamp, and equality voids)."""
+    nodes = store.get("nodes", {})
+    for nid, why in items:
+        nd = nodes.get(nid)
+        if nd is None or nd.get("blocked") or nd.get("cleared") or nd.get("nodeComplete"):
+            continue
+        ev = max(seg_t or 0, _floor_of(store, nd) + 1)
+        if record_verdict(store, nd, "planner", "block", ev, why=why, seg=seg_id):
+            nd["mt"] = seg_t or ev
+            if seg_id and seg_id not in (nd.get("trail") or []):
+                nd.setdefault("trail", []).append(seg_id)
 
 
 def _floor_of(store, nd):
@@ -4300,8 +4368,16 @@ def _plan_session(fsid, path, now):
                 gi = len(menu)
             if gi:
                 hist = _goal_work_text(store, seg_by_id, followup, GOAL_HISTORY_CHARS)
+                # blocks this card's replies bulk-lifted and nothing has ruled on since (the leak, the
+                # user 2026-07-20): named to the model by menu number so it re-asserts the unanswered
+                # ones. Only menu-listed ones can be referenced; the rest wait for a later reply.
+                lifted = _lifted_by_reply(store, followup)
+                lifted_by_num = {i: (nid, ask) for i, mnd in enumerate(menu, 1)
+                                 for (nid, ask, _lt) in lifted if mnd["id"] == nid}
                 ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=True,
-                                           goal_history=hist, goal_num=gi, followup=True), len(menu)) or []
+                                           goal_history=hist, goal_num=gi, followup=True,
+                                           lifted_blocks=[(i, a) for i, (_n, a) in sorted(lifted_by_num.items())] or None),
+                                  len(menu)) or []
                 if any(o["do"] == "mint" for o in ops):
                     # PIVOT: the model says this reply starts a new thread — honor its own placement. The
                     # cited goal is NOT reopened, and the pivot itself must drop its followupPending: this
@@ -4324,6 +4400,14 @@ def _plan_session(fsid, path, now):
                         ytop = _top_ancestor(store["nodes"], pv)
                         store["nodes"][ytop]["pivotFrom"] = followup
                         _tie_pivot(store, ytop, followup, seg_t)   # ...and stays GROUPED with the cited card
+                    # a PIVOT rules the reply answered NOTHING on this card — mechanically restore the
+                    # blocks THIS gesture's send just lifted ("this goal is unchanged" must include its
+                    # pending asks, the user 2026-07-20). Older gestures' leftovers stay for a reply
+                    # that actually engages the card to rule on.
+                    floor_now = store["nodes"].get(followup, {}).get("followupAt") or 0
+                    _reassert_blocks(store, seg_id, seg_t,
+                                     [(nid, ask) for (nid, ask, lt) in lifted
+                                      if lt and floor_now and lt >= floor_now])
                     placed += 1
                     _group_store(store, fsid, now)
                     save_goals(fsid, store)
@@ -4360,6 +4444,13 @@ def _plan_session(fsid, path, now):
                         forced.append(dict(retitle, goal=gi2))   # the model may ALSO retitle the target itself
                         #                                          (re-pointed at the rebuilt menu's index)
                     apply_plan(store, seg_id, seg_t, forced, menu, prompt_uuid=trig, quote=vq)
+                    # the model's per-lifted-ask rulings (the leak, the user 2026-07-20): a block op
+                    # aimed at a lifted item's OLD menu number re-asserts that ask — the reply did not
+                    # answer it — with the reply segment as its fresh evidence. Applied by node id, so
+                    # the post-reopen menu rebuild can't misroute it.
+                    _reassert_blocks(store, seg_id, seg_t,
+                                     [(lifted_by_num[o["goal"]][0], (o.get("why") or lifted_by_num[o["goal"]][1]))
+                                      for o in ops if o.get("do") == "block" and o.get("goal") in lifted_by_num])
                     placed += 1
                     _group_store(store, fsid, now)
                     save_goals(fsid, store)

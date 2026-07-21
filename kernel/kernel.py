@@ -597,9 +597,11 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             # blocks). The enumerated quote above already names the open pieces.
             body = (("These are still open on your own to-do list. For each one: where does it stand, and "
                      "if you don't need anything from me, please continue with it now. If any is blocked, "
-                     "tell me which one and exactly what you need from me to finish it.") if stalled else
+                     "tell me which one and exactly what you need from me to finish it. If one is no "
+                     "longer needed, say so and why.") if stalled else
                     ("For each unfinished piece above: what's done, what's left, and is anything blocked "
-                     "waiting on a decision from me? Keep the overall goal in mind, but report per piece."))
+                     "waiting on a decision from me? If a piece is obsolete and no longer needed, say so "
+                     "and why. Keep the overall goal in mind, but report per piece."))
         elif not injected and str(nd.get("summary") or nd.get("blockSummary") or "").strip():
             # A TYPED follow-up quotes the card's DISTILLED SUMMARY — the takeaway (completed) or decision brief
             # (blocked) that is the card's visible HEADLINE, the thing you're reading + clicked to follow up on
@@ -1027,7 +1029,7 @@ AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anyth
 AUTO_NUDGE_STALLED_TEXT = ("You stopped with items on your own to-do list still open. For each open item: "
                            "where does it stand, and if you don't need anything from me, please continue "
                            "with it now. If any is blocked, tell me which one and exactly what you need "
-                           "from me to finish it.")
+                           "from me to finish it. If one is no longer needed, say so and why.")
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
