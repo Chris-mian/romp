@@ -60,7 +60,7 @@ class BuildSessionRompSystemFlag(unittest.TestCase):
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE = names, proj, td / "goals", td
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global.md"
-        km._read_task_store = lambda fsid: []
+        km._read_task_store = lambda fsid, fold=None: []
         km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.GOALDIR.mkdir(parents=True)

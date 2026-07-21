@@ -117,7 +117,7 @@ class BuildSessionEmitsTeammateCard(unittest.TestCase):
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATE = names, proj, td / "goals", td
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global.md"           # keep a real ~/.claude/CLAUDE.md out of the fixture
-        km._read_task_store = lambda fsid: []                # no to-do card in the way
+        km._read_task_store = lambda fsid, fold=None: []                # no to-do card in the way
         km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.GOALDIR.mkdir(parents=True)

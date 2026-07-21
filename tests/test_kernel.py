@@ -269,6 +269,48 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._task_store_dir = saved
 
+    def test_task_store_resolves_the_interactive_clis_team_naming(self):
+        # Newer interactive Claude Code keys the store by TEAM name — session-<first 8 hex of the BOOT
+        # session id>. A plain launch boots INTO the session's own id (tier 2, derivable); but
+        # `claude -r <fsid>` creates the team from a FRESH boot id recorded nowhere, so the only edge
+        # left is a CONTENT JOIN: the store holding every (id, subject) pair the transcript's own
+        # TaskCreate record (the fold) names is the session's store (the user 2026-07-20: the rescue
+        # TO-DO card said the store was unreadable while the tasks sat under session-<bootid[:8]>).
+        base = Path(self.td.name) / "tasks-teams"
+        saved = km._task_store_dir
+        km._task_store_dir = lambda fsid: base / fsid
+        km._task_dir_hint.clear()
+        try:
+            base.mkdir(parents=True)
+            task = {"id": "1", "subject": "restage the demo", "status": "pending"}
+            # tier 2: a store named session-<fsid[:8]> is the session's own boot id → no join needed
+            d2 = base / ("session-" + SID[:8]); d2.mkdir()
+            (d2 / "1.json").write_text(json.dumps(task))
+            self.assertEqual([t["id"] for t in km._read_task_store(SID)], ["1"],
+                             "session-<fsid[:8]> resolves without a join")
+            self.assertIsNotNone(km._task_store_fp(SID), "the fingerprint resolves the same naming")
+            d2.rename(base / "session-99999999")           # → now only the content join can find it
+            fold = [{"id": "1", "subject": "restage the demo", "activeForm": None, "status": "pending"}]
+            self.assertEqual([t["id"] for t in km._read_task_store(SID, fold)], ["1"],
+                             "the transcript's own (id, subject) record joins to the boot-named store")
+            self.assertEqual(km._task_dir_hint.get(SID), "session-99999999",
+                             "the join is cached — later builds (and the fingerprint) skip the scan")
+            self.assertIsNotNone(km._task_store_fp(SID), "fingerprint follows the joined hint")
+            # ambiguity stays LOUD: a second store with the same pairs → None, never a guess
+            d3 = base / "session-88888888"; d3.mkdir()
+            (d3 / "1.json").write_text(json.dumps(task))
+            km._task_dir_hint.clear()
+            self.assertIsNone(km._read_task_store(SID, fold), "two candidate stores → None (loud), not a guess")
+            # and a fold the stores don't contain matches nothing
+            miss = [{"id": "7", "subject": "unrelated", "activeForm": None, "status": "pending"}]
+            self.assertIsNone(km._read_task_store(SID, miss), "no store holds the pairs → None")
+            # synthetic cN fold ids (no 'Task #N' in the result text) can never join
+            synth = [{"id": "c0", "subject": "restage the demo", "activeForm": None, "status": "pending"}]
+            self.assertIsNone(km._read_task_store(SID, synth), "synthetic fold ids don't join")
+        finally:
+            km._task_store_dir = saved
+            km._task_dir_hint.clear()
+
     def test_todo_card_prefers_the_live_store_over_the_stale_transcript_fold(self):
         # THE fix (the user via `track` 2026-07-03): the card said "3/5" while the store said all done,
         # because a subagent's completion updated the store but wrote NO TaskUpdate into the MAIN
@@ -281,7 +323,7 @@ class ViewBuilder(unittest.TestCase):
                       {"id": "2", "subject": "b", "activeForm": None, "status": "completed"},
                       {"id": "3", "subject": "c", "activeForm": None, "status": "pending"}]
         saved = (km._read_task_store, km._fold_tasks)
-        km._read_task_store = lambda fsid: [dict(t) for t in live_store]
+        km._read_task_store = lambda fsid, fold=None: [dict(t) for t in live_store]
         km._fold_tasks = lambda session: [dict(t) for t in stale_fold]
         try:
             todo = next(e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "todo")
@@ -296,7 +338,7 @@ class ViewBuilder(unittest.TestCase):
         # store is unreadable BUT the transcript shows outstanding task activity, the card surfaces an
         # ERROR — it does NOT quietly show the lossy fold (which could be wrong, the whole bug).
         saved = (km._read_task_store, km._fold_tasks)
-        km._read_task_store = lambda fsid: None            # store unreadable
+        km._read_task_store = lambda fsid, fold=None: None            # store unreadable
         km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "pending"}]
         try:
             todo = next(e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "todo")
@@ -308,7 +350,7 @@ class ViewBuilder(unittest.TestCase):
     def test_unreadable_store_with_no_outstanding_tasks_shows_nothing(self):
         # a done/absent list is a non-event — an unreadable store there is not worth alarming on, so no card.
         saved = (km._read_task_store, km._fold_tasks)
-        km._read_task_store = lambda fsid: None
+        km._read_task_store = lambda fsid, fold=None: None
         km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"}]
         try:
             kinds = [e["kind"] for e in km.build_session(SID, NOW)["events"]]
@@ -320,7 +362,7 @@ class ViewBuilder(unittest.TestCase):
         # a readable store is AUTHORITATIVE: if it says there are no (outstanding) tasks, that wins over a
         # stale transcript fold — no card, and NO error (the store was read fine, it's just empty).
         saved = (km._read_task_store, km._fold_tasks)
-        km._read_task_store = lambda fsid: []              # authoritative-empty (cleared / none)
+        km._read_task_store = lambda fsid, fold=None: []              # authoritative-empty (cleared / none)
         km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "pending"}]
         try:
             kinds = [e["kind"] for e in km.build_session(SID, NOW)["events"]]
@@ -332,7 +374,7 @@ class ViewBuilder(unittest.TestCase):
         # a done list is not a live to-do (the user 2026-06-10). At `track`'s screenshot time the store was
         # already all-completed, so the store-based card is correctly ABSENT — not a stale "3/5".
         saved = km._read_task_store
-        km._read_task_store = lambda fsid: [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"},
+        km._read_task_store = lambda fsid, fold=None: [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"},
                                             {"id": "2", "subject": "b", "activeForm": None, "status": "completed"}]
         try:
             kinds = [e["kind"] for e in km.build_session(SID, NOW)["events"]]
