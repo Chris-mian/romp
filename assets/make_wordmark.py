@@ -23,11 +23,22 @@ Deps: Google Chrome / Chromium (set $CHROME to override the binary), and
 optionally Pillow (used only to auto-trim the banner to its content).
 
 Run:  python make_wordmark.py
-Outputs two identical PNGs (flat #0e1116 background — needed so the letters can be
-thinned to the swirl's line weight via a background-colored text-stroke):
-  - romp-wordmark.png (here) — the README hero.
-  - ../../vscode-extension/media/romp-wordmark.png — a copy served at /media for the
-    dashboard's inbox-zero empty state.
+Renders one master (flat #0e1116 background — needed so the letters can be thinned
+to the swirl's line weight via a background-colored text-stroke), then derives three
+outputs from it:
+  - romp-wordmark.png (here) — the README hero, on the flat dark banner.
+  - ../vscode-extension/media/romp-wordmark.png — the same mark recolored to the feed
+    pane's gray, served at /media for the dashboard's inbox-zero empty state.
+  - ../docs/assets/brand/romp-wordmark.png — the dark banner knocked out to a
+    transparent background for the (dark-only) docs home, so the wordmark blends into
+    the page instead of sitting on a darker rectangle.
+
+The recolor and the knockout both work by matching the flat #0e1116 field (and its
+anti-aliased fringe, via -fuzz) with ImageMagick — the swirl "o" is composited from a
+transparent master, so its dark vortex is #0e1116 showing through and knocks out with
+the rest. True Chrome-rendered transparency can't work directly: the letters are
+thinned by a #0e1116 text-stroke, so a transparent page would expose dark outlines.
+The docs site is dark-only, so the residual fringe stays invisible against the page.
 """
 import base64
 import os
@@ -43,8 +54,10 @@ import make_icon  # sibling module — canonical swirl geometry + palette
 HERE = Path(__file__).resolve().parent
 FONT = HERE / "Anta-Regular.ttf"          # vendored (OFL, see OFL-Anta.txt)
 OUT = HERE / "romp-wordmark.png"          # dark-banner README hero
-# transparent copy served by the kernel at /media for the inbox-zero empty state
-MEDIA_OUT = HERE.parent.parent / "vscode-extension" / "media" / "romp-wordmark.png"
+# pane-gray copy served by the kernel at /media for the inbox-zero empty state
+MEDIA_OUT = HERE.parent / "vscode-extension" / "media" / "romp-wordmark.png"
+# transparent copy for the docs home banner (dark-only site; blends into the page)
+DOCS_OUT = HERE.parent / "docs" / "assets" / "brand" / "romp-wordmark.png"
 
 # --- design constants -------------------------------------------------------
 FONT_PX = 300
@@ -98,7 +111,7 @@ def strong_swirl() -> str:
     return s
 
 
-def build_html(transparent: bool = False) -> str:
+def build_html() -> str:
     font_b64 = base64.b64encode(FONT.read_bytes()).decode()
     # The "o" is the FINALIZED swirl at the MATCHED weight (W=70 mesh, 102..922 crop),
     # rasterized to a transparent master (swirl-o-wordmark.png). Letters are eroded to
@@ -139,24 +152,19 @@ def find_chrome() -> str:
     sys.exit("Chrome/Chromium not found — install it or set $CHROME to the binary path")
 
 
-def autotrim(path: Path, transparent: bool = False) -> None:
-    """Crop the banner down to its content + even padding (no-op if no Pillow).
+def autotrim(path: Path) -> None:
+    """Crop the dark banner down to its content + even padding (no-op if no Pillow).
 
-    For the dark banner we threshold on luminance (content vs dark bg); for the
-    transparent copy we threshold on the alpha channel instead, so the crop keeps
-    the mark's own light pixels and trims only the empty (alpha 0) surround.
+    We threshold on luminance (bright content vs the flat dark bg). The transparent
+    docs copy is derived from this already-trimmed banner, so it needs no re-trim.
     """
     try:
         from PIL import Image
     except ImportError:
         print("  (Pillow not installed — skipping auto-trim)")
         return
-    if transparent:
-        im = Image.open(path).convert("RGBA")
-        mask = im.getchannel("A").point(lambda v: 255 if v > 16 else 0)  # opaque vs empty
-    else:
-        im = Image.open(path).convert("RGB")
-        mask = im.convert("L").point(lambda v: 255 if v > 70 else 0)     # content vs dark bg
+    im = Image.open(path).convert("RGB")
+    mask = im.convert("L").point(lambda v: 255 if v > 70 else 0)     # content vs dark bg
     bbox = mask.getbbox()
     if not bbox:
         return
@@ -166,19 +174,30 @@ def autotrim(path: Path, transparent: bool = False) -> None:
              min(im.width, x1 + pad), min(im.height, y1 + pad))).save(path)
 
 
-def render(chrome: str, out: Path, transparent: bool = False) -> None:
+def render(chrome: str, out: Path) -> None:
     """Rasterize the wordmark to `out` with headless Chrome, then auto-trim it."""
     cmd = [chrome, "--headless", "--disable-gpu", "--hide-scrollbars",
            "--force-device-scale-factor=2", f"--window-size={CANVAS_W},{CANVAS_H}"]
-    if transparent:
-        cmd.append("--default-background-color=00000000")  # keep page alpha in the screenshot
     with tempfile.TemporaryDirectory() as td:
         html = Path(td) / "wordmark.html"
-        html.write_text(build_html(transparent))
+        html.write_text(build_html())
         subprocess.run(cmd + [f"--screenshot={out}", html.as_uri()],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    autotrim(out, transparent)
-    print("wrote", out.relative_to(HERE.parent.parent))
+    autotrim(out)
+    print("wrote", out.relative_to(HERE.parent))
+
+
+def write_docs_transparent(src: Path) -> None:
+    """Derive the docs home banner: knock the flat #0e1116 field out to transparency.
+
+    -fuzz catches the anti-aliased fringe too, so no dark rectangle or halo is left;
+    the swirl "o" is a transparent master over that field, so its dark vortex knocks
+    out with the rest and correctly shows the page through. Needs ImageMagick on PATH.
+    """
+    DOCS_OUT.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["magick", str(src), "-fuzz", "12%",
+                    "-transparent", "#0e1116", str(DOCS_OUT)], check=True)
+    print("wrote", DOCS_OUT.relative_to(HERE.parent), "(#0e1116 bg → transparent)")
 
 
 def main() -> None:
@@ -193,7 +212,8 @@ def main() -> None:
     # dark outlines. Needs ImageMagick (`magick`) on PATH, like the README's Chrome dependency above.
     subprocess.run(["magick", str(MEDIA_OUT), "-fuzz", "15%", "-fill", "#1e1e1e",
                     "-opaque", "#0e1116", str(MEDIA_OUT)], check=True)
-    print("recoloured", MEDIA_OUT.relative_to(HERE.parent.parent), "bg #0e1116 → pane gray #1e1e1e")
+    print("recoloured", MEDIA_OUT.relative_to(HERE.parent), "bg #0e1116 → pane gray #1e1e1e")
+    write_docs_transparent(OUT)                            # docs home (transparent, dark-only site)
 
 
 if __name__ == "__main__":
