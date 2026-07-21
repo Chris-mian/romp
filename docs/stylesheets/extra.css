@@ -61,13 +61,15 @@
   padding: 0 0.7rem;
   font-size: 0.76rem;
   opacity: 1;
-  color: var(--md-primary-bg-color--light);   /* muted white, like the header text */
+  color: #ffffff;                              /* unselected tabs: white, normal weight */
+  font-weight: 400;
   transition: color 0.2s;
 }
 .md-header__tabs .md-tabs__link:hover,
 .md-header__tabs .md-tabs__link:focus {
   color: var(--md-accent-fg-color);            /* romp highlight blue */
 }
+/* Selected tab: romp highlight blue, and bold to carry the selection. */
 .md-header__tabs .md-tabs__item--active .md-tabs__link {
   color: var(--md-accent-fg-color);
   font-weight: 700;
@@ -75,6 +77,16 @@
 @media screen and (max-width: 76.234375em) {
   .md-header__tabs {
     display: none;
+  }
+  /* The slide-out nav drawer's header band + repo row: match the desktop header's
+     near-black instead of Material's primary blue, so the wordmark sits on the same
+     bar. Material colors these with the primary at higher specificity (the
+     [for=__drawer] title and .md-nav__source), so match that here. */
+  .md-nav--primary .md-nav__title[for="__drawer"] {
+    background-color: #12171e;
+  }
+  .md-nav__source {
+    background-color: #12171e;
   }
 }
 
