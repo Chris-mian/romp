@@ -104,7 +104,9 @@ test("a deep-link to an anchor OLDER than the resident tail fetches older histor
   // scrollToAnchor honest-failed even though the message is in the transcript. Fix: fetch the older chunk
   // re-anchored on the uuid (chatHead re-lands), looping until resident or headFrom hits 0.
   assert.match(RENDER, /else if \(s && \(s\.headFrom \?\? 0\) > 0\) \{/, "older-than-tail branch in scrollToAnchor");
-  assert.match(RENDER, /if \(fetchOlderForAnchor\(activeId, uuid\)\) \{\s*pendingAnchor = uuid; anchorPendingOlder = true;/);
+  // 2026-07-20: an in-flight fetch counts as pending too (loadingOlder), and the arrival re-land is
+  // re-pointed at THIS uuid — a push re-render mid-fetch used to fall through to a false "couldn't locate"
+  assert.match(RENDER, /if \(fetchOlderForAnchor\(activeId, uuid\) \|\| loadingOlder\.has\(activeId\)\) \{\s*pendingOlderAnchor\.set\(activeId, uuid\);\s*pendingAnchor = uuid; anchorPendingOlder = true;/);
   // the helper stashes the TARGET uuid (not the current top row) so chatHead lands on it
   assert.match(RENDER, /function fetchOlderForAnchor\(sid: string, uuid: string\): boolean/);
   assert.match(RENDER, /pendingOlderAnchor\.set\(sid, uuid\)/);

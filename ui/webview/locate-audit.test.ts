@@ -26,3 +26,31 @@ test("the chat bundle's kernel fetches are host-aware (kernelUrl)", () => {
   for (const ep of ["/palette", "/models", "/commands", "/followup-preview"])
     assert.ok(render.includes(`kernelUrl("${ep}`), `${ep} must route through kernelUrl`);
 });
+
+test("a mid-fetch anchor attempt keeps waiting instead of toasting 'couldn't locate'", () => {
+  // pendingAnchor re-attempts run on EVERY push re-render (0.5-3s). fetchOlderForAnchor returns
+  // false while a chunk is in flight (loadingOlder), so a mid-fetch attempt fell through to
+  // "pointer-not-rendered" and a FALSE "couldn't locate" toast while the chunk that would land it
+  // was still on the wire (the user 2026-07-20: the ui thread's 7-fetch burst ended not-rendered).
+  const render = fs.readFileSync(path.join(ROOT, "ui", "webview", "render.ts"), "utf8");
+  assert.ok(render.includes("fetchOlderForAnchor(activeId, uuid) || loadingOlder.has(activeId)"),
+            "an in-flight older fetch counts as pending, never a give-up");
+  const guard = render.indexOf("fetchOlderForAnchor(activeId, uuid) || loadingOlder.has(activeId)");
+  const body = render.slice(guard, guard + 300);
+  assert.ok(body.includes("pendingOlderAnchor.set(activeId, uuid)"),
+            "the arrival re-land is re-pointed at THIS uuid");
+  assert.ok(body.includes('landTrail.push("pointer-fetch-older")'),
+            "the trail records the wait, not a false miss");
+});
+
+test("kernel: a cold parse serves the stored summary citation instead of a link-less card", () => {
+  // build_feed's anchor tiers all read parse-derived maps; right after a kernel restart ps is None
+  // until _warm_fleet_bg, so every card shipped summaryAnchorUuid null and the summary click hit the
+  // "no anchor was recorded" toast (the user 2026-07-20: the stalled ui card, 7 restarts that day).
+  const kernel = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
+  assert.ok(kernel.includes("if _sa_u is None and ps is None:"),
+            "the cold-parse fallback exists");
+  const at = kernel.indexOf("if _sa_u is None and ps is None:");
+  assert.ok(kernel.slice(at, at + 1200).includes("_sa_u = _cited"),
+            "…and serves the distiller's stored citation raw");
+});

@@ -3774,7 +3774,12 @@ function scrollToAnchor(uuid: string): boolean {
       // with "couldn't locate" even though it's in the transcript (the user 2026-06-27). Fetch the next older
       // chunk re-anchored on THIS uuid; chatHead lands on it when it arrives, and if it's STILL further back
       // this same branch fires again — a fetch-until-resident loop that terminates when headFrom reaches 0.
-      if (fetchOlderForAnchor(activeId, uuid)) {
+      // A fetch ALREADY IN FLIGHT counts as pending too (the user 2026-07-20): pendingAnchor re-attempts
+      // run on every push re-render (0.5–3s), so a mid-fetch attempt used to fall through to
+      // "pointer-not-rendered" and toast a false "couldn't locate" while the chunk that would land it was
+      // still on the wire. Re-point the arrival re-land at THIS uuid and keep waiting.
+      if (fetchOlderForAnchor(activeId, uuid) || loadingOlder.has(activeId)) {
+        pendingOlderAnchor.set(activeId, uuid);
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false;
       }
     }

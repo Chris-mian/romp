@@ -8808,6 +8808,14 @@ def build_feed(now, tmux=None):
                             break
                     if _sa_u:
                         break
+            if _sa_u is None and ps is None:
+                # COLD-PARSE fallback (the user 2026-07-20): every tier above reads parse-derived maps,
+                # and right after a kernel restart ps is None until _warm_fleet_bg — so for that window
+                # EVERY card shipped summaryAnchorUuid null and the summary click hit the "no anchor was
+                # recorded" toast (a lie: the anchor is on the node). With no parse to validate against,
+                # serve the distiller's stored citation raw — the chat's own landing handles a bad uuid
+                # honestly, and the validated tiers take back over on the first warm push.
+                _sa_u = _cited
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": disp_t, "live": live,
