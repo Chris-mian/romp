@@ -100,7 +100,8 @@ class CoercePlaceTitle(StateTest):
     def test_title_overrides_the_verbatim_label(self):
         ops = jd._coerce_place([], "raw user words here", title="a proper gist")
         self.assertEqual(ops, [{"do": "mint", "text": "a proper gist",
-                                "why": "kept on the board: a user message the planner tried to skip"}])
+                                "why": "kept on the board: a user message the planner tried to skip",
+                                "coerced": True}])
 
     def test_without_title_the_verbatim_label_stands(self):
         ops = jd._coerce_place([], "raw user words here")

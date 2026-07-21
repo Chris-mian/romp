@@ -157,6 +157,77 @@ class CoercePlaceCard(unittest.TestCase):
     def test_empty_board_still_mints(self):
         self.assertEqual(jd._coerce_place([], "USER ASKED: hello")[0]["do"], "mint")
 
+    def test_floor_skips_a_blocked_card(self):
+        # the user 2026-07-21: an aside unrelated to the lone blocked card was coerced INTO it, and the
+        # placement pulled the card back to working — a blocked card is not a landing spot for the floor
+        st = store(node(gid(1), "Old unblocked card", t=50),
+                   node(gid(2), "Newest card, awaiting the user", t=100, blocked=True))
+        ops = jd._coerce_place(jd.open_menu(st), "USER ASKED: unrelated aside")
+        self.assertEqual(ops[0]["do"], "sub")
+        self.assertEqual(jd.open_menu(st)[ops[0]["under"] - 1]["id"], gid(1),
+                         "the floor lands on the newest card NOT waiting on the user")
+
+    def test_floor_skips_a_card_with_a_blocked_sub(self):
+        # blocked rolls up: a card whose sub awaits the user reads needs-you on the board, so the
+        # floor treats the whole card as blocked, not just the flagged node itself
+        st = store(node(gid(1), "Old unblocked card", t=50),
+                   node(gid(2), "Newest card", t=100),
+                   node(gid(3), "sub awaiting the user", parent=gid(2), t=200, blocked=True))
+        ops = jd._coerce_place(jd.open_menu(st), "USER ASKED: unrelated aside")
+        self.assertEqual(jd.open_menu(st)[ops[0]["under"] - 1]["id"], gid(1))
+
+    def test_every_card_blocked_mints_a_new_top(self):
+        st = store(node(gid(1), "The one card, awaiting the user", t=100, blocked=True))
+        ops = jd._coerce_place(jd.open_menu(st), "USER ASKED: unrelated aside")
+        self.assertEqual(ops[0]["do"], "mint",
+                         "a one-card board whose card is blocked gets a fresh top, never a graft")
+
+    def test_coerced_ops_are_marked(self):
+        st = store(node(gid(1), "A card", t=100))
+        self.assertTrue(jd._coerce_place(jd.open_menu(st), "USER ASKED: x")[0].get("coerced"))
+        self.assertTrue(jd._coerce_place([], "USER ASKED: x")[0].get("coerced"))
+
+
+class CoercedPlacementLeavesBlocks(unittest.TestCase):
+    """apply_plan's new-work-filed unblock is for placements the planner CHOSE. A coerced op is the
+    never-vanish floor — bookkeeping, not the user re-engaging the branch — so blocks stand
+    (the user 2026-07-21: an unrelated aside quietly retired the card's needs-you)."""
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self.td))
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def _blocked_store(self):
+        st = store(node(gid(1), "Card awaiting the user", t=100, blocked=True))
+        st["nodes"][gid(1)]["log"] = [{"kind": "block", "src": "planner", "at": NOW - 500,
+                                       "ev_t": NOW - 500, "why": "needs the user's pick"}]
+        return st
+
+    def test_coerced_sub_leaves_the_block_standing(self):
+        st = self._blocked_store()
+        ops = [{"do": "sub", "under": 1, "text": "unrelated aside", "why": "w", "coerced": True}]
+        jd.apply_plan(st, "seg1", NOW, ops, jd.open_menu(st))
+        self.assertTrue(st["nodes"][gid(1)]["blocked"],
+                        "a coerced placement never clears the branch's blocks")
+
+    def test_planner_chosen_sub_still_unblocks(self):
+        st = self._blocked_store()
+        ops = [{"do": "sub", "under": 1, "text": "the user's answer, filed as work", "why": "w"}]
+        jd.apply_plan(st, "seg1", NOW, ops, jd.open_menu(st))
+        self.assertFalse(st["nodes"][gid(1)]["blocked"],
+                         "a deliberate placement keeps the newest-wins unblock")
+
+    def test_coerced_twin_landing_leaves_the_block_standing(self):
+        # the coerced label can dup an existing node under the card — the twin landing is still coerced
+        st = self._blocked_store()
+        st["nodes"][gid(2)] = node(gid(2), "unrelated aside", parent=gid(1), t=NOW - 400)
+        ops = [{"do": "sub", "under": 1, "text": "unrelated aside", "why": "w", "coerced": True}]
+        jd.apply_plan(st, "seg1", NOW, ops, jd.open_menu(st))
+        self.assertTrue(st["nodes"][gid(1)]["blocked"])
+
 
 class PlacePromptPins(unittest.TestCase):
     def test_depth_budget_lives_in_place_sys(self):
@@ -167,6 +238,15 @@ class PlacePromptPins(unittest.TestCase):
         for sys_prompt in (jd.PLAN_SYS, jd.OPENER_SYS):
             self.assertIn("top-level **card", sys_prompt,
                           "both planner runs file subs against top-level cards")
+
+    def test_menu_marks_blocked_nodes_and_prompts_explain_it(self):
+        # the annotation and the guidance travel together: the menu line says a card is waiting on the
+        # user, and both filing prompts say what filing under such a card claims (the user 2026-07-21)
+        st = store(node(gid(1), "Card awaiting the user", t=100, blocked=True))
+        self.assertIn("· blocked: awaiting the user", jd._menu_text(st, jd.open_menu(st)))
+        for sys_prompt in (jd.PLAN_SYS, jd.OPENER_SYS):
+            self.assertIn("blocked: awaiting the user", sys_prompt)
+            self.assertIn("only the user can answer", sys_prompt)
 
 
 class EchoTwinGuard(unittest.TestCase):

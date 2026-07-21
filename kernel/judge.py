@@ -1123,7 +1123,10 @@ PLAN_SYS = (
     "called done without this work? If every card can, mint instead. Scan the whole list, even older "
     "or lower-numbered cards; never default to the most recent. Never file a sub that merely restates "
     "card #n's own title or ask: a sub must add a concrete step, finding, or piece of progress beyond "
-    "it, and if the segment adds nothing beyond the ask itself, add no sub. (\"ref\":<k> files under a "
+    "it, and if the segment adds nothing beyond the ask itself, add no sub. A card marked \"blocked: "
+    "awaiting the user\" is stopped on a question only the user can answer; filing new work under it "
+    "declares that this segment takes up that ask and pulls the card back to working — when the "
+    "segment is about something else, mint instead. (\"ref\":<k> files under a "
     "node you minted earlier in this reply instead of \"under\", e.g. a fresh umbrella goal.)\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>}: open goal/step #n is now finished. Mark done eagerly: '
     "the moment a segment delivers a goal's outcome (committed, shipped, tested, or answered), done it "
@@ -1214,7 +1217,9 @@ OPENER_SYS = (
     "are context, not filing spots). The default for a message that asks for more of the **same** "
     "outcome. Pick the card whose **outcome** this message advances — topic or project overlap is not "
     "enough; ask: can card #n be called done without this? Scan the whole list, even an older or "
-    "lower-numbered card; never default to the most recent.\n"
+    "lower-numbered card; never default to the most recent. A card marked \"blocked: awaiting the "
+    "user\" is stopped on a question only the user can answer; file this message under it only when "
+    "the message takes up that ask — otherwise mint.\n"
     '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a request with its **own** finish line '
     "(a new tool, widget, script, feature, document, build — or an **answer**: an explanation, "
     "comparison, or write-up the user asked to read) — mint it even mid-conversation and even in "
@@ -1671,6 +1676,8 @@ def _menu_text(store, menu):
             line += "  (inside: %s)" % ptext
         if nd.get("agentTask"):                        # a to-do mirror says so (the grouper's menu precedent),
             line += "  · from the agent's own to-do list"   # so the planner can apply the no-bookkeeping rule
+        if nd.get("blocked"):                          # a needs-you card says so, so filing under it is an
+            line += "  · blocked: awaiting the user"   # informed re-engagement claim (the user 2026-07-21)
         out.append(line)
     return "\n".join(out) if out else "(no open goals yet)"
 
@@ -2075,10 +2082,17 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
                     if seg_id and seg_id not in (nodes[dup].get("trail") or []):
                         nodes[dup].setdefault("trail", []).append(seg_id)
                     nodes[dup]["mt"] = seg_t
-                    _unblock_branch(dup); focus = touched = dup
+                    if not o.get("coerced"):           # a coerced landing is bookkeeping, not re-engagement
+                        _unblock_branch(dup)           #  (the user 2026-07-21) — blocks on the branch stand
+                    focus = touched = dup
                     continue
                 nid = new_node(o["text"] or "(step)", parent, o["why"])
-            _unblock_branch(nid); focus = touched = nid
+            # A _coerce_place sub is the never-vanish floor, not the user re-engaging this branch: it must
+            # not clear blocks above it (the user 2026-07-21: an unrelated aside quietly pulled the lone
+            # blocked card back to working). A planner-chosen sub keeps the newest-wins unblock.
+            if not o.get("coerced"):
+                _unblock_branch(nid)
+            focus = touched = nid
         elif do == "done":
             t = _target(o)
             if t and record_verdict(store, nodes[t], "planner", "done", seg_t, why=o["why"], seg=seg_id):
@@ -3229,14 +3243,34 @@ def _coerce_place(menu, text, title=None):
     (card-first, the user 2026-07-08), or a new top when the board is empty. Backstop for a model that
     ignores the never-skip <note>; the normal path is the model placing the message itself. `title` is
     the caller's already-known gist for the message (_prompt_gist) — the verbatim _seg_label head is
-    the fallback, not the default (the user 2026-07-10)."""
+    the fallback, not the default (the user 2026-07-10).
+
+    The op is marked `coerced` (the user 2026-07-21): this placement is bookkeeping — never let a
+    message vanish — not evidence the user re-engaged the branch, so apply_plan skips the
+    new-work-filed unblock for it. BLOCKED cards are skipped as landing spots for the same reason:
+    an aside unrelated to the lone blocked card was landing inside it and pulling it back to
+    working, silently retiring a decision the user still owed. The message lands under the newest
+    card that is not waiting on the user (its whole on-menu subtree unblocked), or as its own top
+    when every card is."""
     label = title or _seg_label(text)
     why = "kept on the board: a user message the planner tried to skip"
     if menu:
         ids = {nd["id"] for nd in menu}
-        tops = [i for i, nd in enumerate(menu, 1) if nd.get("parentId") not in ids]
-        return [{"do": "sub", "under": tops[-1] if tops else len(menu), "text": label, "why": why}]
-    return [{"do": "mint", "text": label, "why": why}]
+        by_id = {nd["id"]: nd for nd in menu}
+
+        def _menu_top(nd):                             # the flush-left line this entry renders under
+            seen = set()
+            while nd.get("parentId") in ids and nd["id"] not in seen:
+                seen.add(nd["id"])
+                nd = by_id[nd["parentId"]]
+            return nd["id"]
+
+        tainted = {_menu_top(nd) for nd in menu if nd.get("blocked")}
+        tops = [i for i, nd in enumerate(menu, 1)
+                if nd.get("parentId") not in ids and nd["id"] not in tainted]
+        if tops:
+            return [{"do": "sub", "under": tops[-1], "text": label, "why": why, "coerced": True}]
+    return [{"do": "mint", "text": label, "why": why, "coerced": True}]
 
 
 def _card_route_subs(store, ops, menu, placer=True):
