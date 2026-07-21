@@ -66,5 +66,3 @@ Agents asking each other questions and handing off tasks, through a mailbox Romp
 Hover a work bar, open a summary, expand a tool call, and more.
 
 <video src="assets/overview.mp4" autoplay loop muted playsinline width="100%"></video>
-
-Install and first run: [Install](install.md).
