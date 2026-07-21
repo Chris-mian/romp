@@ -895,3 +895,7 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 
 /* the "host:" prefix on a federated session's name — see styles.css (one treatment, two sheets) */
 .host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.88em; }
+
+/* the VS Code pipe-down banner — see styles.css (one treatment, two sheets) */
+#rpipe { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; text-align: center;
+  background: #2b2d30; color: #e6e6e6; border-bottom: 1px solid #4a4d51; padding: 7px 14px; }

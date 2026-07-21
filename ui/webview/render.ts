@@ -6213,9 +6213,23 @@ function dismissSession(id: string): void {
   }
 }
 
+// The VS Code pipe's down-banner (the user 2026-07-21): while the extension host's kernel
+// socket is down, the pane says so instead of sitting silently frozen on its last frame —
+// and counts the typed messages the pipe is holding for delivery on reconnect. Only the
+// extension posts pipeState; in the browser the page shim's own stale/disconnected bars cover this.
+function pipeBanner(up: boolean, queued: number): void {
+  const b = document.getElementById("rpipe");
+  if (up) { if (b) b.remove(); return; }
+  const bar = b || document.body.appendChild(Object.assign(document.createElement("div"), { id: "rpipe" }));
+  bar.textContent = queued > 0
+    ? `romp is unreachable — reconnecting… ${queued} message${queued === 1 ? "" : "s"} held, sending when it's back`
+    : "romp is unreachable — reconnecting…";
+}
+
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
+  if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;

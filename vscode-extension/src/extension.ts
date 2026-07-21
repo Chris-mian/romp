@@ -22,6 +22,7 @@ import { execFile } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, FLEET_BODY, TIMELINE_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 import { ensureThenAttach, parseHealthz, warnAfter } from "./kernel-attach";
+import { intentOp } from "./pipe-intent";
 import { routeViewMessage } from "./view-routing";
 import { deriveStatus, freshNeedsYou, renderStatusBar, statusTooltipLines, FleetStatus } from "./fleet-status";
 import { citeText, sessionsForWorkspace, SessionInfo } from "./workspace-sessions";
@@ -380,7 +381,7 @@ function askManagerEnsure(port: number): Promise<boolean> {
 
 class KernelPipe {
   private ws: WebSocket | null = null;
-  private queue: string[] = [];
+  private queue: { s: string; intent: boolean }[] = [];
   private alive = true;
   private everConnected = false;
   webviewReady = false;
@@ -388,7 +389,7 @@ class KernelPipe {
     private app: "chat" | "feed" | "timeline" | "fleet",
     private onDown: (m: any) => void,
     private onReconnect: () => void,
-    private onState?: (up: boolean) => void,
+    private onState?: (up: boolean, queuedIntents?: number) => void,
     // A passive pipe OBSERVES: it polls healthz and attaches when a kernel is
     // there, but never asks the manager to spawn one and never toasts — the
     // ambient status bar must not resurrect a kernel the user turned off.
@@ -396,16 +397,24 @@ class KernelPipe {
   ) {
     void this.connect();
   }
+  queuedIntents(): number {
+    return this.queue.reduce((n, q) => n + (q.intent ? 1 : 0), 0);
+  }
   send(m: any) {
     const s = JSON.stringify(m);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(s);
-    else this.queue.push(s);
+    else {
+      // Held, not dropped — and the pane is told, so a message sent into a
+      // down pipe never reads as delivered while it sits in limbo.
+      this.queue.push({ s, intent: intentOp(m?.type) });
+      this.onState?.(false, this.queuedIntents());
+    }
   }
   private async connect() {
     if (!this.alive) return;
     const ok = this.passive ? (await healthz()).ok : await ensureKernel();
     if (!this.alive) return;
-    if (!ok) { this.onState?.(false); setTimeout(() => void this.connect(), 5000); return; }
+    if (!ok) { this.onState?.(false, this.queuedIntents()); setTimeout(() => void this.connect(), 5000); return; }
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
@@ -416,13 +425,19 @@ class KernelPipe {
       this.onState?.(true);
       if (this.everConnected) {
         // A reconnect after a kernel restart: the kernel lost this client's
-        // state, so reload the webview — its fresh "ready" resyncs everything.
+        // view state, so reload the webview — its fresh "ready" resyncs
+        // everything. USER INTENT still delivers first: a typed message or an
+        // explicit pick queued while the pipe was down is the user's work, and
+        // wiping it with the view chatter silently ate a card reply sent
+        // during a restart window (the user 2026-07-21, roof).
+        const keep = this.queue.filter((q) => q.intent);
         this.queue = [];
+        for (const q of keep) ws.send(q.s);
         this.webviewReady = false;
         this.onReconnect();
       } else {
         this.everConnected = true;
-        for (const s of this.queue) ws.send(s);
+        for (const q of this.queue) ws.send(q.s);
         this.queue = [];
       }
     });
@@ -438,7 +453,7 @@ class KernelPipe {
     const reconnect = () => {
       if (this.ws !== ws) return;
       this.ws = null;
-      this.onState?.(false);
+      this.onState?.(false, this.queuedIntents());
       if (this.alive) setTimeout(() => void this.connect(), 1500);
     };
     ws.on("close", reconnect);
@@ -487,6 +502,10 @@ function wirePanel(p: vscode.WebviewPanel) {
       p.webview.postMessage(m);
     },
     () => { pendingToWebview = []; p.webview.html = buildHtml(p.webview); },
+    // Pipe state → the pane's own banner: while the socket is down the webview
+    // must say so (and how many typed messages are held), never sit silently
+    // frozen on its last frame (the user 2026-07-21, roof).
+    (up, queued) => { void p.webview.postMessage({ type: "pipeState", up, queued: queued ?? 0 }); },
   );
   chatPipe = pipe;
   p.webview.onDidReceiveMessage((m) => {
@@ -563,6 +582,8 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
       p.webview.postMessage(m);
     },
     () => { p.webview.html = buildFeedHtml(p.webview); },
+    // Same pipe-down banner contract as the chat panel (the user 2026-07-21).
+    (up, queued) => { void p.webview.postMessage({ type: "pipeState", up, queued: queued ?? 0 }); },
   );
   feedPipe = pipe;
   p.webview.onDidReceiveMessage((m) => {
