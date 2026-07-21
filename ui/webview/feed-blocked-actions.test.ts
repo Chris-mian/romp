@@ -21,7 +21,13 @@ test("(A) a non-done sub's 'Done' button crosses it off — posts nodeOverride o
   // a "Done" button (not the mark) carries the resolve override now
   assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-done"\)/);
   assert.match(FEED, /done\.textContent = "Done"/);
-  assert.match(CSS, /\.ftree-act-done:hover \{[^}]*color: var\(--rel-done\)/);
+  // Done rests in the neutral gray of .ftree-act-btn and lights up in the romp accent on hover (the user
+  // 2026-07-21) — Done / Status? / Follow up share one accent-hover rule, Drop stays red.
+  assert.match(CSS, /\.ftree-act-done:hover,\s*\n\s*\.ftree-act-status:hover,\s*\n\s*\.ftree-act-fup:hover \{[^}]*color: var\(--accent\)/);
+  assert.match(CSS, /\.ftree-act-drop:hover \{[^}]*color: var\(--err\)/);
+  // no resting color tints on fup/status anymore — they inherit the gray base
+  assert.doesNotMatch(CSS, /\.ftree-act-fup \{[^}]*color: #5aa2ff/);
+  assert.doesNotMatch(CSS, /\.ftree-act-status \{[^}]*color: var\(--accent\)/);
 });
 
 test("(A) Done/Drop/Status? are SUB-TASK-ONLY — the top-level goal (tree root) gets only 'Follow up' (the user 2026-06-30; Clear + the card-level sweep cover the root)", () => {

@@ -427,13 +427,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   font: inherit; font-size: 0.72em; line-height: 1.4; padding: 1px 8px; border-radius: 6px;
   background: transparent; border: 1px solid var(--dim); color: var(--dim); cursor: pointer;
 }
-.ftree-act-done:hover { border-color: var(--rel-done); color: var(--rel-done); }
-.ftree-act-fup { border-color: rgba(90, 162, 255, 0.55); color: #5aa2ff; }
-.ftree-act-fup:hover { border-color: #5aa2ff; background: rgba(90, 162, 255, 0.12); }
-/* "Drop" (item-level clear) + one-click "Status?" join Done / Follow up (the user 2026-07-20) */
+/* All four rest in the same neutral gray (.ftree-act-btn); hover reveals intent (the user 2026-07-21):
+   Done / Status? / Follow up light up in the romp accent, Drop stays red. No resting color tints — a
+   modal full of pre-colored buttons was busier than the glanceable row wants. */
+.ftree-act-done:hover,
+.ftree-act-status:hover,
+.ftree-act-fup:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 .ftree-act-drop:hover { border-color: var(--err); color: var(--err); }
-.ftree-act-status { border-color: rgba(156, 210, 255, 0.55); color: var(--accent); }
-.ftree-act-status:hover { border-color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 .ftree-act-btn:disabled { opacity: 0.55; cursor: default; }
 /* a user-DROPPED sub (item-level clear, the user 2026-07-20): checked off + faded + struck —
    "no longer needed", visually distinct from the green done check. Modal tree + inline checklist. */
