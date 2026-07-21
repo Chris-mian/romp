@@ -123,6 +123,8 @@ EOF
 #!/bin/sh
 echo "\$1" >> "$calls"
 if [ "\$1" = print ]; then
+    # After bootstrap the NEW job answers print (the post-install running check sees it).
+    grep -q bootstrap "$calls" && exit 0
     [ "\$(grep -c print "$calls")" -ge 4 ] && exit 5   # the old job finally drains away
     exit 0                                             # still tearing down
 fi
@@ -133,7 +135,8 @@ EOF
     [ "$status" -eq 0 ]
     [ "$(grep -c print "$calls")" -ge 4 ]              # waited through the drain
     [ "$(grep -c bootstrap "$calls")" -eq 1 ]          # then loaded cleanly, first try
-    [ "$(tail -1 "$calls")" = bootstrap ]              # and never bootstrapped mid-drain
+    # the drain-wait prints stop BEFORE the bootstrap; only the running-check prints follow it
+    grep -B1000 bootstrap "$calls" | grep -q print     # waited, then bootstrapped
 }
 
 @test "install (macOS): a bootstrap that never lands fails LOUDLY, not silently" {
@@ -157,4 +160,37 @@ EOF
     ROMP_OS_OVERRIDE=Plan9 run "$SVC" install
     [ "$status" -eq 1 ]
     [[ "$output" == *"unsupported OS"* ]]
+}
+
+@test "install appends an attribution line to the restart audit" {
+    # Four unload-without-reload outages in one day were untraceable: the loud failure went to the
+    # CALLER's stderr and nothing recorded WHO ran the install. Every install now journals itself.
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    export CLAUDE_CODE_SESSION_ID="11111111-2222-3333-4444-555555555555"
+    mkdir -p "$TEST_DIR/state/romp/names"
+    printf 'testsess\t/tmp\n' > "$TEST_DIR/state/romp/names/11111111-2222-3333-4444-555555555555"
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 run "$SVC" install
+    [ "$status" -eq 0 ]
+    local aud="$TEST_DIR/state/romp/restart-audit.jsonl"
+    [ -f "$aud" ]
+    grep -q '"action": "service-install"' "$aud"
+    grep -q '"name": "testsess"' "$aud"
+}
+
+@test "install (macOS): a bootstrap that is accepted but never runs fails loudly" {
+    # bootstrap ACCEPTED != job RUNNING: launchd can take the definition and still fail the spawn.
+    # Exit 0 must require the service to actually report itself.
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub"
+    cat > "$stub" <<'EOF2'
+#!/bin/sh
+[ "$1" = bootout ] && exit 0
+[ "$1" = bootstrap ] && exit 0    # accepted...
+exit 5                            # ...but print never finds it running
+EOF2
+    chmod +x "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running"* ]]
 }

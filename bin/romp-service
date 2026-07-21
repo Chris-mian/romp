@@ -108,8 +108,27 @@ ensure_romp_node() {
     return 0
 }
 
+# Install attribution (2026-07-20): four times in one day the agent was rewritten/unloaded and the
+# reload never landed — and the failure, though loud on the CALLER's stderr, left no trace saying
+# WHO ran the install. Append who/where/when to the same audit journal `romp --refresh` writes, so
+# "who reinstalled the service?" is one tail instead of forensics. Best-effort, never blocks.
+audit_install() {
+    {
+        _aud="$STATE/restart-audit.jsonl"
+        mkdir -p "$STATE"
+        _sid="${CLAUDE_CODE_SESSION_ID:-}"
+        _name=""
+        [[ -n "$_sid" && -f "$STATE/names/$_sid" ]] && _name="$(cut -f1 "$STATE/names/$_sid" 2>/dev/null | head -1)"
+        printf '{"t": %s, "action": "service-%s", "ppid": %s, "parent": "%s", "sid": "%s", "name": "%s"}\n' \
+            "$(date +%s)" "$1" "$PPID" \
+            "$(ps -o command= -p "$PPID" 2>/dev/null | head -1 | tr -d '"\\' | cut -c1-160)" \
+            "$_sid" "$_name" >> "$_aud"
+    } 2>/dev/null || true
+}
+
 case "${1:-status}" in
   install)
+    audit_install install
     case "$os" in
       Darwin)
         write_plist
@@ -140,6 +159,19 @@ case "${1:-status}" in
                 echo "romp-service: FAILED to load the login agent — romp-manager is NOT running." >&2
                 echo "  launchctl bootstrap: ${err:-unknown error}" >&2
                 echo "  Retry by hand: launchctl bootstrap gui/$(id -u) \"$PLIST\"" >&2
+                exit 1
+            fi
+            # bootstrap ACCEPTED ≠ job RUNNING: launchd can accept the definition and still fail
+            # the spawn (bad launcher path, env). Verify the service actually reports itself
+            # before exiting 0 — an install that "succeeded" onto a dead agent is exactly the
+            # silent outage this script keeps causing.
+            running=""
+            for _ in $(seq 1 20); do
+                if "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then running=1; break; fi
+                sleep 0.3
+            done
+            if [[ -z "$running" ]]; then
+                echo "romp-service: agent loaded but is NOT running — check $LOG" >&2
                 exit 1
             fi
         fi
