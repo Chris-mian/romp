@@ -11231,6 +11231,7 @@ def _producer():
             _record_suspend(_iv)                        # → the timeline closes turns left open across it
         _prev_wall, _prev_mono = _nw, _nm
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
+        _own_frame = False       # set once the pass frame opens; the finally below can then never leak it
         try:
             # Two tiers, run in PARALLEL (the user 2026-06-17) — they share no store and triage never
             # reads the captioner's output, so the only cost of overlap is each tier parsing a transcript
@@ -11248,10 +11249,14 @@ def _producer():
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
+            _own_frame = jd.begin_pass_frame()         # ONE evidence frame for BOTH tiers and their worker pools:
+                                                       # every judge stage this cycle sees the same frozen world
+                                                       # (the user 2026-07-21); the join below ends it
             for t in tiers:
                 t.start()
             for t in tiers:                            # barrier: both tiers finish before the next wake
                 t.join()
+            jd.end_pass_frame(_own_frame)              # evidence unfreezes; the next cycle pins a fresh frame
             try:                                       # AFTER the join → single writer: archive newly-cleared
                 moved = _compact_goal_stores()         # cards out of the live goal stores (keeps build_feed flat).
                 if moved:                              # the first pass migrates the whole backlog of cleared nodes.
@@ -11268,6 +11273,7 @@ def _producer():
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
             _end_goals_pass()      # safety net: never leave a pass's snapshot stuck if the pass raised mid-flight
+            jd.end_pass_frame(_own_frame)   # …nor the evidence frame (idempotent with the normal-path end above)
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
         # instead of waiting out the backstop. The 3s is only a BACKSTOP — for changes we don't get poked
         # for (e.g. a segment closing mid-turn) and a safety net if a poke is ever missed. A pass is cheap

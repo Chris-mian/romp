@@ -876,6 +876,58 @@ def _sdk_owned(fsid):
     return (STATE / "sdk" / (fsid + ".json")).exists()
 
 
+# ── the PASS FRAME (the user 2026-07-21): one frozen view of the EVIDENCE per judge pass ──
+# Every stage of a pass judges the SAME world. Without it, each stage read the live transcript at its
+# own moment, so a turn ending mid-pass was invisible to the planner (stage 1) yet visible to the
+# closer (stage 2) — the closer swept the freshly-ended turn against a tree the planner had not yet
+# ruled on (the ui g139 stranded top). The frame pins parsed_session's result (and the caption memo's
+# fileset key, which would otherwise stamp stale tasks under a fresh key) from first touch to pass
+# end; the next pass sees the new world and runs every stage over it in order. Only EVIDENCE freezes:
+# goal/caption stores keep flowing through the pass — they are the pipeline's own dataflow (the closer
+# must see this pass's planner verdicts). Shared across tier threads AND their worker pools on
+# purpose: one frame, one world, first touch wins under the lock.
+_frame = None                    # {"parses": {fsid: session}, "keys": {tag: fileset-key}} while a pass runs
+_frame_lock = threading.Lock()
+
+
+def begin_pass_frame():
+    """Open a pass frame; True when this call CREATED it (the creator must end it), False when one is
+    already active (a tier running under the kernel producer's frame joins it instead)."""
+    global _frame
+    with _frame_lock:
+        if _frame is not None:
+            return False
+        _frame = {"parses": {}, "keys": {}}
+        return True
+
+
+def end_pass_frame(owned=True):
+    """Drop the pass frame (creator only — a joiner passes its begin_pass_frame() result through)."""
+    global _frame
+    if not owned:
+        return
+    with _frame_lock:
+        _frame = None
+
+
+def _pinned_fileset_key(tag, files):
+    """The fileset key as of this pass's FIRST look (frame-pinned), else the live key. Keeps a
+    memo written mid-pass consistent with the frame's content: a live key over a file that grew
+    mid-pass would stamp stale derived data under the NEW key, and the next pass would trust it."""
+    fr = _frame
+    if fr is not None:
+        with _frame_lock:
+            hit = fr["keys"].get(tag)
+        if hit is not None:
+            return hit
+    k = _fileset_key(files)
+    fr = _frame
+    if fr is not None:
+        with _frame_lock:
+            return fr["keys"].setdefault(tag, k)
+    return k
+
+
 def parsed_session(fsid, files, now):
     """ONE event-model parse per (transcript+states, mtime+size), reused across the captioner, planner,
     sweep, courier, and grouper — which all re-parsed the SAME leaf every pass (up to 4× per change, and
@@ -883,10 +935,20 @@ def parsed_session(fsid, files, now):
     kernel runs every judge in-process, so the cache lives across a producer pass. An unchanged transcript
     now costs 0 parses; a changed one costs 1. Falls through to a fresh parse if the files can't be stat'd.
 
+    Under an open PASS FRAME (begin_pass_frame) the FIRST parse of a session is pinned and every later
+    call in the pass returns it — even after the file grew — so all stages judge one frozen world
+    (the user 2026-07-21); first touch wins across the tier's worker threads.
+
     Passes states/<fsid>.jsonl so REAL idle transitions become idle atoms — without them _session_closed()
     is permanently False and a discharged focus goal never settles to completed (the settled gate, the
     user's bug 2026-06-17). The states file's (mtime,size) is folded into the cache key so an idle-only
     transition (which doesn't touch the transcript) still busts the cache and re-rolls status."""
+    fr = _frame
+    if fr is not None:
+        with _frame_lock:
+            hit = fr["parses"].get(fsid)
+        if hit is not None:
+            return hit
     states = STATESDIR / (fsid + ".jsonl")
     # A FORKED leaf (SDK /clear: discover hands the lastSid file under the stable romp sid) parses with
     # the session's anchor transcript among the candidates, so a fork whose chain back-links across files
@@ -911,15 +973,22 @@ def parsed_session(fsid, files, now):
         if len(_PARSE_CACHE) > 256:        # bounded by fleet size; a wholesale clear on overflow is fine
             _PARSE_CACHE.clear()
         _PARSE_CACHE[fsid] = (key, session)
+    fr = _frame
+    if fr is not None:                     # pin under the frame; a concurrent first toucher already
+        with _frame_lock:                  #  there wins, so every stage shares ONE canonical parse
+            return fr["parses"].setdefault(fsid, session)
     return session
 
 
 def tasks_for(fsid, leaf, files, now):
     """The transcript's ready caption tasks [{text, writes:[{id,grain,t}]}], memoized on disk
     by the file set's (mtime, size) — repeated passes don't re-parse an unchanged transcript
-    (ports the romp-events cache; the per-second-polling / 14MB-transcript guard)."""
+    (ports the romp-events cache; the per-second-polling / 14MB-transcript guard). The key rides
+    the PASS FRAME (_pinned_fileset_key): under a frame the memo is checked and written with the
+    key of the content the pass actually judged, so a file growing mid-pass can't stamp stale
+    tasks under its new key (which the next pass would then trust)."""
     try:
-        key = _fileset_key(files)
+        key = _pinned_fileset_key(("tasks", fsid) + tuple(str(f) for f in files), files)
     except OSError:
         return []
     cf = PCACHE / (fsid + ".json")
@@ -2906,8 +2975,17 @@ def _archive_call(fsid, caps):
 
 
 def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY, verbose=False):
-    """One INDEX-TIER pass over the fleet: caption ready units, then refresh per-session
-    archives whose turn set grew. Returns {"captions": n, "archives": m}."""
+    """One INDEX-TIER pass over the fleet: caption ready units, then refresh per-session archives whose
+    turn set grew. Returns {"captions": n, "archives": m}. Frame-wrapped like run_triage: under the
+    kernel producer it joins the producer's pass frame; standalone it owns one."""
+    own = begin_pass_frame()
+    try:
+        return _run_index(now=now, budget=budget, fairness=fairness, concurrency=concurrency, verbose=verbose)
+    finally:
+        end_pass_frame(own)
+
+
+def _run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY, verbose=False):
     if now is None:
         now = int(time.time())
     fleet = discover(now)
@@ -6564,25 +6642,34 @@ def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ve
     of overlap is each tier parsing a transcript instead of sharing one parse. Order matters: the planner
     places + groups inline, the closer completes/blocks at turn-end, the courier files peer delegations,
     the grouper sweeps any courier-planted tops, the consolidator groups the completed column, then the
-    distiller summarizes newly-completed goals. Returns segments placed by the planner."""
+    distiller summarizes newly-completed goals. Returns segments placed by the planner.
+
+    Runs under a PASS FRAME (begin_pass_frame): every stage judges the same frozen evidence, so a turn
+    ending mid-pass is invisible to the WHOLE pass and processed planner-first next pass (the user
+    2026-07-21). Under the kernel producer both tiers share the producer's frame; standalone
+    (romp-judge --once, tests) this owns its own."""
     if now is None:
         now = int(time.time())
-    placed = run_plan(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    if CLOSER_ON:
-        run_close(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    if UNBLOCK_ON:
-        # after the closer (a just-completed top's blocks are already moot) and before the distiller
-        # (a lifted block's card re-rolls to working in this same pass)
-        run_unblock(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    run_courier(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    run_propagate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)   # delegated goal done on B → check off the sender's tracking node
-    if GROUPER_ON:
-        run_group(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    if CONSOLIDATE_ON:
-        run_consolidate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    if DISTILLER_ON:
-        run_distill(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-    return placed
+    own = begin_pass_frame()
+    try:
+        placed = run_plan(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        if CLOSER_ON:
+            run_close(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        if UNBLOCK_ON:
+            # after the closer (a just-completed top's blocks are already moot) and before the distiller
+            # (a lifted block's card re-rolls to working in this same pass)
+            run_unblock(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        run_courier(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        run_propagate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)   # delegated goal done on B → check off the sender's tracking node
+        if GROUPER_ON:
+            run_group(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        if CONSOLIDATE_ON:
+            run_consolidate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        if DISTILLER_ON:
+            run_distill(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+        return placed
+    finally:
+        end_pass_frame(own)
 
 
 # ───────────────────────── the courier (triage tier; postal delegations) ─────────────────────────
