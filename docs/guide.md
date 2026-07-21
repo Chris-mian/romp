@@ -1,6 +1,6 @@
 # Guide
 
-Romp gathers a fleet of Claude Code sessions into a single dashboard you can
+Romp gathers all your Claude Code sessions into a single dashboard you can
 watch and steer. You see it through four views, each answering a different
 question:
 
@@ -10,13 +10,13 @@ question:
   transcript, breaks the work into tasks, and shows each task as a card. One
   session can produce several, and agents can hand tasks off to one another.
 - **The outline** lists every session with its tasks, for reviewing what a
-  session has done and searching across the whole fleet.
+  session has done and searching across all of them.
 - **The timeline** shows what each session has been doing over time and how they
   have been coordinating; click any part to jump to that moment in the chat.
 
 ## The views
 
-![The dashboard: chat, outline, and feed over one fleet](assets/guide/dashboard-annotated.png){ width="100%" }
+![The dashboard: chat, outline, and feed across every session](assets/guide/dashboard-annotated.png){ width="100%" }
 
 ### The chat
 
@@ -127,7 +127,7 @@ romp --mail inbox
 
 The full mail surface, shell and in-session, is in the
 [Reference](reference.md#mail-from-the-shell). Names resolve against the
-currently live fleet; sending to a dead session's name errors instead of
+currently live sessions; sending to a dead session's name errors instead of
 silently parking mail.
 
 ## Sessions, revival, and search
@@ -142,8 +142,8 @@ laptop, costs nothing.
 
 The picker matches against every session, live or closed. As sessions run, a
 lightweight index judge writes each one a headline and an abstract of what it
-did, so the search reaches inside a session's work, and a fleet of many
-sessions stays navigable months later.
+did, so the search reaches inside a session's work, and many sessions stay
+navigable months later.
 
 Which backend a session runs on (Agent SDK or tmux) is a per-session choice;
 [Session backends](reference.md#session-backends) covers the difference.
@@ -156,12 +156,13 @@ tab or the VS Code / Cursor extension. Everything Romp stores stays local; the
 only traffic that leaves your machine is `claude` itself, both the agents' own
 model calls and the LLM calls in Romp's judge pipeline.
 
-### More machines, one fleet
+### More machines, one place
 
 Federation connects more than one machine: each runs its own kernel, and an
-attached machine's sessions join yours as a single fleet.
+attached machine's sessions join yours in the same dashboard, so their agents
+message each other across the boundary and you steer them all from one place.
 
-![One fleet across a phone, a laptop, and a remote server](assets/guide/federation.png){ width="100%" }
+![Sessions from a phone, a laptop, and a remote server in one dashboard](assets/guide/federation.png){ width="100%" }
 
 Once a host is attached:
 

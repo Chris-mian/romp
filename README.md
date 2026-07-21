@@ -51,7 +51,7 @@ Romp works with Claude Code today. It adds all of this on top of the sessions yo
 You run Romp yourself, on your laptop or a server, with no hosted service in between.
 
 - **On your phone.** Reach the full dashboard over Tailscale.
-- **Across machines.** Connect several over SSH and they federate into one fleet whose agents message across the boundary.
+- **Across machines.** Connect several over SSH: their agents message each other across the boundary, and you steer them all from one place.
 - **In your editor or a browser.** Open it as a VS Code / Cursor extension or a plain browser tab.
 
 ## Quick start

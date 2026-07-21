@@ -10,7 +10,7 @@ that hosts the kernel.
 | `romp <name>` | Start or re-attach the terminal (tmux-backend) session `<name>` |
 | `romp -d` / `-f` / `-j` | Terminal views: dashboard, feed mirror, judge monitor |
 | `romp --on` / `--status` | Start the kernel manager / report its status |
-| `romp --refresh` | Restart the kernels (fleet-wide; running sessions reconnect) |
+| `romp --refresh` | Restart the kernels (every machine; running sessions reconnect) |
 | `romp --mail …` | The postal service from the shell (below) |
 | `romp update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
 | `romp --version` | Version report across the moving parts |
@@ -30,7 +30,7 @@ romp --mail working "<note>"      # publish what this session is working on
 |---|---|
 | `send_message(to, body, kind)` | Message a live session by name; `kind` declares delegate / coordinate / question |
 | `check_inbox()` | Read messages sent to you (also delivered at the end of each turn) |
-| `list_agents()` | The live fleet, each with its branch and working-note |
+| `list_agents()` | The live sessions, each with its branch and working-note |
 | `set_working(text)` | Publish what you hold so peers steer clear |
 | `check_sent()` | Whether your sent messages were read yet |
 | `recall_message(to, id?)` | Unsend a message the recipient hasn't read |
@@ -52,8 +52,8 @@ Sessions run on one of two backends, chosen per session:
 
 The tmux backend exists for when you want the session in an actual terminal:
 run `romp <name>` and that terminal session shows up on the dashboard like any
-other. The two interleave freely in one fleet, so a terminal session can sit
-alongside SDK sessions; it just won't be as smooth as they are.
+other. The two interleave freely, so a terminal session can sit alongside SDK
+sessions; it just won't be as smooth as they are.
 
 ## What the installer sets up
 

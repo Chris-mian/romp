@@ -22,7 +22,7 @@ corrupted fact.
 The thirteen judges run in two tiers. The index tier (cheap, fast models) writes
 text only and never touches goals. The triage tier (a stronger model) maintains the
 board. Both run continuously from the kernel producer and are event-gated,
-so an idle fleet costs file stats, not model calls.
+so idle sessions cost file stats, not model calls.
 
 ## The roster
 
@@ -246,7 +246,7 @@ event).
 | distiller, briefer | 3 tries, then a blank summary plus a card warn | on recovery, or a fresh completion/block |
 
 While the account usage window is exhausted, the rate gate skips every call
-fleet-wide and logs one `rate-limited` row per window; gate skips count
+across every session and logs one `rate-limited` row per window; gate skips count
 toward nothing.
 
 ## Not judges, but often confused with them

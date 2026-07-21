@@ -1,5 +1,5 @@
 site_name: Romp
-site_description: Mission control for a fleet of AI coding agents.
+site_description: Mission control for many AI coding agents at once.
 
 site_url: https://romp-on.github.io/romp/
 repo_url: https://github.com/romp-on/romp
