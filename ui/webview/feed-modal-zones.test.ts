@@ -34,7 +34,9 @@ test("modal node: text → the minting MESSAGE (anchor 'prompt', resolves by pro
 
 test("modal node: mark + time → where it got CHECKED OFF (anchor 'work' @ resolveT, by anchorUuid)", () => {
   assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
-  assert.match(FEED, /const goWork = \(ev: Event\) => \{[^}]*t: resolveT, anchor: "work", anchorUuid: node\.anchorUuid \?\? null \}/);
+  // the work anchor falls to the PROMPT anchor rather than dispatching null (the user 2026-07-20: the
+  // kernel's cache-only parse goes cold on every transcript write, and a null dispatch can only toast)
+  assert.match(FEED, /const goWork = \(ev: Event\) => \{[^}]*t: resolveT, anchor: "work", anchorUuid: node\.anchorUuid \?\? node\.promptAnchorUuid \?\? null \}/);
   assert.match(FEED, /mark\.classList\.add\("lz-nav"\);[^\n]*mark\.onclick = goWork/);
   assert.match(FEED, /meta\.classList\.add\("lz-nav"\);[^\n]*meta\.onclick = goWork/);
   // the old whole-line jump is gone

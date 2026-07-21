@@ -1645,7 +1645,10 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // descendant, so its own anchor is its mint, and the hover must not claim "marked blocked" here.
   const resolved = (node.status === "done" || (node.status === "question" && !node.qderived)) && node.auth !== "open";
   const resolveT = (resolved && node.mt) ? node.mt : node.t;
-  const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+  // anchorUuid can arrive null for a beat (the kernel's cache-only parse goes cold on every transcript
+  // write); fall to the stored promptAnchorUuid rather than dispatch a null the chat can only toast on
+  // (the user 2026-07-20: three dead clicks on a blocked sub's ⏸ mark in one cold beat).
+  const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? node.promptAnchorUuid ?? null }); };
   // prompt-intent: jump to the minting user message. But a node with no opener (an autonomous note, or an
   // opener compacted off-path) has no promptAnchorUuid, so the jump would honest-fail with "couldn't locate".
   // Fall back to goWork — where the work actually happened — rather than toast (the user 2026-06-30).
@@ -1812,7 +1815,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     sum.textContent = nodeDistill;
     // parity with the card's distiller line (the user 2026-06-29): the modal summary is also a LINK — clicking
     // it follows to where the node resolved (its work anchor, the SAME target as the node's mark/time zones).
-    if (!repeat && node.anchorUuid) {
+    // Wired on EITHER anchor: goWork itself falls to the prompt anchor when the work one is cold-null, so
+    // gating on anchorUuid alone dead-ended the line during a cold beat (the user 2026-07-20).
+    if (!repeat && (node.anchorUuid || node.promptAnchorUuid)) {
       sum.classList.add("ftree-summary-link");
       sum.title = "jump to where this was written";
       sum.onclick = goWork;

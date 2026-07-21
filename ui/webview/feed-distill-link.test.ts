@@ -24,7 +24,10 @@ test("the CARD's distiller line links to it.summaryAnchorUuid (work anchor), onl
 });
 
 test("the MODAL node summary is also a link (parity), to the node's work anchor via goWork", () => {
-  assert.match(FEED, /if \(!repeat && node\.anchorUuid\) \{[\s\S]*?sum\.classList\.add\("ftree-summary-link"\);[\s\S]*?sum\.onclick = goWork;/);
+  // wired on EITHER anchor (the user 2026-07-20): the work anchor goes cold-null on every transcript
+  // write (cache-only parse), and gating on it alone dead-ended the summary line for a beat — goWork
+  // itself falls to the prompt anchor, so the line stays live whenever ANY anchor exists.
+  assert.match(FEED, /if \(!repeat && \(node\.anchorUuid \|\| node\.promptAnchorUuid\)\) \{[\s\S]*?sum\.classList\.add\("ftree-summary-link"\);[\s\S]*?sum\.onclick = goWork;/);
 });
 
 test("both link variants get a pointer + hover affordance in CSS", () => {

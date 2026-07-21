@@ -51,7 +51,9 @@ test("the work zones deep-link BY ID — forward node.anchorUuid alongside the t
   // (scrollToAnchor), falling back to t only when the uuid is null/off-path — killing the nearest-time
   // miss where a click landed on an unrelated user message.
   assert.match(FEED, /anchorUuid\?: string \| null/, "AskTreeNode carries the per-node anchor uuid");
-  assert.match(FEED, /goWork = .*showOnTimeline".*anchor: "work", anchorUuid: node\.anchorUuid \?\? null/);
+  // the work anchor falls to the prompt anchor before dispatching null (the user 2026-07-20: a cold-beat
+  // null could only toast; either uuid lands an exact turn)
+  assert.match(FEED, /goWork = .*showOnTimeline".*anchor: "work", anchorUuid: node\.anchorUuid \?\? node\.promptAnchorUuid \?\? null/);
 });
 
 test("the card title deep-links by id — promptAnchorUuid for a 'prompt' title, anchorUuid for a 'work' one", () => {

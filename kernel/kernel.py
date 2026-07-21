@@ -5669,21 +5669,98 @@ def _task_store_dir(fsid):
     return _tasks_base() / fsid
 
 
-def _task_store_fp(fsid):
-    """A cheap fingerprint (each N.json's name+mtime) of the fsid's task store, for the chat-build cache —
-    so a store update the MAIN transcript never recorded (a SUBAGENT completing a task) still busts the
-    to-do card's cache and refreshes it. None when the session has no store dir."""
+_task_dir_hint = {}   # fsid → content-joined store dir NAME (see _task_store_resolve); reset per kernel run
+_task_join_miss = {}  # fsid → the fold pairs that failed to join — skip re-scanning until the pairs CHANGE
+#                       (event-based retry: new task activity reshapes the fold; a kernel restart clears both)
+
+
+def _task_store_known(fsid):
+    """The session's task-store dir when it's derivable WITHOUT a scan: <fsid> itself (SDK sessions —
+    romp pins the boot session id, so the store lands under the transcript's own id), the CLI's
+    session-<fsid[:8]> team naming (an interactive session that booted straight into this id), or a
+    prior content-join hit (_task_dir_hint). None when only _task_store_resolve's join could answer."""
     if not fsid:
         return None
+    d = _task_store_dir(fsid)
+    if d.is_dir():
+        return d
+    d = _task_store_dir("session-" + fsid[:8])
+    if d.is_dir():
+        return d
+    hint = _task_dir_hint.get(fsid)
+    if hint:
+        d = _task_store_dir(hint)
+        if d.is_dir():
+            return d
+    return None
+
+
+def _task_store_resolve(fsid, fold):
+    """The session's task-store dir, resolving the interactive CLI's team naming. Newer Claude Code keys
+    the store by TEAM name, and the default team is named session-<first 8 hex of the CLI's BOOT session
+    id> (verified against the 2.1.215 binary: team name = session-${sessionId.slice(0,8)} at team
+    creation) — but `claude -r <fsid>` creates the team BEFORE resume swaps the session id, so a resumed
+    interactive session's store sits under an id recorded NOWHERE the kernel can reach (not the
+    transcript, not ~/.claude/sessions, not the team config's cwd). The one authoritative edge left is
+    the session's OWN record of creating the tasks: the transcript fold's (id, subject) pairs. A
+    candidate store that contains them ALL is the session's store; no match or SEVERAL matches → None,
+    and the caller stays loud (never guess). The join runs at most once per session per kernel run
+    (_task_dir_hint caches the winner)."""
+    d = _task_store_known(fsid)
+    if d is not None:
+        return d
+    pairs = {(t["id"], t["subject"]) for t in (fold or [])
+             if t.get("subject") and str(t["id"]).isdigit()}   # synthetic cN ids (no 'Task #N' result) can't join
+    if not pairs:
+        return None
+    if _task_join_miss.get(fsid) == pairs:
+        return None                                            # same fold already failed to join → no re-scan
     try:
-        ents = [(e.name, e.stat().st_mtime) for e in os.scandir(_task_store_dir(fsid))
+        cands = [e for e in os.scandir(_task_store_dir(fsid).parent) if e.is_dir()]
+    except OSError:
+        return None
+    hits = []
+    for e in cands:
+        have = set()
+        try:
+            names = [n for n in os.listdir(e.path) if n.endswith(".json")]
+        except OSError:
+            continue
+        for n in names:
+            try:
+                t = json.loads((Path(e.path) / n).read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(t, dict):
+                have.add((str(t.get("id") or n.rsplit(".", 1)[0]), str(t.get("subject") or "")))
+        if pairs <= have:
+            hits.append(e.name)
+    if len(hits) != 1:
+        return None
+    _task_dir_hint[fsid] = hits[0]
+    return _task_store_dir(hits[0])
+
+
+def _task_store_fp(fsid):
+    """A cheap fingerprint (each N.json's name+mtime) of the session's task store, for the chat-build
+    cache — so a store update the MAIN transcript never recorded (a SUBAGENT completing a task) still
+    busts the to-do card's cache and refreshes it. Resolves through _task_store_known so an interactive
+    session's session-<hex> store (or a joined hint) fingerprints too; before the first join lands the
+    fp is None and the next build resolves + caches the hint. None when the session has no store dir."""
+    if not fsid:
+        return None
+    d = _task_store_known(fsid)
+    if d is None:
+        return None
+    try:
+        ents = [(e.name, e.stat().st_mtime) for e in os.scandir(d)
                 if e.name.endswith(".json")]
     except OSError:
         return None
     return tuple(sorted(ents))
 
 
-def _read_task_store(fsid):
+def _read_task_store(fsid, fold=None):
     """The AUTHORITATIVE to-do list from Claude Code's live task store (~/.claude/tasks/<fsid>/<N>.json) —
     the same state TaskList/TaskGet read, updated by EVERY writer INCLUDING subagents. The transcript fold
     (_fold_tasks) only sees the MAIN agent's TaskCreate/TaskUpdate tool calls, so a task a subagent
@@ -5697,11 +5774,15 @@ def _read_task_store(fsid):
     Returns a LIST (possibly empty) when the store dir is READABLE — that is the authoritative answer, even
     when empty (a cleared/never-populated list) — and None ONLY when the store can't be read (dir missing
     or an OS error). The caller must NOT silently fall back to the lossy fold on None; it surfaces an error
-    instead (repo policy: fail loudly, don't degrade silently — see CLAUDE.md)."""
+    instead (repo policy: fail loudly, don't degrade silently — see CLAUDE.md). `fold` (the transcript's
+    own task record, _fold_tasks) feeds _task_store_resolve's content join for interactive sessions whose
+    store is named after an unrecorded boot session id (the user 2026-07-20, the rescue TO-DO error card)."""
     if not fsid:
         return None                                       # no fsid → can't locate the store (NB os.listdir(None) lists CWD)
+    d = _task_store_resolve(fsid, fold)
+    if d is None:
+        return None                                       # store unlocatable → the caller surfaces an error
     try:
-        d = _task_store_dir(fsid)
         names = [n for n in os.listdir(d) if n.endswith(".json")]
     except OSError:
         return None                                       # store unreadable → the caller surfaces an error
@@ -7346,9 +7427,9 @@ def build_session(sid, now, tmux=None):
     # error worth alarming on. Only while work is OUTSTANDING does a card show at all — a fully
     # completed/cancelled list isn't a live to-do (the user 2026-06-10).
     _fsid = os.path.basename(sess["path"]).rsplit(".", 1)[0] if sess.get("path") else ""
-    todo = _read_task_store(_fsid)
+    fold = _fold_tasks(session)                       # the transcript's own task record — feeds the store
+    todo = _read_task_store(_fsid, fold)              # content join for team-named interactive stores
     if todo is None:                                  # authoritative store unreadable — never silently fold
-        fold = _fold_tasks(session)
         if fold and any(t["status"] not in ("completed", "cancelled") for t in fold):
             events.append({"kind": "todo", "tasks": [],
                            "error": "Can't read Claude's task store (~/.claude/tasks) for this session, "
@@ -9314,6 +9395,9 @@ def _seg_caption(caps, seg_id):
     return (hit or {}).get("caption", "")
 
 
+_node_anchor_last = {}   # node id → its last WARM-resolved (prompt, work) anchors — see _node_anchor_uuids
+
+
 def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
     """(promptAnchorUuid, anchorUuid) — the EXACT chat .turn[data-uuid]s a goal node's ledger/feed zones
     deep-link to. promptAnchorUuid = the MINTING segment's trigger (the user message → the text/title
@@ -9328,11 +9412,33 @@ def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
     the TIMESTAMP axis of the echo-vs-atom mismatch but NOT the TEXT axis, so a trigger-text difference
     (a trailing marker, whitespace, an image placeholder) changes the text-hash → the key misses → the
     title click silently no-ops (the user: 'the modal title jump fails to link'). The stored uuid needs no
-    re-match. Falls back to the derivation for nodes minted before the field existed (no promptUuid)."""
+    re-match. Falls back to the derivation for nodes minted before the field existed (no promptUuid).
+
+    WORK anchor: the seg maps come from the parse, and the feed reads the parse CACHE-ONLY — every
+    transcript write reopens a cold beat (empty maps) until the next chat/timeline build or _warm_fleet_bg
+    re-parses, which for an actively-working session is most pushes. The modal's ⏸ mark then dispatched
+    anchorUuid null and the click honest-failed with "couldn't locate" (the user 2026-07-20: the
+    romp_docs blocked-sub mark, three dead clicks in one cold beat). So a warm resolve is REMEMBERED
+    (_node_anchor_last, per kernel run) and a cold/missed one serves, in order: the remembered warm
+    anchor (exact — at worst one resolve behind), the node's stored summaryAnchor (the distiller's
+    validated citation, the same fallback family as build_feed's card-level cold fix), else None — the
+    honest-fail toast stays for the truly unanchorable."""
     trail = nd.get("trail") or []
     anchor_seg = (trail[-1] if resolved else trail[0]) if trail else None
     prompt = nd.get("promptUuid") or seg_trig.get(_seg_key(trail[0] if trail else None))
-    return (prompt, seg_work.get(_seg_key(anchor_seg)))
+    work = seg_work.get(_seg_key(anchor_seg))
+    nid = nd.get("id")
+    if work is not None:
+        if nid:
+            _node_anchor_last[nid] = (prompt, work)
+    else:
+        held = _node_anchor_last.get(nid) if nid else None
+        if held:
+            prompt = prompt or held[0]
+            work = held[1]
+        if work is None:
+            work = nd.get("summaryAnchor")
+    return (prompt, work)
 
 
 def _seg_prompt(seg):

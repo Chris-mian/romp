@@ -47,6 +47,56 @@ class NodeAnchorResolution(unittest.TestCase):
         self.assertEqual(km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True), (None, None))
 
 
+class ColdBeatWorkAnchorFallback(unittest.TestCase):
+    """The feed reads the parse CACHE-ONLY, and every transcript write invalidates it — so an actively
+    working session's pushes arrive with EMPTY seg maps most beats, and every node's work anchor went out
+    null: the modal's ⏸ mark dispatched anchorUuid null and the click could only toast "couldn't locate"
+    (the user 2026-07-20, three dead clicks on the romp_docs blocked sub in one cold beat). A warm resolve
+    is REMEMBERED per node id and served through the cold beats; a node never seen warm this kernel run
+    falls to its stored summaryAnchor (the distiller's validated citation); only a node with neither still
+    honest-fails."""
+
+    SEG_TRIG = {"s1": "u-aaa"}
+    SEG_WORK = {"s1": "a-aaa"}
+    COLD = {}                     # what build_feed's maps look like on a cold beat
+
+    def setUp(self):
+        km._node_anchor_last.clear()
+
+    def tearDown(self):
+        km._node_anchor_last.clear()
+
+    def test_a_warm_resolve_is_remembered_and_served_through_a_cold_beat(self):
+        nd = {"id": "S:g1", "trail": ["s1"], "promptUuid": "u-stored"}
+        warm = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True)
+        self.assertEqual(warm, ("u-stored", "a-aaa"))
+        cold = km._node_anchor_uuids(nd, self.COLD, self.COLD, True)
+        self.assertEqual(cold, warm, "the cold beat serves the remembered warm anchors, not null")
+
+    def test_never_seen_warm_falls_to_the_stored_distiller_citation(self):
+        nd = {"id": "S:g2", "trail": ["sX"], "promptUuid": "u-stored", "summaryAnchor": "a-cited"}
+        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD, True), ("u-stored", "a-cited"))
+
+    def test_a_node_with_neither_still_honest_fails(self):
+        # no warm memory, no stored citation → None work anchor: the render's honest-fail toast is correct
+        nd = {"id": "S:g3", "trail": ["sX"]}
+        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD, True), (None, None))
+
+    def test_the_memory_is_per_node_never_a_neighbors(self):
+        km._node_anchor_uuids({"id": "S:g4", "trail": ["s1"]}, self.SEG_TRIG, self.SEG_WORK, True)
+        nd = {"id": "S:g5", "trail": ["sX"]}
+        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD, True), (None, None),
+                         "g4's warm anchors never bleed onto g5")
+
+    def test_a_warm_miss_prefers_the_memory_over_the_stored_citation(self):
+        # warm maps that MISS this node's seg (drift / rewound off-path) behave like a cold beat: the last
+        # good anchor (exact) outranks the stored citation (older)
+        nd = {"id": "S:g6", "trail": ["s1"], "summaryAnchor": "a-cited"}
+        km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True)
+        got = km._node_anchor_uuids({**nd, "trail": ["sX"]}, self.SEG_TRIG, self.SEG_WORK, True)
+        self.assertEqual(got[1], "a-aaa", "the remembered warm anchor wins over the stored citation")
+
+
 class SharedHelperAntiDrift(unittest.TestCase):
     """The whole point of the helper: the feed and the ledger can't drift. Guard that BOTH build_feed and
     build_session resolve node anchors through km._node_anchor_uuids (not a private re-implementation)."""
