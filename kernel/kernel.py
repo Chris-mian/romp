@@ -7040,7 +7040,9 @@ def _fleet_archived_tops(sid, cap=20):
                     # uuids stamped ON the node ride along (mint prompt, distiller citation); when null
                     # the client still posts t/mt and the kernel's time-based nav lands nearest — the
                     # same graceful fallback every live zone has. Parse-free, as this whole path must be.
-                    "promptAnchorUuid": nd.get("promptUuid"), "anchorUuid": nd.get("summaryAnchor"),
+                    # A junk mint quote ('retry') ships no prompt anchor, same as _node_anchor_uuids.
+                    "promptAnchorUuid": None if jd.junk_quote(nd.get("quote")) else nd.get("promptUuid"),
+                    "anchorUuid": nd.get("summaryAnchor"),
                     "children": ch, "archived": True})
         for c in ch:
             _proj(c, depth + 1, done)
@@ -7638,9 +7640,8 @@ def build_session(sid, now, tmux=None):
         # EXACT deep-link anchors (the user 2026-06-19): a ledger TOC click lands on the precise chat turn
         # BY UUID — the SAME anchors build_feed gives its cards — so the ledger and the feed for one node
         # land identically, replacing the ledger's old nearest-time landing. promptAnchorUuid → the minting
-        # user message (text zone); anchorUuid → where it resolved / is being worked (mark + time zones).
-        _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_work,
-                                      explicit or derived or clr or bool(nd.get("blocked")))
+        # user message (text zone); anchorUuid → the newest trail segment (mark + time zones).
+        _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_work)
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
                      "done": explicit or derived or clr, "derived": derived, "cleared": clr,
                      "blocked": bool(nd.get("blocked")), "t": nd["t"],
@@ -8585,12 +8586,14 @@ def build_feed(now, tmux=None):
             done = (explicit or _closure_done(nid) or ancestor_done) and nid not in agent_open
             derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one
             st = "done" if done else ("question" if _closure_blocked(nid) else "open")
-            # The node's deep-link target SEGMENT: where it RESOLVED (done/blocked → its last trail seg,
-            # matching the mt convention below) else where it was MINTED (open → its first trail seg).
-            # A rolled-up question ancestor is NOT itself resolved — anchor on the node's OWN state.
-            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid, done or bool(nd.get("blocked")))
+            # The node's deep-link target SEGMENT: its NEWEST trail seg — the resolve turn for
+            # done/blocked nodes, the latest activity for open ones (where it stands, not where born).
+            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid)
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
+                        # user-dropped sub (nodeOverride op:clear) → renders checked-off faded, not an
+                        # open ring pretending to be live work (the user 2026-07-20)
+                        "cleared": bool(nd.get("cleared")),
                         # a rolled-UP question (the block lives in a descendant, not here) — the client's
                         # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below
                         "qderived": st == "question" and not nd.get("blocked"),
@@ -8616,6 +8619,9 @@ def build_feed(now, tmux=None):
                         "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only — the user 2026-06-17
                         "blockSummary": nd.get("blockSummary"),         # block-distiller's DECISION BRIEF (MODAL); null until produced — the user 2026-06-18
                         "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
+                        # the per-item story (MODAL, non-done only): newest block/unblock/verdict rows with
+                        # anchors, so an open sub answers 'is this still active?' in place (the user 2026-07-20)
+                        "log": _node_log_rows(nd, seg_uuid) if st != "done" else None,
                         "children": kids})
             for c in kids:
                 flatten(c, out, ancestor_done=done)
@@ -9395,17 +9401,35 @@ def _seg_caption(caps, seg_id):
     return (hit or {}).get("caption", "")
 
 
+def _node_log_rows(nd, seg_work, cap=8):
+    """The node's newest verdict rows, compacted for the modal's per-item story (the user 2026-07-20:
+    'I don't know if they're still active' — the block/unblock history answers it and was already in the
+    store, just never shipped). Each row: kind/src/why/when + the row's EXACT chat anchor when its
+    segment resolves in this parse (else null and the client falls back to ev_t time-nav, the same
+    graceful family as every other zone). Capped to the newest `cap` — the story, not the ledger."""
+    rows = []
+    for r in (nd.get("log") or [])[-cap:]:
+        seg = r.get("seg")
+        rows.append({"kind": r.get("kind"), "src": r.get("src"), "why": r.get("why"),
+                     "at": r.get("at"), "evT": r.get("ev_t"),
+                     "anchorUuid": seg_work.get(_seg_key(seg)) if seg else None})
+    return rows or None
+
+
 _node_anchor_last = {}   # node id → its last WARM-resolved (prompt, work) anchors — see _node_anchor_uuids
 
 
-def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
+def _node_anchor_uuids(nd, seg_trig, seg_work):
     """(promptAnchorUuid, anchorUuid) — the EXACT chat .turn[data-uuid]s a goal node's ledger/feed zones
-    deep-link to. promptAnchorUuid = the MINTING segment's trigger (the user message → the text/title
-    zones, landing on the user turn). anchorUuid = the WORK anchor (reply preferred) of where the node
-    RESOLVED (done/blocked → its LAST trail segment) or was MINTED (open → its FIRST). Shared by
-    build_feed + build_session so a feed card and the ledger TOC for the SAME node land on the SAME turn —
-    replacing the ledger's old nearest-time heuristic (the user 2026-06-19). Lookups go through _seg_key so
-    a timestamp-drifted trail seg id (SDK echo vs real atom) still resolves.
+    deep-link to. promptAnchorUuid = the MINTING segment's trigger (the user message that asked — the
+    text/title zones for DONE nodes, landing on the user turn). anchorUuid = the WORK anchor (reply
+    preferred) of the node's NEWEST trail segment — where it last moved: the resolve turn for done/blocked
+    nodes, the latest activity for open ones (2026-07-20; open nodes anchored their MINT before, which for
+    a long-lived sub said where it was born, never where it stands — the render's title zone now sends
+    non-done clicks here). Shared by build_feed + build_session so a feed card and the ledger TOC for the
+    SAME node land on the SAME turn — replacing the ledger's old nearest-time heuristic (the user
+    2026-06-19). Lookups go through _seg_key so a timestamp-drifted trail seg id (SDK echo vs real atom)
+    still resolves.
 
     PROMPT anchor: prefer the node's STORED `promptUuid` (the judge stamps the trigger atom's uuid at mint,
     2026-07-01) over re-deriving it from trail[0]'s segment key. The derivation drifts: _seg_key reconciles
@@ -9413,6 +9437,10 @@ def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
     (a trailing marker, whitespace, an image placeholder) changes the text-hash → the key misses → the
     title click silently no-ops (the user: 'the modal title jump fails to link'). The stored uuid needs no
     re-match. Falls back to the derivation for nodes minted before the field existed (no promptUuid).
+    A JUNK trigger — the node's mint quote is a bare continuation stub (jd.junk_quote: 'retry',
+    'continue', a slash command) — ships None instead: the user clicked a card title and landed on their
+    own 'retry' (2026-07-20, romp_docs g242), a link that says nothing about the goal. The render falls
+    through to the work anchor, exactly as it already does for null.
 
     WORK anchor: the seg maps come from the parse, and the feed reads the parse CACHE-ONLY — every
     transcript write reopens a cold beat (empty maps) until the next chat/timeline build or _warm_fleet_bg
@@ -9424,8 +9452,10 @@ def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
     validated citation, the same fallback family as build_feed's card-level cold fix), else None — the
     honest-fail toast stays for the truly unanchorable."""
     trail = nd.get("trail") or []
-    anchor_seg = (trail[-1] if resolved else trail[0]) if trail else None
+    anchor_seg = trail[-1] if trail else None
     prompt = nd.get("promptUuid") or seg_trig.get(_seg_key(trail[0] if trail else None))
+    if prompt and jd.junk_quote(nd.get("quote")):
+        prompt = None
     work = seg_work.get(_seg_key(anchor_seg))
     nid = nd.get("id")
     if work is not None:
@@ -13078,9 +13108,15 @@ class Handler(BaseHTTPRequestHandler):
             _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
             _mark_views_dirty()                # cleared.jsonl is invisible to the fleet sig → dirty-rebuild now
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
-            # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
-            # extend this later; resolve is the one the user asked for (2026-06-17).
+            # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
+            # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the
+            # one sub — 'drop = an item-level clear which just checks it off', the user 2026-07-20).
             if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
+                _mark_views_dirty()
+            elif msg.get("op") == "clear":
+                _gone = _subtree_item_ids(str(msg["nodeId"]))
+                _clear_all([str(msg["nodeId"])])
+                _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
                 _mark_views_dirty()
         elif msg and msg.get("type") == "clearAll":
             d = build_feed(int(time.time()))

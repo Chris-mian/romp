@@ -27,13 +27,21 @@ test("modal node: text → the minting MESSAGE (anchor 'prompt', resolves by pro
   // the old anchorUuid:null + time-landing (kernel 92e23ff + bugs' contract).
   // goMsg is multi-statement now (it falls back to goWork when a node has no minting message — see the
   // fallback test in feed-nav-hover); the prompt emit it still carries is pinned by the next two asserts.
+  // 2026-07-20: the minting-message jump is DONE-only — a non-done node's text answers "where does this
+  // stand" (goWork, its newest event) instead; a stale sub's title landed on a bare 'retry' mint before.
   assert.match(FEED, /const goMsg = \(ev: Event\) => \{/);
   assert.match(FEED, /t: node\.t, anchor: "prompt", anchorUuid: node\.promptAnchorUuid \?\? null/);
-  assert.match(FEED, /txt\.classList\.add\("lz-nav"\); txt\.title = "jump to the message that asked for this"; txt\.onclick = goMsg/);
+  assert.match(FEED, /if \(node\.status === "done"\) \{[\s\S]*?txt\.title = "jump to the message that asked for this"; txt\.onclick = goMsg;/);
+});
+
+test("modal NON-DONE node: text → the LATEST WORK (goWork), never the mint prompt (the user 2026-07-20)", () => {
+  // open + blocked nodes: every zone answers "where does this stand" — text included — and lights as one
+  assert.match(FEED, /txt\.title = workTitle; txt\.onclick = goWork;/);
+  assert.match(FEED, /linkHover\(meta \? \[mark, txt, meta\] : \[mark, txt\]\);/);
 });
 
 test("modal node: mark + time → where it got CHECKED OFF (anchor 'work' @ resolveT, by anchorUuid)", () => {
-  assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
+  assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : \(node\.last \|\| node\.t\)/);
   // the work anchor falls to the PROMPT anchor rather than dispatching null (the user 2026-07-20: the
   // kernel's cache-only parse goes cold on every transcript write, and a null dispatch can only toast)
   assert.match(FEED, /const goWork = \(ev: Event\) => \{[^}]*t: resolveT, anchor: "work", anchorUuid: node\.anchorUuid \?\? node\.promptAnchorUuid \?\? null \}/);
@@ -43,10 +51,10 @@ test("modal node: mark + time → where it got CHECKED OFF (anchor 'work' @ reso
   assert.doesNotMatch(FEED, /line\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline"/);
 });
 
-test("RESOLVED node (shared wireNodeZones): mark + time LINKED on hover; text lights alone; styled per zone", () => {
+test("DONE node (shared wireNodeZones): mark + time LINKED on hover; text lights alone; styled per zone", () => {
   // the zone logic is factored into wireNodeZones, shared by the modal AND the card sub-goal checklist
   assert.match(FEED, /function wireNodeZones\(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: HTMLElement, meta: HTMLElement \| null, wire: boolean\)/);
-  assert.match(FEED, /if \(resolved\) \{/);                                   // the 3-way split is gated on resolved
+  assert.match(FEED, /if \(node\.status === "done"\) \{/);                    // the 3-way split is DONE-gated now
   assert.match(FEED, /linkHover\(\[txt\]\);/);
   assert.match(FEED, /linkHover\(meta \? \[mark, meta\] : \[mark\]\);/);       // mark + time pair (time only when present)
   assert.match(CSS, /\.ftree-node \.lz-nav \{[^}]*cursor: pointer/);
@@ -64,14 +72,12 @@ test("card sub-goals click EXACTLY like the modal — same wireNodeZones, separa
   assert.match(CSS, /\.fcheck-text\.lz-hl \{[^}]*background/);                                  // text = fill
 });
 
-test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a circle (the user 2026-06-17)", () => {
-  // not yet checked off / blocked → the mark points at the SAME message as the text and they light together,
-  // but each keeps its own shape: the checkbox is its CIRCULAR halo, never a square (no .lz-merge fill).
-  // auth rider (plan-sync authoritative tier): an agent's OWN to-do item has no minting user message,
-  // so its mark jumps to the latest work instead — a plain judge node keeps the goMsg wiring.
-  assert.match(FEED, /mark\.title = node\.auth \? "jump to the latest work on this to-do item" : "jump to the message that asked for this"/);
-  assert.match(FEED, /mark\.onclick = node\.auth \? goWork : goMsg/);
-  assert.match(FEED, /linkHover\(\[mark, txt\]\)/);
+test("modal NON-DONE node: checkbox + text light together, checkbox STAYS a circle (the user 2026-06-17)", () => {
+  // open/blocked → the mark, text (and time) all point at the node's latest work and light together
+  // (2026-07-20 — the old auth-only goWork rider generalized to every non-done node), but each keeps its
+  // own shape: the checkbox is its CIRCULAR halo, never a square (no .lz-merge fill).
+  assert.match(FEED, /mark\.classList\.add\("lz-nav"\); mark\.title = workTitle; mark\.onclick = goWork;/);
+  assert.match(FEED, /linkHover\(meta \? \[mark, txt, meta\] : \[mark, txt\]\)/);
   assert.match(CSS, /\.ftree-mark\.lz-hl \{[^}]*box-shadow/);   // checkbox highlight = circular halo
   assert.doesNotMatch(CSS, /lz-merge/);                          // no square/bridged merge fill
 });

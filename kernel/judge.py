@@ -3117,6 +3117,28 @@ def _mint_quote(seg):
     return " ".join(t.split()).strip()
 
 
+# The continuation stubs: messages that RESUME work but describe none of it. A goal minted in a
+# segment triggered by one of these carries a quote/anchor that says nothing about the goal — the
+# user clicked a card title and landed on their own bare "retry" (2026-07-20, romp_docs g242).
+_JUNK_QUOTES = frozenset((
+    "retry", "try again", "continue", "keep going", "go", "go ahead", "ok", "okay", "k",
+    "yes", "y", "yeah", "sure", "proceed", "please continue", "carry on", "resume",
+    "keep at it", "continue from where you left off",
+))
+
+
+def junk_quote(q):
+    """Is this mint quote a CONTINUATION STUB rather than an ask — 'retry', 'continue', 'go' — or a bare
+    slash command? Read-side guard for the title-click anchor: a junk trigger never serves as a goal's
+    deep-link target (the click falls through to the work anchor instead). Read-side, not mint-side, on
+    purpose: the stamp stays (data preserved, follow-ups still quote it) and EXISTING stores heal without
+    a migration. None/'' → not junk: pre-quote-era nodes keep their stored anchor unjudged."""
+    if not q:
+        return False
+    qs = " ".join(q.split()).strip().lower().rstrip(".!?…")
+    return qs in _JUNK_QUOTES or (qs.startswith("/") and " " not in qs)
+
+
 def _seg_label(text, words=10):
     """A short (≤`words`-word) goal label from a segment's unit text — the USER ASKED line if present,
     else its first non-empty NON-QUOTED line — for the hard-guard floor placement. Quoted context

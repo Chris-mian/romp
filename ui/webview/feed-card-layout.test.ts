@@ -18,7 +18,7 @@ test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the nam
   assert.match(FEED, /row3\.append\(bgBtn, takeBtn, subBtn, taskBtn, actions\)/, "ask card: row3 is Background/Summary/Sub-goals/Waiting-on-task (+ rare Retry/Revive)");
   assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "…so the action row is Retry/Revive only (Clear + toggles moved up)");
   // Clear is the rightmost control on the NAME row now (both ask + group cards)
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, statBtn, clr\)/, "ask card: Clear on the name row");
   // its tooltip is plain-spoken (the user 2026-07-13): "clear this task", not the inbox-zero jargon
   assert.match(FEED, /clr\.title = "clear this task";/);
   assert.match(FEED, /row2\.append\(idwrap, clr\)/, "group card: Clear on the name row");
@@ -57,7 +57,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
   // it's a direct child of the wrapping row2 (NOT nested in idwrap) so a narrow card wraps it under the
   // name instead of overlapping the chips (the user 2026-06-20)
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "the origin marker rides the name row beside the chips");
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, statBtn, clr\)/, "the origin marker rides the name row beside the chips");
   assert.doesNotMatch(FEED, /idwrap\.append\(name, origin\)/, "origin is no longer nested inside idwrap");
   // populated from it.origin in the update path: a dim gray "↪ from" + the peer in the bold session-name
   // style (its own identity colour); click opens the sender (the user 2026-06-16)
@@ -72,7 +72,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
 test("the follow-up badge serves ONLY '↩ re-judging' now — the '↻ Followed up' chip was removed (the user 2026-07-01)", () => {
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↩ re-judging"/);
   // the badge rides the SESSION-NAME row (right-justified), NOT the bottom action row
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/);
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, statBtn, clr\)/);
   // the CARD badge block is now recheck-only: recheck → "↩ re-judging", else hidden. No followupPending branch.
   // (The modal tree's per-node "↻ Followed up" chip, ftree-followedup, is a separate thing and stays.)
   assert.match(FEED, /if \(it\.recheck\) \{\s*\n\s*a\._followedup\.style\.display = "";\s*\n\s*a\._followedup\.textContent = "↩ re-judging";[\s\S]*?\} else \{\s*\n\s*a\._followedup\.style\.display = "none";\s*\n\s*\}/);

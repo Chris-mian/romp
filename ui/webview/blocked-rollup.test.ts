@@ -22,8 +22,8 @@ test("kernel flatten rolls a blocked descendant up to every non-done ancestor an
   assert.match(KERNEL, /st = "done" if done else \("question" if _closure_blocked\(nid\) else "open"\)/);
   // rolled-up ancestors are distinguishable from the actual ask
   assert.match(KERNEL, /"qderived": st == "question" and not nd\.get\("blocked"\),/);
-  // the anchor keys on the node's OWN state — a rolled-up ancestor is not itself resolved
-  assert.match(KERNEL, /_node_anchor_uuids\(nd, seg_trig, seg_uuid, done or bool\(nd\.get\("blocked"\)\)\)/);
+  // the anchor keys on the node's NEWEST trail segment — where it stands, not where born (2026-07-20)
+  assert.match(KERNEL, /_node_anchor_uuids\(nd, seg_trig, seg_uuid\)/);
 });
 
 test("the card checklist ⏸ tooltip points down the tree on a rolled-up ancestor", () => {
@@ -31,9 +31,9 @@ test("the card checklist ⏸ tooltip points down the tree on a rolled-up ancesto
 });
 
 test("the modal keeps Done/Follow-up OFF rolled-up ancestors and labels them Blocked inside", () => {
-  // action buttons only on the node that is blocked in its OWN right (Done on an ancestor would resolve
-  // the whole subtree; Follow up would file the answer off-target)
-  assert.match(FEED, /if \(!repeat && node\.status === "question" && !node\.qderived && node\.kind !== "handoff"\) \{/);
+  // action buttons only on a node open/blocked in its OWN right (Done on a rolled-up ancestor would
+  // resolve the whole subtree; Follow up would file the answer off-target) — widened to open subs 2026-07-20
+  assert.match(FEED, /if \(!repeat && node\.status !== "done" && !node\.cleared && !node\.qderived && node\.kind !== "handoff"\) \{/);
   assert.match(FEED, /node\.qderived \? "Blocked inside" : "Blocked"/);
   assert.match(FEED, /node\.qderived \? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you"/);
   // nav semantics: a rolled-up ancestor is NOT "resolved" (its anchor is its mint, not a block op)

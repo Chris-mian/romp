@@ -3142,7 +3142,7 @@ class ViewBuilder(unittest.TestCase):
         # With the stored uuid there is nothing to re-match. Here seg_trig is EMPTY, so the derivation would
         # return None — the stored uuid must still win.
         nd = {"trail": ["sid:1000:deadbeef"], "promptUuid": "11111111-2222-3333-4444-555555555555"}
-        prompt, _work = km._node_anchor_uuids(nd, {}, {}, resolved=False)
+        prompt, _work = km._node_anchor_uuids(nd, {}, {})
         self.assertEqual(prompt, "11111111-2222-3333-4444-555555555555",
                          "the stored promptUuid wins even when the seg-key derivation misses (text drift)")
 
@@ -3151,7 +3151,7 @@ class ViewBuilder(unittest.TestCase):
         # exactly as before (additive: order of landing the judge write vs this kernel read doesn't matter).
         seg = "sid:1000:deadbeef"
         seg_trig = {km._seg_key(seg): "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
-        prompt, _work = km._node_anchor_uuids({"trail": [seg]}, seg_trig, {}, resolved=False)
+        prompt, _work = km._node_anchor_uuids({"trail": [seg]}, seg_trig, {})
         self.assertEqual(prompt, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                          "no stored uuid → fall back to the seg_trig derivation (unchanged legacy path)")
 

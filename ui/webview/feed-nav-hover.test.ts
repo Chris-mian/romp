@@ -24,7 +24,8 @@ test("a blocked/done node's mark+time deep-link to where it RESOLVED (node.mt), 
   // "resolved" even if a judge flat-DONE'd its umbrella — the agent's list is authoritative. And a
   // rolled-up qderived question ancestor is not resolved either: the block landed on a descendant.
   assert.match(FEED, /const resolved = \(node\.status === "done" \|\| \(node\.status === "question" && !node\.qderived\)\) && node\.auth !== "open"/);
-  assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
+  // open nodes fall back to their newest activity (last), matching the newest-seg work anchor (2026-07-20)
+  assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : \(node\.last \|\| node\.t\)/);
   assert.match(FEED, /goWork = .*showOnTimeline".*t: resolveT, anchor: "work"/, "the mark/time zones land on the assistant action");
   assert.doesNotMatch(FEED, /goWork = .*anchor: "prompt"/, "the work zones must NOT land on the user's message");
 });

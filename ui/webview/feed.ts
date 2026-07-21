@@ -40,7 +40,15 @@ interface AskTreeNode {
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
   blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
+  cleared?: boolean;                                             // user-dropped sub (nodeOverride op:clear) → checked-off faded row, never an open ring (kernel flatten, the user 2026-07-20)
+  log?: NodeLogRow[] | null;                                     // the node's newest verdict rows (kernel _node_log_rows, non-done only) → the modal's per-item story (the user 2026-07-20)
   children: string[];
+}
+// One verdict-log row (kernel _node_log_rows): who did what to this node, when, and — when the
+// parse resolves it — the exact chat turn to jump to (evT time-nav fallback otherwise).
+interface NodeLogRow {
+  kind: string; src: string; why?: string | null;
+  at?: number | null; evT?: number | null; anchorUuid?: string | null;
 }
 interface AskItem {
   itemId: string; sid: string; name: string; color: { bg: string; fg: string } | null;
@@ -97,6 +105,10 @@ const expandedAsks = new Set<string>();
 // tree is fully open, which matches the always-expanded look it had before
 // collapse was deepened to cover children, not just rows.
 const collapsedNodes = new Set<string>();
+// Per-node LOG-story expand state (the user 2026-07-20), key = askId + ":" + nodeId. Default collapsed:
+// an open sub shows a one-line "asked you · 2h ago" gist; membership here expands the full
+// block/unblock history. Progressive disclosure — same key shape as collapsedNodes, survives re-renders.
+const nodeLogOpen = new Set<string>();
 let fullscreenAskId: string | null = null; // ask itemId OR group key "g:<turnId>" shown in the modal (single-click)
 let modalRenderedId: string | null = null; // last target the modal body was built for → reset body cache on change
 // Per-sub FOLLOW-UP target (the user 2026-06-17): a blocked sub-node's "↳ follow up" re-points the (robust,
@@ -560,6 +572,24 @@ function makeAskCard(it: AskItem): HTMLElement {
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this task";   // plain-spoken (the user 2026-07-13, over the inbox-zero jargon)
+  // "Status?" — the card-level check-in sweep (the user 2026-07-20: scattered open subs with no cheap way
+  // to ask about them): ONE message asking the session where EVERY open/blocked item on this card stands;
+  // the replies file back per item through the judge. Reads _askData at click time (updateAskCard keeps it
+  // fresh) so the handler survives re-renders, like warnChip. Ack = disable + relabel before the round-trip.
+  const statBtn = el("button", "fdismiss fstatus") as HTMLButtonElement; statBtn.textContent = "Status?";
+  statBtn.title = "ask this session where every open item on this card stands — replies file back onto the card";
+  statBtn.style.display = "none";
+  statBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    const cur = (card as any)._askData as AskItem | undefined;
+    if (!cur) return;
+    const sweep = statusSweepText(cur);
+    if (!sweep.n) return;
+    vscodeApi?.postMessage({ type: "askFollowUp", itemId: cur.itemId, text: sweep.text, sid: cur.sid });
+    statBtn.disabled = true; statBtn.textContent = "Asked";
+    optimisticFollowMove(cur.itemId);
+    render();
+  };
   // Manual "Nudge" REMOVED (the user 2026-06-30): once Auto Nudge is robust you never hand-nudge — the
   // background nudge follows up on a stalled working goal automatically, so the manual button (and the whole
   // concept of manually nudging) is gone. Working cards now have no footer action of their own.
@@ -580,7 +610,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
-  row2.append(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
+  row2.append(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, statBtn, clr);
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -744,6 +774,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
+  a._statusBtn = statBtn;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
@@ -1059,6 +1090,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.style.display = "none";
   }
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
+  // Card-level "Status?" shows only where it can act: a real card on a LIVE session with open/blocked
+  // sub-goals to sweep. Re-arms (event-based) once the judge's re-file clears the asked state.
+  a._askData = it;
+  const stb = a._statusBtn as HTMLButtonElement;
+  stb.style.display = (!it.provisional && it.live && statusSweepText(it).n > 0) ? "" : "none";
+  if (stb.disabled && !it.followupPending && !it.recheck && !it.rejudging) { stb.disabled = false; stb.textContent = "Status?"; }
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
   // peer case already shows the "Awaiting <peer>" chip (waitingOn), so the generic awaiting box is suppressed
   // then. (The old header "awaiting" chip is gone — the body box below carries it; the user 2026-07-04.)
@@ -1472,14 +1509,52 @@ function hoverEmit(ids: string | string[] | null) {
 // propagates up), so a completed ask reads as a column of filled dots. The
 // disclosure triangle is the only arrow — no glyph shares its shape.
 function nodeMark(n: AskTreeNode): string {   // AUTHORITATIVE nodes keep the same glyph; the .auth-* class adds a white ring
+  if (n.cleared) return "●";                 // user-dropped → checked off (the faded st-cleared class says "dropped, not done")
   if (n.status === "done") return "●";
   if (n.status === "question") return "⏸";   // blocked → the red pause (was an amber ?), consistent w/ the ledger
   return "○";
 }
 function nodeStatusClass(n: AskTreeNode): string {
+  if (n.cleared) return "cleared";
   if (n.status === "done") return "done";
   if (n.status === "question") return "question";
   return "open";
+}
+
+// One human phrase per verdict-log row — the modal's per-item story speaks in outcomes
+// ("asked you", "you answered"), never judge internals (the user 2026-07-20).
+function logPhrase(r: NodeLogRow): string {
+  if (r.kind === "block") return r.src === "user" ? "you flagged a block" : "asked you";
+  if (r.kind === "unblock") return r.src === "user" ? "you answered" : "unblocked";
+  if (r.kind === "done") return r.src === "user" ? "you checked it off" : "marked done";
+  if (r.kind === "reopen") return "reopened";
+  if (r.kind === "clear") return "dropped";
+  if (r.kind === "dismiss") return "dismissed";
+  if (r.kind === "settle") return "settled";
+  return r.kind || "updated";
+}
+const logRowT = (r: NodeLogRow): number => r.at || r.evT || 0;
+// the node's owning session for navigation (a handoff node lives in the recipient's transcript) —
+// the same resolution wireNodeZones uses for its zones
+function navSidOf(it: AskItem, node: AskTreeNode): string {
+  return node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
+}
+
+// Canned one-click status asks (the user 2026-07-20). The reply shapes are exactly the verdicts the
+// judge's planner files off a nudge reply — done / in progress / blocked-on-you / obsolete — so the
+// session's answer heals the card without any new ingestion machinery.
+function statusAskOne(title: string): string {
+  return "Where does \"" + title + "\" stand? One line: done (say what shipped), in progress (say what's next), "
+       + "blocked on me (restate exactly what you need from me), or obsolete (say to drop it).";
+}
+function statusSweepText(it: AskItem): { n: number; text: string } {
+  const open = (it.tree || []).filter((n) => n.status !== "done" && !n.cleared && n.kind !== "handoff" && n.id !== it.itemId);
+  const lines = open.slice(0, 15).map((n) => "- " + (n.text || "(sub-goal)"));
+  const more = open.length > 15 ? "\n(+" + (open.length - 15) + " more on this card)" : "";
+  return { n: open.length,
+           text: "Status check on this card. For each item below, one line each: done (say what shipped), "
+               + "in progress (say what's next), blocked on me (restate exactly what you need from me), "
+               + "or obsolete (say to drop it):\n" + lines.join("\n") + more };
 }
 // True if any DESCENDANT of `node` is itself a question. Node status is ROLLED UP
 // (a ? anywhere below makes every ancestor ?), so this distinguishes the ACTUAL
@@ -1501,7 +1576,9 @@ function hasQuestionDescendant(node: AskTreeNode, byId: Map<string, AskTreeNode>
 // Re-render trigger: per-node expansion + node states + which questions have briefs.
 function treeSig(it: AskItem): string {
   return it.tree.map((n) =>
-    n.id + n.status + (n.whoWorking ? "W" : "") + (collapsedNodes.has(it.itemId + ":" + n.id) ? "c" : "")).join("|");
+    n.id + n.status + (n.cleared ? "x" : "") + (n.whoWorking ? "W" : "")
+    + (collapsedNodes.has(it.itemId + ":" + n.id) ? "c" : "")
+    + (nodeLogOpen.has(it.itemId + ":" + n.id) ? "L" : "") + ((n.log || []).length || "")).join("|");
 }
 
 // Render the DAG as a Linux-style node tree (modal body only). Sig-guarded so a
@@ -1644,7 +1721,9 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // ...and a rolled-UP question ancestor (qderived) is not itself resolved: the block landed on a
   // descendant, so its own anchor is its mint, and the hover must not claim "marked blocked" here.
   const resolved = (node.status === "done" || (node.status === "question" && !node.qderived)) && node.auth !== "open";
-  const resolveT = (resolved && node.mt) ? node.mt : node.t;
+  // time-nav fallback for the work jump: where it resolved (mt) for resolved nodes, the newest
+  // activity (last) for open ones — matching the newest-seg work anchor (the user 2026-07-20)
+  const resolveT = (resolved && node.mt) ? node.mt : (node.last || node.t);
   // anchorUuid can arrive null for a beat (the kernel's cache-only parse goes cold on every transcript
   // write); fall to the stored promptAnchorUuid rather than dispatch a null the chat can only toast on
   // (the user 2026-07-20: three dead clicks on a blocked sub's ⏸ mark in one cold beat).
@@ -1659,31 +1738,30 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   if (!wire) return goWork;
   // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
   const workTitle = node.status === "question" && !node.qderived ? "jump to where this got marked blocked"
-                  : resolved ? "jump to where this got checked off" : "jump to this work";
-  txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
+                  : resolved ? "jump to where this got checked off" : "jump to the latest work on this";
   const linkHover = (group: HTMLElement[]) => {
     const on = () => group.forEach((g) => g.classList.add("lz-hl"));
     const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
     group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
   };
-  if (resolved) {
-    // RESOLVED (checked off / blocked): MARK + META jump to where it resolved (goWork), as one pair; TEXT
-    // → the minting message, on its own. Hovering the mark or the time lights BOTH (shared target).
+  txt.classList.add("lz-nav");
+  if (node.status === "done") {
+    // DONE: TEXT → the minting message (its own zone); MARK + META jump to where it resolved (goWork),
+    // as one pair. Hovering the mark or the time lights BOTH (shared target).
+    txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
     mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
     if (meta) { meta.classList.add("lz-nav"); meta.title = workTitle; meta.onclick = goWork; }
     linkHover([txt]);
     linkHover(meta ? [mark, meta] : [mark]);
   } else {
-    // NOT yet checked off / blocked → no completion: the checkbox + text are ONE block (both the goal
-    // itself), navigating to the message together and lighting together. The meta time (when present) stays
-    // its own zone → the node's latest work. (the user 2026-06-17.)
-    // An agent's OWN to-do item has no "message that asked for it" — the mark jumps to its latest work instead.
-    mark.classList.add("lz-nav");
-    mark.title = node.auth ? "jump to the latest work on this to-do item" : "jump to the message that asked for this";
-    mark.onclick = node.auth ? goWork : goMsg;
+    // NOT done (open or blocked): every zone answers "where does this STAND?" — the newest event on the
+    // node — not where it was born (the user 2026-07-20: clicking a stale sub's title landed on a bare
+    // 'retry' mint prompt, useless for deciding what to do with it). goWork targets the node's newest
+    // trail segment (kernel _node_anchor_uuids); the minting ask is still one hop away in the chat.
+    txt.title = workTitle; txt.onclick = goWork;
+    mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
     if (meta) { meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork; }
-    linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
-    if (meta) linkHover([meta]);
+    linkHover(meta ? [mark, txt, meta] : [mark, txt]);   // one shared target → one shared highlight
   }
   return goWork;
 }
@@ -1738,35 +1816,60 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // Click/hover zones for this node, via the SHARED wireNodeZones (so the card's sub-goal checklist clicks
   // identically). Returns goWork; the inline rationale below links to the same place. (the user 2026-06-17.)
   const goWork = wireNodeZones(it, node, mark, txt, meta, !repeat);
-  // BLOCKED-node surgical actions in the MODAL tree (the user 2026-06-17): resolve or follow up on a
-  // SPECIFIC blocked sub-goal, not just the whole card. Wired AROUND the shared wireNodeZones (which the
+  // NON-DONE-node surgical actions in the MODAL tree (the user 2026-06-17, widened from blocked-only
+  // 2026-07-20: stale OPEN subs were unactionable — 'I don't know what to do with them'): act on a
+  // SPECIFIC sub-goal, not just the whole card. Wired AROUND the shared wireNodeZones (which the
   // card checklist also uses) so only the modal flips — the card checklist + ledger marks stay pure-nav.
   // Skips repeats (dim back-links) and handoff nodes (those resolve in another session's store). A rolled-UP
   // question ancestor (qderived — the block lives in a descendant) gets NO action buttons: "Done" there would
   // resolve the whole subtree and "Follow up" would file the answer off-target; the actual ask below has them.
-  if (!repeat && node.status === "question" && !node.qderived && node.kind !== "handoff") {
-    // The MARK stays pure NAV here (it keeps wireNodeZones → jump to where it got blocked), EXACTLY like the
+  if (!repeat && node.status !== "done" && !node.cleared && !node.qderived && node.kind !== "handoff") {
+    // The MARK stays pure NAV here (it keeps wireNodeZones → jump to the latest work), EXACTLY like the
     // main card — clicking a node in the modal no longer silently crosses it off, which was confusing (the
-    // user 2026-06-29). Instead two explicit BUTTONS sit on the line: "Done" crosses it off, "Follow up"
-    // answers just this sub-goal.
+    // user 2026-06-29). Instead explicit BUTTONS sit on the line: "Done" crosses it off, "Drop" clears it,
+    // "Status?" asks the session where it stands, "Follow up" answers just this sub-goal.
     const acts = el("span", "ftree-node-acts");
-    // "Done" is SUB-TASK-ONLY (the user 2026-06-30): it must NOT appear on the TOP-LEVEL goal (the tree root),
-    // because the card's own "Clear" already resolves the whole goal — a second top-level "done" is redundant.
+    // Done/Drop/Status? are SUB-TASK-ONLY (the user 2026-06-30): not on the TOP-LEVEL goal (the tree root) —
+    // the card's own Clear resolves the whole goal, and the card-level "Check status" sweeps every open sub.
     // The root is it.tree[0]; in the skip-root single-ask modal it's never drawn here anyway, so every drawn
-    // node IS a sub-task and keeps Done. "Follow up" stays on every blocked node.
+    // node IS a sub-task and keeps them. "Follow up" stays on every non-done node.
     const isRoot = node.id === it.tree?.[0]?.id;
     if (!isRoot) {
       // "Done": post nodeOverride op:resolve — the kernel marks the node resolved + clears the block + re-rolls
       // inline (no judge pass; bugs owns the handler 3dded52). Immediate-apply (no draft to lose on a re-render).
       const done = el("button", "ftree-act-btn ftree-act-done"); done.textContent = "Done";
-      done.title = "mark this sub-goal done — it stops blocking and the thread's other work continues";
+      done.title = node.status === "question"
+        ? "mark this sub-goal done — it stops blocking and the thread's other work continues"
+        : "mark this sub-goal done — you're asserting it's finished";
       done.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
-      acts.append(done);
+      // "Drop": the item-level clear (the user 2026-07-20: 'drop = an item-level clear which just checks
+      // it off') — checks it off as no-longer-needed via the same user-authority seam as a card Clear.
+      // Acknowledges instantly (fades + checks the line); the kernel push confirms.
+      const drop = el("button", "ftree-act-btn ftree-act-drop"); drop.textContent = "Drop";
+      drop.title = "drop this sub-goal — no longer needed; checks it off without claiming it was done";
+      drop.onclick = (ev) => {
+        ev.stopPropagation();
+        vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "clear" });
+        line.classList.remove("st-open", "st-question"); line.classList.add("st-cleared");
+        mark.textContent = "●"; acts.remove();
+      };
+      // "Status?": ONE-CLICK targeted ask — the session states where this item stands and the judge files
+      // the reply on this node (the same askFollowUp + romp-goal-id path a typed per-sub follow-up rides).
+      const stat = el("button", "ftree-act-btn ftree-act-status") as HTMLButtonElement; stat.textContent = "Status?";
+      stat.title = "ask the session where this item stands right now — the reply files back onto this sub-goal";
+      stat.onclick = (ev) => {
+        ev.stopPropagation();
+        vscodeApi?.postMessage({ type: "askFollowUp", itemId: node.id, title: node.text || "(sub-goal)",
+                                 text: statusAskOne(node.text || "this sub-goal"), sid: it.sid });
+        stat.disabled = true; stat.textContent = "Asked";   // instant ack; the ↻ Followed up chip takes over on the next push
+        optimisticFollowMove(it.itemId);
+      };
+      acts.append(done, drop, stat);
     }
     // "Follow up": re-target the footer composer at THIS sub so the answer files under it and unblocks just
     // this branch (the judge reopens + force-files under any node id — no kernel change).
     const fu = el("button", "ftree-act-btn ftree-act-fup"); fu.textContent = "Follow up";
-    fu.title = "follow up on this specific blocked sub-goal";
+    fu.title = node.status === "question" ? "follow up on this specific blocked sub-goal" : "follow up on this specific sub-goal";
     fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
     acts.append(fu);
     line.appendChild(acts);
@@ -1823,6 +1926,39 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
       sum.onclick = goWork;
     }
     box.appendChild(sum);
+  }
+  // The per-item STORY (the user 2026-07-20: 'I don't know if they're still active'): a non-done node
+  // with verdict history shows a one-line gist — its newest event in outcome words + how long ago —
+  // expandable (keyed, survives re-renders) to the full block/unblock log, each row jumping to its own
+  // chat turn (exact anchor when warm, ev-time nearest otherwise). Progressive disclosure: gist →
+  // history → transcript, each one click.
+  if (!repeat && node.status !== "done" && !node.cleared && node.log && node.log.length) {
+    const rows = node.log;
+    const last = rows[rows.length - 1];
+    const opened = nodeLogOpen.has(nodeKey);
+    const gist = el("div", "ftree-log-gist" + (opened ? " open" : ""));
+    gist.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+    gist.textContent = (opened ? "▾ " : "▸ ") + logPhrase(last) + " · " + relAge(hostNow - logRowT(last));
+    gist.title = opened ? "collapse this item's history" : "expand this item's history";
+    gist.onclick = (ev) => { ev.stopPropagation(); if (opened) nodeLogOpen.delete(nodeKey); else nodeLogOpen.add(nodeKey); render(); };
+    box.appendChild(gist);
+    if (opened) {
+      for (const r of rows) {
+        const rt = logRowT(r);
+        const row = el("div", "ftree-log-row");
+        row.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+        const when = el("span", "ftree-log-when"); when.textContent = relAge(hostNow - rt);
+        const what = el("span", "ftree-log-what"); what.textContent = logPhrase(r) + (r.why ? " — " + r.why : "");
+        row.append(when, what);
+        row.title = "jump to this moment in the chat";
+        row.onclick = (ev) => {
+          ev.stopPropagation();
+          vscodeApi?.postMessage({ type: "showOnTimeline", itemId: node.id, sid: navSidOf(it, node),
+                                   t: r.evT || rt, anchor: "work", anchorUuid: r.anchorUuid ?? null });
+        };
+        box.appendChild(row);
+      }
+    }
   }
   // (the in-feed decision sub-card was removed — a blocked node shows its red BLOCKED marker and
   // links to the session; answering happens in the session, not in the feed. the user 2026-06-15.)
@@ -1891,8 +2027,13 @@ function renderModal() {
     // "Move to Working" (the user 2026-07-06): a follow-up WITHOUT a message — "this card isn't
     // blocked/done". Shown only on a needs-input or completed single-ask card (the it branch wires it).
     const mv = el("button", "fdismiss feed-modal-move"); mv.id = "feed-modal-move"; mv.textContent = "Move to Working"; mv.title = "this card isn’t blocked/done — move it back to Working (sends no message)"; mv.style.display = "none";
+    // "Check status" (the user 2026-07-20): the card-level sweep, in the modal too — one message asking
+    // the session where every open/blocked item stands. The single-ask branch wires + shows it.
+    const cs = el("button", "fdismiss feed-modal-status"); cs.id = "feed-modal-status"; cs.textContent = "Check status";
+    cs.title = "ask this session where every open item on this card stands — replies file back onto the card";
+    cs.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, mv, clr);
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, mv, cs, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
@@ -1983,6 +2124,7 @@ function renderModal() {
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;
   const clrEl = document.getElementById("feed-modal-clear") as HTMLElement;
   const mvEl = document.getElementById("feed-modal-move") as HTMLButtonElement | null;
+  const csEl = document.getElementById("feed-modal-status") as HTMLButtonElement | null;
   const fupEl = document.getElementById("feed-modal-follow") as HTMLButtonElement;
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
   const fuinEl = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement;
@@ -2018,6 +2160,7 @@ function renderModal() {
   clrEl.style.display = "";   // re-shown here because the blocked branch below hides it
   // default-hidden + reset every render; only the single-ask branch shows it (group/standalone never do)
   if (mvEl) { mvEl.style.display = "none"; mvEl.disabled = false; mvEl.textContent = "Move to Working"; }
+  if (csEl) { csEl.style.display = "none"; }   // disabled/label NOT reset here — "Asked" survives the per-push re-render
   let titleHoverId: string | null = null;   // the originating typed turn → chat/timeline hover highlight
   if (grp) {
     ttlEl.textContent = grp.title;
@@ -2056,6 +2199,21 @@ function renderModal() {
         mvEl.disabled = true; mvEl.textContent = "Moving…";
         vscodeApi?.postMessage({ type: "cardMove", itemId: it.itemId, sid: it.sid, to: "working" });
         optimisticFollowMove(it.itemId, "plain");
+        render();
+      };
+    }
+    // "Check status" (the user 2026-07-20): shown when the card has open/blocked subs to sweep and the
+    // session is live to answer. Same ack + re-arm contract as the card button (event-based: the judge's
+    // re-file clears the asked state via the fresh modal render).
+    if (csEl && it.live && statusSweepText(it).n > 0) {
+      csEl.style.display = "";
+      if (csEl.disabled && !it.followupPending && !it.recheck && !it.rejudging) { csEl.disabled = false; csEl.textContent = "Check status"; }
+      csEl.onclick = () => {
+        const sweep = statusSweepText(it);
+        if (!sweep.n) return;
+        vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: sweep.text, sid: it.sid });
+        csEl.disabled = true; csEl.textContent = "Asked";
+        optimisticFollowMove(it.itemId);
         render();
       };
     }

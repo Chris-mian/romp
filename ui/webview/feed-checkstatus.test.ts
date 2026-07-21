@@ -19,10 +19,27 @@ test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
   assert.match(FEED, /actions\.append\(apiRetry, revive\)/);
 });
 
-test("the modal footer is age · Follow up · Move to Working · Clear (no check-status control)", () => {
-  assert.doesNotMatch(FEED, /feed-modal-checkstatus/);
-  assert.doesNotMatch(FEED, /wireCheckStatus/);
-  assert.match(FEED, /footRow\.append\(age, fup, mv, clr\)/);   // mv = Move to Working (the user 2026-07-06)
+test("the modal footer is age · Follow up · Move to Working · Check status · Clear", () => {
+  // "Check status" (the user 2026-07-20) is NOT the old manual Nudge coming back: the Nudge was a
+  // contentless poke at a stalled session (auto-nudge replaced it, above); Check status is a per-item
+  // sweep — one message asking where every open/blocked sub-goal stands, whose replies file back per item.
+  assert.match(FEED, /footRow\.append\(age, fup, mv, cs, clr\)/);   // mv = Move to Working (the user 2026-07-06); cs = Check status
+  assert.match(FEED, /el\("button", "fdismiss feed-modal-status"\)/);
+  assert.match(FEED, /cs\.textContent = "Check status"/);
+});
+
+test("the card-level 'Status?' sweep: one askFollowUp naming every open item; acked + re-armed event-based (the user 2026-07-20)", () => {
+  // the sweep body enumerates the card's open/blocked subs (root + handoffs + cleared excluded), capped with an honest "+N more"
+  assert.match(FEED, /function statusSweepText\(it: AskItem\)/);
+  assert.match(FEED, /n\.status !== "done" && !n\.cleared && n\.kind !== "handoff" && n\.id !== it\.itemId/);
+  assert.match(FEED, /\+" more on this card\)"|more on this card/);
+  // card button: reads the CURRENT card data at click time (re-render-safe, the warnChip pattern), acks
+  // by disable+relabel BEFORE the kernel round-trip, and only shows when there is something to sweep
+  assert.match(FEED, /const cur = \(card as any\)\._askData as AskItem \| undefined;/);
+  assert.match(FEED, /statBtn\.disabled = true; statBtn\.textContent = "Asked";/);
+  assert.match(FEED, /stb\.style\.display = \(!it\.provisional && it\.live && statusSweepText\(it\)\.n > 0\) \? "" : "none";/);
+  // re-arm is EVENT-based: the judge's re-file clearing the followup/recheck state, never a timer
+  assert.match(FEED, /if \(stb\.disabled && !it\.followupPending && !it\.recheck && !it\.rejudging\)/);
 });
 
 test("the card's own 'Follow up' button is removed — click-to-cite covers it (the user 2026-07-01)", () => {

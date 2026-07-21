@@ -290,7 +290,9 @@ test("genuinely-empty fleet fades in the romp WORDMARK (like the feed), once per
 test("an ARCHIVED node's zones deep-link too: fleetNode searches archivedTops, not just the live tree (the user 2026-07-11)", () => {
   // the miss made an archived row's text a dead click: fleetNode returned null → bare openSession, no jump
   assert.match(SRC, /\(s\?\.ledger\?\.tree \|\| \[\]\)\.find\(\(n\) => n\.id === nid\)\s*\n?\s*\|\| \(s\?\.ledger\?\.archivedTops \|\| \[\]\)\.find\(\(n\) => n\.id === nid\) \|\| null/);
-  // the kernel's archived projection now carries the anchors this nav reads (null → time fallback)
+  // the kernel's archived projection now carries the anchors this nav reads (null → time fallback);
+  // a junk mint quote ('retry') ships no prompt anchor (jd.junk_quote, the user 2026-07-20)
   const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
-  assert.match(KERNEL, /"promptAnchorUuid": nd\.get\("promptUuid"\), "anchorUuid": nd\.get\("summaryAnchor"\),/);
+  assert.match(KERNEL, /"promptAnchorUuid": None if jd\.junk_quote\(nd\.get\("quote"\)\) else nd\.get\("promptUuid"\),/);
+  assert.match(KERNEL, /"anchorUuid": nd\.get\("summaryAnchor"\),/);
 });

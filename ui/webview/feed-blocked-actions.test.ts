@@ -12,10 +12,11 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("(A) a blocked sub's 'Done' button crosses it off — posts nodeOverride op:resolve (immediate-apply, no draft)", () => {
-  // gated on a REAL blocked sub: not a dim repeat, blocked in its OWN right (never a rolled-up qderived
-  // ancestor — Done there would resolve the whole subtree), not a handoff (those resolve in another store)
-  assert.match(FEED, /if \(!repeat && node\.status === "question" && !node\.qderived && node\.kind !== "handoff"\) \{/);
+test("(A) a non-done sub's 'Done' button crosses it off — posts nodeOverride op:resolve (immediate-apply, no draft)", () => {
+  // gated on a REAL open/blocked sub (widened from blocked-only 2026-07-20): not a dim repeat, not a
+  // user-dropped (cleared) row, never a rolled-up qderived ancestor (Done there would resolve the whole
+  // subtree), not a handoff (those resolve in another store)
+  assert.match(FEED, /if \(!repeat && node\.status !== "done" && !node\.cleared && !node\.qderived && node\.kind !== "handoff"\) \{/);
   assert.match(FEED, /type: "nodeOverride", sid: it\.sid, nodeId: node\.id, op: "resolve"/);
   // a "Done" button (not the mark) carries the resolve override now
   assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-done"\)/);
@@ -23,12 +24,33 @@ test("(A) a blocked sub's 'Done' button crosses it off — posts nodeOverride op
   assert.match(CSS, /\.ftree-act-done:hover \{[^}]*color: var\(--rel-done\)/);
 });
 
-test("(A) 'Done' is SUB-TASK-ONLY — the top-level goal (tree root) gets only 'Follow up'; Clear covers the root (the user 2026-06-30)", () => {
-  // the root is identified as it.tree[0]; the Done button is gated behind !isRoot
+test("(A) Done/Drop/Status? are SUB-TASK-ONLY — the top-level goal (tree root) gets only 'Follow up' (the user 2026-06-30; Clear + the card-level sweep cover the root)", () => {
+  // the root is identified as it.tree[0]; the per-item buttons are gated behind !isRoot
   assert.match(FEED, /const isRoot = node\.id === it\.tree\?\.\[0\]\?\.id;/);
-  assert.match(FEED, /if \(!isRoot\) \{[\s\S]*?ftree-act-done[\s\S]*?acts\.append\(done\);\s*\n\s*\}/);
-  // Follow up is appended unconditionally (every blocked node, the root included)
+  assert.match(FEED, /if \(!isRoot\) \{[\s\S]*?ftree-act-done[\s\S]*?acts\.append\(done, drop, stat\);\s*\n\s*\}/);
+  // Follow up is appended unconditionally (every non-done node, the root included)
   assert.match(FEED, /acts\.append\(fu\);/);
+});
+
+test("(A) 'Drop' is the item-level clear — nodeOverride op:clear, acknowledged in place (the user 2026-07-20)", () => {
+  assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-drop"\)/);
+  assert.match(FEED, /type: "nodeOverride", sid: it\.sid, nodeId: node\.id, op: "clear"/);
+  // instant ack: the line flips to the cleared look before the kernel round-trip
+  assert.match(FEED, /line\.classList\.add\("st-cleared"\);/);
+  // a cleared row renders checked-off + faded + struck, in the modal tree AND the inline checklist
+  assert.match(CSS, /\.ftree-node\.st-cleared \{[^}]*opacity/);
+  assert.match(CSS, /\.fcheck\.cleared \{[^}]*opacity/);
+  assert.match(FEED, /if \(n\.cleared\) return "cleared";/);
+});
+
+test("(A) 'Status?' is a ONE-CLICK targeted ask — askFollowUp with the canned per-item question (the user 2026-07-20)", () => {
+  assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-status"\)/);
+  assert.match(FEED, /function statusAskOne\(title: string\): string/);
+  // the canned ask names the four reply shapes the judge's planner files: done / in progress / blocked-on-me / obsolete
+  assert.match(FEED, /done \(say what shipped\), in progress \(say what's next\), /);
+  assert.match(FEED, /text: statusAskOne\(node\.text \|\| "this sub-goal"\), sid: it\.sid/);
+  // instant ack: disable + relabel before the round-trip (the ↻ chip takes over on the next push)
+  assert.match(FEED, /stat\.disabled = true; stat\.textContent = "Asked";/);
 });
 
 test("(A) MODAL-ONLY: the buttons are added AROUND wireNodeZones; the MARK stays pure nav", () => {

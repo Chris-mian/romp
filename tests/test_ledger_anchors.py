@@ -16,35 +16,36 @@ class NodeAnchorResolution(unittest.TestCase):
     SEG_TRIG = {"s1": "u-aaa", "s2": "u-bbb", "s3": "u-ccc"}
     SEG_WORK = {"s1": "a-aaa", "s2": "a-bbb", "s3": "a-ccc"}
 
-    def test_open_node_anchors_to_its_FIRST_trail_segment(self):
-        # an OPEN node (not resolved) deep-links to where it was MINTED: trail[0] for BOTH prompt and work.
+    def test_every_node_work_anchors_to_its_NEWEST_trail_segment(self):
+        # the work anchor is trail[-1] for EVERY node (2026-07-20): the resolve turn for done/blocked
+        # nodes, the latest activity for open ones — "where it stands", never "where it was born". (Open
+        # nodes anchored their MINT before; a long-lived open sub's click then said nothing useful.)
         nd = {"trail": ["s1", "s2", "s3"]}
-        prompt, work = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, resolved=False)
-        self.assertEqual(prompt, "u-aaa")        # trail[0] trigger
-        self.assertEqual(work, "a-aaa")          # trail[0] work (minted)
-
-    def test_resolved_node_work_anchors_to_its_LAST_trail_segment(self):
-        # a RESOLVED node (done / blocked) keeps the prompt on trail[0] but moves the WORK anchor to trail[-1]
-        # (where it was checked off / blocked) — the mt convention the mark + time zones jump to.
-        nd = {"trail": ["s1", "s2", "s3"]}
-        prompt, work = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, resolved=True)
+        prompt, work = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK)
         self.assertEqual(prompt, "u-aaa")        # trail[0] trigger (the minting message) — unchanged
-        self.assertEqual(work, "a-ccc")          # trail[-1] work (the resolution)
+        self.assertEqual(work, "a-ccc")          # trail[-1] work (the newest event)
 
     def test_single_segment_trail(self):
         nd = {"trail": ["s2"]}
-        self.assertEqual(km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True), ("u-bbb", "a-bbb"))
-        self.assertEqual(km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, False), ("u-bbb", "a-bbb"))
+        self.assertEqual(km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK), ("u-bbb", "a-bbb"))
 
     def test_empty_trail_yields_no_anchors(self):
         # no filed segments → no uuid to land on → (None, None); the render then falls back to nearest-time.
-        self.assertEqual(km._node_anchor_uuids({"trail": []}, self.SEG_TRIG, self.SEG_WORK, True), (None, None))
-        self.assertEqual(km._node_anchor_uuids({}, self.SEG_TRIG, self.SEG_WORK, False), (None, None))
+        self.assertEqual(km._node_anchor_uuids({"trail": []}, self.SEG_TRIG, self.SEG_WORK), (None, None))
+        self.assertEqual(km._node_anchor_uuids({}, self.SEG_TRIG, self.SEG_WORK), (None, None))
 
     def test_segment_missing_from_the_map_degrades_to_None(self):
         # a trail segment the chat parse didn't surface (rewound / orphaned) → None for that anchor, not a throw.
         nd = {"trail": ["sX", "sY"]}
-        self.assertEqual(km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True), (None, None))
+        self.assertEqual(km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK), (None, None))
+
+    def test_a_junk_mint_quote_ships_no_prompt_anchor(self):
+        # the read-side junk guard (jd.junk_quote): a node minted off a bare "retry" must not deep-link
+        # its title to that stub (the user 2026-07-20, romp_docs g242) — existing stores heal, no migration.
+        nd = {"trail": ["s1", "s2"], "promptUuid": "u-stored", "quote": "retry"}
+        prompt, work = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK)
+        self.assertIsNone(prompt)
+        self.assertEqual(work, "a-bbb")
 
 
 class ColdBeatWorkAnchorFallback(unittest.TestCase):
@@ -68,32 +69,32 @@ class ColdBeatWorkAnchorFallback(unittest.TestCase):
 
     def test_a_warm_resolve_is_remembered_and_served_through_a_cold_beat(self):
         nd = {"id": "S:g1", "trail": ["s1"], "promptUuid": "u-stored"}
-        warm = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True)
+        warm = km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK)
         self.assertEqual(warm, ("u-stored", "a-aaa"))
-        cold = km._node_anchor_uuids(nd, self.COLD, self.COLD, True)
+        cold = km._node_anchor_uuids(nd, self.COLD, self.COLD)
         self.assertEqual(cold, warm, "the cold beat serves the remembered warm anchors, not null")
 
     def test_never_seen_warm_falls_to_the_stored_distiller_citation(self):
         nd = {"id": "S:g2", "trail": ["sX"], "promptUuid": "u-stored", "summaryAnchor": "a-cited"}
-        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD, True), ("u-stored", "a-cited"))
+        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD), ("u-stored", "a-cited"))
 
     def test_a_node_with_neither_still_honest_fails(self):
         # no warm memory, no stored citation → None work anchor: the render's honest-fail toast is correct
         nd = {"id": "S:g3", "trail": ["sX"]}
-        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD, True), (None, None))
+        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD), (None, None))
 
     def test_the_memory_is_per_node_never_a_neighbors(self):
-        km._node_anchor_uuids({"id": "S:g4", "trail": ["s1"]}, self.SEG_TRIG, self.SEG_WORK, True)
+        km._node_anchor_uuids({"id": "S:g4", "trail": ["s1"]}, self.SEG_TRIG, self.SEG_WORK)
         nd = {"id": "S:g5", "trail": ["sX"]}
-        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD, True), (None, None),
+        self.assertEqual(km._node_anchor_uuids(nd, self.COLD, self.COLD), (None, None),
                          "g4's warm anchors never bleed onto g5")
 
     def test_a_warm_miss_prefers_the_memory_over_the_stored_citation(self):
         # warm maps that MISS this node's seg (drift / rewound off-path) behave like a cold beat: the last
         # good anchor (exact) outranks the stored citation (older)
         nd = {"id": "S:g6", "trail": ["s1"], "summaryAnchor": "a-cited"}
-        km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK, True)
-        got = km._node_anchor_uuids({**nd, "trail": ["sX"]}, self.SEG_TRIG, self.SEG_WORK, True)
+        km._node_anchor_uuids(nd, self.SEG_TRIG, self.SEG_WORK)
+        got = km._node_anchor_uuids({**nd, "trail": ["sX"]}, self.SEG_TRIG, self.SEG_WORK)
         self.assertEqual(got[1], "a-aaa", "the remembered warm anchor wins over the stored citation")
 
 
