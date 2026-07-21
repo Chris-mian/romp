@@ -16,16 +16,3 @@
   {%- endif -%}
 {% endblock %}
 
-{#- Make the header title ("Romp") go home on click, like the logo. Delegated on
-    document so it survives instant navigation and header re-renders. -#}
-{% block scripts %}
-  {{ super() }}
-  <script>
-    document.addEventListener("click", function (e) {
-      var title = e.target.closest && e.target.closest(".md-header__title");
-      if (!title) return;
-      var logo = document.querySelector(".md-header a.md-logo");
-      if (logo) { e.preventDefault(); window.location.href = logo.href; }
-    });
-  </script>
-{% endblock %}
