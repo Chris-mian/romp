@@ -74,7 +74,7 @@
   color: var(--md-accent-fg-color);
   font-weight: 700;
 }
-@media screen and (max-width: 76.234375em) {
+@media screen and (max-width: 59.9375em) {
   .md-header__tabs {
     display: none;
   }
@@ -144,4 +144,48 @@
 /* The header title is clickable and goes home, like the logo. */
 .md-header__title {
   cursor: pointer;
+}
+
+/* Mobile drawer brand (2026-07-20): the wordmark logo already reads "Romp", so the
+   drawer's site-name text said it twice — hide the text (font-size 0 keeps the
+   logo <img>, which sizes itself) exactly as the header does above. And the repo
+   link moves to the BOTTOM of the drawer: the drawer is for getting around the
+   docs; the GitHub pointer is reference, not navigation. The drawer's primary nav
+   becomes a flex column so `order` + margin-top:auto pin the source link last —
+   scoped to Material's drawer breakpoint, so desktop keeps its header repo link. */
+@media screen and (max-width: 76.234375em) {
+  .md-nav--primary .md-nav__title[for="__drawer"] {
+    font-size: 0;
+    line-height: 0;
+    padding-bottom: 0.6rem;
+  }
+  .md-nav--primary .md-nav__title[for="__drawer"] .md-nav__button.md-logo img {
+    height: 2.2rem;
+    width: auto;
+  }
+  .md-sidebar--primary .md-nav--primary {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+  .md-sidebar--primary .md-nav--primary > .md-nav__source {
+    order: 99;
+    margin-top: auto;
+  }
+}
+
+/* Hold the DESKTOP header down to where its items actually run out of room (the
+   user 2026-07-20): Material flips to the drawer at 76.25em (~1220px) while the
+   header still shows a wide gap between the last tab and the search box. Down to
+   60em (~960px — wordmark + five tabs + search + repo link still fit) keep the
+   desktop layout: tabs stay (their hide rule above now fires below 60em only),
+   the hamburger stays hidden, the repo link stays shown. Below 60em the theme's
+   drawer takes over exactly as before. */
+@media screen and (min-width: 60em) and (max-width: 76.234375em) {
+  .md-header__button[for="__drawer"] {
+    display: none;
+  }
+  .md-header__source {
+    display: block;
+  }
 }
