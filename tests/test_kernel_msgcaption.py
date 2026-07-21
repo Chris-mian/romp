@@ -92,6 +92,30 @@ class MsgCaption(unittest.TestCase):
         self.assertEqual(b["msgCaption"], "", "no message caption yet → empty, so the view falls back to the raw prompt")
         self.assertEqual(b["summary"], "Trimmed the empty space")
 
+    def _drift(self, seg_id, secs=11):
+        p = seg_id.split(":")
+        return "%s:%d:%s" % (p[0], int(p[1]) - secs, p[2])
+
+    def test_drifted_work_caption_still_reaches_the_bar(self):
+        # The captioner records under the JUDGE's parse id, whose middle t sits at send/idle time (the
+        # states overlay leads the turn); the kernel's render id carries the transcript atom's process
+        # time. The exact join missed, so the bar hover fell back to 'request: <prompt>' instead of the
+        # work gist (the user 2026-07-21 via romp_docs). The bar must resolve the drifted id.
+        self._cap(self._drift(self.seg["id"]), "segment", "Trimmed the empty space")
+        self._cap(self._drift(self.seg["id"] + "#p"), "prompt", "the empty space below the cards")
+        b = self._bar()
+        self.assertEqual(b["summary"], "Trimmed the empty space",
+                         "a timestamp-drifted WORK caption still lands on the bar")
+        self.assertEqual(b["msgCaption"], "the empty space below the cards",
+                         "the drifted MESSAGE caption keeps landing on the dot")
+
+    def test_drifted_turn_row_is_not_a_work_caption(self):
+        # A turn-grain row shares the seg-id family (same trigger-text hash); grain filtering keeps it
+        # off the bar, whose caption is the SEGMENT's own.
+        self._cap(self._drift(self.seg["id"]), "turn", "Turn-level rollup line")
+        self.assertEqual(self._bar()["summary"], "",
+                         "no segment-grain caption yet → empty, the view falls back to the prompt")
+
 
 if __name__ == "__main__":
     unittest.main()

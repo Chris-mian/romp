@@ -9132,7 +9132,7 @@ def _msg_sum_scan_session(sid, path, now):
     mstore = jd.load_goals(sid)
     for turn in session["turns"]:
         for seg in _segs_seam(turn, mstore):
-            cap = caps.get(seg["id"], {}).get("caption")
+            cap = _seg_work_caption(caps, seg["id"])     # drift-safe: the store id came from the judge's parse
             if not cap:
                 continue
             for mid in _seg_mids(seg):               # a peer-message segment carries its msgId marker
@@ -9401,6 +9401,38 @@ def _seg_caption(caps, seg_id):
         want = _seg_key(seg_id + "#p")
         hit = next((v for k, v in caps.items() if k.endswith("#p") and _seg_key(k) == want), None)
     return (hit or {}).get("caption", "")
+
+
+def _seg_work_caption(caps, seg_id):
+    """The captioner's WORK caption for a segment (bare store id, grain 'segment'), resilient to the
+    same seg-id timestamp drift as _seg_caption/_seg_placed. The captioner keys its store from the
+    JUDGE's parse, whose states-overlay atoms land a triggered segment's start t at send/idle time;
+    the kernel's render parse omits states, so its id carries the transcript atom's process time —
+    the exact lookup missed and every drifted work-bar hover fell back to 'request: <prompt>' (the
+    user 2026-07-21 via romp_docs). Exact hit first; on miss, resolve through _seg_key among
+    grain-'segment' rows only (turn rows and every seam tail share the empty-text hash). Seam tails
+    also share one invariant key with EACH OTHER, so the fuzzy hit takes the row whose stored t is
+    nearest this parse's seg t — drift runs seconds, distinct segments sit minutes apart. '' when
+    absent."""
+    hit = caps.get(seg_id)
+    if hit is not None:
+        return hit.get("caption", "")
+    parts = seg_id.split(":") if seg_id else []
+    if len(parts) < 3:
+        return ""
+    try:
+        seg_t = int(parts[-2])
+    except ValueError:
+        return ""
+    want = _seg_key(seg_id)
+    best = None
+    for k, v in caps.items():
+        if v.get("grain") != "segment" or _seg_key(k) != want:
+            continue
+        d = abs((v.get("t") or 0) - seg_t)
+        if best is None or d < best[0]:
+            best = (d, v)
+    return best[1].get("caption", "") if best else ""
 
 
 def _node_log_rows(nd, seg_work, cap=8):
@@ -10097,7 +10129,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                 seg_ends[seg["t"]] = spans[-1][1]                  # a completion mark lands at its segment's END (after the work)
                 if not with_bars:
                     continue                                       # SKELETON: lane `since` needs last_t, but not the bar dicts/captions
-                cap = caps.get(seg["id"], {}).get("caption", "")               # WORK caption (the bar)
+                cap = _seg_work_caption(caps, seg["id"])       # WORK caption (the bar) — drift-safe
                 msg_cap = _seg_caption(caps, seg["id"])    # MESSAGE caption (the dot) — gist of the ask, ready early; drift-safe
                 work_uuid, reply_uuid = _seg_anchors(seg["atoms"])
                 trig = next((x for x in seg["atoms"] if x.get("uuid") == seg.get("trigger")), None)

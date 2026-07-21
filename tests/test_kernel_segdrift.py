@@ -122,5 +122,46 @@ class SegCaptionDrift(unittest.TestCase):
             km.jd.CAPDIR = saved
 
 
+class SegWorkCaptionDrift(unittest.TestCase):
+    """_seg_work_caption — the WORK-caption (bar) twin of _seg_caption. Same drift resilience, plus the
+    collision rules the bare ids need: turn rows and every seam tail share the empty-text hash, so a
+    fuzzy hit filters to grain-'segment' rows and takes the one whose stored t is nearest the seg's."""
+
+    def test_exact_hit_wins(self):
+        seg = SID + ":1000:cafebabe"
+        caps = {seg: {"grain": "segment", "t": 1000, "caption": "exact"},
+                SID + ":998:cafebabe": {"grain": "segment", "t": 998, "caption": "near-miss"}}
+        self.assertEqual(km._seg_work_caption(caps, seg), "exact")
+
+    def test_drifted_hit_resolves(self):
+        caps = {SID + ":952:cafebabe": {"grain": "segment", "t": 952, "caption": "committed the fix"}}
+        self.assertEqual(km._seg_work_caption(caps, SID + ":1000:cafebabe"), "committed the fix",
+                         "the judge-keyed work caption resolves through the timestamp-invariant key")
+        self.assertEqual(km._seg_work_caption(caps, SID + ":1000:deadbeef"), "",
+                         "a different segment's caption is never borrowed")
+
+    def test_seam_tail_collision_picks_nearest_t(self):
+        # every seam tail hashes the empty string (trigger-less, tool-first atom) → one invariant key;
+        # the stored t disambiguates: drift runs seconds, distinct tails sit minutes apart
+        caps = {SID + ":1000:da39a3ee": {"grain": "segment", "t": 1000, "caption": "first tail"},
+                SID + ":1300:da39a3ee": {"grain": "segment", "t": 1300, "caption": "second tail"}}
+        self.assertEqual(km._seg_work_caption(caps, SID + ":1011:da39a3ee"), "first tail")
+        self.assertEqual(km._seg_work_caption(caps, SID + ":1289:da39a3ee"), "second tail")
+
+    def test_turn_and_prompt_rows_never_serve_as_work_captions(self):
+        caps = {SID + ":952:da39a3ee": {"grain": "turn", "t": 952, "caption": "turn rollup"},
+                SID + ":952:cafebabe#p": {"grain": "prompt", "t": 952, "caption": "message gist"}}
+        self.assertEqual(km._seg_work_caption(caps, SID + ":1000:da39a3ee"), "",
+                         "a turn-grain row in the same id family is not the bar's caption")
+        self.assertEqual(km._seg_work_caption(caps, SID + ":1000:cafebabe"), "",
+                         "a prompt-grain row is the dot's caption, never the bar's")
+
+    def test_absent_and_malformed(self):
+        self.assertEqual(km._seg_work_caption({}, SID + ":1000:cafebabe"), "")
+        self.assertEqual(km._seg_work_caption({"weird": {"grain": "segment", "caption": "x"}}, "weird"), "x",
+                         "a non-conforming id still exact-matches")
+        self.assertEqual(km._seg_work_caption({}, ""), "")
+
+
 if __name__ == "__main__":
     unittest.main()
