@@ -109,6 +109,10 @@ def _index_model():   return _state_str("index-model", INDEX_MODEL)    # gear "I
 def _triage_effort(): return _state_str("judge-effort", "")   # "" → pass NO --effort (the long-standing default)
 def _index_effort():  return _state_str("index-effort", "")
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
+COURIER_RETRY_HORIZON = WINDOW           # a usage-limited courier call comes back empty and retries every pass, but a
+#                                          peer message still unsummarized past this many seconds (matches discover()'s
+#                                          48h WINDOW) is abandoned — marked 'fyi' — so a long limit window can't
+#                                          re-attempt a stale message forever (the user 2026-07-21).
 BUDGET      = None                       # per-pass caption-CALL cap — REMOVED (the user 2026-06-30): these are
 FAIRNESS    = None                       # cheap Haiku index-tier calls; the per-pass / per-session caption caps
                                          # never mattered in practice and join the goal-status fairness caps in
@@ -362,7 +366,9 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
       fsid   where — the session it was judging ("" only for fleet-level rows like the rate gate)
       err    what kind — "call" (no usable reply: subprocess error, timeout, API error envelope),
              "parse" (the model's own text, rejected by the parser), "give-up" (fail cap hit, quiet
-             until the event named in the note re-arms it), "cite-miss", "rate-limited",
+             until the event named in the note re-arms it), "deferred" (the courier skipped a peer
+             message this pass because its call came back empty — usage-limited/API error — and will
+             retry it until the 48h horizon; surfaced only in debug), "cite-miss", "rate-limited",
              "unmigrated-node", "task-store" (the live task store exists but can't be read —
              plan-sync skipped for the pass rather than silently folding the transcript)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
@@ -6853,14 +6859,38 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         store = load_goals(fsid)
         if _placed_key(store["placements"], seg_id):  # drift-safe: never re-plant a t-shifted duplicate
             continue
+        if now - seg_t > COURIER_RETRY_HORIZON:
+            # ABANDON (the user 2026-07-21): a courier call only comes back empty while the account is
+            # usage-limited (the rate gate in _judge_run), and retrying every pass is right — but not
+            # forever. Past the 48h horizon we stop and mark the message processed ('fyi'), so a long limit
+            # window can't re-attempt a stale message endlessly on a session that stays live for other work.
+            # (A session that fell out of discover()'s 48h WINDOW is already abandoned implicitly; this
+            # catches the still-live-but-old case.)
+            store["placements"][seg_id] = "fyi"
+            store.get("courierDeferred", {}).pop(seg_id, None)
+            _log_judge_error("courier", fsid, "give-up", seg=seg_id,
+                             note="peer message unsummarized past the %dh retry horizon (usage-limited) — abandoned"
+                                  % (COURIER_RETRY_HORIZON // 3600))
+            save_goals(fsid, store)
+            continue
         sender_store = load_goals(sender)
         menu = open_menu(sender_store)
         _judge_ctx.fsid = fsid                        # usage logging: attribute to the recipient session
         raw = courier_llm(text, _menu_text(sender_store, menu), declared=declared)
         edit = _parse_courier(raw, len(menu))
         if not edit and not raw:
-            continue                                  # the CALL failed (logged by _judge_run) → retry next
-            #                                           pass; never counts toward the give-up cap
+            # The CALL came back empty — the account is usage-limited (the rate gate) or the API errored;
+            # _judge_run logged the fleet-level cause. Record a per-segment DEFERRAL (once) so the debug
+            # view surfaces WHY this message is still unsummarized, then retry every pass until it lands or
+            # ages past the horizon above. Never a give-up strike — a doomed call is not the model's fault.
+            dfr = store.setdefault("courierDeferred", {})
+            if seg_id not in dfr:
+                dfr[seg_id] = seg_t
+                _log_judge_error("courier", fsid, "deferred", seg=seg_id,
+                                 note="courier call returned empty (usage-limited or API error); retrying until the %dh horizon"
+                                      % (COURIER_RETRY_HORIZON // 3600))
+                save_goals(fsid, store)
+            continue
         if not edit:
             _log_judge_error("courier", fsid, "parse", note="reply tail: %r" % raw[-160:], seg=seg_id)
             fails = store.setdefault("courierFails", {})
@@ -6876,6 +6906,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                                   % (JUDGE_FAIL_CAP, declared or "none"))
         else:
             store.get("courierFails", {}).pop(seg_id, None)   # a clean reply clears the strike count
+        store.get("courierDeferred", {}).pop(seg_id, None)    # landed (clean reply or parse give-up) → deferral over
         if edit["delegating"]:
             link_id = menu[edit["n"] - 1]["id"] if edit["n"] else None   # sender's related open goal (or None)
             # Mint the sender's precise '↪ delegated to <recipient>' tracking node (the user 2026-06-22) and
