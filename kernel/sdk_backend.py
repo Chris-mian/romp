@@ -482,6 +482,35 @@ def append_retry_recovered(state_dir: Path, sid: str, retries: int, t: int | Non
         f.write(json.dumps(rec) + "\n")
 
 
+ORPHAN_REPLY_CAP = 8000   # text cap per orphan marker — a lost reply is worth keeping, but bound the file
+
+
+def append_orphan_reply(state_dir: Path, sid: str, uuid: str, text: str, t: int | None = None) -> None:
+    """Record an assistant reply that STREAMED LIVE but the transcript never kept (the user 2026-07-21): when a
+    turn hits an API error, the CLI discards the partial reply it was streaming and (on retry) writes a fresh
+    record with a NEW uuid — so the reply the user watched appear is on disk NOWHERE, and retire_live_work drops
+    the live atom at settle, leaving only the "Recovered after N retries" note in its place. This durable marker
+    (its own "orphanReply" key, skipped by the state/awaiting/recovery readers) lets build_session interleave the
+    lost text back at its timestamp — DEDUP'd against the disk so a retry that DID re-reply never doubles."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()) if t is None else int(t),
+           "orphanReply": {"uuid": str(uuid or ""), "text": (text or "")[:ORPHAN_REPLY_CAP]}}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def _atom_text(a: dict) -> str:
+    """The joined text blocks of a live assistant atom (thinking/tool_use skipped)."""
+    msg = a.get("message") or {}
+    c = msg.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
 def append_effort_applied(state_dir: Path, sid: str, effort: str, t: int | None = None) -> None:
     """Record that an /effort change TOOK EFFECT — written the instant the reconnect that carries --effort
     lands (idle → at once; busy → at turn end), so it pins the moment the new effort is real, not when it was
@@ -2981,6 +3010,19 @@ class SdkBackend:
         for k in list(d.keys()):
             a = d[k]
             if not a.get("_echo_text") and not a.get("command"):
+                # An assistant atom carrying real TEXT that never landed on disk is a reply the user WATCHED
+                # stream but the transcript dropped (an API-errored try — the CLI discards the partial and the
+                # retry writes a fresh record with a new uuid). Persist it durably BEFORE dropping the live
+                # atom, so build_session can interleave it back at its timestamp — dedup'd against the disk so a
+                # retry that DID re-reply never doubles. Without this the reply vanishes at settle and only the
+                # "Recovered after N retries" note remains where it was (the user 2026-07-21).
+                if a.get("type") == "assistant" and not a.get("isApiError"):
+                    txt = _atom_text(a)
+                    if txt.strip():
+                        try:
+                            append_orphan_reply(self.state_dir, sid, a.get("uuid") or "", txt, t=a.get("t"))
+                        except Exception:
+                            self._log("orphan-reply persist failed: %s" % traceback.format_exc())
                 del d[k]
         if not d:
             self._live.pop(sid, None)

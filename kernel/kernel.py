@@ -5135,6 +5135,43 @@ def _retry_recoveries(sid):
     return out
 
 
+def _atom_md(a):
+    """Joined text-block content of an assistant atom (thinking/tool_use skipped) — for the orphan-reply
+    dedup, which compares a lost reply's text against what the transcript actually kept."""
+    msg = a.get("message") or {}
+    c = msg.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def _orphan_replies(sid):
+    """Durable orphan-reply markers from states/<sid>.jsonl — {"t":…,"orphanReply":{"uuid","text"}} lines the
+    SDK backend writes (append_orphan_reply) when retire_live_work drops a live assistant reply the transcript
+    never kept (a reply the user watched stream on an API-errored try). Returns [{"t","uuid","text"}, …] oldest
+    first, so build_session can interleave the lost text back at its timestamp, DEDUP'd against the disk. SDK-only."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    out = []
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"orphanReply"' not in line:            # cheap prefilter — most lines are plain state records
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                orq = o.get("orphanReply")
+                if isinstance(orq, dict) and (orq.get("text") or "").strip() and o.get("t"):
+                    out.append({"t": int(o["t"]), "uuid": str(orq.get("uuid") or ""), "text": orq["text"]})
+    except OSError:
+        return []
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
 def _effort_changes(sid):
     """Durable effort-applied markers from states/<sid>.jsonl — {"t":…,"effortApplied":"high"} lines the SDK
     backend writes when an /effort reconnect lands (append_effort_applied). Returns [{"t":epoch,"effort":str}, …]
@@ -7294,8 +7331,27 @@ def build_session(sid, now, tmux=None):
     # took effect and survives scroll-back (and the next message, which pruned the ephemeral /effort chip).
     recoveries = _retry_recoveries(sid); _ri = 0
     efforts = _effort_changes(sid); _ei = 0
+    # Orphan replies (the user 2026-07-21): assistant text that streamed live but the transcript never kept
+    # (an API-errored try). Interleave it back at its timestamp, DEDUP'd against what the disk DID keep — a
+    # retry that re-replied must not double. Match exact, and either-way prefix (a partial stream vs its full
+    # retry). NB: build the disk-text set from the SAME session["turns"] atoms this loop renders.
+    orphans = _orphan_replies(sid); _oi = 0
+    _disk_texts = set()
+    for _t in session["turns"]:
+        for _a in _t["atoms"]:
+            if _a.get("type") == "assistant" and not _a.get("isApiError"):
+                _tx = _atom_md(_a).strip()
+                if _tx:
+                    _disk_texts.add(_tx)
     def _flush_recoveries(upto):
-        nonlocal _ri, _ei
+        nonlocal _ri, _ei, _oi
+        while _oi < len(orphans) and (upto is None or orphans[_oi]["t"] <= upto):
+            _o = orphans[_oi]; _oi += 1
+            _ot = _o["text"].strip()
+            if _ot in _disk_texts or any(dt.startswith(_ot) or _ot.startswith(dt) for dt in _disk_texts):
+                continue                                   # the transcript kept this reply → don't double it
+            events.append({"kind": "assistant", "md": _o["text"], "orphaned": True,
+                           "uuid": "orphan:%s" % (_o["uuid"] or _o["t"]), "ts": iso(_o["t"])})
         while _ri < len(recoveries) and (upto is None or recoveries[_ri]["t"] <= upto):
             _r = recoveries[_ri]; _ri += 1
             events.append({"kind": "retried", "retries": _r["retries"], "ts": iso(_r["t"]),
