@@ -43,7 +43,7 @@ The installer starts Romp and keeps it running, so the dashboard is already
 live. Open **http://127.0.0.1:7433/** in any browser, type a name into the
 picker, and start a session.
 
-![Opening the dashboard, naming a session, and creating it](assets/guide/first-session.gif){ width="100%" }
+<video src="../assets/guide/first-session.mp4" autoplay loop muted playsinline width="100%"></video>
 
 Prefer your editor? Reload your VS Code or Cursor window and open Romp from the
 sidebar. The installer already added the extension.
