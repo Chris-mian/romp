@@ -100,3 +100,58 @@ teardown() {
     ! grep -q '^TMUX_PANE=' "$envdump"
     grep -q '^ROMP_SERVE_BIN=' "$envdump"   # the dump is real: other env DID flow through
 }
+
+@test "quiet-mode refresh defers while turns are in flight, coalesces, applies on the quiet event" {
+    command -v node >/dev/null 2>&1 || skip "node not available"
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+
+    # Fake kernel: binds the serve port, answers /busy from a file the test flips, and logs each
+    # spawn — so the bounce (SIGTERM + respawn) is observable as a second spawn line.
+    local BUSY="$TEST_DIR/busy" SPAWNS="$TEST_DIR/spawns" FAKEK="$TEST_DIR/fake-kernel"
+    echo 2 > "$BUSY"
+    cat > "$FAKEK" <<'PYEOF'
+#!/usr/bin/env python3
+import http.server, json, os
+with open(os.environ["SPAWN_LOG"], "a") as f:
+    f.write("spawn\n")
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        try:
+            n = int(open(os.environ["BUSY_FILE"]).read().strip())
+        except Exception:
+            n = 0
+        b = json.dumps({"busy": n}).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["ROMP_SERVE_PORT"])), H).serve_forever()
+PYEOF
+    chmod +x "$FAKEK"
+
+    env BUSY_FILE="$BUSY" SPAWN_LOG="$SPAWNS" ROMP_QUIET_POLL_MS=200 \
+        ROMP_MANAGER_PORT=7591 ROMP_SERVE_PORT=7592 ROMP_SERVE_BIN="$FAKEK" \
+        node "$MGR" up >/dev/null 2>&1 &
+    MGR_PID=$!
+    local i
+    for i in $(seq 1 50); do
+        curl -fsS "http://127.0.0.1:7591/status" >/dev/null 2>&1 && [ -s "$SPAWNS" ] && break
+        sleep 0.1
+    done
+    [ "$(grep -c spawn "$SPAWNS")" -eq 1 ]
+
+    # Two quiet-mode refreshes while turns are in flight: both defer, the second coalesces.
+    run curl -fsS -X POST "http://127.0.0.1:7591/restart-all?when=quiet"
+    [[ "$output" == *'"deferred":true'* ]]
+    run curl -fsS -X POST "http://127.0.0.1:7591/restart-all?when=quiet"
+    [[ "$output" == *'"coalesced":2'* ]]
+
+    # Still busy after several poll cycles -> no bounce happened.
+    sleep 1
+    [ "$(grep -c spawn "$SPAWNS")" -eq 1 ]
+
+    # The fleet quiets -> exactly ONE bounce delivers both queued refreshes.
+    echo 0 > "$BUSY"
+    for i in $(seq 1 60); do [ "$(grep -c spawn "$SPAWNS")" -ge 2 ] && break; sleep 0.1; done
+    [ "$(grep -c spawn "$SPAWNS")" -eq 2 ]
+    curl -fsS -X POST "http://127.0.0.1:7591/stop" >/dev/null 2>&1 || true
+}

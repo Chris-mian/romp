@@ -2075,6 +2075,16 @@ class SdkBackend:
                          "; still closing: " + ", ".join(unjoined) if unjoined else ""))
         return {"stopped": len(sessions), "inflight": inflight, "unjoined": len(unjoined)}
 
+    def busy_count(self) -> int:
+        """How many SDK sessions have a turn IN FLIGHT right now — the manager's quiet-window gate
+        for deferred deploy restarts (the kernel's /busy route). Authoritative: the same per-session
+        inflight counter the drain uses to count the turns a restart would cut. Queued-but-unstarted
+        turns don't count — the persisted queue survives a bounce losslessly; only an in-flight turn
+        gets interrupted."""
+        with self._lock:
+            sessions = list(self.sessions.values())
+        return sum(1 for s in sessions if s.inflight and not s.ended)
+
     def refresh_usage(self):
         """Best-effort: ask ONE live connected session for the exact /usage snapshot (get_usage control
         request). The kernel's /usage click calls this so the NEXT read is fresh; per-turn-end refreshes

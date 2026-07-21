@@ -42,3 +42,36 @@ test('old restarts age out of the window — no false storm', () => {
   assert.equal(g.inStorm, false);
   assert.equal(g.action, 'restart');
 });
+
+// Quiet-window deploy deferral (the user 2026-07-20): peers deploying with `romp --refresh` bounced
+// the kernel 11x in one day, each bounce cutting whatever SDK turns were in flight. quietGate is the
+// pure apply/wait decision: apply when the kernel reports zero in-flight turns (or is unreachable —
+// nothing to cut), wait otherwise, with a backstop cap so a never-quiet fleet still gets its deploy.
+const { quietGate } = require(path.join(__dirname, '..', 'bin', 'romp-manager'));
+const QOPTS = { maxDeferMs: 900000 };
+
+test('quiet fleet applies immediately', () => {
+  const g = quietGate({ since: 1000 }, 0, 2000, QOPTS);
+  assert.equal(g.action, 'apply');
+  assert.equal(g.reason, 'quiet');
+});
+
+test('in-flight turns defer the bounce', () => {
+  const g = quietGate({ since: 1000 }, 2, 2000, QOPTS);
+  assert.equal(g.action, 'wait');
+  assert.match(g.reason, /2 turn/);
+});
+
+test('an unreachable kernel applies — nothing a restart could cut', () => {
+  assert.equal(quietGate({ since: 1000 }, null, 2000, QOPTS).action, 'apply');
+});
+
+test('the backstop cap applies even while busy — a deploy can never starve', () => {
+  const g = quietGate({ since: 1000 }, 5, 1000 + QOPTS.maxDeferMs, QOPTS);
+  assert.equal(g.action, 'apply');
+  assert.equal(g.reason, 'backstop cap');
+});
+
+test('just under the cap still waits', () => {
+  assert.equal(quietGate({ since: 1000 }, 5, 999 + QOPTS.maxDeferMs, QOPTS).action, 'wait');
+});

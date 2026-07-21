@@ -12518,6 +12518,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, "ok", "text/plain")   # liveness probe — exempt from auth
             if p == "/version":                               # build/version report — exempt from auth (no paths, harmless)
                 return self._send(200, json.dumps(_version_info()), "application/json", cache="no-cache")
+            if p == "/busy":
+                # In-flight SDK turn count — the manager's quiet-window gate for deferred deploy
+                # refreshes (it polls this only while a refresh is pending). Auth-exempt like
+                # /healthz: the manager holds no token, and a bare count leaks nothing.
+                be = _sdk()
+                n = be.busy_count() if be and hasattr(be, "busy_count") else 0
+                return self._send(200, json.dumps({"busy": n}), "application/json", cache="no-cache")
             ok, self._set_cookie, why = self._authorize(q)
             self._cors_origin = self.headers.get("Origin") if ok else None   # echoed by _send (CORS delivery)
             if not ok:

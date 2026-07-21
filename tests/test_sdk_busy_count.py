@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""busy_count — the quiet-window gate for deferred deploy refreshes (the user 2026-07-20). Peers'
+`romp --refresh` deploys bounced the kernel 11x in one day, each cutting in-flight SDK turns; the
+manager now defers a deploy until the kernel's /busy reports zero turns in flight. busy_count must
+mirror exactly what the drain would cut: sessions with inflight > 0 and not ended — never queued
+turns (the persisted queue survives a bounce losslessly). Synthetic; no SDK import."""
+import os
+import tempfile
+import unittest
+from unittest import mock
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+sb = SourceFileLoader("romp_sdk_backend_busy", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+
+
+def _sess(inflight, ended=False):
+    s = mock.Mock()
+    s.inflight = inflight
+    s.ended = ended
+    return s
+
+
+class BusyCount(unittest.TestCase):
+    def _backend(self):
+        return sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+
+    def test_counts_only_inflight_unended_sessions(self):
+        be = self._backend()
+        be.sessions = {"a": _sess(1), "b": _sess(0), "c": _sess(2), "d": _sess(1, ended=True)}
+        self.assertEqual(be.busy_count(), 2,
+                         "idle and ended sessions are not turns a restart would cut")
+
+    def test_empty_backend_is_quiet(self):
+        self.assertEqual(self._backend().busy_count(), 0)
+
+    def test_kernel_serves_busy_route(self):
+        # Source pin: the kernel must expose busy_count as GET /busy (auth-exempt, like /healthz) —
+        # the manager polls it tokenless while a deploy refresh is pending.
+        ksrc = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        get_src = ksrc.split("def do_GET", 1)[1]     # the GET router only (do_HEAD authorizes too)
+        self.assertIn('if p == "/busy":', get_src)
+        self.assertIn("busy_count", get_src)
+        # served BEFORE the auth gate, beside the other exempt routes
+        self.assertLess(get_src.index('if p == "/busy":'),
+                        get_src.index("ok, self._set_cookie, why = self._authorize(q)"))
+
+
+if __name__ == "__main__":
+    unittest.main()

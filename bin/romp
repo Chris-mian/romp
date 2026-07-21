@@ -807,7 +807,10 @@ print(json.dumps({"t": int(time.time()), "ppid": int(os.environ.get("RA_PPID") o
 PYEOF
                } 2>/dev/null || true
                "${ROMP_POSTAL_BIN:-romp-postal-service}" restart >/dev/null 2>&1 || true
-               exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
+               # Deploys defer to the next quiet window (no SDK turn in flight) so a peer's
+               # refresh never cuts another session's turn; `romp --refresh --now` forces the
+               # old immediate bounce (the manager coalesces everything queued meanwhile).
+               exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all "${2:-}" ;;
     --status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
 esac
 

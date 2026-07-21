@@ -82,6 +82,20 @@ const STORM_WINDOW_MS = 60000;        // sliding window for storm detection
 const STORM_MAX = 8;                  // ≥ this many restarts in the window = a storm
 const STORM_COOLDOWN_MS = 30000;      // during a storm, hold to 1 restart per this
 
+// Quiet-window deploy refreshes (the user 2026-07-20): peers deploying with `romp --refresh` bounced
+// the kernel 11x in one day, and every bounce cuts whatever SDK turns are in flight (the drain
+// interrupts them; the next boot resumes them with a nudge — recoverable, but each cut costs the
+// model a full re-read and the user a working-session hiccup). A refresh is a DEPLOY, not an
+// emergency: nothing about it needs to land mid-turn. So `?when=quiet` queues the restart and the
+// manager applies it on the EVENT the fleet's SDK turns drain to zero (the kernel's /busy count,
+// polled only while a refresh is pending), coalescing every refresh queued meanwhile into ONE
+// bounce. The poll is the observation channel, not a heuristic: the gate itself is "no turn in
+// flight". A backstop cap applies the refresh anyway if the fleet never quiets (deploys must land),
+// loudly. Immediate restarts (the dashboard ↻, `--now`) behave exactly as before and satisfy any
+// pending quiet request in passing.
+const QUIET_POLL_MS = Number(process.env.ROMP_QUIET_POLL_MS) || 3000;
+const QUIET_MAX_DEFER_MS = Number(process.env.ROMP_QUIET_MAX_DEFER_MS) || 15 * 60 * 1000;
+
 function spawnKernel(spec) {
   const prev = kernels.get(spec.id);
   // ROMP_MANAGER_PID lets the kernel run a parent-death watchdog (_parent_watch in bin/romp-kernel):
@@ -173,6 +187,61 @@ function restartAll() {
   return ids;
 }
 
+// ── quiet-window deferral (deploy refreshes) ────────────────────────────────
+// Pure decision (time injected → unit-testable). `st` = {since}; `busy` = the kernel's in-flight
+// SDK turn count, or null when the kernel is unreachable — a kernel that isn't answering has no
+// turns a restart could cut, so unreachable counts as quiet.
+function quietGate(st, busy, now, opts) {
+  if (busy === null || busy === 0) return { action: 'apply', reason: busy === null ? 'kernel unreachable' : 'quiet' };
+  if (now - st.since >= opts.maxDeferMs) return { action: 'apply', reason: 'backstop cap' };
+  return { action: 'wait', reason: `${busy} turn(s) in flight` };
+}
+
+let pendingQuiet = null;   // {since, count, mode:'all'|<kernel id>, timer}
+
+function fetchBusy(port, cb) {
+  const req = http.get({ host: HOST, port, path: '/busy', timeout: 2000 }, (res) => {
+    let b = ''; res.on('data', (d) => (b += d));
+    res.on('end', () => { let n = null; try { const v = JSON.parse(b).busy; n = Number.isFinite(v) ? v : null; } catch { n = null; } cb(n); });
+  });
+  req.on('timeout', () => { req.destroy(); cb(null); });
+  req.on('error', () => cb(null));
+}
+
+function clearPendingQuiet() {
+  if (!pendingQuiet) return;
+  if (pendingQuiet.timer) clearTimeout(pendingQuiet.timer);
+  pendingQuiet = null;
+}
+
+function queueQuietRestart(mode) {
+  if (pendingQuiet) {
+    pendingQuiet.count++;
+    if (mode === 'all') pendingQuiet.mode = 'all';   // any 'all' request widens the pending bounce
+    log(`refresh queued behind the pending one (${pendingQuiet.count} coalesced — one bounce will deliver all)`);
+    return pendingQuiet.count;
+  }
+  pendingQuiet = { since: Date.now(), count: 1, mode, timer: null };
+  log(`refresh queued — applying at the next quiet window (no SDK turn in flight; backstop ${Math.round(QUIET_MAX_DEFER_MS / 60000)} min)`);
+  const tick = () => {
+    if (!pendingQuiet) return;                       // an immediate restart satisfied it meanwhile
+    fetchBusy(KERNEL_PORT, (busy) => {
+      if (!pendingQuiet) return;
+      const g = quietGate(pendingQuiet, busy, Date.now(), { maxDeferMs: QUIET_MAX_DEFER_MS });
+      if (g.action === 'apply') {
+        const p = pendingQuiet;
+        clearPendingQuiet();
+        log(`applying deferred refresh — ${g.reason} (${p.count} request(s) coalesced, waited ${Math.round((Date.now() - p.since) / 1000)}s)`);
+        if (p.mode === 'all') restartAll(); else restartKernel(p.mode);
+      } else {
+        pendingQuiet.timer = setTimeout(tick, QUIET_POLL_MS);
+      }
+    });
+  };
+  tick();
+  return 1;
+}
+
 function stopKernel(id) {
   const rec = kernels.get(id);
   if (!rec) return false;
@@ -185,6 +254,7 @@ let shuttingDown = false;
 function shutdownAll(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearPendingQuiet();           // never let a deferred refresh respawn what we're stopping
   log('shutting down — stopping all kernels');
   for (const id of kernels.keys()) stopKernel(id);
   // give the kernels a moment to exit, then go regardless
@@ -244,9 +314,18 @@ function startManager() {
       return json(200, Object.assign({ ok: true }, ensureKernel(port)));
     }
     if (req.method === 'POST' && url.pathname === '/restart-all') {
-      return json(200, { ok: true, restarted: restartAll() });   // `romp refresh` — every kernel
+      if (url.searchParams.get('when') === 'quiet') {            // deploy path: land at the next quiet window
+        return json(202, { ok: true, deferred: true, coalesced: queueQuietRestart('all') });
+      }
+      clearPendingQuiet();                                       // this bounce delivers any pending deploy too
+      return json(200, { ok: true, restarted: restartAll() });   // `romp refresh --now` — every kernel
     }
     if (req.method === 'POST' && url.pathname === '/restart') {
+      if (url.searchParams.get('when') === 'quiet') {
+        if (!kernels.has(kid)) return json(404, { ok: false, error: `no kernel '${kid}'` });
+        return json(202, { ok: true, deferred: true, coalesced: queueQuietRestart(kid) });
+      }
+      clearPendingQuiet();                                       // the dashboard ↻ satisfies a pending deploy in passing
       return restartKernel(kid) ? json(200, { ok: true, restarted: kid }) : json(404, { ok: false, error: `no kernel '${kid}'` });
     }
     if (req.method === 'POST' && url.pathname === '/stop') {
@@ -274,9 +353,10 @@ function probeControl(cb) {
   req.on('error', () => cb(false));
 }
 
-function control(method, pathname, kernel) {
+function control(method, pathname, kernel, params) {
   const u = new URL(`http://${HOST}:${CONTROL_PORT}${pathname}`);
   if (kernel) u.searchParams.set('kernel', kernel);
+  for (const [k, v] of Object.entries(params || {})) u.searchParams.set(k, v);
   const req = http.request(u, { method, timeout: 4000 }, (res) => {
     let b = ''; res.on('data', (d) => (b += d));
     res.on('end', () => { try { process.stdout.write(JSON.stringify(JSON.parse(b), null, 2) + '\n'); } catch (e) { process.stdout.write(b + '\n'); } process.exit(res.statusCode < 400 ? 0 : 1); });
@@ -301,14 +381,17 @@ function ensureUp() {
 // ── dispatch ────────────────────────────────────────────────────────────────
 // Exported for unit tests (restartGate = the pure storm-cap decision). The CLI dispatch runs only when this
 // file is executed directly, so require()-ing it from a test has no side effects.
-module.exports = { restartGate };
+module.exports = { restartGate, quietGate };
 if (require.main === module) {
   const cmd = process.argv[2];
+  // `restart-all` (the `romp --refresh` deploy path) defers to the next quiet window by default —
+  // `--now` keeps the old immediate bounce for emergencies/humans in a hurry.
   if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
-  else if (cmd === 'restart-all') control('POST', '/restart-all');
+  else if (cmd === 'restart-all') control('POST', '/restart-all', null,
+    process.argv[3] === '--now' ? {} : { when: 'quiet' });
   else if (cmd === 'status') control('GET', '/status');
   else if (cmd === 'down') control('POST', '/stop');
   else if (cmd === 'ensure') ensureUp();
   else if (!cmd || cmd === 'up') runManager();
-  else { console.error('usage: romp-manager [up | ensure | restart-all | restart [kernel] | status | down]'); process.exit(2); }
+  else { console.error('usage: romp-manager [up | ensure | restart-all [--now] | restart [kernel] | status | down]'); process.exit(2); }
 }
