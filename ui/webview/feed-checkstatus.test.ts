@@ -37,7 +37,9 @@ test("the card-level 'Status?' sweep: one askFollowUp naming every open item; ac
   // by disable+relabel BEFORE the kernel round-trip, and only shows when there is something to sweep
   assert.match(FEED, /const cur = \(card as any\)\._askData as AskItem \| undefined;/);
   assert.match(FEED, /statBtn\.disabled = true; statBtn\.textContent = "Asked";/);
-  assert.match(FEED, /stb\.style\.display = \(!it\.provisional && it\.live && statusSweepText\(it\)\.n > 0\) \? "" : "none";/);
+  // BLOCKED cards only (the user 2026-07-20): a Working card's agent is visibly moving — no status poke
+  // from the card face; the modal's "Check status" stays available one click deeper for any card.
+  assert.match(FEED, /stb\.style\.display = \(!it\.provisional && it\.live && it\.column === "needs_input"\s*\n\s*&& statusSweepText\(it\)\.n > 0\) \? "" : "none";/);
   // re-arm is EVENT-based: the judge's re-file clearing the followup/recheck state, never a timer
   assert.match(FEED, /if \(stb\.disabled && !it\.followupPending && !it\.recheck && !it\.rejudging\)/);
 });

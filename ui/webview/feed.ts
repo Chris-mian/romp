@@ -1090,11 +1090,15 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.style.display = "none";
   }
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
-  // Card-level "Status?" shows only where it can act: a real card on a LIVE session with open/blocked
-  // sub-goals to sweep. Re-arms (event-based) once the judge's re-file clears the asked state.
+  // Card-level "Status?" shows only where it can act AND where a nudge is warranted: a real card on a
+  // LIVE session, with open/blocked sub-goals to sweep, in the BLOCKED column only (the user 2026-07-20:
+  // a card still Working doesn't need a status poke from the card face — the agent is visibly moving;
+  // the modal's "Check status" remains one click deeper for any card). Re-arms (event-based) once the
+  // judge's re-file clears the asked state.
   a._askData = it;
   const stb = a._statusBtn as HTMLButtonElement;
-  stb.style.display = (!it.provisional && it.live && statusSweepText(it).n > 0) ? "" : "none";
+  stb.style.display = (!it.provisional && it.live && it.column === "needs_input"
+    && statusSweepText(it).n > 0) ? "" : "none";
   if (stb.disabled && !it.followupPending && !it.recheck && !it.rejudging) { stb.disabled = false; stb.textContent = "Status?"; }
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
   // peer case already shows the "Awaiting <peer>" chip (waitingOn), so the generic awaiting box is suppressed
