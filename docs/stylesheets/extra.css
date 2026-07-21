@@ -84,9 +84,28 @@
      [for=__drawer] title and .md-nav__source), so match that here. */
   .md-nav--primary .md-nav__title[for="__drawer"] {
     background-color: #12171e;
+    /* hide the "Romp" site-name text while keeping the band's height (so the repo
+       link below it doesn't reflow); the wordmark logo is an absolutely-positioned
+       img, unaffected by the indent. */
+    text-indent: -9999px;
+    white-space: nowrap;
+    overflow: hidden;
   }
   .md-nav__source {
     background-color: #12171e;
+  }
+  /* Material grows the nav list (flex:1) and orders the repo link (order:99) to the
+     drawer bottom. Pin it right under the wordmark band instead, mirroring the
+     desktop header where the repo link sits up top. The order:99 wins on
+     specificity, so override with !important. */
+  .md-nav--primary > .md-nav__title {
+    order: 0;
+  }
+  .md-nav--primary > .md-nav__source {
+    order: 1 !important;
+  }
+  .md-nav--primary > .md-nav__list {
+    order: 2;
   }
 }
 
