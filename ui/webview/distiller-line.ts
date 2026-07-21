@@ -12,6 +12,25 @@
 //   - it NEVER takes — and therefore can NEVER show — the planner's why-created/why-blocked/why-done
 //     rationale (the user dropped those, esp. under subgoals). The signature has no `why` by design.
 
+/** The (completed, blocked) inputs the distiller line keys on for a CARD, derived from the kernel's GENUINE
+ *  resolution state (`distillState`) rather than the transient `column`. recheck/rejudging drop a still-blocked
+ *  card to the Working column every time its session takes a turn, and keying the line on `column` blanked the
+ *  decision brief each time — a busy session's blocked card read as "unblocked, no summary" (the docs thread,
+ *  the user 2026-07-21). `distillState` rides the real block, so the brief stays put through the flip.
+ *
+ *  Fallback: a payload with no `distillState` (an older build, or a remote kernel that predates the field →
+ *  null/undefined) reads the old `column` meaning, so federation and cache-warm frames still render correctly.
+ *  This is unambiguous: the kernel only emits `distillState:null` for a genuinely-working card, and a working
+ *  card is never `column:"needs_input"`/"completed", so the fallback yields the same "show nothing" there. */
+export function distillInputs(
+  distillState: "completed" | "blocked" | null | undefined,
+  column: string,
+): { completed: boolean; blocked: boolean } {
+  if (distillState === "completed") return { completed: true, blocked: false };
+  if (distillState === "blocked") return { completed: false, blocked: true };
+  return { completed: column === "completed", blocked: column === "needs_input" };
+}
+
 /** The distiller line's text for an item/node, or "" when there's nothing to show. */
 export function distillText(
   completed: boolean,

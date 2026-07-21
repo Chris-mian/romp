@@ -35,12 +35,16 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // `&& !aw` (the user 2026-07-13): an AWAITING placeholder (a bg-task wait with no goal) is provisional too
   // but NOT working — it defers to the boxed why / "Waiting on task" pill, never a false "Working…".
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working" && !aw\) \{[\s\S]*?spinCaption = it\.judging \? "Analyzing…" : "Working…";/);
-  assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Analyzing…";/);
-  assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Analyzing…";/);
+  // recheck/rejudging show "Analyzing…" ONLY when there's no brief yet (&& !briefText); a present decision
+  // brief fills the spot instead, so a still-blocked card doesn't blank its brief to a swirl every turn (the
+  // user 2026-07-21). The brief-vs-swirl behavior is EXECUTED in feed-distill-state / distiller-line tests.
+  assert.match(FEED, /\} else if \(it\.recheck && !briefText\) \{[\s\S]*?spinCaption = "Analyzing…";/);
+  assert.match(FEED, /\} else if \(it\.rejudging && !briefText\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is
-  // distillPending (distiller-line.test.ts); here we just pin that the card branch uses it + sets the caption
-  assert.match(FEED, /\} else if \(distillPending\(it\.column === "completed", it\.column === "needs_input", it\.summary, it\.blockSummary, !!it\.blocked\)\) \{[\s\S]*?spinCaption = "Distilling…";/);
-  assert.match(FEED, /import \{ distillText, applyDistillLine, distillPending \} from "\.\/distiller-line";/);
+  // distillPending (distiller-line.test.ts); here we just pin that the card branch uses it + sets the caption.
+  // Keyed on the genuine state (dCompleted/dBlocked), not the transient column (the user 2026-07-21).
+  assert.match(FEED, /\} else if \(distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\)\) \{[\s\S]*?spinCaption = "Distilling…";/);
+  assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending \} from "\.\/distiller-line";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });

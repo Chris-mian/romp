@@ -6,7 +6,7 @@
 // Rendering is KEYED + INCREMENTAL: cards are kept alive across the host's live
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
-import { distillText, applyDistillLine, distillPending } from "./distiller-line";
+import { distillText, distillInputs, applyDistillLine, distillPending } from "./distiller-line";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes } from "./host-prefix";
 import { initStrip } from "./strip";
@@ -73,6 +73,7 @@ interface AskItem {
               toName?: string; toSid?: string;    // parkedHandoff adds to*
               ctx?: number | null; reason?: string };   // largeResume (resume-gate) adds last-known ctx% + reason
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
+  distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
   artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
@@ -578,24 +579,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this task";   // plain-spoken (the user 2026-07-13, over the inbox-zero jargon)
-  // "Status?" — the card-level check-in sweep (the user 2026-07-20: scattered open subs with no cheap way
-  // to ask about them): ONE message asking the session where EVERY open/blocked item on this card stands;
-  // the replies file back per item through the judge. Reads _askData at click time (updateAskCard keeps it
-  // fresh) so the handler survives re-renders, like warnChip. Ack = disable + relabel before the round-trip.
-  const statBtn = el("button", "fdismiss fstatus") as HTMLButtonElement; statBtn.textContent = "Status?";
-  statBtn.title = "ask this session where every open item on this card stands — replies file back onto the card";
-  statBtn.style.display = "none";
-  statBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    const cur = (card as any)._askData as AskItem | undefined;
-    if (!cur) return;
-    const sweep = statusSweepText(cur);
-    if (!sweep.n) return;
-    vscodeApi?.postMessage({ type: "askFollowUp", itemId: cur.itemId, text: sweep.text, sid: cur.sid });
-    statBtn.disabled = true; statBtn.textContent = "Asked";
-    optimisticFollowMove(cur.itemId);
-    render();
-  };
+  // The card-face "Status?" sweep was REMOVED (the user 2026-07-21): a card still Working doesn't need a
+  // status poke from the card face, and once the decision brief carries a paragraph per blocked sub-goal
+  // (the briefer's per-sub-goal takeaway) the summary already says where each thing stands, so the sweep was
+  // redundant clutter on the face. The sweep still lives one click deeper as the modal footer's "Check
+  // status" (feed-modal-status), and each sub-goal keeps its own "Check status" in the modal tree.
   // Manual "Nudge" REMOVED (the user 2026-06-30): once Auto Nudge is robust you never hand-nudge — the
   // background nudge follows up on a stalled working goal automatically, so the manual button (and the whole
   // concept of manually nudging) is gone. Working cards now have no footer action of their own.
@@ -616,7 +604,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
-  row2.append(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, statBtn, clr);
+  row2.append(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -781,7 +769,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
   a._rgProceed = rgProceed; a._rgCompact = rgCompact; a._rgSkip = rgSkip;
-  a._statusBtn = statBtn;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
@@ -1097,16 +1084,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.style.display = "none";
   }
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
-  // Card-level "Status?" shows only where it can act AND where a nudge is warranted: a real card on a
-  // LIVE session, with open/blocked sub-goals to sweep, in the BLOCKED column only (the user 2026-07-20:
-  // a card still Working doesn't need a status poke from the card face — the agent is visibly moving;
-  // the modal's "Check status" remains one click deeper for any card). Re-arms (event-based) once the
-  // judge's re-file clears the asked state.
-  a._askData = it;
-  const stb = a._statusBtn as HTMLButtonElement;
-  stb.style.display = (!it.provisional && it.live && it.column === "needs_input"
-    && statusSweepText(it).n > 0) ? "" : "none";
-  if (stb.disabled && !it.followupPending && !it.recheck && !it.rejudging) { stb.disabled = false; stb.textContent = "Status?"; }
+  // (The card-face "Status?" sweep was removed 2026-07-21 — see the comment where it used to be declared.)
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
   // peer case already shows the "Awaiting <peer>" chip (waitingOn), so the generic awaiting box is suppressed
   // then. (The old header "awaiting" chip is gone — the body box below carries it; the user 2026-07-04.)
@@ -1132,6 +1110,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // as "in flight, not stalled", which is exactly the awaiting state — the box already distinguishes it from
   // the actively-working cases, so the glyph needn't also freeze). The caption wraps to two lines if long.
   let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
+  // The distiller line keys on the GENUINE resolution state (distillState), not the transient `column`:
+  // recheck/rejudging drop a still-blocked card to Working every time its session takes a turn, which used
+  // to flicker the decision brief OFF (the docs thread read "unblocked, no summary" — the user 2026-07-21).
+  // distillInputs (in ./distiller-line so the test EXECUTES the rule) maps state→(completed,blocked), with a
+  // column fallback for older/remote payloads that predate the field.
+  const { completed: dCompleted, blocked: dBlocked } = distillInputs(it.distillState, it.column);
+  const briefText = distillText(dCompleted, dBlocked, it.summary, it.blockSummary);   // "" when nothing to show
   // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Waiting on task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
@@ -1154,10 +1139,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     spinTip = it.judging
       ? "This stretch of work finished; the judge is sorting it into a goal."
       : "A new prompt, still running. Sorted into a goal once this stretch of work finishes.";
-  } else if (it.recheck) {
+  } else if (it.recheck && !briefText) {
+    // No brief yet → the swirl fills the spot. When a brief EXISTS it shows instead of "Analyzing…" (the
+    // user 2026-07-21): a still-blocked card that its busy session keeps re-judging must keep its decision
+    // brief on screen, not blank it to a swirl every turn — that flicker WAS the "no summary" complaint.
     spinCaption = "Analyzing…";
     spinTip = "You followed up. Reopened to Working; the judge will resolve it or re-block it.";
-  } else if (it.rejudging) {
+  } else if (it.rejudging && !briefText) {
     spinCaption = "Analyzing…";
     spinTip = "You replied on this thread. Moved to Working while the reply runs; it comes back if the judge re-confirms the block.";
   } else if (it.judging && it.column === "working") {
@@ -1167,14 +1155,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     //    Distilling…) when the verdict files the work.
     spinCaption = "Analyzing…";
     spinTip = "This stretch of work finished; the judge is deciding whether it completed or blocked this goal.";
-  } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
+  } else if (distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked)) {
     //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
     //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief
     //    (blockSummary). The same swirl spins in the distiller-line spot until the line lands, so a card that
     //    "is in motion" (the distiller LLM is running) reads as busy rather than blank. Excludes a live
     //    permission/picker block (on YOU). distillPending lives in ./distiller-line so the test EXECUTES it.
+    //    Keyed on distillState (dCompleted/dBlocked), so a still-blocked card mid-flip keeps spinning for its
+    //    brief instead of dropping the swirl the instant `column` reads working (the user 2026-07-21).
     spinCaption = "Distilling…";
-    spinTip = it.column === "completed"
+    spinTip = dCompleted
       ? "Writing the key takeaway…"
       : "Writing the decision brief…";
   }
@@ -1207,7 +1197,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.
   // The rule lives in ./distiller-line so distiller-line.test.ts can EXECUTE it (a regex pin let it silently
   // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
-  const distillShown = applyDistillLine(a._distill as HTMLElement, it.column === "completed", it.column === "needs_input",
+  // Keyed on distillState (dCompleted/dBlocked), NOT it.column: a still-blocked card keeps its brief on
+  // screen through the recheck/rejudging Working flip instead of blanking it every turn (the user 2026-07-21).
+  const distillShown = applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked,
                    it.summary, it.blockSummary);
   // The distiller line is a LINK: clicking it jumps to where the takeaway/brief was actually written — the
   // biggest contiguous assistant-text block in the goal's work span (it.summaryAnchorUuid; kernel
@@ -1899,9 +1891,11 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
         line.classList.remove("st-open", "st-question"); line.classList.add("st-cleared");
         mark.textContent = "●"; acts.remove();
       };
-      // "Status?": ONE-CLICK targeted ask — the session states where this item stands and the judge files
-      // the reply on this node (the same askFollowUp + romp-goal-id path a typed per-sub follow-up rides).
-      const stat = el("button", "ftree-act-btn ftree-act-status") as HTMLButtonElement; stat.textContent = "Status?";
+      // "Check status": ONE-CLICK targeted ask — the session states where this item stands and the judge
+      // files the reply on this node (the same askFollowUp + romp-goal-id path a typed per-sub follow-up
+      // rides). Named "Check status" to match the modal footer's sweep, not the old "Status?" (the user
+      // 2026-07-21: one verb for the same act, whether it sweeps the card or checks a single sub-goal).
+      const stat = el("button", "ftree-act-btn ftree-act-status") as HTMLButtonElement; stat.textContent = "Check status";
       stat.title = "ask the session where this item stands right now — the reply files back onto this sub-goal";
       stat.onclick = (ev) => {
         ev.stopPropagation();

@@ -4807,6 +4807,49 @@ class Distiller(unittest.TestCase):
         self.assertEqual(seen["owed"], "needs the staging credentials from the user",
                          "the open item's blockWhy is the owed question fed to the brief")
 
+    def test_brief_owed_is_the_full_list_when_several_subgoals_are_blocked(self):
+        # the user 2026-07-21: a top blocked on MULTIPLE sub-goals feeds the briefer EVERY owed decision
+        # (each sub-goal + its blockWhy), not just the latest one, so the takeaway can break into one short
+        # paragraph per blocked thing the user can answer on its own — instead of cramming three decisions
+        # into a single paragraph (the docs thread). A LONE block still passes its blockWhy string (above).
+        records = [uline(T0, "improve the docs", "u1", ps="typed"),
+                   aline(T0 + 10, "three things are open, waiting on you", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid, c1, c2 = SID + ":g1", SID + ":g2", SID + ":g3"
+        store = {"rompUuid": SID, "seq": 3, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {}, "lastNode": gid,
+                 "nodes": {gid: {"id": gid, "text": "Improve the docs", "parentId": None,
+                                 "nodeComplete": False, "blocked": False, "cleared": False,
+                                 "trail": [s1], "t": T0, "mt": T0 + 10},
+                           c1: {"id": c1, "text": "record the screencast", "parentId": gid,
+                                "nodeComplete": False, "blocked": True, "cleared": False,
+                                "blockWhy": "you record it yourself using the staged cast",
+                                "trail": [s1], "t": T0, "mt": T0 + 5},
+                           c2: {"id": c2, "text": "consolidate the Internals pages", "parentId": gid,
+                                "nodeComplete": False, "blocked": True, "cleared": False,
+                                "blockWhy": "decide whether to merge them into one or leave as is",
+                                "trail": [s1], "t": T0, "mt": T0 + 8}}}
+        jd.rollup_status(store, True)
+        self.assertEqual(store["status"][gid], "blocked", "two blocked subs roll the top to blocked")
+        jd.save_goals(SID, store)
+        seen = {}
+        def fake_brief(goal_text, work_text, owed):
+            seen["owed"] = owed
+            return "Decide the screencast: record it now.\n\nDecide the Internals: merge or leave."
+        jd.brief_llm = fake_brief
+        self.assertEqual(jd.run_distill(now=now), 1, "the multi-blocked top is briefed")
+        owed = seen["owed"]
+        self.assertIsInstance(owed, list, "several blocked subs → a LIST of owed items, not one string")
+        self.assertEqual([t for t, _ in owed], ["record the screencast", "consolidate the Internals pages"],
+                         "every blocked sub-goal is owed, oldest to newest")
+        self.assertEqual([w for _, w in owed],
+                         ["you record it yourself using the staged cast",
+                          "decide whether to merge them into one or leave as is"])
+        # the multi-paragraph takeaway is stored VERBATIM (pre-wrap renders the per-sub-goal paragraphs)
+        self.assertEqual(jd.load_goals(SID)["nodes"][gid]["blockSummary"],
+                         "Decide the screencast: record it now.\n\nDecide the Internals: merge or leave.")
+
     def test_distill_self_heals_after_repeated_call_failures(self):
         # the user 2026-06-24: a distill call that PERSISTENTLY fails must NOT loop "(generating…)" forever.
         # After DISTILL_FAIL_CAP consecutive fails the card settles to the "" sentinel (distilled, no takeaway).
@@ -5101,6 +5144,30 @@ class Distiller(unittest.TestCase):
     def test_block_brief_prompt_is_a_decision_brief(self):
         for phrase in ("decision brief", "decide", "owed"):
             self.assertIn(phrase, jd.BLOCK_BRIEF_SYS, phrase)
+
+    def test_block_brief_prompt_teaches_per_subgoal_paragraphs(self):
+        # the user 2026-07-21: several owed items → one short paragraph per item, in <owed> order, each led by
+        # its own decision and blank-line separated, so the user can answer each blocked thing on its own.
+        self.assertIn("When <owed> lists more than one", jd.BLOCK_BRIEF_SYS)
+        self.assertIn("one short paragraph per item", jd.BLOCK_BRIEF_SYS)
+        self.assertIn("separated from the ", jd.BLOCK_BRIEF_SYS)   # "...next by a blank line"
+        self.assertIn("When <owed> lists a single", jd.BLOCK_BRIEF_SYS)
+
+    def test_brief_llm_renders_a_multi_owed_list_as_numbered_lines(self):
+        # a LIST of (sub-goal, why) pairs → a numbered <owed> block, one line per pair, so the prompt can map
+        # each to its own takeaway paragraph. A plain string (single block) is passed through unchanged.
+        seen, saved = {}, jd._judge_run
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(user=user) or "a brief")
+        try:
+            jd.brief_llm("the goal", "the work",
+                         [("record the screencast", "you record it"),
+                          ("consolidate Internals", "merge or leave")])
+            self.assertIn("<owed>\n1. record the screencast: you record it\n"
+                          "2. consolidate Internals: merge or leave\n</owed>", seen["user"])
+            jd.brief_llm("g", "w", "just one thing")
+            self.assertIn("<owed>\njust one thing\n</owed>", seen["user"], "a lone string renders as before")
+        finally:
+            jd._judge_run = saved
 
 
 class RunTriage(unittest.TestCase):

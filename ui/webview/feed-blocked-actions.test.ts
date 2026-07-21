@@ -61,8 +61,11 @@ test("(A) 'Drop' is the item-level clear — nodeOverride op:clear, acknowledged
   assert.match(FEED, /if \(n\.cleared\) return "cleared";/);
 });
 
-test("(A) 'Status?' is a ONE-CLICK targeted ask — askFollowUp with the canned per-item question (the user 2026-07-20)", () => {
+test("(A) the per-sub-goal 'Check status' is a ONE-CLICK targeted ask — askFollowUp with the canned per-item question (the user 2026-07-20; renamed from 'Status?' 2026-07-21)", () => {
   assert.match(FEED, /el\("button", "ftree-act-btn ftree-act-status"\)/);
+  // reads "Check status" now — one verb for the same act as the modal footer sweep, not the old "Status?"
+  assert.match(FEED, /stat\.textContent = "Check status"/);
+  assert.doesNotMatch(FEED, /stat\.textContent = "Status\?"/);
   assert.match(FEED, /function statusAskOne\(title: string\): string/);
   // the canned ask names the four reply shapes the judge's planner files: done / in progress / blocked-on-me / obsolete
   assert.match(FEED, /done \(say what shipped\), in progress \(say what's next\), /);

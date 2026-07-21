@@ -28,20 +28,18 @@ test("the modal footer is age · Follow up · Move to Working · Check status ·
   assert.match(FEED, /cs\.textContent = "Check status"/);
 });
 
-test("the card-level 'Status?' sweep: one askFollowUp naming every open item; acked + re-armed event-based (the user 2026-07-20)", () => {
-  // the sweep body enumerates the card's open/blocked subs (root + handoffs + cleared excluded), capped with an honest "+N more"
+test("the card-FACE 'Status?' sweep button is REMOVED — the sweep lives only in the modal footer (the user 2026-07-21)", () => {
+  // the card face carried a "Status?" sweep button; it was pulled off the face (a Working card's agent is
+  // visibly moving, and the per-sub-goal decision brief now says where each blocked thing stands). No card
+  // button, no stored ref, no card-face gating survive.
+  assert.doesNotMatch(FEED, /"fdismiss fstatus"/, "no card-face Status? button");
+  assert.doesNotMatch(FEED, /a\._statusBtn/, "no stored card Status? ref");
+  assert.doesNotMatch(FEED, /statBtn/, "no statBtn anywhere");
+  assert.doesNotMatch(FEED, /\(card as any\)\._askData/, "the card-face sweep's click-time reader is gone");
+  // but statusSweepText SURVIVES — the modal footer "Check status" (feed-modal-status) still sweeps the card
   assert.match(FEED, /function statusSweepText\(it: AskItem\)/);
   assert.match(FEED, /n\.status !== "done" && !n\.cleared && n\.kind !== "handoff" && n\.id !== it\.itemId/);
-  assert.match(FEED, /\+" more on this card\)"|more on this card/);
-  // card button: reads the CURRENT card data at click time (re-render-safe, the warnChip pattern), acks
-  // by disable+relabel BEFORE the kernel round-trip, and only shows when there is something to sweep
-  assert.match(FEED, /const cur = \(card as any\)\._askData as AskItem \| undefined;/);
-  assert.match(FEED, /statBtn\.disabled = true; statBtn\.textContent = "Asked";/);
-  // BLOCKED cards only (the user 2026-07-20): a Working card's agent is visibly moving — no status poke
-  // from the card face; the modal's "Check status" stays available one click deeper for any card.
-  assert.match(FEED, /stb\.style\.display = \(!it\.provisional && it\.live && it\.column === "needs_input"\s*\n\s*&& statusSweepText\(it\)\.n > 0\) \? "" : "none";/);
-  // re-arm is EVENT-based: the judge's re-file clearing the followup/recheck state, never a timer
-  assert.match(FEED, /if \(stb\.disabled && !it\.followupPending && !it\.recheck && !it\.rejudging\)/);
+  assert.match(FEED, /if \(csEl && it\.live && statusSweepText\(it\)\.n > 0\)/, "the modal footer wires the sweep");
 });
 
 test("the card's own 'Follow up' button is removed — click-to-cite covers it (the user 2026-07-01)", () => {

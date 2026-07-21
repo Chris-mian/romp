@@ -6186,7 +6186,11 @@ BLOCK_BRIEF_SYS = (
     "TAKEAWAY: a decision brief that lets the user decide fast. Lead with exactly what they must decide "
     "or provide. If there are concrete options or tradeoffs, state them briefly next. Then add only the "
     "context needed to decide: what was tried, what is at stake. Be as brief as the decision allows, "
-    "usually a sentence or two; the decision itself, not a play-by-play.\n\n"
+    "usually a sentence or two; the decision itself, not a play-by-play. When <owed> lists more than one "
+    "item, the user is blocked on several separate decisions at once: write one short paragraph per item, "
+    "in the order <owed> gives them, each leading with that item's own decision and separated from the "
+    "next by a blank line, so the user can weigh and answer each on its own. When <owed> lists a single "
+    "item, write one paragraph.\n\n"
     "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete **only** "
     "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before "
     "it on the line and nothing after it — never omit it while labels are present, and never invent a "
@@ -6196,12 +6200,22 @@ BLOCK_BRIEF_SYS = (
     "names the goal. This line is parsed off and never shown.")
 
 
-def brief_llm(goal_text, work_text, block_why):
+def brief_llm(goal_text, work_text, owed):
     """The briefer's decision brief for one blocked goal from the TRIAGE-tier model (Sonnet). '' on
     failure. Logged as judge='briefer' — its own name, its own prompt (the user 2026-07-08). Its timeline
     mark still rides the distiller row: the kernel folds fine labels to role-family rows (_JUDGE_FAMILY),
-    which is what keeps the hover's API time/tokens attached (the 2026-06-19 orphaned-'brief' lesson)."""
-    user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, block_why)
+    which is what keeps the hover's API time/tokens attached (the 2026-06-19 orphaned-'brief' lesson).
+
+    `owed` is what the user owes: a single string (one blocked point), or a LIST of (sub-goal, why) pairs
+    when the goal is blocked on SEVERAL sub-goals at once (the user 2026-07-21). A list is rendered as one
+    numbered line per pair so the prompt can break the takeaway into one short paragraph per blocked thing,
+    which the card/modal render as separate paragraphs the user can answer one at a time."""
+    if isinstance(owed, str):
+        owed_block = owed
+    else:
+        owed_block = "\n".join("%d. %s: %s" % (i + 1, (t or "this sub-goal").strip(), (w or "").strip())
+                               for i, (t, w) in enumerate(owed))
+    user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, owed_block)
     return _judge_run(_triage_model(), BLOCK_BRIEF_SYS, user, judge="briefer").strip()   # caller splits SOURCE, then caps
 
 
@@ -6329,7 +6343,13 @@ def _distill_session(fsid, path, now):
             prior = ""
         if blocked:
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
-            owed = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"] if blkd else ""
+            blkd.sort(key=lambda d: d.get("mt", d.get("t", 0)))   # oldest→newest: a stable reading order
+            # ONE sub-goal blocked → its blockWhy (as before). SEVERAL → the full (text, why) list, so the
+            # brief writes one short paragraph per blocked thing the user can answer on its own, instead of
+            # cramming every owed decision into a single paragraph (the user 2026-07-21). A lone block reads
+            # identically to before (blkd[0] is the only, hence the latest, element).
+            owed = ([(d.get("text", ""), d.get("blockWhy", "")) for d in blkd] if len(blkd) > 1
+                    else blkd[0]["blockWhy"] if blkd else "")
             if not work and not owed:                  # nothing to brief → settle: the "" sentinel means
                 # "distilled, no brief" so the card drops its auto-line instead of showing "(generating…)"
                 # forever. Stamp briefedMt so we don't retry; don't clobber a real brief from an earlier block.

@@ -5,7 +5,7 @@
 // through these functions, so this is the single executable source of truth for "is the distiller shown?".
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { distillText, applyDistillLine, distillPending } from "./distiller-line";
+import { distillText, distillInputs, applyDistillLine, distillPending } from "./distiller-line";
 
 // ── distillText: the rule, executed ───────────────────────────────────────────────────────────────────────
 test("a COMPLETED item shows the distiller's takeaway (summary)", () => {
@@ -40,6 +40,35 @@ test("the takeaway is shown VERBATIM (trimmed) — a copy-pasteable artifact sur
 // that keeps the why-rationale lines (which the user dropped) from ever creeping back via this path.
 test("distillText has no `why` input, so it can never display the planner's rationale", () => {
   assert.equal(distillText.length, 4, "(completed, blocked, summary, blockSummary) — exactly four params, no why");
+});
+
+// ── distillInputs: the brief keys on the GENUINE state, not the flickery column (the user 2026-07-21) ────────
+test("distillInputs keys on distillState, so a still-blocked card KEEPS its brief while column reads working", () => {
+  // the regression: recheck/rejudging drop a blocked card to the Working column each turn its session runs;
+  // when the line keyed on column, the brief vanished every time (the docs thread "unblocked, no summary").
+  assert.deepEqual(distillInputs("blocked", "working"), { completed: false, blocked: true },
+    "genuinely blocked but momentarily in the Working column → STILL show the decision brief");
+  assert.deepEqual(distillInputs("blocked", "needs_input"), { completed: false, blocked: true });
+  assert.deepEqual(distillInputs("completed", "working"), { completed: true, blocked: false },
+    "a completed card mid-rejudge keeps its takeaway too");
+});
+
+test("distillInputs shows nothing for a genuinely working card, and falls back to column when the field is absent", () => {
+  assert.deepEqual(distillInputs(null, "working"), { completed: false, blocked: false },
+    "a working card the kernel marked null → no line");
+  // older / remote payloads omit the field: read the column's old meaning so federation frames still render
+  assert.deepEqual(distillInputs(undefined, "needs_input"), { completed: false, blocked: true },
+    "no distillState (old/remote) + needs_input column → blocked (legacy behavior preserved)");
+  assert.deepEqual(distillInputs(undefined, "completed"), { completed: true, blocked: false });
+  assert.deepEqual(distillInputs(undefined, "working"), { completed: false, blocked: false });
+});
+
+// The end-to-end guarantee, executed: a blocked card in the Working column (recheck/rejudge) still yields its
+// brief text — distillInputs → distillText, the exact composition feed.ts runs.
+test("blocked + working column composes to the decision brief text (the flicker fix, end to end)", () => {
+  const { completed, blocked } = distillInputs("blocked", "working");
+  assert.equal(distillText(completed, blocked, null, "Decide: consolidate the Internals pages or not"),
+    "Decide: consolidate the Internals pages or not");
 });
 
 // ── applyDistillLine: the SHOW/HIDE behavior, executed against a fake element (no DOM needed) ───────────────

@@ -8886,6 +8886,16 @@ def build_feed(now, tmux=None):
                                         or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
+            # distillState (the user 2026-07-21): which distilled line the CARD should show — keyed on the
+            # GENUINE resolution state, NOT the transient `column`. recheck/rejudging drop a still-blocked
+            # card to Working the moment its session takes a turn (de-urgent smoothing), and `column`, keyed
+            # on that, flickered the decision brief OFF every time — so a busy session's blocked card read as
+            # "unblocked, no summary" (the docs thread). distillState rides the real block (api_block /
+            # perm_top / col=="blocked"), so the brief/takeaway stays put through the re-judge window; the
+            # column still moves for placement. Completed is stable (never recheck/rejudged), so it matches.
+            distill_state = ("completed" if col == "completed"
+                             else "blocked" if (api_block or nid == perm_top or col == "blocked")
+                             else None)
             # summaryAnchorUuid: where a click on the distilled summary line lands.
             # COMPLETED goals pin to the COMPLETION TURN'S wrap-up — event-derived, not a guess: the
             # closer's DONE-ANCHOR appended the completing turn's final segment as the node's trail tail
@@ -8967,6 +8977,7 @@ def build_feed(now, tmux=None):
                 # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
                 "awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid)} if col == "awaiting" else None),
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
+                "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "artifacts": _feed_artifacts(nodes[nid].get("artifacts"), fsid),   # files the work PRODUCED (distiller ARTIFACTS line), existence-filtered NOW — "N artifacts" under the summary; previews in the modal (the user 2026-07-08)

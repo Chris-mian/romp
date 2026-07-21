@@ -16,7 +16,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the stalled chip is built once and rides the wrapping chip row", () => {
   assert.match(FEED, /const nfBadge = el\("span", "fask-nudgefailed"\)/);
   assert.match(FEED, /nfBadge\.textContent = "stalled"/, "the label is 'stalled' (the user 2026-07-02), no emoji/glyph");
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, statBtn, clr\)/);
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/);
   assert.match(FEED, /a\._nudgeFailed = nfBadge;/);
 });
 
