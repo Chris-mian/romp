@@ -7315,7 +7315,8 @@ def build_session(sid, now, tmux=None):
             w, r = _seg_anchors(seg["atoms"])
             seg_anchors[seg["id"]] = (seg.get("trigger"), w)   # timeline DOT/BAR hover ids (workId = first assistant)
             seg_trig[_seg_key(seg["id"])] = seg.get("trigger")   # keyed timestamp-invariant so a drifted goal-trail seg still resolves
-            seg_work[_seg_key(seg["id"])] = r or w               # readable reply preferred, matches build_feed's seg_uuid
+            seg_work[_seg_key(seg["id"])] = r or _seg_jump(seg["atoms"])   # readable reply, else the first LANDABLE
+            #                                  work atom — never a thinking-only uuid (matches build_feed's seg_uuid)
             for at in seg["atoms"]:
                 if at.get("uuid"):
                     uuid2seg[at["uuid"]] = seg["id"]
@@ -8605,7 +8606,8 @@ def build_feed(now, tmux=None):
             for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
                 for seg in _segs_seam(turn, store):
                     w, r = _seg_anchors(seg["atoms"])
-                    seg_uuid[_seg_key(seg["id"])] = r or w                # timestamp-invariant key (SDK echo/real seg-id drift)
+                    seg_uuid[_seg_key(seg["id"])] = r or _seg_jump(seg["atoms"])   # timestamp-invariant key; landable
+                    #                                  anchors only — never a thinking-only uuid (SDK echo/real drift)
                     seg_trig[_seg_key(seg["id"])] = seg.get("trigger")
                     _lu, _lsub = _seg_last_text(seg["atoms"])
                     seg_best[_seg_key(seg["id"])] = (_lu, _lsub, seg.get("t", 0))   # latest prose → summary deep-link fallback
@@ -9478,6 +9480,31 @@ def _seg_last_text(atoms):
             if n >= jd.CITE_MIN_CHARS:
                 last_sub = a["uuid"]
     return (last_sub or last_any), last_sub is not None
+
+
+def _seg_jump(atoms):
+    """The chat JUMP target for a segment — the anchor a goal node's summary/title/log zones deep-link
+    to: the readable reply when there is one, else the first assistant atom the chat can actually LAND
+    on (a non-empty text block or a tool_use row, which renders a .turn[data-uuid] even inside a
+    collapsed group). A thinking-only atom is never a jump target: the chat renders no landable row
+    for bare thinking, so `r or w` handed the summary zone a uuid locate could only honest-fail on —
+    "couldn't locate this in the transcript" on a card whose newest segment was mid-flight, its only
+    assistant output so far a thinking block (the user 2026-07-21, the romp_docs recording-suggestions
+    card). None when the segment has nothing landable yet → the payload's ev_t time-nav, the same
+    graceful family as every other zone."""
+    work, reply = _seg_anchors(atoms)
+    if reply:
+        return reply
+    for a in atoms:
+        if a.get("type") != "assistant" or a.get("isApiError") or not a.get("uuid"):
+            continue
+        blocks = (a.get("message") or {}).get("content", [])
+        if isinstance(blocks, list) and any(
+                isinstance(b, dict) and (b.get("type") == "tool_use" or
+                                         (b.get("type") == "text" and b.get("text", "").strip()))
+                for b in blocks):
+            return a["uuid"]
+    return None
 
 
 def _seg_key(seg_id):

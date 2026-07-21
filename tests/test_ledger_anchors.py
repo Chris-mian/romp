@@ -199,5 +199,48 @@ class ChatAndFeedHoverRouting(unittest.TestCase):
         self.assertIn('if msg.get("type") == "dotHover":', self.SRC)
 
 
+def _atom(uuid, blocks, typ="assistant", err=False):
+    a = {"type": typ, "uuid": uuid, "message": {"content": blocks}}
+    if err:
+        a["isApiError"] = True
+    return a
+
+
+THINK = [{"type": "thinking", "thinking": "", "signature": "x"}]
+TOOL = [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+TEXT = [{"type": "text", "text": "Here are several recordings that would demonstrate it."}]
+
+
+class SegJump(unittest.TestCase):
+    """_seg_jump — the LANDABLE chat jump target (the user 2026-07-21): a card summary click on the
+    romp_docs recording-suggestions card toasted "couldn't locate this in the transcript" because the
+    newest segment's only assistant output at build time was a thinking block, and the `r or w` fallback
+    handed the summary zone that thinking-only uuid — an atom the chat renders no .turn[data-uuid] for."""
+
+    def test_thinking_only_segment_yields_none_never_the_thinking_uuid(self):
+        self.assertIsNone(km._seg_jump([_atom("a-think", THINK)]),
+                          "no landable atom yet: None → the client's ev_t time-nav, not an honest-fail toast")
+
+    def test_readable_reply_wins(self):
+        atoms = [_atom("a-think", THINK), _atom("a-tool", TOOL), _atom("a-text", TEXT)]
+        self.assertEqual(km._seg_jump(atoms), "a-text")
+
+    def test_tool_row_is_landable_when_there_is_no_prose_yet(self):
+        atoms = [_atom("a-think", THINK), _atom("a-tool", TOOL)]
+        self.assertEqual(km._seg_jump(atoms), "a-tool",
+                         "a tool row renders a .turn[data-uuid] (collapsed groups expand on anchor)")
+
+    def test_api_error_atoms_never_anchor(self):
+        atoms = [_atom("a-err", TEXT, err=True)]
+        self.assertIsNone(km._seg_jump(atoms))
+
+    def test_the_deep_link_maps_use_the_landable_anchor(self):
+        # both zone maps (ledger seg_work + feed seg_uuid) resolve through _seg_jump, not bare `r or w`
+        import inspect
+        src = inspect.getsource(km.build_session) + inspect.getsource(km.build_feed)
+        self.assertEqual(src.count('_seg_jump(seg["atoms"])'), 2)
+        self.assertNotIn("= r or w", src)
+
+
 if __name__ == "__main__":
     unittest.main()
