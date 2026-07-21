@@ -625,6 +625,16 @@ BOOT_RESUME_NUDGE = (
     "conversation and pick the work back up where it stopped. Any messages queued before the restart "
     "follow this one.")
 
+# Staggered boot-resume (the user 2026-07-20): spawning every reconciled session's CLI at once
+# detonated a fleet-wide CPU storm — each resumed claude burns ~a full core catching up on its
+# transcript, so a 13-session restart pegged the machine (load ~20) and starved the kernel's own
+# boot; the restart itself looked hung. At most this many CLIs spawn concurrently; a slot frees on
+# the EVENT that the CLI is past its catch-up burst (its first init message, or its thread dying).
+BOOT_RESUME_CONCURRENCY = max(1, int(os.environ.get("ROMP_BOOT_RESUME_CONCURRENCY", "3")))
+# Backstop ONLY (never the mechanism): a CLI that wedges before init would otherwise hold its slot
+# forever and trap the whole sweep — after this long the sweep proceeds anyway, loudly.
+BOOT_RESUME_SLOT_S = float(os.environ.get("ROMP_BOOT_RESUME_SLOT_S", "180"))
+
 # Same recovery, different death: the session's OWN claude process died mid-turn (killed or crashed)
 # while the kernel stayed up, so the kernel itself resumes it (_heal_cut_session) instead of waiting
 # for the next boot's reconcile.
@@ -871,12 +881,28 @@ class SdkSession:
         self._cur_ask_fut: asyncio.Future | None = None
         self._lock = threading.Lock()
         self._ready = threading.Event()
+        # Boot-stagger hook (see BOOT_RESUME_CONCURRENCY): fired exactly once when this session's CLI
+        # is demonstrably past its spawn+catch-up burst (first init message) or its thread dies —
+        # whichever comes first. The boot reconcile parks a semaphore release here.
+        self.on_boot_settled = None
         self.thread = threading.Thread(target=self._run, name=f"sdk:{self.name}", daemon=True)
 
     # ---- kernel-thread API (thread-safe) ----
 
     def start(self):
         self.thread.start()
+
+    def _fire_boot_settled(self):
+        """Invoke the parked on_boot_settled callback exactly once (init arrived OR the thread died —
+        both mean the spawn's CPU burst is over or moot). Pop-under-lock makes the exactly-once hold
+        across the init path (asyncio thread) racing the death path (_run's finally)."""
+        with self._lock:
+            cb, self.on_boot_settled = self.on_boot_settled, None
+        if cb:
+            try:
+                cb()
+            except Exception:
+                pass
 
     def enqueue(self, text: str):
         """Deliver a user turn (called from the kernel thread). Held in self._pending —
@@ -1178,6 +1204,8 @@ class SdkSession:
         except Exception as e:                       # surfaced for debugging; never crash kernel
             self.backend._log(f"sdk session {self.name} crashed: {type(e).__name__}: {e}")
         finally:
+            self._fire_boot_settled()   # a dead thread must free its boot-stagger slot (first, so
+            #                             a raising _on_session_gone can never leak the slot)
             self.backend._on_session_gone(self)
 
     async def _amain(self):
@@ -1408,6 +1436,8 @@ class SdkSession:
 
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
+            self._fire_boot_settled()   # the CLI is up and streaming — its transcript catch-up burst
+            #                             is over, so the boot-stagger slot (if any) frees NOW
             d = msg.data if isinstance(msg.data, dict) else {}
             self._learn_model(pretty_model(d.get("model")))
             self.perm_mode = d.get("permissionMode") or self.perm_mode
@@ -1952,6 +1982,7 @@ class SdkBackend:
                 except Exception:
                     self._log("boot reconcile: orphan reap failed: %s" % traceback.format_exc())
             resumed, restored, notified = 0, 0, 0
+            to_start: list[str] = []   # sids to spawn — collected first, spawned STAGGERED below
             for r in alive:
                 # Per-session isolation: one session's hiccup (a reg-write race with the outgoing
                 # kernel, a corrupt state file) must not abort the sweep and strand the REST —
@@ -1990,7 +2021,7 @@ class SdkBackend:
                     resumed += 1 if cut else 0
                     notified += 1 if dead_tasks else 0
                     restored += len(queued)
-                    self._ensure(sid)
+                    to_start.append(sid)
                 except Exception:
                     self._log("boot reconcile: session %s failed (sweep continues): %s"
                               % (r.get("sid"), traceback.format_exc()))
@@ -1999,6 +2030,22 @@ class SdkBackend:
                           "notified %d session(s) of dead background tasks, reaped %d orphaned CLI(s)"
                           % (resumed, restored, notified, reaped))
                 self._poke()
+            # STAGGERED spawn (see BOOT_RESUME_CONCURRENCY): every reg above is already fixed —
+            # queues persisted, heals applied — so even a death mid-stagger loses nothing (the next
+            # boot's sweep picks the rest up). Spawns hold a semaphore slot until the session's CLI
+            # is past its catch-up burst (init message) or its thread dies (_fire_boot_settled);
+            # the acquire timeout is a loud BACKSTOP for a pre-init wedge, never the pacing itself.
+            sem = threading.Semaphore(BOOT_RESUME_CONCURRENCY)
+            for sid in to_start:
+                if not sem.acquire(timeout=BOOT_RESUME_SLOT_S):
+                    self._log("boot reconcile: resume slot backstop expired (a CLI is wedged "
+                              "pre-init?) — continuing the sweep anyway")
+                try:   # same per-session isolation as above: one bad spawn must not strand the rest
+                    self._ensure(sid, on_boot_settled=sem.release)
+                except Exception:
+                    sem.release()   # the parked release never got attached — free the slot here
+                    self._log("boot reconcile: spawn %s failed (sweep continues): %s"
+                              % (sid, traceback.format_exc()))
         except Exception:
             self._log("boot reconcile failed: %s" % traceback.format_exc())
 
@@ -2289,16 +2336,28 @@ class SdkBackend:
         self._poke()
         return True
 
-    def _ensure(self, sid: str) -> SdkSession | None:
+    def _ensure(self, sid: str, on_boot_settled=None) -> SdkSession | None:
+        """Start (or return the already-running) SdkSession for `sid`. `on_boot_settled` (the boot
+        stagger's slot release) is parked on a FRESH spawn and fired once its CLI proves up or dies;
+        the no-spawn paths fire it immediately — no CPU burst will ever happen, so no slot is held."""
+        def _settled_now():
+            if on_boot_settled:
+                try:
+                    on_boot_settled()
+                except Exception:
+                    pass
         with self._lock:
             s = self.sessions.get(sid)
             if s and s.thread.is_alive():
+                _settled_now()
                 return s
             reg = read_reg(self.state_dir, sid)
             if not reg or not reg.get("alive"):
+                _settled_now()
                 return None
             reg["sid"] = sid
             s = SdkSession(self, reg)
+            s.on_boot_settled = on_boot_settled
             self.sessions[sid] = s
             s.start()
             return s

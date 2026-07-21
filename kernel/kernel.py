@@ -13338,6 +13338,12 @@ def main():
             sys.stderr.write("romp-kernel: diary sweep migrated %d store file(s)\n" % _n)
     except Exception:
         sys.stderr.write("diary sweep: %s\n" % traceback.format_exc())
+    try:                                                      # judge scratch transcripts are one-shot junk
+        _n = jd.prune_judge_scratch()                         # (~4,600/day): sweep the romp-owned scratch
+        if _n:                                                # project dir at every boot (see JUDGE_SCRATCH)
+            sys.stderr.write("romp-kernel: pruned %d judge scratch transcript(s)\n" % _n)
+    except Exception:
+        sys.stderr.write("judge scratch prune: %s\n" % traceback.format_exc())
     _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot

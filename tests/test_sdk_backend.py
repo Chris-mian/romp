@@ -2162,7 +2162,7 @@ class BgTaskLifecycle(unittest.TestCase):
         be = s.backend
         self._feed(s, "task_started", {"task_id": "b1", "description": "power watcher"})
         be._ensured = []
-        be._ensure = lambda sid: be._ensured.append(sid)
+        be._ensure = lambda sid, on_boot_settled=None: (be._ensured.append(sid), on_boot_settled and on_boot_settled())
         be._on_session_gone(s)
         reg = sb.read_reg(be.state_dir, s.sid)
         self.assertEqual(len(reg["queue"]), 1)
@@ -2176,7 +2176,7 @@ class BgTaskLifecycle(unittest.TestCase):
         s2.ended = True
         be2 = s2.backend
         be2._ensured = []
-        be2._ensure = lambda sid: be2._ensured.append(sid)
+        be2._ensure = lambda sid, on_boot_settled=None: (be2._ensured.append(sid), on_boot_settled and on_boot_settled())
         be2._on_session_gone(s2)
         self.assertEqual(be2._ensured, [])
         self.assertEqual([t["desc"] for t in sb.read_reg(be2.state_dir, s2.sid)["bgTasks"]], ["timer"])

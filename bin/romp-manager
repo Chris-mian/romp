@@ -32,6 +32,15 @@ const HOST = '127.0.0.1';
 const CONTROL_PORT = Number(process.env.ROMP_MANAGER_PORT) || 7432;
 const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || 7433;
 
+// $TMUX scrub (2026-07-20): a manager launched by hand from INSIDE a tmux session leaks $TMUX to
+// its kernels and their SDK-session children — whose tmux-status hooks then resolve `#S` to
+// whatever session is ATTACHED and hijack ITS @romp-session-id anchor (a live session flapping
+// "dead" → bogus revive prompts). launchd spawns us clean; this makes the manual path just as
+// clean at the source. Mirrors kernel/judge.py's scrub for judge subprocesses. The hook's own
+// CLAUDE_CODE_ENTRYPOINT guard stays as defense-in-depth for managers older than this line.
+delete process.env.TMUX;
+delete process.env.TMUX_PANE;
+
 function log(msg) { process.stderr.write('[romp-manager] ' + msg + '\n'); }
 
 // romp-serve is the kernel launcher (rebuilds dist if stale, then execs node on it). Resolve it the

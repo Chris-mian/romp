@@ -77,3 +77,26 @@ teardown() {
     grep -q "start-server" "$CALLS"
     grep -q "exit-empty off" "$CALLS"
 }
+
+@test "a leaked \$TMUX never reaches the manager or its kernels" {
+    command -v node >/dev/null 2>&1 || skip "node not available"
+
+    # The 2026-07-20 anchor-clobber chain: a manual `romp-manager up` from inside tmux leaked
+    # $TMUX to kernels + SDK sessions, whose tmux-status hooks then hijacked the ATTACHED
+    # session's @romp-session-id (live session flapping "dead" -> bogus revive). The manager
+    # must scrub TMUX/TMUX_PANE from its own env before any kernel spawns.
+    local envdump="$TEST_DIR/kernel-env"
+    printf '#!/usr/bin/env bash\nenv > "%s"\nexec sleep 30\n' "$envdump" > "$FAKE"
+    chmod +x "$FAKE"
+    env TMUX="/tmp/tmux-000/default,99999,7" TMUX_PANE="%7" \
+        ROMP_MANAGER_PORT=7581 ROMP_SERVE_PORT=7582 ROMP_SERVE_BIN="$FAKE" \
+        node "$MGR" up >/dev/null 2>&1 &
+    MGR_PID=$!
+    local i
+    for i in $(seq 1 50); do [ -s "$envdump" ] && break; sleep 0.1; done
+    curl -fsS -X POST "http://127.0.0.1:7581/stop" >/dev/null 2>&1 || true
+    [ -s "$envdump" ]
+    ! grep -q '^TMUX=' "$envdump"
+    ! grep -q '^TMUX_PANE=' "$envdump"
+    grep -q '^ROMP_SERVE_BIN=' "$envdump"   # the dump is real: other env DID flow through
+}

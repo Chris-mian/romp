@@ -119,7 +119,7 @@ class BootReconcile(unittest.TestCase):
         d = tempfile.mkdtemp()
         be = _backend(d)
         be._ensured = []
-        be._ensure = lambda sid: be._ensured.append(sid)
+        be._ensure = lambda sid, on_boot_settled=None: (be._ensured.append(sid), on_boot_settled and on_boot_settled())
         return d, be
 
     def test_resumes_exactly_cut_and_queued_sessions(self):
@@ -272,7 +272,7 @@ class BootReconcileResilience(unittest.TestCase):
         d = tempfile.mkdtemp()
         be = _backend(d)
         be._ensured = []
-        be._ensure = lambda sid: be._ensured.append(sid)
+        be._ensure = lambda sid, on_boot_settled=None: (be._ensured.append(sid), on_boot_settled and on_boot_settled())
         logs = []
         be._log_cb = logs.append
         bad = "11111111-aaaa-0000-0000-0000000000e1"
