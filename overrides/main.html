@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 
+{#- The top-level tabs render inline in the header row (see overrides/partials/
+    header.html), so suppress the standalone second tabs bar. -#}
+{% block tabs %}{% endblock %}
+
 {#- The header shows the site name ("Romp"); only the BROWSER TAB says
     "Romp docs", so a docs tab reads apart from a dashboard tab. -#}
 {% block htmltitle %}
