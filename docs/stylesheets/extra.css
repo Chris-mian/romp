@@ -84,12 +84,17 @@
      [for=__drawer] title and .md-nav__source), so match that here. */
   .md-nav--primary .md-nav__title[for="__drawer"] {
     background-color: #12171e;
-    /* hide the "Romp" site-name text while keeping the band's height (so the repo
-       link below it doesn't reflow); the wordmark logo is an absolutely-positioned
+    /* hide the "Romp" site-name text; the wordmark logo is an absolutely-positioned
        img, unaffected by the indent. */
     text-indent: -9999px;
     white-space: nowrap;
     overflow: hidden;
+    /* Material's band is 5.6rem with 3rem of top padding reserved for that text.
+       With the text gone, shrink it to hug the wordmark (logo sits at .4rem tall
+       ~3rem, so ~3.8rem leaves even breathing room above and below). */
+    height: 3.8rem;
+    padding-top: 0;
+    padding-bottom: 0;
   }
   .md-nav__source {
     background-color: #12171e;
