@@ -33,7 +33,7 @@ Its key features:
 
 What's running, what's stuck, and what needs your attention.
 
-![Every session with its status in one view](assets/tile-glance.png){ width="100%" }
+<video src="assets/guide/every-session-timeline.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ## Task management
 
