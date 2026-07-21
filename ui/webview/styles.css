@@ -1833,8 +1833,9 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 .path-full-img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; cursor: zoom-in;
   border: 1px solid rgba(255, 255, 255, 0.14); object-fit: contain; background: rgba(0, 0, 0, 0.25); }
 .path-full-img:hover { border-color: var(--accent); }
-.path-full-pdf { display: block; width: 100%; max-width: 560px; height: 320px; border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(0, 0, 0, 0.25); }
+.path-full-pdfcard { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
+  border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(0, 0, 0, 0.25); }
+.path-full-pdfcard:hover { border-color: var(--accent); }
 
 /* full-view lightbox (preview.ts openLightbox): image at natural-but-capped size, or the PDF in the
    browser's native viewer. Above every overlay layer. Backdrop click / Esc / ✕ closes. */

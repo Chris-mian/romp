@@ -17,13 +17,17 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
-test("previewFull renders the image itself (self-verifying, lightbox on click) and a PDF's inline viewer", () => {
+test("previewFull renders the image itself; a PDF is a click-to-view CARD, never an auto-loading frame", () => {
   assert.match(PREVIEW, /export function previewFull\(path: string, sid\?: string \| null\): HTMLElement \| null/);
   assert.match(PREVIEW, /img\.className = "path-full-img";/);
   assert.match(PREVIEW, /img\.onerror = \(\) => box\.remove\(\);/);
-  assert.match(PREVIEW, /frame\.className = "path-full-pdf";/);
-  // an iframe can't self-verify like an <img> — the HEAD probe removes a dead frame
+  // NO inline <iframe> for PDFs (2026-07-20): a browser set to "Download PDFs" saved a fresh copy on
+  // EVERY chat re-render — the Downloads folder silently filled. The fetch must be user-initiated.
   const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
+  assert.doesNotMatch(pf, /createElement\("iframe"\)/, "no auto-loading PDF frame in the chat strip");
+  assert.match(pf, /box\.classList\.add\("path-full-pdfcard"\);/);
+  assert.match(pf, /box\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); openLightbox\(path, sid\); \};/);
+  // the HEAD probe (headers only — never a download) still removes a dead card
   assert.match(pf, /fetch\(fileUrl\(path, sid\), \{ method: "HEAD" \}\)/);
 });
 
@@ -40,7 +44,7 @@ test("imgRequest carries the session id so RELATIVE mentioned paths resolve agai
 test("full-size images wear the user-image scale — one size per information type", () => {
   assert.match(CSS, /\.path-full-img \{[^}]*max-height: 320px/);
   assert.match(CSS, /\.user-img \{[^}]*max-height: 320px/);
-  assert.match(CSS, /\.path-full-pdf \{[^}]*height: 320px/);
+  assert.match(CSS, /\.path-full-pdfcard \{/);
 });
 
 test("the feed's artifact strips keep their compact thumbnails (cards stay glanceable)", () => {

@@ -109,13 +109,16 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
   return box;
 }
 
-// FULL-SIZE inline render for a mentioned image/PDF in the CHAT (the user 2026-07-20: "not even a
+// FULL-SIZE inline render for a mentioned image in the CHAT (the user 2026-07-20: "not even a
 // thumbnail — a rendered image, like the user messages"). Same self-verification as previewThumb —
 // a path the kernel can't serve removes itself — and an image click still opens the lightbox. Images
 // render at the user-image scale (.path-full-img mirrors .user-img's 320px cap, one size per
-// information type); a PDF renders its native inline viewer (web only — callers gate on canPreview
-// and fall back per surface). The feed's artifact strips deliberately KEEP previewThumb: cards stay
-// glanceable, the chat is where the full render was asked for.
+// information type). A PDF is a labeled CARD, not an auto-loading inline viewer (click → lightbox):
+// the first cut embedded an <iframe> per mentioned PDF, and a browser set to "Download PDFs" (or one
+// that declines to render inline) saved a FRESH COPY on every chat re-render — the user's Downloads
+// folder silently filled with datasheet copies (2026-07-20). A fetch must be user-initiated, once.
+// Web only — callers gate on canPreview and fall back per surface. The feed's artifact strips
+// deliberately KEEP previewThumb: cards stay glanceable, the chat is where the full render lives.
 export function previewFull(path: string, sid?: string | null): HTMLElement | null {
   const kind = previewKind(path);
   if (!kind || !canPreview()) return null;
@@ -123,12 +126,19 @@ export function previewFull(path: string, sid?: string | null): HTMLElement | nu
   box.className = "path-full" + (kind === "pdf" ? " pdf" : "");
   box.title = path;
   if (kind === "pdf") {
-    const frame = document.createElement("iframe");
-    frame.className = "path-full-pdf";
-    frame.src = fileUrl(path, sid);
-    frame.title = path;
-    box.appendChild(frame);
-    // an iframe can't self-verify like an <img> — HEAD-probe so a missing PDF never leaves a dead frame
+    box.classList.add("path-full-pdfcard");
+    const tag = document.createElement("span");
+    tag.className = "path-thumb-tag";
+    tag.textContent = "PDF";
+    const nm = document.createElement("span");
+    nm.className = "path-thumb-name";
+    nm.textContent = path.slice(path.lastIndexOf("/") + 1);
+    box.append(tag, nm);
+    box.style.cursor = "pointer";
+    box.title = "click to view " + path;
+    box.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
+    // a chip can't self-verify like an <img> — HEAD-probe (headers only, no body — never a download)
+    // so a missing PDF never shows a dead card
     fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) box.remove(); }).catch(() => box.remove());
   } else {
     const img = document.createElement("img");
