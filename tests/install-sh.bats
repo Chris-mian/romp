@@ -70,6 +70,54 @@ PY
     [ -L "$HOME/.claude/hooks/tmux-status.sh" ]
 }
 
+# The login-service step (the user's rescue_me, 2026-07-21): a webview deploy must never bootout a
+# HEALTHY romp-manager, and must FAIL LOUDLY (not `|| echo`-swallow) if an install it DID attempt fails —
+# the swallowed failure is what left the dashboard dead on :7433. ROMP_SERVICE_BIN stubs romp-service.
+_svc_stub() {   # write a fake romp-service to $1; behavior toggled by ROMP_SVC_RUNNING / ROMP_SVC_FAIL
+    cat > "$1" <<'SH'
+#!/usr/bin/env bash
+echo "$1" >> "$ROMP_SVC_LOG"
+case "$1" in
+  status) echo "installed: /tmp/plist"; [[ -n "${ROMP_SVC_RUNNING:-}" ]] && echo "running" ;;
+  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; } ;;
+esac
+exit 0
+SH
+    chmod +x "$1"
+}
+
+@test "install.sh: skips the service bootout when romp-manager is already running" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_RUNNING=1
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already running"* ]]
+    # it asked status but NEVER ran install — the healthy manager was left up
+    grep -qx status "$TEST_DIR/svc.log"
+    ! grep -qx install "$TEST_DIR/svc.log"
+}
+
+@test "install.sh: installs the service when romp-manager is NOT running" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log"   # ROMP_SVC_RUNNING unset -> not running
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
+@test "install.sh: a FAILED service install fails the whole run loudly (never swallowed)" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_FAIL=1   # not running + install exits 1
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"romp-service install FAILED"* ]]
+    [[ "$output" == *"dashboard will be dead"* ]]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
 @test "install.sh: merges into an existing settings.json without clobbering the user's own config" {
     mkdir -p "$HOME/.claude"
     cat > "$HOME/.claude/settings.json" <<'JSON'

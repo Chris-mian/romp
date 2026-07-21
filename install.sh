@@ -123,8 +123,28 @@ fi
 # always up — you never run `romp --on`; open the browser and you can even start
 # sessions FROM it. launchd on macOS, systemd --user on Linux. Opt out with
 # ROMP_NO_SERVICE=1; remove later with `romp-service uninstall`.
-if [[ -z "${ROMP_NO_SERVICE:-}" && -x "$ROMP_DIR/bin/romp-service" ]]; then
-    "$ROMP_DIR/bin/romp-service" install || echo "  (romp-service install skipped/failed)"
+if [[ -z "${ROMP_NO_SERVICE:-}" ]]; then
+    # ROMP_SERVICE_BIN overrides the binary (tests stub it); defaults to the repo copy.
+    _svc="${ROMP_SERVICE_BIN:-$ROMP_DIR/bin/romp-service}"
+    if [[ -x "$_svc" ]]; then
+        # Don't tear down a HEALTHY manager just to ship a webview dist/VSIX change. `romp-service
+        # install` boots the running romp-manager OUT (SIGTERM, drains every kernel) then re-bootstraps;
+        # a bootstrap that loses the drain-race exits 1 and leaves the dashboard dead on :7433. A routine
+        # webview deploy needs NO manager restart (the kernel serves the rebuilt dist live), so skip the
+        # whole bootout when the manager already reports `running`. Only (re)install when it is NOT
+        # running — and then FAIL LOUDLY on a non-zero exit rather than `|| echo`-swallowing it, so a
+        # webview deploy can never silently leave the manager unloaded (the user's rescue_me, 2026-07-21).
+        if "$_svc" status 2>/dev/null | grep -qx running; then
+            echo "  romp-manager already running — leaving it up (a webview deploy needs no restart)"
+        else
+            echo "  Installing the romp login service (romp-manager)..."
+            if ! "$_svc" install; then
+                echo "install.sh: romp-service install FAILED — romp-manager is NOT running; the dashboard will be dead on :7433." >&2
+                echo "  Retry by hand:  $_svc install" >&2
+                exit 1
+            fi
+        fi
+    fi
 fi
 
 case ":$PATH:" in
