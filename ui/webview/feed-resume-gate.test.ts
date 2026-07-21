@@ -24,6 +24,10 @@ test("the buttons show only for a largeResume card and each posts resumeGate wit
   assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "resumeGate", id: it\.sid, choice \}\)/);
   // one decision per card: clicking any of the three disables all three + acknowledges immediately
   assert.match(FEED, /for \(const \[b\] of rgBtns\) b\.disabled = true;/);
+  // OPTIMISTIC CLEAR: the card leaves immediately on click (same machinery as the Clear button) — it
+  // used to linger until the kernel round-trip (the user 2026-07-21)
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "resumeGate"[\s\S]*?pendingCleared\.add\(it\.itemId\);\s*\n\s*card\.classList\.add\("dismissing"\);/);
+  assert.match(FEED, /card\.remove\(\); askEls\.delete\(it\.itemId\); dropDismissed\(\[it\.itemId\]\); \} \}, 180\);/);
 });
 
 test("a largeResume card suppresses the block chip and the generic Clear (Skip is its dismissal)", () => {

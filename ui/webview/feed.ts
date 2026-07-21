@@ -1302,6 +1302,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
         vscodeApi?.postMessage({ type: "resumeGate", id: it.sid, choice });
         for (const [b] of rgBtns) b.disabled = true;   // one decision per card; acknowledge immediately
         btn.textContent = busy;
+        // OPTIMISTIC CLEAR (the user 2026-07-21): the decision is made — the card leaves NOW, not after the
+        // kernel resolves the gate and pushes a feed without it. Same machinery as the Clear button:
+        // pendingCleared suppresses it from any push that still carries it (auto-pruned once the kernel drops
+        // the gate), the .dismissing animation plays, then the card is removed and the local asks pruned.
+        card.dispatchEvent(new MouseEvent("mouseleave"));   // flush the cross-surface hover highlight
+        pendingCleared.add(it.itemId);
+        card.classList.add("dismissing");
+        setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); dropDismissed([it.itemId]); } }, 180);
       };
     }
   }
