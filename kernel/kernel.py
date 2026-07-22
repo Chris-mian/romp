@@ -11512,6 +11512,8 @@ _CHAT_MOBILE_CSS = (
     # button, with a hairline color border, not the color as a fill (the user 2026-07-22).
     "#mcur.colored{background:#2a2a2a;color:var(--cbg);border-color:var(--cbg)}"
     "#mcur .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}"
+    # the working cue is the SAME gold status dot desktop uses (the tab's .tab-dot), not a text bullet
+    "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:#2a2a2a;color:#bbbbbb;border:1px solid #3a3a3a;border-radius:6px;font-size:16px;line-height:1}"
@@ -11522,7 +11524,9 @@ _CHAT_MOBILE_CSS = (
     ".mrow{display:flex;align-items:center;gap:9px;padding:10px 12px;cursor:pointer;"
     "border-bottom:1px solid #ffffff12;font:600 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
     ".mrow:last-child{border-bottom:0}"
-    ".mrow .dot{flex:0 0 auto;width:10px;height:10px;border-radius:50%;background:#666666}"
+    # match desktop: the session's identity color tints the NAME text (set inline, like the Fleet list and
+    # the colored tab label), and the only dot is the gold WORKING dot, shown just for working sessions.
+    ".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     ".mrow .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dddddd}"
     ".mrow.active{background:#0d3a5c}"
     # The page must never grow WIDER than the phone (the user 2026-07-11: "the whole chat screen takes up
@@ -11547,7 +11551,7 @@ _CHAT_MOBILE_JS = """
 if(!tabbar||!tabs)return;
 var hdr=document.createElement('div');hdr.id='mhdr';
 var cur=document.createElement('button');cur.id='mcur';cur.type='button';
-cur.innerHTML='<span class="nm"></span><span class="cv">▾</span>';
+cur.innerHTML='<span class="wd" style="display:none"></span><span class="nm"></span><span class="cv">▾</span>';
 var add=document.createElement('button');add.id='madd';add.type='button';add.textContent='+';add.title='Open / new session';
 var list=document.createElement('div');list.id='mlist';
 hdr.appendChild(cur);hdr.appendChild(add);
@@ -11563,15 +11567,18 @@ function sync(){var ts=read(),act=null;
 for(var i=0;i<ts.length;i++){if(ts[i].active){act=ts[i];break;}}
 if(!act&&ts.length)act=ts[0];
 var nm=cur.querySelector('.nm');
-if(act){nm.textContent=(act.working?'• ':'')+act.name;
+cur.querySelector('.wd').style.display=(act&&act.working)?'':'none';   // gold working dot, matching desktop
+if(act){nm.textContent=act.name;
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
 else{nm.textContent='no sessions';cur.classList.remove('colored');}
 list.innerHTML='';
 ts.forEach(function(s){var row=document.createElement('div');row.className='mrow'+(s.active?' active':'');
-var dot=document.createElement('span');dot.className='dot';if(s.bg)dot.style.background=s.bg;
-var lbl=document.createElement('span');lbl.className='nm';lbl.textContent=(s.working?'• ':'')+s.name;
-row.appendChild(dot);row.appendChild(lbl);
+// desktop parity: the identity color tints the NAME (inline, like the Fleet list), and a gold WORKING
+// dot shows only for working sessions — no per-session identity dot (there is none on desktop).
+if(s.working){var wd=document.createElement('span');wd.className='workdot';row.appendChild(wd);}
+var lbl=document.createElement('span');lbl.className='nm';lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;
+row.appendChild(lbl);
 row.addEventListener('click',function(){var rt=realTab(s.id);if(rt)rt.click();hide();});
 list.appendChild(row);});}
 cur.addEventListener('click',function(e){e.stopPropagation();list.classList.toggle('open');});

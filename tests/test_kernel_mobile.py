@@ -232,6 +232,24 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("--chip-bg", js)                    # reads each session's identity color
         self.assertIn("#mcur.colored", css)               # the current button wears that color
 
+    def test_picker_rows_match_desktop_colored_name_plus_gold_working_dot(self):
+        # the user 2026-07-22: on mobile the picker painted a per-session identity DOT (grey #666 when the
+        # session had no color, and confusingly the identity color when it did) — desktop has no such dot.
+        # Match desktop: the identity color tints the NAME text (inline, like the Fleet list / colored tab
+        # label), and the ONLY dot is the gold working dot shown just for working sessions (the .tab-dot).
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
+        self.assertIn("lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;", js)   # identity color on the NAME
+        self.assertIn("if(s.working){var wd=document.createElement('span');wd.className='workdot';", js)  # gold dot only when working
+        self.assertNotIn(".mrow .dot{", css)              # the old identity/grey dot is gone
+        self.assertNotIn("dot.style.background=s.bg", js)  # ...and nothing paints identity onto a dot
+        # the working dot is the SAME status gold desktop uses (styles.css --st-working-bg), not a text bullet
+        self.assertIn(".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
+        self.assertNotIn("'• ')+s.name", js)              # the '• ' text-bullet prefix on rows is gone
+        # the current-session header uses the same gold working dot, not the text bullet either
+        self.assertIn("#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
+        self.assertIn("cur.querySelector('.wd').style.display=(act&&act.working)?'':'none'", js)
+        self.assertNotIn("(act.working?'• ':'')", js)
+
     def test_current_session_title_is_bold_color_on_the_grey_chip(self):
         # the user 2026-07-22: the mobile current-session title reads as the identity color in BOLD on the
         # SAME grey chip as the +/madd button (#2a2a2a), with a hairline color border, not the color as a fill.
