@@ -128,6 +128,12 @@
   width: 70%;
 }
 
+/* Home-page feature headers: the in-app highlight blue, so each feature reads as a
+   distinct section at a glance (the same accent the product uses for "selected"). */
+.md-typeset h2.feature-h {
+  color: var(--md-accent-fg-color);
+}
+
 /* The task-card tab-cycle demo (home: Context where you need it): render it at the
    card's own size, centered, rather than stretched across the page. */
 .md-typeset video.romp-card-demo {
