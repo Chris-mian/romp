@@ -57,6 +57,15 @@ def _open_store():
                             "text": "wire the widget", "log": []}}}
 
 
+def _publish_raw(store):
+    """Write the store file DIRECTLY, bypassing save_goals' rebase. Since the store CAS (2026-07-22) a
+    stale save REBASES instead of clobbering, so the old "pass erased it" interleave can no longer be
+    produced through save_goals. This stands in for a store that lost an event by a route the CAS cannot
+    cover — a crash between publish steps, or a writer that never went through load_goals — which is
+    exactly what the override journal still backstops."""
+    (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+
+
 class ResolveOverrideReplay(unittest.TestCase):
     def setUp(self):
         self._saved_state = jd.STATE
@@ -71,7 +80,9 @@ class ResolveOverrideReplay(unittest.TestCase):
         return [e for e in store["nodes"][NID].get("log", [])
                 if e.get("src") == "user" and e.get("kind") == "done"]
 
-    def test_clobbered_resolve_reapplies_on_the_next_load(self):
+    def test_a_stale_pass_no_longer_erases_the_resolve(self):
+        # Since the store CAS (2026-07-22) the pass's stale save REBASES onto the user's resolve instead
+        # of clobbering it, so the resolve survives on disk directly — no heal round-trip needed.
         jd.save_goals(SID, _open_store())
         judge_copy = jd.load_goals(SID)               # the pass loads BEFORE the user acts
         # the user resolves: journal first, then apply + save (what _resolve_node does)
@@ -81,12 +92,23 @@ class ResolveOverrideReplay(unittest.TestCase):
         jd.save_goals(SID, user_store)
         jd.save_goals(SID, judge_copy)                # the pass's STALE save lands last (the race)
         raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
-        self.assertFalse(raw["nodes"][NID].get("nodeComplete"),
-                         "precondition: the stale save really erased the resolve on disk")
-        healed = jd.load_goals(SID)                   # replay heals it
+        self.assertTrue(raw["nodes"][NID].get("nodeComplete"),
+                        "the stale save rebases onto the resolve instead of erasing it")
+        healed = jd.load_goals(SID)
         self.assertTrue(healed["nodes"][NID].get("nodeComplete"))
-        self.assertEqual(len(self._user_events(healed)), 1)
+        self.assertEqual(len(self._user_events(healed)), 1, "and it is still recorded exactly once")
         self.assertEqual(healed["nodes"][NID]["mt"], T0 + 100)
+
+    def test_the_journal_still_heals_a_store_missing_the_resolve(self):
+        # BACKSTOP: the CAS covers concurrent saves, but not a store that lost the event another way
+        # (crash mid-publish, a writer with no base revision). The journal replay still re-applies it.
+        jd.save_goals(SID, _open_store())
+        jd.append_override(SID, NID, "resolve", T0 + 100)
+        self.assertTrue(jd.load_goals(SID)["nodes"][NID].get("nodeComplete"))
+        _publish_raw(_open_store())                   # a store on disk WITHOUT the resolve
+        healed = jd.load_goals(SID)
+        self.assertTrue(healed["nodes"][NID].get("nodeComplete"), "the journaled resolve re-applies")
+        self.assertEqual(len(self._user_events(healed)), 1)
 
     def test_surviving_resolve_gains_no_second_event(self):
         jd.save_goals(SID, _open_store())
@@ -192,16 +214,24 @@ class FollowupMoveReplay(unittest.TestCase):
         return [e for e in store["nodes"][NID].get("log", [])
                 if e.get("src") == "user" and e.get("kind") == "reopen"]
 
-    def test_clobbered_followup_reopen_reapplies(self):
+    def test_a_stale_pass_no_longer_erases_the_followup_reopen(self):
         jd.save_goals(SID, self._done_store())
         judge_copy = jd.load_goals(SID)               # the pass holds the pre-reply store
         self.assertTrue(jd.optimistic_followup(SID, NID, now=T0 + 100))   # journals + applies + saves
-        jd.save_goals(SID, judge_copy)                # stale save erases the reopen event
+        jd.save_goals(SID, judge_copy)                # the stale save now REBASES onto the reopen
         raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
-        self.assertTrue(raw["nodes"][NID].get("nodeComplete"),
-                        "precondition: the stale save really erased the reopen")
+        self.assertFalse(raw["nodes"][NID].get("nodeComplete"),
+                         "the stale save rebases onto the reopen instead of erasing it")
         healed = jd.load_goals(SID)
         self.assertFalse(healed["nodes"][NID].get("nodeComplete"))
+        self.assertEqual(len(self._reopens(healed)), 1)
+
+    def test_the_journal_still_heals_a_store_missing_the_followup(self):
+        jd.save_goals(SID, self._done_store())
+        self.assertTrue(jd.optimistic_followup(SID, NID, now=T0 + 100))
+        _publish_raw(self._done_store())              # a store on disk WITHOUT the reopen
+        healed = jd.load_goals(SID)
+        self.assertFalse(healed["nodes"][NID].get("nodeComplete"), "the journaled reopen re-applies")
         self.assertEqual(len(self._reopens(healed)), 1)
 
     def test_survived_followup_is_never_doubled(self):
@@ -239,7 +269,10 @@ class BlockOverrideReplay(unittest.TestCase):
         return [e for e in store["nodes"][NID].get("log", [])
                 if e.get("src") == src and e.get("kind") == "block"]
 
-    def test_clobbered_nudge_block_reapplies_on_the_next_load(self):
+    def test_a_stale_pass_no_longer_erases_the_nudge_block(self):
+        # This is the g52 race, and the flicker the user saw on 2026-07-22: the block landed, a stale
+        # pass republished a pre-block snapshot, and the card flashed back to 'working' for one push
+        # before the next load healed it. The CAS now rebases, so the block never leaves disk at all.
         jd.save_goals(SID, _open_store())
         judge_copy = jd.load_goals(SID)               # the pass loads BEFORE the kernel stamps
         store = jd.load_goals(SID)                    # the kernel's write: verdict + journal + save
@@ -249,12 +282,21 @@ class BlockOverrideReplay(unittest.TestCase):
         jd.save_goals(SID, store)
         jd.save_goals(SID, judge_copy)                # the stale save lands last (the g52 race)
         raw = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
-        self.assertFalse(raw["nodes"][NID].get("blocked"),
-                         "precondition: the stale save really erased the block on disk")
+        self.assertTrue(raw["nodes"][NID].get("blocked"),
+                        "the stale save rebases onto the block instead of erasing it — no working flicker")
+        healed = jd.load_goals(SID)
+        self.assertTrue(healed["nodes"][NID].get("blocked"))
+        self.assertEqual(len(self._blocks(healed)), 1, "and the block is recorded exactly once")
+        self.assertIn("didn't resolve", healed["nodes"][NID].get("blockWhy") or "")
+
+    def test_the_journal_still_heals_a_store_missing_the_block(self):
+        jd.save_goals(SID, _open_store())
+        why = "romp followed up once and the response didn't resolve this"
+        jd.append_block(SID, NID, "nudge", why, T0 + 100)
+        _publish_raw(_open_store())                   # a store on disk WITHOUT the block
         healed = jd.load_goals(SID)
         self.assertTrue(healed["nodes"][NID].get("blocked"), "the journaled block re-applies")
         self.assertEqual(len(self._blocks(healed)), 1)
-        self.assertIn("didn't resolve", healed["nodes"][NID].get("blockWhy") or "")
 
     def test_survived_block_is_never_doubled(self):
         # src "interrupt" here so both journaled srcs are covered by the suite
@@ -282,11 +324,15 @@ class BlockOverrideReplay(unittest.TestCase):
         jd.save_goals(SID, store)
         jd.record_verdict(user_copy, user_copy["nodes"][NID], "user", "reopen", T0 + 150,
                           why="Follow-up: answered.")
-        jd.save_goals(SID, user_copy)                 # the user's racing save erases the block row
+        jd.save_goals(SID, user_copy)                 # the user's racing save REBASES onto the block row
         healed = jd.load_goals(SID)
         self.assertFalse(healed["nodes"][NID].get("blocked"),
-                         "replay must not re-block past the user's newer reply")
-        self.assertEqual(len(self._blocks(healed)), 0, "the superseded row stays out")
+                         "the user's newer reply still outranks the block — never re-blocked")
+        # Since the CAS the block row is PRESERVED rather than erased, and the fold arbitrates: a user
+        # event at a later ev_t outranks the judge's block, so the card reads unblocked with its history
+        # intact (better than the old behavior, where the row had to be kept out of the store entirely).
+        self.assertEqual(len(self._blocks(healed)), 1, "the block row survives as history")
+        self.assertEqual(healed["status"].get(NID), "working", "and the rolled-up status is working")
 
 
 if __name__ == "__main__":

@@ -1503,10 +1503,72 @@ def load_goals(fsid):
     except Exception:
         # a FRESH store is born at the current identity version — only stores with history recorded
         # under an OLDER derivation are ever sealed (see _migrate_placements)
-        return {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {},
-                "placementsV": PLACEMENTS_V}
+        store = {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {},
+                 "placementsV": PLACEMENTS_V}
+        store["_baseRev"] = 0            # no file yet; a writer that CREATES one still trips the CAS
+        return store
     _replay_overrides(fsid, store)
+    # OPTIMISTIC-CONCURRENCY BASE (the user 2026-07-22): remember the revision we read, so save_goals can
+    # tell whether anyone else published while we were away (a judge pass holds its store across a
+    # minutes-long model call). Transient — popped before the store is ever serialized.
+    store["_baseRev"] = int(store.get("rev") or 0)
     return store
+
+
+def _disk_rev(fsid):
+    """The revision currently published on disk (0 when absent/unreadable)."""
+    try:
+        return int((json.loads((GOALDIR / (fsid + ".json")).read_text()) or {}).get("rev") or 0)
+    except Exception:
+        return 0
+
+
+def _rebase_onto_disk(fsid, store):
+    """Rebase `store` onto the CURRENT on-disk store, keeping BOTH writers' work.
+
+    The goal store is an append-only EVENT LOG, so two writers that appended DIFFERENT events did not
+    really conflict — the correct answer is simply both sets of events. Today's blind overwrite loses
+    whichever landed first: a judge pass holding a pre-nudge snapshot across its model call republished a
+    superseded rollup, so a card that had just been blocked flashed back to 'working' for one push before
+    the next load healed it from the override journal (the user 2026-07-22). This merges instead of
+    clobbering, exactly like rebasing your commits onto a moved tip rather than redoing the work.
+
+    Verdict identity is (ev_t, src, kind) — the same triple _replay_overrides dedups a re-recorded block
+    on — so a replayed/duplicated event folds instead of doubling."""
+    try:
+        disk = _guard_nodes(json.loads((GOALDIR / (fsid + ".json")).read_text()))
+    except Exception:
+        return                                       # nothing readable to rebase onto → publish as-is
+    d_nodes, m_nodes = disk.get("nodes") or {}, store.get("nodes") or {}
+    for nid, dnd in d_nodes.items():
+        mnd = m_nodes.get(nid)
+        if mnd is None:                              # a node the OTHER writer minted → adopt it wholesale
+            m_nodes[nid] = dnd
+            continue
+        seen = {(e.get("ev_t"), e.get("src"), e.get("kind")) for e in (mnd.get("log") or [])}
+        add = [e for e in (dnd.get("log") or [])
+               if (e.get("ev_t"), e.get("src"), e.get("kind")) not in seen]
+        if add:                                      # events we never saw (their block, their done) → fold in
+            with _authority():
+                mnd["log"] = sorted((mnd.get("log") or []) + add,
+                                    key=lambda e: (int(e.get("ev_t") or 0), int(e.get("at") or 0)))
+        # `mt` is a monotonic last-touched stamp the read side orders and anchors on (a block's mt feeds the
+        # card's disp_t), so it must not regress to our older snapshot — take the newer of the two. The
+        # verdict FLAGS need no such care: rollup_status below re-derives them all from the merged log.
+        if int(dnd.get("mt") or 0) > int(mnd.get("mt") or 0):
+            mnd["mt"] = int(dnd["mt"])
+    store["nodes"] = m_nodes
+    pl = dict(disk.get("placements") or {}); pl.update(store.get("placements") or {})
+    store["placements"] = pl                         # union: neither writer's dedup bookkeeping is lost
+    store["seq"] = max(int(store.get("seq") or 0), int(disk.get("seq") or 0))   # never reuse a gid
+    ct = list(disk.get("closedTurns") or [])
+    for t in (store.get("closedTurns") or []):
+        if t not in ct:
+            ct.append(t)
+    store["closedTurns"] = ct
+    if store.get("lastNode") not in (store.get("nodes") or {}):
+        store["lastNode"] = disk.get("lastNode") or store.get("lastNode")
+    rollup_status(store, session_closed=False)       # re-derive every flag + the status map from the merged logs
 
 
 def _overrides_dir():
@@ -1637,7 +1699,30 @@ def _replay_overrides(fsid, store):
 
 
 def save_goals(fsid, store):
+    """Publish the store, REBASING first if anyone else published while we held it (the user 2026-07-22).
+
+    Writers here are concurrent and uncoordinated: every judge pass holds its store across a model call,
+    while the kernel's nudge tick stamps blocks on its own thread. The old blind rename made that
+    last-writer-wins, silently erasing the other's events — the display flicker where a freshly-blocked
+    card flashed back to 'working' for one push. Now the revision we loaded at (`_baseRev`) is compared
+    against the one on disk; if it moved we rebase onto disk (union of verdict logs) instead of clobbering.
+
+    Bounded retries, and no file lock (this codebase takes none), so a vanishingly small TOCTOU window
+    remains between the last check and the rename — but a merged publish beats an unconditional stomp, and
+    the override journal still backstops the state. Stores built without load_goals carry no `_baseRev`
+    and keep the old unconditional behavior (nothing to rebase onto)."""
     GOALDIR.mkdir(parents=True, exist_ok=True)
+    base = store.pop("_baseRev", None)               # transient: never serialized
+    if base is not None:
+        for _ in range(4):                           # a busy store settles in a pass or two
+            disk = _disk_rev(fsid)
+            if disk == base:
+                break                                # nobody published since we loaded → ours is current
+            _rebase_onto_disk(fsid, store)           # fold their events in, then re-check
+            base = disk
+        store["rev"] = _disk_rev(fsid) + 1
+    else:
+        store["rev"] = int(store.get("rev") or 0) + 1
     tmp = GOALDIR / (fsid + ".json.tmp.%d" % os.getpid())
     tmp.write_text(json.dumps(store))
     tmp.rename(GOALDIR / (fsid + ".json"))            # atomic publish
