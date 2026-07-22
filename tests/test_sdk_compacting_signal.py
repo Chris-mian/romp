@@ -99,5 +99,42 @@ class _BackendSurface(unittest.TestCase):
         self.assertFalse(be.compacting(SID))
 
 
+class _RestoredQueue(unittest.TestCase):
+    """A /compact that arrives via the PERSISTED QUEUE, not send() (the user 2026-07-22). send() is what
+    sets _compacting, but a restored queue is seeded straight into _pending by __init__ — and that is the
+    path the resume gate's "compact on resume" uses (resolve_resume_gate prepends '/compact' to
+    reg['queue'], then spawns). The flag stayed False for the whole compaction: the chip read plain
+    "working" for minutes, and drive ops that should have parked were fed into the compacting CLI."""
+
+    def _session(self, queue):
+        return sb.SdkSession(_FakeBackend(tempfile.mkdtemp()),
+                             {"sid": SID, "name": "x", "queue": queue})
+
+    def test_a_restored_compact_queue_sets_the_compacting_flag(self):
+        s = self._session(["/compact"])
+        self.assertEqual(s._pending, ["/compact"], "the persisted queue seeds _pending")
+        self.assertTrue(s._compacting,
+                        "a queued /compact brackets the compaction even though it never went through send()")
+
+    def test_the_resume_gate_shape_counts_compact_ahead_of_the_backlog(self):
+        # exactly what resolve_resume_gate writes: /compact prepended to the restored backlog
+        s = self._session(["/compact", "carry on with the benchmark"])
+        self.assertTrue(s._compacting)
+
+    def test_an_ordinary_restored_queue_does_not_claim_compacting(self):
+        s = self._session(["carry on with the benchmark", "and post the numbers"])
+        self.assertFalse(s._compacting, "no /compact queued → nothing to bracket")
+
+    def test_an_empty_queue_does_not_claim_compacting(self):
+        self.assertFalse(self._session([])._compacting)
+        self.assertFalse(sb.SdkSession(_FakeBackend(tempfile.mkdtemp()),
+                                       {"sid": SID, "name": "x"})._compacting)
+
+    def test_a_look_alike_in_the_queue_does_not_claim_compacting(self):
+        # reuses _is_compact_cmd, so the same look-alike rules hold on this path
+        self.assertFalse(self._session(["/compactify the report"])._compacting)
+        self.assertFalse(self._session(["please /compact later"])._compacting)
+
+
 if __name__ == "__main__":
     unittest.main()

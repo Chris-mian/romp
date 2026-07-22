@@ -915,6 +915,15 @@ class SdkSession:
         # so a kernel death can DELAY queued messages but never lose them; the boot reconcile
         # resumes any session with a non-empty persisted queue and this seed delivers it.
         self._pending: list[str] = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
+        # A RESTORED /compact must light the compacting bracket too (the user 2026-07-22). send() sets
+        # _compacting when it enqueues a compact command, but a persisted queue lands here INSTEAD of
+        # going through send() — and that is exactly how the resume gate's "compact on resume" delivers
+        # (resolve_resume_gate prepends '/compact' to reg['queue'], then spawns). Without this the flag
+        # stayed False for the whole compaction: the chip read plain "working" for minutes with nothing
+        # visibly happening, and drive ops that should have PARKED were fed into the compacting CLI.
+        # Same enqueue-time semantics as send(); cleared event-based by the boundary / the turn's result.
+        if any(_is_compact_cmd(t) for t in self._pending):
+            self._compacting = True
         self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._lock = threading.Lock()
