@@ -7,6 +7,7 @@
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
 import { distillText, distillInputs, applyDistillLine, distillPending } from "./distiller-line";
+import { spinFor } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes } from "./host-prefix";
 import { initStrip } from "./strip";
@@ -1022,7 +1023,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._time.textContent = relAge(hostNow - it.t);
   // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
   // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
-  // is `rejudging`, not `recheck` — it stays in Needs-You, so no chip here; its swirl says "Re-judging…".)
+  // is `rejudging`, not `recheck`, and gets no chip: since 2026-07-02 it ALSO moves to Working while the reply
+  // is in flight, and its "Analyzing…" swirl carries the same message — the chip would just double it up. The
+  // swirl is therefore the ONLY cue on a rejudging card, which is why it must never be suppressed.)
   // The plain "↻ Followed up" chip (followupPending → reopened to Working) was REMOVED (the user 2026-07-01):
   // click-to-cite makes following up routine, so acknowledging it on the card is now noise — the card just
   // silently returns to Working. (followupPending still drives that column move; only its badge is gone.)
@@ -1088,86 +1091,21 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
   // peer case already shows the "Awaiting <peer>" chip (waitingOn), so the generic awaiting box is suppressed
   // then. (The old header "awaiting" chip is gone — the body box below carries it; the user 2026-07-04.)
-  const aw = it.awaiting;
   // SPINNING SWIRL + a short caption in the card body (the user 2026-06-29): a card with a re-evaluation or
-  // dispatched work in flight shows the spinning romp swirl where the distiller line will eventually land, with
-  // a couple words saying what's happening. Cases:
-  //  • AWAITING — held in Working, waiting on dispatched/delegated work (the kernel's why, else a generic line).
-  //  • PROVISIONAL — a dashed live-prompt placeholder: the session is working a BRAND-NEW ask the planner
-  //    hasn't classified into a goal yet (THAT's why it's dashed — it's not a real card yet) → "Working…".
-  //  • RE-CHECK — a soft-block you answered with a TARGETED follow-up, moved to Working, de-urgented (dashed)
-  //    until the judge re-judges → "Re-judging…".
-  //  • RE-JUDGING — a soft-block + a PLAIN thread reply, with a turn now in flight (the user 2026-06-30). UNLIKE
-  //    the others this card STAYS in Needs-You (we can't tell the reply addressed it), so a Blocked/needs-input
-  //    card spins here — the deliberate exception to "only working cards spin": it signals a re-evaluation may be
-  //    coming without yanking it off your plate. → "Re-judging…".
-  // The blocked placeholder (provisional but needs-input: "Awaiting your input") is on YOU with nothing in
-  // motion, so it's still excluded.
-  // Each case pairs a short body caption with a FULLER tooltip (hover the swirl/caption) that explains what's
-  // actually happening — including, for a provisional card, WHY it's dashed.
-  // AWAITING — the session is held, waiting on background work it dispatched (agents). It keeps its own read:
-  // a boxed "Awaiting background agents" label. The romp swirl SPINS here too (the user 2026-07-04: a spin reads
-  // as "in flight, not stalled", which is exactly the awaiting state — the box already distinguishes it from
-  // the actively-working cases, so the glyph needn't also freeze). The caption wraps to two lines if long.
-  let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
+  // dispatched work in flight shows the spinning romp swirl saying what's happening. The whole ladder lives
+  // in ./spin-caption so spin-caption.test.ts EXECUTES it — a source-regex pin is what let the recheck /
+  // rejudging branches be silently wrong (the user 2026-07-21); see that file for the cases + the contract.
   // The distiller line keys on the GENUINE resolution state (distillState), not the transient `column`:
   // recheck/rejudging drop a still-blocked card to Working every time its session takes a turn, which used
   // to flicker the decision brief OFF (the docs thread read "unblocked, no summary" — the user 2026-07-21).
   // distillInputs (in ./distiller-line so the test EXECUTES the rule) maps state→(completed,blocked), with a
   // column fallback for older/remote payloads that predate the field.
   const { completed: dCompleted, blocked: dBlocked } = distillInputs(it.distillState, it.column);
-  const briefText = distillText(dCompleted, dBlocked, it.summary, it.blockSummary);   // "" when nothing to show
-  // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Waiting on task" pill
-  // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
-  const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
-  if (aw && !it.waitingOn && !awTasks.length) {
-    awaitingBg = true;
-    // A subagent/overlay why keeps the classic boxed label. The caption wraps to two lines if long.
-    const why = aw.why || "";
-    spinCaption = /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
-                                           : "Awaiting background agents";
-    spinTip = why
-      ? why + ". Not on you; paused until the background work lands."
-      : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.";
-  } else if (it.provisional && it.column === "working" && !aw) {
-    // the chip tells the truth about the phase (the user 2026-07-12): an OPEN turn is just Working — the
-    // judge has nothing to classify yet; once the turn settles (kernel `judging`) the planner's pass is
-    // due/in flight and only THEN does the chip say Analyzing…. An AWAITING placeholder (a bg-task wait with
-    // no goal to floor, the user 2026-07-13) is provisional too but NOT working: !aw defers it to the boxed
-    // why (branch above) or, when tasks exist, to the "Waiting on task" pill — never a false "Working…".
-    spinCaption = it.judging ? "Analyzing…" : "Working…";
-    spinTip = it.judging
-      ? "This stretch of work finished; the judge is sorting it into a goal."
-      : "A new prompt, still running. Sorted into a goal once this stretch of work finishes.";
-  } else if (it.recheck && !briefText) {
-    // No brief yet → the swirl fills the spot. When a brief EXISTS it shows instead of "Analyzing…" (the
-    // user 2026-07-21): a still-blocked card that its busy session keeps re-judging must keep its decision
-    // brief on screen, not blank it to a swirl every turn — that flicker WAS the "no summary" complaint.
-    spinCaption = "Analyzing…";
-    spinTip = "You followed up. Reopened to Working; the judge will resolve it or re-block it.";
-  } else if (it.rejudging && !briefText) {
-    spinCaption = "Analyzing…";
-    spinTip = "You replied on this thread. Moved to Working while the reply runs; it comes back if the judge re-confirms the block.";
-  } else if (it.judging && it.column === "working") {
-    //  • SETTLE GAP (the user 2026-07-13) — the session FINISHED its turn but the closer's verdict hasn't
-    //    landed, so the card would sit inertly in Working ("the session is done, why is its card still
-    //    working?"). The swirl says what's actually happening; it hands off to the column move (and then
-    //    Distilling…) when the verdict files the work.
-    spinCaption = "Analyzing…";
-    spinTip = "This stretch of work finished; the judge is deciding whether it completed or blocked this goal.";
-  } else if (distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked)) {
-    //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
-    //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief
-    //    (blockSummary). The same swirl spins in the distiller-line spot until the line lands, so a card that
-    //    "is in motion" (the distiller LLM is running) reads as busy rather than blank. Excludes a live
-    //    permission/picker block (on YOU). distillPending lives in ./distiller-line so the test EXECUTES it.
-    //    Keyed on distillState (dCompleted/dBlocked), so a still-blocked card mid-flip keeps spinning for its
-    //    brief instead of dropping the swirl the instant `column` reads working (the user 2026-07-21).
-    spinCaption = "Distilling…";
-    spinTip = dCompleted
-      ? "Writing the key takeaway…"
-      : "Writing the decision brief…";
-  }
+  // The swirl and the brief are SIBLINGS (secs, then awaitSpin), so a re-judging card shows BOTH: the brief
+  // says what it's blocked on, the swirl says the judge is looking at it again (the user 2026-07-21).
+  const spin = spinFor(it, distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
+                       dCompleted);
+  const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
   a._awaitSpin.style.display = spinCaption ? "" : "none";
   // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now.
   a._awaitSpin.classList.toggle("await-paused", awaitingBg);

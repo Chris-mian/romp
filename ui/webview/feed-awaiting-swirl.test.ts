@@ -1,15 +1,15 @@
 // Spinning-swirl + caption on "in motion, not on you" cards (the user 2026-06-29): a small romp swirl spins in
-// the card body — the SAME spot the distiller takeaway/decision-brief lands for completed/blocked cards — with a
-// couple words saying what's happening. THREE cases, all in the Working column: AWAITING (it.awaiting, not a
-// peer wait → the kernel why), PROVISIONAL (a dashed live-prompt placeholder → "Working…"), RE-CHECK (a
-// soft-block you answered with a TARGETED follow-up, moved to Working → "Re-judging…"), and REJUDGING (a
-// soft-block + a PLAIN reply that STAYS in Needs-You, with a turn in flight → "Re-judging…"). Source pin (no jsdom).
+// the card body, beside the distiller takeaway/decision-brief, with a couple words saying what's happening.
+// The LADDER itself (which case wins, what it says) moved to ./spin-caption and is EXECUTED by
+// spin-caption.test.ts — a source-regex pin let it go silently wrong once (the user 2026-07-21). What's left
+// here is the surface the ladder drives: the DOM element, the wiring, the tooltip text, and the CSS.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const SPIN = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "spin-caption.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 test("the swirl element is built in the body, right after the distiller line, and registered", () => {
@@ -20,30 +20,10 @@ test("the swirl element is built in the body, right after the distiller line, an
   assert.match(FEED, /a\._awaitSpin = awaitSpin; a\._awaitWhy = awaitWhy;/);
 });
 
-test("the swirl + caption covers awaiting, provisional, and re-check — shown when there's a caption, else hidden", () => {
-  // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
-  // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (moved to Working while in flight) →
-  // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
-  // AWAITING: a bg-TASK wait skips the box entirely (the user 2026-07-13) — the compact "Waiting on task"
-  // pill carries it (task list one click away, like Sub-goals); a subagent/overlay why keeps the boxed
-  // "Awaiting background agents" label (2026-07-04).
-  assert.match(FEED, /const awTasks = \(\(aw && aw\.tasks\) \|\| \[\]\)\.filter\(Boolean\);/);
-  assert.match(FEED, /if \(aw && !it\.waitingOn && !awTasks\.length\) \{\s*\n\s*awaitingBg = true;/);
-  assert.match(FEED, /spinCaption = \/\^waiting on\/i\.test\(why\) \? why\.charAt\(0\)\.toUpperCase\(\) \+ why\.slice\(1\)\s*\n\s*: "Awaiting background agents";/);
-  // the provisional chip is PHASE-truthful (the user 2026-07-12): open turn → "Working…" (the judge has
-  // nothing to classify yet); turn settled (kernel `judging`) → "Analyzing…" (the planner pass is due/live).
-  // `&& !aw` (the user 2026-07-13): an AWAITING placeholder (a bg-task wait with no goal) is provisional too
-  // but NOT working — it defers to the boxed why / "Waiting on task" pill, never a false "Working…".
-  assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working" && !aw\) \{[\s\S]*?spinCaption = it\.judging \? "Analyzing…" : "Working…";/);
-  // recheck/rejudging show "Analyzing…" ONLY when there's no brief yet (&& !briefText); a present decision
-  // brief fills the spot instead, so a still-blocked card doesn't blank its brief to a swirl every turn (the
-  // user 2026-07-21). The brief-vs-swirl behavior is EXECUTED in feed-distill-state / distiller-line tests.
-  assert.match(FEED, /\} else if \(it\.recheck && !briefText\) \{[\s\S]*?spinCaption = "Analyzing…";/);
-  assert.match(FEED, /\} else if \(it\.rejudging && !briefText\) \{\s*\n\s*spinCaption = "Analyzing…";/);
-  // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is
-  // distillPending (distiller-line.test.ts); here we just pin that the card branch uses it + sets the caption.
-  // Keyed on the genuine state (dCompleted/dBlocked), not the transient column (the user 2026-07-21).
-  assert.match(FEED, /\} else if \(distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\)\) \{[\s\S]*?spinCaption = "Distilling…";/);
+test("the swirl is driven by spinFor's caption — shown when there is one, else hidden", () => {
+  assert.match(FEED, /import \{ spinFor \} from "\.\/spin-caption";/);
+  assert.match(FEED, /const spin = spinFor\(it, distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
+  assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending \} from "\.\/distiller-line";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
@@ -62,14 +42,13 @@ test("a bg-task wait wears the compact 'Waiting on task' pill that expands the t
 });
 
 test("each case carries a concise tooltip on the swirl (hover → the key idea, not an essay)", () => {
-  assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "", awaitingBg = false;/);
   // tooltips are short and plain-spoken (the user 2026-06-29): the key idea, no LLM-essay phrasing, no em dashes
-  assert.match(FEED, /"A new prompt, still running\. Sorted into a goal once this stretch of work finishes\.";/);
-  assert.match(FEED, /"This stretch of work finished; the judge is sorting it into a goal\."/);
-  assert.match(FEED, /spinTip = "You followed up\. Reopened to Working; the judge will resolve it or re-block it\.";/);
-  assert.match(FEED, /spinTip = "You replied on this thread\. Moved to Working while the reply runs; it comes back if the judge re-confirms the block\.";/);
+  assert.match(SPIN, /"A new prompt, still running\. Sorted into a goal once this stretch of work finishes\."/);
+  assert.match(SPIN, /"This stretch of work finished; the judge is sorting it into a goal\."/);
+  assert.match(SPIN, /tip: "You followed up\. Reopened to Working; the judge will resolve it or re-block it\.",/);
+  assert.match(SPIN, /tip: "You replied on this thread\. Moved to Working while the reply runs; it comes back if the judge re-confirms the block\.",/);
   // no em dashes anywhere in the swirl tooltips (JLD + the user's house style ban them)
-  assert.doesNotMatch(FEED, /spinTip = "[^"]*—/);
+  assert.doesNotMatch(SPIN, /tip: "[^"]*—/);
   assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
@@ -96,12 +75,4 @@ test("the swirl uses the shared glyph, spins SLOWER (calmer) + reverse like the 
   assert.match(CSS, /animation: fask-swirl-spin 2\.4s linear infinite;/);   // slowed from 1.4s (the user 2026-06-29)
   assert.match(CSS, /@keyframes fask-swirl-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);   // reverse, like rl-spin
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.fask-awaiting-swirl \{ animation: none; \} \}/);
-});
-
-test("a REAL working card wears the Analyzing… swirl through the settle→verdict gap (the user 2026-07-13)", () => {
-  // the session finished its turn but the closer's verdict hasn't landed — kernel `judging` on a real
-  // working card (not just the provisional) lights the swirl so the card never sits inertly in Working
-  // after the session is done; it hands off to the column move (then Distilling…) when the verdict files.
-  assert.match(FEED, /\} else if \(it\.judging && it\.column === "working"\) \{[\s\S]*?spinCaption = "Analyzing…";/);
-  assert.match(FEED, /the judge is deciding whether it completed or blocked this goal\./);
 });

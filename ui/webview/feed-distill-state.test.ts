@@ -22,12 +22,16 @@ test("the card routes the distiller line through distillInputs(distillState, col
   assert.doesNotMatch(FEED, /applyDistillLine\([^)]*it\.column === "needs_input"/);
 });
 
-test("the recheck/rejudging 'Analyzing…' swirl YIELDS to a present brief (the flicker fix)", () => {
-  // when a decision brief exists it fills the distiller-line spot; the swirl only shows when there's nothing
-  // to say yet — so a still-blocked card keeps its brief on screen instead of blanking to a swirl every turn.
-  assert.match(FEED, /\} else if \(it\.recheck && !briefText\) \{/);
-  assert.match(FEED, /\} else if \(it\.rejudging && !briefText\) \{/);
-  assert.match(FEED, /const briefText = distillText\(dCompleted, dBlocked, it\.summary, it\.blockSummary\);/);
+test("the brief and the recheck/rejudging swirl BOTH show — neither suppresses the other", () => {
+  // The flicker this fix chased came from keying the LINE on the transient `column`; distillState fixed
+  // that. Gating the swirl on `!briefText` as well went too far (the user 2026-07-21): a blocked card being
+  // re-judged then showed its brief and nothing else, reading as a working card that inexplicably has a
+  // summary, with no cue that it was in motion or still blocked underneath. They are SIBLING elements
+  // (feed.ts appends `secs` then `awaitSpin`), never rivals for one spot.
+  assert.doesNotMatch(FEED, /it\.recheck && !briefText/);
+  assert.doesNotMatch(FEED, /it\.rejudging && !briefText/);
+  // the swirl's rule is EXECUTED in spin-caption.test.ts; the line's in distiller-line.test.ts
+  assert.match(FEED, /const spin = spinFor\(it, distillPending\(/);
 });
 
 test("AskItem carries distillState from the kernel", () => {
