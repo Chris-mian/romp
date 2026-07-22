@@ -11565,6 +11565,7 @@ _CHAT_MOBILE_CSS = (
     "#mcur .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}"
     # the working cue is the SAME gold status dot desktop uses (the tab's .tab-dot), not a text bullet
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
+    "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:#2a2a2a;color:#bbbbbb;border:1px solid #3a3a3a;border-radius:6px;font-size:16px;line-height:1}"
@@ -11578,6 +11579,7 @@ _CHAT_MOBILE_CSS = (
     # match desktop: the session's identity color tints the NAME text (set inline, like the Fleet list and
     # the colored tab label), and the only dot is the gold WORKING dot, shown just for working sessions.
     ".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
+    ".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}"   # green: idle-waiting-on-bg-work
     ".mrow .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dddddd}"
     ".mrow.active{background:#0d3a5c}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
@@ -11613,21 +11615,23 @@ function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),functi
 var lab=t.querySelector('.tab-label');
 return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),active:t.classList.contains('active')};});}
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),active:t.classList.contains('active')};});}
 function sync(){var ts=read(),act=null;
 for(var i=0;i<ts.length;i++){if(ts[i].active){act=ts[i];break;}}
 if(!act&&ts.length)act=ts[0];
 var nm=cur.querySelector('.nm');
-cur.querySelector('.wd').style.display=(act&&act.working)?'':'none';   // gold working dot, matching desktop
+var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
+wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
 if(act){nm.textContent=act.name;
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
 else{nm.textContent='no sessions';cur.classList.remove('colored');}
 list.innerHTML='';
 ts.forEach(function(s){var row=document.createElement('div');row.className='mrow'+(s.active?' active':'');
-// desktop parity: the identity color tints the NAME (inline, like the Fleet list), and a gold WORKING
-// dot shows only for working sessions — no per-session identity dot (there is none on desktop).
+// desktop parity: the identity color tints the NAME (inline, like the Fleet list); the dot mirrors the
+// tab's own dot — gold when working, green (awaitbg) when idle-waiting-on-bg-work, none otherwise.
 if(s.working){var wd=document.createElement('span');wd.className='workdot';row.appendChild(wd);}
+else if(s.awaitbg){var wd=document.createElement('span');wd.className='workdot await';row.appendChild(wd);}
 var lbl=document.createElement('span');lbl.className='nm';lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;
 row.appendChild(lbl);
 row.addEventListener('click',function(){var rt=realTab(s.id);if(rt)rt.click();hide();});

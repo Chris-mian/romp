@@ -232,22 +232,29 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("--chip-bg", js)                    # reads each session's identity color
         self.assertIn("#mcur.colored", css)               # the current button wears that color
 
-    def test_picker_rows_match_desktop_colored_name_plus_gold_working_dot(self):
+    def test_picker_rows_match_desktop_colored_name_plus_status_dot(self):
         # the user 2026-07-22: on mobile the picker painted a per-session identity DOT (grey #666 when the
         # session had no color, and confusingly the identity color when it did) — desktop has no such dot.
         # Match desktop: the identity color tints the NAME text (inline, like the Fleet list / colored tab
-        # label), and the ONLY dot is the gold working dot shown just for working sessions (the .tab-dot).
+        # label), and the dot MIRRORS the tab's own status dot — gold when working, GREEN when awaitingBg
+        # (idle-waiting-on-bg-work, the .tab-dot.await), none otherwise.
         js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
         self.assertIn("lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;", js)   # identity color on the NAME
-        self.assertIn("if(s.working){var wd=document.createElement('span');wd.className='workdot';", js)  # gold dot only when working
+        self.assertIn("if(s.working){var wd=document.createElement('span');wd.className='workdot';", js)  # gold dot when working
+        # awaitingBg is read off the desktop tab's own green dot (no tab-working class on an awaiting tab)
+        self.assertIn("awaitbg:!!t.querySelector('.tab-dot.await')", js)
+        self.assertIn("else if(s.awaitbg){var wd=document.createElement('span');wd.className='workdot await';", js)  # green dot when awaiting
         self.assertNotIn(".mrow .dot{", css)              # the old identity/grey dot is gone
         self.assertNotIn("dot.style.background=s.bg", js)  # ...and nothing paints identity onto a dot
-        # the working dot is the SAME status gold desktop uses (styles.css --st-working-bg), not a text bullet
+        # the dots are the SAME status colors desktop uses (styles.css --st-working-bg gold, --st-awaitbg-bg green)
         self.assertIn(".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
+        self.assertIn(".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}", css)
         self.assertNotIn("'• ')+s.name", js)              # the '• ' text-bullet prefix on rows is gone
-        # the current-session header uses the same gold working dot, not the text bullet either
+        # the current-session header uses the same gold/green status dot, not the text bullet either
         self.assertIn("#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}", css)
-        self.assertIn("cur.querySelector('.wd').style.display=(act&&act.working)?'':'none'", js)
+        self.assertIn("#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}", css)
+        self.assertIn("wd.style.display=(act&&(act.working||act.awaitbg))?'':'none'", js)
+        self.assertIn("wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working))", js)
         self.assertNotIn("(act.working?'• ':'')", js)
 
     def test_current_session_title_is_bold_color_on_the_grey_chip(self):
