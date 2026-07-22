@@ -1661,6 +1661,58 @@ def save_goal_archive(fsid, store):
     tmp.rename(GOALARCHDIR / (fsid + ".json"))        # atomic publish
 
 
+def drop_goals_after(fsid, cut_t):
+    """Roll a session's GOAL STORE back to just before cut_t: archive every goal node BORN at/after cut_t
+    (node["t"] >= cut_t), whole subtrees, to goals-archive/. A chat delete/edit abandons every turn at/after
+    cut_t, so a card MINTED from one of those now-gone turns is an orphan and goes with them (the user
+    2026-07-22, who asked that deleting a message clean up the goals it spawned).
+
+    Scope, deliberately narrow: this drops cards BORN in the abandoned range — nothing else. A verdict an
+    abandoned turn applied to a PRE-EXISTING card (a reply that unblocked it, say) is left as-is; reverting
+    those would mean surgically truncating the append-only diary AND the durable override journal that
+    re-applies user actions on every load — far more machinery than the case is worth (the user chose this
+    simpler shape over a full verdict revert). node["t"] is frozen at birth and a child is always born after
+    its parent, so a born-in-range top drags its whole subtree.
+
+    Returns the number of nodes archived. No-op-safe (absent/empty store, or nothing in range → 0)."""
+    cut_t = int(cut_t)
+    store = load_goals(fsid)
+    nodes = store.get("nodes") or {}
+    if not nodes:
+        return 0
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    move, stack = set(), [nid for nid, nd in nodes.items() if int(nd.get("t") or 0) >= cut_t]
+    while stack:                                        # a born-in-range node drags its whole subtree
+        x = stack.pop()
+        if x in move:
+            continue
+        move.add(x)
+        stack.extend(children.get(x, []))
+    if not move:
+        return 0
+    status = store.get("status") or {}
+    arch = load_goal_archive(fsid)
+    a_nodes = arch.setdefault("nodes", {}); a_status = arch.setdefault("status", {})
+    for nid in move:
+        if nid in nodes:
+            a_nodes[nid] = nodes.pop(nid)              # a whole-node dict delete is UNGUARDED (not a PROTECTED key)
+        if nid in status:
+            a_status[nid] = status.pop(nid)
+    arch["rompUuid"] = store.get("rompUuid", fsid)
+    save_goal_archive(fsid, arch)
+    # a dangling lastNode is tolerated (focus→None), but that would prematurely settle the pre-cut focus card;
+    # re-point it at the newest SURVIVING node so rollup_status keeps a sane focus.
+    if store.get("lastNode") not in nodes:
+        store["lastNode"] = (max(nodes, key=lambda n: int(nodes[n].get("t") or 0)) if nodes else None)
+    # removing a born-in-range SUB can change its surviving parent's rolled-up status (a blocked child now
+    # gone), so re-roll the status map from the (unchanged) surviving logs.
+    rollup_status(store, session_closed=False)
+    save_goals(fsid, store)
+    return len(move)
+
+
 def open_menu(store, cap=20):
     """The session's open nodes, numbered oldest-first, capped — the planner's candidate menu. A node is
     open only if NEITHER it NOR any ancestor is complete/cleared/settled-done: a completed (or cleared)

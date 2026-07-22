@@ -6213,8 +6213,29 @@ def _rewind_send(sid, user_uuid, text, now=None):
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
     if err:
         return err
+    # Same as delete: the edited message + its tail are abandoned; read its time before be.rewind arms the
+    # cut, then archive the cards those now-gone turns spawned. The edited text lands as a NEW turn (a later
+    # timestamp), minted AFTER this runs, so its fresh card is never caught by the cut.
+    cut_t = _atom_epoch(sess["path"], sid, str(user_uuid), now)
     ok, berr = be.rewind(sid, target, str(text))
+    if ok and cut_t is not None:
+        _drop_goals_after(sid, cut_t)
+        _mark_views_dirty()
     return None if ok else (berr or "the rewind could not be applied")
+
+
+def _atom_epoch(path, sid, uuid, now):
+    """The epoch time of the transcript atom `uuid`, or None. Used to turn a rewind's cut record into a
+    cut_t the goal-store revert can compare against node/verdict times (all seg_t epoch seconds). Read
+    BEFORE the backend arms its pending_cut, so the parse still contains the about-to-be-abandoned atom."""
+    try:
+        for turn in _parse(path, sid, now)["turns"]:
+            for a in turn.get("atoms") or []:
+                if a.get("uuid") == uuid:
+                    return a.get("t")
+    except Exception:
+        return None
+    return None
 
 
 def _rewind_rollback(sid, user_uuid, now=None):
@@ -6234,8 +6255,24 @@ def _rewind_rollback(sid, user_uuid, now=None):
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
     if err:
         return err
+    # The DELETED message is user_uuid (target is its surviving ancestor); everything at/after it is
+    # abandoned. Read its time NOW, before be.rollback arms the pending_cut that would hide it from _parse.
+    cut_t = _atom_epoch(sess["path"], sid, str(user_uuid), now)
     ok, berr = be.rollback(sid, target)
+    if ok and cut_t is not None:
+        _drop_goals_after(sid, cut_t)                    # archive cards minted from the now-abandoned turn(s)
+        _mark_views_dirty()
     return None if ok else (berr or "the rollback could not be applied")
+
+
+def _drop_goals_after(sid, cut_t):
+    """Archive goal cards born in a rewind/delete's abandoned range (jd.drop_goals_after). Best-effort: a
+    failure here must never undo the cut the user already got, so log and move on (fail loud, not silent)."""
+    try:
+        jd.drop_goals_after(sid, cut_t)
+    except Exception as e:
+        jd._log_judge_error("romp", sid, "revert-failed",
+                            note="goal cleanup after a rewind/delete failed: %r" % e)
 
 
 def _parse_cached(path):

@@ -207,5 +207,54 @@ class ParseCut(unittest.TestCase):
         self.assertIn('sig.append(_be.pending_cut(sess.get("sid") or "") if _be else "")', src)
 
 
+class RevertOnDelete(unittest.TestCase):
+    """Deleting a message rolls the GOAL STORE back too (jd.revert_to), keyed on the deleted message's time
+    (the user 2026-07-22). _atom_epoch resolves that time from the transcript BEFORE the backend arms its
+    cut; the rollback arm then reverts the goal actions the abandoned turn(s) drove."""
+
+    def _transcript(self, recs):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, SID + ".jsonl")
+        with open(p, "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        return p
+
+    def test_atom_epoch_resolves_a_message_time(self):
+        from datetime import datetime, timezone
+        now = int(datetime(2026, 7, 16, 10, 1, 0, tzinfo=timezone.utc).timestamp())
+        p = self._transcript([_rec("user", "u1", None, "first ask"),
+                              _rec("assistant", "a1", "u1", "first reply"),
+                              _rec("user", "u2", "a1", "second ask")])
+        want = next(a["t"] for t in km.em.parse_session(p, rompuuid=SID, now=now)["turns"]
+                    for a in t["atoms"] if a.get("uuid") == "u2")
+        self.assertEqual(km._atom_epoch(p, SID, "u2", now), want, "resolves the atom's epoch time")
+        self.assertIsNone(km._atom_epoch(p, SID, "no-such-uuid", now), "a uuid not in the transcript → None")
+
+    def test_delete_drops_born_in_range_goals_after_a_successful_cut(self):
+        # the deleted message's time is read BEFORE be.rollback arms the pending_cut (which would hide it
+        # from _parse), then the cards those now-abandoned turns spawned are archived on success.
+        src = inspect.getsource(km._rewind_rollback)
+        self.assertIn("cut_t = _atom_epoch(", src)                   # resolved before be.rollback
+        self.assertIn("ok, berr = be.rollback(sid, target)", src)
+        self.assertIn("_drop_goals_after(sid, cut_t)", src)          # archive born-in-range cards on success
+        self.assertLess(src.index("cut_t = _atom_epoch("), src.index("be.rollback(sid, target)"),
+                        "the deleted message's time is read BEFORE the cut is armed")
+
+    def test_edit_drops_born_in_range_goals_too(self):
+        # an edit abandons the old tail the same way a delete does → same cleanup
+        src = inspect.getsource(km._rewind_send)
+        self.assertIn("cut_t = _atom_epoch(", src)
+        self.assertIn("_drop_goals_after(sid, cut_t)", src)
+        self.assertLess(src.index("cut_t = _atom_epoch("), src.index("be.rewind(sid, target"),
+                        "the edited message's time is read BEFORE the cut is armed")
+
+    def test_drop_goals_after_is_best_effort(self):
+        # a cleanup failure must never undo the cut the user already got
+        src = inspect.getsource(km._drop_goals_after)
+        self.assertIn("jd.drop_goals_after(sid, cut_t)", src)
+        self.assertIn("except Exception", src)                       # swallow-and-log, never raise past the delete
+
+
 if __name__ == "__main__":
     unittest.main()
