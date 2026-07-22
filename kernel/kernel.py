@@ -11493,9 +11493,9 @@ if(!ws||ws.readyState===3)connect();}});})();
 # Hide the tab row and show ONE compact native <select> (#msess) instead — tap it, pick a session from
 # the list. _CHAT_MOBILE_JS keeps the select in sync with the real tabs and routes a pick back to them.
 # On a narrow / touch viewport the chat's session tabs wrap into several rows. Replace them with one
-# compact header row — [current session ▾] [+ open/new] [▾ summary] — where the current-session button
-# opens a CUSTOM dropdown list (a native <select> can't render the per-session identity colors, so this
-# is our own element). The list, the current button, and each row carry the session's color.
+# compact header row — [current session ▾] [+ open/new] — where the current-session button opens a
+# CUSTOM dropdown list (a native <select> can't render the per-session identity colors, so this is our
+# own element). The list, the current button, and each row carry the session's color.
 _CHAT_MOBILE_CSS = (
     "#mhdr,#mlist{display:none}"    # both hidden on desktop (#mlist is a #tabbar sibling, not inside #mhdr)
     # Gate the picker on a TOUCH device, not pane width: the chat iframe is one of three desktop panes, so
@@ -11506,12 +11506,14 @@ _CHAT_MOBILE_CSS = (
     "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
     "#mhdr{display:flex;align-items:stretch;gap:6px;width:100%}"
     "#mcur{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;"
-    "background:#2a2a2a;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
+    "background:#000;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
     "font:600 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
-    "#mcur.colored{background:var(--cbg);color:var(--cfg);border-color:transparent}"
-    "#mcur .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+    # colored session: the identity color reads as the NAME (bold) on a black chip, with a hairline
+    # color border, not the color as a fill (the user 2026-07-22).
+    "#mcur.colored{background:#000;color:var(--cbg);border-color:var(--cbg)}"
+    "#mcur .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}"
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
-    "#madd,#mcoll{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
+    "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:#2a2a2a;color:#bbbbbb;border:1px solid #3a3a3a;border-radius:6px;font-size:16px;line-height:1}"
     "#mlist{display:none;position:absolute;left:8px;right:8px;top:100%;margin-top:4px;z-index:200;"
     "max-height:60vh;overflow:auto;background:#252526;border:1px solid #3a3a3a;border-radius:8px;"
@@ -11538,8 +11540,8 @@ _CHAT_MOBILE_CSS = (
 
 # Build the mobile chat header from the live tab DOM: the current-session button mirrors the active tab
 # (name + identity color), the dropdown list shows every session with its color dot, a row tap clicks the
-# real tab (so render.js's own setActive/focus runs), + clicks the real .tab-add (open/new session), and
-# ▾ clicks the real .tab-collapse (toggle the summary). A MutationObserver re-syncs on any tab change.
+# real tab (so render.js's own setActive/focus runs), and + clicks the real .tab-add (open/new session).
+# A MutationObserver re-syncs on any tab change.
 _CHAT_MOBILE_JS = """
 (function(){var tabbar=document.getElementById('tabbar'),tabs=document.getElementById('tabs');
 if(!tabbar||!tabs)return;
@@ -11547,9 +11549,8 @@ var hdr=document.createElement('div');hdr.id='mhdr';
 var cur=document.createElement('button');cur.id='mcur';cur.type='button';
 cur.innerHTML='<span class="nm"></span><span class="cv">▾</span>';
 var add=document.createElement('button');add.id='madd';add.type='button';add.textContent='+';add.title='Open / new session';
-var coll=document.createElement('button');coll.id='mcoll';coll.type='button';coll.textContent='▾';coll.title='Toggle summary';
 var list=document.createElement('div');list.id='mlist';
-hdr.appendChild(cur);hdr.appendChild(add);hdr.appendChild(coll);
+hdr.appendChild(cur);hdr.appendChild(add);
 tabbar.appendChild(hdr);tabbar.appendChild(list);
 function realTab(id){return tabs.querySelector('.tab[data-id="'+id+'"]');}
 function hide(){list.classList.remove('open');}
@@ -11572,11 +11573,9 @@ var dot=document.createElement('span');dot.className='dot';if(s.bg)dot.style.bac
 var lbl=document.createElement('span');lbl.className='nm';lbl.textContent=(s.working?'• ':'')+s.name;
 row.appendChild(dot);row.appendChild(lbl);
 row.addEventListener('click',function(){var rt=realTab(s.id);if(rt)rt.click();hide();});
-list.appendChild(row);});
-var rc=tabs.querySelector('.tab-collapse');if(rc&&rc.textContent)coll.textContent=rc.textContent;}
+list.appendChild(row);});}
 cur.addEventListener('click',function(e){e.stopPropagation();list.classList.toggle('open');});
 add.addEventListener('click',function(e){e.stopPropagation();var a=tabs.querySelector('.tab-add');if(a)a.click();});
-coll.addEventListener('click',function(e){e.stopPropagation();var c=tabs.querySelector('.tab-collapse');if(c)c.click();});
 document.addEventListener('click',function(e){if(!hdr.contains(e.target)&&!list.contains(e.target))hide();});
 new MutationObserver(sync).observe(tabs,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style']});
 sync();})();
@@ -11973,6 +11972,11 @@ var rb=document.getElementById('ro-reload');if(rb)rb.addEventListener('click',fu
 _LANDING_USAGE_JS = """
 (function(){var el=document.getElementById('rail-usage');if(!el)return;
 var tip=document.createElement('div');tip.id='ru-tip';tip.style.display='none';document.body.appendChild(tip);
+// A real full-screen backdrop in the SHELL document catches the dismiss tap (the user 2026-07-22): on
+// mobile the panes are content iframes, so an outside tap lands in another document and a document-level
+// click listener never fires — the panel got stuck. The backdrop sits under the (pointer-events:none)
+// tip, so a tap anywhere over it closes the modal, exactly like the net panel's #rnet-back.
+var back=document.createElement('div');back.id='ru-back';document.body.appendChild(back);
 function fmtR(ep){var dt=ep-Math.floor(Date.now()/1000);if(dt<=0)return'soon';var d=Math.floor(dt/86400);dt-=d*86400;
 var h=Math.floor(dt/3600);dt-=h*3600;var m=Math.floor(dt/60);return(d?d+'d ':'')+((h||d)?h+'h ':'')+m+'m';}
 function fmtAgo(ep){var dt=Math.max(0,Math.floor(Date.now()/1000)-ep);if(dt<90)return'just now';
@@ -12068,10 +12072,11 @@ tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHe
 window.__rompUsagePanel=function(){
 function openIt(){var h=tipHTML();if(!h)return;
 tip.innerHTML=h;tip.classList.add('ru-modal');tip.style.left='';tip.style.top='';tip.style.display='block';
-setTimeout(function(){var off=function(){tip.style.display='none';tip.classList.remove('ru-modal');
-document.removeEventListener('click',off,true);document.removeEventListener('keydown',esc2,true);};
+back.classList.add('on');
+var off=function(){tip.style.display='none';tip.classList.remove('ru-modal');back.classList.remove('on');
+document.removeEventListener('keydown',esc2,true);};
 var esc2=function(e){if(e.key==='Escape')off();};
-document.addEventListener('click',off,true);document.addEventListener('keydown',esc2,true);},0);}
+back.onclick=off;document.addEventListener('keydown',esc2,true);}
 fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
 .then(function(u){if(u&&(u.fiveHour||u.sevenDay||u.fable))render(u);openIt();})
 .catch(function(){openIt();});};
@@ -12574,6 +12579,10 @@ def _landing():
             # hover tooltip; only the positioning differs)
             "#ru-tip.ru-modal{left:50%!important;top:44%!important;transform:translate(-50%,-50%);max-width:92vw;"
             "box-shadow:0 12px 36px #000000aa}"
+            # the dismiss backdrop for the mobile Usage modal: below the tip (z 300), above the panes; a tap
+            # anywhere over it closes the modal (see _LANDING_USAGE_JS). Faint dim so it reads as tap-to-close.
+            "#ru-back{position:fixed;inset:0;z-index:290;display:none;background:rgba(0,0,0,0.4)}"
+            "#ru-back.on{display:block}"
             "#ru-tip{position:fixed;z-index:300;background:#1e1e1e;border:1px solid #3a3a3a;border-radius:7px;"
             "padding:8px 10px;font:500 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfd6dd;"
             "box-shadow:0 5px 18px rgba(0,0,0,0.45);pointer-events:none;line-height:1.4}"

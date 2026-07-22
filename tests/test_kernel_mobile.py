@@ -57,6 +57,21 @@ class LandingShell(unittest.TestCase):
         # the lifted-fullscreen settings iframe must override the mobile display:none
         self.assertIn("body.settings-open #f-feed{display:block;position:fixed", html)
 
+    def test_usage_modal_dismisses_via_a_real_backdrop_not_a_document_click(self):
+        # the user 2026-07-22: on mobile the Usage panel got STUCK — an outside tap landed on a content
+        # iframe (a different document), so the shell's document-level click listener never fired and the
+        # modal never closed. Fix: a real full-screen backdrop in the SHELL document (like the net panel's
+        # #rnet-back) catches the tap, so any tap over it dismisses. The #ru-tip is pointer-events:none, so
+        # a tap that visually lands on the panel still reaches the backdrop underneath and closes it.
+        html, js = km._landing(), km._LANDING_USAGE_JS
+        self.assertIn("ru-back", js)                              # the backdrop element is created
+        self.assertIn("back.onclick=off", js)                    # a tap on the backdrop closes the modal
+        self.assertIn("back.classList.add('on')", js)            # ...shown when the panel opens
+        self.assertIn("#ru-back{position:fixed;inset:0", html)   # full-screen, in the shell document
+        self.assertIn("#ru-back.on{display:block}", html)
+        # the old broken mechanism (a document-level capture click listener) is gone
+        self.assertNotIn("addEventListener('click',off,true)", js)
+
     def test_desktop_unchanged_tabbar_hidden_until_breakpoint(self):
         html = km._landing()
         self.assertIn("#mtabs{display:none}", html)   # hidden by default (desktop)
@@ -194,6 +209,13 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("--chip-bg", js)                    # reads each session's identity color
         self.assertIn("#mcur.colored", css)               # the current button wears that color
 
+    def test_current_session_title_is_bold_color_on_black(self):
+        # the user 2026-07-22: the mobile current-session title should read as the identity color in BOLD
+        # on a BLACK chip (with a hairline color border), not the color used as the fill.
+        css = km._CHAT_MOBILE_CSS
+        self.assertIn("#mcur.colored{background:#000;color:var(--cbg);border-color:var(--cbg)}", css)
+        self.assertIn("white-space:nowrap;font-weight:700}", css)   # the .nm name span is bold
+
     def test_picker_is_gated_on_touch_not_pane_width(self):
         # regression: the chat iframe is one of three desktop panes, so it's ALWAYS narrow. A bare
         # max-width breakpoint matched that narrow pane and swapped the mobile picker in on desktop,
@@ -202,12 +224,17 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("@media (pointer:coarse) and (max-width:1024px){", css)
         self.assertNotIn("(max-width:820px),", css)   # the width-only OR-clause that leaked onto desktop is gone
 
-    def test_picker_routes_a_pick_and_wires_new_session_and_summary(self):
-        js = km._CHAT_MOBILE_JS
+    def test_picker_routes_a_pick_and_wires_new_session(self):
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
         self.assertIn(".tab[data-id", js)             # a row tap clicks the real tab (render.js focuses it)
         self.assertIn("MutationObserver", js)         # re-syncs as tabs change
         self.assertIn(".tab-add", js)                 # + → open / new session
-        self.assertIn(".tab-collapse", js)            # ▾ → toggle the summary
+        # the dead "Toggle summary" button (#mcoll → .tab-collapse) is GONE (the user 2026-07-22): the
+        # ledger/summary strip it toggled was retired, so .tab-collapse never existed in the DOM produced
+        # by render.ts and the button did nothing. Nothing left to rewire it to, so it was removed.
+        self.assertNotIn("mcoll", js)
+        self.assertNotIn(".tab-collapse", js)
+        self.assertNotIn("#mcoll", css)
 
 
 class RevealRouting(unittest.TestCase):
