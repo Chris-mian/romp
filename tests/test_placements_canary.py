@@ -79,14 +79,15 @@ RECORDS = [
     aline(T0 + 4020, "Resuming after compaction.", "a5", "cb1"),
 ]
 
-# The pinned derivation, recorded under PLACEMENTS_V = 4 (2026-07-13; ids unchanged from the v3 pin —
-# the compact-turn split shifts ids only in transcripts WITH compactions, which this fixture now has).
+# The pinned derivation, recorded under PLACEMENTS_V = 6 (2026-07-22; the LAST id — a text-less segment
+# — moved off the shared sha1('') hash da39a3ee onto its anchor atom's uuid, so text-less seams no longer
+# alias each other; the four text-bearing ids above are unchanged, they still key on content).
 EXPECTED_SEG_IDS = [
     SID + ":1780000000:ca8d36fd",
     SID + ":1780000120:f03c5f4f",
     SID + ":1780000240:686c9d66",
     SID + ":1780000330:f3320ed1",
-    SID + ":1780004000:da39a3ee",
+    SID + ":1780004000:d780b71b",
 ]
 
 
@@ -108,9 +109,9 @@ class PlacementIdentityCanary(unittest.TestCase):
     def test_placements_v_is_current(self):
         # The pins above were recorded under this version; a bump without re-pinning (or re-pinning
         # without a bump) should both fail loudly.
-        # v5 (2026-07-20, the bare slash-invocation twin skip) changed the atom SET, not the id
-        # derivation — the pinned ids above still hold and were re-verified under v5.
-        self.assertEqual(jd.PLACEMENTS_V, 5, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=5 — "
+        # v6 (2026-07-22, the uuid-anchored text-less seg id) shifted the LAST pinned id off da39a3ee;
+        # text-bearing ids are unchanged. Pins and version re-recorded together.
+        self.assertEqual(jd.PLACEMENTS_V, 6, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=6 — "
                          "re-pin the ids and this version together, in the same commit")
 
 

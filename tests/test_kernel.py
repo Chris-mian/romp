@@ -1528,33 +1528,39 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(km._live_replanned({"seg1#live": None}, "seg1"))
         self.assertFalse(km._live_replanned({"seg1#p": "s:g1"}, "seg1"))
 
-    def test_empty_seam_placement_does_not_alias_a_distant_seam(self):
-        # A text-LESS settle-seam hashes to sha1('') (da39a3ee), so EVERY empty seam in a session shares ONE
-        # _seg_key. Without the t-guard a FRESH working seam inherited an OLD empty seam's placement → the feed
-        # thought it "already placed" and suppressed the "a working session always shows a card" placeholder,
-        # leaving a working session with a blank Working column (the user 2026-07-22, two live sessions).
-        self.assertTrue(km._seg_is_empty("u:2000000000:da39a3ee"), "sha1('') hash → a text-less seam")
-        self.assertTrue(km._seg_is_empty("u:2000000000:da39a3ee#p"), "…rides the #p/#d/#live suffix too")
-        self.assertFalse(km._seg_is_empty("u:2000000000:abc12345"), "a real content hash is text-bearing")
+    def test_text_less_seams_get_distinct_stable_ids_not_one_shared_hash(self):
+        # A settle-seam tail has no trigger text, so _segment_id can't hash content. It USED to hash sha1('')
+        # — the SAME for every text-less seam — so under the timestamp-invariant _seg_key every empty seam in a
+        # session collapsed to ONE key, and a fresh working seam inherited a long-done seam's placement (the
+        # feed read it "already placed" and blanked the Working column, the user 2026-07-22). _segment_id now
+        # keys a text-less segment on its ANCHOR ATOM's uuid: unique per seam, stable across parses, no window.
+        import hashlib
         u = "11111111-2222-3333-4444-555555555555"
-        fresh = u + ":2000000000:da39a3ee"             # the in-flight seam (recent t)
-        distant = u + ":1000000000:da39a3ee"           # a long-done seam, same empty hash, ~11.5 days earlier
-        near = u + ":1999999950:da39a3ee"              # the SAME seam re-parsed, t drifted 50s (< _SEG_DRIFT_S)
-        nodes = {u + ":g13": {"id": u + ":g13", "parentId": None, "cleared": False}}
-        aliased = {distant + "#p": u + ":g13", distant: None}   # the gone-target + None-ruling rows the fresh seam matched
-        self.assertFalse(km._seg_placed(aliased, fresh),
-                         "a fresh empty seam is NOT 'placed' by a distant empty-seam alias (the bug)")
-        self.assertFalse(km._live_replanned({distant + "#live": None}, fresh), "…nor 're-planned' by one")
-        self.assertFalse(km._live_cleared_under(aliased, nodes, fresh),
-                         "…no near placement → the main gate surfaces it, not the clear-mid-work resurrect")
-        # the drift the invariant EXISTS for still resolves — the same seam re-parsed a few seconds off matches
-        self.assertTrue(km._seg_placed({near + "#p": u + ":g13"}, fresh),
-                        "a placement within drift IS this seam — timestamp-invariance kept for real drift")
-        self.assertTrue(km._seg_placed({fresh + "#p": u + ":g13"}, fresh), "an exact-id placement matches")
-        # a TEXT-BEARING segment is untouched: it keeps FULL timestamp-invariance across ANY drift (the
-        # 2026-07-01 phantom-'Analyzing' fix — a real prompt whose t drifted must still read as placed).
-        self.assertTrue(km._seg_placed({u + ":1000000000:abc12345#p": u + ":g13"}, u + ":2000000000:abc12345"),
-                        "a real-content seg matches across drift regardless of t")
+        def seam_atom(uuid):   # a text-LESS (tool-only) opener atom
+            return {"uuid": uuid, "type": "assistant", "session_id": u,
+                    "message": {"role": "assistant",
+                                "content": [{"type": "tool_use", "id": "t_" + uuid, "name": "Bash", "input": {}}]}}
+        a1, a2 = seam_atom("aaaa1111"), seam_atom("bbbb2222")
+        id1 = em._segment_id(u, 1000000000, [a1], None)
+        id2 = em._segment_id(u, 2000000000, [a2], None)
+        self.assertTrue(id1.endswith(hashlib.sha1(b"aaaa1111").hexdigest()[:8]),
+                        "a text-less seam is keyed by its anchor atom's uuid, not sha1('')")
+        self.assertNotIn("da39a3ee", id1, "…so the shared empty-text hash never appears")
+        self.assertNotEqual(km._seg_key(id1), km._seg_key(id2), "two distinct seams get DISTINCT keys")
+        # STABLE across t-drift: same anchor atom, different seg_t → SAME key (the hash rides the uuid, not t)
+        self.assertEqual(km._seg_key(id1), km._seg_key(em._segment_id(u, 1000000050, [a1], None)),
+                         "the same seam re-parsed at a drifted t keeps its key")
+        # TEXT-BEARING is unchanged — content hash, drift-invariant across the SDK echo (same text, diff uuid)
+        def text_atom(uuid, txt):
+            return {"uuid": uuid, "type": "user", "session_id": u,
+                    "message": {"role": "user", "content": [{"type": "text", "text": txt}]}}
+        tb1 = em._segment_id(u, 1000000000, [text_atom("cccc", "run the tests")], "cccc")
+        tb2 = em._segment_id(u, 2000000000, [text_atom("dddd", "run the tests")], "dddd")
+        self.assertEqual(km._seg_key(tb1), km._seg_key(tb2),
+                         "a text-bearing seg keys on CONTENT, so its echo and real atom still match")
+        # and the placement lookup no longer aliases — no window needed, distinct keys never collide
+        self.assertTrue(km._seg_placed({id1 + "#p": u + ":g1"}, id1), "a seam matches its OWN placement")
+        self.assertFalse(km._seg_placed({id1 + "#p": u + ":g1"}, id2), "…but NOT a distinct seam's (no alias)")
 
     def test_feed_api_error_floor_yields_to_awaiting_background_agents(self):
         # the user 2026-07-05 (the jld_audit inconsistency): the main thread hit content-filter API errors
@@ -1760,16 +1766,17 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse([a for a in km.build_feed(NOW)["asks"] if a.get("provisional")],
                          "a placed tail drops the placeholder")
 
-    def test_working_seam_surfaces_despite_a_distant_empty_seam_alias(self):
-        # THE repro (the user 2026-07-22): a session working PAST a completed goal (an
-        # empty settle-seam) showed a BLANK Working column. Every text-less seam shares the sha1('') hash, so
-        # the fresh tail's _seg_placed matched a LONG-DONE seam's placement (a gone card + a None ruling) and
-        # the placeholder was suppressed. The t-guard drops the distant alias, so the placeholder surfaces.
+    def test_a_legacy_empty_hash_placement_does_not_suppress_a_fresh_seam(self):
+        # TRANSITION guard for the uuid-anchored seam identity (the user 2026-07-22): stores written before the
+        # change carry seam placements keyed by the shared sha1('') hash (da39a3ee). A fresh seam now keys on
+        # its atom uuid, so it CANNOT collide with a legacy empty-hash placement — a session working past a
+        # completed goal surfaces its placeholder instead of reading a stale da39a3ee row as "already placed"
+        # (the blank-board bug). PLACEMENTS_V's seal handles the flip; this pins that the keys simply don't alias.
         recs = [uline(T0, "fix A, B and C", "u1", ps="typed"),
                 aline(T0 + 20, "Working through the three items.", "a1", "u1", tools=("Edit",), stop="tool_use"),
                 trline(T0 + 25, "tu_a1_0", "r1", "a1", content="edited"),
                 aline(T0 + 40, "All three merged and pushed.", "a2", "r1", stop="tool_use"),
-                aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]   # the empty seam tail (turn OPEN)
+                aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]   # the seam tail (turn OPEN)
         self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         self._warm_tpath()
         seg_id = em.segments(km._parse(str(self.tpath), SID, NOW)["turns"][0])[0]["id"]
@@ -1781,17 +1788,16 @@ class ViewBuilder(unittest.TestCase):
                  "placements": {seg_id: g1}, "status": {g1: "completed"},
                  "seams": [{"t": T0 + 100, "top": g1, "text": "fix A, B and C",
                             "segs": [jd._seg_key(seg_id)]}]}
-        # the fresh seam tail's key — the DISTANT aliases below must share it (same empty hash) to reproduce
         tail = jd.apply_seams([em.segments(km._parse(str(self.tpath), SID, NOW)["turns"][0])[0]], store)[1]
-        self.assertTrue(km._seg_is_empty(tail["id"]),
-                        "the text-less seam tail carries the sha1('') hash — the collision premise")
-        old = SID + ":1000000000:" + tail["id"].split(":")[-1]     # a long-done empty seam, ~11.5 days earlier
-        store["placements"].update({old + "#p": SID + ":gGONE", old: None})   # a gone target + a None ruling (the distant aliases)
+        self.assertNotIn("da39a3ee", tail["id"], "the seam tail is uuid-anchored now, not sha1('')")
+        # a LEGACY empty-hash placement (pre-change) for some long-done seam — a gone target + a None ruling
+        legacy = SID + ":1000000000:da39a3ee"
+        store["placements"].update({legacy + "#p": SID + ":gGONE", legacy: None})
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         self._working_tmux()
         prov = [a for a in km.build_feed(NOW)["asks"] if a.get("provisional")]
         self.assertEqual(len(prov), 1,
-                         "the working seam surfaces its placeholder — the distant empty-seam alias no longer suppresses it")
+                         "the fresh uuid-keyed seam surfaces its placeholder — a legacy da39a3ee placement can't alias it")
         self.assertEqual(prov[0]["column"], "working")
         self.assertTrue(any(a["itemId"] == g1 and a["column"] == "completed" for a in km.build_feed(NOW)["asks"]),
                         "the completed card stays completed alongside it")

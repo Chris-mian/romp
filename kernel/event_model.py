@@ -861,15 +861,32 @@ def _is_segment_input(atom):
 def _segment_id(rompuuid, seg_t, atoms, trigger_uuid):
     """`${rompUuid}:${seg.t}:${hash}` — parallel to the turn id; the summarizer layer's
     dedup key for a segment. Hash of the trigger atom's text (or the first atom's text
-    for a triggerless/autonomous segment)."""
+    for a triggerless/autonomous segment).
+
+    A TEXT-LESS segment (a settle-seam tail, a tool-only continuation) has no content to hash —
+    sha1("") is the SAME for every one, so a content key would alias them ALL under the
+    timestamp-invariant _seg_key: a fresh working seam inherited a long-done seam's placement, and a
+    session working past a completed goal showed a blank board (the user 2026-07-22). Its identity is
+    instead its ANCHOR ATOM's uuid — unique per atom, present in the transcript, and STABLE across the
+    judge parse (which carries the states/idle overlay) and the kernel render parse (which omits it),
+    since the anchor is the segment's opener, a real atom the overlay never displaces (verified).
+    Text-BEARING segments keep the content hash: it is drift-invariant across the SDK optimistic echo
+    (send time) and the real transcript atom (process time), which share text but NOT uuid — so an
+    atom-uuid key there would MISS its own echo. Hash the content, or — only when there is none — the
+    anchor atom's identity."""
     text = ""
+    anchor = None
     if trigger_uuid:
         a = next((x for x in atoms if x.get("uuid") == trigger_uuid), None)
         if a:
             text = _text_of(_content(a.get("message")))
+            anchor = a
     if not text and atoms:
+        anchor = anchor or atoms[0]
         text = _text_of(_content(atoms[0].get("message")))
-    h = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:8]
+    basis = text or (anchor or {}).get("uuid") \
+        or next((a.get("uuid") for a in atoms if a.get("uuid")), "")   # first uuid-bearing atom if the anchor has none
+    h = hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:8]
     return "%s:%d:%s" % (rompuuid, seg_t, h)
 
 

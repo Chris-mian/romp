@@ -9596,59 +9596,6 @@ def _seg_key(seg_id):
     return jd._seg_key(seg_id)
 
 
-# A TEXT-LESS segment (a settle-seam tail: no prompt, no trigger text) hashes to sha1("")[:8] — so EVERY
-# empty seam in a session shares one content hash, and the timestamp-invariant _seg_key collapses them all to
-# ONE key. The fuzzy _seg_key match then aliases a FRESH in-flight seam to an UNRELATED old seam's placement:
-# a working session past a completed goal showed a BLANK board because its seam looked "already placed" (the
-# provisional placeholder bowed out) though the placement it matched was a long-done seam's (the user
-# 2026-07-22, two live sessions each working past a completed goal). For an empty seam the content hash identifies nothing, so a
-# bare key match is a FALSE alias; require the recorded t within drift — the same nearest-t disambiguation
-# _seg_work_caption already uses (real drift runs seconds; distinct seams sit minutes/days apart). A
-# text-BEARING segment is unaffected: its hash is a real identity, so it keeps the full timestamp-invariance
-# these lookups were built for (the 2026-07-01 phantom-'Analyzing' fix).
-_EMPTY_SEG_HASH = "da39a3ee"                             # sha1(b"")[:8] — the text-less-segment content hash
-_SEG_DRIFT_S = 90                                        # a seg id's t drifts sub-minute across parses; beyond this it's a DIFFERENT seam
-
-
-def _seg_t(seg_id):
-    """The volatile middle `t` of a `uuid:t:hash[#suffix]` seg id, as an int — None for a non-conforming id."""
-    parts = (seg_id or "").split(":")
-    if len(parts) < 3:
-        return None
-    try:
-        return int(parts[-2])
-    except ValueError:
-        return None
-
-
-def _seg_is_empty(seg_id):
-    """Is this a TEXT-LESS segment — content hash sha1('') (_EMPTY_SEG_HASH)? Rides any #p/#d/#live suffix.
-    Empty seams all share this hash, so lookups must disambiguate them by t, not by the (aliased) _seg_key."""
-    parts = (seg_id or "").split(":")
-    return bool(parts) and parts[-1].split("#")[0] == _EMPTY_SEG_HASH
-
-
-def _placement_hits(placements, seg_id, suffixes):
-    """The placement KEYS matching `seg_id` (over the given #suffix variants) under the timestamp-invariant
-    _seg_key — WITH the empty-seam guard: a text-less seam matches a stored key only when their t's are within
-    _SEG_DRIFT_S, so a fresh seam never inherits a distant seam's placement. A text-bearing seg matches on the
-    key alone (its hash is identity; t is the drift the invariant absorbs). The three provisional-card
-    placement lookups (_seg_placed / _live_replanned / _live_cleared_under) all resolve through this."""
-    want = {_seg_key(seg_id + sfx) for sfx in suffixes}
-    empty = _seg_is_empty(seg_id)
-    tq = _seg_t(seg_id) if empty else None
-    hits = []
-    for k in placements:
-        if _seg_key(k) not in want:
-            continue
-        if empty and tq is not None:
-            tk = _seg_t(k)
-            if tk is not None and abs(tq - tk) > _SEG_DRIFT_S:
-                continue                               # a DIFFERENT empty seam sharing the aliased hash — not this one
-        hits.append(k)
-    return hits
-
-
 def _seg_placed(placements, seg_id):
     """Is this LIVE-parse segment already placed by the planner (any phase: bare work key, '#p' prompt-run,
     '#d' delegation, '#live' clear-mid-work re-plan)? Timestamp-INVARIANT, like every other kernel read of a judge-written seg key: the
@@ -9657,12 +9604,15 @@ def _seg_placed(placements, seg_id):
     queued message drifts by however long it waited). A raw `in placements` then misses forever, so the
     provisional placeholder never dropped: an idle session kept a phantom dotted "working" card for hours
     (the user 2026-07-01, session at rest since 17:34 still 'Analyzing' at 20:35). A RETIRED placement
-    (value None) still counts as placed — the planner ruled; nothing is pending. A TEXT-LESS seam matches
-    only a placement near its own t (see _placement_hits) — never a distant empty-seam alias."""
+    (value None) still counts as placed — the planner ruled; nothing is pending. Every segment (text-less
+    seams included) now carries a UNIQUE _seg_key — a text-less seam is keyed by its anchor atom's uuid, not
+    the shared sha1('') (em._segment_id, the user 2026-07-22) — so the fuzzy match aliases nothing and needs
+    no t-window."""
     if (seg_id in placements or (seg_id + "#p") in placements or (seg_id + "#d") in placements
             or (seg_id + "#live") in placements):
         return True                                    # exact hit — the common, no-drift case
-    return bool(_placement_hits(placements, seg_id, ("", "#p", "#d", "#live")))
+    want = {_seg_key(seg_id), _seg_key(seg_id + "#p"), _seg_key(seg_id + "#d"), _seg_key(seg_id + "#live")}
+    return any(_seg_key(k) in want for k in placements)
 
 
 def _card_gone(nodes, nid):
@@ -9687,7 +9637,8 @@ def _live_replanned(placements, seg_id):
     placeholder must not resurrect either (a phantom 'Analyzing' nothing will ever replace)."""
     if (seg_id + "#live") in placements:
         return True
-    return bool(_placement_hits(placements, seg_id, ("#live",)))
+    want = _seg_key(seg_id + "#live")
+    return any(_seg_key(k) == want for k in placements)
 
 
 def _live_cleared_under(placements, nodes, seg_id):
@@ -9700,7 +9651,8 @@ def _live_cleared_under(placements, nodes, seg_id):
     recorded #live key (a second clear of the same in-flight work is final, not another placeholder)."""
     if _live_replanned(placements, seg_id):
         return False
-    vals = [placements[k] for k in _placement_hits(placements, seg_id, ("", "#p", "#d"))]
+    fam = {_seg_key(seg_id), _seg_key(seg_id + "#p"), _seg_key(seg_id + "#d")}
+    vals = [v for k, v in placements.items() if _seg_key(k) in fam]
     if not vals or any(v is None for v in vals):
         return False                                   # unplaced (normal gates apply) / a standing ruling
     return all(isinstance(v, str) and _card_gone(nodes, v) for v in vals)
@@ -9725,10 +9677,11 @@ def _seg_work_caption(caps, seg_id):
     the kernel's render parse omits states, so its id carries the transcript atom's process time —
     the exact lookup missed and every drifted work-bar hover fell back to 'request: <prompt>' (the
     user 2026-07-21 via romp_docs). Exact hit first; on miss, resolve through _seg_key among
-    grain-'segment' rows only (turn rows and every seam tail share the empty-text hash). Seam tails
-    also share one invariant key with EACH OTHER, so the fuzzy hit takes the row whose stored t is
-    nearest this parse's seg t — drift runs seconds, distinct segments sit minutes apart. '' when
-    absent."""
+    grain-'segment' rows only (turn rows carry a different key). Text-less seams now carry a UNIQUE
+    _seg_key (em._segment_id anchors them on their atom uuid, the user 2026-07-22), so they no longer
+    collide with each other; the nearest-t pick remains only to absorb a drifted t and to disambiguate
+    the rare TWO segments that share real trigger text (e.g. two 'continue's) — drift runs seconds,
+    distinct segments sit minutes apart. '' when absent."""
     hit = caps.get(seg_id)
     if hit is not None:
         return hit.get("caption", "")

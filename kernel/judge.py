@@ -128,7 +128,7 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          model actually wrote. Closer / grouper / consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 5                         # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 6                         # placements-identity schema version (plan P2, the user 2026-07-06).
 #                                          v2 (2026-07-09): a 07-07/07-08 change to segment-text derivation
 #                                          stepped the text hash without this bump — dormant segments' old-hash
 #                                          placements stopped matching, and every restart/touch replayed them as
@@ -148,6 +148,12 @@ PLACEMENTS_V = 5                         # placements-identity schema version (p
 #                                          writes a typed command as BOTH a raw-text record and the
 #                                          <command-name> wrapper) — a previously-emitted duplicate human atom
 #                                          drops out, shifting the seg set of transcripts that carry it.
+#                                          v6 (2026-07-22): TEXT-LESS segments (seam tails, tool-only
+#                                          continuations) are now keyed by their anchor atom's uuid instead of
+#                                          sha1('') — every empty seam used to share ONE key, so a fresh working
+#                                          seam inherited a long-done seam's placement and blanked the Working
+#                                          column (em._segment_id fix). Text-less seg ids shift; text-bearing
+#                                          are unchanged. The seal retires the old da39a3ee-keyed placements.
 #                                          THE DEPLOY RULE: any change to seg-id DERIVATION (the t component or
 #                                          the text hash — em.segments, _seg_key, _unit_key) OR to WHICH ATOMS
 #                                          PARSE OUT of existing transcripts (em.FileAdapter emission) MUST bump
