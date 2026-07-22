@@ -3573,7 +3573,7 @@ class JudgeSystemPrompt(unittest.TestCase):
 
 class JudgeClaudeBin(unittest.TestCase):
     """Judges exec the RESOLVED claude binary, never bare `claude` off PATH: a kernel started over
-    non-login ssh (a federated host — jetty 2026-07-03) has no ~/.local/bin on PATH, so every judge
+    non-login ssh (a federated host — TESTHOST 2026-07-03) has no ~/.local/bin on PATH, so every judge
     call exec-failed silently (goals minted only via the no-LLM fallbacks, the closer never completed
     a card, judge-usage stayed empty) while SDK sessions — which resolve the binary — kept working."""
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tunnel status tells the end-to-end truth (the user 2026-07-10): the old check was the LOCAL -L
 listener accepting — which ssh always does, even when the far side resets every connection — so a
-remote host with no kernel running read 'up' (jetty), every action routed to it silently vanished,
+remote host with no kernel running read 'up' (TESTHOST), every action routed to it silently vanished,
 and the /sessions + /version polls failing left no mark. _tunnel_status derives from the poll that
 actually crossed the tunnel; an alive tunnel with nobody answering is 'no-kernel', surfaced in the
 popover with the next step. The /send remote forward reports a dead far kernel instead of ok:true.

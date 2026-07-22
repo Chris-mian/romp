@@ -245,10 +245,53 @@ tailscale serve reset         # back to local-only
 With Tailscale on the phone, the full dashboard is in your pocket: check the
 feed, answer a blocked card, start a session. On the phone's **first** open,
 append the access token — `https://<machine>.<tailnet>.ts.net/?token=<token>`,
-with the token from `romp --url` (or paste it into the page a bare open
+with the token from `romp launch` (or paste it into the page a bare open
 serves); a year-long cookie remembers the phone after that. Only devices
 signed into your tailnet can connect (WireGuard device identity plus TLS);
 nothing is opened to your LAN or the internet, and the proxy persists across
 restarts of both Tailscale and the kernel. Still don't use `tailscale funnel`
 (the public-internet variant): the token would then be the only thing between
 the internet and your agents, with no device identity in front of it.
+
+### Security
+
+Romp drives agents that run tools and shell commands as you, so reaching its
+API is equivalent to running code as you. Everything below follows from that.
+
+**One token, required on every request.** The kernel and the postal bus both
+demand a token on every request — *including from `127.0.0.1`*. Loopback is not
+a security boundary: on a multi-user machine every local account can reach your
+ports, so without this any other user could inject prompts into your live
+sessions. The token is 144-bit random and lives at
+`~/.local/state/romp/serve-token` with mode `0600` — **file permissions are the
+actual gate**. Local tools (the CLI, hooks, the bus, the editor extension) read
+that file and send it automatically; you never type it. Only liveness probes
+(`/healthz`, `/version`, `/busy`, and the bus's `/ping`) are exempt.
+
+**Getting in.** Run `romp launch`: it prints the tokened link *and* opens your
+browser. The first visit exchanges the token for a year-long `HttpOnly` cookie,
+so afterwards plain `http://127.0.0.1:7433/` just works. Opening that bare URL
+without a cookie shows a paste-the-token page rather than a dead error.
+
+**Remote machines.** Every machine mints its **own** token. When you attach a
+host, your machine reads that host's token over ssh and stores it locally (in
+`~/.local/state/romp/remotes.json`, also `0600` — it is a credential store).
+Dashboard traffic to a remote never crosses the network in the open: it rides
+the ssh tunnel, which supplies encryption and machine identity, while the token
+authorizes at the far end. Check-in reverses the direction — credentials always
+flow *outward* from the machine that initiates, so a hub never holds a way in.
+
+**Federated messages are gated by trust.** A message that reaches an agent's
+context can steer it, so each attached host carries a trust level — `trusted`,
+`directed` (the default), or `isolated`. A `directed` host's mail is held for
+your approval instead of being delivered; see [Trust levels](#trust-levels-hold-untrusted-mail-for-approval).
+
+**What this does not protect against.** Root on a machine can read any file
+(including the token) and inspect any process — no userspace design changes
+that, so don't keep long-lived credentials on a box whose root you don't trust.
+Likewise, anything already running as *you* can read the token: same-machine
+sessions are separated by policy, not by this boundary. The enforceable lines
+are per-user (the token file) and per-machine (the trust level).
+
+Full details, including how to report a vulnerability, are in
+[SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md).

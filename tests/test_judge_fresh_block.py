@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A FRESH block must survive subtree-completion (the user 2026-07-15, the g78 jetty card and the
+"""A FRESH block must survive subtree-completion (the user 2026-07-15, the g78 TESTHOST card and the
 g86 diagnosis card). The closer's one reply often pairs "block the TOP on the user's answer" with
 "done its record subs" (born-done records like "Diagnosed …"), all anchored to the same turn. The
 bottom-up all-children-complete path then made the card read complete, and two layers erased the
@@ -44,7 +44,7 @@ def _ask_card(s, block_ev=T1, done_ev=T1):
     """The g78/g86 shape: a top the closer BLOCKED on the user, whose only child is a record sub
     the same reply closed as done."""
     s["nodes"] = {n["id"]: n for n in [
-        _node("g1", "Resolve the jetty push refusal",
+        _node("g1", "Resolve the TESTHOST push refusal",
               log=[_row("block", block_ev, why="say whether to also update the fallback")]),
         _node("g2", "Diagnosed stale leftovers as the cause", parent="g1",
               log=[_row("done", done_ev, why="cause identified and explained")]),

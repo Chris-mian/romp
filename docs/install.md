@@ -38,11 +38,22 @@ running from login on.
 ## First run
 
 The installer starts Romp and keeps it running, so the dashboard is already
-live. Run `romp --url` and open the printed link in any browser — it carries
-the one-time access token (every request is token-gated, even on loopback);
-after that first open a cookie remembers you and plain
-**http://127.0.0.1:7433/** works. Type a name into the picker and start a
-session. (A bare open without the token shows a page to paste it instead.)
+live. Run:
+
+```bash
+romp launch
+```
+
+It opens the dashboard in your browser and prints the link as well. The link
+carries a one-time access token (every request is token-gated, even on
+loopback); after that first open a cookie remembers you and plain
+`http://127.0.0.1:7433/` works on its own. Type a name into the picker and
+start a session. (Opening `http://127.0.0.1:7433/` before that shows a page to
+paste the token into, rather than an error.)
+
+On a remote or headless box `romp launch` won't try to open a browser — it
+prints the link plus the two ways to reach it from your laptop (attach the host
+from your dashboard, or forward the port over ssh).
 
 <video src="../assets/guide/first-session.mp4" autoplay loop muted playsinline width="100%"></video>
 

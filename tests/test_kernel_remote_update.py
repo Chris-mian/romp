@@ -53,7 +53,7 @@ class VersionDrift(unittest.TestCase):
         self.assertFalse(km._remote_out_of_date({"kernel_sha": ""}), "blank remote sha → not flagged")
 
     def test_remote_public_exposes_version_fields(self):
-        pub = km._remote_public({"host": "jetty", "kernel_port": 7433, "local_port": 8801, "token": "t",
+        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801, "token": "t",
                                  "status": "up", "sids": [], "kernel_sha": "def5678"})
         self.assertEqual(pub["kernelSha"], "def5678")
         self.assertEqual(pub["localSha"], "abc1234", "localSha is the live HEAD short (what a push would send)")
@@ -101,18 +101,18 @@ class UpdateRemote(unittest.TestCase):
 
     def test_a_clean_ancestor_remote_is_pushed_reset_and_restarted(self):
         calls = self._wire(apply_out="SYNCED:abcdef0")
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertTrue(ok)
         self.assertIn("synced to abcdef0", detail)
         # it force-pushed local HEAD to a scratch ref at host:remote-dir
         push = next(a for a in calls if a[0] == "git" and "push" in a)
         self.assertIn("--force", push)
-        self.assertIn("jetty:/home/u/romp", push)
+        self.assertIn("TESTHOST:/home/u/romp", push)
         self.assertTrue(any(str(x).startswith("HEAD:refs/heads/") for x in push), "pushes HEAD to a scratch ref")
 
     def test_already_up_to_date_short_circuits(self):
         self._wire(rhead=self.LFULL)          # remote already at local HEAD
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertTrue(ok)
         self.assertIn("already up to date", detail)
 
@@ -120,7 +120,7 @@ class UpdateRemote(unittest.TestCase):
         # "just take what is committed on local" (the user 2026-07-04): a dirty working tree is NOT a blocker —
         # _update_remote pushes the committed HEAD and never asks you to commit first.
         self._wire(apply_out="SYNCED:abcdef0")
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertTrue(ok)
         self.assertNotIn("commit", detail.lower())
 
@@ -131,31 +131,31 @@ class UpdateRemote(unittest.TestCase):
             return _R()
         km.subprocess.run = fake
         km._HEAD_CACHE.update(ts=0.0, full=None, short=None)
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertFalse(ok)
         self.assertIn("git checkout", detail)
 
     def test_refuses_a_dirty_remote_without_clobbering(self):
         self._wire(dirty="M")
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertFalse(ok)
         self.assertIn("uncommitted changes", detail)
 
     def test_refuses_a_diverged_remote(self):
         self._wire(apply_out="DIVERGED")
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertFalse(ok)
         self.assertIn("diverged", detail)
 
     def test_no_romp_clone_fails_loudly(self):
         self._wire(disc_out="NOROMP")
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertFalse(ok)
         self.assertIn("not installed", detail)
 
     def test_a_failed_push_surfaces_the_git_error(self):
         self._wire(push_rc=1, push_err="Permission denied (publickey)")
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertFalse(ok)
         self.assertIn("git push", detail)
         self.assertIn("Permission denied", detail)
@@ -163,7 +163,7 @@ class UpdateRemote(unittest.TestCase):
     def test_no_github_origin_in_the_remote_commands(self):
         # peer-to-peer: NOTHING should pull from origin / touch GitHub
         calls = self._wire()
-        km._update_remote("jetty")
+        km._update_remote("TESTHOST")
         for a in calls:
             cmd = a[-1] if isinstance(a[-1], str) else ""
             self.assertNotIn("git pull", cmd, "no pull-from-origin anywhere")
@@ -174,9 +174,9 @@ class UpdateRemote(unittest.TestCase):
         # orphan) — kill the kernel, `romp-manager ensure` (respawns via a live manager, or STARTS one that spawns
         # a supervised kernel — upgrading an attach-bootstrapped bare host), then port-poll; bare romp-serve is a
         # LAST-RESORT fallback only when the port never returns. It must NOT rely on `romp --refresh` (the stuck bug).
-        km._remotes = {"jetty": {"host": "jetty", "kernel_port": 7433}}
+        km._remotes = {"TESTHOST": {"host": "TESTHOST", "kernel_port": 7433}}
         calls = self._wire()
-        km._update_remote("jetty")
+        km._update_remote("TESTHOST")
         apply = next(a[-1] for a in calls if isinstance(a[-1], str) and "merge-base" in a[-1])
         self.assertIn("pkill -f", apply, "kills the running kernel")
         self.assertIn('"$R/bin/romp-manager" ensure', apply, "prefers the manager (ensure = idempotent supervised start)")
@@ -185,14 +185,14 @@ class UpdateRemote(unittest.TestCase):
         self.assertNotIn("--refresh", apply, "does NOT rely on `romp --refresh` (needs a manager) — the stuck bug")
 
     def test_apply_is_detached_from_the_ssh_session(self):
-        # the user 2026-07-11 (jetty): the apply kills the running kernel before booting its
+        # the user 2026-07-11 (TESTHOST): the apply kills the running kernel before booting its
         # replacement, so an ssh drop between the two halves left the host kernel-LESS — and every
         # banner Retry re-killed whatever a previous attempt had booted. The apply now runs in its
         # own session (setsid, plain-bash fallback where setsid is missing), so once started the
         # kill+boot pair always completes on the remote even if the connection dies.
-        km._remotes = {"jetty": {"host": "jetty", "kernel_port": 7433}}
+        km._remotes = {"TESTHOST": {"host": "TESTHOST", "kernel_port": 7433}}
         calls = self._wire()
-        km._update_remote("jetty")
+        km._update_remote("TESTHOST")
         wrapper = next(a[-1] for a in calls if isinstance(a[-1], str) and "merge-base" in a[-1])
         self.assertTrue(wrapper.startswith("APPLY="), "the apply script rides a variable, quoted once")
         self.assertIn('exec setsid bash -c "$APPLY"', wrapper)
@@ -211,7 +211,7 @@ class UpdateRemote(unittest.TestCase):
                 return _R(out="DIR:/home/u/romp\nHEAD:%s\nDIRTY:" % self.RHEAD)
             raise km.subprocess.TimeoutExpired(argv, 60)
         km.subprocess.run = fake
-        ok, detail = km._update_remote("jetty")
+        ok, detail = km._update_remote("TESTHOST")
         self.assertFalse(ok)
         self.assertIn("keeps", detail)
         self.assertIn("running", detail)
@@ -285,14 +285,14 @@ class RompUpdateCLI(unittest.TestCase):
         self.assertEqual(ru.main([]), 2)
 
     def test_named_host_updates_that_remote(self):
-        self.assertEqual(ru.main(["jetty"]), 0)
-        self.assertEqual(self.posted, [("/tunnels/update", {"host": "jetty"})])
+        self.assertEqual(ru.main(["TESTHOST"]), 0)
+        self.assertEqual(self.posted, [("/tunnels/update", {"host": "TESTHOST"})])
 
     def test_no_arg_updates_only_out_of_date_remotes(self):
-        ru._get = lambda u, path: {"tunnels": [{"host": "jetty", "outOfDate": True},
+        ru._get = lambda u, path: {"tunnels": [{"host": "TESTHOST", "outOfDate": True},
                                                {"host": "gpu1", "outOfDate": False}]}
         self.assertEqual(ru.main([]), 0)
-        self.assertEqual(self.posted, [("/tunnels/update", {"host": "jetty"})], "only the stale remote is updated")
+        self.assertEqual(self.posted, [("/tunnels/update", {"host": "TESTHOST"})], "only the stale remote is updated")
 
     def test_no_arg_all_current_updates_nothing(self):
         ru._get = lambda u, path: {"tunnels": [{"host": "gpu1", "outOfDate": False}]}
@@ -301,7 +301,7 @@ class RompUpdateCLI(unittest.TestCase):
 
     def test_a_failed_update_returns_nonzero(self):
         ru._post = lambda u, path, body: {"ok": False, "detail": "git pull failed"}
-        self.assertEqual(ru.main(["jetty"]), 1)
+        self.assertEqual(ru.main(["TESTHOST"]), 1)
 
 
 def inspect_src():

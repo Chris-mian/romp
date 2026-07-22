@@ -97,10 +97,10 @@ class CancelCreateTest(unittest.TestCase):
 
     def test_remote_cue_is_not_reaped_locally(self):
         self._live = {SID: {}}
-        self._cancel("jetty:" + NAME)                          # host-prefixed cue
+        self._cancel("TESTHOST:" + NAME)                          # host-prefixed cue
         self.assertEqual(self.be.killed, [], "a remote spawn is not torn down by the local kernel")
         self.assertNotIn(NAME, km._cancel_pending)
-        self.assertNotIn("jetty:" + NAME, km._cancel_pending)
+        self.assertNotIn("TESTHOST:" + NAME, km._cancel_pending)
 
     # ── the history guard (the user 2026-07-16) ──
 

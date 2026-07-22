@@ -71,7 +71,7 @@ class PushThroughKernel(unittest.TestCase):
         pm.local_agents = lambda: [{"id": "local-1", "name": "mysess"}]
         try:
             pm.HEARTBEATS.clear()
-            pm._record_heartbeat("11111111-2222-3333-4444-555555555555", "jettytest")   # not local → recorded
+            pm._record_heartbeat("11111111-2222-3333-4444-555555555555", "remotetest")   # not local → recorded
             pm._record_heartbeat("local-1", "mysess")                                    # local → ignored
             self.assertIn("11111111-2222-3333-4444-555555555555", pm.HEARTBEATS)
             self.assertNotIn("local-1", pm.HEARTBEATS)

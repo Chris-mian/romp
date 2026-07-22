@@ -187,7 +187,7 @@ and loop-free:
   already keeps fleet versions in step; the version-drift banner covers the
   gap).
 - Stage 3 adds check-in alongside attach; attach remains for the
-  hub-has-ssh-out topologies (headless boxes like jetty, where the hub holding
+  hub-has-ssh-out topologies (headless boxes, where the hub holding
   ssh to a disposable box is the *right* trust direction).
 - Outbox format is new state under `~/.local/state/romp/postal/`; nothing to
   migrate — the first parked message creates it.

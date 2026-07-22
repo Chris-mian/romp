@@ -5112,7 +5112,7 @@ class ViewBuilder(unittest.TestCase):
 
     def test_createSession_sdk_backend_unavailable_warns_instead_of_tmux_fallback(self):
         """The user asked for an SDK session on a kernel without the SDK venv and got a MYSTERY TMUX session
-        instead (jetty, 2026-07-02) — the handler silently fell through to _spawn_session. Now it warns
+        instead (TESTHOST, 2026-07-02) — the handler silently fell through to _spawn_session. Now it warns
         (naming bin/romp-sdk-setup) and creates nothing."""
         saved_sdk, saved_spawn, saved_tmux = km._sdk, km._spawn_session, km._tmux_sessions
         km._sdk = lambda: None                               # the backend is unavailable (no venv / py<3.10)
@@ -5858,7 +5858,7 @@ class ServeSecurity(unittest.TestCase):
         with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
             body = r.read().decode("utf-8", "replace")
-        self.assertIn("romp --url", body)                  # names the CLI that prints the tokened link
+        self.assertIn("romp launch", body)                 # names the CLI that opens/prints the tokened link
         self.assertNotIn("testtok", body)                  # never echoes the token itself
         self.assertNotIn("src=/chat", body)                # none of the real shell is served
 

@@ -285,10 +285,10 @@ class ReapStrayTunnels(unittest.TestCase):
     def test_kills_only_matching_orphan_tunnels(self):
         BUS = km.BUS_PORT
         fake_ps = "\n".join([
-            "  12345 /usr/bin/ssh -N -T -L 50512:127.0.0.1:7433 -R %d:127.0.0.1:%d jetty" % (BUS, BUS),  # orphan → kill
+            "  12345 /usr/bin/ssh -N -T -L 50512:127.0.0.1:7433 -R %d:127.0.0.1:%d TESTHOST" % (BUS, BUS),  # orphan → kill
             "  22222 ssh -N -T -L 9:127.0.0.1:7433 -R %d:127.0.0.1:%d otherhost" % (BUS, BUS),           # other host → keep
-            "  33333 ssh jetty",                                                                          # user's own ssh → keep
-            "  %d ssh -N -T -L 1:127.0.0.1:7433 -R %d:127.0.0.1:%d jetty" % (os.getpid(), BUS, BUS),      # us → keep
+            "  33333 ssh TESTHOST",                                                                          # user's own ssh → keep
+            "  %d ssh -N -T -L 1:127.0.0.1:7433 -R %d:127.0.0.1:%d TESTHOST" % (os.getpid(), BUS, BUS),      # us → keep
         ])
 
         class _R:
@@ -298,10 +298,10 @@ class ReapStrayTunnels(unittest.TestCase):
         km.subprocess.run = lambda *a, **k: _R()
         km.os.kill = lambda pid, sig: killed.append((pid, sig))
         try:
-            km._reap_stray_tunnels("jetty")
+            km._reap_stray_tunnels("TESTHOST")
         finally:
             km.subprocess.run, km.os.kill = saved_run, saved_kill
-        self.assertEqual(killed, [(12345, 15)], "only the jetty orphan tunnel is SIGTERM'd")
+        self.assertEqual(killed, [(12345, 15)], "only the TESTHOST orphan tunnel is SIGTERM'd")
 
 
 class SshHostSafety(unittest.TestCase):

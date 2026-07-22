@@ -572,6 +572,7 @@ romp — launch & manage persistent Claude Code tmux sessions
 
 Usage:
 EOF
+    _romp_cmd "romp launch"                -            "Open the dashboard in your browser (prints the link too)"
     _romp_cmd "romp"                       -            "Start a session named after the current folder"
     _romp_cmd "romp <name>"                -            "Start a session with the given name"
     _romp_cmd "romp -r"                    -            "Resume a past conversation (full-screen picker, by name)"
@@ -595,7 +596,7 @@ EOF
     _romp_cmd "romp --resume <id>"         -            "Resume a specific conversation by its UUID"
     _romp_cmd "romp --detach"              -            "Create the session without attaching (prints attach cmd)"
     _romp_cmd "romp --mail ..."            romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
-    _romp_cmd "romp --url"                 -            "Print the tokened dashboard URL (first browser open; seeds the cookie)"
+    _romp_cmd "romp --url"                 -            "Print ONLY the tokened dashboard URL (for scripts; humans want \`romp launch\`)"
     _romp_cmd "romp checkin <host>"        -            "Publish this machine to an attached hub (peer-bus check-in; checkout withdraws)"
     exit 0
 fi
@@ -668,14 +669,60 @@ _romp_token() {
     cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token" 2>/dev/null || true
 }
 
-# `romp --url` — print the tokened dashboard URL (the browser entry point: the first open seeds a
-# year-long cookie; after that the bare URL works). The kernel's login page names this command.
+# `romp --url` — print the tokened dashboard URL, nothing else (scripting/piping; `romp launch` is the
+# human entry point). The first open seeds a year-long cookie; after that the bare URL works.
 if [[ "${1:-}" == "--url" ]]; then
     _tok="$(_romp_token)"
     if [[ -z "$_tok" ]]; then
         echo "romp --url: no serve token yet (start romp first — the kernel mints it)" >&2; exit 1
     fi
     echo "http://127.0.0.1:${ROMP_KERNEL_PORT:-7433}/?token=$_tok"
+    exit 0
+fi
+
+# `romp launch` — THE first-run entry point (the user 2026-07-22, who wanted one command instead of
+# copying a token by hand). Jupyter's flow: print the tokened URL, then TRY to open a browser on it.
+# Both, always — the print is the contract (it always works, and you can copy it), the open is the
+# convenience (it may not be possible). On a remote/headless box (ssh, no DISPLAY, no opener) it
+# doesn't pretend: it prints the URL plus the two ways to actually reach it from your laptop.
+if [[ "${1:-}" =~ ^(--)?(launch|open)$ ]]; then
+    _tok="$(_romp_token)"
+    _kport="${ROMP_KERNEL_PORT:-7433}"
+    if [[ -z "$_tok" ]]; then
+        echo "romp launch: no serve token yet — start romp first (\`romp --on\`), then re-run." >&2
+        exit 1
+    fi
+    _url="http://127.0.0.1:$_kport/?token=$_tok"
+    # Is this a machine we could plausibly open a browser on? An ssh session or a Linux box with no
+    # DISPLAY is headless — opening would silently do nothing, so say so instead of faking success.
+    _headless=0
+    if [[ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]]; then _headless=1; fi
+    if [[ "$(uname -s)" != "Darwin" && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then _headless=1; fi
+    echo ""
+    echo "    romp dashboard:"
+    echo ""
+    echo "        $_url"
+    echo ""
+    if [[ "$_headless" == 1 ]]; then
+        echo "    This looks like a remote/headless machine, so no browser was opened."
+        echo "    To reach it from your laptop, either:"
+        echo "      • attach this host from your laptop's dashboard (network button, bottom right), or"
+        echo "      • forward the port:  ssh -N -L $_kport:127.0.0.1:$_kport $(hostname -s 2>/dev/null || echo '<this-host>')"
+        echo "        then open the URL above on your laptop."
+        echo ""
+        exit 0
+    fi
+    # Local machine: try to open it. Never fail the command if the opener is missing — the URL above
+    # is the real deliverable (the user always has a working way in).
+    if command -v open >/dev/null 2>&1; then _opener=(open)
+    elif command -v xdg-open >/dev/null 2>&1; then _opener=(xdg-open)
+    else _opener=(); fi
+    if [[ ${#_opener[@]} -gt 0 ]] && "${_opener[@]}" "$_url" >/dev/null 2>&1; then
+        echo "    (opened in your browser — the link above still works if it didn't)"
+    else
+        echo "    (couldn't open a browser automatically — copy the link above)"
+    fi
+    echo ""
     exit 0
 fi
 

@@ -63,9 +63,9 @@ cd romp
 export PATH="$PATH:$(pwd)/bin"   # add this to your shell rc
 ```
 
-Run `romp --url` and open the printed link in any browser (it carries the
-one-time access token; after that first open, plain `http://127.0.0.1:7433/`
-works — a cookie remembers you). Start a session.
+Run `romp launch`. It opens the dashboard in your browser and prints the link
+too — the link carries a one-time access token, and after that first open plain
+`http://127.0.0.1:7433/` works (a cookie remembers you). Start a session.
 
 ## Docs
 

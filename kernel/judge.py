@@ -308,7 +308,7 @@ def _clean_caption(out):
 def _judge_claude_bin():
     """The claude binary for judge calls: ROMP_CLAUDE_BIN override (the kernel exports its own
     resolution at boot), else PATH, else the standard user install spot. Judges used to exec bare
-    `claude` and inherit PATH luck: a kernel started over NON-LOGIN ssh (a federated host — jetty,
+    `claude` and inherit PATH luck: a kernel started over NON-LOGIN ssh (a federated host,
     2026-07-03) has no ~/.local/bin on PATH, so EVERY judge call exec-failed silently — goals minted
     only via the no-LLM fallbacks, the closer never completed a card, and judge-usage stayed empty —
     while SDK sessions kept working (they resolve the binary: kernel _claude_bin, which this mirrors)."""
@@ -2522,7 +2522,7 @@ def rollup_status(store, session_closed, now=None):
     def _fresh_block(nid):
         # Is this node's landed block the LATEST ruling — at least as new as every piece of completion
         # evidence that would moot it? Two comparisons, with deliberate tie semantics (the user
-        # 2026-07-15, the g78 jetty card + the g86 diagnosis card):
+        # 2026-07-15, the g78 remote-push card + the g86 diagnosis card):
         #   • the SUBTREE's newest done (ties favor the BLOCK): the closer delivers "block the top on
         #     the user + done its record subs" in one reply, all anchored to the same turn — the block
         #     sits on the node itself and is not discharged by the records it arrived with;

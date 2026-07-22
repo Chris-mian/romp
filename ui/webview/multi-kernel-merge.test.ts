@@ -129,15 +129,15 @@ test("mergeHostFeeds: concatenates items/asks/working across hosts (local first)
   const perHost = {
     "": { type: "feed", items: [{ sid: U }], asks: [{ sid: U, itemId: "a" }], working: [U],
           ledgers: [{ sid: U }], now: 1000, dismissedCount: 3, showDismissed: false, canUndoClear: true },
-    jetty: { type: "feed", items: [{ sid: "jetty:" + V }], asks: [{ sid: "jetty:" + V, itemId: "b" }],
-             working: ["jetty:" + V], ledgers: [{ sid: "jetty:" + V }], now: 999, dismissedCount: 7 },
+    TESTHOST: { type: "feed", items: [{ sid: "TESTHOST:" + V }], asks: [{ sid: "TESTHOST:" + V, itemId: "b" }],
+             working: ["TESTHOST:" + V], ledgers: [{ sid: "TESTHOST:" + V }], now: 999, dismissedCount: 7 },
   };
-  const m = mergeHostFeeds(perHost, ["", "jetty"]);
+  const m = mergeHostFeeds(perHost, ["", "TESTHOST"]);
   assert.equal(m.type, "feed");
-  assert.deepEqual(m.items.map((i: any) => i.sid), [U, "jetty:" + V], "items concatenated, local first");
-  assert.deepEqual(m.asks.map((a: any) => a.sid), [U, "jetty:" + V], "asks concatenated");
-  assert.deepEqual(m.working, [U, "jetty:" + V], "working concatenated");
-  assert.deepEqual(m.ledgers.map((l: any) => l.sid), [U, "jetty:" + V], "ledgers (fleet) concatenated");
+  assert.deepEqual(m.items.map((i: any) => i.sid), [U, "TESTHOST:" + V], "items concatenated, local first");
+  assert.deepEqual(m.asks.map((a: any) => a.sid), [U, "TESTHOST:" + V], "asks concatenated");
+  assert.deepEqual(m.working, [U, "TESTHOST:" + V], "working concatenated");
+  assert.deepEqual(m.ledgers.map((l: any) => l.sid), [U, "TESTHOST:" + V], "ledgers (fleet) concatenated");
   // local is authoritative for the dashboard's own chrome (clock, toggles)…
   assert.equal(m.now, 1000);
   assert.equal(m.showDismissed, false);
@@ -149,8 +149,8 @@ test("mergeHostFeeds: concatenates items/asks/working across hosts (local first)
 test("mergeHostFeeds: a remote-only undo lights the Undo button (clear routed to that kernel)", () => {
   const m = mergeHostFeeds({
     "": { type: "feed", items: [], asks: [], working: [], canUndoClear: false, dismissedCount: 0 },
-    jetty: { type: "feed", items: [], asks: [], working: [], canUndoClear: true, dismissedCount: 2 },
-  }, ["", "jetty"]);
+    TESTHOST: { type: "feed", items: [], asks: [], working: [], canUndoClear: true, dismissedCount: 2 },
+  }, ["", "TESTHOST"]);
   assert.equal(m.canUndoClear, true);
   assert.equal(m.dismissedCount, 2);
 });
@@ -164,7 +164,7 @@ test("mergeHostFeeds: single (local) host is an equivalent passthrough", () => {
 });
 
 test("mergeHostFeeds: a host with no feed yet contributes nothing (no crash)", () => {
-  const m = mergeHostFeeds({ "": { type: "feed", items: [{ sid: U }], asks: [], working: [] } }, ["", "jetty"]);
+  const m = mergeHostFeeds({ "": { type: "feed", items: [{ sid: U }], asks: [], working: [] } }, ["", "TESTHOST"]);
   assert.deepEqual(m.items.map((i: any) => i.sid), [U]);
 });
 
@@ -178,7 +178,7 @@ test("mergeHostFeeds: ledgers omitted until some host builds them (fleet loader 
 // ── timeline federation (the timeline now rides the same shim + merge as every other pane) ──────
 
 test("prefixInbound: timeline {type:data} payload — sessions, turns keys + bar.tid, marks, activeChat", () => {
-  const out = prefixInbound("jetty", {
+  const out = prefixInbound("TESTHOST", {
     type: "data",
     data: {
       sessions: [{ id: U, name: "sess1", state: "idle" }],
@@ -190,29 +190,29 @@ test("prefixInbound: timeline {type:data} payload — sessions, turns keys + bar
     },
   });
   const d = out.data;
-  assert.equal(d.sessions[0].id, "jetty:" + U);
-  assert.equal(d.sessions[0].name, "jetty:sess1", "lane label reads host:name");
-  assert.deepEqual(Object.keys(d.turns), ["jetty:" + U], "turns re-keyed by prefixed sid");
-  assert.equal(d.turns["jetty:" + U][0].tid, "jetty:" + U, "a bar's tid (its sid) is prefixed");
-  assert.equal(d.turns["jetty:" + U][0].id, "ev-1", "event uuids stay bare (globally unique)");
-  assert.equal(d.messages[0].fromId, "jetty:" + U);
-  assert.equal(d.messages[0].toId, "jetty:" + V);
-  assert.equal(d.judging[0].sid, "jetty:" + U);
-  assert.equal(d.activeChat.tid, "jetty:" + U, "the active-chat cue lights the prefixed lane");
+  assert.equal(d.sessions[0].id, "TESTHOST:" + U);
+  assert.equal(d.sessions[0].name, "TESTHOST:sess1", "lane label reads host:name");
+  assert.deepEqual(Object.keys(d.turns), ["TESTHOST:" + U], "turns re-keyed by prefixed sid");
+  assert.equal(d.turns["TESTHOST:" + U][0].tid, "TESTHOST:" + U, "a bar's tid (its sid) is prefixed");
+  assert.equal(d.turns["TESTHOST:" + U][0].id, "ev-1", "event uuids stay bare (globally unique)");
+  assert.equal(d.messages[0].fromId, "TESTHOST:" + U);
+  assert.equal(d.messages[0].toId, "TESTHOST:" + V);
+  assert.equal(d.judging[0].sid, "TESTHOST:" + U);
+  assert.equal(d.activeChat.tid, "TESTHOST:" + U, "the active-chat cue lights the prefixed lane");
   assert.equal(d.now, 1000, "scalar fields untouched");
 });
 
 test("prefixInbound: timeline {type:bars} detail message (top-level turns/marks)", () => {
-  const out = prefixInbound("jetty", {
+  const out = prefixInbound("TESTHOST", {
     type: "bars",
     turns: { [U]: [{ id: "ev-1", tid: U }] },
     judging: [{ judge: "closer", sid: U, t: 5 }],
     messages: [],
     now: 7,
   });
-  assert.deepEqual(Object.keys(out.turns), ["jetty:" + U]);
-  assert.equal(out.turns["jetty:" + U][0].tid, "jetty:" + U);
-  assert.equal(out.judging[0].sid, "jetty:" + U);
+  assert.deepEqual(Object.keys(out.turns), ["TESTHOST:" + U]);
+  assert.equal(out.turns["TESTHOST:" + U][0].tid, "TESTHOST:" + U);
+  assert.equal(out.judging[0].sid, "TESTHOST:" + U);
   assert.equal(out.now, 7);
 });
 
@@ -225,13 +225,13 @@ test("mergeHostTimelines: local lanes first, host stamped per session, turns/mar
   const perHost = {
     "": { sessions: [{ id: U, name: "loc" }], turns: {}, messages: [], judging: [],
           now: 1000, usage: { u: 1 }, focus: { nonce: 3 } },
-    jetty: { sessions: [{ id: "jetty:" + V, name: "jetty:rem" }], turns: { ["jetty:" + V]: [{ id: "e" }] },
-             messages: [{ fromId: "jetty:" + V }], judging: [], now: 999 },
+    TESTHOST: { sessions: [{ id: "TESTHOST:" + V, name: "TESTHOST:rem" }], turns: { ["TESTHOST:" + V]: [{ id: "e" }] },
+             messages: [{ fromId: "TESTHOST:" + V }], judging: [], now: 999 },
   };
-  const m = mergeHostTimelines(perHost, ["", "jetty"]);
-  assert.deepEqual(m.sessions.map((s: any) => s.id), [U, "jetty:" + V], "local group first, remote below");
-  assert.deepEqual(m.sessions.map((s: any) => s.host), ["", "jetty"], "owning host stamped (drives the lane-group gap)");
-  assert.deepEqual(Object.keys(m.turns), ["jetty:" + V]);
+  const m = mergeHostTimelines(perHost, ["", "TESTHOST"]);
+  assert.deepEqual(m.sessions.map((s: any) => s.id), [U, "TESTHOST:" + V], "local group first, remote below");
+  assert.deepEqual(m.sessions.map((s: any) => s.host), ["", "TESTHOST"], "owning host stamped (drives the lane-group gap)");
+  assert.deepEqual(Object.keys(m.turns), ["TESTHOST:" + V]);
   assert.equal(m.messages.length, 1);
   assert.equal(m.now, 1000, "the LOCAL kernel is the clock authority");
   assert.deepEqual(m.usage, { u: 1 }, "usage (account rate-limit bars) stays local");
@@ -241,14 +241,14 @@ test("mergeHostTimelines: local lanes first, host stamped per session, turns/mar
 test("mergeHostBars: per-host bars union — one host's push can't clobber another's (applyBars replaces wholesale)", () => {
   const perHost = {
     "": { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [{ judge: "planner", sid: U, t: 1 }], now: 50 },
-    jetty: { type: "bars", turns: { ["jetty:" + V]: [{ id: "b" }] }, messages: [], judging: [], now: 49 },
+    TESTHOST: { type: "bars", turns: { ["TESTHOST:" + V]: [{ id: "b" }] }, messages: [], judging: [], now: 49 },
   };
-  const m = mergeHostBars(perHost, ["", "jetty"]);
-  assert.deepEqual(Object.keys(m.turns).sort(), [U, "jetty:" + V].sort());
+  const m = mergeHostBars(perHost, ["", "TESTHOST"]);
+  assert.deepEqual(Object.keys(m.turns).sort(), [U, "TESTHOST:" + V].sort());
   assert.equal(m.judging.length, 1);
   assert.equal(m.now, 50, "local clock");
   // a host with no bars yet contributes nothing (no crash)
-  const single = mergeHostBars({ "": perHost[""] }, ["", "jetty"]);
+  const single = mergeHostBars({ "": perHost[""] }, ["", "TESTHOST"]);
   assert.deepEqual(Object.keys(single.turns), [U]);
 });
 
@@ -258,32 +258,32 @@ test("mergeHostBars: warming is true if ANY host is still the cold partial (keep
   // so a warmed local + a still-cold remote keeps the loader until the remote settles.
   const warm = { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [], now: 50, warming: false };
   const cold = { type: "bars", turns: {}, messages: [], judging: [], now: 50, warming: true };
-  assert.equal(mergeHostBars({ "": warm, jetty: cold }, ["", "jetty"]).warming, true, "any warming host → keep warming");
-  assert.equal(mergeHostBars({ "": warm }, ["", "jetty"]).warming, false, "all settled → warming clears");
+  assert.equal(mergeHostBars({ "": warm, TESTHOST: cold }, ["", "TESTHOST"]).warming, true, "any warming host → keep warming");
+  assert.equal(mergeHostBars({ "": warm }, ["", "TESTHOST"]).warming, false, "all settled → warming clears");
   assert.equal(mergeHostBars({ "": cold }, [""]).warming, true, "the cold local partial is warming");
 });
 
 test("stitchMessages: a cross-host connector lands on both lanes, recipient's copy wins the timing", () => {
-  // laptop session U messaged jetty session V. The LOCAL kernel emitted its one-sided copy (toId = the
-  // bare foreign sid — it has no lane for it, no exec); JETTY's kernel emitted its own copy, whose
+  // laptop session U messaged TESTHOST session V. The LOCAL kernel emitted its one-sided copy (toId = the
+  // bare foreign sid — it has no lane for it, no exec); TESTHOST's kernel emitted its own copy, whose
   // FOREIGN end (U) got blindly host-prefixed by inbound prefixing, and which KNOWS the delivery time.
-  const sessions = [{ id: U, name: "local-sess" }, { id: "jetty:" + V, name: "jetty:remote-sess" }];
+  const sessions = [{ id: U, name: "local-sess" }, { id: "TESTHOST:" + V, name: "TESTHOST:remote-sess" }];
   const merged = stitchMessages([
     { id: "m1", fromId: U, toId: V, from: "local-sess", to: "", sent: 100, exec: 100, hasExec: false },
-    { id: "m1", fromId: "jetty:" + U, toId: "jetty:" + V, from: "", to: "jetty:remote-sess", sent: 100, exec: 130, hasExec: true },
+    { id: "m1", fromId: "TESTHOST:" + U, toId: "TESTHOST:" + V, from: "", to: "TESTHOST:remote-sess", sent: 100, exec: 130, hasExec: true },
   ], sessions);
   assert.equal(merged.length, 1, "the two kernels' copies of one message dedupe by id");
   const m = merged[0];
   assert.equal(m.fromId, U, "sender endpoint = the local lane");
-  assert.equal(m.toId, "jetty:" + V, "recipient endpoint stitched onto jetty's (prefixed) lane");
+  assert.equal(m.toId, "TESTHOST:" + V, "recipient endpoint stitched onto TESTHOST's (prefixed) lane");
   assert.equal(m.hasExec, true, "the recipient kernel's real delivery time wins");
   assert.equal(m.exec, 130);
 });
 
 test("stitchMessages: fills a missing display name from the matched lane; unmatched ends pass through", () => {
-  const sessions = [{ id: U, name: "local-sess" }, { id: "jetty:" + V, name: "jetty:remote-sess" }];
+  const sessions = [{ id: U, name: "local-sess" }, { id: "TESTHOST:" + V, name: "TESTHOST:remote-sess" }];
   const [m] = stitchMessages([{ id: "m2", fromId: U, toId: V, from: "local-sess", to: "", sent: 1, exec: 1, hasExec: false }], sessions);
-  assert.equal(m.to, "jetty:remote-sess", "the sender kernel never knew the foreign name — the lane fills it");
+  assert.equal(m.to, "TESTHOST:remote-sess", "the sender kernel never knew the foreign name — the lane fills it");
   // an endpoint matching NO lane (a long-dead local sid, or a not-yet-attached host) is left alone —
   // the view's lane lookup drops the connector, same as ever.
   const ghost = "77777777-6666-5555-4444-333333333333";
@@ -292,61 +292,61 @@ test("stitchMessages: fills a missing display name from the matched lane; unmatc
 });
 
 test("mergeHostBars: stitches connectors against the lane list handed in (bars carry no lanes)", () => {
-  const sessions = [{ id: U, name: "a" }, { id: "jetty:" + V, name: "jetty:b" }];
+  const sessions = [{ id: U, name: "a" }, { id: "TESTHOST:" + V, name: "TESTHOST:b" }];
   const perHost = {
     "": { type: "bars", turns: {}, judging: [], nudges: [],
           messages: [{ id: "m1", fromId: U, toId: V, sent: 5, exec: 5, hasExec: false }] },
-    jetty: { type: "bars", turns: {}, judging: [], nudges: [],
-             messages: [{ id: "m1", fromId: "jetty:" + U, toId: "jetty:" + V, sent: 5, exec: 9, hasExec: true }] },
+    TESTHOST: { type: "bars", turns: {}, judging: [], nudges: [],
+             messages: [{ id: "m1", fromId: "TESTHOST:" + U, toId: "TESTHOST:" + V, sent: 5, exec: 9, hasExec: true }] },
   };
-  const m = mergeHostBars(perHost, ["", "jetty"], sessions);
+  const m = mergeHostBars(perHost, ["", "TESTHOST"], sessions);
   assert.equal(m.messages.length, 1);
-  assert.deepEqual([m.messages[0].fromId, m.messages[0].toId, m.messages[0].exec], [U, "jetty:" + V, 9]);
+  assert.deepEqual([m.messages[0].fromId, m.messages[0].toId, m.messages[0].exec], [U, "TESTHOST:" + V, 9]);
 });
 
 test("routeOutbound: an explicit host field routes there, stripped (createSession's + modal host pick)", () => {
-  const remote = routeOutbound({ type: "createSession", name: "web", backend: "sdk", dir: "", host: "jetty" });
-  assert.deepEqual(remote, [{ host: "jetty", msg: { type: "createSession", name: "web", backend: "sdk", dir: "" } }],
+  const remote = routeOutbound({ type: "createSession", name: "web", backend: "sdk", dir: "", host: "TESTHOST" });
+  assert.deepEqual(remote, [{ host: "TESTHOST", msg: { type: "createSession", name: "web", backend: "sdk", dir: "" } }],
                    "the kernel handlers are host-blind — the field is stripped");
   const local = routeOutbound({ type: "createSession", name: "web", backend: "sdk", dir: "", host: "" });
   assert.deepEqual(local, [{ host: "", msg: { type: "createSession", name: "web", backend: "sdk", dir: "" } }]);
 });
 
 test("routeOutbound: name-addressed messages route to a KNOWN host only (compact / sendCommand / deepLink)", () => {
-  const known = new Set(["jetty"]);
+  const known = new Set(["TESTHOST"]);
   // a remote lane's display name is prefixed → routed + stripped
-  assert.deepEqual(routeOutbound({ type: "compact", name: "jetty:sess1" }, known),
-                   [{ host: "jetty", msg: { type: "compact", name: "sess1" } }]);
-  assert.deepEqual(routeOutbound({ type: "deepLink", session: "jetty:sess1" }, known),
-                   [{ host: "jetty", msg: { type: "deepLink", session: "sess1" } }]);
+  assert.deepEqual(routeOutbound({ type: "compact", name: "TESTHOST:sess1" }, known),
+                   [{ host: "TESTHOST", msg: { type: "compact", name: "sess1" } }]);
+  assert.deepEqual(routeOutbound({ type: "deepLink", session: "TESTHOST:sess1" }, known),
+                   [{ host: "TESTHOST", msg: { type: "deepLink", session: "sess1" } }]);
   // a local name that merely CONTAINS a colon must not misroute (unknown host prefix)
   assert.deepEqual(routeOutbound({ type: "compact", name: "odd:name" }, known),
                    [{ host: "", msg: { type: "compact", name: "odd:name" } }]);
   // and with no knownHosts at all, names never route
-  assert.deepEqual(routeOutbound({ type: "compact", name: "jetty:sess1" }),
-                   [{ host: "", msg: { type: "compact", name: "jetty:sess1" } }]);
+  assert.deepEqual(routeOutbound({ type: "compact", name: "TESTHOST:sess1" }),
+                   [{ host: "", msg: { type: "compact", name: "TESTHOST:sess1" } }]);
   // renameSession routes by ID; its `name` (the user's new title) is never stripped
-  const rn = routeOutbound({ type: "renameSession", id: "jetty:" + U, name: "newtitle" }, known);
-  assert.deepEqual(rn, [{ host: "jetty", msg: { type: "renameSession", id: U, name: "newtitle" } }]);
+  const rn = routeOutbound({ type: "renameSession", id: "TESTHOST:" + U, name: "newtitle" }, known);
+  assert.deepEqual(rn, [{ host: "TESTHOST", msg: { type: "renameSession", id: U, name: "newtitle" } }]);
 });
 
 test("routeOutbound: a feed card action routes by its sid, itemId untouched (askClear/expand/askFollowUp)", () => {
   // Regression (the user 2026-07-02): Clear on a REMOTE card sent {askClear, itemId} with NO sid → routed
   // to the LOCAL kernel (a no-op there), so the card resurrected on every reload. The card's sid now rides
   // along purely for routing; the itemId stays bare — it's already the owning kernel's own id.
-  const r = routeOutbound({ type: "askClear", itemId: U + ":g3", sid: "jetty:" + U });
-  assert.deepEqual(r, [{ host: "jetty", msg: { type: "askClear", itemId: U + ":g3", sid: U } }]);
+  const r = routeOutbound({ type: "askClear", itemId: U + ":g3", sid: "TESTHOST:" + U });
+  assert.deepEqual(r, [{ host: "TESTHOST", msg: { type: "askClear", itemId: U + ":g3", sid: U } }]);
   // a local card is unchanged: bare sid → local kernel
   const l = routeOutbound({ type: "askClear", itemId: U + ":g3", sid: U });
   assert.equal(l[0].host, "");
 });
 
 test("routeOutbound: a hover CLEAR broadcasts to every kernel (no sid to route by)", () => {
-  const routes = routeOutbound({ type: "timelineHover", off: true }, new Set(["jetty", "gpu1"]));
-  assert.deepEqual(routes.map((r) => r.host).sort(), ["", "gpu1", "jetty"].sort());
+  const routes = routeOutbound({ type: "timelineHover", off: true }, new Set(["TESTHOST", "gpu1"]));
+  assert.deepEqual(routes.map((r) => r.host).sort(), ["", "gpu1", "TESTHOST"].sort());
   // …but a hover ON routes to the lane's owner only
-  const on = routeOutbound({ type: "timelineHover", sid: "jetty:" + U, segIds: [] }, new Set(["jetty"]));
-  assert.deepEqual(on, [{ host: "jetty", msg: { type: "timelineHover", sid: U, segIds: [] } }]);
+  const on = routeOutbound({ type: "timelineHover", sid: "TESTHOST:" + U, segIds: [] }, new Set(["TESTHOST"]));
+  assert.deepEqual(on, [{ host: "TESTHOST", msg: { type: "timelineHover", sid: U, segIds: [] } }]);
 });
 
 test("routeOutbound: openFolder ALWAYS stays local, with a remote id's host prefix left INTACT", () => {
@@ -377,19 +377,19 @@ test("manager: merged timeline emits HOLD until the local lanes snapshot arrives
   g.window = { dispatchEvent: (ev: any) => emitted.push(ev.data) };
   try {
     const fm = new FederationManager();
-    fm.inbound("jetty", { type: "data", data: { sessions: [{ id: V, name: "rem" }], turns: {}, messages: [], judging: [], now: 500 } });
-    fm.inbound("jetty", { type: "bars", turns: { [V]: [{ id: "e", start: 400, end: 450 }] }, messages: [], judging: [], now: 500 });
+    fm.inbound("TESTHOST", { type: "data", data: { sessions: [{ id: V, name: "rem" }], turns: {}, messages: [], judging: [], now: 500 } });
+    fm.inbound("TESTHOST", { type: "bars", turns: { [V]: [{ id: "e", start: 400, end: 450 }] }, messages: [], judging: [], now: 500 });
     assert.equal(emitted.length, 0, "no emit before the local snapshot — it would carry now:undefined");
     fm.inbound("", { type: "data", data: { sessions: [{ id: U, name: "loc" }], turns: {}, messages: [], judging: [], now: 1000 } });
     assert.equal(emitted.length, 1, "the local arrival itself emits the merged lanes");
     assert.equal(emitted[0].type, "data");
     assert.equal(emitted[0].data.now, 1000, "the merged payload carries the local clock");
-    assert.deepEqual(emitted[0].data.sessions.map((s: any) => s.id), [U, "jetty:" + V],
+    assert.deepEqual(emitted[0].data.sessions.map((s: any) => s.id), [U, "TESTHOST:" + V],
       "the buffered remote lanes ride the first emit");
     fm.inbound("", { type: "bars", turns: {}, messages: [], judging: [], now: 1001 });
     assert.equal(emitted.length, 2, "bars flow once the local lanes exist");
     assert.equal(emitted[1].type, "bars");
-    assert.ok(("jetty:" + V) in emitted[1].turns, "the buffered remote bars merge in");
+    assert.ok(("TESTHOST:" + V) in emitted[1].turns, "the buffered remote bars merge in");
   } finally {
     if (hadWindow) g.window = prevWindow; else delete g.window;
   }

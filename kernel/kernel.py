@@ -363,7 +363,7 @@ border-radius:6px;background:#0c1117;color:#dfe7ee">
   <button style="margin-top:.9em;padding:.5em 1.4em;border:0;border-radius:6px;\
 background:#9cd2ff;color:#0c1a2e;font-weight:600;cursor:pointer">Open</button>
   <div style="opacity:.6;margin-top:1.2em;font-size:.9em">Get a ready-made link with
-  <code>romp --url</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
+  <code>romp launch</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
 </form>
 """
 
@@ -4026,7 +4026,7 @@ def _tunnel_status(proc_alive, port_up, remote_answered):
     """The tunnel row's TRUE status. `port_up` (the local -L listener accepting) said 'up' on its own
     for a dead far end — ssh accepts the local connect, then resets when the remote side refuses — so a
     downed remote kernel read as a healthy tunnel while every poll through it failed and every action
-    sent to it vanished (jetty, the user 2026-07-10). End-to-end truth is the /sessions poll itself:
+    sent to it vanished (a federated host, the user 2026-07-10). End-to-end truth is the /sessions poll itself:
     only a remote kernel that ANSWERED this tick is 'up'; an alive tunnel with nobody answering is
     'no-kernel' (the popover says to start romp there). Pure for tests."""
     if not proc_alive:
@@ -4419,7 +4419,7 @@ def _update_remote(host):
         'echo "SYNCED:$NEW"'
     ) % (shlex.quote(rdir), _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, kport)
     # The apply KILLS the running kernel before booting its replacement, so it must be immune to the
-    # ssh dying between the two halves — exactly what a flaky link does (jetty, the user 2026-07-11:
+    # ssh dying between the two halves — exactly what a flaky link does (the user 2026-07-11:
     # every drop mid-apply left the host kernel-LESS, and each banner Retry re-killed whatever a
     # previous attempt had managed to boot). `setsid` puts the apply in its own session, so an ssh
     # disconnect (or the local 60s timeout) no longer terminates it: the kill+boot pair always
@@ -14075,7 +14075,7 @@ class Handler(BaseHTTPRequestHandler):
                         _create_sdk_session(nm, cwd)
                     else:
                         # NEVER silently fall back to tmux (the user asked for SDK and got a mystery tmux
-                        # session on a host without the venv — jetty, 2026-07-02). Say what's missing.
+                        # session on a remote host without the venv, 2026-07-02). Say what's missing.
                         client["send"](json.dumps({"type": "warn", "text":
                             "SDK backend unavailable on this kernel (claude-agent-sdk not importable — "
                             "run bin/romp-sdk-setup with Python 3.10+). Session not created."}))
@@ -14392,7 +14392,7 @@ def main():
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
     sys.stderr.write("romp-kernel: every request needs the serve token (loopback included) — "
-                     "browser entry: `romp --url`\n")
+                     "browser entry: `romp launch`\n")
     if BIND != "127.0.0.1":
         # reachable off-box (tailnet/phone): the Origin gate blocks cross-site browsers token-free,
         # and the token is required everywhere. Open from the phone:

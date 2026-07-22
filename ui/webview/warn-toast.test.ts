@@ -1,5 +1,5 @@
 // Silent-failure surfacing (the user 2026-07-10): creating a session on an unreachable remote host
-// (jetty, kernel down behind an alive ssh tunnel) produced NO feedback — the kernel's `warn` messages
+// (TESTHOST, kernel down behind an alive ssh tunnel) produced NO feedback — the kernel's `warn` messages
 // had no webview handler, and federation dropped any outbound message routed to a host whose socket
 // wasn't open. Now every kernel `warn` toasts on the right, and a dropped route synthesizes a local
 // warn naming the host and the action. No jsdom harness for these renderers, so pin the wiring at the
