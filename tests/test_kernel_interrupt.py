@@ -543,3 +543,51 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
             self.assertEqual(sent, [], "no genuine ended turn to arm off → never fires")
         finally:
             restore()
+
+
+class KernelDisplayParseReadsStates(unittest.TestCase):
+    """The DISPLAY parse (kernel _parse — feeds _session_working on the chip, feed card, timeline lane) must
+    read states/<sid>.jsonl exactly like jd.parsed_session does. The interrupt/settle idle transition lands
+    in states/, NOT the transcript: an SDK stop need not write any transcript record. So a states-only change
+    must both (a) synthesize an idle atom in the display parse and (b) BUST the parse cache (keyed on the
+    transcript alone before, so the fresh idle was invisible). Before this, an SDK interrupt cleared 'working'
+    for the judge/nudge (which read states) but the chip/card/lane stayed yellow (the user 2026-07-22:
+    "pressing interrupt doesn't clear working"). Synthetic fixtures only."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = Path(self.td.name)
+        km._parse_cache.clear()
+        self.tpath = Path(self.td.name) / (SID + ".jsonl")
+        # an OPEN turn: the assistant stops on tool_use (no end_turn) and no interrupt record → reads working
+        recs = [uline(T0, "do the thing", "u1"),
+                aline(T0 + 10, "working on it", "a1", "u1", "tool_use")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        km._parse_cache.clear()
+        self.td.cleanup()
+
+    def _write_idle(self):
+        # exactly what SdkBackend.interrupt / _record_idle append: a backdated idle transition, states/ only
+        p = jd.STATE / "states" / (SID + ".jsonl")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"t": NOW - 1, "state": "idle"}) + "\n")
+
+    def test_open_turn_reads_working_before_any_idle(self):
+        ps = km._parse(str(self.tpath), SID, NOW)
+        self.assertTrue(km._session_working(ps["turns"]),
+                        "an open tool_use turn with no idle transition → working")
+
+    def test_a_states_only_idle_clears_working_and_busts_the_cache(self):
+        # first parse: no states file yet → working, and it caches keyed on the transcript
+        self.assertTrue(km._session_working(km._parse(str(self.tpath), SID, NOW)["turns"]),
+                        "premise: the open turn reads working and is now cached")
+        self._write_idle()                              # the interrupt writes idle to states/ ONLY (transcript untouched)
+        ps = km._parse(str(self.tpath), SID, NOW)
+        self.assertTrue(any(a.get("type") == "idle" for turn in ps["turns"] for a in turn["atoms"]),
+                        "the states idle transition became an idle atom in the display parse")
+        self.assertFalse(km._session_working(ps["turns"]),
+                         "a states-only idle transition clears 'working' on the display parse (cache busted)")

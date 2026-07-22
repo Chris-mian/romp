@@ -6111,11 +6111,25 @@ def _parse(path, sid, now):
     # tmux/dormant fall to one small reg read; the transcript-leaf read happens only while
     # a rollback is actually pending.
     cut = _be.pending_cut(sid) if _be else ""
+    # states/<sid>.jsonl → REAL idle transitions become idle atoms (the interrupt/settle write lands HERE,
+    # not the transcript). Mirrors jd.parsed_session, which has read states since 2026-06-17 — the kernel's
+    # DISPLAY parse was overlooked, so an SDK interrupt cleared 'working' for the judge/nudge (which read
+    # states) while the chip/card/timeline lane (which read this cache) stayed yellow. Without it the display
+    # only clears on a transcript write, which an SDK stop need not produce (the user 2026-07-22: "pressing
+    # interrupt doesn't clear working"). Safe: _session_working sorts atoms by their START time, so an idle
+    # span whose end runs to `now` never closes a genuinely-working turn — its fresh work atoms sort later.
+    states = jd.STATE / "states" / (sid + ".jsonl")
     try:
         st = os.stat(path)
         key = (st.st_mtime, st.st_size, cut)
     except OSError:
         key = None
+    if key is not None:
+        try:                                         # a states-ONLY change (an idle transition that never
+            sst = os.stat(states)                    # touches the transcript) must bust the cache too — else
+            key = key + (sst.st_mtime, sst.st_size)  # the fresh idle atom is invisible and 'working' latches
+        except OSError:
+            pass                                     # no states file yet → nothing to fold
     hit = _parse_cache.get(path)
     if hit is not None and key is not None and hit[0] == key:
         return hit[1]
@@ -6130,6 +6144,7 @@ def _parse(path, sid, now):
     session = em.parse_session(path, rompuuid=sid, candidate_files=cands,
                                postal_log=str(jd.MESSAGES), now=now,
                                sdk_human=bool(_be and _be.owns(sid)),   # SDK session: composer input is promptSource "sdk"
+                               states=str(states) if states.exists() else None,   # idle transitions → idle atoms (see above)
                                leaf_override=cut or None)   # pending bare rollback → render the cut conversation NOW
     if key is not None:
         if len(_parse_cache) > 256:              # backstop: bounded by fleet size, but never unbounded
