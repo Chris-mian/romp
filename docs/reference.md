@@ -93,6 +93,15 @@ code {dir}                          # VS Code instead
 - `ROMP_NO_SDK=1 ./install.sh` skips the SDK backend's venv (tmux sessions
   still work).
 
+### Judge models, and what they cost
+
+Romp's judges read your transcripts to build the task cards, so they spend
+tokens beyond your own sessions. The defaults keep that cheap: the high-volume
+indexing tier runs on Haiku, the judgment tier on Sonnet. Change either from
+the gear ("Indexing model" and "Triage model"). The analytics modal shows
+actual usage over any period, your sessions against the judge pipeline broken
+out per judge and per tier, and toggles between tokens and dollars.
+
 ## Where things live
 
 State is written under `${XDG_STATE_HOME:-~/.local/state}/romp/`. Transcripts
