@@ -10871,8 +10871,12 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
-        active = bool(tm and tm["state"] in ("working", "permission", "picker", "compacting", "waiting"))
-        faded = (not live) or (not active and bool(tm and tm["since"]) and now - tm["since"] > 3600)
+        # Idle fade: the SAME rule the chat tab uses (ready + idle > 1h — see the `faded` beside the chat
+        # chip), keyed on the DERIVED chip `state` computed above, not the raw tmux state. The old form read
+        # tmux's vocabulary and counted "waiting" as active — but "waiting" IS the post-turn idle state, so
+        # every live lane stayed active forever and only DEAD lanes ever dimmed (the user 2026-07-22: idle
+        # threads dim in the chat but never on the timeline). Dead lanes still fade via `not live`.
+        faded = (not live) or (state == "ready" and bool(tm and tm["since"]) and now - tm["since"] > 3600)
         # AWAITING dispatched/background work — the SAME _session_awaiting the chat chip folds into its
         # yellow working dot, emitted per lane so the timeline shows the in-flight-elsewhere state instead
         # of a bare READY (the user 2026-07-01: the surfaces must share one working model; this was the

@@ -50,3 +50,21 @@ test("every surface renders the prefix through the shared treatment", () => {
   assert.match(TL, /const hci = String\(s\.id \|\| ''\)\.indexOf\(':'\)/);
   assert.match(TL, /'font-style': 'italic', 'font-size': 10\.5/);
 });
+
+test("the host prefix FADES in tandem with the name it precedes (the user 2026-07-22)", () => {
+  // .host-prefix declares its OWN color, so an at-rest tab's inline faded color cannot inherit into it —
+  // a remote session's "host:" stayed bright while its name dimmed, often outshining it. Both surfaces
+  // now fade the prefix alongside the name, and un-fade it alongside the name on hover.
+  const RENDER = read("render.ts"), CSS = read("styles.css");
+  const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+  // CHAT: renderTabs marks the label whenever it applies the faded color; the sheet fades the prefix with it
+  assert.match(RENDER, /label\.classList\.add\("name-faded"\)/);
+  assert.match(RENDER, /mouseenter", \(\) => \{ label\.style\.color = full; label\.classList\.remove\("name-faded"\); \}/);
+  assert.match(RENDER, /mouseleave", \(\) => \{ label\.style\.color = fadedColor\(full\); label\.classList\.add\("name-faded"\); \}/);
+  assert.match(CSS, /\.tab-label\.name-faded \.host-prefix \{ opacity: 0\.5; \}/);
+  // TIMELINE: the SVG twin — a tspan's own fill beats the parent <text>, so fade it explicitly and
+  // register it for the same hover un-fade the name uses
+  assert.match(TL, /hostTsp = el\('tspan', \{ fill: F\(MODEL_FG\)/);
+  assert.match(TL, /if \(hostTsp\) fadedEls\.push\(\{ el: hostTsp, full: MODEL_FG, faded: F\(MODEL_FG\) \}\)/);
+  assert.doesNotMatch(TL, /el\('tspan', \{ fill: '#9aa0a6'/, "the hard-coded never-fading fill is gone");
+});

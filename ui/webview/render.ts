@@ -2916,9 +2916,13 @@ function renderTabs() {
     if (s.status.faded && id !== activeId && s.color) {
       const full = s.color.bg;
       label.style.color = fadedColor(full);
+      // The "host:" prefix declares its OWN color (quiet gray), so the parent's faded color can't inherit
+      // into it — left alone it stays at full gray and outshines the faded name it precedes. Fade it in
+      // tandem via a class, and un-fade it with the name on hover (the user 2026-07-22).
+      label.classList.add("name-faded");
       // hover un-fades the name to its full (readable) identity color, reverting on leave
-      tab.addEventListener("mouseenter", () => { label.style.color = full; });
-      tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); });
+      tab.addEventListener("mouseenter", () => { label.style.color = full; label.classList.remove("name-faded"); });
+      tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); label.classList.add("name-faded"); });
     }
     tab.appendChild(label);
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
