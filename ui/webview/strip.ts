@@ -258,6 +258,17 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     up: "connected", authorizing: "authorizing…", connecting: "connecting…", starting: "connecting…",
     "no-kernel": "kernel not answering", down: "disconnected", error: "error",
   };
+  // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
+  // Mirrors the web popover's TIP map — the two copies must say the same thing.
+  const TIP: Record<string, string> = {
+    up: "Connected: the ssh tunnel is open and that machine's romp kernel is answering through it. Its sessions appear in your tabs and timeline.",
+    authorizing: "Opening an ssh connection and reading that machine's access token. Needs `ssh <host>` to work without a prompt.",
+    connecting: "The ssh tunnel is up; waiting for the remote kernel to answer on its port.",
+    starting: "The ssh tunnel is up; waiting for the remote kernel to answer on its port.",
+    "no-kernel": "The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine's romp there and boots it.",
+    down: "The ssh tunnel is not up. romp keeps retrying; check that `ssh <host>` works from a terminal.",
+    error: "The connection failed. Hover the status text for the reason romp got back.",
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = (ms: number) => { clearTimeout(timer); if (!pop.hidden) timer = setTimeout(refresh, ms); };
   const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel";
@@ -280,10 +291,10 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       .catch(() => { b.disabled = false; b.textContent = prev; });
   }
 
-  function renderList(ts: any[]) {
+  function renderList(ts: any[], known: any[] = []) {
     list.textContent = "";
     button.classList.toggle("on", ts.some((t) => t.status === "up"));
-    if (!ts.length) {
+    if (!ts.length && !known.length) {
       const e = document.createElement("div");
       e.className = "sn-empty";
       e.textContent = "No remotes attached.";
@@ -299,10 +310,13 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         : (t.status === "error" || t.status === "no-kernel") ? "#E5534B"
         : t.status === "down" ? "#8a8a8a" : "transparent";
       if (dot.style.background === "transparent") dot.style.boxShadow = "inset 0 0 0 1.5px var(--accent, #9cd2ff)";
+      dot.title = TIP[t.status] || "";
       const nm = document.createElement("span");
       nm.className = "sn-name";
       nm.textContent = `${t.host} — ${LBL[t.status] || t.status}`
         + (t.outOfDate ? " · different build" : "");
+      nm.title = (TIP[t.status] || "")
+        + (t.outOfDate ? "\n\nThis machine is running a different commit than yours; Push sends this machine's committed romp there." : "");
       r.append(dot, nm);
       // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is
       // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
@@ -328,22 +342,60 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       if (t.status === "up" && t.outOfDate) {
         const u = document.createElement("button");
         u.textContent = "Push";
-        u.title = `Push this machine's romp to ${t.host} + restart it`;
+        u.title = `Push this machine's committed romp to ${t.host} and restart its kernel, so it runs exactly this code. `
+          + `Uncommitted local edits are NOT sent — commit first. It refuses if that machine has its own commits.`;
         u.addEventListener("click", () => act("/tunnels/update", t.host, u, "Pushing…"));
         r.appendChild(u);
       }
       if (t.status === "no-kernel") {
         const s = document.createElement("button");
         s.textContent = "Start";
-        s.title = `Update ${t.host} to this machine's romp, then start its kernel`;
+        s.title = `No kernel is answering on ${t.host}. This pushes this machine's romp there and boots its kernel.`;
         s.addEventListener("click", () => act("/tunnels/start", t.host, s, "Starting…"));
         r.appendChild(s);
       }
       const d = document.createElement("button");
       d.textContent = "Detach";
+      d.title = `Close the ssh tunnel to ${t.host}. It stays in this list as a previously-attached host, `
+        + `keeping its trust level, so you can re-attach in one click.`;
       d.addEventListener("click", () => act("/tunnels/detach", t.host, d, "…"));
       r.appendChild(d);
       list.appendChild(r);
+    }
+    // PREVIOUSLY ATTACHED (the user 2026-07-22): hosts attached before, kept after detach so they are one
+    // click away instead of buried in the ssh-config dropdown. Dimmed, each remembering the trust level
+    // last set for it — re-attaching a box marked `trusted` will not silently drop back to directed.
+    if (known.length) {
+      const hd = document.createElement("div");
+      hd.className = "sn-khead";
+      hd.textContent = "Previously attached";
+      hd.title = "Hosts you have attached before. They keep the trust level you last chose, so re-attaching "
+        + "restores it. Forget removes a host from this list.";
+      list.appendChild(hd);
+      for (const k of known) {
+        const r = document.createElement("div");
+        r.className = "sn-row sn-known";
+        const dot = document.createElement("span");
+        dot.className = "sn-dot";
+        dot.style.background = "transparent";
+        dot.style.boxShadow = "inset 0 0 0 1.5px #5a5a5a";
+        dot.title = "Not attached right now.";
+        const nm = document.createElement("span");
+        nm.className = "sn-name";
+        nm.textContent = `${k.host} — not attached · ${k.trust || "directed"}`;
+        nm.title = "Trust level remembered from the last time this host was attached; re-attaching restores it.";
+        r.append(dot, nm);
+        const ra = document.createElement("button");
+        ra.textContent = "Re-attach";
+        ra.title = `Open the ssh tunnel to ${k.host} again, restoring its remembered trust level.`;
+        ra.addEventListener("click", () => act("/tunnels", k.host, ra, "Attaching…"));
+        const fg = document.createElement("button");
+        fg.textContent = "Forget";
+        fg.title = `Remove ${k.host} from this list. It does not touch the host itself; attaching again will re-add it.`;
+        fg.addEventListener("click", () => act("/tunnels/forget", k.host, fg, "…"));
+        r.append(ra, fg);
+        list.appendChild(r);
+      }
     }
   }
 
@@ -352,7 +404,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
-      renderList(ts);
+      renderList(ts, (d && d.known) || []);
       schedule(ts.some((t: any) => busy(t.status)) ? 600 : 3000);   // fast while mid-attach, slow keep-alive after
     }).catch((err) => {
       // Fail loudly: an unreachable kernel renders as an error line, never a

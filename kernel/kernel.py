@@ -3644,6 +3644,12 @@ def _tmux_sessions():
 # STATE/remotes.json so attached hosts survive a kernel restart (the supervisor re-spawns their procs).
 
 REMOTES_FILE = jd.STATE / "remotes.json"
+# Hosts you have EVER attached, kept after detach (the user 2026-07-22: the popover should list past
+# hosts as persistent entries, not make you re-find them in the ssh-config dropdown). Separate from
+# remotes.json on purpose: that file is the LIVE set the supervisor polls, and a remembered host has
+# no tunnel to poll. Also remembers the trust level, so re-attaching a box you had marked `trusted`
+# doesn't silently drop back to `directed`.
+KNOWN_FILE = jd.STATE / "remotes-known.json"
 BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))      # this laptop's postal bus (reverse-forwarded)
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
@@ -3888,6 +3894,7 @@ def set_trust(host, level):
             return None, "no attached host '%s'" % host
         r["trust"] = level
     _remotes_save()
+    _known_note(host, level)               # the remembered entry tracks the level, so a re-attach keeps it
     _tunnel_wake.set()                     # a prompt supervisor pass pushes the new level to the bus
     with _remotes_lock:
         return (_remote_public(_remotes[host]) if host in _remotes else None), None
@@ -4137,13 +4144,17 @@ def attach_remote(host, kernel_port=None):
                  "local_port": _free_port(), "bus_port": _free_port(), "token": "", "proc": None,
                  # A newly attached host is DIRECTED by default (safe-by-default federation): its mail is
                  # held for human approval, never auto-injected. Raise to trusted for a box you control.
-                 "trust": "directed",
+                 # A host you attached BEFORE keeps the level you chose then — re-attaching a box you
+                 # deliberately marked `trusted` must not silently drop it back to directed.
+                 "trust": known_trust(host) or "directed",
                  # phase the browser popover surfaces: authorizing (ssh + token) → connecting
                  # (tunnel up, waiting for the port) → up. See _LANDING_REMOTES_JS's LBL map.
                  "status": "authorizing", "detail": "", "sids": []}
             _remotes[host] = r
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
+        _attach_trust = r.get("trust")
+    _known_note(host, _attach_trust)               # remember it for the popover's past-hosts list
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
     # BOOTSTRAP: no token yet (the kernel there never ran) or nothing listening on its port → start
     # romp-serve over ssh and wait for the port, so "install romp on the box, click attach" is the
@@ -4180,11 +4191,84 @@ def attach_remote(host, kernel_port=None):
     return pub
 
 
+_known = {}                    # host -> {host, lastAttachedAt, trust} — see KNOWN_FILE
+_known_lock = threading.Lock()
+
+
+def _known_load():
+    try:
+        rows = json.loads(KNOWN_FILE.read_text())
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    with _known_lock:
+        for row in rows:
+            if isinstance(row, dict) and row.get("host"):
+                _known[row["host"]] = {"host": row["host"],
+                                       "lastAttachedAt": row.get("lastAttachedAt") or 0,
+                                       "trust": row.get("trust") or "directed"}
+
+
+def _known_save():
+    with _known_lock:
+        rows = sorted(_known.values(), key=lambda k: -(k.get("lastAttachedAt") or 0))
+    try:
+        _atomic_write(KNOWN_FILE, json.dumps(rows))
+    except Exception:
+        sys.stderr.write("known-hosts save: %s\n" % traceback.format_exc())
+
+
+def _known_note(host, trust=None):
+    """Record (or refresh) a host you attached. Called on attach and whenever its trust changes, so the
+    remembered entry always carries the level you last chose for it."""
+    host = (host or "").strip()
+    if not host:
+        return
+    with _known_lock:
+        e = _known.setdefault(host, {"host": host, "lastAttachedAt": 0, "trust": "directed"})
+        e["lastAttachedAt"] = int(time.time())
+        if trust:
+            e["trust"] = trust
+    _known_save()
+
+
+def known_trust(host):
+    """The trust level remembered for a host from its last attachment, or None if it's new here."""
+    with _known_lock:
+        e = _known.get((host or "").strip())
+    return (e or {}).get("trust")
+
+
+def known_forget(host):
+    """Drop a remembered host (the popover's Forget). True if it was there."""
+    host = (host or "").strip()
+    with _known_lock:
+        gone = _known.pop(host, None) is not None
+    if gone:
+        _known_save()
+    return gone
+
+
+def list_known():
+    """Remembered hosts that are NOT currently attached — the popover's 'previously attached' rows.
+    An attached host already has a live row, so listing it twice would just be noise."""
+    with _remotes_lock:
+        live = set(_remotes)
+    with _known_lock:
+        rows = [dict(e) for h, e in _known.items() if h not in live]
+    return sorted(rows, key=lambda k: -(k.get("lastAttachedAt") or 0))
+
+
 def detach_remote(host):
-    """Detach a remote: kill its tunnel proc and forget it."""
+    """Detach a remote: kill its tunnel proc and forget it. The host stays in the KNOWN list (with the
+    trust you last set), so the popover can offer a one-click re-attach instead of sending you back to
+    the ssh-config dropdown."""
     host = (host or "").strip()
     with _remotes_lock:
         r = _remotes.pop(host, None)
+    if r:
+        _known_note(host, r.get("trust"))          # remember it (and its level) on the way out
     if r and r.get("proc"):
         try:
             r["proc"].terminate()
@@ -12689,6 +12773,14 @@ var hs=(d&&d.hosts)||[];var mru=mruHost();
 if(mru&&hs.indexOf(mru)>=0){hs=[mru].concat(hs.filter(function(h){return h!==mru;}));}   // most-recently-connected first, not just ssh-config order
 hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+(h===mru?' \\u00b7 recent':'')+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
 var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
+// Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
+var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
+authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
+connecting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
+starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
+'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine\\u2019s romp there and boots it.',
+down:'The ssh tunnel is not up. romp keeps retrying; check that `ssh <host>` works from a terminal.',
+error:'The connection failed. Hover the status text for the reason romp got back.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
 function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (its Start button fast-polls on click)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
@@ -12702,13 +12794,13 @@ var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function
 paintIcon(ts.some(function(t){return t.status==='up';}),busy);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+' \\u2014 '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts);
+if(!back.hidden)render(ts,(d&&d.known)||[]);
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule(busy?600:3000);
 }).catch(function(){schedule(3000);});}
-function render(ts){list.innerHTML='';
-if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
+function render(ts,known){list.innerHTML='';known=known||[];
+if(!ts.length&&!known.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
@@ -12724,11 +12816,11 @@ w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'b
 var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+' \\u2014 this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
 ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
-var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s romp to '+t.host+' + restart it\">Push</button>':'';
+var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are NOT sent \\u2014 commit first. It refuses if that machine has its own commits.\">Push</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
-var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"Update '+t.host+' to this machine\\u2019s romp, then start its kernel\">Start</button>':'';
+var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"No kernel is answering on '+t.host+'. This pushes this machine\\u2019s romp there and boots its kernel.\">Start</button>':'';
 // keep connected (peer-bus check-in, stage 3): publish THIS machine to that host over our own
 // outbound ssh. Only for hosts WE attach; a row that checked in to us is labeled instead.
 var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions, its bus peers with yours, and this attach auto-reconnects. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
@@ -12737,10 +12829,22 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publi
 var tcur=t.trust||'directed';
 var trust='<select class=rnet-trust data-t=\"'+t.host+'\" title=\"Federation trust \\u2014 trusted: full two-way postal (a box you control); directed: its mail is held for your approval; isolated: dashboard only, no postal\">'+
 ['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select>';
-row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-trust+keep+upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
+row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
+trust+keep+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 list.appendChild(row);});
+// PREVIOUSLY ATTACHED (the user 2026-07-22): hosts you attached before, kept after detach so they are
+// one click away instead of buried in the ssh-config dropdown. Dimmed, and each remembers the trust
+// level you last set for it — re-attaching a box you marked `trusted` will not silently drop to directed.
+if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
+hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
+list.appendChild(hd);
+known.forEach(function(k){var kr=document.createElement('div');kr.className='rnet-row rnet-known';
+kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
+'<span class=nm><b>'+k.host+'</b> <span class=st title=\"Trust level remembered from the last time this host was attached; re-attaching restores it.\">not attached \\u00b7 '+(k.trust||'directed')+'</span></span>'+
+'<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
+'<button data-fg=\"'+k.host+'\" title=\"Remove '+k.host+' from this list. It does not touch the host itself; attaching again will re-add it.\">Forget</button>';
+list.appendChild(kr);});}
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
 s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -12751,6 +12855,14 @@ if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d
 c.disabled=false;refresh();}).catch(function(){c.checked=!c.checked;c.disabled=false;alert('keep-connected on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
 b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
+// Re-attach a remembered host: the SAME /tunnels attach the dropdown drives, so the kernel restores
+// its remembered trust level on the way in. Forget only drops it from the list.
+list.querySelectorAll('button[data-ra]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-ra');
+b.disabled=true;b.textContent='Attaching\\u2026';icon.classList.add('busy');
+try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}
+fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){schedule(600);refresh();}).catch(function(){b.disabled=false;b.textContent='Retry';});};});
+list.querySelectorAll('button[data-fg]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-fg');
+b.disabled=true;fetch('/tunnels/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){b.disabled=false;});};});
 list.querySelectorAll('button[data-s]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-s');
 b.disabled=true;b.textContent='Starting\\u2026';schedule(600);   // fast poll so the 'starting' phase shows live
 fetch('/tunnels/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
@@ -13103,6 +13215,13 @@ def _landing():
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
             ".rnet-trust:disabled{opacity:0.55;cursor:default}"
+            # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
+            # history you can act on and never as something currently connected. Hover restores full
+            # opacity (they're interactive, not decoration).
+            ".rnet-khead{color:#6e7681;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;"
+            "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
+            ".rnet-known{opacity:0.62}"
+            ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
@@ -13613,7 +13732,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")
             if p == "/tunnels":                               # attached remote kernels + state (drives the federated dashboard)
+                # `known` = hosts attached before but not now, so the popover can list them as persistent
+                # re-attach rows instead of making you re-find them in the ssh-config dropdown.
                 return self._send(200, json.dumps({"tunnels": list_remotes(),
+                                                   "known": list_known(),
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
@@ -13876,6 +13998,18 @@ class Handler(BaseHTTPRequestHandler):
                 if pub is None:
                     return self._send(404, json.dumps({"ok": False, "error": "no attached host '%s' — attach it first" % host}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/forget":
+                # Drop a remembered (previously-attached) host from the popover's list. Body: {"host"}.
+                # Only touches the memory — a currently-attached host is detached, not forgotten.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "forgotten": known_forget(host)}),
+                                  "application/json")
             if u.path == "/tunnels/trust":
                 # Set an attached host's federation trust level (the per-host selector). Body:
                 # {"host", "trust": trusted|directed|isolated}. directed holds inbound mail for approval.
@@ -14424,6 +14558,7 @@ def main():
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
+    _known_load()                                              # remembered past hosts (popover's re-attach rows)
     _remotes_load()                                            # re-attach remote kernels from a prior run
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)

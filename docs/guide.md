@@ -185,6 +185,14 @@ Setup is one install and one click:
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
 
+The popover remembers every host you have attached. Detaching one moves it to a
+**Previously attached** list rather than dropping it, so bringing it back is one
+click (**Re-attach**) instead of hunting through the ssh-config dropdown — and it
+keeps the trust level you last chose, so a machine you marked `trusted` doesn't
+quietly come back as `directed`. **Forget** removes a host from that list; it
+does nothing to the machine itself. Every status word and button in the popover
+explains itself on hover, so none of this needs the command line.
+
 #### Trust levels: hold untrusted mail for approval
 
 A message that lands in an agent's context can steer it, so each attached host
