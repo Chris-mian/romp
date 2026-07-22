@@ -1063,7 +1063,7 @@ class ViewBuilder(unittest.TestCase):
             "nodes": {top: gn(top, "research the API", None, why="user asked for the research")},
             "placements": {}, "status": {top: "working"}}))
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle: "Waiting on the 3 research agents it dispatched."
+        km._session_awaiting = lambda sid, path, idle, stamp=False: "Waiting on the 3 research agents it dispatched."
         try:
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
         finally:
@@ -1254,7 +1254,7 @@ class ViewBuilder(unittest.TestCase):
         saved_w, saved_a = km._wait_for_graph, km._session_awaiting
         km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerY", "name": "peerY",
                                                        "color": None, "inCycle": False, "since": NOW}}
-        km._session_awaiting = lambda sid, path, idle: None      # isolate the POSTAL path
+        km._session_awaiting = lambda sid, path, idle, stamp=False: None      # isolate the POSTAL path
         try:
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
         finally:
@@ -2800,12 +2800,12 @@ class ViewBuilder(unittest.TestCase):
         self._orphaned_goal(idle=True)
         km._set_auto_nudge(True)
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle: "Waiting on its background agents."
+        km._session_awaiting = lambda sid, path, idle, stamp=False: "Waiting on its background agents."
         sent, restore = self._stub_nudge()
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(sent, [], "an awaiting session is held, not nudged")
-            km._session_awaiting = lambda sid, path, idle: None   # no longer awaiting → the genuine stall is nudged
+            km._session_awaiting = lambda sid, path, idle, stamp=False: None   # no longer awaiting → the genuine stall is nudged
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 1, "once the wait clears, the genuine stall is nudged")
         finally:
@@ -5162,7 +5162,7 @@ class ViewBuilder(unittest.TestCase):
         # background work it dispatched is no longer folded into "working" — the shared _session_chip
         # emits `awaitingBg`, so the chat chip (straw "Awaiting") and the timeline lane split together.
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle: "bg agents" if idle else None
+        km._session_awaiting = lambda sid, path, idle, stamp=False: "bg agents" if idle else None
         try:
             chip = km.build_session(SID, NOW)["status"]["state"]
             lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)["state"]
@@ -5175,7 +5175,7 @@ class ViewBuilder(unittest.TestCase):
         # working beats the awaiting flavor: while the main thread is actually producing, the chip says
         # Working — awaitingBg only covers the idle-but-held stretch.
         saved_aw, saved_w = km._session_awaiting, km._session_working
-        km._session_awaiting = lambda sid, path, idle: "bg agents"
+        km._session_awaiting = lambda sid, path, idle, stamp=False: "bg agents"
         km._session_working = lambda turns: True
         try:
             chip = km.build_session(SID, NOW)["status"]["state"]
@@ -5187,7 +5187,7 @@ class ViewBuilder(unittest.TestCase):
         # the straw dots (feed cards/headers + chat tabs) key on feed["awaiting"] exactly as the yellow
         # dots key on feed["working"] — same names, same federation prefixing (ARRAY_ID).
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle: "bg agents" if idle else None
+        km._session_awaiting = lambda sid, path, idle, stamp=False: "bg agents" if idle else None
         try:
             feed = km.build_feed(NOW)
         finally:

@@ -4967,7 +4967,46 @@ def _pending_queued(path):
 _api_err_cache = {}           # path -> ((mtime, size), err|None)
 
 
-def _session_awaiting(sid, path, idle):
+_SESSION_STAMP_CACHE = {}    # sid -> ((goals mtime,size, overrides mtime,size), why) — see _session_stamp_cached
+
+
+def _session_stamp_cached(sid):
+    """Freshest durable ⏳ awaiting stamp across ALL of a session's goals — the SESSION-level twin of
+    _goal_awaiting_stamp, so the rail chip and timeline lane (which read _session_awaiting, not the per-goal
+    stamp) light up the same restart-proof awaiting the feed card already shows off the stamp (the user
+    2026-07-22). mtime-cached on the goal-store + override-journal files so an ordinary idle session — which
+    falls through every live source to here every render — does not reparse the store each tick."""
+    sid = str(sid)
+    try:
+        gs = (jd.GOALDIR / (sid + ".json")).stat()
+        gkey = (gs.st_mtime, gs.st_size)
+    except Exception:
+        return None                                    # no store yet → nothing to stamp
+    try:
+        ostt = (jd._overrides_dir() / (sid + ".jsonl")).stat()
+        okey = (ostt.st_mtime, ostt.st_size)
+    except Exception:
+        okey = None                                    # no override journal is normal
+    key = (gkey, okey)
+    hit = _SESSION_STAMP_CACHE.get(sid)
+    if hit and hit[0] == key:
+        return hit[1]
+    why = None
+    try:                                               # load_goals (not a raw read) so overrides replay —
+        nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
+        best = None
+        for nd in nodes.values():
+            if nd.get("awaitingWhy") and not nd.get("rolledUp"):
+                cand = (nd.get("awaitingAt") or 0, nd["awaitingWhy"])
+                best = cand if best is None else max(best, cand)
+        why = best[1] if best else None
+    except Exception:
+        why = None
+    _SESSION_STAMP_CACHE[sid] = (key, why)
+    return why
+
+
+def _session_awaiting(sid, path, idle, stamp=False):
     """A session AWAITING dispatched/delegated background work (a WORKING flavor, the user 2026-06-22) → a
     one-line 'why' for the ⏳ awaiting badge, else None. Only when IDLE — an actively producing turn is
     just 'working'. Three EVENT-BASED sources, in order:
@@ -4987,6 +5026,14 @@ def _session_awaiting(sid, path, idle):
          CLI spawn stamp when one exists. A DORMANT session never reaches it: its tasks died with its CLI,
          so the death notice — not awaiting — is the truth there.
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
+      2. the JUDGE's durable ⏳ stamp (_session_stamp_cached), OPT-IN via stamp=True — the closer's awaiting
+         verdict, materialized in the goal store, so it OUTLIVES a kernel restart (sources 0-1 die with the
+         backend, which is how a genuinely-waiting session read 'stalled'). LIVE-only: a dormant session's
+         dispatched work died with its CLI, so a stale stamp must not resurrect it. Only the SESSION-scoped
+         display consumers pass stamp=True (the rail chip / chat-view chip / timeline lane, each ONE indicator
+         per session, for which "the session is awaiting" is the right summary). The FEED does NOT: it scopes
+         the stamp per goal via _goal_awaiting_stamp, so a stamp on one goal never floors its siblings to
+         awaiting (a session-wide _await_ok would). The nudge gates skip via their own per-goal stamp check.
     Postal peer-waits are handled separately in build_feed."""
     if not idle:
         return None
@@ -5026,6 +5073,13 @@ def _session_awaiting(sid, path, idle):
     ov = _states_awaiting_overlay(sid)
     if ov is not None:                                # a producer is writing overlay records → trust it
         return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
+    # Source 2 — the JUDGE's durable ⏳ stamp (restart-proof), OPT-IN. Only for a LIVE CLI (`live is not None`
+    # means a backend snapshot exists, tmux or SDK; a dormant session never resurrects off a stale stamp) AND
+    # only when the caller asked (stamp=True): the session-scoped display surfaces want it, the per-goal feed
+    # scopes it itself. This is what carries a genuinely-awaiting session's rail chip + timeline lane across a
+    # restart, the same read the feed card floors to per goal via _goal_awaiting_stamp.
+    if live is not None and stamp:
+        return _session_stamp_cached(sid)
     return None
 
 
@@ -6646,7 +6700,7 @@ def _session_chip(sid, path, session, tm, now):
     freshest parse the caller has (live-merged where available); `tm` the backend snapshot or None."""
     turns = session.get("turns", [])
     open_now = _session_working(turns)
-    awaiting_why = _session_awaiting(sid, path, not open_now)
+    awaiting_why = _session_awaiting(sid, path, not open_now, stamp=True)   # session-scoped chip → durable stamp too
     aerr = _api_error(path) if not (open_now or awaiting_why) else None
     st = (tm or {}).get("state", "") or ""
     compacting = _compacting(sid, st, session, now, (tm or {}).get("since"))
@@ -7828,8 +7882,9 @@ def build_session(sid, now, tmux=None):
     open_now = _session_working(session["turns"])
     # AWAITING dispatched/delegated work (background agents) — a WORKING flavor, "in flight, not stalled" (the
     # user 2026-06-22), the SAME signal _nudge + build_feed use. Only meaningful when the main turn is idle
-    # (_session_awaiting returns None while open_now).
-    awaiting_why = _session_awaiting(sid, sess["path"], not open_now)
+    # (_session_awaiting returns None while open_now). Session-scoped chat-view chip → the durable stamp too,
+    # so the composer's awaiting chip survives a kernel restart like the feed card.
+    awaiting_why = _session_awaiting(sid, sess["path"], not open_now, stamp=True)
     # API error → the session is BLOCKED until retried: a bottom card (renderApiError, a RED dot) AND the chip
     # flips to "blocked" below. Detected event-based from the transcript (isApiErrorMessage), so the exact
     # text (500 / timeout / model-not-found) doesn't matter (the user 2026-06-16). GATED on the session NOT
@@ -10592,7 +10647,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         # last designed chat/timeline split). Named awaitingBg: the lane's legacy 'awaiting' STATE and the
         # `awaiting` intervals field below both mean blocked-on-YOU. Cheap (live subagent snapshot + states
         # overlay), so both the skeleton and the bars build carry it.
-        awaiting_bg = (_session_awaiting(sid, s["path"], not open_now) if live else None)
+        awaiting_bg = (_session_awaiting(sid, s["path"], not open_now, stamp=True) if live else None)
         sessions.append({
             "id": sid, "name": name, "live": live, "state": state, "awaitingBg": awaiting_bg,
             # the live bg-task descriptions behind awaitingBg (the user 2026-07-13): the lane draws the

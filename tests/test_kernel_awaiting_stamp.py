@@ -76,7 +76,7 @@ class NudgeFailedRespectsTheStamp(unittest.TestCase):
         km.jd.GOALDIR.mkdir(parents=True)
         km._autonudge_cache.clear()
         self.gid = SID + ":g1"
-        km._session_awaiting = lambda sid, path, idle: None   # the LIVE sources are dark (post-restart)
+        km._session_awaiting = lambda sid, path, idle, stamp=False: None   # the LIVE sources are dark (post-restart)
         km._path_of = lambda sid, now=None: "/nonexistent"
         (td / "auto-nudge.json").write_text(json.dumps(
             {"enabled": True, "nudged": {self.gid: {"count": 1, "lastTurnId": "t1"}}}))
@@ -108,6 +108,81 @@ class NudgeFailedRespectsTheStamp(unittest.TestCase):
         store = km.jd.load_goals(SID)
         self.assertTrue(store["nodes"][self.gid]["blocked"], "the existing stall→block behavior stands")
         self.assertTrue(km._auto_nudge_data()["nudged"][self.gid].get("failed"))
+
+
+class SessionLevelStamp(unittest.TestCase):
+    """Source 2 of _session_awaiting (2026-07-22): the durable stamp reaching the SESSION-scoped surfaces
+    (rail chip / chat-view chip / timeline lane) via stamp=True, so a genuinely-awaiting session stays
+    green/faded across a kernel restart where the live sources go dark. The FEED passes stamp=False (its own
+    per-goal _goal_awaiting_stamp scoping) so one goal's stamp never floors its siblings."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"
+        km.jd.GOALDIR.mkdir(parents=True)
+        km._SESSION_STAMP_CACHE.clear()
+        km._states_awaiting_overlay = lambda sid: None
+        # a LIVE snapshot with an EMPTY bg-task set (SDK-style): sources 0-1 find nothing and fall through to
+        # the stamp; the present "bgTasks" key means source 0.75 (transcript pairing) is skipped as well
+        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+
+    def tearDown(self):
+        km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay = self._saved
+        km._SESSION_STAMP_CACHE.clear()
+        self.td.cleanup()
+
+    def _seed(self, *stamps):
+        nodes = {nid: _node(nid, why=why, at=at) for nid, why, at in stamps}
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
+
+    def test_session_stamp_takes_the_freshest_across_ALL_tops(self):
+        # session-level, so it scans every goal (not one subtree like _goal_awaiting_stamp) for the newest
+        self._seed(("g1", "the older wait, padded", 100), ("g2", "the newer wait", 300))
+        self.assertEqual(km._session_stamp_cached(SID), "the newer wait")
+
+    def test_stamp_true_lifts_a_live_session_whose_live_sources_are_dark(self):
+        self._seed(("g1", "the watcher it armed; files the clip when it triggers", 200))
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         "the watcher it armed; files the clip when it triggers")
+
+    def test_stamp_false_stays_none_so_the_feed_scopes_per_goal(self):
+        # the crux: the feed calls stamp=False, so the session-level signal is None for a stamp-only session
+        # and _await_ok can never floor a SIBLING working goal — only _goal_awaiting_stamp floors the one goal
+        self._seed(("g1", "some async wait", 200))
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=False))
+
+    def test_a_dormant_session_never_resurrects_off_a_stale_stamp(self):
+        self._seed(("g1", "a wait whose CLI is gone", 200))
+        km._tmux_sessions = lambda: {}          # SID not in the live set → live is None
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
+
+    def test_an_open_turn_is_working_not_awaiting_even_with_a_stamp(self):
+        self._seed(("g1", "async wait", 200))
+        self.assertIsNone(km._session_awaiting(SID, "/p", False, stamp=True), "idle=False short-circuits")
+
+    def test_the_chip_reads_awaitingBg_for_a_stamp_only_live_session(self):
+        # end to end: no live source, only the stamp → the shared _session_chip derivation still says awaiting
+        self._seed(("g1", "the watcher it armed", 200))
+        saved = (km._session_working, km._api_error, km._compacting, km._interrupting)
+        km._session_working = lambda turns: False
+        km._api_error = lambda path: None
+        km._compacting = lambda *a, **k: False
+        km._interrupting = lambda *a, **k: False
+        try:
+            chip = km._session_chip(SID, "/p", {"turns": []}, km._tmux_sessions()[SID], NOW)
+        finally:
+            km._session_working, km._api_error, km._compacting, km._interrupting = saved
+        self.assertEqual(chip, "awaitingBg")
+
+    def test_the_cache_invalidates_when_the_store_changes(self):
+        self._seed(("g1", "first wait", 200))
+        self.assertEqual(km._session_stamp_cached(SID), "first wait")
+        self._seed(("g1", "second wait, a different length so size differs", 300))
+        self.assertEqual(km._session_stamp_cached(SID), "second wait, a different length so size differs")
 
 
 if __name__ == "__main__":
