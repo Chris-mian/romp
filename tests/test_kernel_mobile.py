@@ -295,6 +295,18 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertNotIn(".tab-collapse", js)
         self.assertNotIn("#mcoll", css)
 
+    def test_picker_rows_have_an_end_session_control(self):
+        # the user 2026-07-22: the mobile picker had no way to end a session (desktop has the tab x). Add a
+        # per-row x that clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog
+        # (Close tab / End session / Cancel) + the endSession/closeTab plumbing — no new backend.
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
+        self.assertIn("x.className='mclose'", js)
+        self.assertIn("x.title='End session'", js)
+        # it triggers the real tab's close x, and stops propagation so it doesn't also switch sessions
+        self.assertIn("var c=rt&&rt.querySelector('.tab-close');if(c)c.click();", js)
+        self.assertIn("e.stopPropagation();hide();", js)
+        self.assertIn(".mrow .mclose{", css)
+
 
 class RevealRouting(unittest.TestCase):
     def test_reveal_chat_focuses_chat_and_nudges_shell(self):

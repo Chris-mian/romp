@@ -11557,6 +11557,9 @@ _CHAT_MOBILE_CSS = (
     ".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     ".mrow .workdot.await{background:var(--st-awaitbg-bg,#54B204)}"   # green: idle-waiting-on-bg-work
     ".mrow .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dddddd}"
+    # per-row end-session x (the mobile picker's only way to end a session — desktop has the tab x)
+    ".mrow .mclose{flex:0 0 auto;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"
+    ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
     # more space than is available, about 20 percent too wide, with the controls not all fitting). Measured
@@ -11610,6 +11613,12 @@ if(s.working){var wd=document.createElement('span');wd.className='workdot';row.a
 else if(s.awaitbg){var wd=document.createElement('span');wd.className='workdot await';row.appendChild(wd);}
 var lbl=document.createElement('span');lbl.className='nm';lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;
 row.appendChild(lbl);
+// End-session x: clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog (Close tab /
+// End session / Cancel) + endSession/closeTab plumbing — the mobile picker's only way to end a session
+// (the user 2026-07-22). stopPropagation so it doesn't also switch to the session.
+var x=document.createElement('span');x.className='mclose';x.textContent='×';x.title='End session';
+x.addEventListener('click',function(e){e.stopPropagation();hide();var rt=realTab(s.id);var c=rt&&rt.querySelector('.tab-close');if(c)c.click();});
+row.appendChild(x);
 row.addEventListener('click',function(){var rt=realTab(s.id);if(rt)rt.click();hide();});
 list.appendChild(row);});}
 cur.addEventListener('click',function(e){e.stopPropagation();list.classList.toggle('open');});
