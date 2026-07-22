@@ -2,9 +2,14 @@
 """Which triggers get a provisional 'Analyzing…' placeholder — the "a WORKING session always shows a card"
 invariant, and its two boundaries.
 
-A SLASH-COMMAND turn must NOT spawn one (the user 2026-06-29): the planner SKIPS command segments (they never
-become goals), so they never get a `placement` — a command-triggered placeholder would hang forever (the JLD
-`/usage` case). But a kernel RESUME turn MUST get one (the user 2026-07-09): a romp-system restart/resume
+A BARE slash-command turn must NOT spawn one (the user 2026-06-29): the planner SKIPS such segments (they
+never become goals), so they never get a `placement` — that placeholder would hang forever (the JLD `/usage`
+case). NARROWED 2026-07-22: a command that put the MODEL to work (a skill / custom command carrying the real
+ask in its args, `/jld <request>`) IS planned now, so it DOES get a placeholder and that placeholder drops on
+schedule — the old blanket rule left such a session with no card at all. The discriminator is exact: a
+built-in's <local-command-stdout> becomes a SYNTHETIC assistant atom flagged `command`, while model-side atoms
+(a skill's skillMd payload, ordinary reply/tool-use) carry no such flag — see jd._seg_command_worked.
+But a kernel RESUME turn MUST get one (the user 2026-07-09): a romp-system restart/resume
 notice reopens the session's OWN work after a `romp --refresh` or a crash heal, and leaving that actively-
 working session cardless is the bug that prompted this — it read WORKING with nothing to click. Safe because,
 unlike a command, a system segment IS placed when it ends (plan_units' housekeeping 'work' unit, placed even
@@ -45,6 +50,25 @@ class ProvisionalCommand(unittest.TestCase):
                             "message": {"role": "user", "content": "<command-name>/usage</command-name>"}}])
         card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
         self.assertIsNone(card, "a slash-command turn never warrants a provisional placeholder")
+
+    def test_a_worked_command_turn_DOES_get_a_placeholder(self):
+        # `/jld <the ask>` — a SKILL / custom command carrying a real request in its args, with the model now
+        # working on it. Unlike a bare built-in it IS placed by the planner (_seg_command_worked), so its
+        # placeholder drops on schedule instead of hanging. Without this the JLD session ran with NO card at
+        # all, not even a provisional one (the user 2026-07-22).
+        now = int(time.time())
+        s = self._session([
+            {"type": "user", "timestamp": _iso(now - 5), "uuid": "c1", "parentUuid": None,
+             "message": {"role": "user",
+                         "content": "<command-name>/jld</command-name>\n"
+                                    "<command-args>design a speech pathology curriculum</command-args>"}},
+            {"type": "assistant", "timestamp": _iso(now - 3), "uuid": "a1", "parentUuid": "c1",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it…"}],
+                         "stop_reason": None}}])
+        card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
+        self.assertIsNotNone(card, "a command that put the model to work warrants a placeholder")
+        self.assertEqual(card["column"], "working")
+        self.assertTrue(card["provisional"])
 
     def test_a_real_prompt_still_gets_a_placeholder(self):
         now = int(time.time())

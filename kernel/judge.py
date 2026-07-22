@@ -3241,9 +3241,16 @@ def plan_units(session, store=None):
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
         segs = _segs(turn, store) if store is not None else em.segments(turn)
         for si, seg in enumerate(segs):
-            if _seg_command(seg):                         # a slash-command turn — tracked in chat/timeline, but NEVER a goal/feed card
-                continue
+            _is_cmd = _seg_command(seg)
+            if _is_cmd and not _seg_command_worked(seg):   # a BARE slash command (/model, /compact, /usage): tracked in
+                continue                                  # chat + timeline, but never a goal / feed card. A command that
+                #                                           put the MODEL to work — a skill or custom command carrying the
+                #                                           real ask in its args — falls through and is planned like any
+                #                                           other prompt (the user 2026-07-22: a `/jld <request>` session
+                #                                           ran with NO card at all, not even a provisional one).
             work_text = _unit_text(seg["atoms"])
+            if _is_cmd:                                   # title from the request, not from the invocation
+                work_text = _strip_cmd_prefix(work_text, seg)
             if not work_text:
                 continue
             if seg.get("seam"):                           # settle-time seam tail (plans/segment-regrowth.md): work that
@@ -3267,6 +3274,8 @@ def plan_units(session, store=None):
                     # slash-shaped → DEFER to the close (the CLI 2.1.215+ raw-record window; see
                     # _seg_slash_shaped): mid-window it may be a command whose wrapper hasn't landed
                     ptext = _prompt_text(seg["atoms"])
+                    if _is_cmd:                           # same: the ask, not the invocation
+                        ptext = _strip_cmd_prefix(ptext, seg)
                     if ptext:
                         out.append((seg["id"], "prompt", seg["t"], ptext, human, followup, trig, vq))
                 if (human and store is not None and not _seg_nudge(seg)
@@ -6917,6 +6926,45 @@ def _seg_command(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and trig.get("command"))
+
+
+def _seg_command_worked(seg):
+    """True if a COMMAND segment actually put the MODEL to work, rather than the CLI doing something locally
+    and printing the result (the user 2026-07-22). This is the line between a SKILL / custom slash command
+    carrying the real ask in its args (`/jld <the ask>`: the model then works on it, so it deserves a goal +
+    feed card — without this its work was invisible, no card and not even a provisional one) and a BARE
+    built-in (`/model`, `/compact`, `/usage`, `/clear`: nothing to file).
+
+    The event model already draws that line, so this needs no name list and no args heuristic. A built-in's
+    `<local-command-stdout>` becomes a SYNTHETIC assistant atom flagged `command` (event_model LOCAL_STDOUT_RE),
+    while everything the model side produces — a skill's injected instructions payload (skillMd) or ordinary
+    reply / tool-use atoms — is a plain assistant atom with no such flag. "Any assistant atom that is not the
+    stdout echo" IS the discriminator: exact, list-free, and it stays correct as commands come and go (a
+    built-in that genuinely works, like /init, then correctly earns a card). Before the model produces
+    anything this is False, so the decision DEFERS to the first real atom instead of guessing at invocation
+    time — the same never-suppress-always-defer posture _seg_slash_shaped takes."""
+    for a in (seg.get("atoms") or []):
+        if a.get("type") == "assistant" and not a.get("command"):
+            return True
+    return False
+
+
+def _strip_cmd_prefix(text, seg):
+    """Drop a WORKED command segment's leading `/<name>` token from the text the PLANNER reads, so the goal is
+    titled from the user's actual request ("/jld i'm designing X" → "i'm designing X") instead of from the
+    invocation. Display is untouched: chat and timeline still show the command verbatim. Defensive — text that
+    doesn't start with the exact command name, or an args-less command (nothing would be left), is returned
+    unchanged."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    name = (trig or {}).get("command")
+    if not isinstance(name, str) or not text:
+        return text
+    head = text.lstrip()
+    if not head.startswith(name):
+        return text
+    rest = head[len(name):].lstrip()
+    return rest or text                      # args-less (`/router`) → the name is all we have; keep it
 
 
 BARE_SLASH_RE = re.compile(r"^/[A-Za-z][\w:-]*(?:[ \t][^\n]*)?$")   # one line, leading slash-word: "/compact",

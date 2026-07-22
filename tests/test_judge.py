@@ -784,6 +784,49 @@ class PlanParseStorm(unittest.TestCase):
         self.assertEqual([u[1] for u in units], ["prompt"],
                          "a path-leading real prompt still places immediately")
 
+    # A BARE built-in still files nothing; a command that put the MODEL to work does (the user 2026-07-22).
+    # The JLD case: `/jld <request>` ran with no card at all, not even provisional, because every command
+    # segment was skipped outright. The discriminator is exact: a built-in's <local-command-stdout> becomes a
+    # SYNTHETIC assistant atom flagged `command`, model-side atoms carry no such flag.
+    def test_a_bare_command_still_yields_no_unit(self):
+        recs = [uline(T0, "<command-name>/usage</command-name>", "u1"),
+                uline(T0 + 5, "<local-command-stdout>tokens: 12k</local-command-stdout>", "u2", "u1")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual(units, [], "a bare built-in command never becomes a goal or feed card")
+
+    def test_a_command_that_put_the_model_to_work_is_planned(self):
+        recs = [uline(T0, "<command-name>/jld</command-name>\n<command-args>design a speech pathology "
+                          "curriculum</command-args>", "u1"),
+                aline(T0 + 10, "Here is a first outline.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"],
+                         "a skill/custom command carrying the real ask is filed like any prompt")
+
+    def test_a_worked_command_titles_from_the_request_not_the_invocation(self):
+        recs = [uline(T0, "<command-name>/jld</command-name>\n<command-args>design a speech pathology "
+                          "curriculum</command-args>", "u1"),
+                aline(T0 + 10, "Here is a first outline.", "a1", "u1", stop="end_turn")]
+        text = jd.plan_units(build_session(recs))[0][3]
+        self.assertIn("speech pathology", text, "the ask survives into the planner text")
+        self.assertFalse(text.lstrip().startswith("/jld"),
+                         "the '/jld' invocation is stripped so the goal titles from the request")
+
+    def test_an_open_worked_command_places_its_ask_immediately(self):
+        # the card must appear the moment the model starts working, not only at the close
+        recs = [uline(T0, "<command-name>/jld</command-name>\n<command-args>design a curriculum"
+                          "</command-args>", "u1"),
+                aline(T0 + 10, "Working on it…", "a1", "u1", stop=None)]        # OPEN
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["prompt"], "an open worked command places its ask now")
+
+    def test_the_invocation_alone_defers_until_the_model_acts(self):
+        # nothing model-side yet → indistinguishable from a bare built-in, so DEFER (never suppress): the
+        # first real atom decides, mirroring _seg_slash_shaped's posture
+        recs = [uline(T0, "<command-name>/jld</command-name>\n<command-args>design a curriculum"
+                          "</command-args>", "u1")]
+        self.assertEqual(jd.plan_units(build_session(recs)), [],
+                         "before the model acts, a command invocation files nothing")
+
     def test_units_carry_the_segments_trigger_uuid(self):
         # the user 2026-07-01, via bugs: plan_units' 7th field is the segment's OWN trigger atom uuid
         # (the human message that opened it), threaded through to apply_plan for node["promptUuid"].

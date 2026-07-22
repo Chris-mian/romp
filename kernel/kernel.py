@@ -8604,9 +8604,14 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     # drops), unlike a command segment which is never placed. Genuine peer/sdk triggers stay excluded.
     if not jd._seg_human(held) and not held.get("seam") and not jd._seg_system(held):
         return None
-    if jd._seg_command(held) or jd._seg_slash_shaped(held):   # a SLASH-COMMAND turn is never classified into a goal (the
-        return None                                  # planner skips it), so it would NEVER place → the placeholder would
-                                                     # hang forever (the JLD /usage case). No placeholder for a command.
+    if (jd._seg_command(held) and not jd._seg_command_worked(held)) or jd._seg_slash_shaped(held):
+        return None                                  # a BARE slash command is never classified into a goal (the
+                                                     # planner skips it), so it would NEVER place → the placeholder would
+                                                     # hang forever (the JLD /usage case). No placeholder for a bare
+                                                     # command. One that put the MODEL to work (a skill / custom command
+                                                     # carrying the real ask in its args) IS placed now
+                                                     # (_seg_command_worked, the user 2026-07-22), so its placeholder
+                                                     # drops on schedule and that work stops being invisible.
                                                      # (2026-06-29). _seg_slash_shaped covers the CLI 2.1.215+ window where a
                                                      # typed /compact lands as a raw-text human atom ~90s BEFORE its
                                                      # <command-name> wrapper (past the compact_boundary): _seg_command is
