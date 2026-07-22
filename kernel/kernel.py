@@ -4521,7 +4521,15 @@ def _update_remote(host):
         # can't run (or the port never returns) we relaunch romp-serve bare as a last resort so the host isn't
         # left dead. The port poll confirms whichever path brought it back.
         'if [ ! -x "$R/bin/romp-serve" ]; then echo "NOLAUNCH:$NEW"; exit 0; fi; '
-        'pkill -f "bin/romp-kernel" 2>/dev/null; '
+        # SELF-MATCH GUARD. `pkill -f` matches its pattern against every process's FULL COMMAND LINE —
+        # including this apply script's own, because the pattern text sits literally inside it. The plain
+        # spelling therefore killed the apply shell AT THIS LINE, before it could restart the kernel or
+        # echo SYNCED. The reset had already run, so the code really was synced, but romp reported
+        # "remote apply failed" and left the host with NO kernel — both halves of "pushes always fail and
+        # it's never clear why", plus the recurring dead remote, from this one line (the user 2026-07-22).
+        # `romp-kern[e]l` is a regex that still matches the real process (romp-kernel) while NOT matching
+        # this script's own text (romp-kern[e]l), so pkill can no longer take itself down.
+        'pkill -f "bin/romp-kern[e]l" 2>/dev/null; '
         'if command -v node >/dev/null 2>&1 && [ -x "$R/bin/romp-manager" ]; then "$R/bin/romp-manager" ensure >>"$LOGDIR/update.log" 2>&1 || true; fi; '
         'UP=0; for i in 1 2 3 4 5 6 7 8; do sleep 1; if bash -c "exec 3<>/dev/tcp/127.0.0.1/%d" 2>/dev/null; then UP=1; break; fi; done; '
         'if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null &  sleep 1; fi; '
