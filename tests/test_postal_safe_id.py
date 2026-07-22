@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Regression guard for the Romp Postal Service path-traversal hole (the bus is
-unauthenticated and ids/names arriving over it are used as path components under
-the mail/names roots). A crafted reference like `../../../etc` must be rejected
+"""Regression guard for the Romp Postal Service path-traversal hole (ids/names
+arriving over the bus are used as path components under the mail/names roots).
+The bus is token-gated now (test_postal_token.py), but these checks stay as
+defense-in-depth: a crafted reference like `../../../etc` must be rejected
 before any path join, so it cannot read or clobber files outside those roots.
 
 Synthetic only — placeholder UUIDs, hermetic temp state dir, no real session data.

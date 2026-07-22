@@ -116,7 +116,8 @@ class JudgeSettings(unittest.TestCase):
         for sel in ("id=rs-judgemodel", "id=rs-judgeeffort", "id=rs-indexmodel", "id=rs-indexeffort"):
             self.assertIn(sel, html)
         # options come from GET /models at open (2026-07-13) — plain labels, one source
-        self.assertIn("fetch(kb() + '/models'", html)
+        # (ku() = kb() + the ?token= the kernel now requires on every request)
+        self.assertIn("fetch(ku('/models')", html)
         self.assertIn({"value": "sonnet", "label": "Sonnet"}, km.MODEL_CHOICES)
         self.assertNotIn("balanced", html)   # descriptions dropped (the user, who wanted just the model names)
 

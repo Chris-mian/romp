@@ -217,9 +217,12 @@ tailscale serve reset         # back to local-only
 ```
 
 With Tailscale on the phone, the full dashboard is in your pocket: check the
-feed, answer a blocked card, start a session. Only devices signed into your
-tailnet can connect (WireGuard device identity plus TLS); nothing is opened to
-your LAN or the internet, and the proxy persists across restarts of both
-Tailscale and the kernel. Don't use `tailscale funnel` (the public-internet
-variant): the kernel trusts loopback-proxied connections as local, so a funnel
-would publish the dashboard unauthenticated.
+feed, answer a blocked card, start a session. On the phone's **first** open,
+append the access token — `https://<machine>.<tailnet>.ts.net/?token=<token>`,
+with the token from `romp --url` (or paste it into the page a bare open
+serves); a year-long cookie remembers the phone after that. Only devices
+signed into your tailnet can connect (WireGuard device identity plus TLS);
+nothing is opened to your LAN or the internet, and the proxy persists across
+restarts of both Tailscale and the kernel. Still don't use `tailscale funnel`
+(the public-internet variant): the token would then be the only thing between
+the internet and your agents, with no device identity in front of it.

@@ -9,18 +9,33 @@ commit than local). Uncommitted local edits are NOT sent — commit first. (To u
 `git pull`/checkout then `romp --refresh`.)
 """
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 KPORTS = ["http://127.0.0.1:7433", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
+
+
+def _token():
+    """The serve token — required on every kernel request, loopback included (Jupyter's model).
+    Same resolution the kernel uses: env override, else the 0600 state file."""
+    t = (os.environ.get("ROMP_SERVE_TOKEN") or "").strip()
+    if t:
+        return t
+    try:
+        base = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local/state"))
+        return (base / "romp" / "serve-token").read_text().strip()
+    except OSError:
+        return ""
 
 
 def _kernel():
     """The base URL of the running LOCAL kernel (it owns the remote tunnels), or None."""
     for u in KPORTS:
         try:
-            with urllib.request.urlopen(u + "/version", timeout=1.5) as r:
+            with urllib.request.urlopen(u + "/version", timeout=1.5) as r:   # /version is auth-exempt
                 if r.status == 200:
                     return u
         except Exception:
@@ -29,13 +44,15 @@ def _kernel():
 
 
 def _get(u, path):
-    with urllib.request.urlopen(u + path, timeout=5) as r:
+    req = urllib.request.Request(u + path, headers={"X-Romp-Token": _token()})
+    with urllib.request.urlopen(req, timeout=5) as r:
         return json.loads(r.read().decode() or "{}")
 
 
 def _post(u, path, body):
     req = urllib.request.Request(u + path, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers={"Content-Type": "application/json",
+                                          "X-Romp-Token": _token()}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=120) as r:          # git pull + restart can take a while
             return json.loads(r.read().decode() or "{}")

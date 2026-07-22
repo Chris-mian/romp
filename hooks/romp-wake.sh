@@ -18,5 +18,10 @@ set -uo pipefail
 cat >/dev/null 2>&1 || true
 
 port="${ROMP_SERVE_PORT:-7433}"
-( curl -sf -m 0.5 -X POST "http://127.0.0.1:${port}/tick" -o /dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1
+# The kernel gates every request on the serve token, loopback included (Jupyter's model) — read it
+# the way the kernel resolves it: env override, else the 0600 state file. Missing token → the poke
+# 403s silently, same posture as no kernel at all (the 20s backstop covers it).
+tok="${ROMP_SERVE_TOKEN:-}"
+[[ -n "$tok" ]] || tok="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token" 2>/dev/null || true)"
+( curl -sf -m 0.5 -X POST -H "X-Romp-Token: ${tok}" "http://127.0.0.1:${port}/tick" -o /dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1
 exit 0

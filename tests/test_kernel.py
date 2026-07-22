@@ -5617,9 +5617,11 @@ class WsFraming(unittest.TestCase):
 
 
 class ServeSecurity(unittest.TestCase):
-    """The serve-layer gate (docs/read-side.md): Origin/Host validation on every request AND the
-    /ws upgrade (kills the cross-site WS hole token-free), + ROMP_SERVE_TOKEN for non-local reach.
-    Runs the REAL handler over a loopback server (GET /feed is a static page → no model calls)."""
+    """The serve-layer gate (docs/read-side.md): Origin validation on every request AND the /ws
+    upgrade (kills the cross-site WS hole token-free), + the serve token REQUIRED on every gated
+    route, loopback included (Jupyter's model — loopback is reachable by every local user, so the
+    0600 token file, not the socket, is the same-user boundary). Runs the REAL handler over a
+    loopback server (GET /feed is a static page → no model calls)."""
 
     @classmethod
     def setUpClass(cls):
@@ -5642,8 +5644,14 @@ class ServeSecurity(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code
 
-    def test_local_request_allowed(self):
-        self.assertEqual(self._code("/feed", {}), 200)
+    def test_loopback_needs_token_and_all_forms_work(self):
+        # Loopback is NOT a trust boundary: token-free → 403 even from 127.0.0.1. Every credential
+        # form authorizes: ?token= (browser bootstrap), the cookie it seeds, X-Romp-Token (CLI/hooks).
+        self.assertEqual(self._code("/feed", {}), 403)
+        self.assertEqual(self._code("/feed?token=testtok", {}), 200)
+        self.assertEqual(self._code("/feed", {"Cookie": "romp_token=testtok"}), 200)
+        self.assertEqual(self._code("/feed", {"X-Romp-Token": "testtok"}), 200)
+        self.assertEqual(self._code("/feed", {"X-Romp-Token": "wrong"}), 403)
 
     def test_restart_endpoint_acks_post(self):
         """The web Restart button (↻) POSTs /restart; the kernel must ACK {ok,restarting} (and, with a
@@ -5653,7 +5661,8 @@ class ServeSecurity(unittest.TestCase):
         import urllib.request, json as _json
         saved = os.environ.pop("ROMP_MANAGER_PORT", None)   # never trigger a real restart-all in a test
         try:
-            req = urllib.request.Request("http://127.0.0.1:%d/restart" % self.port, method="POST", data=b"")
+            req = urllib.request.Request("http://127.0.0.1:%d/restart?token=testtok" % self.port,
+                                         method="POST", data=b"")
             with urllib.request.urlopen(req, timeout=5) as r:
                 self.assertEqual(r.status, 200)
                 self.assertEqual(_json.loads(r.read().decode()), {"ok": True, "restarting": True})
@@ -5664,11 +5673,13 @@ class ServeSecurity(unittest.TestCase):
     def test_tick_endpoint_wakes_producer(self):
         """POST /tick is the event-driven judge trigger: the Stop / UserPromptSubmit hooks poke it the
         instant a turn ends / a prompt lands, and it must wake the producer (set _producer_wake) so the
-        judges run NOW instead of on the next 20s backstop tick. Local request → no token needed."""
+        judges run NOW instead of on the next 20s backstop tick. The hook authorizes with the
+        X-Romp-Token header (read from the 0600 token file) — exercised here the same way."""
         import urllib.request, json as _json
         km._producer_wake.clear()
         self.assertFalse(km._producer_wake.is_set())
-        req = urllib.request.Request("http://127.0.0.1:%d/tick" % self.port, method="POST", data=b"")
+        req = urllib.request.Request("http://127.0.0.1:%d/tick" % self.port, method="POST", data=b"",
+                                     headers={"X-Romp-Token": "testtok"})
         with urllib.request.urlopen(req, timeout=5) as r:
             self.assertEqual(r.status, 200)
             self.assertEqual(_json.loads(r.read().decode()), {"ok": True, "woke": True})
@@ -5676,8 +5687,10 @@ class ServeSecurity(unittest.TestCase):
         km._producer_wake.clear()
 
     def test_unknown_post_path_is_404(self):
+        # authorized but unknown → 404 (auth runs first: unauthorized would be 403)
         import urllib.request, urllib.error
-        req = urllib.request.Request("http://127.0.0.1:%d/nope" % self.port, method="POST", data=b"")
+        req = urllib.request.Request("http://127.0.0.1:%d/nope?token=testtok" % self.port,
+                                     method="POST", data=b"")
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 code = r.status
@@ -5688,7 +5701,7 @@ class ServeSecurity(unittest.TestCase):
     def test_timeline_page_served(self):
         # the combined shell's third pane: /timeline injects the shared obsidian TimelinePanel verbatim
         import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:%d/timeline" % self.port, timeout=5) as r:
+        with urllib.request.urlopen("http://127.0.0.1:%d/timeline?token=testtok" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
             body = r.read().decode("utf-8", "replace")
         self.assertIn("TimelinePanel", body, "the shared obsidian view is injected")
@@ -5696,7 +5709,7 @@ class ServeSecurity(unittest.TestCase):
 
     def test_landing_has_three_panes(self):
         import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
+        with urllib.request.urlopen("http://127.0.0.1:%d/?token=testtok" % self.port, timeout=5) as r:
             body = r.read().decode("utf-8", "replace")
         for pane in ("src=/chat", "src=/feed", "src=/timeline"):
             self.assertIn(pane, body)
@@ -5759,7 +5772,7 @@ class ServeSecurity(unittest.TestCase):
     def test_fleet_page_served(self):
         # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, rendered by dist/fleet.js.
         import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:%d/fleet" % self.port, timeout=5) as r:
+        with urllib.request.urlopen("http://127.0.0.1:%d/fleet?token=testtok" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
             body = r.read().decode("utf-8", "replace")
         self.assertIn("id=fleet-list", body)
@@ -5800,7 +5813,7 @@ class ServeSecurity(unittest.TestCase):
         # below the mobile Chat/Feed/Timeline bar — dvh didn't match the painted viewport. The shell now
         # pins the height to window.visualViewport.height via --app-h, keeping 100dvh only as a fallback.
         import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
+        with urllib.request.urlopen("http://127.0.0.1:%d/?token=testtok" % self.port, timeout=5) as r:
             body = r.read().decode("utf-8", "replace")
         self.assertIn("visualViewport", body)               # the live-visible-height source
         self.assertIn("--app-h", body)                      # the custom prop the JS drives
@@ -5816,35 +5829,38 @@ class ServeSecurity(unittest.TestCase):
             "Sec-WebSocket-Key": "x", "Sec-WebSocket-Version": "13"}), 403)
 
     def test_same_origin_ws_passes_gate(self):
-        # same-origin upgrade passes the gate (101); urllib can't complete the upgrade, so a 101
-        # surfaces as a non-403 — assert it's NOT rejected
-        self.assertNotEqual(self._code("/ws?app=chat", {
+        # same-origin upgrade WITH the cookie passes the gate (101) — the served page always has it
+        # (the page itself required the token to load). urllib can't complete the upgrade, so a 101
+        # surfaces as a non-403 — assert it's NOT rejected. Token-free same-origin is 403 now.
+        ws_headers = {
             "Origin": "http://127.0.0.1:%d" % self.port, "Host": "127.0.0.1:%d" % self.port,
             "Upgrade": "websocket", "Connection": "Upgrade",
-            "Sec-WebSocket-Key": "x", "Sec-WebSocket-Version": "13"}), 403)
+            "Sec-WebSocket-Key": "x", "Sec-WebSocket-Version": "13"}
+        self.assertEqual(self._code("/ws?app=chat", dict(ws_headers)), 403)
+        self.assertNotEqual(self._code("/ws?app=chat",
+                                       dict(ws_headers, Cookie="romp_token=testtok")), 403)
 
     def test_healthz_exempt(self):
         self.assertEqual(self._code("/healthz", {"Origin": "http://evil.example"}), 200)
 
-    def test_forged_host_header_is_ignored_for_locality(self):
-        # Locality is judged by the REAL TCP peer, never the client-settable Host
-        # header: this loopback connection forging a non-local Host must STILL be
-        # local (200, no token). The dangerous inverse — remote peer forging
-        # Host: localhost — is pinned unit-level in test_kernel_auth_hardening.py.
-        h = {"Host": "100.64.1.2:%d" % self.port}
-        self.assertEqual(self._code("/feed", h), 200)
+    def test_host_header_has_no_auth_power(self):
+        # The Host header must carry NO authorization weight in either direction: a forged
+        # non-local Host with a valid token still authorizes, and a forged local Host without
+        # a token is still denied (the old proven bypass was Host-forged "locality"; locality
+        # itself is gone — the token decides, loopback included).
+        self.assertEqual(self._code("/feed?token=testtok", {"Host": "100.64.1.2:%d" % self.port}), 200)
+        self.assertEqual(self._code("/feed", {"Host": "localhost:%d" % self.port}), 403)
 
-    def test_nonlocal_peer_needs_token(self):
-        # The 403 path over a real request: a loopback socket can't present a
-        # non-local peer, so stub the locality verdict to "off-box client" and
-        # require the serve token end-to-end through _authorize.
-        orig = km.Handler._is_local_host
-        km.Handler._is_local_host = lambda self: False
-        try:
-            self.assertEqual(self._code("/feed", {}), 403)
-            self.assertEqual(self._code("/feed?token=testtok", {}), 200)
-        finally:
-            km.Handler._is_local_host = orig
+    def test_login_page_on_bare_root_open(self):
+        # A token-less browser open of "/" gets the paste-the-token page (Jupyter's login flow),
+        # not a dead 403 — and it must not leak anything but the entry instructions.
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            body = r.read().decode("utf-8", "replace")
+        self.assertIn("romp --url", body)                  # names the CLI that prints the tokened link
+        self.assertNotIn("testtok", body)                  # never echoes the token itself
+        self.assertNotIn("src=/chat", body)                # none of the real shell is served
 
 
 class HostSuspend(unittest.TestCase):

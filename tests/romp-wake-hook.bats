@@ -38,6 +38,25 @@ teardown() { rm -rf "$TEST_DIR"; }
     grep -q 'http://127.0.0.1:7433/tick' "$CURL_LOG"
 }
 
+@test "romp-wake sends the serve token header (env override form)" {
+    # The kernel gates every request on the serve token, loopback included — the poke
+    # must carry X-Romp-Token or it 403s silently and the judges fall back to the backstop.
+    ROMP_SERVE_TOKEN=tok-from-env run bash -c 'echo "{}" | "'"$HOOK"'"'
+    [ "$status" -eq 0 ]
+    for _ in $(seq 1 40); do [ -s "$CURL_LOG" ] && break; sleep 0.05; done
+    grep -q 'X-Romp-Token: tok-from-env' "$CURL_LOG"
+}
+
+@test "romp-wake reads the serve token from the state file" {
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf 'tok-from-file\n' > "$XDG_STATE_HOME/romp/serve-token"
+    run bash -c 'echo "{}" | "'"$HOOK"'"'
+    [ "$status" -eq 0 ]
+    for _ in $(seq 1 40); do [ -s "$CURL_LOG" ] && break; sleep 0.05; done
+    grep -q 'X-Romp-Token: tok-from-file' "$CURL_LOG"
+}
+
 @test "romp-wake never fails the turn when the kernel is unreachable" {
     rm "$MOCK/curl"                       # use the real curl against a dead port
     ROMP_SERVE_PORT=1 run bash -c 'printf "" | "'"$HOOK"'"'

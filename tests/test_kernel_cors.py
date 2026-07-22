@@ -49,10 +49,15 @@ class CorsDelivery(unittest.TestCase):
         self.srv.shutdown()
         self.srv.server_close()
 
-    def _req(self, method, path, origin=None, headers=None):
+    def _req(self, method, path, origin=None, headers=None, token=True):
+        # token=True sends X-Romp-Token (the serve token is required on every gated route,
+        # loopback included); the deny-path tests pass token=False so the ORIGIN gate is
+        # what decides (a valid token would authorize any origin and defeat the point).
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         try:
             h = dict(headers or {})
+            if token:
+                h.setdefault("X-Romp-Token", km.TOKEN)
             if origin is not None:
                 h["Origin"] = origin
             conn.request(method, path, headers=h)
@@ -70,7 +75,7 @@ class CorsDelivery(unittest.TestCase):
         self.assertIn("origin", (h.get("vary") or "").lower())
 
     def test_foreign_origin_gets_no_echo(self):
-        status, h = self._req("GET", "/models", origin="http://evil.example")
+        status, h = self._req("GET", "/models", origin="http://evil.example", token=False)
         self.assertEqual(status, 403, "the auth gate still rejects cross-site origins")
         self.assertIsNone(h.get("access-control-allow-origin"),
                           "a denied origin must never be echoed — the 403 stays unreadable")
@@ -105,8 +110,10 @@ class CorsDelivery(unittest.TestCase):
         self.assertIn("content-type", (h.get("access-control-allow-headers") or "").lower())
 
     def test_preflight_rejects_foreign_origin(self):
+        # Credential-less: the Origin gate decides. (WITH a valid token a foreign origin
+        # is approved on purpose — that's the federated dashboard's preflight.)
         status, h = self._req("OPTIONS", "/tunnels", origin="http://evil.example",
-                              headers={"Access-Control-Request-Method": "POST"})
+                              headers={"Access-Control-Request-Method": "POST"}, token=False)
         self.assertEqual(status, 403)
         self.assertIsNone(h.get("access-control-allow-origin"))
 

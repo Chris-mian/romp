@@ -87,18 +87,27 @@ class WsOriginGuard(unittest.TestCase):
             status, 403,
             "cross-site /ws upgrade must be rejected (got %s); see CVE-2026-25253" % status)
 
-    def test_absent_origin_accepted(self):
-        # Non-browser client (CLI / native) sends no Origin → allowed.
+    def test_absent_origin_needs_token(self):
+        # Non-browser client (CLI / native): the token is required even on loopback
+        # (Jupyter's model — the 0600 token file, not the socket, is the same-user
+        # boundary). Token-free → 403; with the token → upgrade.
         self.assertEqual(
-            _ws_handshake(self.port, origin=None), 101,
-            "absent-Origin (non-browser) client must still upgrade")
+            _ws_handshake(self.port, origin=None), 403,
+            "a token-less loopback client must be refused (loopback is not a trust boundary)")
+        self.assertEqual(
+            _ws_handshake(self.port, origin=None, token=km.TOKEN), 101,
+            "an absent-Origin client WITH the token must upgrade")
 
-    def test_same_origin_accepted(self):
-        # The local web UI: Origin matches the server's own host → allowed.
+    def test_same_origin_accepted_with_token(self):
+        # The local web UI: same-origin AND carrying the token (the served page always
+        # has it — the page itself required ?token=/cookie to load) → allowed.
         origin = "http://127.0.0.1:%d" % self.port
         self.assertEqual(
-            _ws_handshake(self.port, origin=origin), 101,
-            "same-origin local UI must still upgrade")
+            _ws_handshake(self.port, origin=origin), 403,
+            "same-origin without a token must be refused")
+        self.assertEqual(
+            _ws_handshake(self.port, origin=origin, token=km.TOKEN), 101,
+            "same-origin local UI with the token must upgrade")
 
     def test_valid_token_authorizes_foreign_origin(self):
         # FEDERATED dashboard: the browser is served by ANOTHER kernel, so its Origin is foreign

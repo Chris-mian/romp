@@ -15,6 +15,7 @@
 // The browser pages the kernel serves are this same pipe minus VS Code — both
 // front ends are clients of one kernel, sharing tabs with per-client focus.
 import * as vscode from "vscode";
+import * as fs from "fs";
 import * as http from "http";
 import * as path from "path";
 import * as os from "os";
@@ -30,6 +31,22 @@ import { parsePorcelain } from "./session-diff";
 import { buildMenu, usageSummary } from "./romp-menu";
 
 const HOST = "127.0.0.1";
+
+// The kernel serve token — required on EVERY kernel request, loopback included (Jupyter's model:
+// the 0600 state file, not the socket, is the same-user trust boundary; /healthz and /version stay
+// exempt). Same resolution order as the kernel's _load_token: env override, else the state file.
+// Read per call (a tiny local file): a freshly minted token is picked up on the next
+// fetch/reconnect without a window reload.
+function serveToken(): string {
+  const env = (process.env.ROMP_SERVE_TOKEN || "").trim();
+  if (env) return env;
+  try {
+    const base = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+    return fs.readFileSync(path.join(base, "romp", "serve-token"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
 
 // Build-drift banner (the user 2026-07-13, who wanted a banner when anything gets out of sync).
 // __ROMP_BUILD__ is baked by esbuild.js at bundle time (epoch seconds); every kernel keepalive carries
@@ -418,7 +435,7 @@ class KernelPipe {
     // One window-group id per VS Code window: the kernel routes a feed click's
     // focus to THIS window's chat panel (same mechanism as the combined
     // browser page's panes).
-    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}`);
+    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}&token=${encodeURIComponent(serveToken())}`);
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }
@@ -863,7 +880,8 @@ async function rompMenu() {
 // GET a kernel JSON endpoint; null on any failure (callers surface it).
 function fetchJson(path: string): Promise<any | null> {
   return new Promise((resolve) => {
-    const req = http.get({ host: HOST, port: kernelPort(), path, timeout: 2500 }, (res) => {
+    const req = http.get({ host: HOST, port: kernelPort(), path, timeout: 2500,
+                           headers: { "X-Romp-Token": serveToken() } }, (res) => {
       let body = "";
       res.on("data", (d) => (body += d));
       res.on("end", () => {
@@ -1113,7 +1131,7 @@ function buildHtml(webview: vscode.Webview): string {
 <body>
 ${chatBody(ATTACH_TITLE_VSCODE)}
   ${mediaBaseTag(webview, n)}
-  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompShowStrip=true;</script>
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompKernelToken=${JSON.stringify(serveToken())};window.__rompShowStrip=true;</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -1151,7 +1169,7 @@ function buildFeedHtml(webview: vscode.Webview): string {
 <body>
 ${FEED_BODY}
   ${mediaBaseTag(webview, n)}
-  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompShowStrip=true;</script>
+  <script nonce="${n}">window.__rompKernelBase=${JSON.stringify(kernelBase)};window.__rompKernelToken=${JSON.stringify(serveToken())};window.__rompShowStrip=true;</script>
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;

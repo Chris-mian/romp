@@ -595,6 +595,7 @@ EOF
     _romp_cmd "romp --resume <id>"         -            "Resume a specific conversation by its UUID"
     _romp_cmd "romp --detach"              -            "Create the session without attaching (prints attach cmd)"
     _romp_cmd "romp --mail ..."            romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
+    _romp_cmd "romp --url"                 -            "Print the tokened dashboard URL (first browser open; seeds the cookie)"
     _romp_cmd "romp checkin <host>"        -            "Publish this machine to an attached hub (peer-bus check-in; checkout withdraws)"
     exit 0
 fi
@@ -659,6 +660,25 @@ if [[ "${1:-}" == "update" || "${1:-}" == "--update" ]]; then
     exec romp-update "$@"
 fi
 
+# The kernel serve token — required on EVERY kernel/bus request, loopback included (Jupyter's
+# model: the 0600 file, not the socket, is the same-user trust boundary). Same resolution order
+# as the kernel's _load_token: env override, else the state file.
+_romp_token() {
+    if [[ -n "${ROMP_SERVE_TOKEN:-}" ]]; then printf '%s' "$ROMP_SERVE_TOKEN"; return; fi
+    cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token" 2>/dev/null || true
+}
+
+# `romp --url` — print the tokened dashboard URL (the browser entry point: the first open seeds a
+# year-long cookie; after that the bare URL works). The kernel's login page names this command.
+if [[ "${1:-}" == "--url" ]]; then
+    _tok="$(_romp_token)"
+    if [[ -z "$_tok" ]]; then
+        echo "romp --url: no serve token yet (start romp first — the kernel mints it)" >&2; exit 1
+    fi
+    echo "http://127.0.0.1:${ROMP_KERNEL_PORT:-7433}/?token=$_tok"
+    exit 0
+fi
+
 # `romp checkin <host>` / `romp checkout <host>` — publish THIS machine to an attached hub over our
 # own outbound ssh (peer-bus check-in, plans/postal-peer-buses.md stage 3), or withdraw it. The
 # plumbing behind the network popover's keep-connected checkbox; the host must be attached first.
@@ -669,6 +689,7 @@ if [[ "${1:-}" =~ ^(--)?(checkin|checkout)$ ]]; then
     _kport="${ROMP_KERNEL_PORT:-7433}"
     _on="false"; [[ "$_verb" == "checkin" ]] && _on="true"
     _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/tunnels/checkin" \
+                  -H "X-Romp-Token: $(_romp_token)" \
                   -H 'Content-Type: application/json' -d "{\"host\": \"$_host\", \"on\": $_on}")" \
         || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
@@ -698,6 +719,7 @@ if [[ "${1:-}" =~ ^(--)?(send|interrupt|end)$ ]]; then
         _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_who")"
     fi
     _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/$_verb" \
+                  -H "X-Romp-Token: $(_romp_token)" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
         || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
