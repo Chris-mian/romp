@@ -52,9 +52,7 @@ click flips a card between its background, its summary, and its sub-tasks.
 
 Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.
 
-![A message crossing between two sessions on the timeline](assets/tile-coordination-timeline.png){ width="100%" }
-
-![The same message, shown in the chat](assets/tile-coordination-chat.png){ .romp-narrow }
+<video src="assets/guide/coordination.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ## Detail on demand
 
