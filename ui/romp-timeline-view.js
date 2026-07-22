@@ -764,9 +764,22 @@ class TimelinePanel {
       this._ptr = { x: e.clientX, y: e.clientY };
       if (!this.tip || !this.tip.classList.contains('show')) return;
       const o = this._tipOwner;
-      if (!o || !o.isConnected) { this.hideTip(); return; }   // owner removed by a redraw
+      // Owner removed by a redraw. Hiding alone left the tip DOWN until the next draw() re-armed it
+      // (_rehover), which on an idle fleet is up to seconds away — the tip appeared, vanished, and only
+      // came back if you held the cursor perfectly still (the user 2026-07-21). Rebind to whatever the
+      // rebuild put under the cursor right now instead of waiting for that redraw.
+      if (!o || !o.isConnected) { this.hideTip(); this._rehover(); return; }
+      // Leave-test against the owner's HIT extent, not its bare geometry box. getBoundingClientRect on
+      // an SVG path measures the path outline, and Chrome does not include the stroke — so a connector
+      // for an immediately-delivered message, which is a straight vertical line, reports a box 0px WIDE.
+      // Every sub-pixel horizontal twitch of a real hand then read as "pointer left the glyph" and hid
+      // the tip, which only came back on the next redraw: appears, vanishes, and returns only if you
+      // hold perfectly still (the user 2026-07-21). Firefox measures these boxes differently, which is
+      // why it did not show the same flicker. Pad by half the stroke so the test matches the invisible
+      // target the user is actually aiming at.
       const r = o.getBoundingClientRect();
-      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) this.hideTip();
+      const pad = (parseFloat(o.getAttribute && o.getAttribute('stroke-width')) || 0) / 2;
+      if (e.clientX < r.left - pad || e.clientX > r.right + pad || e.clientY < r.top - pad || e.clientY > r.bottom + pad) this.hideTip();
     };
     this.wrap.addEventListener('mousemove', this._onTipSweep);
     this._onPtrOut = () => { this._ptr = null; };   // cursor left the plot → nothing left to re-hover
@@ -1802,7 +1815,15 @@ class TimelinePanel {
   // the redraw off entirely (draw()'s freeze), so there is nothing to restore.
   _rehover() {
     const p = this._ptr;
-    if (!p || !this.tip || !this.tip.classList || this.tip.classList.contains('show')) return;
+    if (!p || !this.tip || !this.tip.classList) return;
+    // A SHOWN tip is only worth leaving alone while its owner SURVIVED the rebuild. draw() wipes the
+    // svg, so the usual case is a tip still up but pointing at a DETACHED owner — stale, not live.
+    // Skipping on `.show` alone left that stale tip in place, so the re-arm below never ran; the next
+    // mouse movement then hit _onTipSweep, which hides a tip whose owner is no longer isConnected,
+    // and nothing restored it until the NEXT redraw — up to seconds away on an idle fleet. That is
+    // the "it appears, disappears, and only comes back if I hold still" report (the user 2026-07-21).
+    // Re-arming here rebinds the tip to the freshly rebuilt element within the same draw.
+    if (this.tip.classList.contains('show') && this._tipOwner && this._tipOwner.isConnected) return;
     let node = null;
     try { node = this.svg.ownerDocument.elementFromPoint(p.x, p.y); } catch (e) { return; }
     // walk up to the hit target: elementFromPoint can land on a child of the element carrying the handler
