@@ -6427,3 +6427,124 @@ class InvalidateClosure(unittest.TestCase):
         self.assertEqual(calls, 2)
         self.assertEqual(src.count('any(o.get("do") == "done" for o in ops)'), 2,
                          "each call sits behind the done-ops guard")
+
+
+class MergeNestsTodoIntoContainer(unittest.TestCase):
+    """A to-do (agentTask) node merged into a CONTAINER survivor (umbrella / already holds children)
+    must be NESTED as a visible child, never dissolved. Dissolving hands the container the to-do's
+    authoritative-open link, gating the whole card 'working' while no sub-goal shows the open work —
+    exactly g253 'Run end-to-end processing' folded into the g247 root goal, held working behind seven
+    done sub-goals (the user 2026-07-21)."""
+
+    def _todo(self, s, text, key, status="open"):
+        s["seq"] = s.get("seq", 0) + 1
+        nid = "%s:g%d" % (SID, s["seq"])
+        s["nodes"][nid] = {"id": nid, "text": text, "parentId": None, "nodeComplete": False,
+                           "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0,
+                           "agentBornOpen": True,
+                           "agentTask": {"key": key, "status": status, "raw": "in_progress"}}
+        return nid
+
+    def test_todo_into_root_with_children_is_nested_not_dissolved(self):
+        s = _store()
+        root = _mknode(s, "Batch record processing, with a summary report")["id"]
+        _mknode(s, "Benchmark parser variants", parent=root, complete=True)
+        todo = self._todo(s, "Run end-to-end processing and report", key="5")
+        n = jd._merge_nodes(s, todo, root, T0 + 100, "same overall goal")
+        self.assertEqual(n, 1, "the nest counts as a change (caller re-rolls)")
+        self.assertIn(todo, s["nodes"], "the to-do node survives — it is not dissolved")
+        self.assertEqual(s["nodes"][todo]["parentId"], root, "the to-do is nested as a child of the root")
+        self.assertEqual(s["nodes"][todo]["agentTask"]["status"], "open", "keeps its own open link")
+        self.assertIsNone(s["nodes"][root].get("agentTask"),
+                          "the container must NOT adopt the open link (would gate the card invisibly)")
+        self.assertNotIn("mergedFrom", s["nodes"][root], "a nest is not a fuse — no mergedFrom provenance")
+
+    def test_todo_into_umbrella_is_nested(self):
+        s = _store()
+        umb = _mknode(s, "Umbrella")["id"]
+        s["nodes"][umb]["umbrella"] = True
+        todo = self._todo(s, "Do the thing", key="1")
+        self.assertEqual(jd._merge_nodes(s, todo, umb, T0 + 100, "x"), 1)
+        self.assertEqual(s["nodes"][todo]["parentId"], umb, "nested under the umbrella, not dissolved")
+        self.assertIsNone(s["nodes"][umb].get("agentTask"))
+
+    def test_todo_into_childless_leaf_still_fuses(self):
+        # No regression: a childless top survivor renders its own state, so fusing (the survivor adopts
+        # the link) stays correct and the to-do node is absorbed.
+        s = _store()
+        leaf = _mknode(s, "Set up the parser")["id"]
+        todo = self._todo(s, "Set up the parser environment and download fixtures", key="2")
+        self.assertEqual(jd._merge_nodes(s, todo, leaf, T0 + 100, "twins"), 1)
+        self.assertNotIn(todo, s["nodes"], "the to-do is dissolved into the leaf survivor")
+        self.assertEqual(s["nodes"][leaf]["agentTask"]["key"], "2",
+                         "the leaf survivor adopts the open link — visible as that sub-goal")
+
+    def test_two_todos_never_fuse_even_into_a_container(self):
+        # No regression: the both-agentTask refusal wins over the nest — two distinct to-dos each keep
+        # their own node.
+        s = _store()
+        a = self._todo(s, "task A", key="1")
+        _mknode(s, "child of A", parent=a)                      # make A a container
+        b = self._todo(s, "task B", key="2")
+        self.assertEqual(jd._merge_nodes(s, b, a, T0 + 100, "x"), 0, "both carry agentTask → refused")
+        self.assertIn(b, s["nodes"], "the second to-do keeps its own node")
+        self.assertIsNone(s["nodes"][b].get("parentId"), "and is not re-parented")
+
+
+class SyncPlanRehomesAdoptedOpenLink(unittest.TestCase):
+    """Backstop: _sync_declared_plan re-homes an OPEN to-do link that a merge parked on a CONTAINER
+    (root goal / umbrella) onto a fresh child leaf, so the open work shows on the card instead of gating
+    it invisibly — the heal for a legacy g247-style store or an odd merge order. A node BORN a to-do
+    (why 'declared...') renders its own row and is left alone (the user 2026-07-21)."""
+
+    def setUp(self):
+        self._orig = jd.em.task_store_plan
+
+    def tearDown(self):
+        jd.em.task_store_plan = self._orig
+
+    def test_open_link_on_root_is_split_to_a_child_leaf(self):
+        root, child = SID + ":g1", SID + ":g2"
+        s = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {},
+             "lastNode": root,
+             "nodes": {root: jd.GuardedNode({"id": root, "text": "Batch record processing, with a summary report",
+                                 "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
+                                 "trail": [], "t": T0, "mt": T0, "why": "process records in batches",
+                                 "agentBornOpen": True,
+                                 "agentTask": {"key": "5", "status": "open", "raw": "in_progress"}, "log": []}),
+                       child: jd.GuardedNode({"id": child, "text": "Benchmark parser variants", "parentId": root,
+                                 "nodeComplete": True, "blocked": False, "cleared": False, "trail": [], "t": T0,
+                                 "mt": T0, "why": "declared in the agent's own to-do list", "log": []})}}
+        jd.em.task_store_plan = lambda fsid: [
+            {"key": "5", "text": "Run end-to-end processing on sample inputs and report",
+             "activeForm": "Running end-to-end processing", "status": "in_progress"}]
+        jd._sync_declared_plan(s, {"leafFsid": "fsidX"}, "segZ", T0 + 500)
+        self.assertIsNone(s["nodes"][root].get("agentTask"),
+                          "the root goal must NOT keep the open link (it would gate the card invisibly)")
+        carriers = [n for n in s["nodes"].values() if (n.get("agentTask") or {}).get("key") == "5"]
+        self.assertEqual(len(carriers), 1, "exactly one node carries the open link now")
+        self.assertEqual(carriers[0]["parentId"], root, "re-homed as a visible child of the root")
+        self.assertEqual(carriers[0]["agentTask"]["status"], "open")
+        self.assertEqual(carriers[0]["text"], "Run end-to-end processing on sample inputs and report",
+                         "the child leaf carries the TASK's text, not the goal title")
+
+    def test_born_todo_container_is_left_alone(self):
+        # A node that IS a to-do (why 'declared...') which grew a sub-step child must NOT be split — its
+        # own row already shows the open state.
+        root, sub = SID + ":g1", SID + ":g2"
+        s = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {},
+             "lastNode": root,
+             "nodes": {root: jd.GuardedNode({"id": root, "text": "Build the pipeline", "parentId": None,
+                                 "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": T0,
+                                 "mt": T0, "why": "declared in the agent's own to-do list", "agentBornOpen": True,
+                                 "agentTask": {"key": "1", "status": "open", "raw": "in_progress"}, "log": []}),
+                       sub: jd.GuardedNode({"id": sub, "text": "a sub-step", "parentId": root, "nodeComplete": False,
+                                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0, "why": "x",
+                                 "log": []})}}
+        jd.em.task_store_plan = lambda fsid: [
+            {"key": "1", "text": "Build the pipeline", "activeForm": "Building", "status": "in_progress"}]
+        before = set(s["nodes"])
+        jd._sync_declared_plan(s, {"leafFsid": "fsidX"}, "segZ", T0 + 500)
+        self.assertEqual((s["nodes"][root].get("agentTask") or {}).get("key"), "1",
+                         "the born to-do keeps its own link")
+        self.assertEqual(set(s["nodes"]), before, "no leaf minted — a born-to-do container is left alone")

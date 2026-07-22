@@ -2614,6 +2614,36 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
                       "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "log": []})
         by_key[key] = nid
         changed = True
+
+    # 3) BACKSTOP (the user 2026-07-21): an OPEN to-do link belongs on a LEAF the card can render, never
+    # on a CONTAINER that is not itself a to-do row — the root goal or an umbrella, whose done sub-goals
+    # mask it (g253 folded into the g247 root goal held the card 'working' invisibly). _merge_nodes now
+    # NESTS a to-do into a container rather than fusing, so this only bites a legacy store or a fuse into
+    # a top that LATER grew children: re-home the open link onto a fresh child leaf so the open work is
+    # visible, and revert the container to a plain node. A node BORN a to-do renders its OWN row (its
+    # text IS the step) — leaving those alone is exactly what keeps a legit to-do that grew sub-steps
+    # from being split. Idempotent: the split leaf is a placed to-do child the grouper leaves put.
+    for key, nid in list(by_key.items()):
+        nd = nodes.get(nid)
+        if (not nd or (nd.get("agentTask") or {}).get("status") != "open"
+                or nd.get("why") == "declared in the agent's own to-do list"):
+            continue
+        if not (nd.get("umbrella") or any(c.get("parentId") == nid for c in nodes.values())):
+            continue                                        # childless non-container → its own row shows it
+        it = items.get(key)
+        store["seq"] = store.get("seq", 0) + 1
+        leaf = "%s:g%d" % (store["rompUuid"], store["seq"])
+        nodes[leaf] = GuardedNode({"id": leaf,
+                      "text": (it or {}).get("text") or (it or {}).get("activeForm") or nd.get("text") or "(declared step)",
+                      "parentId": nid, "nodeComplete": False, "blocked": False, "cleared": False,
+                      "trail": list(nd.get("trail") or []), "promptUuid": nd.get("promptUuid"),
+                      "t": nd.get("t") or seg_t, "mt": seg_t,
+                      "why": "declared in the agent's own to-do list",
+                      "agentTask": dict(nd["agentTask"]), "agentBornOpen": True, "log": []})
+        for f in ("agentTask", "agentBornOpen", "agentDone"):
+            nd.pop(f, None)
+        by_key[key] = leaf
+        changed = True
     return changed
 
 
@@ -4972,7 +5002,10 @@ def _merge_nodes(store, dupe_id, surv_id, t, why):
     segment key dangles. The dupe's own verdict flags/diary are dropped with it: contradictory twin
     states (one done, one blocked) were exactly the bug, and the survivor's own evidence stands.
     Refused (returns 0) when either side is gone or both carry agentTask links — two distinct to-do
-    items are never one goal; each mirror must keep its own node for plan-sync. Provenance rides
+    items are never one goal; each mirror must keep its own node for plan-sync. A to-do dupe whose
+    survivor is a CONTAINER (umbrella, or already holds children) is NESTED as that survivor's child
+    instead of fused (returns 1) — dissolving it would hand the container an authoritative-open link
+    that gates the card invisibly, with no sub-goal showing the open work. Provenance rides
     surv[\"mergedFrom\"] (plain field, not diary: the fold must not treat a merge as a verdict, and a
     non-user log event would also drop a held user reopen). Returns 1 when applied."""
     nodes = store["nodes"]
@@ -4990,6 +5023,21 @@ def _merge_nodes(store, dupe_id, surv_id, t, why):
             seen.add(x)
             x = nodes.get(x, {}).get("parentId")
         return False
+
+    # A to-do (agentTask) leaf must never be DISSOLVED into a CONTAINER survivor — an umbrella, or any
+    # node that already holds children (the root goal is the canonical case). Fusing it in hands the
+    # container the to-do's authoritative-open link, which then gates the whole card 'working' while
+    # NO sub-goal shows the open work: g253 "Run end-to-end processing" folded into the g247 root goal,
+    # holding the card working invisibly behind seven done sub-goals (the user 2026-07-21). A CHILDLESS
+    # top survivor is fine to fuse — the card itself renders its own state — so only a container masks
+    # it. Honor the grouper's "these belong together" by NESTING the to-do as a visible CHILD instead
+    # of erasing it (skipped when surv is the dupe's own descendant, which would cycle).
+    surv_has_kids = any(nd.get("parentId") == surv_id for nd in nodes.values())
+    if (dupe.get("agentTask") and (surv_has_kids or surv.get("umbrella"))
+            and not _is_anc(dupe_id, surv_id)):
+        dupe["parentId"] = surv_id
+        dupe["mt"] = t
+        return 1
 
     if _is_anc(dupe_id, surv_id):                      # merging a node into its own descendant: the survivor
         surv["parentId"] = dupe.get("parentId")        # takes the dupe's place first, so no relink can cycle
