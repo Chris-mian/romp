@@ -1757,6 +1757,70 @@ def _auto_nudge_tick(now, tmux):
         _push_all()
 
 
+# The awaiting BACKSTOP (the user 2026-07-22): a durable ⏳ stamp can, in the worst case, outlive its story
+# — the agent scheduled its own check-back and that wakeup was lost (a kernel restart between arming and
+# firing, a watcher that silently died), so the session sleeps behind the stamp with nothing to wake it.
+# This is the ONE place a time threshold is unavoidable: we are detecting a MISSING event (the wake that
+# never came), which no other event announces. So, SLOWLY and ONCE per stamp episode, wake the session to
+# re-check its OWN async work. It is patient — a legitimate dispatched/external wait almost always resolves
+# well inside the window, so a stamp still open past it is very likely a lost wakeup.
+AWAITING_BACKSTOP_SECS = 6 * 3600
+AWAITING_BACKSTOP_TEXT = (
+    "Checking in on the background work you set in motion for this goal. If it finished, pick the result up "
+    "and continue. If it stalled, died, or you are now waiting on me, say what you need. If it is genuinely "
+    "still running, a one-line status is enough. (Automated re-check: this goal has been awaiting a while.)")
+
+
+def _mark_awaiting_backstop(gid, at):
+    """Record the ONE backstop wake for a stamp EPISODE, keyed on the stamp anchor (awaitingAt): a new
+    episode (a fresh awaitingAt from the closer's next awaiting verdict) re-arms; a re-assert of the same
+    wait does not re-wake. Lives beside `nudged` in auto-nudge.json under its own `backstop` key."""
+    d = dict(_auto_nudge_data())
+    bs = dict(d.get("backstop", {}))
+    bs[gid] = at
+    d["backstop"] = bs
+    _write_auto_nudge(d)
+
+
+def _awaiting_backstop_tick(now, tmux):
+    """Slow one-shot wake for a LIVE session asleep behind a stale awaiting stamp (see the block comment
+    above). NEVER a needs-you floor — the wait was legitimate; the agent re-checks and decides (proceed,
+    block, or ask). Rides the auto-nudge master toggle and reuses the nudge's idle / genuine-stop / queue
+    suppressions so it can never fire mid-turn or jump queued user input. The auto-nudge tick already SKIPS
+    awaiting-stamped goals, so this is the only writer that touches them, and at most once per 6h episode."""
+    if not _auto_nudge_on():
+        return
+    backstop = _auto_nudge_data().get("backstop", {})
+    fired = False
+    for s in _alive_sessions(now, tmux):
+        sid = s["sid"]
+        try:
+            if tmux.get(sid) is None:                # not a live CLI → a dormant session's work is gone, not asleep
+                continue
+            gid, at, why = _session_stamp_full(sid)
+            if not gid or not at or now - at < AWAITING_BACKSTOP_SECS:
+                continue                             # no stamp, or still patient
+            if backstop.get(gid) == at:
+                continue                             # already woke for THIS stamp episode (once per anchor)
+            turns = jd.parsed_session(sid, [s["path"]], now).get("turns", [])
+            if not turns or _session_working(turns):
+                continue                             # actively producing → not asleep
+            ls_val, ls_t = _last_state(sid)          # authoritative state log: a progressing record at/after the
+            lt = turns[-1]                           # turn end is a mid-turn lull, not a real idle — same
+            if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
+                continue                             # genuine-stop discriminator the nudge uses
+            if _pending_ops.get(str(sid)) or _backend_queued(sid) or _backend_rewind_pending(sid):
+                continue                             # the user has input queued / a rewind armed → don't jump it
+            Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AWAITING_BACKSTOP_TEXT, injected=True, auto=True))
+            _mark_awaiting_backstop(gid, at)
+            _log_nudge_event(sid, gid, now, 0)       # timeline romp-logo dot (count 0 marks a backstop, not an escalation)
+            fired = True
+        except Exception:
+            sys.stderr.write("awaiting-backstop (session %s): %s\n" % (sid or "?", traceback.format_exc()))
+    if fired:
+        _push_all()
+
+
 def _backend_queued(sid):
     """True if the session's backend holds queued-but-unstarted user turns (the SDK keeps them in _pending;
     tmux folds them from the transcript's queue-op records). Composer sends now go straight to that queue
@@ -5006,18 +5070,20 @@ _api_err_cache = {}           # path -> ((mtime, size), err|None)
 _SESSION_STAMP_CACHE = {}    # sid -> ((goals mtime,size, overrides mtime,size), why) — see _session_stamp_cached
 
 
-def _session_stamp_cached(sid):
-    """Freshest durable ⏳ awaiting stamp across ALL of a session's goals — the SESSION-level twin of
-    _goal_awaiting_stamp, so the rail chip and timeline lane (which read _session_awaiting, not the per-goal
-    stamp) light up the same restart-proof awaiting the feed card already shows off the stamp (the user
-    2026-07-22). mtime-cached on the goal-store + override-journal files so an ordinary idle session — which
-    falls through every live source to here every render — does not reparse the store each tick."""
+def _session_stamp_full(sid):
+    """(gid, awaitingAt, why) of the freshest durable ⏳ awaiting stamp across ALL of a session's goals, or
+    (None, None, None) — the SESSION-level twin of _goal_awaiting_stamp, so the rail chip and timeline lane
+    (which read _session_awaiting, not the per-goal stamp) light up the same restart-proof awaiting the feed
+    card already shows off the stamp (the user 2026-07-22). mtime-cached on the goal-store + override-journal
+    files so an ordinary idle session — which falls through every live source to here every render — does not
+    reparse the store each tick. _session_stamp_cached returns just the why (the display surfaces); the
+    awaiting backstop needs the gid + awaitingAt too."""
     sid = str(sid)
     try:
         gs = (jd.GOALDIR / (sid + ".json")).stat()
         gkey = (gs.st_mtime, gs.st_size)
     except Exception:
-        return None                                    # no store yet → nothing to stamp
+        return (None, None, None)                      # no store yet → nothing to stamp
     try:
         ostt = (jd._overrides_dir() / (sid + ".jsonl")).stat()
         okey = (ostt.st_mtime, ostt.st_size)
@@ -5027,19 +5093,26 @@ def _session_stamp_cached(sid):
     hit = _SESSION_STAMP_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
-    why = None
+    full = (None, None, None)
     try:                                               # load_goals (not a raw read) so overrides replay —
         nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
         best = None
-        for nd in nodes.values():
+        for nid, nd in nodes.items():
             if nd.get("awaitingWhy") and not nd.get("rolledUp"):
-                cand = (nd.get("awaitingAt") or 0, nd["awaitingWhy"])
+                cand = (nd.get("awaitingAt") or 0, nid, nd["awaitingWhy"])
                 best = cand if best is None else max(best, cand)
-        why = best[1] if best else None
+        if best:
+            full = (best[1], best[0], best[2])         # (gid, at, why)
     except Exception:
-        why = None
-    _SESSION_STAMP_CACHE[sid] = (key, why)
-    return why
+        full = (None, None, None)
+    _SESSION_STAMP_CACHE[sid] = (key, full)
+    return full
+
+
+def _session_stamp_cached(sid):
+    """The freshest durable ⏳ stamp's WHY for a session (or None) — the display surfaces' view; see
+    _session_stamp_full for the gid + awaitingAt the awaiting backstop consumes."""
+    return _session_stamp_full(sid)[2]
 
 
 def _session_awaiting(sid, path, idle, stamp=False):
@@ -11634,6 +11707,10 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+        try:                                  # slow one-shot wake for a session asleep behind a stale awaiting stamp
+            _awaiting_backstop_tick(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("awaiting-backstop: %s\n" % traceback.format_exc())
         try:                                  # Interrupt → Blocked runs EVERY push, independent of the nudge toggle
             _interrupt_block_tick(int(time.time()), _tmux_sessions())
         except Exception:

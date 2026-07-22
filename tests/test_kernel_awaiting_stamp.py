@@ -185,5 +185,121 @@ class SessionLevelStamp(unittest.TestCase):
         self.assertEqual(km._session_stamp_cached(SID), "second wait, a different length so size differs")
 
 
+class _FakeBackend:
+    def __init__(self): self.sent = []
+    def send(self, sid, body): self.sent.append((sid, body))
+    def pending_queued(self, sid): return False       # → _backend_queued False; no pending_cut → rewind False
+
+
+class AwaitingBackstop(unittest.TestCase):
+    """The slow one-shot wake for a session asleep behind a STALE awaiting stamp whose own wakeup was lost
+    (the user 2026-07-22). Patient (6h), once per stamp episode (keyed on awaitingAt), never a needs-you
+    floor. The one place a time threshold is unavoidable: detecting a MISSING event (the wake that never
+    came). SYNTHETIC fixtures only."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self.saved = {k: getattr(km, k) for k in
+                      ("_alive_sessions", "_session_working", "_last_state", "_log_nudge_event",
+                       "_push_all", "_followup_body")}
+        self.saved_jd = (km.jd.STATE, km.jd.GOALDIR, km.jd.parsed_session)
+        self.saved_backend = km.Sessions.backend_for
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"; km.jd.GOALDIR.mkdir(parents=True)
+        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()
+        (td / "auto-nudge.json").write_text(json.dumps({"enabled": True, "nudged": {}}))
+        self.fb = _FakeBackend()
+        km.Sessions.backend_for = lambda sid: self.fb
+        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": "/p"}]
+        km._session_working = lambda turns: False           # idle by default
+        km._last_state = lambda sid: ("waiting", 0)         # not a progressing state → genuine idle
+        km.jd.parsed_session = lambda sid, paths, now: {"turns": [{"id": "t1", "ended": True, "end": 100, "atoms": []}]}
+        km._log_nudge_event = lambda *a, **k: None
+        km._push_all = lambda *a, **k: None
+        km._followup_body = lambda *a, **k: "wake body"
+        km._pending_ops.pop(SID, None)
+        self.gid = SID + ":g1"
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(km, k, v)
+        km.jd.STATE, km.jd.GOALDIR, km.jd.parsed_session = self.saved_jd
+        km.Sessions.backend_for = self.saved_backend
+        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()
+        self.td.cleanup()
+
+    def _seed(self, at):
+        nd = _node(self.gid, why="the trace it dispatched; reports when it returns", at=at)
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
+
+    def _tick(self, now, tmux=None):
+        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()   # deterministic: never hit a stale cache
+        km._awaiting_backstop_tick(now, {SID: {"state": ""}} if tmux is None else tmux)
+
+    def test_stamp_full_exposes_gid_and_at(self):
+        self._seed(at=500)
+        self.assertEqual(km._session_stamp_full(SID), (self.gid, 500, "the trace it dispatched; reports when it returns"))
+
+    def test_fires_once_for_a_stale_stamp(self):
+        now = 1_000_000
+        self._seed(at=now - 7 * 3600)                # older than the 6h window
+        self._tick(now)
+        self.assertEqual(len(self.fb.sent), 1, "a stamp open past the window gets one wake")
+        self.assertEqual(km._auto_nudge_data().get("backstop", {}).get(self.gid), now - 7 * 3600,
+                         "the wake is recorded against the stamp anchor")
+
+    def test_stays_patient_for_a_fresh_stamp(self):
+        now = 1_000_000
+        self._seed(at=now - 3600)                    # only an hour old
+        self._tick(now)
+        self.assertEqual(self.fb.sent, [], "a legitimate wait inside the window is left alone")
+
+    def test_does_not_wake_twice_for_the_same_anchor(self):
+        now = 1_000_000
+        self._seed(at=now - 7 * 3600)
+        self._tick(now); self._tick(now + 60)
+        self.assertEqual(len(self.fb.sent), 1, "once per stamp episode, not every tick")
+
+    def test_re_arms_for_a_new_stamp_episode(self):
+        now = 1_000_000
+        self._seed(at=now - 7 * 3600)
+        self._tick(now)
+        self._seed(at=now - 6 * 3600 - 1)            # a NEW awaitingAt (the closer re-classified) → new anchor
+        self._tick(now)
+        self.assertEqual(len(self.fb.sent), 2, "a fresh awaiting episode re-arms the backstop")
+
+    def test_skips_when_the_master_toggle_is_off(self):
+        (Path(self.td.name) / "auto-nudge.json").write_text(json.dumps({"enabled": False, "nudged": {}}))
+        self._seed(at=1_000_000 - 7 * 3600)
+        self._tick(1_000_000)
+        self.assertEqual(self.fb.sent, [], "the backstop rides the auto-nudge master toggle")
+
+    def test_skips_a_working_session(self):
+        km._session_working = lambda turns: True
+        self._seed(at=1_000_000 - 7 * 3600)
+        self._tick(1_000_000)
+        self.assertEqual(self.fb.sent, [], "a session actively producing is not asleep")
+
+    def test_skips_a_mid_turn_lull_per_the_state_log(self):
+        km._last_state = lambda sid: ("working", 200)   # authoritative state progressing AT/AFTER turn end (100)
+        self._seed(at=1_000_000 - 7 * 3600)
+        self._tick(1_000_000)
+        self.assertEqual(self.fb.sent, [], "a progressing state record means a lull, not a real stop")
+
+    def test_dormant_session_is_not_woken(self):
+        self._seed(at=1_000_000 - 7 * 3600)
+        self._tick(1_000_000, tmux={})               # SID not in the live set → not a live CLI
+        self.assertEqual(self.fb.sent, [], "a dormant session's dispatched work is gone, not asleep")
+
+    def test_never_writes_a_block(self):
+        now = 1_000_000
+        self._seed(at=now - 7 * 3600)
+        self._tick(now)
+        nd = km.jd.load_goals(SID)["nodes"][self.gid]
+        self.assertFalse(nd.get("blocked"), "the backstop wakes, it never floors to needs-you")
+
+
 if __name__ == "__main__":
     unittest.main()
