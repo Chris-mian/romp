@@ -714,7 +714,15 @@ if [[ "${1:-}" =~ ^(--)?(launch|open)$ ]]; then
     fi
     # Local machine: try to open it. Never fail the command if the opener is missing — the URL above
     # is the real deliverable (the user always has a working way in).
-    if command -v open >/dev/null 2>&1; then _opener=(open)
+    # ROMP_OPENER overrides which command opens the URL; set it EMPTY to open nothing
+    # (the URL still prints, which is the contract). Set-but-empty and unset differ here,
+    # so ${VAR+set} rather than a truthiness check. Tests need this because PATH pruning
+    # cannot express "no opener": macOS ships /usr/bin/open, so dropping a stub from PATH
+    # leaves the REAL opener behind and the test launches an actual browser.
+    if [[ -n "${ROMP_OPENER+set}" ]]; then
+        # shellcheck disable=SC2206
+        _opener=(${ROMP_OPENER})
+    elif command -v open >/dev/null 2>&1; then _opener=(open)
     elif command -v xdg-open >/dev/null 2>&1; then _opener=(xdg-open)
     else _opener=(); fi
     if [[ ${#_opener[@]} -gt 0 ]] && "${_opener[@]}" "$_url" >/dev/null 2>&1; then

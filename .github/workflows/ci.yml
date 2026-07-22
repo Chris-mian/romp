@@ -24,6 +24,10 @@ jobs:
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Every job is time-boxed. Without this a test that BLOCKS (waiting on a tmux
+    # server, a socket, a prompt that never comes) burns the 6h default before
+    # anyone finds out, and a required check that hangs blocks merges silently.
+    timeout-minutes: 15
     strategy:
       # One red cell must not hide the others: a 3.10-only break and a
       # macOS-only break look identical if the matrix stops at the first.
@@ -49,6 +53,9 @@ jobs:
   shell:
     name: Shell (bats, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Generous vs the python jobs on purpose: the suite takes ~1min on Linux but
+    # ~16min on macOS, so anything near 15 would kill a PASSING job.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +74,7 @@ jobs:
   vscode-extension:
     name: vscode-extension (typecheck + test + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: vscode-extension
