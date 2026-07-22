@@ -1505,6 +1505,34 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(km._live_replanned({"seg1#live": None}, "seg1"))
         self.assertFalse(km._live_replanned({"seg1#p": "s:g1"}, "seg1"))
 
+    def test_empty_seam_placement_does_not_alias_a_distant_seam(self):
+        # A text-LESS settle-seam hashes to sha1('') (da39a3ee), so EVERY empty seam in a session shares ONE
+        # _seg_key. Without the t-guard a FRESH working seam inherited an OLD empty seam's placement → the feed
+        # thought it "already placed" and suppressed the "a working session always shows a card" placeholder,
+        # leaving a working session with a blank Working column (the user 2026-07-22, two live sessions).
+        self.assertTrue(km._seg_is_empty("u:2000000000:da39a3ee"), "sha1('') hash → a text-less seam")
+        self.assertTrue(km._seg_is_empty("u:2000000000:da39a3ee#p"), "…rides the #p/#d/#live suffix too")
+        self.assertFalse(km._seg_is_empty("u:2000000000:abc12345"), "a real content hash is text-bearing")
+        u = "11111111-2222-3333-4444-555555555555"
+        fresh = u + ":2000000000:da39a3ee"             # the in-flight seam (recent t)
+        distant = u + ":1000000000:da39a3ee"           # a long-done seam, same empty hash, ~11.5 days earlier
+        near = u + ":1999999950:da39a3ee"              # the SAME seam re-parsed, t drifted 50s (< _SEG_DRIFT_S)
+        nodes = {u + ":g13": {"id": u + ":g13", "parentId": None, "cleared": False}}
+        aliased = {distant + "#p": u + ":g13", distant: None}   # the gone-target + None-ruling rows the fresh seam matched
+        self.assertFalse(km._seg_placed(aliased, fresh),
+                         "a fresh empty seam is NOT 'placed' by a distant empty-seam alias (the bug)")
+        self.assertFalse(km._live_replanned({distant + "#live": None}, fresh), "…nor 're-planned' by one")
+        self.assertFalse(km._live_cleared_under(aliased, nodes, fresh),
+                         "…no near placement → the main gate surfaces it, not the clear-mid-work resurrect")
+        # the drift the invariant EXISTS for still resolves — the same seam re-parsed a few seconds off matches
+        self.assertTrue(km._seg_placed({near + "#p": u + ":g13"}, fresh),
+                        "a placement within drift IS this seam — timestamp-invariance kept for real drift")
+        self.assertTrue(km._seg_placed({fresh + "#p": u + ":g13"}, fresh), "an exact-id placement matches")
+        # a TEXT-BEARING segment is untouched: it keeps FULL timestamp-invariance across ANY drift (the
+        # 2026-07-01 phantom-'Analyzing' fix — a real prompt whose t drifted must still read as placed).
+        self.assertTrue(km._seg_placed({u + ":1000000000:abc12345#p": u + ":g13"}, u + ":2000000000:abc12345"),
+                        "a real-content seg matches across drift regardless of t")
+
     def test_feed_api_error_floor_yields_to_awaiting_background_agents(self):
         # the user 2026-07-05 (the jld_audit inconsistency): the main thread hit content-filter API errors
         # while two background agents kept working. The feed card wore a red "API error" + "stalled" chip
@@ -1708,6 +1736,42 @@ class ViewBuilder(unittest.TestCase):
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         self.assertFalse([a for a in km.build_feed(NOW)["asks"] if a.get("provisional")],
                          "a placed tail drops the placeholder")
+
+    def test_working_seam_surfaces_despite_a_distant_empty_seam_alias(self):
+        # THE repro (the user 2026-07-22): a session working PAST a completed goal (an
+        # empty settle-seam) showed a BLANK Working column. Every text-less seam shares the sha1('') hash, so
+        # the fresh tail's _seg_placed matched a LONG-DONE seam's placement (a gone card + a None ruling) and
+        # the placeholder was suppressed. The t-guard drops the distant alias, so the placeholder surfaces.
+        recs = [uline(T0, "fix A, B and C", "u1", ps="typed"),
+                aline(T0 + 20, "Working through the three items.", "a1", "u1", tools=("Edit",), stop="tool_use"),
+                trline(T0 + 25, "tu_a1_0", "r1", "a1", content="edited"),
+                aline(T0 + 40, "All three merged and pushed.", "a2", "r1", stop="tool_use"),
+                aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]   # the empty seam tail (turn OPEN)
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        seg_id = em.segments(km._parse(str(self.tpath), SID, NOW)["turns"][0])[0]["id"]
+        g1 = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "lastNode": g1,
+                 "nodes": {g1: {"id": g1, "text": "fix A, B and C", "parentId": None, "nodeComplete": True,
+                                "blocked": False, "cleared": False, "settledDone": True,
+                                "trail": [seg_id], "t": T0, "mt": T0 + 40}},
+                 "placements": {seg_id: g1}, "status": {g1: "completed"},
+                 "seams": [{"t": T0 + 100, "top": g1, "text": "fix A, B and C",
+                            "segs": [jd._seg_key(seg_id)]}]}
+        # the fresh seam tail's key — the DISTANT aliases below must share it (same empty hash) to reproduce
+        tail = jd.apply_seams([em.segments(km._parse(str(self.tpath), SID, NOW)["turns"][0])[0]], store)[1]
+        self.assertTrue(km._seg_is_empty(tail["id"]),
+                        "the text-less seam tail carries the sha1('') hash — the collision premise")
+        old = SID + ":1000000000:" + tail["id"].split(":")[-1]     # a long-done empty seam, ~11.5 days earlier
+        store["placements"].update({old + "#p": SID + ":gGONE", old: None})   # a gone target + a None ruling (the distant aliases)
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        self._working_tmux()
+        prov = [a for a in km.build_feed(NOW)["asks"] if a.get("provisional")]
+        self.assertEqual(len(prov), 1,
+                         "the working seam surfaces its placeholder — the distant empty-seam alias no longer suppresses it")
+        self.assertEqual(prov[0]["column"], "working")
+        self.assertTrue(any(a["itemId"] == g1 and a["column"] == "completed" for a in km.build_feed(NOW)["asks"]),
+                        "the completed card stays completed alongside it")
 
     def test_session_working_reads_the_event_model_not_tmux(self):
         # the user 2026-06-22: WORKING is derived from the TRANSCRIPT (an open, un-ended final turn), never the
