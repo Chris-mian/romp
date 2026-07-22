@@ -1701,27 +1701,32 @@ function renderAsk(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement | null
   for (const b of blocks) {
     const qel = el("div", "ask-q");
     const qt = el("div", "ask-qtext"); qt.textContent = b.question || b.header || ""; qel.appendChild(qt);
-    const opts = Array.isArray(b.options) ? b.options : [];
-    const labels = opts.map((o) => String(o.label || "")).filter(Boolean);
-    const chosen = (b.chosen || []).map((c) => String(c));
-    const picked = new Set(chosen.filter((c) => labels.includes(c)));   // answers that name an option
-    const others = chosen.filter((c) => !labels.includes(c));           // free-text "Other" answers
-    for (const o of opts) {
-      const isChosen = !!o.label && picked.has(String(o.label));
-      const opt = el("div", "ask-opt" + (isChosen ? " chosen" : ""));
-      const mark = el("span", "ask-mark"); mark.textContent = isChosen ? "●" : "○"; opt.appendChild(mark);
-      const lab = el("span", "ask-optlabel"); lab.textContent = o.label || ""; opt.appendChild(lab);
-      if (o.description) { const d = el("span", "ask-optdesc"); d.textContent = o.description; opt.appendChild(d); }
-      qel.appendChild(opt);
-    }
-    // a free-text answer matching no option → a selected "Other" row + the verbatim words (quoted),
-    // so a typed answer is never silently dropped to an empty-looking menu.
-    for (const other of others) {
-      const opt = el("div", "ask-opt chosen ask-other");
-      const mark = el("span", "ask-mark"); mark.textContent = "●"; opt.appendChild(mark);
-      const lab = el("span", "ask-optlabel"); lab.textContent = "Other"; opt.appendChild(lab);
-      const d = el("span", "ask-answer-text"); d.textContent = "“" + other + "”"; opt.appendChild(d);
-      qel.appendChild(opt);
+    // While PENDING the options live in the red picker below (renderLiveAsk), so the transcript turn stays
+    // a compact "Question + title" card — no options — instead of duplicating the whole picker (the user
+    // 2026-07-22). Once ANSWERED it fills in to the full question + chosen-option box.
+    if (answered) {
+      const opts = Array.isArray(b.options) ? b.options : [];
+      const labels = opts.map((o) => String(o.label || "")).filter(Boolean);
+      const chosen = (b.chosen || []).map((c) => String(c));
+      const picked = new Set(chosen.filter((c) => labels.includes(c)));   // answers that name an option
+      const others = chosen.filter((c) => !labels.includes(c));           // free-text "Other" answers
+      for (const o of opts) {
+        const isChosen = !!o.label && picked.has(String(o.label));
+        const opt = el("div", "ask-opt" + (isChosen ? " chosen" : ""));
+        const mark = el("span", "ask-mark"); mark.textContent = isChosen ? "●" : "○"; opt.appendChild(mark);
+        const lab = el("span", "ask-optlabel"); lab.textContent = o.label || ""; opt.appendChild(lab);
+        if (o.description) { const d = el("span", "ask-optdesc"); d.textContent = o.description; opt.appendChild(d); }
+        qel.appendChild(opt);
+      }
+      // a free-text answer matching no option → a selected "Other" row + the verbatim words (quoted),
+      // so a typed answer is never silently dropped to an empty-looking menu.
+      for (const other of others) {
+        const opt = el("div", "ask-opt chosen ask-other");
+        const mark = el("span", "ask-mark"); mark.textContent = "●"; opt.appendChild(mark);
+        const lab = el("span", "ask-optlabel"); lab.textContent = "Other"; opt.appendChild(lab);
+        const d = el("span", "ask-answer-text"); d.textContent = "“" + other + "”"; opt.appendChild(d);
+        qel.appendChild(opt);
+      }
     }
     card.appendChild(qel);
   }

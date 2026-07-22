@@ -32,6 +32,21 @@ test("the turn flips to the blue 'answered' box only once an answer is recorded"
   assert.match(RENDER, /answered Claude/);
 });
 
+test("a PENDING question renders COMPACT — head + title only, no options (the user 2026-07-22)", () => {
+  // The pending turn used to duplicate the entire picker (question + every option) that the red live-ask
+  // box already shows directly below it, so the same question appeared twice. Now the option rows are
+  // emitted only once ANSWERED; while pending the card is just the "Question" head + the question title,
+  // and it fills in to the full question+chosen box on answer.
+  assert.match(RENDER, /if \(answered\) \{\s*\n\s*const opts = Array\.isArray\(b\.options\) \? b\.options : \[\];/);
+  // the title is rendered UNCONDITIONALLY, before (and outside) the answered-only option block
+  const body = RENDER.split("for (const b of blocks) {")[1].split("card.appendChild(qel);")[0];
+  assert.ok(body.includes("qel.appendChild(qt);"), "the question title is still rendered");
+  assert.ok(body.indexOf("qel.appendChild(qt);") < body.indexOf("if (answered) {"),
+    "the title must be emitted outside/before the answered-only option block");
+  // and the pending head chip ("Question" / "N questions") is unchanged
+  assert.match(RENDER, /head\.textContent = blocks\.length > 1 \? `\$\{blocks\.length\} questions` : "Question"/);
+});
+
 test("a free-text answer matching no option renders as an 'Other' row with the verbatim text", () => {
   // chosen entries that name an option highlight it; the rest surface as free-text "Other" rows
   assert.match(RENDER, /const picked = new Set\(chosen\.filter\(\(c\) => labels\.includes\(c\)\)\)/);
