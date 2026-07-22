@@ -69,7 +69,8 @@ class KernelWiring(unittest.TestCase):
         km._sdk = lambda: self.be
         self.pushes = []
         km._push_all = lambda *a, **k: self.pushes.append(1)
-        km._send_to_app = lambda *a, **k: None
+        self.app_sends = []                              # (app, msg) fan-outs: cardPredict + its cardMoveAck
+        km._send_to_app = lambda app, msg: self.app_sends.append((app, msg))
         # insulate the real goal store: record the optimistic-reopen call, no disk I/O. Tests that need a
         # "reopened" return flip this to True.
         self.fu_calls = []
@@ -83,6 +84,7 @@ class KernelWiring(unittest.TestCase):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
         km._compact_clicked.clear()
         km._pending_ops.clear()
+        km._user_goal_write.pop("sid-sdk", None)         # the punch-through marker is module state — don't leak it
 
     def _route(self, msg):
         return km._drive(msg, {"send": lambda s: None})
@@ -209,6 +211,56 @@ class KernelWiring(unittest.TestCase):
         self.assertGreater(km._views_dirty[0], dirty_before, "a reopen dirty-marks the views past the cache")
         self.assertTrue(km._pusher_wake.is_set(), "…and wakes the pusher so the board updates at once")
         km._pusher_wake.clear()
+
+    def _app_msgs(self, kind):
+        return [m for app, m in self.app_sends if app == "feed" and m.get("type") == kind]
+
+    def test_askfollowup_answers_the_prediction_instead_of_leaving_the_client_to_time_it_out(self):
+        # the user 2026-07-21: the client used to give its optimistic Working flip 4 seconds to be confirmed
+        # by a payload and then toast "that follow-up didn't move the card to Working" — a stopwatch standing
+        # in for something the kernel knows exactly. It now ANSWERS: cardMoveAck carries whether the reopen
+        # applied, so only a REAL refusal interrupts the user, and the buildId tells the client which payload
+        # is the answer to this gesture (never one already in flight when the click landed).
+        km.jd.optimistic_followup = lambda sid, gid, **kw: (self.fu_calls.append((sid, gid)), True)[1]
+        km._user_goal_write.pop("sid-sdk", None)
+        self.app_sends = []
+        self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "text": "also do X"}))
+        acks = self._app_msgs("cardMoveAck")
+        self.assertEqual(len(acks), 1, "exactly one answer per gesture")
+        self.assertEqual(acks[0]["ids"], ["sid-sdk:g1"])
+        self.assertTrue(acks[0]["ok"], "the reopen applied → nothing to interrupt the user about")
+        self.assertIsInstance(acks[0]["buildId"], int)
+        self.assertIn("sid-sdk", km._user_goal_write,
+                      "…and the write is marked so it punches through a mid-flight judge pass (_feed_goals)")
+        # the ack FOLLOWS the prediction it answers, so a client can never see the answer before the question
+        kinds = [m["type"] for _a, m in self.app_sends if m.get("type") in ("cardPredict", "cardMoveAck")]
+        self.assertEqual(kinds, ["cardPredict", "cardMoveAck"])
+
+    def test_a_refused_reopen_acks_false_and_marks_no_user_write(self):
+        # optimistic_followup returns False when the goal is GONE from the store (compacted/rotated away) or
+        # sealed by a view clear. THAT is the one honest "it didn't stick", and the only case that toasts.
+        km._user_goal_write.pop("sid-sdk", None)
+        self.app_sends = []                                # setUp's double returns False
+        self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:gGONE", "text": "hello?"}))
+        acks = self._app_msgs("cardMoveAck")
+        self.assertEqual(len(acks), 1)
+        self.assertFalse(acks[0]["ok"], "a refused reopen is reported as refused, not left to time out")
+        self.assertNotIn("sid-sdk", km._user_goal_write, "nothing was written → nothing to punch through")
+
+    def test_cardmove_answers_its_prediction_too(self):
+        saved = km.jd.user_move
+        km.jd.user_move = lambda sid, gid, **kw: True
+        km._user_goal_write.pop("sid-sdk", None)
+        self.app_sends = []
+        try:
+            self.assertTrue(self._route({"type": "cardMove", "id": "sid-sdk",
+                                         "itemId": "sid-sdk:g1", "to": "working"}))
+            acks = self._app_msgs("cardMoveAck")
+            self.assertEqual(len(acks), 1)
+            self.assertTrue(acks[0]["ok"])
+            self.assertIn("sid-sdk", km._user_goal_write)
+        finally:
+            km.jd.user_move = saved
 
     def test_askfollowup_without_itemid_just_sends(self):
         # a raw follow-up with no goal id (e.g. a typed message routed as askFollowUp) sends only — no reopen.

@@ -43,15 +43,20 @@ test("the optimistic move also bumps the card's sort key to now so it lands at t
 });
 
 test("the kernel is authoritative: a confirming push clears the prediction, an unconfirmed one is left predicting", () => {
-  // reconcile runs against the authoritative incoming payload on every feed push
-  assert.match(FEED, /reconcileFollowMove\(incomingAsks\);/);
+  // reconcile runs against the authoritative incoming payload on every feed push, carrying that payload's
+  // buildId so an ACKED prediction can tell a pre-click payload from the kernel's answer (feed-move-ack)
+  assert.match(FEED, /reconcileFollowMove\(incomingAsks, typeof m\.buildId === "number" \? m\.buildId : 0\);/);
   // CONFIRMED = the kernel now lists the card as working, OR no longer lists it (cleared/absorbed).
   // (An ANSWER-kind prediction additionally yields to the first payload either way — feed-card-predict.)
   assert.match(FEED, /if \(!a \|\| a\.column === "working" \|\| pendingMoveKind\.get\(id\) === "answer"\) \{/);
 });
 
-test("an unconfirmed prediction reverts AND toasts after the window (so a behavior change is visible)", () => {
-  assert.match(FEED, /const FOLLOW_MOVE_MS = 4000;/);
+test("an UNANSWERED prediction reverts AND toasts after the backstop (so a behavior change is visible)", () => {
+  // The window is a LIVENESS backstop for an ack that never came, no longer the mechanism itself
+  // (feed-move-ack.test.ts). It used to be 4s, which the mid-pass goal-store freeze made unwinnable, so it
+  // fired on replies that HAD landed (the user 2026-07-21).
+  assert.match(FEED, /const MOVE_ACK_MS = 15000;/);
+  assert.doesNotMatch(FEED, /FOLLOW_MOVE_MS/, "the old confirm-me-within-4s window is gone");
   // the timer fires only if STILL pending (a confirming push would have deleted it), then drops the prediction,
   // toasts, and re-renders to the kernel's authoritative state
   assert.match(FEED, /if \(!pendingFollowMove\.has\(itemId\)\) return;/);

@@ -33,10 +33,10 @@ test("an ANSWER prediction yields to the FIRST authoritative payload and reverts
   // still shows the card out of Working is post-answer truth — e.g. the next permission prompt of a burst.
   // Holding the prediction would mask a genuine "needs you".
   assert.match(FEED, /if \(!a \|\| a\.column === "working" \|\| pendingMoveKind\.get\(id\) === "answer"\) \{/);
-  // the revert timeout toasts for followup/plain (a lost message must be apparent) but never for answer —
-  // the re-shown ⏸ blocked card IS the signal
-  assert.match(FEED, /if \(k === "plain"\) feedToast\(/);
-  assert.match(FEED, /else if \(k !== "answer"\) feedToast\(/);
+  // the backstop toasts for followup/plain (an answer romp never gave must be apparent) but never for an
+  // ANSWER prediction — the re-shown ⏸ blocked card IS the signal. An answer is never acked either, so it
+  // reaches neither branch of ackFollowMove; the reconcile above always retires it first (2026-07-21).
+  assert.match(FEED, /if \(k !== "answer"\) feedToast\(/);
 });
 
 test("executed replica: reconcile keeps a followup prediction pending but drops an answer either way", () => {

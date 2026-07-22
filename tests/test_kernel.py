@@ -4073,6 +4073,128 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["column"], "needs_input", "no pass active → live read shows the block at once")
 
+    def _settled_store(self, *suffixes):
+        # top goal(s) already SETTLED into Completed, each with the diary its flags were materialized from —
+        # the state a card is in when the user replies to it
+        suffixes = suffixes or ("gP",)
+        nodes, status = {}, {}
+        for sfx in suffixes:
+            g = "%s:%s" % (SID, sfx)
+            nodes[g] = {"id": g, "text": "the goal " + sfx, "parentId": None,
+                        "nodeComplete": True, "blocked": False, "cleared": False, "trail": [],
+                        "t": NOW - 100, "mt": NOW - 50, "doneWhy": "finished",
+                        "settledAt": NOW - 50, "settledDone": True,
+                        "log": [{"ev_t": NOW - 50, "src": "closer", "kind": "done", "why": "finished", "at": NOW - 50},
+                                {"ev_t": NOW - 50, "src": "romp", "kind": "settle", "at": NOW - 50}]}
+            status[g] = "completed"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": len(nodes), "lastNode": list(nodes)[-1],
+            "nodes": nodes, "placements": {}, "status": status}))
+        return list(nodes) if len(nodes) > 1 else list(nodes)[0]
+
+    def test_a_user_reply_mid_pass_shows_working_at_once_not_when_the_pass_ends(self):
+        # THE BUG (the user 2026-07-21): the pre-pass snapshot above was also freezing out the USER's own
+        # writes. optimistic_followup writes the LIVE store while the feed reads the frozen copy, so a reply
+        # landing mid-pass stayed invisible for the whole pass — 30-80s in practice — and the client's revert
+        # window expired first and toasted "that follow-up didn't move the card to Working" while the session
+        # was already working the reply. A user gesture must never wait out a judge pass: the override journal
+        # it records is replayed onto the snapshot, so the card flies to Working on the very next build.
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        g = self._settled_store()
+        km._begin_goals_pass()                             # a judge pass is already in flight when the user replies
+        try:
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card["column"], "completed", "pre-pass state: the card is settled in Completed")
+            self.assertTrue(jd.optimistic_followup(SID, g, text="also handle the empty case", now=NOW))
+            km._note_user_goal_write(SID)                  # what the askFollowUp route does on a real reply
+            card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card2["column"], "working",
+                             "the reply punches through the snapshot — no waiting out the pass")
+            self.assertTrue(card2["followupPending"], "…wearing the Followed up chip, as after the pass")
+            card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card3["column"], "working", "and it STAYS working on later builds in the same pass")
+        finally:
+            km._end_goals_pass()
+
+    def test_a_second_reply_in_the_same_pass_punches_through_too(self):
+        # The re-punch is keyed on the user-write MARK, not a once-per-snapshot flag: replying to one card
+        # and then another, both inside a single (long) judge pass, must move BOTH. A plain done-flag would
+        # have served the first reply and silently swallowed every reply after it for the rest of the pass.
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        ga, gb = self._settled_store("gA", "gB")
+        km._begin_goals_pass()
+        try:
+            self.assertTrue(jd.optimistic_followup(SID, ga, text="first reply", now=NOW))
+            km._note_user_goal_write(SID)
+            cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+            self.assertEqual((cards[ga]["column"], cards[gb]["column"]), ("working", "completed"))
+            self.assertTrue(jd.optimistic_followup(SID, gb, text="second reply", now=NOW + 1))
+            km._note_user_goal_write(SID)
+            cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+            self.assertEqual((cards[ga]["column"], cards[gb]["column"]), ("working", "working"),
+                             "the second reply lands too, without waiting out the pass")
+        finally:
+            km._end_goals_pass()
+
+    def test_the_user_punch_through_still_hides_the_judges_mid_pass_writes(self):
+        # The punch-through is scoped to the USER's gesture, replayed onto the PRE-pass snapshot — it does not
+        # re-open the store to the judges' half-applied writes, which is the whole reason the snapshot exists.
+        # Three states are distinguishable here and only one is right: completed (frozen, the bug), needs_input
+        # (the planner's transient, the flicker), working (the user's reply on the pre-pass card).
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        g = self._settled_store()
+        km._begin_goals_pass()
+        try:
+            self.assertTrue(jd.optimistic_followup(SID, g, text="one more thing", now=NOW))
+            km._note_user_goal_write(SID)
+            self._store_with_status("blocked")             # the planner's transient mid-pass write lands on disk
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card["column"], "working",
+                             "the user's reply shows; the judge's mid-pass block does NOT")
+        finally:
+            km._end_goals_pass()
+
+    def test_a_reply_that_predates_the_pass_is_never_double_applied(self):
+        # The mark is compared against WHEN THE SNAPSHOT WAS READ, and a TIE resolves toward replaying — a
+        # write racing the read loop must never be the one that gets lost. That is only safe because the
+        # replay is idempotent, so pin the property the tie-break leans on: however many builds run, the
+        # user's reopen appears in the card's diary exactly ONCE.
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        g = self._settled_store()
+        km._end_goals_pass()
+        self.assertTrue(jd.optimistic_followup(SID, g, text="before the pass", now=NOW))
+        km._note_user_goal_write(SID)
+        km._begin_goals_pass()                             # the pass snapshots a store that ALREADY has the reply
+        try:
+            for _ in range(3):
+                card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+                self.assertEqual(card["column"], "working")
+            log = km._feed_goals(SID)["nodes"][g].get("log") or []
+            self.assertEqual(len([e for e in log if e.get("src") == "user" and e.get("kind") == "reopen"]), 1,
+                             "the reopen is applied once, no matter how many builds replay the journal")
+        finally:
+            km._end_goals_pass()
+
+    def test_the_feed_payload_carries_a_build_id_that_advances_per_build(self):
+        # buildId is what lets a client tell "this payload predates my click" from "this is the kernel's
+        # answer to it" (see _next_feed_build_id / cardMoveAck), so it must advance on every real build and
+        # hold steady on a cache hit — otherwise an acked prediction clears against a stale payload.
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        km._built_feed[:] = [None, None, 0.0]
+        km._views_dirty[0] = 0.0
+        first = km._cached_feed(NOW, km._tmux_sessions(), ("sig", 1))
+        self.assertIsInstance(first.get("buildId"), int)
+        again = km._cached_feed(NOW, km._tmux_sessions(), ("sig", 1))
+        self.assertEqual(again["buildId"], first["buildId"], "a cache hit re-sends the SAME build, same id")
+        km._views_dirty[0] = time.time()                   # a user write forces a rebuild past the cache
+        third = km._cached_feed(NOW, km._tmux_sessions(), ("sig", 1))
+        self.assertGreater(third["buildId"], first["buildId"], "a real rebuild advances the id")
+
     def test_seg_key_strips_the_volatile_timestamp(self):
         self.assertEqual(km._seg_key("11111111-2222:1782627917:19cee1e8"), "11111111-2222:19cee1e8")
         self.assertEqual(km._seg_key("11111111-2222:1782627951:19cee1e8"), "11111111-2222:19cee1e8",

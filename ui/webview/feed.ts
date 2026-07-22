@@ -165,11 +165,21 @@ function dropDismissed(ids: string[]): void {
 // Optimistic follow-up MOVE (the user 2026-06-30): submitting a follow-up on a blocked card moves it to
 // Working IMMEDIATELY, instead of waiting out the kernel round-trip (be.send + build_feed + push). The kernel
 // stays AUTHORITATIVE — this is only a short-lived prediction: the kernel's own optimistic_followup flips the
-// card to working, and the next push that confirms it clears the prediction (reconcileFollowMove). If the
-// kernel does NOT confirm within FOLLOW_MOVE_MS, the prediction was wrong → revert to the kernel's state AND
-// show a transient toast, so a behavior change is apparent rather than silently masked. Mirrors pendingCleared.
-const FOLLOW_MOVE_MS = 4000;
-const pendingFollowMove = new Map<string, number>();   // card itemId → revert/toast timer id
+// card to working, and the next push that confirms it clears the prediction (reconcileFollowMove).
+//
+// The prediction ends on an EVENT, never a stopwatch (the user 2026-07-21). It used to get 4 seconds to be
+// confirmed by a payload and then reverted with "that follow-up didn't move the card to Working", but the
+// feed serves a goal-store snapshot frozen for the length of a judge pass — routinely 30-80s — so a reply
+// landing mid-pass could not be confirmed inside any window worth waiting, and the toast fired while the
+// session was already working the reply. Both halves are fixed: the kernel now punches user writes through
+// that snapshot (_feed_goals), and it ANSWERS the prediction instead of leaving the client to time it out.
+// cardMoveAck carries ok — false is the one real failure, the goal gone from the store or sealed by a view
+// clear, and the only thing worth a toast — plus the buildId of the newest feed build already underway, so
+// the prediction can wait for a payload built AFTER the gesture rather than trusting one that could not
+// possibly know about it yet. MOVE_ACK_MS is now only a backstop for an answer that never arrives.
+const MOVE_ACK_MS = 15000;
+const pendingFollowMove = new Map<string, number>();   // card itemId → backstop timer id; KEY = still predicting
+const pendingMoveAck = new Map<string, number>();      // card itemId → the buildId the kernel acked it with
 // What KIND of reply put each prediction in flight (the user 2026-07-20: EVERY context-carrying reply flips
 // its card to Working instantly, not just the feed composer's own follow-up):
 //  - "followup": a message rides along → the prediction wears the re-check styling ("Followed up" chip),
@@ -180,18 +190,48 @@ const pendingFollowMove = new Map<string, number>();   // card itemId → revert
 //    answer re-shows the ⏸ blocked card, which IS the signal — unlike a message, nothing can be lost.
 type MoveKind = "followup" | "plain" | "answer";
 const pendingMoveKind = new Map<string, MoveKind>();
+function clearFollowMove(itemId: string) {
+  const t = pendingFollowMove.get(itemId); if (t) clearTimeout(t);
+  pendingFollowMove.delete(itemId); pendingMoveKind.delete(itemId); pendingMoveAck.delete(itemId);
+}
 function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
   pendingMoveKind.set(itemId, kind);
+  pendingMoveAck.delete(itemId);                       // a fresh gesture waits on its OWN answer, not the last one's
   const timer = window.setTimeout(() => {
     if (!pendingFollowMove.has(itemId)) return;        // a push already confirmed the move → nothing to do
-    pendingFollowMove.delete(itemId);                  // give the kernel authority: drop the prediction
-    const k = pendingMoveKind.get(itemId); pendingMoveKind.delete(itemId);
-    if (k === "plain") feedToast("That move didn’t stick — the card didn’t reach Working. Check it.");
-    else if (k !== "answer") feedToast("That follow-up didn’t move the card to Working — the session may not have picked it up. Check it.");
+    const k = pendingMoveKind.get(itemId);
+    clearFollowMove(itemId);                           // give the kernel authority: drop the prediction
+    // Reaching here means the kernel never answered AT ALL (see ackFollowMove) — not that it declined the
+    // move, which is what the old wording claimed on every mid-pass reply. An "answer" prediction has no
+    // ack by design and always yields to the first payload, so it never gets this far.
+    if (k !== "answer") feedToast("romp didn’t confirm that move, so the card is back to the state romp reports. Check it.");
     render();                                          // fall back to the kernel-authoritative state
-  }, FOLLOW_MOVE_MS);
+  }, MOVE_ACK_MS);
   pendingFollowMove.set(itemId, timer);
+}
+// The kernel's ANSWER to a predicted move (cardMoveAck, the user 2026-07-21). ok=false is the only genuine
+// "it didn't stick": the goal is no longer in the store (compacted or rotated away) or a view clear sealed
+// it — worth interrupting for, and precise about what happened, including that a follow-up's message still
+// went out. ok=true records the buildId the prediction must outlive and re-arms the window SILENTLY: the
+// kernel has spoken, so nothing from here on is worth a toast, but a prediction must never outlive the
+// answer either, so the backstop stays armed in case a payload goes missing.
+function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
+  if (!pendingFollowMove.has(itemId)) return;
+  if (!ok) {
+    const plain = pendingMoveKind.get(itemId) === "plain";
+    clearFollowMove(itemId);
+    feedToast(plain ? "That card isn’t on the board any more, so it couldn’t move to Working."
+                    : "Your reply was sent, but that card isn’t on the board any more to move to Working.");
+    render();
+    return;
+  }
+  pendingMoveAck.set(itemId, buildId);
+  const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
+  pendingFollowMove.set(itemId, window.setTimeout(() => {
+    if (!pendingFollowMove.has(itemId)) return;
+    clearFollowMove(itemId); render();                 // silent wedge guard: no payload ever answered the ack
+  }, MOVE_ACK_MS));
 }
 // On a fresh authoritative payload: a predicted card the kernel now lists as working (or no longer lists at
 // all — cleared/absorbed) is CONFIRMED → drop the prediction + its timer. Else keep predicting (not caught up)
@@ -199,13 +239,20 @@ function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
 // right after retiring the picker (answerAsk → _mark_views_dirty), so a payload that still shows the card out
 // of Working is post-answer truth — a real remaining/renewed block (e.g. the next permission prompt of a
 // burst). Holding the prediction there would MASK a genuine "needs you"; dropping it re-shows the ⏸ card.
-function reconcileFollowMove(incoming: AskItem[]) {
+function reconcileFollowMove(incoming: AskItem[], buildId: number) {
   for (const id of Array.from(pendingFollowMove.keys())) {
     const a = incoming.find((x) => x.itemId === id);
     if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
-      const t = pendingFollowMove.get(id); if (t) clearTimeout(t);
-      pendingFollowMove.delete(id); pendingMoveKind.delete(id);
+      clearFollowMove(id);
+      continue;
     }
+    // ACKED, yet this payload still shows the card elsewhere. Trust it ONLY if it was built after the kernel
+    // took the gesture: an older payload (one already in flight when the click landed) cannot know about the
+    // reopen, and taking it as the answer is exactly the bounce back to Completed this replaced. A NEWER one
+    // is the kernel's own state, so yield to it silently — the reply landed, the card simply moved on (the
+    // work finished, a fresh block arrived), which is honest to show and never a failed move.
+    const acked = pendingMoveAck.get(id);
+    if (acked !== undefined && buildId > acked) clearFollowMove(id);
   }
 }
 // Render-time: keep each still-unconfirmed predicted card in Working, styled like the kernel's own re-checked
@@ -2869,7 +2916,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     const only = onlyTag();
     const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
     asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
-    reconcileFollowMove(incomingAsks);   // confirm/clear optimistic follow-up moves against the authoritative payload
+    // confirm/clear optimistic follow-up moves against the authoritative payload. buildId says WHEN this
+    // payload read the store, which is what makes "the kernel has answered my click" an event and not a
+    // guess (see reconcileFollowMove); a kernel too old to send one reads as 0 and simply never confirms
+    // an acked prediction early, leaving the backstop to retire it.
+    reconcileFollowMove(incomingAsks, typeof m.buildId === "number" ? m.buildId : 0);
     // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
     if (pendingRestored.size) {
@@ -2920,6 +2971,15 @@ window.addEventListener("message", (e: MessageEvent) => {
       if (top && top.column !== "working") { optimisticFollowMove(top.itemId, kind); moved = true; }
     }
     if (moved) render();
+  } else if (m.type === "cardMoveAck" && Array.isArray(m.ids)) {
+    // the kernel's answer to the prediction above (_ack_card_move). Ids resolve exactly as cardPredict's do
+    // — the kernel may name a SUB-goal that a visible top card carries — and an id this view never predicted
+    // is a no-op, so the ack is safe to broadcast to every feed pane.
+    const bid = typeof m.buildId === "number" ? m.buildId : 0;
+    for (const raw of m.ids.map(String)) {
+      const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
+      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid);
+    }
   }
 });
 

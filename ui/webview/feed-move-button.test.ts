@@ -30,21 +30,27 @@ test("clicking posts cardMove and acknowledges BEFORE the kernel round-trip", ()
   assert.ok(ack >= 0 && post > ack, "disable+relabel comes before the cardMove post");
 });
 
-test("the optimistic flip is a PLAIN move — no follow-up chip styling, its own revert toast", () => {
+test("the optimistic flip is a PLAIN move — no follow-up chip styling, its own refusal toast", () => {
   assert.match(FEED, /optimisticFollowMove\(it\.itemId, "plain"\);/);
   // plain ids skip the recheck + followupPending prediction styling
   assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ a\.recheck = true; a\.followupPending = true; \}/);
-  // the revert toast names a move, not a follow-up
-  assert.match(FEED, /That move didn’t stick/);
-  // reconcile clears the plain marker with the prediction
-  assert.match(FEED, /pendingFollowMove\.delete\(id\); pendingMoveKind\.delete\(id\);/);
+  // a REFUSED move (the kernel's ack says the card is gone/sealed) names a move, not a follow-up — and no
+  // longer claims a message went unheard, since a plain move carries none (the user 2026-07-21)
+  assert.match(FEED, /const plain = pendingMoveKind\.get\(itemId\) === "plain";/);
+  assert.match(FEED, /That card isn’t on the board any more, so it couldn’t move to Working\./);
+  // one seam retires a prediction, so the kind + ack markers can never outlive it
+  assert.match(FEED, /function clearFollowMove\(itemId: string\) \{/);
+  assert.match(FEED, /pendingFollowMove\.delete\(itemId\); pendingMoveKind\.delete\(itemId\); pendingMoveAck\.delete\(itemId\);/);
 });
 
 test("kernel: cardMove routes to jd.user_move with 'working' as the only legal target", () => {
   assert.match(KERNEL, /elif t == "cardMove":/);
   assert.match(KERNEL, /if iid and \(msg\.get\("to"\) or "working"\) == "working":/);
-  assert.match(KERNEL, /jd\.user_move\(sid, iid, now=int\(time\.time\(\)\)\)/);
+  assert.match(KERNEL, /ok = bool\(jd\.user_move\(sid, iid, now=int\(time\.time\(\)\)\)\)/);
   assert.match(KERNEL, /_mark_views_dirty\(\)/);
+  // the move is answered, and marked so it shows even mid-judge-pass (feed-move-ack.test.ts)
+  assert.match(KERNEL, /_note_user_goal_write\(sid\)/);
+  assert.match(KERNEL, /_ack_card_move\(\[iid\], ok\)/);
 });
 
 test("judge: user_move reuses the follow-up machinery — reopen + followupAt floor + stub, NO followupPending", () => {

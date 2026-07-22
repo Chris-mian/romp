@@ -2468,6 +2468,19 @@ def _predict_working(flavor, ids=None, sid=None):
         _send_to_app("feed", {"type": "cardPredict", "ids": ids, "flavor": flavor})
 
 
+def _ack_card_move(ids, ok):
+    """ANSWER the prediction _predict_working just fired (the user 2026-07-21). The client used to give a
+    prediction 4 seconds to be confirmed by a payload and then toast "that follow-up didn't move the card to
+    Working" — a TIMER standing in for an event the kernel already knows exactly: whether the reopen applied.
+    So say it. ok=False is the only genuine failure (the goal is gone from the store, or sealed by a view
+    clear) and is the only thing worth interrupting the user about; ok=True hands the card back to the
+    kernel's own state, which `buildId` lets the client wait for without guessing (see _next_feed_build_id)."""
+    ids = [i for i in ids if i]
+    if ids:
+        _send_to_app("feed", {"type": "cardMoveAck", "ids": ids, "ok": bool(ok),
+                              "buildId": _feed_build_id[0]})
+
+
 def _picker_mid_series(sid):
     """A multi-question AskUserQuestion answered mid-series (the user 2026-07-21): one tool call carries N
     questions, and the SDK loop holds the session in the `picker` state across ALL of them (sdk_backend
@@ -2580,13 +2593,17 @@ def _drive(msg, client):
             _predict_working("followup", ids=[iid])       # instant cue to every feed view (chat-typed citation
             #                                               follow-ups included) — the reopen below is what the
             #                                               next push confirms it against
+            ok = False
             try:
-                if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time())):
+                ok = bool(jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time())))
+                if ok:
                     # (the reopen event holds the top open + wears the chip; stub nodes retired 2026-07-07)
+                    _note_user_goal_write(sid)            # …and it shows even mid-judge-pass (_feed_goals)
                     _mark_views_dirty()                   # a reopen pushes the "Followed up" board at once —
                     #                                       the store write is invisible to the fleet sig
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
+            _ack_card_move([iid], ok)                     # …and TELL the client, instead of it timing us out
     elif t == "cardMove":
         # USER recategorize (the user 2026-07-06): the feed card's "Move to Working" button — a follow-up
         # WITHOUT a message. Nothing is sent to the session; the judge-side user_move reopens/unblocks the
@@ -2596,11 +2613,15 @@ def _drive(msg, client):
         iid = str(msg.get("itemId") or "")
         if iid and (msg.get("to") or "working") == "working":
             _predict_working("plain", ids=[iid])          # other feed views flip in step with the clicked one
+            ok = False
             try:
-                if jd.user_move(sid, iid, now=int(time.time())):
+                ok = bool(jd.user_move(sid, iid, now=int(time.time())))
+                if ok:
+                    _note_user_goal_write(sid)        # …and it shows even mid-judge-pass (_feed_goals)
                     _mark_views_dirty()               # the store write is invisible to the fleet sig
             except Exception:
                 sys.stderr.write("cardMove: %s\n" % traceback.format_exc())
+            _ack_card_move([iid], ok)                 # ok=False = sealed/gone: the ONE honest "didn't stick"
     # RESOLVING a live picker (answer/submit/custom/cancel/text) retires it from the backend's in-memory ask
     # set — which is exactly what makes the card stop saying "needs you". That set lives in MEMORY, so NO
     # file-mtime sig sees it change: without the dirty mark _cached_feed happily serves the pre-answer build
@@ -5956,11 +5977,26 @@ _judge_gen = [0]                                 # bumped each producer pass →
 # immediate (clears also route through cleared.jsonl, untouched). Pre-pass (not lazy-on-first-read) is the
 # point: a lazy snapshot could capture the planner's mid-pass "blocked" and freeze on THAT.
 _goals_snap = [None]                             # {sid: store} while a judge pass is mid-flight, else None
+_goals_snap_at = [0.0]                           # when that snapshot's file reads STARTED (see _feed_goals)
+_goals_snap_done = {}                            # sid → the user-write mark already punched onto THIS snapshot
 _goals_snap_lock = threading.Lock()
+# A USER gesture (card reply, Move to Working, resolve) must NEVER wait out a pass (the user 2026-07-21).
+# The snapshot above exists to hide half-applied JUDGE writes; it was also hiding the user's own, because
+# optimistic_followup/user_move write the LIVE store while the feed reads the frozen copy. A reply landing
+# mid-pass therefore stayed invisible for the whole pass — routinely 30-80s here (one closer call alone ran
+# 24s) — so the client's own revert deadline expired first and toasted "that follow-up didn't move the card
+# to Working" while the session was already working the reply. sid → time of the newest user write.
+_user_goal_write = {}
+
+def _note_user_goal_write(sid):
+    """A user gesture just wrote this session's goal store AND journaled itself to overrides/<sid>.jsonl.
+    Record when, so _feed_goals replays it onto a mid-pass snapshot instead of serving the pre-gesture card."""
+    _user_goal_write[str(sid)] = time.time()
 
 def _begin_goals_pass():
     """Capture the PRE-pass goal stores so build_feed serves a pass-boundary-consistent view for the pass."""
-    snap = {}
+    at = time.time()          # stamped BEFORE the reads: a write racing this loop must count as AFTER them,
+    snap = {}                 # so it gets replayed onto the snapshot rather than lost to the read order
     try:
         for p in jd.GOALDIR.glob("*.json"):
             try:
@@ -5971,21 +6007,40 @@ def _begin_goals_pass():
         pass
     with _goals_snap_lock:
         _goals_snap[0] = snap
+        _goals_snap_at[0] = at
+        _goals_snap_done.clear()
 
 def _end_goals_pass():
     """Pass over — drop the snapshot so reads go live again (post-pass results + any user writes show now)."""
     with _goals_snap_lock:
         _goals_snap[0] = None
+        _goals_snap_done.clear()
 
 def _feed_goals(sid):
     """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
     never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
-    snapshot → live (it has no prior state to flicker from). See the _goals_snap note above."""
+    snapshot → live (it has no prior state to flicker from). See the _goals_snap note above.
+
+    USER WRITES PUNCH THROUGH (the user 2026-07-21): a gesture recorded since this snapshot was taken is
+    replayed onto it from the override journal — the same durable record load_goals replays, so the user's
+    reopen shows AT ONCE without admitting the judges' mid-pass writes alongside it. That is the authority
+    ladder the judge already encodes (user > judges) applied to the view, and it is how a CLEAR has always
+    behaved (cleared.jsonl is read live, outside the snapshot). Replay is idempotent, but rollup_status is
+    not free, so a sid re-punches only when its mark MOVES — a second gesture in the same pass must land
+    too, which a plain already-done flag would have swallowed."""
     with _goals_snap_lock:
         snap = _goals_snap[0]
-    if snap is not None and sid in snap:
-        return snap[sid]
-    return jd.load_goals(sid)
+        if snap is not None and sid in snap:
+            store, mark = snap[sid], _user_goal_write.get(str(sid), 0.0)
+            if mark >= _goals_snap_at[0] and _goals_snap_done.get(sid) != mark:
+                _goals_snap_done[sid] = mark
+                try:
+                    jd._replay_overrides(sid, store)   # the reopen/move/resolve event, applied by the judge's own code
+                    jd.rollup_status(store, False)     # …and the card's column follows it (the user just acted → working)
+                except Exception:
+                    sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
+            return store
+    return jd.load_goals(sid)                          # no pass in flight → live read, outside the lock
 
 # Delta-send (the user 2026-06-25, "stop re-sending what didn't change"): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
@@ -8201,6 +8256,7 @@ def _resolve_node(sid, node_id):
         closed = False
     jd.rollup_status(store, closed)
     jd.save_goals(sid, store)
+    _note_user_goal_write(sid)                        # crossing a node off shows mid-pass too (_feed_goals)
     for lid in _delegation_linked_ids([node_id]):     # crossing off propagates across a delegation link: resolve the
         _resolve_node(lid.rsplit(":", 1)[0], lid)     # peer copy too, so a handed-off piece is checked off ONCE, not
         #                                               twice (the user 2026-06-23). Bounded recursion: a node already
@@ -11165,6 +11221,20 @@ _built_timeline = [None, None, 0.0]               # [fleet_sig, payload, built_a
 # connect serves a near-fresh cache instantly; the feed/timeline lag content by at most this window (the CHAT
 # is real-time on its own delta path, unaffected). Idle fleets still reuse indefinitely via the sig.
 REBUILD_MIN_S = 2.0
+# Monotonic id of each feed BUILD, assigned at build START (the user 2026-07-21). It is how a client tells
+# "this payload could not possibly know about my click yet" from "this payload is the kernel's answer to it":
+# a card-move ack carries the id of the newest build already underway, and only a payload with a HIGHER id
+# read the store after the gesture landed. Assigning at start (not finish) is the whole point — a build
+# already in flight when the click arrives gets the LOWER id it deserves. Cached re-sends keep their build's
+# id, so this changes exactly as often as the payload does and costs the push dedup nothing.
+_feed_build_lock = threading.Lock()
+_feed_build_id = [0]
+
+
+def _next_feed_build_id():
+    with _feed_build_lock:
+        _feed_build_id[0] += 1
+        return _feed_build_id[0]
 
 
 def _fleet_view_sig(now, tmux):
@@ -11198,7 +11268,9 @@ def _cached_feed(now, tmux, sig, connect=False):
     dirty = not connect and _views_dirty[0] > e[2]        # connect still serves the warmed build (never rebuilds)
     if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
         return e[1]
+    bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
     feed = build_feed(now, tmux)
+    feed["buildId"] = bid
     _built_feed[:] = [sig, feed, time.time()]
     return feed
 
