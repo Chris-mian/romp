@@ -307,6 +307,31 @@ class CostWeighting(unittest.TestCase):
         self.assertEqual(km._price_for("claude-opus-4-8-20990101", prices)["out"], 2, "same-family fallback")
         self.assertIsNone(km._price_for("some-other-model", prices), "unknown family → uncounted")
 
+    def test_fable_and_sonnet5_are_priced_not_uncounted(self):
+        # Regression: both signed as None AND matched no family, so their tokens costed $0 silently.
+        prices = km._model_prices(NOW)
+        for mid, rate in (("claude-fable-5", 50e-6), ("claude-sonnet-5", 15e-6)):
+            row = km._price_for(mid, prices)
+            self.assertIsNotNone(row, mid + " must be priced, not uncounted")
+            self.assertEqual(row["out"], rate, mid + " output rate")
+        self.assertEqual(km._price_for("claude-fable-5", prices)["in"], 10e-6, "fable input is 2x opus")
+        self.assertEqual(km._price_for("claude-opus-4-8", prices)["in"], 5e-6, "opus rate unchanged")
+
+    def test_price_sig_signs_single_number_ids_and_ignores_date_suffixes(self):
+        self.assertEqual(km._price_sig("claude-opus-4-8"), ("opus", "4", "8"), "X-Y pair still signs")
+        self.assertEqual(km._price_sig("claude-haiku-4-5-20251001"), ("haiku", "4", "5"), "date after a minor")
+        self.assertEqual(km._price_sig("claude-sonnet-5"), ("sonnet", "5", None), "single-number id")
+        self.assertEqual(km._price_sig("claude-fable-5"), ("fable", "5", None), "fable family")
+        self.assertEqual(km._price_sig("claude-sonnet-5-20260101"), ("sonnet", "5", None), "date is not a minor")
+        self.assertIsNone(km._price_sig("gpt-4o"), "non-Anthropic id")
+
+    def test_remote_feed_can_reach_every_baked_in_model(self):
+        # _refresh_remote_prices builds `want` from DEFAULT_MODEL_PRICES; an id that cannot sign is
+        # invisible to the feed forever, which is how fable/sonnet-5 would have stayed stale.
+        want = {km._price_sig(k): k for k in km.DEFAULT_MODEL_PRICES if km._price_sig(k)}
+        self.assertEqual(len(want), len(km.DEFAULT_MODEL_PRICES),
+                         "every baked-in model must sign, or the feed can never refresh it")
+
     def test_config_overrides_default_price(self):
         km.PRICE_CONFIG.write_text(json.dumps(
             {"claude-opus-4-8": {"in": 9e-6, "out": 40e-6, "cache_w": 1e-6, "cache_r": 1e-7}}))

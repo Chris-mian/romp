@@ -10584,17 +10584,24 @@ PRICE_TTL = 6 * 3600
 DEFAULT_MODEL_PRICES = {   # $/token: input, output, cache write (5m), cache read. Starting points only —
                            # the LiteLLM refresh overwrites these with the live feed (which carries the
                            # exact ids), so they just need to be sane when offline / before the first fetch.
+    "claude-fable-5":            {"in": 10e-6, "out": 50e-6, "cache_w": 12.5e-6, "cache_r": 1e-6},
     "claude-opus-4-8":           {"in": 5e-6, "out": 25e-6, "cache_w": 6.25e-6, "cache_r": 0.5e-6},
+    "claude-sonnet-5":           {"in": 3e-6, "out": 15e-6, "cache_w": 3.75e-6, "cache_r": 0.3e-6},
     "claude-sonnet-4-6":         {"in": 3e-6, "out": 15e-6, "cache_w": 3.75e-6, "cache_r": 0.3e-6},
     "claude-haiku-4-5-20251001": {"in": 1e-6, "out": 5e-6,  "cache_w": 1.25e-6, "cache_r": 0.1e-6},
-}
+}   # Sonnet 5 is listed at its STANDARD rate, not the introductory one, so the table stays right
+    # once the intro period ends; the feed refresh corrects it either way while the intro is live.
 _price_cache = {"t": 0, "remote": {}}   # remote feed prices, refreshed on a TTL in the background
 
 
 def _price_sig(name):
-    """(family, major, minor) of an Anthropic model id, or None — opus/sonnet/haiku + the first X-Y
-    version pair (so 'claude-opus-4-8' → ('opus','4','8'), the feed's 'claude-opus-4-1' → (...,'1'))."""
-    m = re.search(r"(opus|sonnet|haiku)\D*(\d+)[.\-](\d+)", (name or "").lower())
+    """(family, major, minor) of an Anthropic model id, or None. Families: fable/opus/sonnet/haiku.
+    The minor is OPTIONAL so single-number ids sign too ('claude-opus-4-8' → ('opus','4','8'),
+    'claude-sonnet-5' → ('sonnet','5',None), 'claude-fable-5' → ('fable','5',None)); it is capped at
+    two digits so a trailing DATE is not mistaken for one ('claude-sonnet-5-20260101' still signs as
+    ('sonnet','5',None), and 'claude-haiku-4-5-20251001' as ('haiku','4','5')). Matching stays
+    conservative: a differing minor is a DIFFERENT signature, never a silent near-miss."""
+    m = re.search(r"(fable|opus|sonnet|haiku)\D*(\d+)(?:[.\-](\d{1,2})(?!\d))?", (name or "").lower())
     return (m.group(1), m.group(2), m.group(3)) if m else None
 
 
@@ -10653,12 +10660,13 @@ def _model_prices(now=None):
 
 
 def _price_for(model, prices):
-    """The price row for a model: exact id, else any priced model of the same family (opus/sonnet/haiku)
-    so a differently-dated id still gets a sane rate, else None (uncounted — defensive)."""
+    """The price row for a model: exact id, else any priced model of the same family
+    (fable/opus/sonnet/haiku) so a differently-dated id still gets a sane rate, else None
+    (uncounted — defensive)."""
     if model in prices:
         return prices[model]
     m = (model or "").lower()
-    for fam in ("opus", "sonnet", "haiku"):
+    for fam in ("fable", "opus", "sonnet", "haiku"):
         if fam in m:
             for k, v in prices.items():
                 if fam in k.lower():
