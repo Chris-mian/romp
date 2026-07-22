@@ -98,6 +98,14 @@ Nudging holds off while you are actively driving a session, and it re-arms only
 after a real turn ends, so it never talks over you and never loops on its own
 messages.
 
+A session can also be waiting on something that is not you. When it dispatches
+work and pauses for the result, it shows a green **Awaiting** chip on the fleet
+rail, on the chat statusline above the message box, and on its timeline lane,
+where the pending stretch is drawn faded. Awaiting never means it needs you: it
+means the work is in flight until what the session sent for comes back. The
+chip clears on the session's next turn, when the task finishes or blocks, when
+you clear the card, or as soon as you reply.
+
 ## Messaging between agents (the Romp Postal Service)
 
 Sessions message each other through a mailbox Romp gives them, and every
