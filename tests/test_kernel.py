@@ -500,6 +500,67 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events[1:]], ["user", "assistant"],
                          "the real conversation follows the pinned card, untouched")
 
+    def test_judge_awaiting_stamp_floors_the_card_to_the_awaiting_badge(self):
+        """The closer's durable awaiting verdict (awaitingWhy/awaitingAt on the node, kernel/judge.py)
+        floors a WORKING top to the ⏳ awaiting flavor even when every LIVE awaiting source is dark —
+        the post-kernel-restart case where the in-memory subagent/bgTask sets died and a genuinely
+        waiting goal used to read as plain working, then 'stalled'."""
+        top = SID + ":gaw"
+        why = "a parameter sweep it launched; will file results when it lands"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "Run the sweep", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0,
+                            "awaitingWhy": why, "awaitingAt": T0 + 40,
+                            "log": [{"ev_t": T0 + 40, "src": "closer", "kind": "awaiting", "why": why, "at": 1}]}},
+            "placements": {}, "status": {top: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["column"], "working", "awaiting is a flavor of working, not a new column")
+        self.assertEqual((card["awaiting"] or {}).get("why"), why, "the badge carries the stamp's why")
+
+    def test_judge_awaiting_stamp_suppresses_the_stalled_chip(self):
+        """The false-'stalled' chain, reproduced end to end: a failed-nudge record exists, the live
+        awaiting sources are dark, but the goal store carries the judge's stamp — the card must wear
+        the ⏳ badge, NOT the 'stalled' chip (nudgeFailed only renders for a working/blocked col)."""
+        top = SID + ":gaw2"
+        why = "the campaign timer it armed; acts when it fires"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "Watch the campaign", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0,
+                            "awaitingWhy": why, "awaitingAt": T0 + 40,
+                            "log": [{"ev_t": T0 + 40, "src": "closer", "kind": "awaiting", "why": why, "at": 1}]}},
+            "placements": {}, "status": {top: "working"}}))
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "nudged": {top: {"count": 1, "lastTurnId": "t1", "failed": True,
+                                               "failedAt": NOW - 60}}}))
+        km._autonudge_cache.clear()
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertFalse(card.get("nudgeFailed"), "an awaiting goal never wears the stalled chip")
+        self.assertEqual((card["awaiting"] or {}).get("why"), why)
+
+    def test_delegated_only_open_work_reads_as_awaiting_the_peer(self):
+        """Delegation-derived awaiting (the courier's durable handoff graph): a top whose every OPEN leaf
+        is a handoff-tracking node has all its outstanding work with peers — the card wears the ⏳ badge
+        naming the delegation instead of plain working. (A PURE-delegation top is suppressed outright;
+        this is the mixed top: own work done, peer work outstanding.)"""
+        top, own, hand = SID + ":gd", SID + ":gd_own", SID + ":gd_h"
+        peer = "22222222-3333-4444-5555-666666666666"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 3, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "Ship the port", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0},
+                      own: {"id": own, "text": "Land the API side", "parentId": top, "nodeComplete": True,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 10},
+                      hand: {"id": hand, "text": "delegated the client port", "parentId": top,
+                             "nodeComplete": False, "blocked": False, "cleared": False, "trail": [],
+                             "t": T0, "mt": T0, "handoff": {"peer": peer, "msgId": "m1"}}},
+            "placements": {}, "status": {top: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["column"], "working", "awaiting stays a flavor of working")
+        self.assertIn("delegated to", (card["awaiting"] or {}).get("why") or "",
+                      "the badge names the delegation, from the handoff graph (not the question-regex)")
+
     def test_hide_from_feed_flag_drops_a_sessions_cards(self):
         """The timeline lane gear's "hide from feed" flag (the user 2026-06-19): a flagged session mints NO
         feed cards (it stays on the timeline). Muting also VIEW-CLEARS its current goals (the user 2026-06-23),

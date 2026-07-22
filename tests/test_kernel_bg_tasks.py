@@ -19,17 +19,51 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 TUSE = "11111111-aaaa-bbbb-cccc-222222222222"
 
 
-def _launch(tid=TUSE, cmd="sleep 5 && false", desc="Restart server after test"):
-    return {"type": "assistant", "message": {"content": [
+def _launch(tid=TUSE, cmd="sleep 5 && false", desc="Restart server after test", ts=None):
+    rec = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "id": tid, "name": "Bash",
          "input": {"run_in_background": True, "command": cmd, "description": desc}}]}}
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _notif_body(tid, status, outfile, summary):
+    return ("<task-notification>\n<task-id>bkv4ddzb1</task-id>\n<tool-use-id>%s</tool-use-id>\n"
+            "<output-file>%s</output-file>\n<status>%s</status>\n<summary>%s</summary>\n</task-notification>"
+            % (tid, outfile, status, summary))
 
 
 def _notif(tid=TUSE, status="failed", outfile="", summary='Background command "Restart server after test" failed with exit code 1'):
-    body = ("<task-notification>\n<task-id>bkv4ddzb1</task-id>\n<tool-use-id>%s</tool-use-id>\n"
-            "<output-file>%s</output-file>\n<status>%s</status>\n<summary>%s</summary>\n</task-notification>"
-            % (tid, outfile, status, summary))
+    # the OLDER result shape: the notification wrapped in a tool_result block naming the launch id
+    body = _notif_body(tid, status, outfile, summary)
     return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": body}]}}
+
+
+def _notif_str(tid=TUSE, status="completed", outfile="", summary="job finished"):
+    # the CURRENT dominant result shape: a standalone user record whose message.content IS the
+    # notification string — no tool_result wrapper; the join key is the INNER <tool-use-id> tag
+    return {"type": "user", "message": {"content": _notif_body(tid, status, outfile, summary)},
+            "promptSource": "sdk", "userType": "external"}
+
+
+def _notif_queued(tid=TUSE, status="completed", outfile="", summary="job finished"):
+    # a notification ENQUEUED while the session is busy — the task itself is already finished
+    return {"type": "queue-operation", "operation": "enqueue", "content": _notif_body(tid, status, outfile, summary)}
+
+
+def _agent_launch(tid="tu_agent1", desc="Map the parser", ts=None):
+    # an async Agent dispatch ack: a user record whose TOP-LEVEL toolUseResult says async_launched;
+    # the tool_result block names the launching tool_use id
+    rec = {"type": "user",
+           "toolUseResult": {"isAsync": True, "status": "async_launched", "agentId": "a1",
+                             "description": desc, "prompt": "map the parser end to end",
+                             "outputFile": "/tmp/agent-a1.output"},
+           "message": {"content": [{"type": "tool_result", "tool_use_id": tid,
+                                    "content": [{"type": "text", "text": "Async agent launched successfully."}]}]}}
+    if ts:
+        rec["timestamp"] = ts
+    return rec
 
 
 def _prompt(text="next thing please"):
@@ -140,6 +174,136 @@ class BgTasks(unittest.TestCase):
         self.assertIn('id="bg-tasks"', body)
         self.assertLess(body.index('id="content"'), body.index('id="bg-tasks"'), "after the transcript")
         self.assertLess(body.index('id="bg-tasks"'), body.index('id="composer"'), "before the composer")
+
+
+class NotificationShapes(unittest.TestCase):
+    """The result can land in THREE durable shapes; a task must clear on any of them. Missing the standalone
+    string shape (the current dominant one) left finished tasks reading 'running' forever in the box."""
+
+    def test_a_string_shape_notification_clears_the_task(self):
+        path = _write([_launch(), _notif_str(tid=TUSE)])
+        try:
+            self.assertEqual(km._bg_tasks(path)["count"], 0, "the standalone string notification finishes the task")
+        finally:
+            os.unlink(path)
+
+    def test_an_enqueued_notification_clears_the_task(self):
+        # queued while the session is busy — the task itself is already done; don't wait for delivery
+        path = _write([_launch(), _notif_queued(tid=TUSE)])
+        try:
+            self.assertEqual(km._bg_tasks(path)["count"], 0, "an enqueued notification finishes the task")
+        finally:
+            os.unlink(path)
+
+    def test_parse_extracts_the_inner_tool_use_id(self):
+        note = km._parse_task_notification(_notif_body("tu_42", "completed", "", "done"))
+        self.assertEqual(note["tool_use_id"], "tu_42", "the string shape's only join key is the inner tag")
+
+    def test_a_notification_for_an_unknown_launch_is_ignored(self):
+        path = _write([_launch(), _notif_str(tid="tu_other")])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["count"], 1, "a foreign notification never clears someone else's task")
+
+
+class AsyncAgentDispatch(unittest.TestCase):
+    """An async Agent dispatch is background work too: its ack (toolUseResult async_launched) is the durable
+    launch record, its <task-notification> the durable result."""
+
+    def test_an_async_agent_ack_counts_as_running(self):
+        path = _write([_agent_launch(tid="tu_agent1", desc="Map the parser")])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["tasks"][0]["status"], "running")
+        self.assertEqual(res["tasks"][0]["summary"], "Map the parser", "running shows the dispatch description")
+
+    def test_its_notification_clears_it(self):
+        path = _write([_agent_launch(tid="tu_agent1"), _notif_str(tid="tu_agent1", summary="agent finished")])
+        try:
+            self.assertEqual(km._bg_tasks(path)["count"], 0)
+        finally:
+            os.unlink(path)
+
+    def test_a_sync_agent_result_is_not_a_launch(self):
+        rec = _agent_launch(tid="tu_sync")
+        rec["toolUseResult"] = {"status": "success", "isAsync": False, "description": "quick lookup"}
+        path = _write([rec])
+        try:
+            self.assertEqual(km._bg_tasks(path)["count"], 0, "a synchronous agent result never enters the box")
+        finally:
+            os.unlink(path)
+
+
+class DurableAwaitingSource(unittest.TestCase):
+    """_session_awaiting source 0.75: for a LIVE CLI with no lifecycle set (tmux — the CLI outlives kernel
+    restarts and has no SDK task stream), the transcript's own launch↔notification pairing keeps awaiting
+    across kernel restarts. An SDK snapshot's bgTasks key (even empty) stays authoritative; a dormant
+    session never reaches the source."""
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def _patched(self, live_map, spawned=None):
+        saved = (km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay)
+        km._tmux_sessions = lambda: live_map
+        km._sdk_spawned_at = lambda sid: spawned
+        km._states_awaiting_overlay = lambda sid: None
+        return saved
+
+    def _restore(self, saved):
+        km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay = saved
+
+    def test_a_live_lifecycle_less_cli_reads_awaiting_from_the_transcript(self):
+        path = _write([_launch(desc="power watcher")])
+        saved = self._patched({self.SID: {"name": "web"}})
+        try:
+            why = km._session_awaiting(self.SID, path, True)
+        finally:
+            self._restore(saved)
+            os.unlink(path)
+        self.assertEqual(why, "waiting on a background task: power watcher")
+
+    def test_the_notification_landing_ends_it(self):
+        path = _write([_launch(), _notif_str(tid=TUSE)])
+        saved = self._patched({self.SID: {"name": "web"}})
+        try:
+            self.assertIsNone(km._session_awaiting(self.SID, path, True))
+        finally:
+            self._restore(saved)
+            os.unlink(path)
+
+    def test_an_sdk_snapshots_empty_bg_set_is_authoritative(self):
+        # the live lifecycle set says NOTHING is running → the transcript scan must not override it
+        path = _write([_launch()])
+        saved = self._patched({self.SID: {"name": "web", "bgTasks": []}})
+        try:
+            self.assertIsNone(km._session_awaiting(self.SID, path, True))
+        finally:
+            self._restore(saved)
+            os.unlink(path)
+
+    def test_a_dormant_session_never_reads_the_transcript_source(self):
+        # dead CLI → its tasks died with it; the death notice, not awaiting, is the truth
+        path = _write([_launch()])
+        saved = self._patched({})
+        try:
+            self.assertIsNone(km._session_awaiting(self.SID, path, True))
+        finally:
+            self._restore(saved)
+            os.unlink(path)
+
+    def test_the_spawn_stamp_gates_pre_restart_ghosts(self):
+        # launched BEFORE the current CLI spawned → died with the old one → not awaiting
+        path = _write([_launch(ts="2026-07-22T10:00:00.000Z", desc="old watcher")])
+        saved = self._patched({self.SID: {"name": "web"}}, spawned=4102444800)  # spawn far after the launch
+        try:
+            self.assertIsNone(km._session_awaiting(self.SID, path, True))
+        finally:
+            self._restore(saved)
+            os.unlink(path)
 
 
 if __name__ == "__main__":

@@ -97,3 +97,42 @@ class WaitFor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeclaredKindWins(unittest.TestCase):
+    """The schema `kind` field is the designed intent source (send_message REQUIRES it); the body regex
+    is only the fallback for legacy rows that predate the field (the 2026-07-22 unification)."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.MESSAGES
+        jd.MESSAGES = Path(self.td.name) / "messages.jsonl"
+
+    def tearDown(self):
+        jd.MESSAGES = self.saved
+        self.td.cleanup()
+
+    def _msgs(self, rows):
+        # rows are (from, to, t, body, kind); kind="" omits the field (a legacy row)
+        def rec(i, r):
+            o = {"from_id": r[0], "to_id": r[1], "t": r[2], "id": "m%d" % i, "body": r[3]}
+            if r[4]:
+                o["kind"] = r[4]
+            return json.dumps(o)
+        jd.MESSAGES.write_text("\n".join(rec(i, r) for i, r in enumerate(rows)) + "\n")
+
+    def test_kind_question_creates_the_wait_without_any_lead_word(self):
+        self._msgs([(X, Y, 100, "can you confirm the schema shape?", "question")])
+        self.assertEqual(km._wait_for_graph(0, {X, Y}).get(X, {}).get("peerSid"), Y,
+                         "the declared question is a wait even without a QUESTION: lead word")
+
+    def test_a_declared_coordinate_never_creates_a_wait(self):
+        self._msgs([(X, Y, 100, "QUESTION: rhetorical, just flagging the rename", "coordinate")])
+        self.assertEqual(km._wait_for_graph(0, {X, Y}), {},
+                         "the declared kind outranks a question-shaped body")
+
+    def test_legacy_rows_without_kind_keep_the_regex_fallback(self):
+        self._msgs([(X, Y, 100, "QUESTION: which port?", "")])
+        self.assertEqual(km._wait_for_graph(0, {X, Y}).get(X, {}).get("peerSid"), Y)
+        self._msgs([(X, Y, 100, "heads-up: landed the thing", "")])
+        self.assertEqual(km._wait_for_graph(0, {X, Y}), {})

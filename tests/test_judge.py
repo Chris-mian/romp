@@ -634,7 +634,7 @@ class PlanParse(unittest.TestCase):
             '{"verdicts":[{"n":0,"do":"lift","why":"x"},{"n":2,"do":"lift","why":"y"}]}', 3))
         # clean replies in each parser are untouched
         self.assertEqual(jd._parse_close('{"done":[{"goal":2,"why":"x"}],"block":[]}', 3),
-                         {"done": {2: "x"}, "block": {}})
+                         {"done": {2: "x"}, "block": {}, "awaiting": {}})
         self.assertEqual(jd._parse_unblock('{"verdicts":[{"n":2,"do":"lift","why":"x"}]}', 3), {2: "x"})
 
     def test_retitle_parses_with_valid_goal_and_text(self):
@@ -3161,24 +3161,24 @@ class BlockCompletionCorrectness(unittest.TestCase):
 class SweepParse(unittest.TestCase):
     def test_done_list_with_reasons(self):
         self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "shipped it"}]}', 4),
-                         {"done": {2: "shipped it"}, "block": {}})
+                         {"done": {2: "shipped it"}, "block": {}, "awaiting": {}})
         self.assertEqual(jd._parse_close(
             '{"done": [{"goal": 1, "why": "fixed the parser"}, {"goal": 3, "why": "wired the CLI flags"}]}', 4),
-            {"done": {1: "fixed the parser", 3: "wired the CLI flags"}, "block": {}})
+            {"done": {1: "fixed the parser", 3: "wired the CLI flags"}, "block": {}, "awaiting": {}})
         self.assertEqual(jd._parse_close('noise {"done": [{"goal": 2, "why": "done"}]} more', 4),
-                         {"done": {2: "done"}, "block": {}}, "the outermost JSON object is isolated from prose")
+                         {"done": {2: "done"}, "block": {}, "awaiting": {}}, "the outermost JSON object is isolated from prose")
 
     def test_block_list_parsed_and_done_wins(self):
         # the user 2026-06-17: the closer can now BLOCK a touched top (needs the user), not just complete it
         self.assertEqual(jd._parse_close('{"done": [], "block": [{"goal": 2, "why": "Approve the migration?"}]}', 3),
-                         {"done": {}, "block": {2: "Approve the migration?"}})
+                         {"done": {}, "block": {2: "Approve the migration?"}, "awaiting": {}})
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 1, "why": "?"}]}', 3),
-                         {"done": {1: "shipped"}, "block": {}}, "a goal in both -> done wins, dropped from block")
+                         {"done": {1: "shipped"}, "block": {}, "awaiting": {}}, "a goal in both -> done wins, dropped from block")
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "x"}]}', 3),
-                         {"done": {1: "x"}, "block": {}}, "an absent block key is tolerated")
+                         {"done": {1: "x"}, "block": {}, "awaiting": {}}, "an absent block key is tolerated")
 
     def test_empty_done_completes_nothing(self):
-        self.assertEqual(jd._parse_close('{"done": []}', 3), {"done": {}, "block": {}},
+        self.assertEqual(jd._parse_close('{"done": []}', 3), {"done": {}, "block": {}, "awaiting": {}},
                          "empty done list -> empty maps (complete/block nothing)")
 
     def test_garbage_skips(self):
@@ -3192,13 +3192,13 @@ class SweepParse(unittest.TestCase):
 
     def test_out_of_range_and_dupes_dropped(self):
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "a"}, {"goal": 9, "why": "b"}]}', 3),
-                         {"done": {1: "a"}, "block": {}}, "out-of-range index is dropped")
-        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {"done": {}, "block": {}},
+                         {"done": {1: "a"}, "block": {}, "awaiting": {}}, "out-of-range index is dropped")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {"done": {}, "block": {}, "awaiting": {}},
                          "only out-of-range -> empty (nothing in-range done)")
         self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "first"}, {"goal": 2, "why": "second"}]}', 3),
-                         {"done": {2: "first"}, "block": {}}, "first reason wins for a duplicate index")
+                         {"done": {2: "first"}, "block": {}, "awaiting": {}}, "first reason wins for a duplicate index")
         self.assertEqual(jd._parse_close('{"done": ["junk", {"why": "no goal"}, {"goal": 2, "why": "ok"}]}', 3),
-                         {"done": {2: "ok"}, "block": {}}, "malformed entries are skipped")
+                         {"done": {2: "ok"}, "block": {}, "awaiting": {}}, "malformed entries are skipped")
 
     def test_closer_prompt_offers_block(self):
         for phrase in ('"block"', "blocked", "owed by the user", "needs the user"):
@@ -6548,3 +6548,128 @@ class SyncPlanRehomesAdoptedOpenLink(unittest.TestCase):
         self.assertEqual((s["nodes"][root].get("agentTask") or {}).get("key"), "1",
                          "the born to-do keeps its own link")
         self.assertEqual(set(s["nodes"]), before, "no leaf minted — a born-to-do container is left alone")
+
+
+# ───────────────────── the closer's AWAITING verdict (⏳ annotation, 2026-07-22) ─────────────────────
+class AwaitingVerdict(unittest.TestCase):
+    """The closer classifies a goal AWAITING only when its turn ends with async work the assistant set in
+    motion AND intent to act when it lands (the user 2026-07-21). The stamp is an annotation verdict (like
+    settle: never `state`), durable in the goal store across kernel restarts, ended by exact events: the
+    closer's own lift on the goal's next audited turn, a landing done/block, a clear, or a user reply."""
+
+    def test_parse_collects_awaiting_and_resolutions_win(self):
+        self.assertEqual(
+            jd._parse_close('{"done": [], "block": [], "awaiting": [{"goal": 2, "why": "a test run; merges when green"}]}', 3),
+            {"done": {}, "block": {}, "awaiting": {2: "a test run; merges when green"}})
+        self.assertEqual(
+            jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 2, "why": "?"}],'
+                            ' "awaiting": [{"goal": 1, "why": "w"}, {"goal": 2, "why": "w"}, {"goal": 3, "why": "w"}]}', 3),
+            {"done": {1: "shipped"}, "block": {2: "?"}, "awaiting": {3: "w"}},
+            "a goal resolved done/blocked never also carries the annotation")
+        self.assertIsNone(jd._parse_close('{"done": [], "awaiting": [{"goal": 0, "why": "x"}]}', 3),
+                          "a zero index in the awaiting list poisons the whole reply, same as the others")
+
+    def test_apply_stamps_the_annotation_without_resolving(self):
+        s = _store()
+        g = _mknode(s, "G1")
+        newly = jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "a fleet test run; merges when green"}},
+                               t=T0 + 50, touched=1)
+        self.assertEqual(newly, [], "awaiting is an annotation, never a completion")
+        self.assertEqual(g["awaitingWhy"], "a fleet test run; merges when green")
+        self.assertEqual(g["awaitingAt"], T0 + 50)
+        self.assertFalse(g["nodeComplete"] or g["blocked"], "state stays open")
+        self.assertNotIn("mt", g, "an annotation never bumps mt (not a resolution)")
+        self.assertEqual([e["src"] for e in g["log"] if e["kind"] == "awaiting"], ["closer"])
+
+    def test_reassert_same_why_keeps_the_original_stamp_no_new_row(self):
+        # a long poll loop re-asserts every audited turn; identical whys never chew through LOG_CAP
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the campaign timer"}}, t=T0 + 50, touched=1)
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the campaign timer"}}, t=T0 + 500, touched=1)
+        rows = [e for e in g["log"] if e["kind"] == "awaiting"]
+        self.assertEqual(len(rows), 1, "an identical re-assert is skipped, not re-appended")
+        self.assertEqual(g["awaitingAt"], T0 + 50, "the stamp keeps its original since-time")
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the deploy it kicked off"}}, t=T0 + 900, touched=1)
+        self.assertEqual(g["awaitingWhy"], "the deploy it kicked off", "a changed why is a real event -> new row")
+        self.assertEqual(g["awaitingAt"], T0 + 900)
+
+    def test_the_next_audited_turn_without_reassert_lifts_the_stamp(self):
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the watcher"}}, t=T0 + 50, touched=1)
+        self.assertTrue(g.get("awaitingWhy"))
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {}}, t=T0 + 500, touched=1)
+        self.assertNotIn("awaitingWhy", g, "the goal's own next audited turn is the exact clearing event")
+        self.assertTrue(any(e.get("lift") for e in g["log"] if e["kind"] == "awaiting"),
+                        "the lift is a diary row, not a silent flag wipe")
+
+    def test_a_history_nominated_candidate_never_lifts(self):
+        # _subtree_done/_starved candidates ride the menu WITHOUT a turn of their own: their omission
+        # from the awaiting list says nothing about their wait -> the `touched` bound excludes them
+        s = _store()
+        g1, g2 = _mknode(s, "touched"), _mknode(s, "candidate")
+        jd.apply_close(s, [g1, g2], {"done": {}, "block": {}, "awaiting": {2: "its own async job"}}, t=T0 + 50, touched=2)
+        jd.apply_close(s, [g1, g2], {"done": {}, "block": {}, "awaiting": {}}, t=T0 + 500, touched=1)
+        self.assertEqual(g2.get("awaitingWhy"), "its own async job",
+                         "the candidate (index 2 > touched 1) keeps its stamp; only real turns lift")
+
+    def test_a_landing_resolution_ends_the_wait(self):
+        for kind, verdicts in (("done", {"done": {1: "shipped"}, "block": {}, "awaiting": {}}),
+                               ("block", {"done": {}, "block": {1: "Approve?"}, "awaiting": {}})):
+            s = _store()
+            g = _mknode(s, "G1")
+            jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the test run"}}, t=T0 + 50, touched=1)
+            jd.apply_close(s, [g], verdicts, t=T0 + 500, touched=1)
+            self.assertNotIn("awaitingWhy", g, "a landed %s outranks and ends the annotation" % kind)
+
+    def test_a_user_reply_voids_a_stale_stamp_but_the_resolving_turn_lands(self):
+        # done-style floor: a stamp computed from evidence STRICTLY BEFORE the reply is voided; the very
+        # turn that processes the reply may itself dispatch async work and legitimately wait (equality lands)
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.record_verdict(s, g, "user", "reopen", T0 + 100, msg=True)
+        self.assertFalse(jd.record_verdict(s, g, "closer", "awaiting", T0 + 99, why="stale pre-reply wait"),
+                         "pre-reply evidence is voided at the gate")
+        self.assertNotIn("awaitingWhy", g)
+        self.assertTrue(jd.record_verdict(s, g, "closer", "awaiting", T0 + 100, why="the job the reply asked for"),
+                        "the reply-triggered turn's own audit lands at equality")
+        self.assertEqual(g["awaitingWhy"], "the job the reply asked for")
+
+    def test_a_later_user_reply_ends_the_wait_in_the_fold(self):
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.record_verdict(s, g, "closer", "awaiting", T0 + 50, why="the watcher")
+        self.assertEqual(g["awaitingWhy"], "the watcher")
+        jd.record_verdict(s, g, "user", "reopen", T0 + 200, msg=True)
+        self.assertNotIn("awaitingWhy", g, "the user spoke -> the wait's story moved; the stamp ends")
+
+    def test_fold_is_shuffle_invariant_with_awaiting_rows(self):
+        import itertools
+        base = [{"ev_t": T0 + 10, "src": "closer", "kind": "awaiting", "why": "w1", "at": 1},
+                {"ev_t": T0 + 20, "src": "closer", "kind": "awaiting", "at": 2, "lift": True},
+                {"ev_t": T0 + 30, "src": "closer", "kind": "awaiting", "why": "w2", "at": 3},
+                {"ev_t": T0 + 40, "src": "user", "kind": "reopen", "at": 4, "msg": True}]
+        want = None
+        for perm in itertools.permutations(base):
+            f = jd._fold_node({"id": "n", "log": list(perm)})
+            got = (f["state"], f["awaitingWhy"], f["awaitingAt"])
+            if want is None:
+                want = got
+            self.assertEqual(got, want, "any log order folds to the same awaiting verdict")
+        self.assertEqual(want, ("open", None, None), "the trailing user reopen ends the w2 wait")
+
+    def test_awaiting_stamps_are_diary_owned(self):
+        nd = jd.GuardedNode({"id": "n", "text": "G"})
+        with self.assertRaises(TypeError):
+            nd["awaitingWhy"] = "hand-written"
+        with self.assertRaises(TypeError):
+            nd["awaitingAt"] = 123
+
+    def test_closer_prompt_offers_awaiting_with_the_tight_rule(self):
+        # the user 2026-07-21: ONLY when it plans to take action again pending something running
+        # asynchronously — both halves required, user-waits stay blocked, when unsure omit
+        for phrase in ('"awaiting"', "set running", "asynchronously", "plans to act on when it completes",
+                       "**both** halves", "Waiting on the user is blocked, never awaiting",
+                       "When unsure between awaiting and omitting, omit"):
+            self.assertIn(phrase, jd.CLOSER_SYS, phrase)

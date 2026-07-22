@@ -1313,6 +1313,33 @@ def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None):
     _write_auto_nudge(d)
 
 
+def _goal_awaiting_stamp(nodes, top, children=None):
+    """The freshest live ⏳ stamp in `top`'s subtree — the JUDGE's durable awaiting verdict (the closer's
+    `awaiting` annotation, kernel/judge.py: the goal's latest audited turn ended waiting on async work it
+    set in motion, with intent to act when it lands). Returns the stamp's why, or None.
+
+    This is the store-backed twin of _session_awaiting's LIVE sources: it survives kernel restarts (the
+    in-memory subagent/bgTask sets die with the backend, which is how a genuinely-waiting session read as
+    'stalled' after a restart), and it needs no time checks — the fold/lift machinery ends it on exact
+    events (the goal's next audited turn, a landing done/block, a clear, a user reply). rolledUp nodes are
+    skipped: their flag cache is tree-derived display state, not verdicts."""
+    if children is None:
+        children = {}
+        for nid, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(nid)
+    best, stack = None, [top]
+    while stack:
+        x = stack.pop()
+        nd = nodes.get(x)
+        if not nd:
+            continue
+        if nd.get("awaitingWhy") and not nd.get("rolledUp"):
+            cand = (nd.get("awaitingAt") or 0, nd["awaitingWhy"])
+            best = cand if best is None else max(best, cand)
+        stack.extend(children.get(x, []))
+    return best[1] if best else None
+
+
 def _mark_nudge_failed(gid):
     """Stamp `failed` on `gid`'s nudge record — the nudge-RESPONSE turn completed (closer-settled, so the
     planner has processed it too) and the goal is STILL working-stalled: the one ask didn't resolve it, and
@@ -1332,6 +1359,9 @@ def _mark_nudge_failed(gid):
         _sid = gid.rsplit(":", 1)[0]
         if _session_awaiting(_sid, _path_of(_sid) or "", True):
             return
+        if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid):
+            return                                     # the judge's durable ⏳ stamp says the goal waits on
+            #                                            async work — same rule as above, restart-proof
     except Exception:
         pass
     now = int(time.time())
@@ -1846,6 +1876,12 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
             continue                                 # all open work handed to peers → nothing for THIS session
         if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
             continue                                 # awaiting a live peer's reply to a question this goal predates
+        if _goal_awaiting_stamp(nodes, gid, _kids):
+            continue                                 # the judge's durable ⏳ stamp (closer awaiting verdict):
+            #                                          the goal's latest audited turn ended waiting on async
+            #                                          work it dispatched — not a stall. Restart-proof, unlike
+            #                                          the session-level live gate above; lifted by exact
+            #                                          events (next audited turn / done / block / user reply)
         rec = nudged.get(gid) or {}
         # Fire at most ONCE per GENUINE stall — keyed on arm_id, the newest genuinely-triggered ended
         # turn. NEVER re-arm off romp's own turns: re-arming on the nudge-response was the ~5s runaway
@@ -4945,6 +4981,11 @@ def _session_awaiting(sid, path, idle):
          finish") — the lifecycle set can't ghost (its tasks die with the CLI, terminals clear it), though
          a genuinely long-lived server the agent leaves running WILL hold awaiting until it's stopped;
          accepted, refinement noted (gate on tasks launched as the turn's closing act if it misfires).
+      0.75 the TRANSCRIPT's own launch↔notification pairing (_bg_scan_cached) — the DURABLE twin of 0.5,
+         consulted only for a LIVE CLI that carries no lifecycle set (a tmux session, whose CLI outlives
+         kernel restarts and has no SDK task stream; an SDK backend gap mid-reattach). Ghost-gated by the
+         CLI spawn stamp when one exists. A DORMANT session never reaches it: its tasks died with its CLI,
+         so the death notice — not awaiting — is the truth there.
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
     Postal peer-waits are handled separately in build_feed."""
     if not idle:
@@ -4956,7 +4997,8 @@ def _session_awaiting(sid, path, idle):
     # agents are still running, falsely clearing the verdict; the API-error floor then painted a red
     # "API error" + "stalled" card over a session with two agents mid-flight. Tmux sessions carry no
     # subagents field → None → fall through unchanged.
-    tm = _tmux_sessions().get(str(sid)) or {}
+    live = _tmux_sessions().get(str(sid))    # None = not a live CLI (dormant); {}-like = live snapshot
+    tm = live or {}
     subs = tm.get("subagents")
     if subs:
         # `subagents` is the snapshot's LIST of live agents ({"type","since"}); the original source-0 code
@@ -4970,6 +5012,17 @@ def _session_awaiting(sid, path, idle):
         if len(bg) == 1:
             return "waiting on a background task%s" % ((": " + d0) if d0 else "")
         return "waiting on %d background tasks%s" % (len(bg), (" — " + d0 + ", …") if d0 else "")
+    if live is not None and "bgTasks" not in live and path:
+        # Source 0.75 — a live CLI with NO lifecycle set (tmux; SDK mid-reattach): the transcript's own
+        # launch↔notification pairing, ghost-gated by the CLI spawn stamp when one exists. When the
+        # snapshot DOES carry a bgTasks key (SDK), its empty set is authoritative — never overridden here.
+        sp = _sdk_spawned_at(sid)
+        run = [tk for tk in _bg_scan_cached(path) if not (sp and tk.get("t") and tk["t"] < sp)]
+        if run:
+            d0 = str(run[0].get("summary") or "").strip()
+            if len(run) == 1:
+                return "waiting on a background task%s" % ((": " + d0) if d0 else "")
+            return "waiting on %d background tasks%s" % (len(run), (" — " + d0 + ", …") if d0 else "")
     ov = _states_awaiting_overlay(sid)
     if ov is not None:                                # a producer is writing overlay records → trust it
         return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
@@ -5232,7 +5285,9 @@ def _result_text(content):
 
 def _parse_task_notification(txt):
     """Parse a <task-notification> block's fields, or None if it isn't one. Keys on the exact tags the
-    harness emits (status / summary / output-file), not a guess."""
+    harness emits (status / summary / output-file / tool-use-id), not a guess. tool_use_id is the join
+    key back to the LAUNCHING tool_use — the standalone (string-content) notification shape carries it
+    only inside the text, unlike the older tool_result wrapper whose block names it."""
     if not txt or "<task-notification>" not in txt:
         return None
 
@@ -5243,7 +5298,8 @@ def _parse_task_notification(txt):
         a += len(tag) + 2
         b = txt.find("</" + tag + ">", a)
         return txt[a:b].strip() if b >= 0 else ""
-    return {"status": (fld("status") or "completed").lower(), "summary": fld("summary"), "output_file": fld("output-file")}
+    return {"status": (fld("status") or "completed").lower(), "summary": fld("summary"),
+            "output_file": fld("output-file"), "tool_use_id": fld("tool-use-id")}
 
 
 def _read_task_output(of):
@@ -5266,14 +5322,30 @@ def _read_task_output(of):
 
 
 def _scan_bg_tasks(path):
-    """Walk the transcript pairing run_in_background launches with their <task-notification> results, and
-    surface a task ONLY while it's still RUNNING (in flight across turns). A finished task drops out of the box
-    the instant its result lands — the box is a live "what's running now" indicator, and a task's COMPLETION is
-    already shown in the chat as its AGENT notice card (renderAgentNotif), so keeping it here lingered as an
-    "empty" bordered line the user didn't want (the user 2026-07-06). Newest-launched first, capped. No output
-    content here (read fresh in _bg_tasks — a running task's output grows independently of the transcript).
+    """Walk the transcript pairing async LAUNCHES with their <task-notification> results, and surface a task
+    ONLY while it's still RUNNING (in flight across turns). A finished task drops out of the box the instant
+    its result lands — the box is a live "what's running now" indicator, and a task's COMPLETION is already
+    shown in the chat as its AGENT notice card (renderAgentNotif), so keeping it here lingered as an "empty"
+    bordered line the user didn't want (the user 2026-07-06). Newest-launched first, capped. No output content
+    here (read fresh in _bg_tasks — a running task's output grows independently of the transcript).
+
+    Launches come in TWO durable shapes: a Bash tool_use with run_in_background:true, and an async
+    Agent dispatch — its ack is a user record whose TOP-LEVEL toolUseResult says isAsync/"async_launched"
+    (the tool_result block names the launching tool_use id). Results come in THREE: the notification inside
+    a tool_result block (the older wrapper), a standalone user record whose message.content IS the
+    notification string (the current dominant shape — missing this left finished tasks reading 'running'
+    forever), and a queue-operation enqueue holding the notification while the session is busy — the task
+    itself is already finished the moment any of the three exists.
     Returns [{id,status,summary,command,outputFile}]."""
     tasks, order = {}, []
+
+    def _mark(note):
+        # a notification keyed by its INNER <tool-use-id> (the string/queue shapes have no wrapper block)
+        tid = (note or {}).get("tool_use_id")
+        if tid and tid in tasks:
+            tasks[tid].update(status=note["status"], outputFile=note["output_file"],
+                              summary=note["summary"] or tasks[tid]["summary"])
+
     try:
         with open(path, errors="replace") as f:
             for line in f:
@@ -5295,13 +5367,27 @@ def _scan_bg_tasks(path):
                                               "command": inp.get("command") or "", "outputFile": ""}
                                 order.append(tid)
                 elif t == "user" and isinstance(c, list):
+                    tur = o.get("toolUseResult")
+                    tur = tur if isinstance(tur, dict) else {}
+                    async_launch = bool(tur.get("isAsync")) or tur.get("status") == "async_launched"
                     for b in c:
                         if isinstance(b, dict) and b.get("type") == "tool_result":
                             tid = b.get("tool_use_id")
+                            if async_launch and tid and tid not in tasks:
+                                # an async Agent dispatch ack — the durable "this work is now running" record
+                                tasks[tid] = {"id": tid, "status": "running", "t": _msg_epoch(o),
+                                              "summary": (tur.get("description") or "Background agent"),
+                                              "command": "", "outputFile": tur.get("outputFile") or ""}
+                                order.append(tid)
+                                continue
                             note = _parse_task_notification(_result_text(b.get("content")))
                             if tid in tasks and note:      # its result landed → mark it done; the keep-filter drops it
                                 tasks[tid].update(status=note["status"], outputFile=note["output_file"],
                                                   summary=note["summary"] or tasks[tid]["summary"])
+                elif t == "user" and isinstance(c, str):
+                    _mark(_parse_task_notification(c))
+                elif t == "queue-operation" and o.get("operation") == "enqueue":
+                    _mark(_parse_task_notification(o.get("content") or ""))
     except OSError:
         return []
     keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running"]
@@ -5321,6 +5407,26 @@ def _sdk_spawned_at(sid):
         return None
 
 
+def _bg_scan_cached(path):
+    """The mtime+size-cached _scan_bg_tasks result for a transcript — the task META only (no output tails;
+    callers that show output read it fresh, a running task's log grows independently of the transcript).
+    Shared by the chat box (_bg_tasks) and the awaiting source (_session_awaiting source 0.75)."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _bgtasks_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    scan = _scan_bg_tasks(path)
+    if key is not None:
+        if len(_bgtasks_cache) > 256:
+            _bgtasks_cache.clear()
+        _bgtasks_cache[path] = (key, scan)
+    return scan
+
+
 def _bg_tasks(path, spawned_at=None, live=None):
     """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
     'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
@@ -5334,20 +5440,7 @@ def _bg_tasks(path, spawned_at=None, live=None):
     previous CLI and their completions can never land, so they'd count as running forever — the ghost '25
     background tasks' that read as a wedged session (nimbus, the user 2026-07-10). Both filters run after
     the cache, since they change without the transcript changing."""
-    try:
-        st = os.stat(path)
-        key = (st.st_mtime, st.st_size)
-    except OSError:
-        key = None
-    hit = _bgtasks_cache.get(path)
-    if hit is not None and key is not None and hit[0] == key:
-        scan = hit[1]
-    else:
-        scan = _scan_bg_tasks(path)
-        if key is not None:
-            if len(_bgtasks_cache) > 256:
-                _bgtasks_cache.clear()
-            _bgtasks_cache[path] = (key, scan)
+    scan = _bg_scan_cached(path)
     if live is not None:
         live_ids = {t.get("toolUseId") for t in live if t.get("toolUseId")}
         scan = [tk for tk in scan if tk["id"] in live_ids]
@@ -8526,9 +8619,9 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
             "provisional": True, "tree": []}
 
 
-# A postal message that REQUIRES a reply (QUESTION/ASK/Q) — vs a COORDINATE/FYI heads-up that doesn't. Only
-# these create a "waiting on" edge, so an actively-coordinating session isn't falsely shown waiting for every
-# FYI it sent (the user 2026-06-22).
+# LEGACY question-intent tell for postal rows that predate the schema `kind` field (QUESTION/ASK/Q lead
+# word). Rows that CARRY a kind use it directly — the sender's declared intent is the designed source; the
+# body regex is only the fallback for old log rows (the user 2026-06-22 / the 2026-07-22 unification).
 _WAIT_Q_RE = re.compile(r"^\s*(?:QUESTION|ASK|Q)\b", re.I)
 
 
@@ -8552,7 +8645,9 @@ def _wait_for_graph(now, alive_sids):
                 continue
             ts = int(ts)
             last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
-            if _WAIT_Q_RE.match(o.get("body") or ""):    # a reply-REQUIRED ask creates the wait edge
+            k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins;
+            is_q = (k == "question") if k else bool(_WAIT_Q_RE.match(o.get("body") or ""))
+            if is_q:                                     # a reply-REQUIRED ask creates the wait edge
                 last_q[(f, t_)] = max(last_q.get((f, t_), 0), ts)
     except OSError:
         pass
@@ -8927,8 +9022,27 @@ def build_feed(now, tmux=None):
                 _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
                               if nodes[x].get("blocked") and not _closure_done(x)] or [0])
                 _await_ok = owned_since.get(nid, -1) >= _blk_t
+            # The JUDGE's durable ⏳ stamp (the closer's awaiting verdict, kernel/judge.py): this goal's
+            # latest audited turn ended waiting on async work it set in motion. Store-backed, so it holds
+            # across kernel restarts — exactly where the live snapshot signals above go dark and a
+            # genuinely-waiting goal used to read as plain working, then "stalled". It floors WORKING
+            # only: a real needs-you (block) always outranks the annotation.
+            _stamp_why = _goal_awaiting_stamp(nodes, nid, children) if col == "working" else None
+            # DELEGATION-derived awaiting (the courier's durable handoff graph, not the question-regex):
+            # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
+            # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
+            # as "this session should be doing something"). Ends on the graph's own event: run_propagate
+            # checks the handoff off the moment the peer's linked goal completes.
+            _deleg_why = None
+            if col == "working" and not _stamp_why and not _await_ok \
+                    and _all_outstanding_delegated(nodes, nid):
+                _peers = sorted({(_name_of((nodes[x].get("handoff") or {}).get("peer")) or "a peer")
+                                 for x in _subtree(nid)
+                                 if isinstance(nodes[x].get("handoff"), dict)
+                                 and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")})
+                _deleg_why = "delegated to %s; waiting on their result" % (", ".join(_peers) or "a peer")
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
-                    _await_ok or (col == "blocked" and _peer_wait)):
+                    _await_ok or _stamp_why or _deleg_why or (col == "blocked" and _peer_wait)):
                 col = "awaiting"
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
@@ -8940,7 +9054,7 @@ def build_feed(now, tmux=None):
                 sgoal = jd.load_goals(psid).get("nodes", {}).get(gid) if gid else None
                 if sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared") and gid not in cleared:
                     origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
-            await_why = sess_awaiting_why if col == "awaiting" else None   # the ⏳ awaiting badge's "why" (None for the postal-only case → the waitingOn chip names the peer)
+            await_why = (sess_awaiting_why or _stamp_why or _deleg_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph (None for the postal-only case → the waitingOn chip names the peer)
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
             # such node in its subtree — else (working/awaiting) its LAST ACTIVITY (the newest mt anywhere in

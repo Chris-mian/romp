@@ -45,6 +45,14 @@ class TheLadder(unittest.TestCase):
         self.assertFalse(jd.may_apply(self.store, nd, "judge", "block", FA), "computed from the answered ask: void")
         self.assertTrue(jd.may_apply(self.store, nd, "judge", "block", FA + 1), "a genuinely new ask: blocks")
 
+    def test_judge_awaiting_floor_equality_lands(self):
+        # the closer's ⏳ annotation rides the DONE-style floor: the turn that processes the user's
+        # reply may itself dispatch async work and legitimately wait (equality = that turn's own audit)
+        nd = self.store["nodes"][G1]
+        self.assertFalse(jd.may_apply(self.store, nd, "closer", "awaiting", FA - 1), "pre-reply stamp: void")
+        self.assertTrue(jd.may_apply(self.store, nd, "closer", "awaiting", FA), "the reply-triggered turn: lands")
+        self.assertTrue(jd.may_apply(self.store, nd, "closer", "awaiting", FA + 1), "newer evidence: lands")
+
     def test_no_user_floor_means_judges_flow(self):
         nd = node()   # no followupAt
         self.assertTrue(jd.may_apply(self.store, nd, "judge", "done", FA - 999))
@@ -77,8 +85,9 @@ class LintNoScatteredGuards(unittest.TestCase):
                 continue
             if "_done_is_stale(" in s or "_block_is_stale(" in s:
                 offenders.append((i, s))
-        # the only two permitted call lines are inside may_apply's body
-        self.assertEqual(len(offenders), 2, "guards called outside may_apply: %r" % offenders)
+        # the only permitted call lines are inside may_apply's body: done, block, and awaiting (the
+        # closer's ⏳ annotation rides the done-style floor, 2026-07-22) — each a bare `return not` there
+        self.assertEqual(len(offenders), 3, "guards called outside may_apply: %r" % offenders)
         for _, s in offenders:
             self.assertTrue(s.startswith("return not "), "unexpected guard call shape: %r" % s)
 
