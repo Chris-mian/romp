@@ -1442,6 +1442,29 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
 
+    def test_no_provisional_card_for_a_raw_text_compact_command_window(self):
+        # the user 2026-07-22: a session with no OPEN goal, currently /compact-ing, showed a spurious
+        # "Compact conversation context" provisional card. CLI 2.1.215+ writes a typed /compact as a
+        # raw-text human atom ~90s BEFORE its <command-name> wrapper lands (past the compact_boundary), so
+        # _seg_command is still False during the window; the planner DEFERS placement for a slash-shaped
+        # segment (never places it), so the placeholder would surface for the whole window. _provisional_card
+        # must mirror plan_units' _seg_slash_shaped guard (judge.py:3207).
+        recs = [uline(T0, "first ask", "u1", ps="typed"),
+                aline(T0 + 20, "Done with the first ask.", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "/compact", "u2", "a1", ps="typed")]   # raw-text /compact, wrapper not yet landed
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        g1 = SID + ":g1"
+        self._goal_store(
+            {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            {g1: "completed"}, last=g1, planned=False)   # every goal done; only the open /compact turn remains
+        self._working_tmux()
+        asks = km.build_feed(NOW)["asks"]
+        self.assertFalse([a for a in asks if a.get("provisional")],
+                         "a raw-text /compact turn gets no provisional card (mirrors the landed-command guard)")
+        self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
+
     def test_provisional_card_resurrects_when_the_card_is_cleared_mid_turn(self):
         # the user 2026-07-05: clearing a card whose segment was STILL WORKING left the session on a blank
         # board until the turn ended — the placement tombstone suppressed the placeholder while the placed

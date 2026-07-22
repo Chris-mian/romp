@@ -8310,9 +8310,17 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     # drops), unlike a command segment which is never placed. Genuine peer/sdk triggers stay excluded.
     if not jd._seg_human(held) and not held.get("seam") and not jd._seg_system(held):
         return None
-    if jd._seg_command(held):                        # a SLASH-COMMAND turn is never classified into a goal (the planner
-        return None                                  # skips it), so it would NEVER place → the placeholder would hang
-                                                     # forever (the JLD /usage case). No placeholder for a command. (2026-06-29)
+    if jd._seg_command(held) or jd._seg_slash_shaped(held):   # a SLASH-COMMAND turn is never classified into a goal (the
+        return None                                  # planner skips it), so it would NEVER place → the placeholder would
+                                                     # hang forever (the JLD /usage case). No placeholder for a command.
+                                                     # (2026-06-29). _seg_slash_shaped covers the CLI 2.1.215+ window where a
+                                                     # typed /compact lands as a raw-text human atom ~90s BEFORE its
+                                                     # <command-name> wrapper (past the compact_boundary): _seg_command is
+                                                     # still False then, so a goalless COMPACTING session showed a spurious
+                                                     # "Compact conversation context" card. plan_units already DEFERS
+                                                     # placement for such a segment (judge.py:3207) → no placement ever
+                                                     # stamps → the placeholder would surface for the whole window. Mirror
+                                                     # the judge's guard here so it doesn't. (the user 2026-07-22)
     placements = (store or {}).get("placements") or {}
     nodes = (store or {}).get("nodes") or {}
     # Is the held segment actually IN-FLIGHT? The clear-mid-work resurrect below applies ONLY then — the
