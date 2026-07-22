@@ -867,9 +867,10 @@ class TimelinePanel {
     this._drawRAF = requestAnimationFrame(() => { this._drawRAF = null; this.draw(); });
   }
 
-  // Trackpad gestures: horizontal two-finger scroll → pan (offset); pinch/expand → zoom the
-  // window width, anchored at the time under the cursor. Both write the continuous window/
-  // offset state and re-seat the slider thumbs, so the result persists + redraws like a drag.
+  // Trackpad gestures: horizontal two-finger scroll → pan (offset); pinch/expand → zoom the window width,
+  // anchored on the REAL time under the cursor (_anchorOff), so hovering a thing and pinching expands INTO
+  // it. Both write the continuous window/offset state and re-seat the slider thumbs, so the result persists
+  // + redraws like a drag.
   onWheel(e) {
     const g = this._geom; if (!g || !this.data || !this.data.sessions) return;
     const pinch = e.ctrlKey;                                   // Chromium maps trackpad pinch → ctrl+wheel
@@ -899,9 +900,11 @@ class TimelinePanel {
       const newWin = Math.max(MIN_W, Math.min(MAX_W, curWin * factor));
       const svgX = (e.clientX - rect.left) * scaleX;
       const frac = Math.max(0, Math.min(1, (svgX - g.ml) / g.plotW));   // cursor position across the plot
-      const cc = cT0 + frac * curWin;                         // compressed time under the cursor — pin it
+      // Pin the REAL time under the cursor, not its compressed coordinate: gap widths ride the window
+      // (gapCT = winSec * GAP_FRAC), so the compressed axis RESCALES on every zoom step — see _anchorOff.
+      const rc = (g.decompress || ((c) => c))(cT0 + frac * curWin);
       this._winSec = newWin;
-      this._offSec = Math.max(0, Math.min(MAX_OFFSET, cNow - (cc + (1 - frac) * newWin)));
+      this._offSec = this._anchorOff(rc, frac, newWin);
     } else if (this._lockNow) {
       // 🔒 horizontal wheel → ZOOM (no pan possible — the right edge is pinned at now). Rightward (toward
       // now) zooms IN, leftward (toward the past) zooms OUT — same direction as the locked touch-drag.
@@ -919,6 +922,23 @@ class TimelinePanel {
     this._startLiveTick();   // a pan back to the now-edge re-pins → resume smooth advance (no-op otherwise)
   }
 
+  // The offset that puts REAL time `rc` back at fraction `frac` across the plot, for a window `newWin`
+  // wide. Every zoom anchor goes through here (wheel pinch + touch pinch), because the compressed axis is
+  // NOT a fixed coordinate system: a collapsed idle gap is `gapCT = winSec * GAP_FRAC` wide, so changing
+  // the window rescales every gap, and _buildCompressMap anchors its origin at the FIRST collapsed gap —
+  // near the start of history. Pinning the anchor in compressed seconds (what this did before) therefore
+  // pinned it against that far-left origin: the zoom's real fixed point sat near the beginning of the
+  // timeline and the hovered instant slid away, worse with every step (the user 2026-07-21, "it looks like
+  // it's fixing the leftmost coordinate"). So we convert to real time, then re-derive the offset under the
+  // map the NEXT draw will build (same inputs as draw(): the live now + the new window's gap width).
+  _anchorOff(rc, frac, newWin) {
+    const nowS = this._liveNow();
+    const cmap = this._collapseGaps && this.data
+      ? this._buildCompressMap(this.data.turns || {}, newWin * GAP_FRAC, nowS) : null;
+    const compress = cmap ? cmap.compress : (t) => t;
+    return Math.max(0, Math.min(MAX_OFFSET, compress(nowS) - (compress(rc) + (1 - frac) * newWin)));
+  }
+
   _touchDist(a, b) { return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }
 
   // Touchscreen pan/zoom (phones — no wheel events). ONE finger, horizontal: PAN the window (free, breaks
@@ -926,8 +946,9 @@ class TimelinePanel {
   // a horizontal drag ZOOMS instead (the right edge stays pinned at now, so there's nowhere to pan) — this
   // is the user's "locked-to-now drag does a zoom." ONE finger, vertical: falls through to native lane
   // scroll (touch-action:pan-y), and a tap with no movement falls through to the lane's click/select. TWO
-  // fingers: PINCH-zoom the window width, anchored at the midpoint. Math mirrors onWheel/_panDragMove in
-  // COMPRESSED time (linear there). _winSec/_offSec are the same continuous state the wheel + sliders write.
+  // fingers: PINCH-zoom the window width, anchored at the REAL time under the midpoint (_anchorOff, shared
+  // with the wheel). Panning stays in COMPRESSED time, where the mapping is linear, so a pan is a pure
+  // translate. _winSec/_offSec are the same continuous state the wheel + sliders write.
   onTouchStart(e) {
     const g = this._geom; if (!g || !this.data || !this.data.sessions) return;
     if (e.touches.length >= 2) {
@@ -939,8 +960,11 @@ class TimelinePanel {
       const cNow = compress(this.data.now), cT1 = cNow - curOff, cT0 = cT1 - curWin;
       const svgX = ((a.clientX + b.clientX) / 2 - rect.left) * scaleX;   // midpoint across the plot
       const frac = Math.max(0, Math.min(1, (svgX - g.ml) / g.plotW));
+      // pin the REAL time under the midpoint (see _anchorOff): the anchor is captured ONCE here and reused
+      // for every move, so a compressed-coordinate anchor drifts harder here than on the trackpad — the
+      // window changes by a large factor across one gesture, rescaling the axis under a fixed number.
       this._touch = { mode: 'pinch', startDist: Math.max(1, this._touchDist(a, b)), frac,
-        cc: cT0 + frac * curWin, cNow, startWin: curWin };          // pin the compressed time under the midpoint
+        rc: (g.decompress || ((c) => c))(cT0 + frac * curWin), startWin: curWin };
       e.preventDefault();
     } else if (e.touches.length === 1) {
       const t = e.touches[0];
@@ -958,7 +982,12 @@ class TimelinePanel {
       const dist = Math.max(1, this._touchDist(e.touches[0], e.touches[1]));
       const newWin = Math.max(MIN_W, Math.min(MAX_W, d.startWin * (d.startDist / dist)));   // spread → narrower window (zoom in)
       this._winSec = newWin;
-      this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.cNow - (d.cc + (1 - d.frac) * newWin)));
+      this._offSec = this._anchorOff(d.rc, d.frac, newWin);
+      // …and CLAIM the offset (as the wheel does): without this the next draw either forces off=0 (still
+      // pinned to now) or re-derives it from _holdReal to hold the right edge, discarding the anchor we
+      // just computed — the mid-gesture frames ignored the midpoint entirely.
+      this._markOffsetGesture();
+      this._scheduleDraw();
       e.preventDefault();
     } else if (d.mode === 'drag') {
       const dx = e.touches[0].clientX - d.startX, dy = e.touches[0].clientY - d.startY;
