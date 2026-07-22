@@ -745,12 +745,17 @@ _atomic_lock = threading.Lock()
 _atomic_seq = [0]
 
 
-def _atomic_write(path, text):
+def _atomic_write(path, text, mode=None):
     """Atomically publish `text` to `path` via a UNIQUELY-named temp + os.replace. The temp name is unique
     per (pid, thread, call): two kernel THREADS writing the SAME state file — the pusher, producer, and WS
     handlers all do — must not share a temp path. With the old pid-only name they did, so the loser renamed
     a temp the winner had already moved and crashed the push with FileNotFoundError (the user 2026-06-23).
-    os.replace overwrites atomically + portably; the temp is removed if the write fails."""
+    os.replace overwrites atomically + portably; the temp is removed if the write fails.
+
+    `mode` (e.g. 0o600) is applied to the TEMP before the replace, so the published file is never briefly
+    world-readable — required for any file holding a CREDENTIAL. Without it the temp inherits the umask
+    (usually 0644): remotes.json stores every attached host's serve token, so at 0644 any other local user
+    could read those tokens and drive the REMOTE kernels, defeating the loopback token gate for federation."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _atomic_lock:
@@ -759,6 +764,8 @@ def _atomic_write(path, text):
     tmp = path.with_name("%s.tmp.%d.%d.%d" % (path.name, os.getpid(), threading.get_ident(), n))
     try:
         tmp.write_text(text)
+        if mode is not None:
+            os.chmod(tmp, mode)                          # before the publish — never a world-readable window
         os.replace(tmp, path)                            # atomic publish (overwrites; cross-platform)
     except Exception:
         try:
@@ -4050,11 +4057,14 @@ def _remote_public(r):
 
 
 def _remotes_save():
-    """Persist the attached set (sans the live Popen) so a kernel restart re-attaches them."""
+    """Persist the attached set (sans the live Popen) so a kernel restart re-attaches them.
+    0600: every row carries that host's SERVE TOKEN (fetched over ssh at attach), so this file is a
+    credential store — at the default 0644 any other local user could lift a remote's token and drive
+    that machine's kernel through the tunnel, which would defeat the loopback token gate for federation."""
     with _remotes_lock:
         rows = [{k: v for k, v in r.items() if k != "proc"} for r in _remotes.values()]
     try:
-        _atomic_write(REMOTES_FILE, json.dumps(rows))
+        _atomic_write(REMOTES_FILE, json.dumps(rows), mode=0o600)
     except Exception:
         sys.stderr.write("remotes save: %s\n" % traceback.format_exc())
 
@@ -4064,6 +4074,10 @@ def _remotes_load():
         rows = json.loads(REMOTES_FILE.read_text())
     except Exception:
         return
+    try:
+        os.chmod(REMOTES_FILE, 0o600)   # HEAL a file written before the 0600 fix — it holds remote serve
+    except OSError:                     # tokens, and a stale 0644 would keep leaking them until the next save
+        pass
     if not isinstance(rows, list):
         return
     with _remotes_lock:
