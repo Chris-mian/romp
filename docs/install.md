@@ -43,8 +43,8 @@ picker, and start a session.
 
 <video src="../assets/guide/first-session.mp4" autoplay loop muted playsinline width="100%"></video>
 
-Prefer your editor? Reload your VS Code or Cursor window and open Romp from the
-sidebar. The installer already added the extension.
+The installer also adds the VS Code / Cursor extension. Reload your editor
+window and open Romp from the sidebar.
 
 From here, the [Guide](guide.md) tours the four views and everything Romp does
 with your sessions.
