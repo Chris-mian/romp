@@ -4,9 +4,8 @@ title: Romp
 
 # ![Romp](assets/brand/romp-wordmark.png){ .romp-wordmark }
 
-Agents like Claude Code can work on their own for long stretches, so it makes
-sense to run several at once. That changes how you work, from doing the work
-yourself to directing the agents that do it. But running many in parallel brings
+Agents like Claude Code can work autonomously for long stretches, so it makes
+sense to deploy multiple in parallel. However, this parallelism creates
 management overhead: keeping track of which agent is doing what, scrolling
 through transcripts to find the background a decision needs, checking in to see
 which agents are stuck, and coordinating handoffs of work and context.
