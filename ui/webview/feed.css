@@ -624,6 +624,22 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fdismiss.fretry:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:disabled { opacity: 0.55; cursor: default; }
 
+/* Quarantine (per-host trust): a held message from a directed peer — Approve (accent, the primary
+   action), Edit (neutral), Deny (red, like the Clear/Retry family). The body rides its own read-only
+   textarea above the actions. */
+.fdismiss.fq:disabled { opacity: 0.55; cursor: default; }
+.fdismiss.fq-ok { color: var(--accent); border-color: rgba(156, 210, 255, 0.6); }
+.fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+.fdismiss.fq-no { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
+.fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
+.fask-qbody {
+  display: block; width: 100%; box-sizing: border-box; margin: 6px 0 2px;
+  font: inherit; font-size: 12px; line-height: 1.45; resize: vertical; min-height: 3.2em;
+  color: #dfe7ee; background: #0c1117; border: 1px solid #35414d; border-radius: 6px; padding: 6px 8px;
+}
+.fask-qbody:read-only { opacity: 0.85; cursor: default; }
+.fask-qbody:not(:read-only) { border-color: var(--accent); opacity: 1; }
+
 /* ↩ answer row — the user's recorded reply to an agent question (an explicit
    child event on the card, kind:"answer"): decision blue, never dimmed — it's
    his input, not routine agent progress. */

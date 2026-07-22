@@ -304,6 +304,27 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       nm.textContent = `${t.host} — ${LBL[t.status] || t.status}`
         + (t.outOfDate ? " · different build" : "");
       r.append(dot, nm);
+      // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is
+      // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
+      const trust = document.createElement("select");
+      trust.className = "sn-trust";
+      trust.title = "Federation trust — trusted: full two-way postal (a box you control); "
+        + "directed: its mail is held for your approval; isolated: dashboard only, no postal";
+      for (const lvl of ["trusted", "directed", "isolated"]) {
+        const o = document.createElement("option");
+        o.value = lvl; o.textContent = lvl;
+        if ((t.trust || "directed") === lvl) o.selected = true;
+        trust.appendChild(o);
+      }
+      trust.addEventListener("change", () => {
+        trust.disabled = true;
+        fetch(kernelUrl("/tunnels/trust"), { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ host: t.host, trust: trust.value }) })
+          .then((rp) => rp.json())
+          .then((d) => { if (!(d && d.ok)) { /* the next poll re-renders the true level */ } trust.disabled = false; schedule(600); })
+          .catch(() => { trust.disabled = false; });
+      });
+      r.appendChild(trust);
       if (t.status === "up" && t.outOfDate) {
         const u = document.createElement("button");
         u.textContent = "Push";

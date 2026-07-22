@@ -185,6 +185,32 @@ Setup is one install and one click:
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
 
+#### Trust levels: hold untrusted mail for approval
+
+A message that lands in an agent's context can steer it, so each attached host
+carries a trust level you set on its row in the network popover (remembered per
+host):
+
+- **trusted** — full two-way postal, for a machine you control.
+- **directed** (the default for a newly attached host) — you can send work *to*
+  its sessions, but its mail *to* you is held for approval. Each held message
+  becomes a needs-you card ("incoming postal message from X to Y") with
+  **Approve** (deliver), **Edit** (change the text first), and **Deny** (drop),
+  so a human decides before any of that host's content reaches one of your
+  agents. This is the safe posture for rented or shared compute (a cloud VM, a
+  RunPod box): you can drive the box, it cannot drive you.
+- **isolated** — no postal at all; the host's sessions still show in the
+  dashboard, but its bus never peers with yours.
+
+Because a federated machine's root can read anything on that box, keep only
+scoped, revocable credentials there. For a check-in hub, restrict the key the
+roaming machine uses to forwarding only — a line like
+
+    restrict,port-forwarding ssh-ed25519 AAAA... romp-tunnel
+
+in the hub's `~/.ssh/authorized_keys` lets a leaked key open the romp tunnels
+but never a shell or command.
+
 ### Your laptop, anywhere (check-in)
 
 A roaming machine can publish itself to an always-on hub over its own

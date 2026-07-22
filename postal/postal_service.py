@@ -900,6 +900,8 @@ class Handler(BaseHTTPRequestHandler):
             if not _safe_id(sid):
                 return self._send({"error": "missing or invalid id"}, 400)
             return self._send(_drain(sid))
+        if u.path == "/quarantine":                # held inbound mail from directed peers (kernel reads the
+            return self._send({"held": quarantine_list()})   # dir directly for cards; this is for introspection/tests
         self._send({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -998,6 +1000,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/heartbeat":
             _record_heartbeat(data.get("id"), data.get("name", "?"))
             return self._send({"ok": True})
+        if u.path == "/quarantine/act":            # human verdict on a held message (approve/deny), from the
+            mid = str(data.get("mid") or "")       # blocked card via the kernel; approve delivers, deny drops
+            action = str(data.get("action") or "").strip().lower()
+            text = data.get("text")                # optional human-edited body for approve
+            ok, err = quarantine_decide(mid, action, text)
+            return self._send({"ok": ok} if ok else {"ok": False, "error": err}, 200 if ok else 400)
         self._send({"error": "not found"}, 404)
 
 def _log(msg):
@@ -1212,13 +1220,17 @@ PEERS = {}
 def peer_update(data):
     """Apply one kernel notify. Returns (payload, status). `token` is the PEER machine's serve token
     (the kernel learned it at attach/checkin) — the dialer needs it because the peer's bus is
-    token-gated too. A token-less notify (e.g. a down transition) keeps the last known token."""
+    token-gated too. `trust` is the per-host federation level (trusted|directed|isolated) the inbound
+    gate reads. A token-less/trust-less notify (e.g. a down transition) keeps the last known values."""
     host = str(data.get("host") or "").strip()
     port = data.get("port")
     if not host or not isinstance(port, int) or isinstance(port, bool) or not (0 < port < 65536):
         return {"error": "host and port required"}, 400
-    tok = str(data.get("token") or "") or (PEERS.get(host) or {}).get("token") or ""
-    PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time()), "token": tok}
+    prev = PEERS.get(host) or {}
+    tok = str(data.get("token") or "") or prev.get("token") or ""
+    trust = str(data.get("trust") or "") or prev.get("trust") or "directed"
+    PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time()),
+                   "token": tok, "trust": trust}
     _peer_threads_reconcile(host)                    # an up peer gets its dialer; a down one is woken to exit
     return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
 
@@ -1359,11 +1371,95 @@ def fleet_presence(exclude_host):
             out.append(dict(pa, via=h))
     return out
 
+# ── quarantine (per-host trust model) ───────────────────────────────────────────
+# Mail from a DIRECTED peer is HELD here, one file per message, instead of injecting into the target
+# session. The human approves/denies/edits it (a blocked card in the feed/chat); approve replays the
+# same deliver() a TRUSTED peer's mail would have run. The kernel reads this dir directly to build the
+# cards (fast, bus-down-resilient); mutations go through the bus routes below (delivery is postal's).
+QUARANTINE = STATE / "quarantine"
+
+def _quarantine_put(origin, m, to_id):
+    """Hold one inbound relay from a directed host: quarantine/<mid>.json with everything approve needs
+    to replay deliver(). Idempotent by mid (a resend overwrites the same file, never double-holds)."""
+    mid = m.get("mid") or ""
+    if not _safe_id(mid):
+        return False
+    rec = {"mid": mid, "to": m.get("to") or "", "toId": to_id, "frm": m.get("frm") or "?",
+           "frmId": m.get("frm_id") or "", "body": m.get("body") or "", "kind": m.get("kind") or "",
+           "origin": origin, "at": int(time.time())}
+    try:
+        QUARANTINE.mkdir(parents=True, exist_ok=True)
+        tmp = QUARANTINE / (mid + ".tmp")
+        tmp.write_text(json.dumps(rec))
+        tmp.rename(QUARANTINE / (mid + ".json"))      # atomic publish (the kernel may be reading the dir)
+        _log("quarantine: held %s from %s -> %s (directed)" % (mid, origin, rec["to"]))
+        return True
+    except OSError:
+        return False
+
+def quarantine_list():
+    """All held messages, newest first — the kernel's card source + the approve/deny UI."""
+    out = []
+    try:
+        for f in QUARANTINE.glob("*.json"):
+            try:
+                out.append(json.loads(f.read_text()))
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        return []
+    out.sort(key=lambda r: r.get("at") or 0, reverse=True)
+    return out
+
+def quarantine_get(mid):
+    if not _safe_id(mid):
+        return None
+    try:
+        return json.loads((QUARANTINE / (mid + ".json")).read_text())
+    except (OSError, ValueError):
+        return None
+
+def quarantine_del(mid):
+    if not _safe_id(mid):
+        return False
+    try:
+        (QUARANTINE / (mid + ".json")).unlink()
+        return True
+    except OSError:
+        return False
+
+def quarantine_decide(mid, action, text=None):
+    """Approve (deliver, optionally with human-edited text) or deny (drop) a held message. Returns
+    (ok, error). Approve replays the deliver() the gate would have run for a trusted peer, so the
+    message lands as normal postal mail (from-attribution intact). The mid was already peer_seen'd at
+    hold time, so the sender never resends regardless of the verdict."""
+    rec = quarantine_get(mid)
+    if rec is None:
+        return False, "no held message '%s'" % mid
+    if action == "deny":
+        quarantine_del(mid)
+        return True, None
+    if action == "approve":
+        body = str(text) if (text is not None and str(text).strip()) else (rec.get("body") or "")
+        to_id = rec.get("toId") or ""
+        live = {a["id"] for a in local_agents()}
+        if to_id not in live:                         # session renamed/revived since it was held → re-match by name
+            match = [a for a in local_agents() if a["name"] == rec.get("to") and not _postal_off(a["id"])]
+            if not match:
+                return False, "recipient '%s' is no longer a live local session" % (rec.get("to") or "?")
+            to_id = match[0]["id"]
+        deliver(to_id, rec.get("frm") or "?", rec.get("frmId") or "", body, kind=rec.get("kind") or "")
+        quarantine_del(mid)
+        return True, None
+    return False, "unknown action '%s' (approve|deny)" % action
+
+
 def _relay_in(host, m):
     """One incoming relay: deliver locally, FORWARD one hop to a peer that owns the recipient, or
-    bounce. Returns (verdict, bounce): 'ack' (delivered, or a dedupe re-ack), 'hold' (forwarded —
-    the END-TO-END ack comes back through us later; the sender keeps it parked meanwhile), 'bounce'
-    (definitive refusal), or 'drop' (unidentifiable: no mid to ack or bounce)."""
+    bounce. Returns (verdict, bounce): 'ack' (delivered/held/deduped), 'hold' (forwarded — the
+    END-TO-END ack comes back through us later; the sender keeps it parked meanwhile), 'bounce'
+    (definitive refusal), or 'drop' (unidentifiable: no mid to ack or bounce). Per-host trust gates the
+    local-delivery branch: trusted injects, directed holds for approval, isolated silently drops."""
     mid = m.get("mid") or ""
     if not mid:
         return "drop", None
@@ -1372,8 +1468,18 @@ def _relay_in(host, m):
     to = m.get("to") or ""
     match = [a for a in local_agents() if a["name"] == to and not _postal_off(a["id"])]
     if match:
-        deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
-                kind=m.get("kind") or "")
+        # Trust key = the true ORIGIN (the forwarding host stamps m["origin"]; else the direct peer).
+        # Unknown host (a race before the kernel's notify lands) defaults to directed — never auto-inject.
+        origin = m.get("origin") or host
+        trust = (PEERS.get(origin) or {}).get("trust") or "directed"
+        if trust == "trusted":
+            deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
+                    kind=m.get("kind") or "")
+        elif trust == "directed":
+            _quarantine_put(origin, m, match[0]["id"])   # HELD for human approve/deny/edit; never injects
+        # else isolated → drop: ack so the sender stops resending, but deliver nothing (no communication).
+        # An isolated host normally never peers at all (the kernel forces its notify down), so this is a
+        # defensive backstop for the checkin-peer path where the mobile dials our /peer-exchange.
         peer_seen_add(mid)
         return "ack", None
     if any(a["name"] == to for a in local_agents()):
@@ -1583,7 +1689,8 @@ def _seed_peers_from_kernel():
             port = row.get("busPort")
             if row.get("host") and isinstance(port, int) and port:
                 peer_update({"host": row["host"], "port": port, "up": row.get("status") == "up",
-                             "token": row.get("token") or ""})   # the peer's serve token — its bus is gated too
+                             "token": row.get("token") or "",   # the peer's serve token — its bus is gated too
+                             "trust": row.get("trust") or "directed"})   # per-host trust for the inbound gate
     except Exception:
         pass                                         # no kernel yet → the notify path fills the table
 

@@ -66,6 +66,36 @@ UID can read.
 - **No unsafe deserialization:** no `pickle`, `eval`, `exec`, or non-safe YAML on
   untrusted data.
 
+## Federated messaging: per-host trust
+
+romp can attach other machines so their sessions appear in one dashboard and can
+exchange postal messages with yours. Because a message that lands in an agent's
+context is a prompt-injection surface, **each attached host carries a trust
+level** you set in the network popover (persisted per host):
+
+- **trusted** — full two-way postal, no gating. For a machine you control (your
+  laptop, your home server).
+- **directed** (the **default** for a newly attached host) — you can send work
+  *to* that host's sessions, but its mail to you is **held for approval**, never
+  auto-injected. Each held message appears as a needs-you card ("incoming postal
+  message from X to Y") with **Approve** (deliver), **Edit** (change the text
+  first), and **Deny** (drop) — a human decides before any of that host's content
+  reaches one of your agents. This is the safe posture for rented/shared compute
+  (a cloud VM, a RunPod box): you can drive it, it cannot drive you.
+- **isolated** — no postal at all in either direction; the host's sessions are
+  visible in the dashboard but its bus never peers with yours.
+
+The trust unit is the **machine**, not a session on it: any process on a remote
+box can write to that box's bus, so trust is set per host. Identity is provided
+by the ssh tunnel the message arrives on — no separate signing. The gate is
+enforced at the receiving bus's delivery point, so it holds regardless of which
+host originated the message (a forwarded message is judged by its true origin).
+
+The one thing romp can NOT firewall this way is same-machine peers: two sessions
+running as the same user share a UID, so mailbox trust between them is policy,
+not a security boundary (the enforceable lines are per-UID, from the serve token,
+and per-machine, from this trust level).
+
 ## Network access
 
 romp makes one outbound request by default: it fetches a public model-pricing

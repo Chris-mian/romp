@@ -3758,23 +3758,42 @@ def _tunnel_argv(r):
              "--", r["host"]])
 
 
-def _notify_bus_peer(host, port, up, peer_token=""):
+def _notify_bus_peer(host, port, up, peer_token="", trust="directed"):
     """Tell the LOCAL bus about a peer bus endpoint (event: a tunnel transition, never a poll). True on
     ack. Guarded: postal being down must never break the tunnel supervisor — the caller records success
     and retries an unacked notify on the next pass. Stage 2's HELLO re-learns the table after a bus
     restart; until then a restarted bus heals on the next tunnel transition or retry. Authorizes to the
     local bus with OUR serve token; peer_token is the PEER machine's serve token (r["token"]), which the
-    bus needs to dial that peer's /peer-exchange through the tunnel — both buses are token-gated now."""
+    bus needs to dial that peer's /peer-exchange through the tunnel — both buses are token-gated now.
+    trust rides too: the bus gates inbound mail from a 'directed' peer into quarantine and drops an
+    'isolated' peer's mail — it needs the per-host level to make that call at delivery time."""
     try:
         conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up),
-                                                  "token": peer_token or ""}),
+                                                  "token": peer_token or "", "trust": trust or "directed"}),
                      {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
         ok = conn.getresponse().status == 200
         conn.close()
         return ok
     except Exception:
         return False
+
+
+def _bus_quarantine_act(body):
+    """Proxy a quarantine verdict (approve/deny, optional edited text) to the bus, which OWNS postal
+    delivery and the held-message store. On approve the bus re-runs the peer's deliver(), so an approved
+    message lands as normal postal mail. Returns (ok, error)."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=6)
+        conn.request("POST", "/quarantine/act", json.dumps(body),
+                     {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        j = json.loads(data.decode() or "{}")
+        return bool(j.get("ok")), (j.get("error") or ("bus HTTP %s" % resp.status))
+    except Exception as e:
+        return False, "postal bus unreachable: %s" % e
 
 
 # ── check-in (peer-bus stage 3, plans/postal-peer-buses.md; resolved decisions 1-3) ─────────────────
@@ -3817,6 +3836,29 @@ def checkin_set(host, on):
     _remotes_save()
     with _remotes_lock:
         return _remote_public(_remotes[host]) if host in _remotes else None
+
+
+TRUST_LEVELS = ("trusted", "directed", "isolated")
+
+
+def set_trust(host, level):
+    """Set an attached host's federation trust level (the popover's per-host selector drives this).
+    trusted = full bidirectional postal (a box you control); directed = its mail is HELD for human
+    approval, never auto-injected (the safe default for rented/shared compute); isolated = no postal at
+    all, dashboard aggregation only. Persists and wakes the supervisor, which re-notifies the bus with
+    the new level on its next pass (the notify is keyed on (up, trust), so even a trusted<->directed
+    switch propagates). Returns (public_row, None) or (None, error)."""
+    if level not in TRUST_LEVELS:
+        return None, "trust must be one of %s" % ", ".join(TRUST_LEVELS)
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is None:
+            return None, "no attached host '%s'" % host
+        r["trust"] = level
+    _remotes_save()
+    _tunnel_wake.set()                     # a prompt supervisor pass pushes the new level to the bus
+    with _remotes_lock:
+        return (_remote_public(_remotes[host]) if host in _remotes else None), None
 
 
 def _checkin_payload(r):
@@ -3875,6 +3917,7 @@ def checkin_apply(body):
             return {"ok": False, "error": "host '%s' is already an ssh-attached remote here" % host}, 409
         _remotes[host] = {"host": host, "checkin_peer": True, "kernel_port": kp, "local_port": kp,
                           "bus_port": bp, "token": str((body or {}).get("token") or ""),
+                          "trust": "directed",   # a host that checks in to US is directed by default too
                           "proc": None, "status": "connecting", "detail": "", "sids": []}
     _remotes_save()
     _tunnel_wake.set()                     # poll it now: the row reads up within one supervisor pass
@@ -4000,6 +4043,7 @@ def _remote_public(r):
             "checkinPeer": bool(r.get("checkin_peer")),  # this host checked in to US (no ssh of ours)
             "token": r.get("token") or "", "status": r.get("status") or "down",
             "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
+            "trust": r.get("trust") or "directed",   # per-host federation trust: trusted|directed|isolated
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
             "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
             "kernelDate": drift["date"]}
@@ -4031,6 +4075,7 @@ def _remotes_load():
             r["booting"] = False       # transient in-flight Start flag — persisted mid-boot it would
             #                            freeze the row's status against the supervisor forever
             r.setdefault("sids", [])
+            r.setdefault("trust", "directed")   # pre-trust remotes.json rows read as directed (safe default)
             r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
             r.setdefault("local_port", _free_port())
             r.setdefault("bus_port", _free_port())   # peer-bus mode's -L to the remote's bus (allocated
@@ -4051,6 +4096,9 @@ def attach_remote(host, kernel_port=None):
         if r is None:
             r = {"host": host, "kernel_port": int(kernel_port or _REMOTE_KERNEL_PORT),
                  "local_port": _free_port(), "bus_port": _free_port(), "token": "", "proc": None,
+                 # A newly attached host is DIRECTED by default (safe-by-default federation): its mail is
+                 # held for human approval, never auto-injected. Raise to trusted for a box you control.
+                 "trust": "directed",
                  # phase the browser popover surfaces: authorizing (ssh + token) → connecting
                  # (tunnel up, waiting for the port) → up. See _LANDING_REMOTES_JS's LBL map.
                  "status": "authorizing", "detail": "", "sids": []}
@@ -4503,17 +4551,24 @@ def _tunnel_supervisor():
                         r["sids"] = sids
                     if rsha is not None:
                         r["kernel_sha"] = rsha
-                    peer_up, peer_known = (st == "up"), r.get("_peer_up")
+                    peer_up = (st == "up")
                     peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
-                if _postal_peers_on() and peer_up != peer_known:
-                    # Peer-bus mode: the tunnel TRANSITION is the event the local bus keys its peer table
-                    # on (reachable at 127.0.0.1:bus_port through the second -L). Outside the lock — it's
-                    # an HTTP round-trip. Success is recorded so only transitions notify; a failed notify
-                    # leaves _peer_up unset and retries next pass (the bus may have been mid-restart).
-                    if _notify_bus_peer(r["host"], peer_port, peer_up, peer_tok):
+                    peer_trust = r.get("trust") or "directed"
+                    # ISOLATED: no postal peering at all — force the effective up down so the bus never
+                    # gets an up-notify (no dialer, no relays either way). Dashboard aggregation over the
+                    # -L /sessions poll is separate and keeps running. The bus gate is belt-and-suspenders.
+                    notify_up = peer_up and peer_trust != "isolated"
+                    want, notified = (notify_up, peer_trust), r.get("_peer_notified")
+                if _postal_peers_on() and want != notified:
+                    # Peer-bus mode: a change to (effective-up, trust) is the event the local bus keys its
+                    # peer table on (reachable at 127.0.0.1:bus_port through the second -L). Keyed on trust
+                    # too, so a trusted<->directed switch propagates even when up-state is unchanged — the
+                    # gate needs the current level. Outside the lock (HTTP round-trip); a failed notify
+                    # leaves _peer_notified unset and retries next pass (the bus may have been mid-restart).
+                    if _notify_bus_peer(r["host"], peer_port, notify_up, peer_tok, peer_trust):
                         with _remotes_lock:
                             if r["host"] in _remotes:
-                                r["_peer_up"] = peer_up
+                                r["_peer_notified"] = want
                 if _postal_peers_on() and r.get("checkin") and peer_up:
                     # CHECK-IN handshake, once per tunnel incarnation (keyed on the ssh pid): the hub
                     # learns our reverse-forward ports + token the moment our tunnel answers. A failed
@@ -9522,6 +9577,9 @@ def build_feed(now, tmux=None):
             "column": "needs_input",
             "tree": []})
     asks.extend(_resume_gate_asks(now, cleared))
+    # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
+    # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
+    asks.extend(_quarantine_cards(now, cleared))
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
             "dismissedCount": len(cleared), "showDismissed": False,
@@ -9816,6 +9874,52 @@ def _parked_handoffs(now, alive_sids):
                     "toId": to_id, "toName": _name_of(to_id) or to_id[:8],
                     "body": (o.get("body") or "")[:240], "t": int(o.get("t") or now)})
     out.sort(key=lambda h: h["t"])
+    return out
+
+
+def _quarantine_cards(now, cleared):
+    """Inbound mail from a DIRECTED federated host (per-host trust model), HELD for a human decision:
+    approve (deliver, optionally after editing), or deny (drop). Never auto-injects the peer's content
+    — that IS the point of directed trust. Reads the bus's quarantine dir directly (plain JSON files,
+    so it works even if the bus is momentarily down); itemId 'quarantine:<mid>' rides cleared.jsonl so
+    a Clear dismisses the card (the held file stays until an explicit approve/deny). Best-effort []."""
+    qdir = jd.STATE / "postal" / "quarantine"
+    out = []
+    try:
+        files = sorted(qdir.glob("*.json"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            rec = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        mid = rec.get("mid") or ""
+        if not mid:
+            continue
+        item_id = "quarantine:" + mid
+        if item_id in cleared:
+            continue
+        frm, to, origin = rec.get("frm") or "?", rec.get("to") or "?", rec.get("origin") or "?"
+        t = int(rec.get("at") or now)
+        out.append({
+            "itemId": item_id, "sid": rec.get("toId") or "", "name": to,
+            "color": _name_color(rec.get("toId") or ""),
+            "text": "Held message from %s to %s" % (frm, to),
+            "t": t, "live": False,
+            "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "turnId": item_id, "origin": None,
+            "followupPending": None, "waitingOn": None,
+            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
+            "nudged": None,
+            "blocked": {"state": "quarantine", "mid": mid, "frm": frm, "to": to, "origin": origin,
+                        "body": rec.get("body") or "",
+                        "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
+                                "waiting on you — approve to deliver it to %s, edit the text first, or deny "
+                                "to drop it. Nothing reaches %s until you approve." % (frm, origin, to, to)},
+            "column": "needs_input",
+            "tree": []})
+    out.sort(key=lambda c: c["t"])
     return out
 
 
@@ -12575,10 +12679,19 @@ var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" 
 // keep connected (peer-bus check-in, stage 3): publish THIS machine to that host over our own
 // outbound ssh. Only for hosts WE attach; a row that checked in to us is labeled instead.
 var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions, its bus peers with yours, and this attach auto-reconnects. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
+// Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is HELD for
+// your approval, never auto-injected; isolated = dashboard only, no postal. The gate lives in the bus.
+var tcur=t.trust||'directed';
+var trust='<select class=rnet-trust data-t=\"'+t.host+'\" title=\"Federation trust \\u2014 trusted: full two-way postal (a box you control); directed: its mail is held for your approval; isolated: dashboard only, no postal\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select>';
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-keep+upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
+trust+keep+upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
 list.appendChild(row);});
+list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
+s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+s.disabled=false;refresh();}).catch(function(){s.disabled=false;alert('trust change on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('input[data-k]').forEach(function(c){c.onchange=function(){var h=c.getAttribute('data-k');
 c.disabled=true;fetch('/tunnels/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,on:c.checked})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -12935,6 +13048,8 @@ def _landing():
             ".rnet-row button:disabled{opacity:0.55;cursor:default}"
             ".rnet-keep{display:flex;align-items:center;gap:4px;color:#999;font-size:11px;flex:0 0 auto;cursor:pointer;white-space:nowrap}"
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
+            ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
+            ".rnet-trust:disabled{opacity:0.55;cursor:default}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
@@ -13708,6 +13823,22 @@ class Handler(BaseHTTPRequestHandler):
                 if pub is None:
                     return self._send(404, json.dumps({"ok": False, "error": "no attached host '%s' — attach it first" % host}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/trust":
+                # Set an attached host's federation trust level (the per-host selector). Body:
+                # {"host", "trust": trusted|directed|isolated}. directed holds inbound mail for approval.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                level = str((body or {}).get("trust") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                pub, err = set_trust(host, level)
+                if err:
+                    code = 404 if err.startswith("no attached") else 400
+                    return self._send(code, json.dumps({"ok": False, "error": err}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
             if u.path == "/checkin":
                 # A mobile machine's check-in handshake arriving through its own reverse forward.
                 try:
@@ -13829,6 +13960,20 @@ class Handler(BaseHTTPRequestHandler):
             _clear_ask(msg["itemId"])
             _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
             _mark_views_dirty()                # cleared.jsonl is invisible to the fleet sig → dirty-rebuild now
+        elif msg and msg.get("type") == "quarantineDecision" and msg.get("mid"):
+            # Human verdict on a DIRECTED peer's held message (per-host trust): approve delivers it
+            # (optionally with human-edited text), deny drops it. The bus owns delivery + the held-message
+            # store, so proxy there; on success the bus removes the held file, so _quarantine_cards drops
+            # the card on the next build (event-based — no cleared.jsonl needed). Failure warn-toasts.
+            _qmid = str(msg["mid"])
+            _qbody = {"mid": _qmid, "action": str(msg.get("action") or "").strip().lower()}
+            if msg.get("text") is not None:
+                _qbody["text"] = str(msg["text"])
+            _qok, _qerr = _bus_quarantine_act(_qbody)
+            if _qok:
+                _mark_views_dirty()
+            else:
+                client["send"](json.dumps({"type": "warn", "text": "quarantine: " + _qerr}))
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the

@@ -102,6 +102,13 @@ class TwoBusExchange(unittest.TestCase):
             except Exception:
                 pass
             m.MAILROOT.mkdir(parents=True, exist_ok=True)
+        # In production the kernel's /peer notify (peer_update) populates PEERS with each host's trust,
+        # and the inbound gate HOLDS a directed peer's mail. These tests exercise the exchange/relay
+        # MECHANICS, so mark the exchanged peers trusted (the gate keys on the relay's origin host: B sees
+        # A's self_host "hosta"; A's dialer-apply uses the "srv" alias). Trust itself is covered in
+        # test_postal_quarantine.py.
+        pmb.PEERS["hosta"] = {"port": 1, "up": True, "trust": "trusted"}
+        pm.PEERS["srv"] = {"port": 1, "up": True, "trust": "trusted"}
 
     def tearDown(self):
         os.environ.pop("ROMP_POSTAL_PEERS", None)
@@ -206,6 +213,11 @@ class ThreeBusRelay(unittest.TestCase):
             except Exception:
                 pass
             m.MAILROOT.mkdir(parents=True, exist_ok=True)
+        # Mechanics test → mark the origin trusted so the inbound gate delivers (see TwoBusExchange.setUp).
+        # The gate keys on the relay's ORIGIN host: B delivers to beta and C delivers a forwarded message
+        # whose origin is "hosta" (B stamps origin when it forwards). Trust itself: test_postal_quarantine.
+        pmb.PEERS["hosta"] = {"port": 1, "up": True, "trust": "trusted"}
+        pmc.PEERS["hosta"] = {"port": 1, "up": True, "trust": "trusted"}
 
     def tearDown(self):
         os.environ.pop("ROMP_POSTAL_PEERS", None)

@@ -12,7 +12,7 @@ test("the three resume-gate buttons are created and ride the action row", () => 
   assert.match(FEED, /const rgProceed = el\("button", "fdismiss frg"\)[\s\S]*?rgProceed\.textContent = "Proceed"/);
   assert.match(FEED, /const rgCompact = el\("button", "fdismiss frg"\)[\s\S]*?rgCompact\.textContent = "Compact on resume"/);
   assert.match(FEED, /const rgSkip = el\("button", "fdismiss frg"\)[\s\S]*?rgSkip\.textContent = "Skip"/);
-  assert.match(FEED, /actions\.append\(apiRetry, revive, rgProceed, rgCompact, rgSkip\)/);
+  assert.match(FEED, /actions\.append\(apiRetry, revive, rgProceed, rgCompact, rgSkip, qApprove, qEdit, qDeny\)/);
 });
 
 test("the buttons show only for a largeResume card and each posts resumeGate with its choice", () => {
@@ -32,9 +32,9 @@ test("the buttons show only for a largeResume card and each posts resumeGate wit
 
 test("a largeResume card suppresses the block chip and the generic Clear (Skip is its dismissal)", () => {
   assert.match(FEED, /it\.blocked\.state !== "largeResume"/);   // block badge hidden for the resume card
-  assert.match(FEED, /\(a\._clr as HTMLElement\)\.style\.display = isResumeGate \? "none" : ""/);
+  assert.match(FEED, /\(a\._clr as HTMLElement\)\.style\.display = \(isResumeGate \|\| isQuar\) \? "none" : ""/);
 });
 
 test("the blocked type carries the largeResume ctx/reason fields", () => {
-  assert.match(FEED, /ctx\?: number \| null; reason\?: string \};\s*\/\/ largeResume/);
+  assert.match(FEED, /ctx\?: number \| null; reason\?: string;\s*\/\/ largeResume/);
 });
