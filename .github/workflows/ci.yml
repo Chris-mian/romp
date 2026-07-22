@@ -1,9 +1,14 @@
 name: CI
 
-# Run the test suites that gate romp: the Python pipeline (bin/), the shell
-# surfaces (tmux hooks / postal / manager), and the VS Code extension build.
-# Minimal on purpose — one Linux runner per suite, the dev Python/Node versions.
-# Broaden to a {macOS, Linux} x {Python 3.11..3.13} matrix later if needed.
+# Run the test suites that gate romp: the Python pipeline (kernel/, cli/,
+# postal/), the shell surfaces (tmux hooks / postal / manager), and the VS Code
+# extension build.
+#
+# The Python and shell suites run on BOTH Linux and macOS. romp is a
+# macOS-first tool in practice (tmux + launchd), so a Linux-only gate misses the
+# platform most users are on. Python spans 3.10 (the floor docs/install.md
+# promises) through 3.13 (the dev version); the older versions run on Linux
+# only, since a version gap and a platform gap rarely fail the same way.
 
 on:
   push:
@@ -17,25 +22,45 @@ concurrency:
 
 jobs:
   python:
-    name: Python (pytest)
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One red cell must not hide the others: a 3.10-only break and a
+      # macOS-only break look identical if the matrix stops at the first.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.10', '3.13']
+        include:
+          - os: ubuntu-latest
+            python-version: '3.11'
+          - os: ubuntu-latest
+            python-version: '3.12'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       - name: Install pytest
         run: python -m pip install --upgrade pip pytest
       - name: Run pytest
         run: python -m pytest -q
 
   shell:
-    name: Shell (bats)
-    runs-on: ubuntu-latest
+    name: Shell (bats, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Install bats + tmux
+      - name: Install bats + tmux (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y bats tmux
+      - name: Install bats + tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core tmux
       - name: Run bats
         run: bats tests/*.bats
 
@@ -51,7 +76,11 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: chat-view/package-lock.json
+          # Resolved from the REPO ROOT, not from defaults.run.working-directory.
+          # A wrong path here fails the job outright ("Some specified paths were
+          # not resolved"), which is what a stale chat-view/ path did until the
+          # directory was renamed to vscode-extension/.
+          cache-dependency-path: vscode-extension/package-lock.json
       - name: Install deps
         run: npm ci
       - name: Typecheck
