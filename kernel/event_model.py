@@ -83,6 +83,15 @@ TEAMMATE_BLOCK_RE = re.compile(r"<teammate-message\b([^>]*)>(.*?)</teammate-mess
 # (`<command-message|args|contents>`, `<local-command-caveat>`) stay skipped as harness noise.
 CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-command-(?:stdout|caveat))>")
 COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")           # the slash command itself, e.g. "/usage"
+# ...but the CLI does NOT fix the wrapper ORDER: a built-in writes <command-name> first, while a SKILL /
+# custom command writes <command-message> first ("/jld" → "<command-message>jld</command-message>\n
+# <command-name>/jld</command-name>…"). Anchored-only matching therefore MISSED every skill invocation: the
+# record fell through to the harness-noise skip, so the command never became an atom, and the work it
+# triggered was absorbed into whatever segment came BEFORE it — a JLD session ran with its request buried in
+# the preceding "/model" command segment and no card of its own (the user 2026-07-22). Find the tag anywhere,
+# but ONLY inside a record that already begins with a command wrapper (CMD_WRAP_RE), so prose that merely
+# quotes "<command-name>" can never be mistaken for an invocation.
+COMMAND_NAME_ANY_RE = re.compile(r"<command-name>([^<]*)</command-name>")
 COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")            # its arguments (often empty)
 LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")   # the command's output
 # A slash command's stdout is captured from the TUI VERBATIM, so it can carry ANSI SGR color codes
@@ -596,7 +605,8 @@ class FileAdapter:
                 # reply and ENDS naturally). The `command` flag makes the planner/judge skip it (never a goal /
                 # feed card — see _seg_command). This runs BEFORE the isMeta skip because some Claude versions
                 # mark these records isMeta. The other wrappers (message/args/contents/caveat) stay skipped.
-                mcmd = COMMAND_NAME_RE.match(btext)
+                mcmd = COMMAND_NAME_RE.match(btext) or (COMMAND_NAME_ANY_RE.search(btext)
+                                                        if CMD_WRAP_RE.match(btext) else None)
                 if mcmd and u not in replay_uuids:
                     name = mcmd.group(1).strip() or "/?"
                     if not name.startswith("/"):

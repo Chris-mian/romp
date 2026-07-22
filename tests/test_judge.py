@@ -803,11 +803,16 @@ class PlanParseStorm(unittest.TestCase):
                          "a skill/custom command carrying the real ask is filed like any prompt")
 
     def test_a_worked_command_titles_from_the_request_not_the_invocation(self):
+        # The OPEN segment's raw prompt gist IS what the goal is titled from, so the '/jld' invocation is
+        # stripped there. (The ENDED work unit stays framed — "USER ASKED: /jld …" — which is honest and
+        # hands the planner the whole exchange; only this gist needed cleaning.)
         recs = [uline(T0, "<command-name>/jld</command-name>\n<command-args>design a speech pathology "
                           "curriculum</command-args>", "u1"),
-                aline(T0 + 10, "Here is a first outline.", "a1", "u1", stop="end_turn")]
-        text = jd.plan_units(build_session(recs))[0][3]
-        self.assertIn("speech pathology", text, "the ask survives into the planner text")
+                aline(T0 + 10, "Working on it…", "a1", "u1", stop=None)]        # OPEN → prompt unit
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["prompt"])
+        text = units[0][3]
+        self.assertIn("speech pathology curriculum", text, "the ask survives into the planner text")
         self.assertFalse(text.lstrip().startswith("/jld"),
                          "the '/jld' invocation is stripped so the goal titles from the request")
 

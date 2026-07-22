@@ -3333,9 +3333,9 @@ def plan_units(session, store=None):
                 #                                           real ask in its args — falls through and is planned like any
                 #                                           other prompt (the user 2026-07-22: a `/jld <request>` session
                 #                                           ran with NO card at all, not even a provisional one).
-            work_text = _unit_text(seg["atoms"])
-            if _is_cmd:                                   # title from the request, not from the invocation
-                work_text = _strip_cmd_prefix(work_text, seg)
+            work_text = _unit_text(seg["atoms"])           # left framed ("USER ASKED: /jld …") — honest, and the
+            #                                               planner has the whole exchange for context. Only the raw
+            #                                               PROMPT gist below is stripped, since that one IS the title.
             if not work_text:
                 continue
             if seg.get("seam"):                           # settle-time seam tail (plans/segment-regrowth.md): work that

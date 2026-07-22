@@ -710,6 +710,42 @@ class SlashCommandTurn(unittest.TestCase):
         self.assertEqual(turn["atoms"][0].get("command"), "/usage")
         self.assertTrue(turn["ended"], "a bare command turn self-ends — never traps the session in 'working'")
 
+    def test_a_skill_invocation_with_message_first_is_still_a_command_atom(self):
+        # The CLI does NOT fix the wrapper ORDER: a built-in writes <command-name> first, but a SKILL / custom
+        # command writes <command-message> first. Anchored-only matching missed the latter entirely — the
+        # record fell through to the harness-noise skip, the invocation never became an atom, and the work it
+        # triggered was absorbed into the PRECEDING segment. That is why a JLD session (`/jld <request>`) ran
+        # with its ask buried in the previous "/model" command turn and no card of its own (the user
+        # 2026-07-22).
+        recs = [
+            {"type": "user", "timestamp": iso(T0), "uuid": "c1", "parentUuid": None,
+             "message": {"role": "user",
+                         "content": "<command-message>jld</command-message>\n"
+                                    "<command-name>/jld</command-name>\n"
+                                    "<command-args>design a curriculum</command-args>"}},
+            {"type": "assistant", "timestamp": iso(T0 + 1), "uuid": "a1", "parentUuid": "c1",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "On it."}],
+                         "stop_reason": "end_turn"}},
+        ]
+        out = run_recs(recs)
+        self.assertEqual(len(out["turns"]), 1)
+        turn = out["turns"][0]
+        self.assertEqual(turn["trigger"], {"uuid": "c1"}, "the skill invocation OPENS its own turn")
+        self.assertEqual(turn["atoms"][0].get("command"), "/jld", "recognized despite the message-first order")
+        self.assertEqual(_text(turn["atoms"][0]), "/jld design a curriculum",
+                         "its display text carries the args, so the ask is visible")
+
+    def test_prose_quoting_the_command_tag_is_not_an_invocation(self):
+        # the ordering fix searches for <command-name> ANYWHERE, so it is guarded by CMD_WRAP_RE: the record
+        # must already BEGIN with a command wrapper. A real message that merely quotes the tag stays human.
+        recs = [{"type": "user", "timestamp": iso(T0), "uuid": "u1", "parentUuid": None, "promptSource": "typed",
+                 "message": {"role": "user",
+                             "content": "the transcript shows <command-name>/usage</command-name> mid-line"}}]
+        out = run_recs(recs)
+        turn = out["turns"][0]
+        self.assertIsNone(turn["atoms"][0].get("command"),
+                          "prose quoting the tag is a real message, never an invocation")
+
 
 def _text(atom):
     msg = atom.get("message") or {}
