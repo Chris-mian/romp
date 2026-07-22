@@ -3653,7 +3653,32 @@ _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
              "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10",
              # NEVER touch the user's ssh connection multiplexing: a concierge ssh must not create or reuse a
              # ControlMaster socket, or a half-open one could hang the user's own `ssh <host>` (the user 2026-06-30).
-             "-o", "ControlMaster=no", "-o", "ControlPath=none"]
+             "-o", "ControlMaster=no", "-o", "ControlPath=none",
+             # Advisory chatter is NOISE on a programmatic ssh: OpenSSH 10 prints a post-quantum
+             # key-exchange warning on every connection to an older server. It goes to stderr and the
+             # connection is fine, but our failure paths surface stderr as the reason — so a harmless
+             # warning masked every real error (the user 2026-07-22). ERROR keeps genuine failures
+             # ("Could not resolve hostname", "Permission denied") and drops the advisories.
+             "-o", "LogLevel=ERROR"]
+
+
+# Benign lines ssh/git may still emit (a server banner isn't covered by LogLevel) — stripped before
+# stderr is shown as a failure reason. Belt-and-braces with LogLevel=ERROR above.
+_SSH_NOISE = ("post-quantum", "store now, decrypt later", "openssh.com/pq",
+              "Warning: Permanently added", "Pseudo-terminal will not be allocated")
+
+
+def _ssh_err(text):
+    """ssh's stderr MINUS benign chatter, for use as a user-facing failure reason.
+
+    ssh writes advisories to stderr that say nothing about success. The remote paths were written as
+    `proc.stderr or "<helpful fallback>"`, so the moment ANY such line existed stderr was truthy, the
+    fallback never fired, and every failure was reported as the advisory instead of its real cause —
+    the "pushes always fail and it's never clear why" report (the user 2026-07-22). Returning "" when
+    nothing meaningful remains keeps `_ssh_err(e) or "<fallback>"` working as intended."""
+    keep = [ln for ln in (text or "").splitlines()
+            if ln.strip() and not any(n in ln for n in _SSH_NOISE)]
+    return "\n".join(keep).strip()
 
 _remotes = {}                  # host -> {host, kernel_port, local_port, token, proc, status, detail, sids}
 _remotes_lock = threading.Lock()
@@ -3974,7 +3999,7 @@ def _start_remote_kernel(host):
             return True, out.partition(":")[2]
         if "NOROMP" in out:
             return False, "romp not installed on %s — clone it and run ./install.sh" % host
-        return False, (r.stderr or out or "ssh failed").strip()[:200]
+        return False, (_ssh_err(r.stderr) or out or "ssh failed").strip()[:200]
     except Exception as e:
         return False, str(e)
 
@@ -4379,7 +4404,7 @@ def _update_remote(host):
     info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
     rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
     if not rdir:
-        return False, (d.stderr or "couldn't locate the remote romp clone").strip()[:200]
+        return False, (_ssh_err(d.stderr) or "couldn't locate the remote romp clone on %s" % host).strip()[:200]
     if rdirty:
         return False, "remote %s has uncommitted changes — commit or discard them there first (won't clobber)" % host
     if rhead and rhead == lfull:
@@ -4394,7 +4419,7 @@ def _update_remote(host):
     except Exception as e:
         return False, "git push to %s failed: %s" % (host, str(e)[:160])
     if p.returncode != 0:
-        return False, "git push to %s failed: %s" % (host, (p.stderr or p.stdout or "").strip()[:160])
+        return False, "git push to %s failed: %s" % (host, (_ssh_err(p.stderr) or p.stdout or "").strip()[:160])
     # (3) verify no divergence, reset the remote to the pushed HEAD, clean up, restart
     apply_cmd = (
         'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; R=%s; '
@@ -4441,12 +4466,22 @@ def _update_remote(host):
     if tag == "SYNCED":
         return True, "synced to %s + restarting" % (rest or _local_head(short=True) or "HEAD")
     if tag == "DIVERGED":
-        return False, "remote %s has diverged (its own commits) — not clobbering; reconcile it there first" % host
+        # Two very different causes land here, and the old wording only described the first, which is
+        # why a rewritten local history read as an unexplained refusal (the user 2026-07-22): either the
+        # remote really has its own commits, or LOCAL history was rewritten (rebase/filter-repo/amend),
+        # after which the remote's HEAD is an ancestor of nothing and the guard fires forever. Name both
+        # and give the exact way out, so the fix doesn't need a code read.
+        return False, ("remote %s has diverged — not clobbering. Either it has its own commits, or local "
+                       "history was rewritten (rebase/filter-repo), which orphans the remote's HEAD. To "
+                       "discard what's on %s and force it to match local: "
+                       "git push --force %s:<remote-romp-dir> HEAD:refs/heads/%s "
+                       "then, on %s: git reset --hard %s && git update-ref -d refs/heads/%s"
+                       % (host, host, host, _P2P_REF, host, _P2P_REF, _P2P_REF))
     if tag == "RESETFAIL":
         return False, "pushed, but the remote couldn't check out the new code"
     if tag == "NOLAUNCH":
         return False, "pushed + reset, but found no romp/romp-serve launcher to restart the kernel"
-    return False, (a.stderr or aout or "remote apply failed").strip()[:180]
+    return False, (_ssh_err(a.stderr) or aout or "remote apply failed").strip()[:180]
 
 
 def _start_remote(host):
