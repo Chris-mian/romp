@@ -197,27 +197,6 @@ def _last_plain_user_turn_t(turns):
     return best
 
 
-def _latest_human_send_t(sid):
-    """Time of the most recent OPTIMISTIC human send still in the backend's live echo — a plain reply you JUST
-    sent that hasn't landed in the transcript yet. build_feed reads its re-check basis from the CACHED parse
-    (no live-merge, for speed), so a blocked card only de-urgented a push or two later, once the atom landed and
-    the parse re-read it — the delay the user hit (2026-06-29). Counting the echo makes the card leave Blocked
-    the INSTANT you reply. Excludes a targeted card-reply/nudge (the romp-goal-id marker), matching
-    _last_plain_user_turn_t. 0 if none / on any error."""
-    try:
-        atoms = Sessions.backend_for(str(sid)).live_atoms(str(sid))
-    except Exception:
-        return 0
-    best = 0
-    for a in atoms or []:
-        if a.get("author") != "human":
-            continue
-        if "romp-goal-id" in (a.get("_echo_text") or _atom_user_text(a) or ""):   # targeted reply, not a plain one
-            continue
-        best = max(best, a.get("t") or 0)
-    return best
-
-
 def _awake_spans(start, end):
     """Split a work span [start, end] into the sub-spans the host was AWAKE for, EXCISING every recorded
     suspension that overlaps it. A segment that kept working after the lid reopened thus renders as one bar
@@ -8851,8 +8830,6 @@ def build_feed(now, tmux=None):
             if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
                 api_top = f
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
-        echo_send_t = _latest_human_send_t(fsid)     # a JUST-SENT reply still in the echo (not yet a turn)
-        plain_user_t = max(plain_user_t, echo_send_t)  # → instant, not a push or two later (the user 2026-06-29)
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         # Which top cards OWN a live background task (launch tool_use → placement → top), for the
         # blocked-yield below. Only consulted while the session-level awaiting signal is up.
@@ -8946,19 +8923,28 @@ def build_feed(now, tmux=None):
             recheck = bool(col == "blocked" and nid != api_top and nid != perm_top
                            and nodes[nid].get("followupPending"))
             # RE-JUDGING (the user 2026-06-30; MOVED to Working 2026-07-02): a PLAIN reply on the thread
-            # AFTER the block moves the card to WORKING immediately — the moment you hit send it's the
-            # agent's move, and the delay before the card left Needs-You was the user's complaint
-            # (2026-07-02: "make it immediate"). This is NOT the old permanent sweep whose failure mode was
-            # an unrelated reply stranding a real block in Working forever (the 2026-06-30 regression): the
-            # move is EVENT-BOUNDED by the reply being in flight — the just-sent echo (echo_send_t, before
-            # the turn even opens → instant) or the open turn (who_working). When the turn ends and the
-            # judge left the goal blocked, both flags drop and the card RETURNS to Needs-You on its own;
-            # if the judge resolved it, the store moves it out authoritatively. The "Re-judging…" swirl
-            # rides along in Working. Never the hard floors (api/permission).
+            # AFTER the block moves the card to WORKING while the reply's turn runs — it's the agent's move
+            # now, and the delay before the card left Needs-You was the user's complaint (2026-07-02). This
+            # is NOT the old permanent sweep whose failure mode was an unrelated reply stranding a real
+            # block in Working forever (the 2026-06-30 regression): the move is EVENT-BOUNDED by the OPEN
+            # TURN (who_working). When the turn ends and the judge left the goal blocked, the flag drops and
+            # the card RETURNS to Needs-You on its own; if the judge resolved it, the store moves it out
+            # authoritatively. The "Re-judging…" swirl rides along in Working. Never the hard floors
+            # (api/permission).
+            #
+            # NO ECHO ARM (the user 2026-07-22): the flip used to ALSO ride the backend send-echo
+            # (echo_send_t), for a sub-second flip before the turn's atom lands in the cached parse. But a
+            # composer slash-command echo never retires — its expanded transcript form ("<command-name>…")
+            # doesn't text-match the raw echo, and the parser skips it from the human floor — so the stale
+            # echo pinned rejudging TRUE forever: the card sat in Working, idle, invisible to the nudge
+            # (which reads the still-blocked store). Bounding on the open turn alone is self-limiting — a
+            # cached parse cannot show who_working past a turn that ended — so it can never stick. A hair
+            # less instant on the very first push; the store-backed reopen (followupPending) still gives the
+            # instant flip for a TARGETED card reply.
             rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
                              and not nodes[nid].get("followupPending")
                              and plain_user_t > disp_t
-                             and (who_working or echo_send_t > disp_t))
+                             and who_working)
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
             # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
             # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely

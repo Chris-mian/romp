@@ -3973,35 +3973,37 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
 
-    def test_feed_rejudging_is_INSTANT_from_a_just_sent_reply_still_in_the_echo(self):
-        # The delay fix (the user 2026-06-29 → immediate COLUMN move 2026-07-02): a plain reply registers the
-        # INSTANT it's sent — while still only an optimistic echo (not yet a transcript turn, turn not even
-        # open). The echo alone moves the card to Working with the "Re-judging…" swirl; build_feed reads the
-        # cached parse (no plain reply there), so the echo is what supplies both the reply time and in-flight.
+    def test_feed_rejudging_ignores_a_stranded_echo_only_the_open_turn_drives_it(self):
+        # REGRESSION (the user 2026-07-22): rejudging used to ALSO ride the backend send-echo, moving a card
+        # to Working the instant you hit send (before the turn opened). But a composer slash-command echo
+        # NEVER retires — its expanded transcript form ("<command-name>/jld…") doesn't text-match the raw
+        # echo, and the parser skips it from the human floor — so a stranded echo pinned the card in Working,
+        # idle, FOREVER, invisible to the nudge (which reads the still-blocked store). The flip is now bounded
+        # by the OPEN TURN alone: a cached parse can't show who_working past a turn that ended, so a stale
+        # echo can never strand it. (A hair less instant on the first push; a TARGETED card-reply still moves
+        # instantly via the store-backed followupPending reopen.)
         g = self._blocked_store()
         km._tmux_echo.pop(SID, None)
-        saved_w = km._session_working
+        saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
         try:
-            # NO open turn yet — the send instant, before the CLI even starts the turn (the user 2026-07-02:
-            # the card must move the moment you hit send, not when the turn opens or the atom lands)
+            # a plain reply exists in the parse AFTER the block (mt NOW-100), but the session is now IDLE
+            km._last_plain_user_turn_t = lambda turns: NOW - 10
             km._session_working = lambda turns: False
-            card_before = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertFalse(card_before["rejudging"], "no reply yet → no re-judge")
-            self.assertEqual(card_before["column"], "needs_input", "still urgent (Blocked)")
-            # now the user sends a plain reply — only an optimistic echo so far, turn not open
-            km._tmux_echo_add(SID, "go ahead, do option B", author="human")
+            # …and a stranded echo of a send is still sitting in the live tail (the slash-command case that
+            # never prunes). It must NOT resurrect the flip.
+            km._tmux_echo_add(SID, "/jld go ahead, do option B", author="human")
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertTrue(card["rejudging"], "the just-sent echo lights 'Re-judging…' AT ONCE")
-            self.assertEqual(card["column"], "working", "and moves the card to Working AT ONCE — send-instant")
-            self.assertFalse(card["recheck"], "a plain reply is not a targeted follow-up")
-            # a TARGETED reply (romp-goal-id) is NOT a plain reply → does NOT feed rejudging
-            km._tmux_echo.pop(SID, None)
-            km._tmux_echo_add(SID, "answer <!-- romp-goal-id: x:g1 -->", author="human")
-            card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertFalse(card3["rejudging"], "a targeted card-reply doesn't feed the plain-reply re-judge")
+            self.assertFalse(card["rejudging"], "a stranded echo on an IDLE session no longer drives rejudging")
+            self.assertEqual(card["column"], "needs_input",
+                             "so the blocked card stays in Needs-You where the nudge sees it — never stuck in Working")
+            # the moment a turn actually opens, the plain reply legitimately moves it (the kept who_working arm)
+            km._session_working = lambda turns: True
+            card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertTrue(card2["rejudging"], "an OPEN turn after a plain reply still lights 'Re-judging…'")
+            self.assertEqual(card2["column"], "working")
         finally:
             km._tmux_echo.pop(SID, None)
-            km._session_working = saved_w
+            km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
 
     def test_feed_recheck_targeted_followup_does_not_sweep_siblings(self):
         # two blocked tops; a TARGETED follow-up (followupPending) on g1 only. No plain reply. g1 re-checks,
