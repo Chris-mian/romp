@@ -26,7 +26,7 @@ class LandingShell(unittest.TestCase):
             self.assertIn(pane, html)
 
     def test_outline_is_a_mobile_tab_not_desktop_only(self):
-        # the user 2026-07-11: "I can't access the outline view in the mobile UI" — the fleet pane was
+        # the user 2026-07-11, who couldn't access the outline view in the mobile UI — the fleet pane was
         # explicitly desktop-only (#fleet-pane display:none!important, no tab, no switcher entry).
         html = km._landing()
         self.assertIn(">Outline</button>", html)                       # the tab exists, labeled Outline

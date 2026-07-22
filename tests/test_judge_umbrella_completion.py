@@ -3,7 +3,7 @@
 
 The old is_complete backstop — "a node with children, all complete, is complete" — was the one
 completion path with no author, no evidence, and no diary row. It assumed children enumerate the
-parent's work, but the planner files prerequisites/retries as children: "Run long soak-test
+parent's work, but the planner files prerequisites/retries as children: "Run long soak
 experiment" auto-completed (and settled, and rolled its checkmark down) when its "retry the
 connection" child closed, though the experiment never ran. Now:
   - rollup_status is_complete = own verdict (nodeComplete) or the settledDone grandfather —

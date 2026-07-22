@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A session whose launch dir contains an underscore (or space, etc.) must still be DISCOVERED.
 
-Regression (the user 2026-07-14, "the romp_demo session never got a card"): Claude encodes a launch
+Regression (the user 2026-07-14, who reported the romp_demo session never got a card): Claude encodes a launch
 dir into its ~/.claude/projects/ folder name by replacing EVERY non-alphanumeric char with '-', so
 /…/romp_demo becomes -…-romp-demo. _proj_dir only rewrote '/' and '.', leaving the underscore intact,
 so it scanned -…-romp_demo — a folder that never exists. discover() then found no transcript and the

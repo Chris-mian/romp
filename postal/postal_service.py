@@ -1218,13 +1218,22 @@ def peer_seen_add(mid):
         _log("peer-seen append failed: %s" % e)     # dedupe degrades to the in-memory window
 
 def outbox_put(host, msg):
-    """Park one cross-host message for `host` and poke its exchange (long-poll release + dialer)."""
+    """Park one cross-host message for `host` and poke its exchange (long-poll release + dialer).
+    `host` and the message `mid` become path components, so both MUST clear _safe_id first: a
+    peer-crafted `mid` like `../../../foo` over the unauthenticated bus would otherwise write
+    outside OUTBOX (arbitrary-file-write). Legit ids (short hostnames, `_unique()` mids) pass."""
+    mid = (msg or {}).get("mid") or ""
+    if not (_safe_id(host) and _safe_id(mid)):
+        _log("outbox_put: refusing unsafe host/mid %r/%r" % (host, mid))
+        return
     d = OUTBOX / host
     d.mkdir(parents=True, exist_ok=True)
-    (d / (msg["mid"] + ".json")).write_text(json.dumps(msg))
+    (d / (mid + ".json")).write_text(json.dumps(msg))
     _peer_wake(host).set()
 
 def outbox_list(host):
+    if not _safe_id(host):
+        return []
     try:
         out = []
         for f in sorted((OUTBOX / host).glob("*.json")):
@@ -1237,12 +1246,16 @@ def outbox_list(host):
         return []
 
 def outbox_get(host, mid):
+    if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
+        return None
     try:
         return json.loads((OUTBOX / host / (mid + ".json")).read_text())
     except Exception:
         return None
 
 def outbox_del(host, mid):
+    if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
+        return False
     try:
         (OUTBOX / host / (mid + ".json")).unlink()
         return True

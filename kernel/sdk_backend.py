@@ -828,8 +828,8 @@ class SdkSession:
         self.cwd = reg.get("cwd") or os.path.expanduser("~")
         self.mode = reg.get("mode") or "acceptEdits"
         self.resume_sid = reg.get("lastSid") or None  # resume target after a restart/crash
-        # Heal STRANDED pending-switch flags (the user 2026-07-11: "the three dots sitting there
-        # forever"): a /model or /effort switch that was mid-flight when the previous kernel/process
+        # Heal STRANDED pending-switch flags (the user 2026-07-11, who reported the three dots sitting there
+        # forever): a /model or /effort switch that was mid-flight when the previous kernel/process
         # died can never be cleared by its in-memory switch path — but the persisted flags keep the
         # badge's switching-dots alive whenever the session is served from the reg (the dormant path
         # in live_sessions). A FRESH construction makes them moot by definition: effort is a
@@ -1094,7 +1094,7 @@ class SdkSession:
         # acknowledges the interrupt — and the CLI won't acknowledge until the in-flight model call reaches
         # a boundary, which can take SECONDS mid-stream. Setting _interrupted only AFTER that await meant the
         # snapshot kept reading 'working' the whole time, so a stopped turn still looked like it was spinning
-        # (the user 2026-06-30: "I interrupted but it said working for a while"). Flip + poke up front so the
+        # (the user 2026-06-30, who interrupted but it said working for a while). Flip + poke up front so the
         # lane reads 'waiting' the instant the user hits stop; the interrupt itself completes below.
         #
         # Don't touch inflight or release the next queued turn here. A normal interrupt aborts the turn and the
@@ -1263,8 +1263,8 @@ class SdkSession:
         async def inputs():
             # Forward queued turns to the SDK AS SOON AS they're available — even while a turn is in flight —
             # so a message you send mid-turn reaches the model at its NEXT tool boundary instead of being held
-            # until the whole turn finishes (the user 2026-06-27: "forward it in as soon as you can, that's
-            # what I do with a queued message"). The CLI's streaming input owns the boundary timing; romp just
+            # until the whole turn finishes (the user 2026-06-27, who wanted it forwarded in as soon as possible, as they
+            # do with a queued message). The CLI's streaming input owns the boundary timing; romp just
             # stops artificially holding. EXCEPTION: when the current turn is INTERRUPTED/wedged (inflight>0
             # AND _interrupted), HOLD the queue — feeding the next turn into a stuck CLI is the double-count /
             # zombie hazard the interrupt path guards against; it releases once that turn's ResultMessage
@@ -1311,8 +1311,8 @@ class SdkSession:
         while not self.ended:
             self._wake.clear()
             self._reconnect = False
-            # RECONCILE INFLIGHT ACROSS A RECONNECT (the user 2026-07-01: "switch the model on a new session
-            # → it says working indefinitely"). A reconnect abandons the previous client; a turn it left in
+            # RECONCILE INFLIGHT ACROSS A RECONNECT (the user 2026-07-01, who switched the model on a new session
+            # and it said working indefinitely). A reconnect abandons the previous client; a turn it left in
             # flight can NEVER get its ResultMessage on the new connection (that client, and its receive loop,
             # are gone) — so inflight, and the "working" signal it drives, would be stranded elevated FOREVER.
             # request_reconnect defers while inflight>0, but a race (it fired at inflight==0, then the input
@@ -1505,7 +1505,7 @@ class SdkSession:
             # Compaction just landed: the active context dropped to the summary. Re-pull the % NOW, on the
             # boundary event itself, rather than waiting for the next turn's ResultMessage — the CLI auto-runs
             # a continuation turn after /compact that can work for minutes, and until it settled the bar kept
-            # showing the STALE pre-compaction % (the user 2026-06-30: "I compacted but it still says 72%").
+            # showing the STALE pre-compaction % (the user 2026-06-30, who compacted but it still said 72%).
             # get_context_usage() reads current state, so it reports the post-compaction number here.
             asyncio.ensure_future(self._do_refresh_context())
         elif isinstance(msg, SystemMessage) and msg.subtype == "api_retry":
@@ -2840,8 +2840,8 @@ class SdkBackend:
             # Synthesize the "/effort X" invocation atom, exactly as set_model does for "/model X": the
             # reconnect leaves NO transcript record at all, so without this an idle-session effort change
             # showed nothing in the chat while a busy one (parked) showed a queued chip — the same pick,
-            # visibly acknowledged or not depending on timing (the user 2026-07-05: "somewhat
-            # inconsistent"). One chip, both paths.
+            # visibly acknowledged or not depending on timing (the user 2026-07-05, who called it somewhat
+            # inconsistent). One chip, both paths.
             t = int(time.time())
             disp = "/effort " + value
             uid = "cmd:%d:effort" % t

@@ -1,5 +1,5 @@
-"""Timeline ships in TWO messages so the lanes paint before the heavy bars (the user 2026-06-25, "startup
-still slow" → "load everything else and have the bars load after").
+"""Timeline ships in TWO messages so the lanes paint before the heavy bars (the user 2026-06-25, who found startup
+still slow and wanted everything else loaded with the bars loaded after).
 
 build_timeline(with_bars=False) builds only the LANES SKELETON (sessions/status, no turns/judging/messages/
 nudges); _push sends it as {type:"data"} FIRST, then the cached full build's detail rides a {type:"bars"}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Creating/opening a session is ACK-FAST (the user 2026-07-14: "why does it take so long to open a new
-SDK-backed session?"). The measured 7-10s was NOT the CLI boot (spawn = file writes ~0.2s; connect is
+"""Creating/opening a session is ACK-FAST (the user 2026-07-14, who asked why it took so long to open a new
+SDK-backed session). The measured 7-10s was NOT the CLI boot (spawn = file writes ~0.2s; connect is
 threaded, a booting claude process ~0.4s in; the raw SDK connect itself is ~1.5s) — it was the handler's
 inline _push_all(): a new session invalidates the discover cache, so the build re-scans and re-serializes
 the WHOLE fleet synchronously on the WS thread before the focus frame is sent, duplicating the rebuild the

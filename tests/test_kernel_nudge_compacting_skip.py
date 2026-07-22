@@ -1,4 +1,4 @@
-"""Auto-nudge must SKIP a compacting session (the user 2026-07-06: "nudge got called after compact"). The old
+"""Auto-nudge must SKIP a compacting session (the user 2026-07-06, who reported a nudge getting called after compact). The old
 guard keyed on the tmux `st == "compacting"`, but SDK sessions have NO tmux state — so a /compact on an SDK
 session left the raw-state check blind and a status-check nudge fired mid-compaction. The guard now also
 consults the corroborated _compacting_now (the same signal the chip/timeline/chat compacting element use).

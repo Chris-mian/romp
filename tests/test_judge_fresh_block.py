@@ -45,7 +45,7 @@ def _ask_card(s, block_ev=T1, done_ev=T1):
     the same reply closed as done."""
     s["nodes"] = {n["id"]: n for n in [
         _node("g1", "Resolve the jetty push refusal",
-              log=[_row("block", block_ev, why="say whether to also patch the pre-check")]),
+              log=[_row("block", block_ev, why="say whether to also update the fallback")]),
         _node("g2", "Diagnosed stale leftovers as the cause", parent="g1",
               log=[_row("done", done_ev, why="cause identified and explained")]),
     ]}

@@ -1,5 +1,5 @@
-// Click-safe, always-acknowledged dashboard buttons (the user 2026-06-24): the "had to click End session
-// several times" bug. The dashboard re-renders on every kernel push; a handler hung on a node that a
+// Click-safe, always-acknowledged dashboard buttons (the user 2026-06-24): the bug where End session had to be clicked
+// several times. The dashboard re-renders on every kernel push; a handler hung on a node that a
 // re-render rebuilds is destroyed mid-click and the click is dropped. The fix is systemic — delegate to a
 // stable ancestor (HTML lists) or defer the rebuild while a pointer is pressed (the SVG timeline) — plus an
 // immediate press acknowledgement so the user never re-clicks because nothing visibly happened.

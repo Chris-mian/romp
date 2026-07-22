@@ -78,8 +78,8 @@ def _rebind_state(path):
 INDEX_MODEL  = "haiku"    # captioner + archiver (index tier — high volume, low stakes)
 TRIAGE_MODEL = "sonnet"   # planner/grouper/closer/distiller/courier (triage tier — judgment)
 # The selectable model/effort CHOICES are defined ONCE, in the kernel (MODEL_CHOICES / EFFORT_CHOICES), and
-# served to EVERY picker — chat, timeline, and the judge-tier settings (the user 2026-07-02: "same code path,
-# don't hardcode in multiple places"). The judge holds no list: it reads the per-tier override the kernel
+# served to EVERY picker — chat, timeline, and the judge-tier settings (the user 2026-07-02, who wanted one
+# shared code path rather than the list hardcoded in multiple places). The judge holds no list: it reads the per-tier override the kernel
 # persisted (already validated against MODEL_CHOICES) and falls back to the default above.
 _state_cache = {}   # STATE-relative filename -> {"val": str, "mt": float} (mtime-cached, like the kernel's _colormap)
 
@@ -1421,7 +1421,7 @@ def _parse_plan(raw, menu_len, allow_extend=False):
 
 
 # ── The write seam: diary-owned node keys are UNWRITABLE outside the diary/cache layer ────────────
-# (the user 2026-07-07: "shouldn't the architecture make it impossible?"). Every node loaded from disk
+# (the user 2026-07-07, who asked whether the architecture could make it impossible). Every node loaded from disk
 # (and every mint) is a GuardedNode: assigning a PROTECTED key raises TypeError unless the write comes
 # from inside _authority() — held only by record_verdict (event append + immediate materialize) and the
 # rollup cache layers (settle stamp, roll-down, the un-resolve). A stray `nd["blocked"] = False` is now
@@ -2742,7 +2742,7 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
 
 
 def opener_llm(prompt_text, menu_text, model=None, effort=None, sibling_num=None):
-    """The opener (the user 2026-06-21, via link_audit; "prompt-planner" until 2026-07-09): place a
+    """The opener (the user 2026-06-21, via link_audit; called prompt-planner until 2026-07-09): place a
     segment's opening user MESSAGE on the goal tree the instant it lands, before the work — so the inbox
     shows the real placed goal immediately, not just the _provisional_card placeholder. mint OR sub only
     (never skip/done/block; no work yet — it only opens, mirroring the closer, which only closes). '' on
@@ -3729,7 +3729,7 @@ def _block_is_stale(store, nd, ev_t):
 
 
 def _done_is_stale(store, nd, ev_t):
-    """Mirror of _block_is_stale for DONE verdicts (the user 2026-07-06, "Move to Working"): the floor
+    """Mirror of _block_is_stale for DONE verdicts (the user 2026-07-06, on Move to Working): the floor
     is the user's last assertion that this goal — or the card it files under (_floor_of) — is NOT
     resolved: a card follow-up or a feed move back to Working (user_move). A done verdict computed from
     evidence AT/BEFORE that stamp would snap the card straight back to Completed on the next pass (a
@@ -4522,8 +4522,8 @@ def _plan_session(fsid, path, now):
                 if any(o["do"] == "mint" for o in ops):
                     # PIVOT: the model says this reply starts a new thread — honor its own placement. The
                     # cited goal is NOT reopened, and the pivot itself must drop its followupPending: this
-                    # verdict IS the judge processing the follow-up ("that reply wasn't an answer to this
-                    # goal"), so the optimistic chip is resolved. Rollup can't be relied on to heal it —
+                    # verdict IS the judge processing the follow-up (concluding the reply wasn't an answer to this
+                    # goal), so the optimistic chip is resolved. Rollup can't be relied on to heal it —
                     # its self-heal exists only on the re-COMPLETED branch, and `blocked` outranks the
                     # followup-pending branch, so a still-BLOCKED target kept the flag forever: the card
                     # sat in Working with a permanent "Re-judging…" swirl instead of returning to

@@ -870,8 +870,8 @@ mountControls();
 render();
 vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initial fleet state (like feed/timeline)
 
-// Hold the romp loader up until the ledgers actually land (the user 2026-06-29: "show the loading thing until
-// the tasks are ready to render"). The shared _pane_spin loader has an 8s backstop that would otherwise hide
+// Hold the romp loader up until the ledgers actually land (the user 2026-06-29, who wanted the loading thing shown until
+// the tasks are ready to render). The shared _pane_spin loader has an 8s backstop that would otherwise hide
 // it over an EMPTY pane while a cold kernel is still building every session's ledger (which can take longer
 // than 8s for a big fleet) — leaving a blank gap before the tasks paint. So while we're not loaded yet, keep
 // re-asserting the loader, beating that backstop; stop the instant the data arrives (event-based via `loaded`).

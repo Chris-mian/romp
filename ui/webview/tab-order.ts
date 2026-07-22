@@ -6,8 +6,8 @@
 // This is the whole ordering model, extracted so it's unit-testable. The old client kept a PARALLEL order
 // (an `effIdx` + `firstSeen` tiebreaker re-sort run on every status push) that diverged from the kernel and
 // made tabs jump around on ordinary activity — the bug the kernel's own tests could never catch, because
-// they tested the (stable) kernel, not this client layer (the user 2026-06-27: "I just want it stable —
-// additions by subtraction").
+// they tested the (stable) kernel, not this client layer (the user 2026-06-27, who just wanted it stable —
+// additions by subtraction).
 
 /**
  * The render order after a kernel `tabOrder` push: adopt the kernel's order verbatim, but keep any tab the

@@ -303,5 +303,32 @@ class ReapStrayTunnels(unittest.TestCase):
         self.assertEqual(killed, [(12345, 15)], "only the jetty orphan tunnel is SIGTERM'd")
 
 
+class SshHostSafety(unittest.TestCase):
+    """A remote `host` becomes ssh's first positional arg. A host beginning with `-` (e.g.
+    `-oProxyCommand=<cmd>`) would be parsed by ssh as an option → local command execution. attach_remote
+    must reject such hosts, and every ssh argv must carry a `--` guard right before the host (M2)."""
+
+    def test_safe_ssh_host_accepts_real_targets(self):
+        for ok in ("myhost", "web.example.com", "user@10.0.0.1", "h-1_2", "192.168.1.5", "[fe80::1]"):
+            self.assertTrue(km._safe_ssh_host(ok), "should accept %r" % ok)
+
+    def test_safe_ssh_host_rejects_option_injection(self):
+        for bad in ("-oProxyCommand=touch /tmp/x", "-Fnone", "-", "", None, 5,
+                    "a b", "a;b", "a$(id)", "a`id`", "a|b", "x" * 300):
+            self.assertFalse(km._safe_ssh_host(bad), "should reject %r" % (bad,))
+
+    def test_attach_remote_rejects_option_host(self):
+        # Reaches validation before any ssh is spawned — a crafted host is a clean ValueError.
+        with self.assertRaises(ValueError):
+            km.attach_remote("-oProxyCommand=touch /tmp/romp-m2-pwned")
+
+    def test_tunnel_argv_guards_host_with_dashdash(self):
+        r = {"host": "myhost", "local_port": 5001, "kernel_port": 6001, "bus_port": 7001,
+             "rk_port": 8001, "rb_port": 9001}
+        argv = km._tunnel_argv(r)
+        self.assertEqual(argv[-1], "myhost", "host is the trailing positional")
+        self.assertEqual(argv[-2], "--", "a `--` separator immediately precedes the host")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

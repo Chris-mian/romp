@@ -1,5 +1,5 @@
 // Pinch-zoom must stay anchored on the TIME UNDER THE CURSOR, so you can hover a thing and pinch, pinch,
-// pinch to expand into it (the user 2026-07-21: "it looks like it's fixing the leftmost coordinate").
+// pinch to expand into it (the user 2026-07-21, who observed it fixing the leftmost coordinate).
 //
 // Why it drifted: the anchor was computed in COMPRESSED seconds, but the compressed axis is not a fixed
 // coordinate system. Collapsed idle gaps are `gapCT = winSec * GAP_FRAC` wide, so EVERY zoom step rescales

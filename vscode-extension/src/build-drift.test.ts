@@ -1,6 +1,6 @@
-// Build-drift banner + one-click self-update in VS Code (the user 2026-07-13: "if anything gets out of
-// sync I want to see a banner"; 2026-07-14: "I want a button that does this for me, like the web view
-// has"). The VS Code panes run VSIX-BUNDLED webview code — no kernel-served page, no ?v= token, so the
+// Build-drift banner + one-click self-update in VS Code (the user 2026-07-13, who wanted a banner when anything gets out of
+// sync; 2026-07-14, who wanted a button that does it for them, like the web view
+// has). The VS Code panes run VSIX-BUNDLED webview code — no kernel-served page, no ?v= token, so the
 // browser pages' shim check never runs here, and a pane's wsStale posts go to a parent that doesn't
 // handle them. Instead the EXTENSION compares the `dv` (kernel dist token) riding every keepalive
 // against its own bundled build stamp (__ROMP_BUILD__, baked by esbuild.js) and prompts ONCE when the

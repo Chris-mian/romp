@@ -87,8 +87,8 @@ class NudgeBar(unittest.TestCase):
         self.assertFalse(bars[human["id"]].get("nudgeAuto"), "a genuine human prompt is never an auto-nudge")
 
     def test_bars_flag_any_romp_authored_prompt_so_its_dot_wears_the_logo(self):
-        # the user 2026-07-16: an auto-retry ("retry" + <!-- romp-injected -->) "rendered as a user prompt
-        # instead of a ROMP logo thing" — it authors 'romp' but carries no romp-AUTO marker, so nudgeAuto
+        # the user 2026-07-16, who reported an auto-retry ("retry" + <!-- romp-injected -->) rendering as a user prompt
+        # instead of a romp logo thing — it authors 'romp' but carries no romp-AUTO marker, so nudgeAuto
         # alone left every non-nudge romp message looking like something the human typed. The view keys its
         # swirl-dot on this flag; nudgeAuto still distinguishes the auto-nudge's own caption.
         bars = self._bars()

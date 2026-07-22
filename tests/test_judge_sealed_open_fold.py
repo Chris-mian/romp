@@ -38,11 +38,11 @@ def _node(g, text, parent=None, done=False, **extra):
 def _nimbus_shape(s):
     """The live shape: an OPEN top card (held open by a genuinely open sibling sub, like the real
     card's connectivity work), a sub with a landed closer done, and an open child under that sub —
-    the zombie ("Explained where the auth token is stored" under a done "Assess firewall...")."""
+    the zombie ("Documented where the cache file lives" under a done "Assess firewall...")."""
     s["nodes"] = {n["id"]: n for n in [
         _node("g1", "Get the board connected"),
         _node("g2", "Assess firewall downsides and locate token", parent="g1", done=True),
-        _node("g3", "Explained where the auth token is stored", parent="g2"),
+        _node("g3", "Documented where the cache file lives", parent="g2"),
         _node("g8", "Fix connectivity between laptop and device", parent="g1"),
     ]}
     s["seq"] = 8

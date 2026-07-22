@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""discover() is CACHED behind a directory-mtime fingerprint (the user 2026-06-25, "startup still slow").
+"""discover() is CACHED behind a directory-mtime fingerprint (the user 2026-06-25, who found startup still slow).
 
 It was re-walking ~80 project dirs and reading every fork's head 2-4× per push (feed + timeline + chat each
 call it) — ~60-250ms, the single biggest slice of a build. Its OUTPUT only changes when a session is

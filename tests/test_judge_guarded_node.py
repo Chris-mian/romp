@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The write seam (the user 2026-07-07: "shouldn't the architecture make it impossible?"): every node
+"""The write seam (the user 2026-07-07, who asked whether the architecture could make it impossible): every node
 loaded from disk or minted is a GuardedNode — writing a diary-owned key outside the diary/cache layer
 RAISES at the write site instead of silently corrupting state for materialize to re-fight. Also pins the
 event-vocabulary semantics that replaced the last hand-managed states: dismiss (the pivot verdict)

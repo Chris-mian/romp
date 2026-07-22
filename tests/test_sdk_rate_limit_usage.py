@@ -48,7 +48,7 @@ class RecordRateLimit(unittest.TestCase):
         self.assertIsInstance(u["t"], int)
 
     def test_a_seven_day_event_does_not_null_the_statusline_five_hour(self):
-        # Regression (the user 2026-06-30, "the session limit disappeared"): usage.json is account-wide and also
+        # Regression (the user 2026-06-30, who reported the session limit disappeared): usage.json is account-wide and also
         # written by the tmux statusline. A seven_day-only SDK event must MERGE — preserve the five_hour another
         # writer set — not clobber the whole file from our partial accumulator.
         (self.state / "usage.json").write_text(json.dumps({

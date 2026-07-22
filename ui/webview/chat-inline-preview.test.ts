@@ -1,5 +1,5 @@
-// A mentioned image/PDF renders FULL-SIZE in the chat (the user 2026-07-20: "not even a thumbnail,
-// but a rendered image, kind of like it does with the user messages"), absolute OR relative path —
+// A mentioned image/PDF renders FULL-SIZE in the chat (the user 2026-07-20, who wanted not even a thumbnail
+// but a rendered image, similar to how it renders the user messages), absolute OR relative path —
 // the kernel resolves a relative one against the session's cwd exactly like click-to-open. Per
 // surface: web renders via previewFull (kernel /file bytes → <img> at the user-image scale / a PDF's
 // native inline <iframe>, both self-removing when the kernel can't serve the path); the VS Code

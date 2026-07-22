@@ -77,7 +77,7 @@ class SessionBackend(ABC):
         own delivery: forwarding the message to the model at the next tool boundary, folding several queued
         sends into one turn, and holding them across an interrupt until the turn settles (SdkSession._pending
         + its inputs() generator). The kernel then hands composer sends straight to send() the instant they
-        arrive (the user 2026-07-17: "get them in as soon as possible"), instead of parking them itself.
+        arrive (the user 2026-07-17, who wanted them in as soon as possible), instead of parking them itself.
         False (default) means the backend has no such queue, so the kernel holds sends while a turn runs and
         merges them into one message at turn end (tmux). Slash-command drive ops (/compact, /model, /effort)
         still park in the kernel FIFO on BOTH backends to preserve press-order — this flag governs plain text

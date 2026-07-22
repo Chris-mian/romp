@@ -1,5 +1,5 @@
 """Feed + timeline are EXPENSIVE to build (re-segment every session ~2.7s) and were rebuilt on EVERY push,
-so a reload/idle tick paid the full cost (the user 2026-06-25: "reload/startup still very slow"). They're
+so a reload/idle tick paid the full cost (the user 2026-06-25, who found reload/startup still very slow). They're
 now cached, keyed on a fleet fingerprint that busts on any transcript/states/postal change, a judge pass, a
 live tmux badge change, a colormap/session-flags change, or a 5s time bucket (so age labels keep advancing).
 """

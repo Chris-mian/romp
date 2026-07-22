@@ -364,7 +364,7 @@ _clients = []                                # connected WS clients: {app, wid, 
 _clients_lock = threading.Lock()
 _client_seen = [0.0]
 # SIDs seen ALIVE at any point during THIS kernel run. (Retained for diagnostics; it no longer drives
-# tabs — the user 2026-06-17 reversed "keep a tab when it dies": a dead session is now TIMELINE-ONLY,
+# tabs — the user 2026-06-17 reversed the earlier keep-a-tab-when-it-dies rule: a dead session is now TIMELINE-ONLY,
 # not an auto-kept chat tab. It gets a chat tab only on demand, via "View read-only" → _kept_open.)
 _seen_live = set()
 # Dead sessions the user explicitly chose to VIEW READ-ONLY (confirmRevive → "View read-only"): these —
@@ -2044,8 +2044,8 @@ def _chat_tab_sessions(now, tmux):
     return result
 
 
-TL_LANE_WINDOW = 12 * 3600       # default: DEAD lanes only from the last 12h (the user 2026-06-26: "rarely
-                                 # looking at a 48h window, usually much smaller"). The view auto-zooms to ~12h
+TL_LANE_WINDOW = 12 * 3600       # default: DEAD lanes only from the last 12h (the user 2026-06-26, who
+                                 # rarely looks at a 48h window, usually much smaller). The view auto-zooms to ~12h
                                  # anyway; older dead sessions just aren't loaded. LIVE sessions show at any age.
 
 
@@ -2058,10 +2058,10 @@ def _timeline_sessions(now, tmux, live_only=False):
 
     live_only=True returns ONLY the living sessions — used for the FIRST paint on a cold kernel start so the
     fleet comes up at once without reading any dead session; the producer then adds the dead-within-12h lanes
-    on its next pass (the user 2026-06-26: "get the main UI up with the live sessions first, dead in background").
+    on its next pass (the user 2026-06-26, who wanted the main UI up with the live sessions first, dead in background).
 
     The timeline is a COMPLETE activity history, so ×-hiding a tab does NOT drop its lane (the user
-    2026-06-17 reversed the earlier "X in the chat also drops the timeline lane"): closing a tab is a
+    2026-06-17 reversed the earlier rule that X-ing a tab in the chat also dropped the timeline lane): closing a tab is a
     tab-strip view preference and must never erase the session from the timeline. A now-dead session that
     was active during the visible span appears on scrollback regardless of tab/hidden state — the active
     filter alone gates it. So `_hidden_tabs()` is deliberately NOT consulted here (it still gates the
@@ -2312,8 +2312,8 @@ def _pick_identity_color(now=None):
 
 
 def _create_sdk_session(nm, cwd):
-    """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14: "why does it take so long
-    to open a new SDK session?"). spawn() is file writes and connect() is threaded (~0.4s to a booting
+    """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14, who asked why it took so long
+    to open a new SDK session). spawn() is file writes and connect() is threaded (~0.4s to a booting
     CLI) — the 7-10s the user waited was the handler's inline _push_all(): a new session invalidates the
     discover cache, so that build re-scans and re-serializes the whole fleet SYNCHRONOUSLY on the WS
     thread, duplicating the rebuild the pusher (woken by spawn's poke) was already doing. Order matters:
@@ -2558,7 +2558,7 @@ def _drive(msg, client):
         _mark_views_dirty()                               # the stamp lives in memory — no sig sees it
     elif t in ("compact", "compactSession"):
         # Mid-turn (or behind an existing queue) the click PARKS as a queued /compact chip and fires when
-        # the turn ends (the user 2026-07-02: the icon "blinked and nothing happened" while working — now
+        # the turn ends (the user 2026-07-02, who saw the icon blink with nothing happening while working — now
         # the queued chip IS the acknowledgement, and later messages chain behind it in press order).
         if _ops_gate(sid):
             _park_op(sid, ("compact",))
@@ -2700,7 +2700,7 @@ def _drive(msg, client):
         # The GATE is for the AUTO-retry loop only (romp's 10s tick): a global pause or a thread the user
         # interrupted must not relapse into the storm. But a MANUAL "Retry now" click (msg.manual) is an
         # explicit one-shot override — it ALWAYS fires so the button is never a dead no-op on a suppressed/
-        # paused thread (the user 2026-07-06: "Retry now did nothing on the SDK backend"). It fires ONE retry
+        # paused thread (the user 2026-07-06, who reported Retry now doing nothing on the SDK backend). It fires ONE retry
         # without clearing the suppression, so it doesn't re-arm the auto-loop the user turned off.
         if not msg.get("manual") and (_retry_paused_on() or _session_retry_suppressed(sid)):
             return
@@ -3382,7 +3382,7 @@ def _unify_model_labels(rows):
     """Make every session in the fleet's live map show the SAME display name for the SAME model — so a
     session on the version-less best-effort label ("Opus", from a /model switch that hasn't run a turn
     yet, incl. a stale-badge heal) borrows the fleet's real versioned name ("Opus 4.8") when another live
-    session is already reporting it (the user 2026-07-03: "why do some say Opus and others Opus 4.8?").
+    session is already reporting it (the user 2026-07-03, who asked why some say Opus and others Opus 4.8).
     Family = the model's first word (Opus/Opus 4.8 → 'opus'); the VERSIONED variant (has a space) wins.
     Display-only + in place; a family no live session runs a versioned variant of just keeps its short
     label. Never merges across families, so it can't relabel one model as another."""
@@ -3571,6 +3571,18 @@ def _ssh_config_hosts():
     return hosts
 
 
+_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@:\[\]-]+$")
+
+def _safe_ssh_host(host):
+    """A remote `host` becomes ssh's first positional arg. Reject anything ssh could parse as an option
+    (leading '-', e.g. `-oProxyCommand=<cmd>` → local command execution) or that smuggles option/shell
+    metacharacters. The ssh argvs also carry a `--` guard (belt-and-suspenders); validating here turns a
+    crafted host into a clean rejection instead of a confusing ssh failure. Real hosts — aliases and
+    user@host / IPv6-literal forms — pass."""
+    return bool(host) and isinstance(host, str) and len(host) <= 255 \
+        and not host.startswith("-") and bool(_SSH_HOST_RE.match(host))
+
+
 def _free_port():
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -3599,7 +3611,7 @@ def _fetch_remote_token(host):
     tunnel still opens; the dashboard just can't authorize until romp is set up on the remote)."""
     cmd = 'cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token"'
     try:
-        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd],
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, cmd],
                            capture_output=True, text=True, timeout=20)
         return (r.stdout or "").strip() if r.returncode == 0 else ""
     except Exception:
@@ -3632,11 +3644,11 @@ def _tunnel_argv(r):
             # token. All credentials flow OUTWARD: the hub never holds a way into this machine.
             argv += ["-R", "%d:127.0.0.1:%d" % (r["rk_port"], PORT),
                      "-R", "%d:127.0.0.1:%d" % (r["rb_port"], BUS_PORT)]
-        return argv + [r["host"]]
+        return argv + ["--", r["host"]]
     return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
             ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
              "-R", "%d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT),
-             r["host"]])
+             "--", r["host"]])
 
 
 def _notify_bus_peer(host, port, up):
@@ -3773,7 +3785,7 @@ def _remote_kernel_up(host, port):
     curl/nc on the remote (bash is everywhere romp runs)."""
     cmd = "bash -c 'exec 3<>/dev/tcp/127.0.0.1/%d' 2>/dev/null && echo UP || echo DOWN" % int(port)
     try:
-        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd], capture_output=True, text=True, timeout=15)
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, cmd], capture_output=True, text=True, timeout=15)
         return "UP" in (r.stdout or "")
     except Exception:
         return False
@@ -3791,7 +3803,7 @@ def _start_remote_kernel(host):
            'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; '
            'nohup "$S" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "STARTED:$S"')
     try:
-        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd], capture_output=True, text=True, timeout=25)
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, cmd], capture_output=True, text=True, timeout=25)
         out = (r.stdout or "").strip()
         if "STARTED" in out:
             return True, out.partition(":")[2]
@@ -3917,6 +3929,8 @@ def attach_remote(host, kernel_port=None):
     host = (host or "").strip()
     if not host:
         raise ValueError("host required")
+    if not _safe_ssh_host(host):
+        raise ValueError("invalid host")
     with _remotes_lock:
         r = _remotes.get(host)
         if r is None:
@@ -4148,8 +4162,8 @@ _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its 
 
 
 def _update_remote(host):
-    """PEER-TO-PEER update (the user 2026-07-04: "p2p pushing by default, no GH backstop — just take what is
-    committed on local"). Push THIS kernel's committed HEAD straight to `host` over ssh and restart it, so the
+    """PEER-TO-PEER update (the user 2026-07-04, who wanted p2p pushing by default, no GH backstop — just take what is
+    committed on local). Push THIS kernel's committed HEAD straight to `host` over ssh and restart it, so the
     remote runs exactly the local code — GitHub/origin is never involved. Three steps, all over the same
     BatchMode/no-multiplexing ssh every other remote call uses:
       1. ssh-discover the remote romp clone (conventional dirs, mirrors _start_remote_kernel) + its HEAD; REFUSE
@@ -4179,7 +4193,7 @@ def _update_remote(host):
         'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
         'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
     try:
-        d = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, disc], capture_output=True, text=True, timeout=25)
+        d = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, disc], capture_output=True, text=True, timeout=25)
     except Exception as e:
         return False, str(e)[:200]
     out = d.stdout or ""
@@ -4238,7 +4252,7 @@ def _update_remote(host):
     guarded_apply = ('APPLY=%s; if command -v setsid >/dev/null 2>&1; then exec setsid bash -c "$APPLY"; '
                      'else exec bash -c "$APPLY"; fi' % shlex.quote(apply_cmd))
     try:
-        a = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, guarded_apply], capture_output=True, text=True, timeout=60)
+        a = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, guarded_apply], capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         return False, ("pushed, but confirming the restart timed out — the detached restart keeps "
                        "running on %s; check the popover in a minute" % host)
@@ -5098,7 +5112,7 @@ def _session_retrying(sid, tm):
     feed card's "retrying since" chip, else None. Without this a storm renders as plain healthy Working:
     the API-error badge (_api_error) is gated on the session being IDLE, and a retry storm keeps the turn
     open — nimbus sat retrying for ~80 minutes with nothing on the card and auto-nudge correctly silent
-    (the user 2026-07-09: "working" with zero progress is exactly what's worth surfacing).
+    (the user 2026-07-09, for whom working with zero progress is exactly what's worth surfacing).
 
     `since` = the start of the CURRENT contiguous retrying stretch in the states log (event-based: the
     first retrying row after the last non-retrying state row — a recovery in between ends the stretch, so
@@ -5955,7 +5969,7 @@ def _fold_tasks(session):
 
 _parse_cache = {}                                # realpath → ((mtime, size, pending-rollback cut), parsed session)
 
-# Built-chat cache (the user 2026-06-24, "the UI is sluggish"): the pusher rebuilt EVERY open chat tab on
+# Built-chat cache (the user 2026-06-24, who found the UI sluggish): the pusher rebuilt EVERY open chat tab on
 # every 0.5s poll — a full transcript reshape into ChatEvent[] AND a json.dumps of the whole chat, per tab,
 # even when nothing changed. With transcripts now tens of MB, that pegged the kernel and starved the
 # webview. Cache each session's built payload + its serialized string, keyed on the transcript+states
@@ -6042,7 +6056,7 @@ def _feed_goals(sid):
             return store
     return jd.load_goals(sid)                          # no pass in flight → live read, outside the lock
 
-# Delta-send (the user 2026-06-25, "stop re-sending what didn't change"): the chat pusher used to send the
+# Delta-send (the user 2026-06-25, who wanted to stop re-sending what didn't change): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
 # whole transcript resident in the browser (instant scrollback) but send only the CHANGED SUFFIX. _prev_chat_
 # events holds the last-built events per session; _chat_diff finds the first index that differs from it — the
@@ -6051,7 +6065,7 @@ def _feed_goals(sid):
 _prev_chat_events = {}                           # sid → the events list from the previous build (to diff against)
 _prev_chat_ledger = {}                           # sid → the previous build's ledger (so a delta carries it only when changed)
 
-# Wire tail-windowing (the user 2026-06-25, "startup is slow"): delta-send already trims STEADY-STATE pushes,
+# Wire tail-windowing (the user 2026-06-25, who found startup slow): delta-send already trims STEADY-STATE pushes,
 # but a FRESH connect still got every open tab's WHOLE transcript (the 42MB active session + the others) —
 # tens of MB transferred + parsed before the dashboard settled. So a full send now ships only the last
 # WIRE_TAIL events plus a `headFrom` offset; the browser renders that tail (its own virtualization already
@@ -6255,7 +6269,7 @@ def _has_parsing_client():
     """True iff a CHAT or TIMELINE client is connected — both already parse the living fleet into the SAME
     kernel parse cache (build_session / build_timeline bars). When one is, the feed's parse warms for free,
     so the dedicated warmer must NOT also parse: it would only steal GIL from the chat's active-tab reshape
-    on a cold restart (the user 2026-06-26, "chat sessions take a long time to load on restart")."""
+    on a cold restart (the user 2026-06-26, who found chat sessions slow to load on restart)."""
     with _clients_lock:
         return any(c["app"] in ("chat", "timeline") for c in _clients)
 
@@ -6519,8 +6533,8 @@ def _session_chip(sid, path, session, tm, now):
             "retrying" if st == "retrying" else
             "working" if open_now else
             # idle main thread, waiting on background work it dispatched (bg tasks / subagents / overlay):
-            # its OWN state, no longer folded into "working" (the user 2026-07-13: "differentiate working
-            # from awaiting") — the chip says Awaiting in the straw color, the tab/feed dots match, and the
+            # its OWN state, no longer folded into "working" (the user 2026-07-13, who wanted to differentiate working
+            # from awaiting) — the chip says Awaiting in the straw color, the tab/feed dots match, and the
             # timeline badge recolors, all off this one shared value. ("awaiting" above = awaiting INPUT.)
             "awaitingBg" if awaiting_why else "ready")
 
@@ -6596,8 +6610,8 @@ def _working_now(sid):
 def _ops_gate(sid):
     """Should a drive op PARK instead of firing? Whenever the session is NOT quiet — compacting OR an
     open turn (which includes the interrupt-settling window) — and, for strict press-order, whenever a
-    queue ALREADY exists (the user 2026-07-02 ×2: "interrupted, picked a model, sent a message — the
-    model never registered and the message vanished"; input fired into a busy/tearing-down session races
+    queue ALREADY exists (the user 2026-07-02 ×2, who interrupted, picked a model, and sent a message — the
+    model never registered and the message vanished; input fired into a busy/tearing-down session races
     and drops. Now EVERY drive op lands as a visible queued chip and delivers in the sequence pressed).
     Interrupt itself is the one exception — it must always fire immediately (the escape hatch)."""
     sid = str(sid)
@@ -6784,8 +6798,8 @@ def _apply_pending_ops():
     2026-07-02, compact-mid-turn): settings ops (model/effort) apply instantly and delivery continues,
     but a SEND or /COMPACT ends the pass — its turn/compaction must finish before the next op fires, so
     "compact, then two messages, then a model pick" lands as pressed. A leading RUN of consecutive sends
-    is delivered together, not one turn each (_deliver_send_batch — the user 2026-07-17: "send them all at
-    once"; the SDK folds the run into one turn, tmux merges it). Event-gated throughout (_compacting
+    is delivered together, not one turn each (_deliver_send_batch — the user 2026-07-17, who wanted them sent all at
+    once; the SDK folds the run into one turn, tmux merges it). Event-gated throughout (_compacting
     + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes); a dead
     session's queue is dropped (fails once, logged), never retried."""
     for sid, ops in list(_pending_ops.items()):
@@ -7230,7 +7244,7 @@ def _archive_roots(sid):
 
 # A slash command that fires lifecycle hooks (e.g. /compact) echoes each one back in its output as
 # "PreCompact [~/.claude/hooks/tmux-status.sh] completed successfully" — internal plumbing the user never
-# wants to see (the user 2026-06-30: "what is this pre-compact thing?"). Strip those notices from a command's
+# wants to see (the user 2026-06-30, who asked what the pre-compact thing was). Strip those notices from a command's
 # OUTPUT text; the meaningful event (a compaction) is already marked by the ✦ Compacted boundary. Shape is
 # invariant: "<HookName> [<path>] completed successfully".
 _HOOK_NOTICE_RE = re.compile(r"\b[A-Za-z][A-Za-z]+\s+\[[^\]]+\]\s+completed successfully")
@@ -7713,7 +7727,7 @@ def build_session(sid, now, tmux=None):
     # `current` = the in-progress turn's start, for the Fleet recency stamp (its ONLY reader reads .t —
     # the old text/id/tlId subfields' readers died with the in-chat ledger box; 2026-07-07 payload audit)
     current = {"t": last_turn["t"]} if (open_now and last_turn) else None
-    # Goal-graph overview TREE (the user's "that view", 2026-06-16): render every top-level goal and
+    # Goal-graph overview TREE (the user's request for that view, 2026-06-16): render every top-level goal and
     # recurse — but expand a node's children ONLY if the node itself isn't done. A done node is a pruned
     # LEAF: its descendants are hidden even if open. Skip cleared nodes. `current` marks the focus node
     # being worked on (the graph's lastNode) so render can point a line at it; done nodes carry their
@@ -8277,8 +8291,8 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
 
     The drop gate is the planner's PLACEMENT (placements), NOT the turn being open. Keying on the open turn
     (the old _session_working gate) dropped the placeholder at TURN-END — but the planner classifies a pass or
-    two later, so the feed showed NOTHING in that gap (the user 2026-06-29: "serious delay between the
-    provisional disappearing and the real cards appearing"). Live-session only (a dead one isn't planning), and
+    two later, so the feed showed NOTHING in that gap (the user 2026-06-29, who reported a serious delay between the
+    provisional disappearing and the real cards appearing). Live-session only (a dead one isn't planning), and
     the build_feed caller only asks when there's NO working card, so it never duplicates a real card."""
     if not live:                                     # only a LIVE (running) session is 'analyzing' a fresh ask
         return None
@@ -8866,7 +8880,7 @@ def build_feed(now, tmux=None):
             #    awaiting badge. _bg_owner_tops resolves each live task's launch to its placed top;
             #    a task owned elsewhere — or one whose launch can't be attributed (subagents, the
             #    overlay, an unplaced launch) — never flips a blocked card. Genuinely stale blocks are
-            #    retired by the judge's own unblock path ("new work filed on this branch"), which is
+            #    retired by the judge's own unblock path (new work filed on this branch), which is
             #    placement-exact; this floor no longer approximates it session-wide.
             #  - EVENT ORDER (the user 2026-07-15): even an owned task yields only when dispatched at/
             #    after the block — an ask newer than the dispatch is live (nimbus ended its turn asking
@@ -9156,7 +9170,7 @@ def build_feed(now, tmux=None):
     # which leaf). Turn captions are NOT cards — emitting them as standalone DETAILS items piled
     # finished deliverables into the columns, which both this spec and the original FEED-ASKS-SPEC.md
     # ("details turns never appear at all") forbid. Captions live in the card's trail, the ledger, and
-    # the timeline — not here. (the user 2026-06-16; reverts commit 05505fa "show stream cards".)
+    # the timeline — not here. (the user 2026-06-16; reverts commit 05505fa, which showed stream cards.)
     # PARKED HANDOFFS (the user 2026-06-22): a send to a DEAD session parks until revival — surface each as a
     # needs-you card so you can revive the recipient (deliver it) or dismiss it, instead of parking silently.
     # Not tied to a goal node; the itemId "parked:<msgId>" rides the same cleared.jsonl, so Clear dismisses it.
@@ -9324,7 +9338,7 @@ def _msg_summaries():
     caption in captions/. Rendered as a ≤9-word gloss over the verbose raw body by the timeline
     connectors (_postal_messages) and the chat incoming cards (_hydrate_postal).
 
-    PER-SESSION incremental cache (the user 2026-07-03: "startup slow, opening each session slow"). The
+    PER-SESSION incremental cache (the user 2026-07-03, who found startup slow and opening each session slow). The
     old memo keyed the WHOLE map on the fleet's (path, mtime) signature — so ANY session writing (a busy
     fleet is always writing) invalidated it and every build_session re-scanned all ~15 transcripts, ~1.2s
     per chat-open. Now each session's submap is cached against its OWN mtime: a build re-scans only the
@@ -10280,7 +10294,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     with_bars=False builds only the LANES SKELETON (sessions + tokens + status) — the heavy per-segment
     bars, the judging band, the message connectors and the nudge marks are left empty. The push sends this
     skeleton FIRST so the lanes paint instantly, then ships the bars as a separate {type:"bars"} message
-    (the user 2026-06-25: "load everything else and have the bars load after"). build_timeline is ~95%
+    (the user 2026-06-25, who wanted everything else loaded and the bars loaded after). build_timeline is ~95%
     bars+judging by payload and the dominant startup cost, so the skeleton is cheap and lands immediately."""
     if tmux is None:
         tmux = _tmux_sessions()
@@ -11217,7 +11231,7 @@ _built_timeline = [None, None, 0.0]               # [fleet_sig, payload, built_a
 # (only the changed session rebuilds), but that's a big refactor of build_feed/build_timeline. Interim cap: a
 # minimum rebuild interval. With an ACTIVE fleet the fleet_sig busts on every push (the watched session keeps
 # writing), so without this the views rebuild every push — a fresh CONNECT then waits ~2.7s and the kernel
-# stays saturated (the user 2026-06-25: "reload still very very slow"). Reusing a <REBUILD_MIN_S build means a
+# stays saturated (the user 2026-06-25, who found reload still very very slow). Reusing a <REBUILD_MIN_S build means a
 # connect serves a near-fresh cache instantly; the feed/timeline lag content by at most this window (the CHAT
 # is real-time on its own delta path, unaffected). Idle fleets still reuse indefinitely via the sig.
 REBUILD_MIN_S = 2.0
@@ -11458,8 +11472,8 @@ ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnec
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}   // keepalive: stamped lastRecv above; carries the build token (drift → reload banner); nothing for the bundle to render
 if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
-// onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29: "the swirling thing upon
-// kernel restart"), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
+// onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29, who wanted the swirling loader on
+// kernel restart), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
 ws.onclose=function(){netState("down");try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}setTimeout(connect,1500);};
 ws.onerror=function(){try{ws.close();}catch(e){}};}
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
@@ -11529,8 +11543,8 @@ _CHAT_MOBILE_CSS = (
     ".mrow .workdot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     ".mrow .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dddddd}"
     ".mrow.active{background:#0d3a5c}"
-    # The page must never grow WIDER than the phone (the user 2026-07-11: "the whole chat screen takes up
-    # more space than is available... like 20 percent too wide, and the controls don't all fit"). Measured
+    # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
+    # more space than is available, about 20 percent too wide, with the controls not all fitting). Measured
     # at 390px: the STATUSLINE row (model/effort/mode/branch chips + the context bar) is flex/no-wrap with
     # a desktop 44px gutter, so its tail — the ctx bar — landed at x=402..450 and dragged the whole
     # document to 450px, panning every surface ~15% off-screen. Wrap it on touch (the bar drops to a
@@ -12664,8 +12678,8 @@ def _landing():
             # no pane focus RING on mobile (the user 2026-07-22): only one pane shows at a time, so it's
             # always the focused one — the ring just draws a pointless blue border around the whole view.
             ".pane.pane-focused::after{display:none}"
-            # the Outline (fleet) rides the tab bar like every other pane (the user 2026-07-11: "I can't
-            # access the outline view in the mobile UI" — it was desktop-only before)
+            # the Outline (fleet) rides the tab bar like every other pane (the user 2026-07-11, who couldn't
+            # access the outline view in the mobile UI — it was desktop-only before)
             "#chat-pane,#fleet-pane,#feed-pane,#tl-pane{display:contents!important}"
             # reset the desktop iframe absolute-fill (the bare `iframe` reset below re-flows them as tab panes)
             ".pane>iframe{position:static;inset:auto;width:100%;height:100%}"

@@ -1,5 +1,5 @@
-// The per-item STORY (the user 2026-07-20: a giant card's stale subs — "I don't know if they're still
-// active"): a non-done sub-goal shows a one-line gist of its newest verdict event in OUTCOME words
+// The per-item STORY (the user 2026-07-20: a giant card's stale subs, where they couldn't tell if the subs were still
+// active): a non-done sub-goal shows a one-line gist of its newest verdict event in OUTCOME words
 // ("asked you · 2h ago"), expandable (keyed state, survives re-renders) to the full block/unblock log,
 // each row a jump to its own chat turn. The data was always in the goal store's node log — the kernel
 // now ships it compacted (_node_log_rows) and the feed renders it. Progressive disclosure: gist →

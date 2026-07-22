@@ -1,4 +1,4 @@
-// A pasted screenshot must render ONCE (the user 2026-07-10: "it appears to be rendering twice").
+// A pasted screenshot must render ONCE (the user 2026-07-10, who reported it appearing to render twice).
 // The composer inserts the saved path into the message text, so the user turn carries the picture
 // two ways: ev.images (the full in-bubble userImage render) AND a literal path in ev.md. The
 // 2026-07-08 mentioned-path thumbnail feature made linkifyFileUris ALSO thumb that literal path —

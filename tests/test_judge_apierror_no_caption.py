@@ -3,8 +3,8 @@
 API error. Claude Code writes every failure as an assistant record that carries the error TEXT ("overloaded",
 "Request timed out"), so the captioner's work-detector counted it as real work and captioned it — a flood of
 judge calls (captioner + the archiver behind it) glossing nothing but error noise, ironically burning tokens
-during a usage limit (the user 2026-07-06: "crazy number of judge calls... just retry and API errors... maybe
-just the captioner"). An API-error record is now excluded from _has_asst_work / _unit_text, so an error-only
+during a usage limit (the user 2026-07-06, who reported a crazy number of judge calls from just retry and API errors, suggesting maybe
+just the captioner). An API-error record is now excluded from _has_asst_work / _unit_text, so an error-only
 turn is work-less (no caption); a turn that did real work THEN errored still captions the real work.
 """
 import os

@@ -17,8 +17,8 @@ test("a tree-node work-zone click navigates to the NODE's own resolution time, n
 });
 
 test("a blocked/done node's mark+time deep-link to where it RESOLVED (node.mt), the assistant action", () => {
-  // the user 2026-06-16: "for blocked and completed things jump to places in the chat that are NOT the
-  // user's message." The mark + the time zones send node.mt (the block/done segment) with anchor:"work",
+  // the user 2026-06-16, who wanted blocked and completed things to jump to places in the chat that are NOT the
+  // user's message. The mark + the time zones send node.mt (the block/done segment) with anchor:"work",
   // so the chat lands on the ASSISTANT turn. (Only the TEXT zone, goMsg, lands on the user's message.)
   // auth !== "open" rider (plan-sync authoritative tier): an agent's own OPEN to-do item is never
   // "resolved" even if a judge flat-DONE'd its umbrella — the agent's list is authoritative. And a

@@ -484,8 +484,8 @@ class TimelinePanel {
     // Newest data.now sample ever seen this page-lifetime (see isFreshNowSample): a push carrying an
     // OLDER now is a RE-EMISSION — federation re-emits the STORED local payload whenever a remote host
     // pushes, and _cached_timeline re-serves its build-time now — never a fresh clock sample, so it must
-    // not move the live edge (the user 2026-07-03: the timeline "jumps forward and then keeps going
-    // backwards" the moment a remote host is attached).
+    // not move the live edge (the user 2026-07-03, who saw the timeline jump forward and then keep going
+    // backwards the moment a remote host is attached).
     this._newestNow = null;
 
     this.wrap = host.createDiv({ cls: 'romp-tl-wrap' });
@@ -785,8 +785,8 @@ class TimelinePanel {
     this._onPtrOut = () => { this._ptr = null; };   // cursor left the plot → nothing left to re-hover
     this.wrap.addEventListener('mouseleave', this._onPtrOut);
 
-    // Show the romp loader FROM CONSTRUCTION (the user 2026-07-03: "nothing appears in the timeline as it's
-    // starting up, I don't get the ROMP logo with the spinning things"). draw() otherwise bails at its top on
+    // Show the romp loader FROM CONSTRUCTION (the user 2026-07-03, who reported nothing appearing in the timeline as it's
+    // starting up, without the romp logo and the spinning things). draw() otherwise bails at its top on
     // null data (`if (!data...) return`) — so between the iframe (re)loading on a kernel restart and the first
     // {type:"data"} skeleton arriving, the pane was BLANK, no loader at all. The loader now goes up at once and
     // draw() clears it once the bars land; _armLoaderBackstop guards a never-arriving payload (CLAUDE.md).
@@ -941,8 +941,8 @@ class TimelinePanel {
   // the window rescales every gap, and _buildCompressMap anchors its origin at the FIRST collapsed gap —
   // near the start of history. Pinning the anchor in compressed seconds (what this did before) therefore
   // pinned it against that far-left origin: the zoom's real fixed point sat near the beginning of the
-  // timeline and the hovered instant slid away, worse with every step (the user 2026-07-21, "it looks like
-  // it's fixing the leftmost coordinate"). So we convert to real time, then re-derive the offset under the
+  // timeline and the hovered instant slid away, worse with every step (the user 2026-07-21, who observed it looked like
+  // it was fixing the leftmost coordinate). So we convert to real time, then re-derive the offset under the
   // map the NEXT draw will build (same inputs as draw(): the live now + the new window's gap width).
   _anchorOff(rc, frac, newWin) {
     const nowS = this._liveNow();
@@ -957,7 +957,7 @@ class TimelinePanel {
   // Touchscreen pan/zoom (phones — no wheel events). ONE finger, horizontal: PAN the window (free, breaks
   // 🔒 like a mouse drag) — content tracks the finger (drag right → earlier time slides in). When 🔒locked
   // a horizontal drag ZOOMS instead (the right edge stays pinned at now, so there's nowhere to pan) — this
-  // is the user's "locked-to-now drag does a zoom." ONE finger, vertical: falls through to native lane
+  // is the user's rule that a locked-to-now drag does a zoom. ONE finger, vertical: falls through to native lane
   // scroll (touch-action:pan-y), and a tap with no movement falls through to the lane's click/select. TWO
   // fingers: PINCH-zoom the window width, anchored at the REAL time under the midpoint (_anchorOff, shared
   // with the wheel). Panning stays in COMPRESSED time, where the mapping is linear, so a pan is a pure
@@ -1239,7 +1239,7 @@ class TimelinePanel {
     this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
     // Live-edge baseline: the edge free-runs off a FIXED anchor and each poll rebases it MONOTONICALLY
     // (reanchorEdge) — it catches up forward when behind but NEVER moves backward, so bursty/jittery/
-    // re-emitted pushes can't snap the axis around (the user 2026-07-03 "jumps forward then back"). A
+    // re-emitted pushes can't snap the axis around (the user 2026-07-03, who saw it jump forward then back). A
     // RE-EMITTED payload (older data.now — federation/cache) is also clamped to the newest sample seen so
     // the bars/positions it drives don't regress (isFreshNowSample). When held/frozen (not live-following),
     // `off` cancels the edge's position, so we just keep data.now fresh for off-screen pending items.
@@ -1671,7 +1671,7 @@ class TimelinePanel {
     // work-row click can carry a typed-turn id. anchor='work' → flash the BAR + open workUuid (even on a
     // typed turn); anchor='prompt' → the start dot. Absent (old payloads) → fall back to kind-inference:
     // typed/queued/enqueue = the user's prompt (dot); drain/absorbed/decision = peer/queue work (bar). This
-    // is the fix for the user landing on "an edit" or "my own message" (the start glyph of a drain turn is a
+    // is the fix for the user landing on an edit or their own message (the start glyph of a drain turn is a
     // tool-use boundary or the coincident message-arrival dot), never the work.
     const kindWork = !!(byId && byId.src && byId.src !== 'typed' && byId.src !== 'queued');
     const onWork = !!byId && (f.anchor === 'work' ? true : (f.anchor === 'prompt' ? false : kindWork));
@@ -2846,8 +2846,8 @@ class TimelinePanel {
       svg.appendChild(hl);
       const u = (msgUI[i] = { hl, dot: null, lit: msgLit });
       // The hit target is BUILT here but APPENDED in a final pass below, after the arrival dots
-      // (the user 2026-07-21: "hovering the vertical part doesn't pop up the tooltip — I have to hit
-      // the horizontal part or the dot"). Appended here it sat UNDER every dot drawn afterwards, so on
+      // (the user 2026-07-21, who found that hovering the vertical part didn't pop up the tooltip and they had to hit
+      // the horizontal part or the dot). Appended here it sat UNDER every dot drawn afterwards, so on
       // a connector's vertical runs — which start and end AT the lanes, exactly where the dots are —
       // most of the line was covered and the hover landed on whatever dot was on top. Round caps/joins
       // so the hit follows the rounded corners to the very ends instead of stopping short (butt caps),
@@ -2910,8 +2910,8 @@ class TimelinePanel {
         // A romp-AUTHORED prompt (t.romp — an auto-nudge, the Nudge button, or an auto-retry: anything romp
         // injected rather than the human typing) is marked as a ROMP MESSAGE: a BLACK-filled dot with the romp
         // favicon swirl inside (the user 2026-06-23, replacing the old white ⚡ bolt). Originally auto-nudges
-        // ONLY; widened to every romp message (the user 2026-07-16: an auto-retry "rendered as a user prompt
-        // instead of a ROMP logo thing"), mirroring the chat's 2026-07-05 supersession of the same rule — at
+        // ONLY; widened to every romp message (the user 2026-07-16, who reported an auto-retry rendering as a user prompt
+        // instead of a romp logo thing), mirroring the chat's 2026-07-05 supersession of the same rule — at
         // the data level a retry and a nudge are both just romp-injected. The AUTO-nudge keeps its own caption
         // ('romp · nudge' + "romp nudged <name>"); any other romp message says 'romp' and shows its request,
         // so an auto-retry reads "romp / retry ×14" instead of masquerading as something the user asked for.

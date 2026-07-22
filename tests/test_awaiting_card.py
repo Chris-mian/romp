@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """_awaiting_card (bin/romp-kernel): a LIVE, IDLE session awaiting a dispatched BACKGROUND TASK with no
 open goal to floor gets a lightweight working-column placeholder in the FEED — so the wait shows there, not
-only on the timeline's faded awaiting stretch (the user 2026-07-13, "there's no card there"). Synthetic
+only on the timeline's faded awaiting stretch (the user 2026-07-13, who noted there's no card there). Synthetic
 inputs only: placeholder UUID, no real session data.
 """
 import os

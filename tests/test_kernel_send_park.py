@@ -107,7 +107,7 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         self.assertNotIn(SID, km._pending_ops, "consumed — never re-delivered")
 
     def test_compact_clicked_mid_turn_parks_and_fires_at_turn_end(self):
-        # the user 2026-07-02: the compact icon "blinked and nothing happened" while the session worked.
+        # the user 2026-07-02, who saw the compact icon blink with nothing happening while the session worked.
         # The click now parks a ("compact",) op — the queued /compact chip is the acknowledgement — and
         # fires the real /compact when the turn ends, marking compacting for every surface.
         km._pending_ops[SID] = [("compact",), ("send", "and then this", None)]
@@ -130,8 +130,8 @@ class OpQueueParkOrDeliver(unittest.TestCase):
                          "the message waits for the compaction to finish (press order)")
 
     def test_an_open_turn_parks_everything_too(self):
-        # the user 2026-07-02 ×2 ("interrupted, picked a model, sent a message — the model never
-        # registered and the message vanished"): input fired into a busy/tearing-down session races and
+        # the user 2026-07-02 ×2, who interrupted, picked a model, and sent a message — the model never
+        # registered and the message vanished: input fired into a busy/tearing-down session races and
         # drops. The gate now parks EVERY drive op while a turn is open (the interrupt-settling window
         # keeps the turn open until the stop lands, so the whole scenario chains in press order).
         km._compacting_now = lambda sid: False
@@ -240,7 +240,7 @@ class SdkForwardsAndBatch(unittest.TestCase):
 
     def test_a_send_after_a_parked_drive_op_chains_behind_it_even_for_the_sdk(self):
         # press-order beats mid-turn forwarding: once a /model is parked, a later message stays behind it
-        # (the user 2026-07-17: "be careful with that aspect"). The drive op parks (a queue exists), so the
+        # (the user 2026-07-17, who asked to be careful with that aspect). The drive op parks (a queue exists), so the
         # send parks too — it does NOT jump ahead by forwarding mid-turn.
         km._working_now = lambda sid: True
         km._set_model_or_park(self.fbe, SID, "opus")

@@ -1,5 +1,5 @@
-// The live edge must never run BACKWARD (the user 2026-07-03: the timeline "jumps forward as if it's
-// more recent and then it jumps back"). Two mechanisms guarantee it:
+// The live edge must never run BACKWARD (the user 2026-07-03, who saw the timeline jump forward as if it's
+// more recent and then jump back). Two mechanisms guarantee it:
 //   1. isFreshNowSample clamps a RE-EMITTED payload (federation re-serves the stored local `now` on a
 //      remote push; _cached_timeline re-serves its build-time `now`) so the bars/positions never regress.
 //   2. reanchorEdge keeps the DISPLAYED edge monotonic: it catches up forward when the free-run falls

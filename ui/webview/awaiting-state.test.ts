@@ -1,4 +1,4 @@
-// The distinct AWAITING state (the user 2026-07-13: "differentiate working from awaiting"): a session
+// The distinct AWAITING state (the user 2026-07-13, who wanted to differentiate working from awaiting): a session
 // whose main thread is idle but waiting on background work it dispatched no longer folds into "working".
 // The kernel's shared _session_chip emits `awaitingBg`; the chat chip says "Awaiting" in STRAW
 // (--st-awaitbg-bg #d9c37a, the working gold's paler sibling — same family, visibly held), and the little

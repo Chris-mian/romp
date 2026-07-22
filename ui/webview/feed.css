@@ -296,8 +296,8 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 @keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .fask-awaiting-swirl { animation: none; } }
 /* awaiting-background-agents: a rounded outline box so the "held, waiting on dispatched work" state reads as
-   distinct. The romp swirl SPINS here like everywhere else (the user 2026-07-04: a spin reads as "in flight,
-   not stalled" — which is the awaiting state; the box already sets it apart from the working cases). The box
+   distinct. The romp swirl SPINS here like everywhere else (the user 2026-07-04, for whom a spin reads as in flight,
+   not stalled — which is the awaiting state; the box already sets it apart from the working cases). The box
    aligns to the top so a two-line caption wraps cleanly beside the glyph. */
 .fask-awaiting.await-paused {
   align-self: flex-start; max-width: 100%; margin: 3px 0 4px; align-items: flex-start;

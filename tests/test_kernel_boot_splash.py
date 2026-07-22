@@ -1,6 +1,6 @@
 """A boot splash paints with the dashboard shell the instant a reload lands, so the user sees "something's
-happening" before the panes connect + parse (the user 2026-06-26: "a delay before anything even shows...
-it would be fine to immediately pop up some kind of loading romp dialogue with some moving dots").
+happening" before the panes connect + parse (the user 2026-06-26, who noted a delay before anything even shows
+and suggested immediately popping up some kind of loading romp dialogue with some moving dots).
 
 It's a full-window centered romp wordmark + pulsing accent-blue dots in the served landing HTML; it fades the
 moment ANY pane posts {romp:'ready'} (the timeline lanes render first, no parse), with a 5s backstop so a

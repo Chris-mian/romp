@@ -1,6 +1,6 @@
 // The distiller's display line, computed in ONE place so a test can EXECUTE the rule — not just regex the
-// source, which is what let it get silently removed before (the user 2026-06-29: "make sure the distiller
-// captions never turn off again"). The whole saga: the captions were dropped, and the source-pin tests were
+// source, which is what let it get silently removed before (the user 2026-06-29, who asked to make sure the distiller
+// captions never turn off again). The whole saga: the captions were dropped, and the source-pin tests were
 // simply rewritten to assert the removal, so nothing caught it. distiller-line.test.ts runs THIS instead.
 //
 // THE CONTRACT (the test pins it behaviorally):

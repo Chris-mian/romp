@@ -675,8 +675,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   // is ONE flex-wrap container: the full-width bodies force their own lines, lone buttons share a row.
   // Open, the body runs the full card width and its collapse control is a block "less" button on its own
   // line under the text, always bottom-left (the old trailing-inline placement wrapped unpredictably).
-  // TOGGLE buttons (the user 2026-07-02, round 7 — replaces the separate "less" control): "Background" /
-  // "Summary" are always-visible press toggles, capitalized like Clear. Both collapsed → the two buttons
+  // TOGGLE buttons (the user 2026-07-02, round 7 — replaces the separate less control): the Background /
+  // Summary buttons are always-visible press toggles, capitalized like Clear. Both collapsed → the two buttons
   // sit side by side on one row. Expanding background splits them apart — each button heads its own
   // content — with one clear line between the background part and the summary part; expanding only the
   // summary keeps the buttons side by side with its text below. A pressed toggle wears .on (bright +
@@ -837,8 +837,8 @@ const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "non
 function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "none" {
   return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
 }
-// Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08 — "the
-// little triangle-y icons" from the outline view). A node is COLLAPSED by default; membership here means the
+// Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08, who referred to the
+// little triangle-y icons from the outline view). A node is COLLAPSED by default; membership here means the
 // user clicked its triangle open. So the tree opens showing only the top level and expands on demand — like
 // the modal's one-level view. Empty default = everything collapsed. (Its OWN state, not the modal's
 // `collapsedNodes`, which uses the inverse sense + its own seeding.)
@@ -1830,8 +1830,8 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
   // the EXACT turn by id — where the node resolved (done/blocked) or was minted (open) — killing the
   // nearest-time mismatch. FALLBACK (anchorUuid null/off-path): the time path below. anchor:"work"
-  // lands on the ASSISTANT turn, never the user prompt (the user 2026-06-16: "for blocked and
-  // completed things jump to places in the chat that are NOT the user's message"). A blocked/done
+  // lands on the ASSISTANT turn, never the user prompt (the user 2026-06-16, who wanted blocked and
+  // completed things to jump to places in the chat that are NOT the user's message). A blocked/done
   // node sends node.mt — the segment where the planner applied the block/done op, i.e. where the work
   // actually got blocked or finished — so the click lands on THAT assistant action, not where the node
   // was first minted. An open node sends node.t (its own start). navSid is the node's session

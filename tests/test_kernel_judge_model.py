@@ -118,7 +118,7 @@ class JudgeSettings(unittest.TestCase):
         # options come from GET /models at open (2026-07-13) — plain labels, one source
         self.assertIn("fetch(kb() + '/models'", html)
         self.assertIn({"value": "sonnet", "label": "Sonnet"}, km.MODEL_CHOICES)
-        self.assertNotIn("balanced", html)   # descriptions dropped (the user: "just the model names")
+        self.assertNotIn("balanced", html)   # descriptions dropped (the user, who wanted just the model names)
 
     def test_ws_handlers_exist(self):
         ksrc = inspect.getsource(km)

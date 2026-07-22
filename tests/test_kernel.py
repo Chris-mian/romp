@@ -678,7 +678,7 @@ class ViewBuilder(unittest.TestCase):
         # "working" — the laptop sleeps constantly, so a multi-hour turn straddles many sleeps. The suspend
         # guard keys on the turn's LAST ACTIVITY (end), not its start (t): before the fix it keyed on the
         # start, so any sleep since the turn opened flipped the chip to "ready" while the agent was actively
-        # working (the user 2026-06-22, "bugz is working but it says ready").
+        # working (the user 2026-06-22, who saw a working session reported as ready).
         with self.tpath.open("a") as f:
             f.write(json.dumps(uline(NOW, "wire the overview strip", "uOpen", parent="a2")) + "\n")
             f.write(json.dumps(aline(NOW + 7300, "Editing render.ts.", "aWork", "uOpen",
@@ -1205,7 +1205,7 @@ class ViewBuilder(unittest.TestCase):
 
     def test_transcript_only_bg_task_is_not_awaiting_but_live_sources_are(self):
         # A run_in_background launch visible ONLY in the transcript must NOT pin an idle session to a
-        # working flavor (the user 2026-07-07: a leftover scrape ghost "maybe never finishes"). The LIVE
+        # working flavor (the user 2026-07-07: a leftover scrape ghost that might never finish). The LIVE
         # sources do: a real subagent (source 0), and — since the user reversed the shell-task exclusion
         # on 2026-07-11 (nimbus's 20-minute campaign timer) — the backend's live bg-task set fed by the
         # CLI's task lifecycle stream (source 0.5), whose why carries the task's own description.
@@ -1656,7 +1656,7 @@ class ViewBuilder(unittest.TestCase):
                          "the cap keeps the newest rows")
 
     def test_cardmove_message_routes_to_user_move(self):
-        # the user 2026-07-09: "Move to Working" errored and snapped back — the drive router had no
+        # the user 2026-07-09: Move to Working errored and snapped back — the drive router had no
         # cardMove arm (the feed sends itemId/sid, never `id`; cardMove is not in ID_OPS), so the
         # handler below the routing gate was DEAD CODE: every click fell to "not a drive op", nothing
         # reached jd.user_move, and the optimistic flip reverted with the error toast. Pin the routing
@@ -1811,8 +1811,8 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(p["judging"], "open turn → the swirl chip stays Working…, not Analyzing…")
 
     def test_provisional_card_says_analyzing_only_once_the_turn_settles(self):
-        # The phase prefix tells the truth (the user 2026-07-12: "is it actually analyzing, or is it just
-        # working and hasn't received the segment to analyze yet?"): the turn has ENDED but the planner
+        # The phase prefix tells the truth (the user 2026-07-12, who asked whether it was actually analyzing, or just
+        # working and hadn't received the segment to analyze yet): the turn has ENDED but the planner
         # hasn't placed the segment — its classify pass is due/in flight — and only NOW does the card say
         # "Analyzing:" (and `judging` flips the swirl chip to Analyzing…).
         self._open_turn_transcript(ended=True)
@@ -2587,7 +2587,7 @@ class ViewBuilder(unittest.TestCase):
                 pass
 
     def test_auto_nudge_does_not_re_arm_on_a_nudge_response_that_stays_working(self):
-        # the user 2026-07-01 — REVERSES the 2026-06-25 "keep nudging til resolved" rule, which tight-looped
+        # the user 2026-07-01 — REVERSES the earlier 2026-06-25 keep-nudging-til-resolved rule, which tight-looped
         # (track: count 82 at ~5s intervals, burning tokens). The agent's OWN nudge-response turn, even if it
         # ends still-working, must NOT re-arm: its trigger is romp-authored (_turn_romp_injected). A stall that
         # persists WITHOUT genuine new work is surfaced as blocked + a nudge-failed chip, not nudged forever.
@@ -3123,8 +3123,8 @@ class ViewBuilder(unittest.TestCase):
 
     def test_working_card_time_freshens_to_last_activity_not_mint(self):
         # A reply/nudge re-files under a WORKING goal and advances its mt; the card's age must FRESHEN to that
-        # last activity, not stay pinned to the mint t (the user 2026-07-01: "I replied but it still says 15m
-        # ago — should be 0m"). completed/blocked cards already show their resolution mt; this fixes working.
+        # last activity, not stay pinned to the mint t (the user 2026-07-01, who replied but it still said 15m
+        # ago when it should be 0m). completed/blocked cards already show their resolution mt; this fixes working.
         g = SID + ":gw"
         self._goal_store({g: {"id": g, "text": "confirm go-ahead", "parentId": None, "nodeComplete": False,
                               "blocked": False, "cleared": False, "trail": [], "t": NOW - 900, "mt": NOW - 120}},
@@ -3534,7 +3534,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(km._rename_session(SID, "has spaces!"), "invalid chars → rejected, no rename")
 
     def test_dead_session_is_not_auto_kept_as_a_tab(self):
-        # the user 2026-06-17 REVERSED "keep a tab when it dies": a session shown alive then dead is now
+        # the user 2026-06-17 REVERSED the earlier keep-a-tab-when-it-dies rule: a session shown alive then dead is now
         # TIMELINE-ONLY — it does NOT linger as a chat tab (reopen from the timeline instead). It still
         # reports 'closed' (so wherever it IS shown — a read-only tab — it renders struck-through).
         saved_seen, saved_has, saved_kept = set(km._seen_live), km._has_tmux, set(km._kept_open)
@@ -3948,7 +3948,7 @@ class ViewBuilder(unittest.TestCase):
         return g
 
     def test_feed_plain_reply_moves_block_to_working_while_in_flight(self):
-        # the user 2026-07-02 ("make it immediate"): a PLAIN thread reply after a soft block moves the card
+        # the user 2026-07-02 (who wanted it immediate): a PLAIN thread reply after a soft block moves the card
         # to WORKING — but only WHILE the reply is in flight (open turn / just-sent echo), so an unrelated
         # reply can never strand a real block in Working forever (the 2026-06-30 regression): when the turn
         # ends and the judge left the goal blocked, the card RETURNS to Needs-You on its own.
@@ -4643,7 +4643,7 @@ class ViewBuilder(unittest.TestCase):
             km._msg_sum_cache.clear()
 
     def test_msg_summaries_rescans_only_changed_sessions(self):
-        # the user 2026-07-03 ("startup slow, opening each session slow"): the old memo keyed the whole
+        # the user 2026-07-03 (who found startup slow and opening each session slow): the old memo keyed the whole
         # map on the FLEET signature, so any one session writing re-scanned ALL transcripts on every
         # build_session (~1.2s/open on a busy fleet). Now each session's submap caches against its OWN
         # mtime — an unchanged peer is never re-scanned, only the session that actually changed is.
@@ -6042,7 +6042,7 @@ class TmuxInputEcho(unittest.TestCase):
         self.assertTrue(merged["turns"][-1]["ended"], "but an echo must NOT reopen the turn (it's a user msg, not work)")
 
     def test_successful_send_echo_prunes_when_the_real_user_atom_lands(self):
-        text = "edit the files and I'll restart"
+        text = "edit the files and I'll rerun"
         km._tmux_echo_add(SID, text)
         merged = km._merge_live_atoms(self._session([self._real_user(text)]), SID)
         texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]

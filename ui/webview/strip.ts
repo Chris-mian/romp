@@ -62,8 +62,8 @@ export function usageWindows(usage: any, nowS: number): UsageWindow[] {
   return out;
 }
 
-// Which panes get a quick-open label when hidden (the user 2026-07-13: "chat
-// outline feed — only the ones that aren't currently shown"). Timeline lives
+// Which panes get a quick-open label when hidden (the user 2026-07-13, who wanted chat,
+// outline, and feed — only the ones that aren't currently shown). Timeline lives
 // in VS Code's own panel, so it isn't listed.
 export const STRIP_PANES: Array<{ key: string; label: string }> = [
   { key: "chat", label: "Chat" },
@@ -231,7 +231,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
 //
 // The button acknowledges every toggle (.open accent chrome) and each toggle
 // posts a clientDiag breadcrumb through the host to the kernel's
-// client-diag.jsonl — the user reported the button "doing nothing" in VS Code
+// client-diag.jsonl — the user reported the button doing nothing in VS Code
 // (2026-07-14) while every repro outside VS Code works, so the next report
 // comes with recorded evidence instead of guesses.
 function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Record<string, unknown>) => void) {

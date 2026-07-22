@@ -2529,8 +2529,8 @@ class OptimisticFollowupHold(unittest.TestCase):
                          "a reopen mints nothing — the planner resolves or files real work later")
 
     def test_reply_floors_blocks_across_the_whole_subtree(self):
-        # the user 2026-07-09: "in practice if it's blocked on something I will send it back — I'm not
-        # individually replying to blocked sub-goals." A reply to the card clears blocks wherever they
+        # the user 2026-07-09, who in practice sends a blocked card back rather than
+        # individually replying to blocked sub-goals. A reply to the card clears blocks wherever they
         # sit in its subtree, exactly like Move to Working (the g593 case: the closer's block sat on a
         # grandchild, the user's reply reopened only the cited node, and the card stayed in Needs-You).
         gid, mid, leaf = SID + ":g1", SID + ":g2", SID + ":g3"
@@ -2896,14 +2896,14 @@ class PlanTuning(unittest.TestCase):
         self.assertIn("**distinct deliverable**", jd.PLAN_SYS)
         self.assertIn("whose **outcome** this work advances", jd.PLAN_SYS)
         self.assertIn("**own** finish line", jd.OPENER_SYS)
-        # explanations are deliverables too (the user 2026-07-20: an "explain this" ask filed as a sub of
+        # explanations are deliverables too (the user 2026-07-20: an explain-this ask filed as a sub of
         # a 19-sub umbrella got checked off without ever surfacing — the answer was never seen). Both
         # mint rules name the answer/explanation finish line explicitly.
         for prompt in (jd.PLAN_SYS, jd.OPENER_SYS):
             self.assertIn("an **answer**: an explanation, comparison, or write-up the user asked", prompt)
         # the mint-vs-sub tiebreak is SYMMETRIC (the user 2026-07-08, over-minting): decide by the finish
         # line, no standing thumb on the mint side — "prefer mint" caused follow-up-shaped messages to
-        # mint their own tops ("Get alternate shorter version of last paragraph").
+        # mint their own tops ("Get a shorter version of the summary").
         self.assertIn("decide by the finish line, never by topic overlap", jd.OPENER_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
@@ -3058,10 +3058,10 @@ class BlockCompletionCorrectness(unittest.TestCase):
         self.assertIn("is a block, not a done", jd.PLAN_SYS, "the planner done op defers the approval-ask to block")
 
     def test_past_tense_record_subs_close_on_both_sides(self):
-        # the user 2026-07-14 (the nimbus card): past-tense record-subs ("Explained where the token
-        # is stored", "Gave two options…") were filed OPEN with no paired done, and the closer's
-        # when-in-doubt-omit default kept them open at their one audit — eight phantom "uncompleted
-        # tasks" on one card. Both judges now carry the past-tense tell: the planner must pair such a
+        # the user 2026-07-14 (the nimbus card): past-tense record-subs (titles phrased as already-done
+        # work, e.g. explaining a design point or laying out options) were filed OPEN with no paired done,
+        # and the closer's when-in-doubt-omit default kept them open at their one audit — eight phantom
+        # uncompleted tasks on one card. Both judges now carry the past-tense tell: the planner must pair such a
         # sub with a done (or block) in the same reply, and the closer's DONE side (not the omit
         # default) closes a record-sub the turn shows delivered.
         for phrase in ("title in the **past tense**", "phantom open work",
@@ -3081,7 +3081,7 @@ class BlockCompletionCorrectness(unittest.TestCase):
         card = _mknode(s, "Get the board connected")
         jd.apply_plan(s, "seg-rec", T0 + 20,
                       [{"do": "sub", "why": "user asked where the token lives", "under": 1,
-                        "text": "Explained where the auth token is stored"},
+                        "text": "Documented where the cache file lives"},
                        {"do": "done", "why": "it lives in a file on the Mac", "ref": 1}],
                       jd.open_menu(s))
         nid = s["placements"]["seg-rec"]
@@ -4945,7 +4945,7 @@ class Distiller(unittest.TestCase):
         return gid, now
 
     def test_a_give_up_stamps_a_failed_warn_that_names_a_generic_cause(self):
-        # the user 2026-07-03 ("fail loudly"): a give-up must not blank the card SILENTLY — it stamps a
+        # the user 2026-07-03 (who wanted it to fail loudly): a give-up must not blank the card SILENTLY — it stamps a
         # brief-failed / summary-failed warn (yellow chip → modal) so the failure is followable from the card.
         (jd.STATE).mkdir(parents=True, exist_ok=True)       # no maxed account window → the generic cause
         (jd.STATE / "usage.json").write_text(json.dumps({"five_hour": {"pct": 20}, "seven_day": {"pct": 40}}))
@@ -5457,12 +5457,12 @@ class QuoteTitleHeal(unittest.TestCase):
         g1, g2, g3 = "s:g1", "s:g2", "s:g3"
         store = {"nodes": {
             g1: {"id": g1, "text": "> In the same way you can hover on dots…",
-                 "quote": "So when you hover on a segment now, it lights up a larger portion after a split second delay"},
+                 "quote": "So when you hover on a row now, it highlights a wider span after a brief delay"},
             g2: {"id": g2, "text": "A perfectly good title", "quote": "whatever"},
             g3: {"id": g3, "text": "> quote-leaked but no quote field"},
         }}
         self.assertEqual(jd._heal_quote_titles(store), 1, "only the healable quote-leak is touched")
-        self.assertTrue(store["nodes"][g1]["text"].startswith("So when you hover on a segment now"),
+        self.assertTrue(store["nodes"][g1]["text"].startswith("So when you hover on a row now"),
                         "the title becomes the user's own words")
         self.assertLessEqual(len(store["nodes"][g1]["text"]), 72, "capped at a word boundary")
         self.assertEqual(store["nodes"][g2]["text"], "A perfectly good title", "good titles untouched")

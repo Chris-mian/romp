@@ -31,7 +31,7 @@ import { buildMenu, usageSummary } from "./romp-menu";
 
 const HOST = "127.0.0.1";
 
-// Build-drift banner (the user 2026-07-13: "if anything gets out of sync I want to see a banner").
+// Build-drift banner (the user 2026-07-13, who wanted a banner when anything gets out of sync).
 // __ROMP_BUILD__ is baked by esbuild.js at bundle time (epoch seconds); every kernel keepalive carries
 // `dv`, the kernel's current dist token (newest dist/*.js mtime, same clock). dv newer than this bundle
 // means the shared webview sources were rebuilt after this VSIX was packaged — the panes are rendering
@@ -1067,8 +1067,8 @@ function mediaBaseTag(webview: vscode.Webview, n: string): string {
   return `<script nonce="${n}">window.__rompMediaBase=${JSON.stringify(String(base))};</script>`;
 }
 
-// Scale every romp surface to the EDITOR font (the user 2026-07-13: "at least
-// as big as a file's text"). The bundles set absolute px sizes around a 13px
+// Scale every romp surface to the EDITOR font (the user 2026-07-13, who wanted it at least
+// as big as a file's text). The bundles set absolute px sizes around a 13px
 // base, so a uniform zoom is the scale knob: editor.fontSize / 13, never
 // below 1 (a small editor font keeps romp at its designed size). Re-applied
 // on editor.fontSize changes via refreshWebviewHtml().

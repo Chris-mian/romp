@@ -13,18 +13,18 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
-FOLLOWUP = ("> Clarify storage and application of default model/effort settings (done)\n"
-            "> The question was fully answered: new SDK sessions start immediately with hardcoded defaults.\n\n"
-            "Can you make those persist so a change I make is remembered and reapplied at startup?\n\n"
-            "<!-- romp-injected --><!-- romp-goal-id: 48466e32-497a-4801-8372-be12ebac29e1:g2 -->")
+FOLLOWUP = ("> Add a widget-count field to the report header (done)\n"
+            "> The question was fully answered: the count renders from the live store on each pass.\n\n"
+            "Can you also surface that count in the sidebar so it updates as things change?\n\n"
+            "<!-- romp-injected --><!-- romp-goal-id: 11111111-2222-3333-4444-555555555555:g2 -->")
 
 
 class SplitFollowup(unittest.TestCase):
     def test_strips_the_quote_and_markers_keeps_body_and_goal(self):
         goal, body, fu, ctx = km._split_followup(FOLLOWUP)
         self.assertTrue(fu)
-        self.assertEqual(goal, "Clarify storage and application of default model/effort settings (done)")
-        self.assertEqual(body, "Can you make those persist so a change I make is remembered and reapplied at startup?")
+        self.assertEqual(goal, "Add a widget-count field to the report header (done)")
+        self.assertEqual(body, "Can you also surface that count in the sidebar so it updates as things change?")
         self.assertNotIn("romp-goal-id", body, "the comment marker is gone")
         self.assertNotIn(">", body, "the goal-context quote is gone")
 
@@ -32,8 +32,8 @@ class SplitFollowup(unittest.TestCase):
         # the ↩ Follow-up header is click-expandable (the user 2026-07-01): ctx = ALL quote lines, not just
         # the title line, so the chat can show exactly what rode along with the message. Display-only.
         _goal, _body, _fu, ctx = km._split_followup(FOLLOWUP)
-        self.assertEqual(ctx, "Clarify storage and application of default model/effort settings (done)\n"
-                              "The question was fully answered: new SDK sessions start immediately with hardcoded defaults.")
+        self.assertEqual(ctx, "Add a widget-count field to the report header (done)\n"
+                              "The question was fully answered: the count renders from the live store on each pass.")
         self.assertNotIn("romp-goal-id", ctx, "markers are plumbing, not context")
 
     def test_plain_message_passes_through(self):

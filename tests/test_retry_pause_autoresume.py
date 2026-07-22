@@ -2,8 +2,8 @@
 """The global retry-pause is an API-HEALTH flag, not a permanent switch. The user flips "stop all
 auto-retries" to calm the auto-retry + judge storm during an API / usage-limit outage — but the judge
 tier is gated on `not _retry_paused_on()`, so a pause that never clears silently kills EVERY judge for
-hours (the user 2026-06-30: "none of the judges are running... that's an API problem, it should get
-cleared the second I get a successful response that's not an API error on any session"). _auto_resume_retry
+hours (the user 2026-06-30, who noted none of the judges were running and called it an API problem that should
+clear the second a successful non-API-error response arrives on any session). _auto_resume_retry
 clears it event-based: the first live session that is NOT blocked on an API error AND wrote fresh output
 since the pause began (mtime past the pause floor) proves the account can serve requests again.
 """

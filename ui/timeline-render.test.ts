@@ -229,8 +229,8 @@ function whiteBoltPaths(panel: any): number {
   return n;
 }
 // Any romp-AUTHORED prompt draws the romp swirl in its dot. Originally auto-nudges only (the user
-// 2026-06-23); widened to every romp message (the user 2026-07-16: an auto-retry "rendered as a user prompt
-// instead of a ROMP logo thing"), mirroring the chat's 2026-07-05 supersession of the same rule.
+// 2026-06-23); widened to every romp message (the user 2026-07-16, who reported an auto-retry rendering as a user prompt
+// instead of a romp logo thing), mirroring the chat's 2026-07-05 supersession of the same rule.
 test("an AUTO-nudge prompt draws the romp swirl in its dot; a normal user prompt does not", () => {
   const base = new TimelinePanel(makeNode("div"));
   base.data = synthData();
@@ -423,7 +423,7 @@ test("the timeline reads collapse-gaps from the shared romp:settings (live-synce
   assert.match(src, /e\.key !== 'romp:settings'\) return;[\s\S]*?collapseGaps !== false/);   // storage live-sync
 });
 
-// Freeze-on-hover must actually STOP the edge (the user 2026-06-13: "timeline doesn't stop when I hover").
+// Freeze-on-hover must actually STOP the edge (the user 2026-06-13, who reported the timeline not stopping when they hover).
 test("freeze-on-hover also fires under 🔒 lock-to-now, and never marks offDirty", () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
@@ -669,7 +669,7 @@ test("prompt-dot hover shows the MESSAGE caption once ready, falling back to the
   assert.equal(panel.req({}), "", "neither → empty");
 });
 
-// ── BARS-DEFER (the user 2026-06-25, "load everything else and have the bars load after"): the kernel
+// ── BARS-DEFER (the user 2026-06-25, who wanted everything else loaded and the bars loaded after): the kernel
 // ships the timeline as TWO ws messages — {type:"data"} = the lanes SKELETON (sessions/status, no
 // turns/judging/messages/nudges) which paints instantly, then {type:"bars"} = the heavy detail. update()
 // renders the skeleton; applyBars() fills the bars; and a skeleton-only update must NOT blink the bars out.

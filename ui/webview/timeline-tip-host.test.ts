@@ -36,7 +36,7 @@ test("the tip carries its OWN font, so the adopted host page can't restyle it", 
 });
 
 test("the tip appears instantly and only eases out", () => {
-  // the user 2026-07-21: "it still takes a half second for tooltips to pop up". The show latency
+  // the user 2026-07-21, who noted tooltips still took a half second to pop up. The show latency
   // itself measures ~0-1ms, but the base rule fades opacity+transform over .1s, and on the way IN
   // that reads as the tip trailing the cursor. .show kills the transition so appearing is immediate;
   // dropping .show falls back to the base rule, so hiding still eases.

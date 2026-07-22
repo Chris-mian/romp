@@ -189,8 +189,8 @@ class BootReconcile(unittest.TestCase):
 
     def test_stranded_pending_switch_flags_heal_at_boot_without_waking_the_session(self):
         # a /model or /effort switch mid-flight at the kernel's death strands its pending flags; the
-        # dormant serving path shows them as switching-dots FOREVER (the user 2026-07-11: "the three
-        # dots sitting there forever"). The boot sweep heals the flags; an otherwise-idle session
+        # dormant serving path shows them as switching-dots FOREVER (the user 2026-07-11, who reported the three
+        # dots sitting there forever). The boot sweep heals the flags; an otherwise-idle session
         # stays lazy (no wake just for the heal).
         d, be = self._setup()
         sid = "11111111-aaaa-0000-0000-00000000000e"

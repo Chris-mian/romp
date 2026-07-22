@@ -1,4 +1,4 @@
-"""Diff-based delta-send for the chat (the user 2026-06-25, "stop re-sending what didn't change").
+"""Diff-based delta-send for the chat (the user 2026-06-25, who wanted to stop re-sending what didn't change).
 
 The chat pusher used to send the FULL events array on every change (~8MB for a big transcript). Now the
 whole transcript stays resident in the browser (instant scrollback), but a caught-up client receives only

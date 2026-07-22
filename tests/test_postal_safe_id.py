@@ -47,5 +47,37 @@ class TraversalAtSinks(unittest.TestCase):
             pm._mailbox("../../../tmp/evil")
 
 
+class OutboxTraversal(unittest.TestCase):
+    """The cross-host outbox keys files as OUTBOX/<host>/<mid>.json. Both host and mid arrive over the
+    unauthenticated bus (a relay's `to`-route host and the peer-supplied `mid`), so a crafted `mid`
+    like `../../../../foo` would escape OUTBOX and write attacker JSON anywhere (the H1 hole). All four
+    path-builders must reject unsafe host/mid; a legit mid (`_unique()` form) must still round-trip."""
+
+    def test_put_refuses_traversal_mid(self):
+        tmp = tempfile.mkdtemp()
+        target = os.path.join(tmp, "pwned")               # outbox_put appends ".json"
+        rel = os.path.relpath(target, str(pm.OUTBOX / "TESTHOST"))  # ../../.../tmp/.../pwned — has "/"
+        pm.outbox_put("TESTHOST", {"mid": rel, "body": "x"})
+        self.assertFalse(os.path.exists(target + ".json"),
+                         "a traversal mid must not write outside OUTBOX")
+
+    def test_put_refuses_traversal_host(self):
+        tmp = tempfile.mkdtemp()
+        target = os.path.join(tmp, "pwned.json")
+        pm.outbox_put(os.path.relpath(tmp, str(pm.OUTBOX)), {"mid": "px-1.2_3.TESTHOST", "body": "x"})
+        self.assertFalse(os.path.exists(target), "a traversal host must not write outside OUTBOX")
+
+    def test_get_and_del_refuse_traversal(self):
+        self.assertIsNone(pm.outbox_get("TESTHOST", "../../../../etc/passwd"))
+        self.assertFalse(pm.outbox_del("TESTHOST", "../../../../etc/passwd"))
+        self.assertEqual(pm.outbox_list("../../../../etc"), [])
+
+    def test_legit_mid_round_trips(self):
+        mid = "px-1700000000.1234_567.TESTHOST"           # the _unique() shape: digits, ".", "_", host
+        pm.outbox_put("TESTHOST", {"mid": mid, "body": "hi"})
+        self.assertEqual((pm.outbox_get("TESTHOST", mid) or {}).get("body"), "hi")
+        self.assertTrue(pm.outbox_del("TESTHOST", mid))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -29,9 +29,26 @@ This repo may go public; assume every commit is permanent and world-readable.
 - **No personal identifiers** in code, comments, fixtures, docs, or commit
   messages: no names, machine/host names, vault names, emails, or absolute
   home paths (use `$HOME`/`~`).
+- **Paraphrase the user, never quote them.** The `(the user <date>: ...)`
+  attribution convention that explains WHY code exists is fine — but it must
+  paraphrase, never embed a verbatim quote of what they typed. A quoted
+  utterance is real recorded data. Write `(the user 2026-07-02, who wanted one
+  shared picker)`, NOT `(the user 2026-07-02: "same code path, one picker")`.
+- **No real session or goal names from OTHER projects.** A bug that surfaced in
+  some other session is documented with a SYNTHETIC session name (`web`, `api`,
+  `TESTHOST`) and an invented goal title — never the real project's nickname or
+  goal text (which leaks what that unrelated project is). Add any coined
+  project/session nickname to `~/.config/romp/private-strings.txt` so the test
+  catches it. Reuse the neutral demo domain the doc screenshots use (a
+  `notes-api` with `web`/`api`/`tests` sessions) rather than inventing per-test
+  worlds.
 - `tests/test_no_personal_identifiers.py` enforces this mechanically (local
-  hostname, home path, plus `~/.config/romp/private-strings.txt`); run it
-  before committing fixtures.
+  hostname, home path, plus the coined names in the UNTRACKED
+  `~/.config/romp/private-strings.txt` — that list lives outside the repo on
+  purpose, since it enumerates the very strings we're hiding); run it before
+  committing. It scans text files only — it can NOT see into binary media, so
+  screenshots/recordings under `docs/assets/` must be eyeballed for on-screen
+  session content before release.
 
 ## Worktrees — work on an isolated worktree by default (user rule, 2026-06-29)
 Do ALL non-trivial work on its own git worktree, not the shared main tree — concurrent

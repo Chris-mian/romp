@@ -93,7 +93,7 @@ class CardTime(unittest.TestCase):
 
     def test_completed_card_time_ignores_a_no_op_rejudge_touch_of_the_umbrella(self):
         # An hours-old completed card must NOT jump to "moments ago" when a later no-op re-judge re-touches
-        # the UMBRELLA node's mt without changing the work (the user 2026-07-08: it read "3m ago" while the
+        # the UMBRELLA node's mt without changing the work (the user 2026-07-08: it read 3m ago while the
         # done children + settle time were hours old). The time stays the settle time / the done DESCENDANTS'
         # completion mt — both stable — never the umbrella's re-touched mt.
         top, sub = SID + ":top", SID + ":sub"

@@ -73,8 +73,8 @@ test("a scrolled-up append restores by turn ANCHOR (data-uuid), raw scrollTop on
   assert.match(RENDER, /content\.scrollTop = yNow - a\.y;/, "the anchor turn keeps its exact on-screen offset");
 });
 
-// BY-ID landing only — NO time-based fallback anywhere (the user 2026-06-20: "shrink the 29%, then remove
-// the time fallback"). Prompt-intent jumps resolve by id (promptAnchorUuid → a user turn OR a peer's postal
+// BY-ID landing only — NO time-based fallback anywhere (the user 2026-06-20, who wanted to shrink the 29%, then remove
+// the time fallback). Prompt-intent jumps resolve by id (promptAnchorUuid → a user turn OR a peer's postal
 // card, see the kind-guard test below); the genuinely-unanchorable (autonomous / pruned-or-compacted) honest-
 // fail with a toast. The whole time-nearest mechanism (scrollToNearestT) is deleted.
 test("scrollToNearestT is GONE — no time-based navigation remains in the chat", () => {

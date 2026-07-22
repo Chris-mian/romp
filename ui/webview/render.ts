@@ -875,8 +875,8 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
     tn.replaceWith(frag);
   }
-  // A mentioned image/PDF renders FULL-SIZE under the message (the user 2026-07-20: "not even a
-  // thumbnail — a rendered image, like the user messages"; supersedes the 2026-07-08 thumbnail strip,
+  // A mentioned image/PDF renders FULL-SIZE under the message (the user 2026-07-20, who wanted not even a
+  // thumbnail but a rendered image, like the user messages; supersedes the 2026-07-08 thumbnail strip,
   // which lives on in the feed's artifact strips). Absolute AND relative paths work — the kernel
   // resolves a relative one against this session's cwd, same as click-to-open. Per surface:
   //   web       — previewFull: the kernel serves the bytes straight into an <img> at the user-image
@@ -1100,8 +1100,8 @@ function applyGlow(groups: Array<{ sid: string; uuids: string[] }>, mids: string
   paintRailBand();    // one continuous measured band over the rail line (the user 2026-07-02)
 }
 
-// Rail bands ALWAYS end on dots (the user 2026-07-02 ×3: "nothing else could really have any meaning in
-// this representation"). The dots are the rail's only real y-coordinates, so every band edge is found by
+// Rail bands ALWAYS end on dots (the user 2026-07-02 ×3, for whom nothing else could really have any meaning in
+// this representation). The dots are the rail's only real y-coordinates, so every band edge is found by
 // WALKING to a dot: up from a turn to the nearest dot at-or-above it, down to the nearest dot below.
 // Turn-box edges are only the last-resort fallback at the transcript's ends, where no bounding dot exists.
 function railDotAbove(turn: HTMLElement, hostR: DOMRect): number | null {
@@ -2454,7 +2454,7 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   const peer = el("span", "postal-service-peer");
   peer.textContent = ev.peer;
   makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
-  // the romp swirl marks this as a romp-postal-service message (the user 2026-06-23: postal is "from romp" too)
+  // the romp swirl marks this as a romp-postal-service message (the user 2026-06-23: postal is from romp too)
   const rlogo = el("img", "postal-service-romp-logo") as HTMLImageElement;
   rlogo.src = mediaSrc("romp-swirl-glyph.svg"); rlogo.alt = ""; rlogo.title = "Romp Postal Service message"; rlogo.onerror = () => rlogo.remove();
   head.appendChild(rlogo);
@@ -4195,7 +4195,7 @@ function lastTurnStart(events: ChatEvent[]): number {
 // The elapsed is measured from the most recent user-role line of ANY author — the
 // thing that ACTUALLY triggered this reply — NOT the older human prompt: a nudge or
 // postal push that prompted the work is the start, so a nudge-triggered reply doesn't
-// inherit the original prompt's elapsed (the user 2026-06-22: "worked 23m" for a
+// inherit the original prompt's elapsed (the user 2026-06-22, who saw worked 23m for a
 // 2-min-old nudge — the clock had run from a much older human prompt). Drives the
 // "worked …" rail footer.
 function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): number | null {
@@ -4419,7 +4419,7 @@ function landActive(content: HTMLElement | null, v: View): void {
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
-  // BY-ID landing ONLY (the user 2026-06-20 — "shrink the 29%, then remove the time fallback"). TIER 1, by id:
+  // BY-ID landing ONLY (the user 2026-06-20, who wanted to shrink the 29%, then remove the time fallback). TIER 1, by id:
   // a card TITLE / node text sends promptAnchorUuid, which lands the originating MESSAGE — a user turn OR a
   // peer's postal card (scrollToAnchor's kind guard now accepts both). That covers the ~71% of cards that
   // resolve PLUS the peer-opener slice the guard used to refuse into the time fallback. The rest mint from an
@@ -5330,7 +5330,7 @@ function elapsedMs(sinceMs: number | null): string {
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
 type MetaKind = "mode" | "model" | "effort";
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
-// judge-tier settings (the user 2026-07-02: "same code path ... don't hardcode this in multiple places"), so
+// judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
 // keeps its reference; the session picker appends its own "Default" (use-the-CLI-default) sentinel — not a model.
 const MODEL_CHOICES: { label: string; value: string }[] = [];

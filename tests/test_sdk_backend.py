@@ -450,8 +450,8 @@ class LiveTail(unittest.TestCase):
     def test_compact_boundary_refreshes_context_now(self):
         """After /compact the active context drops to the summary, but the % used to refresh only on the next
         turn's ResultMessage. The CLI auto-runs a continuation turn after /compact that can work for minutes,
-        so until it settled the bar kept showing the STALE pre-compact % (the user 2026-06-30: "I compacted
-        but it still says 72%"). A compact_boundary system message must re-pull the % on the boundary itself."""
+        so until it settled the bar kept showing the STALE pre-compact % (the user 2026-06-30, who compacted
+        but it still said 72%). A compact_boundary system message must re-pull the % on the boundary itself."""
         import asyncio
         class _Sys:                                              # stand-in for SystemMessage (isinstance + subtype)
             def __init__(self, subtype): self.subtype = subtype; self.data = {}
@@ -471,7 +471,7 @@ class LiveTail(unittest.TestCase):
         """client.interrupt() BLOCKS until the CLI acknowledges the interrupt, which can take seconds mid-
         stream (the CLI won't ack until the model call hits a boundary). If _interrupted — the flag that makes
         the snapshot read 'waiting' — were set only AFTER that await, a stopped turn keeps reading 'working'
-        the whole time (the user 2026-06-30: "I interrupted but it said working for a while"). The flag must
+        the whole time (the user 2026-06-30, who interrupted but it said working for a while). The flag must
         flip up front, so the lane reflects the stop the instant the user hits it."""
         import asyncio
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
@@ -1784,8 +1784,8 @@ class ReconnectReconcilesInflight(unittest.TestCase):
     """A reconnect abandons the previous client; a turn it left IN FLIGHT can never get its ResultMessage on
     the new connection (that client and its receive loop are gone), so inflight — and the 'working' signal it
     drives — would be stranded elevated FOREVER: the session reads 'working' indefinitely though it's idle
-    (the user 2026-07-01: "start a new session, immediately switch the model → the model switches but then it
-    says it's working indefinitely, when it just changed the model and is ready"). request_reconnect defers
+    (the user 2026-07-01, who started a new session and immediately switched the model, after which it
+    said it was working indefinitely though it had just changed the model and was ready). request_reconnect defers
     while inflight>0, but a race (it fired at inflight==0, then the input generator started a turn before the
     teardown ran) still strands one. The reconnect must reconcile inflight to idle.
       fix : after the reconnect, inflight == 0 and the session reads 'waiting'.
@@ -1953,7 +1953,7 @@ class RateLimitUsageStaleness(unittest.TestCase):
         self.assertEqual(self._usage()["five_hour"]["pct"], 99)
 
     def test_write_failure_is_logged_not_swallowed(self):
-        # the user 2026-07-02 ("I suspect there's some error somewhere that's being swallowed"): a failed
+        # the user 2026-07-02 (who suspected an error somewhere was being swallowed): a failed
         # usage.json write must land in the backend log, never a bare `except: pass`.
         now = int(time.time())
         self.be.state_dir = Path(self.d) / "gone" / "deeper"   # no parent → the tmp write raises

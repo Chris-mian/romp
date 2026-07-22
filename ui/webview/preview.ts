@@ -109,8 +109,8 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
   return box;
 }
 
-// FULL-SIZE inline render for a mentioned image in the CHAT (the user 2026-07-20: "not even a
-// thumbnail — a rendered image, like the user messages"). Same self-verification as previewThumb —
+// FULL-SIZE inline render for a mentioned image in the CHAT (the user 2026-07-20, who wanted not even a
+// thumbnail but a rendered image, like the user messages). Same self-verification as previewThumb —
 // a path the kernel can't serve removes itself — and an image click still opens the lightbox. Images
 // render at the user-image scale (.path-full-img mirrors .user-img's 320px cap, one size per
 // information type). A PDF is a labeled CARD, not an auto-loading inline viewer (click → lightbox):

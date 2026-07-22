@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Goal-card status UX (the user 2026-07-20): a giant card's stale sub-goals were unreadable and
-unactionable — clicking a sub's title landed on the user's own bare "retry" (the mint segment's
+unactionable — clicking a sub's title landed on the user's own bare retry (the mint segment's
 trigger), and nothing said whether an open sub was still active. Read-side fixes under test:
 
 - jd.junk_quote: a continuation stub ("retry", "continue", a bare slash command) never serves as a
@@ -44,7 +44,7 @@ class JunkQuote(unittest.TestCase):
 
     def test_real_asks_are_not_junk(self):
         for q in ("fix the flaky auth test", "retry the deploy with the new token",
-                  "i didnt stop you that was a kernel restart, continue",
+                  "i didnt mean to interrupt, that was a restart, keep going",
                   "/compact then summarize what changed"):
             self.assertFalse(jd.junk_quote(q), q)
 

@@ -1,5 +1,5 @@
-// Click-to-open BARE file paths in the chat (the user 2026-07-06: "click `design/judge-simplification-plan.md`
-// and open it"). The linkifier already handled file:// URIs; now it also linkifies absolute/anchored paths and
+// Click-to-open BARE file paths in the chat (the user 2026-07-06, who wanted to click a bare path like design/judge-simplification-plan.md
+// and open it). The linkifier already handled file:// URIs; now it also linkifies absolute/anchored paths and
 // relative paths that carry a file extension — while leaving prose like "and/or", "TCP/IP", "24/7" alone. A
 // relative link posts the ACTIVE session id so the kernel resolves it against that session's cwd (the repo the
 // agent runs in), not the kernel's launch cwd. Slash-less BARE filenames (`power2_watts.pdf`) link too, but

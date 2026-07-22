@@ -1,6 +1,6 @@
 // The timeline ships a LANES skeleton first, then the heavy BARS ({type:"bars"} → applyBars). Until all the
 // data is in, the timeline shows ONLY the romp wordmark loader (R + spinning swirl-o + m + p + dots) — NO
-// lanes, NO gridlines (the user 2026-06-26: partial data + empty gridlines read as "broken"). draw() returns
+// lanes, NO gridlines (the user 2026-06-26: partial data + empty gridlines read as broken). draw() returns
 // early with the loader while !_barsLoaded. Source-level pins (no jsdom for the SVG renderer).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
