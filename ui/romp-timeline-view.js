@@ -34,6 +34,10 @@ function _rompMatchesOnly(name, tag) {
 // passes that around ~5-6 messages and keeps growing). Drawn at alpha .5 so
 // overlapping flows stay legible.
 const MSG_W0 = 2, MSG_GROW = 1.3;
+// Invisible hit stroke for a message connector. Wide enough that the SHORT vertical runs (an
+// immediately-delivered message is almost entirely vertical: lane → track → lane, ~26px total with
+// the ends under the dots) are an easy target rather than a few pixels of exposed line.
+const MSG_HIT_W = 18;
 const GAP_MIN = 20 * 60;   // broken-axis: collapse idle gaps (no work on ANY lane) longer than this. Each
                            // collapses to GAP_FRAC of the window — a CONTINUOUS function of zoom (not the
                            // discrete niceStep), so the break width changes smoothly while zooming (no
@@ -2791,14 +2795,22 @@ class TimelinePanel {
       const hl = el('path', { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0 + 3, opacity: msgLit ? 0.95 : 0, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
       svg.appendChild(hl);
       const u = (msgUI[i] = { hl, dot: null, lit: msgLit });
-      const hit = el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(14, MSG_W0 + 6) }); hit.style.cursor = 'pointer';
+      // The hit target is BUILT here but APPENDED in a final pass below, after the arrival dots
+      // (the user 2026-07-21: "hovering the vertical part doesn't pop up the tooltip — I have to hit
+      // the horizontal part or the dot"). Appended here it sat UNDER every dot drawn afterwards, so on
+      // a connector's vertical runs — which start and end AT the lanes, exactly where the dots are —
+      // most of the line was covered and the hover landed on whatever dot was on top. Round caps/joins
+      // so the hit follows the rounded corners to the very ends instead of stopping short (butt caps),
+      // and a wider stroke so a short vertical (an immediately-delivered message is almost ALL vertical)
+      // is still an easy target.
+      const hit = el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': MSG_HIT_W, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }); hit.style.cursor = 'pointer';
       const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
       hit.__tlHoverIn = mEnter;                    // re-armable after a redraw rebuilds this path (_rehover)
       hit.addEventListener('mouseenter', mEnter);
       hit.addEventListener('mousemove', (e) => this.moveTip(e));
       hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); });
       hit.addEventListener('click', msgNav(mm));
-      svg.appendChild(hit);
+      u.hit = hit;
     });
 
     // dot helper: optional onClick (deep-link) + optional linkedHl (co-light a connector on hover).
@@ -2826,6 +2838,13 @@ class TimelinePanel {
       const c = dot(x(execAt(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl, dagOrHoverMsg(mm.id));
       if (u) u.dot = c;
     });
+
+    // PASS 3: the connector hit targets, appended LAST so a message's own line wins the hover along
+    // its WHOLE path — including the vertical runs, which the arrival dots above would otherwise cover.
+    // Nothing is lost by sitting over a message dot: the dot's tooltip, growth and click are the same
+    // message's, and mEnter grows the linked dot too. Prompt dots are drawn after this pass, so they
+    // keep their own hover.
+    Object.keys(msgUI).forEach((k) => { const u = msgUI[k]; if (u && u.hit) svg.appendChild(u.hit); });
 
     // turn process-start (prompt) dots — at startAt; CLICKABLE → jump to the prompt that started
     // the period. Skipped where a PROCESSED message dot coincides (the message dot stands in).
