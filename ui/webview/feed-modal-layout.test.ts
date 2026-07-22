@@ -42,6 +42,17 @@ test("the root goal reads larger; node times are parenthesized and pulled in (fi
   assert.match(CSS, /\.ftree \{[^}]*width: fit-content/);
 });
 
+test("on a phone the tree row wraps so the reply text keeps a full line, not a 1-char column (the user 2026-07-22)", () => {
+  // .ftree-node is a no-wrap flex row: text (flex:1 1 auto; min-width:0) + the nowrap Done/Drop/Check-status/
+  // Follow-up group. On a narrow modal the button group hogged its full width and the shrinkable text
+  // collapsed to a 1ch-wide vertical stack. Coarse-pointer only: wrap the row and drop the acts onto their
+  // own line under the full-width text; desktop's single-line layout is untouched.
+  assert.match(CSS, /@media \(pointer: coarse\) \{\s*\n\s*\.ftree-node \{ flex-wrap: wrap; \}/);
+  assert.match(CSS, /\.ftree-node-acts \{ flex-basis: 100%; margin-left: 0; margin-top: 3px; justify-content: flex-end; \}/);
+  // the base row is still single-line (no flex-wrap) so desktop is unchanged
+  assert.match(CSS, /\.ftree-node\{ display: flex; align-items: baseline; gap: 6px;/);
+});
+
 test("the age is recency-tinted in both modal variants (ask / group)", () => {
   assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ it\.trgb\.join\(","\) \+ "\)"/);
   assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ grp\.trgb\.join\(","\) \+ "\)"/);

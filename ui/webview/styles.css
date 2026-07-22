@@ -31,10 +31,10 @@
   --st-working-bg: #e0b020; --st-working-fg: #332600;
   --st-ready-bg: #2b7fb8;   --st-ready-fg: #ffffff;
   --st-awaiting-bg: #c0392b;--st-awaiting-fg: #ffffff;
-  /* awaiting-BACKGROUND (idle, waiting on bg work it dispatched — the user 2026-07-13): straw — the
-     working gold's paler, washed sibling, so it reads "held, in motion elsewhere" next to Working.
+  /* awaiting-BACKGROUND (idle, waiting on bg work it dispatched): the romp brand green (the swirl's green
+     arm — the user 2026-07-22), distinct from Working's gold and not owned by any other status.
      Mirrored as a hex in feed.css .fwork-dot.await + the timeline BADGE map (those files load standalone). */
-  --st-awaitbg-bg: #d9c37a; --st-awaitbg-fg: #332600;
+  --st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;
   --st-compacting-bg: #14b8a6; --st-compacting-fg: #ffffff;   /* teal — the compacting accent (text + compression bar) */
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;   /* alarm red — session stopped on an API error */
 

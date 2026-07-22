@@ -382,9 +382,9 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 /* margin-right is negative to offset the .fask-id flex gap (6px) → the dot sits
    snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
 .fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
-/* idle-but-awaiting background work → the same dot in straw, matching the chat chip's Awaiting color
-   (--st-awaitbg-bg in styles.css; hex here because the feed page loads only this file — the user 2026-07-13) */
-.fwork-dot.await { background: #d9c37a; }
+/* idle-but-awaiting background work → the same dot in the romp brand green, matching the chat chip's
+   Awaiting color (--st-awaitbg-bg in styles.css; hex here because the feed page loads only this file) */
+.fwork-dot.await { background: #54B204; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.9em; font-weight: 400;
   white-space: nowrap; }   /* same size as the card checklist lines it corresponds to, never bold (the user 2026-07-02) */
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's
@@ -436,6 +436,15 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .ftree-act-fup:hover,
 .ftree-act-drop:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 .ftree-act-btn:disabled { opacity: 0.55; cursor: default; }
+/* On a phone the modal row is too narrow to hold the reply text AND the nowrap Done/Drop/Check-status/
+   Follow-up group on one line: .ftree-node has no flex-wrap, so the buttons kept their full width and the
+   flex-shrinkable text (min-width:0 + overflow-wrap:anywhere) collapsed to a 1-char-wide vertical stack
+   (the user 2026-07-22). Let the row wrap and drop the action group onto its own line under the full-width
+   text. Coarse-pointer only, so the desktop single-line layout is unchanged. */
+@media (pointer: coarse) {
+  .ftree-node { flex-wrap: wrap; }
+  .ftree-node-acts { flex-basis: 100%; margin-left: 0; margin-top: 3px; justify-content: flex-end; }
+}
 /* a user-DROPPED sub (item-level clear, the user 2026-07-20): checked off + faded + struck —
    "no longer needed", visually distinct from the green done check. Modal tree + inline checklist. */
 .ftree-node.st-cleared { opacity: 0.55; }

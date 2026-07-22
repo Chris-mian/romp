@@ -1,7 +1,7 @@
 // The distinct AWAITING state (the user 2026-07-13, who wanted to differentiate working from awaiting): a session
 // whose main thread is idle but waiting on background work it dispatched no longer folds into "working".
-// The kernel's shared _session_chip emits `awaitingBg`; the chat chip says "Awaiting" in STRAW
-// (--st-awaitbg-bg #d9c37a, the working gold's paler sibling — same family, visibly held), and the little
+// The kernel's shared _session_chip emits `awaitingBg`; the chat chip says "Awaiting" in the romp brand
+// GREEN (--st-awaitbg-bg #54B204, the swirl's green arm — distinct from Working's gold), and the little
 // dots match the chip's color everywhere: the chat tab dot and the feed's fwork-dot (cards, group cards,
 // modal headers, grouped-mode session headers). ("awaiting" the chip state = a live permission/picker
 // prompt, on YOU — a different concept; the Bg suffix dodges that name.) Source pins (no jsdom).
@@ -32,7 +32,7 @@ test("the chat chip knows awaitingBg: its own straw chip, label 'Awaiting', with
 
 test("the chat tab dot matches the chip: straw for awaitingBg, yellow for working", () => {
   assert.match(RENDER, /if \(st === "working"\) tab\.appendChild\(el\("span", "tab-dot"\)\);\s*\n\s*else if \(st === "awaitingBg"\) tab\.appendChild\(el\("span", "tab-dot await"\)\);/);
-  assert.match(STYLES, /--st-awaitbg-bg: #d9c37a; --st-awaitbg-fg: #332600;/);
+  assert.match(STYLES, /--st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;/);
   assert.match(STYLES, /\.chip-awaitingBg \{ background: var\(--st-awaitbg-bg\); color: var\(--st-awaitbg-fg\); \}/);
   assert.match(STYLES, /\.tab-dot\.await \{ background: var\(--st-awaitbg-bg\); \}/);
 });
@@ -48,7 +48,7 @@ test("the feed dot matches too: dotFor picks work/await per name, the dot retint
   assert.match(FEED, /else if \(st && has\) prev!\.classList\.toggle\("await", st === "await"\);/);
   // every name-dot site routes through dotFor: cards, group cards, both modal headers, grouped headers
   assert.equal((FEED.match(/setWorkDot\((?:a\._name|agent|nm), dotFor\(/g) || []).length, 5);
-  assert.match(FEEDCSS, /\.fwork-dot\.await \{ background: #d9c37a; \}/);
+  assert.match(FEEDCSS, /\.fwork-dot\.await \{ background: #54B204; \}/);
   assert.match(FED, /const ARRAY_ID = \["order", "names", "working", "awaiting"\];/);
   assert.match(FED, /if \(Array\.isArray\(f\.awaiting\)\) merged\.awaiting\.push\(\.\.\.f\.awaiting\);/);
 });

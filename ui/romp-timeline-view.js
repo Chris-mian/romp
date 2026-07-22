@@ -68,7 +68,7 @@ const NICE = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 1
 const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8', fg: '#ffffff' },
                 attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' },
                 retrying: { bg: '#e67e22', fg: '#2a1500' },   // amber: soft-blocked on an API rate-limit/overload auto-retry (api 2026-06-23)
-                awaitbg: { bg: '#d9c37a', fg: '#332600' } };  // straw: idle, waiting on bg work — matches the chat chip (--st-awaitbg-bg; the user 2026-07-13)
+                awaitbg: { bg: '#54B204', fg: '#0c1a00' } };  // romp brand green: idle, waiting on bg work — matches the chat chip (--st-awaitbg-bg; the user 2026-07-22)
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and

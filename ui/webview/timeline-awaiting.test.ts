@@ -11,11 +11,11 @@ import * as path from "node:path";
 
 const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
-test("an awaitingBg lane renders an Awaiting badge in its own straw color (the user 2026-07-13)", () => {
+test("an awaitingBg lane renders an Awaiting badge in the romp brand green (the user 2026-07-22)", () => {
   // keyed on the chip state (the shared _session_chip split) OR the legacy why-field (older remote kernels)
   assert.match(TL, /else if \(s\.state === 'awaitingBg' \|\| s\.awaitingBg\) m = \{ label: 'Awaiting', kind: 'awaitbg' \};/);
-  // straw, matching --st-awaitbg-bg in styles.css (this file loads standalone, so the hex is mirrored)
-  assert.match(TL, /awaitbg: \{ bg: '#d9c37a', fg: '#332600' \}/);
+  // brand green, matching --st-awaitbg-bg in styles.css (this file loads standalone, so the hex is mirrored)
+  assert.match(TL, /awaitbg: \{ bg: '#54B204', fg: '#0c1a00' \}/);
   // an awaitingBg lane still reads ACTIVE (full opacity / ongoing treatment), like working/compacting
   assert.match(TL, /s\.state === 'awaitingBg' \|\| s\.state === 'compacting';/);
 });
