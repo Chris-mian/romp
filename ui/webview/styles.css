@@ -1859,6 +1859,11 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    Inherits nothing from the session's identity color (the parent sets color; this overrides). Defined
    in feed.css too — the feed page loads only that sheet (the .romp-acted precedent). */
 .host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.88em; }
+/* ...but it must FADE with the name it precedes. Because the rule above is a declaration on the child,
+   the at-rest tab's inline faded color can't inherit into it, so a remote session's "host:" stayed bright
+   while its name dimmed (the user 2026-07-22). renderTabs adds .name-faded whenever it applies the faded
+   name color, and drops it on hover, so the two always move together. */
+.tab-label.name-faded .host-prefix { opacity: 0.5; }
 
 /* VS Code pipe-down banner (the user 2026-07-21): while the extension host's kernel socket is
    down the pane says so — never a silently frozen frame — and counts held messages. Mirrors the

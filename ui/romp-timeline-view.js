@@ -2524,14 +2524,20 @@ class TimelinePanel {
       // never contains a colon), the same rule as ui/webview/host-prefix.ts.
       const hci = String(s.id || '').indexOf(':');
       const hpre = hci > 0 ? String(s.id).slice(0, hci + 1) : null;
+      let hostTsp = null;
       if (hpre && s.name && s.name.startsWith(hpre) && s.name.length > hpre.length) {
-        const tp = el('tspan', { fill: '#9aa0a6', 'font-weight': 400, 'font-style': 'italic', 'font-size': 10.5 });
-        tp.textContent = hpre;
+        // its own fill, so the parent <text>'s faded color can NOT reach it — fade it explicitly (and
+        // un-fade it with the name on hover, below) or "host:" outshines the dimmed name (the user 2026-07-22)
+        hostTsp = el('tspan', { fill: F(MODEL_FG), 'font-weight': 400, 'font-style': 'italic', 'font-size': 10.5 });
+        hostTsp.textContent = hpre;
         const tn = el('tspan', {}); tn.textContent = s.name.slice(hpre.length);
-        lbl.appendChild(tp); lbl.appendChild(tn);
+        lbl.appendChild(hostTsp); lbl.appendChild(tn);
       } else { lbl.textContent = s.name; }
       svg.appendChild(lbl);
-      if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
+      if (s.faded) {
+        fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
+        if (hostTsp) fadedEls.push({ el: hostTsp, full: MODEL_FG, faded: F(MODEL_FG) });
+      }
       // Clicking the NAME JUMPS you into that session in the chat — focus and all (the user 2026-07-03).
       // The empty row (rowHit) only PREVIEWS it (preserveFocus=true, no focus steal); the name is the
       // "take me there" affordance, so it opens with focus=true. It's still a drag handle: mousedown starts
