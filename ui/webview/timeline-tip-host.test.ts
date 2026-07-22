@@ -35,6 +35,20 @@ test("the tip carries its OWN font, so the adopted host page can't restyle it", 
   assert.match(tip![0], /font-family:var\(--vscode-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif\)/);
 });
 
+test("the tip appears instantly and only eases out", () => {
+  // the user 2026-07-21: "it still takes a half second for tooltips to pop up". The show latency
+  // itself measures ~0-1ms, but the base rule fades opacity+transform over .1s, and on the way IN
+  // that reads as the tip trailing the cursor. .show kills the transition so appearing is immediate;
+  // dropping .show falls back to the base rule, so hiding still eases.
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "timeline-pane.css"), "utf8");
+  const base = CSS.match(/\.romp-tl-tip\{[^}]*\}/);
+  const show = CSS.match(/\.romp-tl-tip\.show\{[^}]*\}/);
+  assert.ok(base, ".romp-tl-tip base rule exists");
+  assert.ok(show, ".romp-tl-tip.show rule exists");
+  assert.match(show![0], /transition:none/, "showing must not animate — that is the perceived lag");
+  assert.match(base![0], /transition:opacity/, "the base rule keeps the ease-OUT when .show is dropped");
+});
+
 test("an iframe teardown removes the tip from the adopted host document", () => {
   assert.match(SRC, /if \(tipDoc !== document\) window\.addEventListener\('pagehide', \(\) => \{ try \{ this\.tip\.remove\(\); \} catch \(e\) \{\} \}\);/);
 });
