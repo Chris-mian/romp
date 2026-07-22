@@ -748,7 +748,16 @@ class TimelinePanel {
     // drop the tip once the cursor is no longer over the element that opened it (or
     // that element is gone). hideTip() on the owner's mouseleave still handles the
     // normal case; this only catches the orphaned ones.
+    // The INVERSE net (the user 2026-07-21, message connectors): the same redraw that orphans a SHOWN tip
+    // also swallows one that never got to open. draw() rebuilds the WHOLE svg, so the glyph under the cursor
+    // is replaced by a fresh element — and a pointer that hasn't moved crosses no boundary, so the new
+    // element's mouseenter never fires and the tooltip simply doesn't come up. On a busy fleet (a redraw per
+    // push, plus the live tick sliding content) that reads as "connector tips don't appear immediately":
+    // they only land if you happen to jiggle the mouse between rebuilds. Remember where the pointer is so
+    // draw() can re-run the hover-in of whatever it just rebuilt underneath it (see _rehover).
+    this._ptr = null;
     this._onTipSweep = (e) => {
+      this._ptr = { x: e.clientX, y: e.clientY };
       if (!this.tip || !this.tip.classList.contains('show')) return;
       const o = this._tipOwner;
       if (!o || !o.isConnected) { this.hideTip(); return; }   // owner removed by a redraw
@@ -756,6 +765,8 @@ class TimelinePanel {
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) this.hideTip();
     };
     this.wrap.addEventListener('mousemove', this._onTipSweep);
+    this._onPtrOut = () => { this._ptr = null; };   // cursor left the plot → nothing left to re-hover
+    this.wrap.addEventListener('mouseleave', this._onPtrOut);
 
     // Show the romp loader FROM CONSTRUCTION (the user 2026-07-03: "nothing appears in the timeline as it's
     // starting up, I don't get the ROMP logo with the spinning things"). draw() otherwise bails at its top on
@@ -768,7 +779,7 @@ class TimelinePanel {
 
   destroy() {
     window.removeEventListener('resize', this._onResize);
-    if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep);
+    if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep); this.wrap.removeEventListener('mouseleave', this._onPtrOut);
       this.wrap.removeEventListener('touchstart', this._onTouchStart); this.wrap.removeEventListener('touchmove', this._onTouchMove); this.wrap.removeEventListener('touchend', this._onTouchEnd); this.wrap.removeEventListener('touchcancel', this._onTouchEnd); }
     if (this._drawRAF) cancelAnimationFrame(this._drawRAF);
     this._stopLiveTick();
@@ -1746,6 +1757,25 @@ class TimelinePanel {
       if (this._frozeFromPin) { this._frozeFromPin = false; this._jumpToNow(); }
       else if (dirty && this.data) this.draw();
     }, 40);
+  }
+
+  // Re-arm hover after a rebuild (the user 2026-07-21, message-connector tips). draw() wipes and rebuilds
+  // the whole SVG, so a glyph the cursor is resting on comes back as a BRAND NEW element — and the browser
+  // fires mouseenter only when a pointer MOVES across a boundary, never for one that has sat still. Without
+  // this the tip waits for the user to jiggle the mouse. So: after the rebuild, hit-test the pointer we
+  // already track and re-run whatever is under it. Event-based (keyed on the rebuild finishing + a real
+  // pointer position), never a timer or a hover-intent delay. Cheap: one elementFromPoint per redraw, and
+  // only while the cursor is actually over the plot. Skipped when a tip is already up — an open tip holds
+  // the redraw off entirely (draw()'s freeze), so there is nothing to restore.
+  _rehover() {
+    const p = this._ptr;
+    if (!p || !this.tip || !this.tip.classList || this.tip.classList.contains('show')) return;
+    let node = null;
+    try { node = this.svg.ownerDocument.elementFromPoint(p.x, p.y); } catch (e) { return; }
+    // walk up to the hit target: elementFromPoint can land on a child of the element carrying the handler
+    for (let n = node; n && n !== this.svg; n = n.parentNode) {
+      if (n.__tlHoverIn) { n.__tlHoverIn({ clientX: p.x, clientY: p.y, currentTarget: n }); return; }
+    }
   }
 
   // Deep-link a click on a timeline item into the romp Chat View VS Code extension,
@@ -2762,7 +2792,9 @@ class TimelinePanel {
       svg.appendChild(hl);
       const u = (msgUI[i] = { hl, dot: null, lit: msgLit });
       const hit = el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(14, MSG_W0 + 6) }); hit.style.cursor = 'pointer';
-      hit.addEventListener('mouseenter', (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); });
+      const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
+      hit.__tlHoverIn = mEnter;                    // re-armable after a redraw rebuilds this path (_rehover)
+      hit.addEventListener('mouseenter', mEnter);
       hit.addEventListener('mousemove', (e) => this.moveTip(e));
       hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); });
       hit.addEventListener('click', msgNav(mm));
@@ -2774,7 +2806,9 @@ class TimelinePanel {
     // growth the native hover applies, no white ring (the user 2026-07-17) — and mouseleave restores it.
     const dot = (cx, cy, color, html, onClick, linkedHl, lit) => {
       const c = el('circle', { cx, cy, r: lit ? DOT_R + 2 : DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 0.75 }); c.style.cursor = onClick ? 'pointer' : 'default';   // thinner white border on EVERY dot — romp + user (the user 2026-06-23)
-      c.addEventListener('mouseenter', (e) => { c.setAttribute('r', DOT_R + 2); if (linkedHl) linkedHl.setAttribute('opacity', '0.95'); this.showTip(html(), e); });
+      const dEnter = (e) => { c.setAttribute('r', DOT_R + 2); if (linkedHl) linkedHl.setAttribute('opacity', '0.95'); this.showTip(html(), e); };
+      c.__tlHoverIn = dEnter;                      // re-armable after a redraw rebuilds this dot (_rehover)
+      c.addEventListener('mouseenter', dEnter);
       c.addEventListener('mousemove', (e) => this.moveTip(e));
       c.addEventListener('mouseleave', () => { c.setAttribute('r', lit ? DOT_R + 2 : DOT_R); if (linkedHl) linkedHl.setAttribute('opacity', lit ? '0.95' : '0'); this.hideTip(); });
       if (onClick) c.addEventListener('click', onClick);
@@ -2911,6 +2945,10 @@ class TimelinePanel {
 
     // 🔒 lock-to-now padlock at the now-edge (replaces the old toolbar checkbox, the user 2026-06-26)
     this._drawLockToggle(svg, lockCx, axisY);
+
+    // The svg is fully rebuilt above — restore the hover the rebuild just swallowed, so a tip under a
+    // stationary cursor comes up at once instead of waiting for the next mouse move (see _rehover).
+    this._rehover();
   }
 
   // The lock-to-now padlock, drawn at the NOW-EDGE (bottom of the rightmost tick) — accent-blue when LOCKED,
