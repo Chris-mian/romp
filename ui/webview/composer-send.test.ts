@@ -21,8 +21,9 @@ test("⏎ and the send button share ONE sendComposer() path", () => {
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\)/);
   // Enter calls it (desktop only — the mobile guard is asserted separately below)
   assert.match(RENDER, /if \(e\.key === "Enter" && !e\.shiftKey && !isCoarsePointer\(\)\) \{\s*e\.preventDefault\(\);\s*sendComposer\(\);/);
-  // the button calls it (mousedown keeps textarea focus)
-  assert.match(RENDER, /sendBtn\?\.addEventListener\("mousedown", \(e\) => \{ e\.preventDefault\(\); sendComposer\(\); ta\.focus\(\); \}\)/);
+  // the button calls it (mousedown keeps textarea focus on desktop; on a phone it blurs so the keyboard
+  // collapses and the box drops back to the bottom — see composer-send-blur.test.ts)
+  assert.match(RENDER, /sendBtn\?\.addEventListener\("mousedown", \(e\) => \{ e\.preventDefault\(\); sendComposer\(\); if \(isCoarsePointer\(\)\) ta\.blur\(\); else ta\.focus\(\); \}\)/);
 });
 
 test("on a phone (coarse pointer) Enter is a newline, not send — the Send button is the only send (the user 2026-07-15)", () => {

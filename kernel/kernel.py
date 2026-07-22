@@ -12121,10 +12121,11 @@ var gear=document.getElementById('rail-gear');
 if(gear)gear.onclick=function(){var f=document.getElementById('f-feed');
 try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'openSettings'},'*');}catch(e){}};
 // the rail's ↻ restarts the kernel (POST /restart), then polls /healthz and reloads once it's back up.
-var rf=document.getElementById('rail-refresh');
-if(rf)rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';
-try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
+// Factored to window.__rompRestart so the mobile bottom bar (no rail there) can trigger the same thing.
+window.__rompRestart=function(){try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
 var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};
+var rf=document.getElementById('rail-refresh');
+if(rf)rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();};
 })();
 """
 
@@ -12256,7 +12257,12 @@ var bar=document.getElementById('mtabs');if(!bar)return;
 // The bar is position:fixed (glued to the viewport bottom), so it's out of flow — reserve its real
 // rendered height (button text + padding) on .col as --mtabs-h so the iframes tile above it and the
 // fixed bar never covers the chat composer. Re-measure on resize/orientation (font metrics can shift).
-function barfit(){try{document.documentElement.style.setProperty('--mtabs-h',(bar.offsetHeight||0)+'px');}catch(e){}}
+// While the keyboard is OPEN, though, the bar is hidden behind it, so its reserved strip rendered as a
+// dead black band between the composer and the keyboard (the user 2026-07-22) — collapse the reservation
+// to 0 so the chat pane extends flush above the keyboard, and restore it when the keyboard closes. The
+// keyboard is open when the visual viewport is much shorter than the layout viewport (event: vv resize).
+function kbOpen(){var vv=window.visualViewport;return vv?(window.innerHeight-vv.height>120):false;}
+function barfit(){try{document.documentElement.style.setProperty('--mtabs-h',(kbOpen()?0:(bar.offsetHeight||0))+'px');}catch(e){}}
 barfit();window.addEventListener('resize',barfit);window.addEventListener('orientationchange',barfit);
 if(window.visualViewport){window.visualViewport.addEventListener('resize',barfit);}
 var F={chat:document.getElementById('f-chat'),fleet:document.getElementById('f-fleet'),feed:document.getElementById('f-feed'),timeline:document.getElementById('f-timeline')};
@@ -12266,10 +12272,12 @@ for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pa
 try{localStorage.setItem(KT,p);}catch(e){}}
 for(var i=0;i<B.length;i++)(function(b){var pk=b.getAttribute('data-pane');if(pk){b.addEventListener('click',function(){show(pk);});}})(B[i]);
 // the rail's actions on mobile: settings opens the feed iframe's modal (same path as the desktop
-// gear), net opens the shell's remotes panel, usage opens the tooltip's window bars as a modal
+// gear), net opens the shell's remotes panel, usage opens the tooltip's window bars as a modal, and
+// restart reuses the rail refresh's kernel restart (the user 2026-07-22 — the rail is hidden on mobile)
 var A={settings:function(){var f=F.feed;try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'openSettings'},'*');}catch(e){}},
 net:function(){try{window.__rompOpenNet&&window.__rompOpenNet();}catch(e){}},
-usage:function(){try{window.__rompUsagePanel&&window.__rompUsagePanel();}catch(e){}}};
+usage:function(){try{window.__rompUsagePanel&&window.__rompUsagePanel();}catch(e){}},
+restart:function(){try{window.__rompRestart&&window.__rompRestart();}catch(e){}}};
 Array.prototype.forEach.call(bar.querySelectorAll('button[data-act]'),function(b){
 b.addEventListener('click',function(){var f=A[b.getAttribute('data-act')];if(f)f();});});
 window.addEventListener('message',function(e){var m=e.data;if(!m)return;if(m.romp==='reveal'&&m.pane)show(m.pane);// the chat header's Fleet pill / the fleet's back-to-chat post toggleFleet — on mobile that IS a tab switch
@@ -12793,7 +12801,11 @@ def _landing():
             "<rect x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
             "<rect x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
             "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></button>"
-            "<button class=mact data-act=settings aria-label=Settings title=Settings>&#9885;</button>"
+            # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
+            # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
+            "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>↻</button>"
+            # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
+            "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"
             "</nav>"
             # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
             "<div id=rnet-back hidden><div id=rnet-panel>"

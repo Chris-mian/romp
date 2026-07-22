@@ -38,13 +38,16 @@ class LandingShell(unittest.TestCase):
 
     def test_rail_actions_reachable_on_mobile(self):
         # the user 2026-07-11: settings / the network panel / usage stats were rail-only (the rail is
-        # hidden on mobile). Three data-act buttons on the bar; each routes to the existing machinery.
+        # hidden on mobile). data-act buttons on the bar; each routes to the existing machinery.
         html = km._landing()
-        for act in ("data-act=settings", "data-act=net", "data-act=usage"):
+        for act in ("data-act=settings", "data-act=net", "data-act=usage", "data-act=restart"):
             self.assertIn(act, html)
         # ICONS, not words (the user 2026-07-11): settings wears the desktop rail's own gear glyph, net its
         # network-tree SVG; usage gets the theme's own motif — two stacked fill bars at different levels
-        self.assertIn("data-act=settings aria-label=Settings title=Settings>&#9885;</button>", html)
+        # the settings icon is the SAME gear the desktop rail uses (U+26ED ⛭), not the outlined star it had
+        self.assertIn("data-act=settings aria-label=Settings title=Settings>⛭</button>", html)
+        self.assertIn("id=rail-gear title=Settings aria-label=Settings>⛭</div>", html)  # matches the rail
+        self.assertNotIn("&#9885;", html)                               # the old outlined-star glyph is gone
         self.assertIn("data-act=net aria-label='Remote kernels'", html)
         self.assertIn("<rect x='1' y='3' width='9' height='4' rx='1' fill='currentColor'/>", html)   # the used-bar fill
         self.assertNotIn(">Gear</button>", html)
@@ -56,6 +59,26 @@ class LandingShell(unittest.TestCase):
         self.assertIn("#ru-tip.ru-modal", html)                         # centered placement for the panel
         # the lifted-fullscreen settings iframe must override the mobile display:none
         self.assertIn("body.settings-open #f-feed{display:block;position:fixed", html)
+
+    def test_mobile_restart_button_reuses_the_rail_refresh_kernel_restart(self):
+        # the user 2026-07-22: there was no restart-kernel affordance on mobile (the rail's own ↻ is hidden
+        # there). Add a bar button that fires the SAME restart the rail does — factored to window.__rompRestart
+        # (POST /restart, poll /healthz, reload) so both surfaces share one path, not a copy.
+        html = km._landing()
+        self.assertIn("data-act=restart aria-label='Restart kernel' title='Restart kernel'>↻</button>", html)
+        self.assertIn("window.__rompRestart=function", km._LANDING_SETTINGS_JS)   # the shared restart path
+        self.assertIn("fetch('/restart',{method:'POST'})", km._LANDING_SETTINGS_JS)
+        self.assertIn("rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();}", km._LANDING_SETTINGS_JS)
+        self.assertIn("restart:function(){try{window.__rompRestart", km._LANDING_MOBILE_JS)   # the bar routes to it
+
+    def test_mobile_bar_reservation_collapses_while_the_keyboard_is_open(self):
+        # the user 2026-07-22: focusing the composer opened the keyboard and left a dead black band between
+        # the box and the keyboard — the fixed bar's reserved height (--mtabs-h) showing through while the
+        # bar itself was hidden behind the keyboard. Collapse the reservation to 0 when the keyboard is open
+        # (visual viewport much shorter than the layout viewport), restore it when the keyboard closes.
+        js = km._LANDING_MOBILE_JS
+        self.assertIn("function kbOpen(){var vv=window.visualViewport;return vv?(window.innerHeight-vv.height>120):false;}", js)
+        self.assertIn("--mtabs-h',(kbOpen()?0:(bar.offsetHeight||0))+'px'", js)
 
     def test_usage_modal_dismisses_via_a_real_backdrop_not_a_document_click(self):
         # the user 2026-07-22: on mobile the Usage panel got STUCK — an outside tap landed on a content

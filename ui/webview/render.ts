@@ -6470,8 +6470,10 @@ function setupComposer() {
   };
   // an explicit send button on the right of the box (touch devices have no easy ⏎; desktop gets a click
   // affordance too). mousedown, not click, so the textarea keeps focus and a follow-up keeps typing.
+  // On a phone, though, keeping focus keeps the on-screen keyboard up and the composer pinned above it;
+  // blur instead so the keyboard collapses and the box drops back to the bottom (the user 2026-07-22).
   const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
-  sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); ta.focus(); });
+  sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); if (isCoarsePointer()) ta.blur(); else ta.focus(); });
 
   // ── drag-to-resize the message box (the user 2026-07-07) ── the #composer-resize handle straddles the
   // top-edge divider; dragging it UP grows the composer (to see a long message in full), DOWN shrinks it.
