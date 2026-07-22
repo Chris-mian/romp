@@ -27,10 +27,13 @@ test("draw() re-arms the hover it just swallowed, as its final act", () => {
   assert.match(draw.slice(0, 400), /this\._rehover\(\);/, "_rehover runs after the rebuild completes");
 });
 
-test("_rehover no-ops while a tip is already up, and hit-tests in the SVG's own document", () => {
-  const fn = SRC.slice(SRC.indexOf("  _rehover() {"), SRC.indexOf("  _rehover() {") + 900);
-  // an open tip already holds the redraw off (draw()'s freeze) — nothing was swallowed, nothing to restore
-  assert.match(fn, /this\.tip\.classList\.contains\('show'\)\) return;/);
+test("_rehover no-ops while a LIVE tip is up, and hit-tests in the SVG's own document", () => {
+  const fn = SRC.slice(SRC.indexOf("  _rehover() {"), SRC.indexOf("  _rehover() {") + 1400);
+  // An open tip whose owner survived holds the redraw off (draw()'s freeze) — nothing to restore. But
+  // draw() wipes the svg, so a shown tip usually points at a DETACHED owner: stale, not live. Skipping
+  // on `.show` alone left that stale tip up and the re-arm never ran, so the next mouse move hid it
+  // (owner not connected) and only the NEXT redraw brought it back (the user 2026-07-21).
+  assert.match(fn, /this\.tip\.classList\.contains\('show'\) && this\._tipOwner && this\._tipOwner\.isConnected\) return;/);
   assert.match(fn, /this\.svg\.ownerDocument\.elementFromPoint\(p\.x, p\.y\)/, "pane-local coords, pane-local doc");
   assert.match(fn, /for \(let n = node; n && n !== this\.svg; n = n\.parentNode\)/, "walks up, stops at the svg");
   assert.match(fn, /n\.__tlHoverIn\(\{ clientX: p\.x, clientY: p\.y, currentTarget: n \}\)/);

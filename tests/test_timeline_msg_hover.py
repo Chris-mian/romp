@@ -70,6 +70,38 @@ class TimelineMessageHover(unittest.TestCase):
         self.assertIn("'stroke-linecap': 'round'", decl, "butt caps stop the hit short of the path ends")
         self.assertIn("'stroke-linejoin': 'round'", decl)
 
+    def test_leave_test_pads_by_the_hit_stroke(self):
+        """The sweep must measure the owner's HIT extent, not its bare geometry box.
+
+        getBoundingClientRect on an SVG path measures the outline and Chrome excludes the stroke, so a
+        connector for an immediately-delivered message — a straight vertical line — reports a box 0px
+        WIDE. Comparing the pointer against that box unpadded meant every sub-pixel twitch of a real
+        hand read as "left the glyph" and hid the tip, which then only returned on the next redraw: the
+        tip appeared, vanished, and came back only if the cursor was held perfectly still (the user
+        2026-07-21). Firefox measures these boxes differently, hence no flicker there. Measured over a
+        12s hold on a live timeline: 12 hide/show cycles and 704ms hidden before, 0 and 0ms after.
+        """
+        sweep = self.src[self.src.index("this._onTipSweep = (e) => {"):self.src.index("this.wrap.addEventListener('mousemove', this._onTipSweep);")]
+        self.assertRegex(
+            sweep, r"const pad = \(parseFloat\(o\.getAttribute && o\.getAttribute\('stroke-width'\)\) \|\| 0\) / 2",
+            "the leave test needs the owner's stroke to know its real extent",
+        )
+        for edge in ("r.left - pad", "r.right + pad", "r.top - pad", "r.bottom + pad"):
+            self.assertIn(edge, sweep, "every edge of the leave test must be padded by the hit stroke")
+
+    def test_a_stale_tip_is_rebound_rather_than_left_or_dropped(self):
+        """A redraw detaches the tip's owner; the tip must rebind to the fresh glyph, not wait for a draw."""
+        sweep = self.src[self.src.index("this._onTipSweep = (e) => {"):self.src.index("this.wrap.addEventListener('mousemove', this._onTipSweep);")]
+        self.assertIn(
+            "if (!o || !o.isConnected) { this.hideTip(); this._rehover(); return; }", sweep,
+            "a destroyed owner should rebind at once instead of waiting for the next redraw",
+        )
+        rehover = self.src[self.src.index("  _rehover() {"):self.src.index("  // Deep-link a click on a timeline item")]
+        self.assertIn(
+            "if (this.tip.classList.contains('show') && this._tipOwner && this._tipOwner.isConnected) return;", rehover,
+            "skip only a tip whose owner SURVIVED the rebuild; a shown-but-detached tip is stale",
+        )
+
     def test_hover_still_lights_the_connector_and_its_dot(self):
         """The hit target keeps co-highlighting the line + linked dot and stays re-armable after a redraw."""
         start = self.src.index("PASS 1: connector line + highlight")
