@@ -11,13 +11,21 @@
 //   gone). Kernel ops (setAutoNudge, setJudgeModel, ...) ride it.
 // - window.__rompKernelBase: fetch prefix — '' in the browser (same origin);
 //   the VS Code host injects http://127.0.0.1:<port> and allows it in the
-//   webview CSP (connect-src).
+//   webview CSP (connect-src). window.__rompKernelToken rides along the same
+//   way: the kernel gates every request on the serve token (loopback included);
+//   the browser has its cookie, a webview's cross-origin fetch does not — so
+//   ku() appends ?token= when the host injected one (mirrors media.ts kernelUrl).
 // - Opening: a {romp:'openSettings'} window message (the web shell's rail gear
 //   posts it into the feed iframe; the VS Code host posts it into the webview).
 // Model/effort <option>s come from GET /models at open (they were server-baked
 // into the HTML before — /models was already the single source of truth).
 
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
+function ku(path) {
+  var tok = (typeof window !== 'undefined' && window.__rompKernelToken) || '';
+  if (!tok) return kb() + path;
+  return kb() + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+}
 
 // Static port of the kernel's _shortcut_rows() (the chat-surface shortcuts).
 var SHORTCUT_ROWS =
@@ -186,7 +194,7 @@ function initGear(post) {
     o.innerHTML = plRow(pd); o.addEventListener('click', function (e) { e.stopPropagation(); plPick(pd.name); }); plList.appendChild(o); }); }
   function plPick(name) { plActive = name; plPaint(); if (plList) plList.hidden = true;
     post({ type: 'setPalette', name: name }); }
-  function plFill() { fetch(kb() + '/palette', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+  function plFill() { fetch(ku('/palette'), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
     if (d && d.palettes) { plData = d.palettes; plActive = d.active || ''; plBuild(); plPaint(); } }).catch(function () {}); }
   if (plBtn) plBtn.addEventListener('click', function (e) { e.stopPropagation(); plBuild(); if (plList) plList.hidden = !plList.hidden; });
   document.addEventListener('click', function (e) { var w = document.getElementById('rs-pal');
@@ -209,7 +217,7 @@ function initGear(post) {
   var choices = null;
   function fillChoices() {
     if (choices) return Promise.resolve(choices);
-    return fetch(kb() + '/models', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+    return fetch(ku('/models'), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
       choices = d || { models: [], efforts: [] };
       var mo = (choices.models || []).map(function (m) { return '<option value="' + m.value + '">' + m.label + '</option>'; }).join('');
       var eo = '<option value="">Default</option>' + (choices.efforts || []).map(function (m) { return '<option value="' + m.value + '">' + m.label + '</option>'; }).join('');
@@ -220,7 +228,7 @@ function initGear(post) {
   }
   function lv() { var t = document.querySelector('script[src*="feed.js"]');
     var m = t && t.getAttribute('src').match(/[?&]v=(\d+)/); return m ? +m[1] : 0; }
-  function fill() { fillChoices().then(function () { return fetch(kb() + '/version', { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
+  function fill() { fillChoices().then(function () { return fetch(ku('/version'), { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
     if (an) an.checked = !!v.autoNudge;
     if (jm && typeof v.judgeModel === 'string') jm.value = v.judgeModel;   // the judge's ACTUAL current model/effort per tier is authoritative
     if (im && typeof v.indexModel === 'string') im.value = v.indexModel;
@@ -242,8 +250,8 @@ function initGear(post) {
   p.addEventListener('click', function (e) { if (e.target === p) closeSettings(); });   // click the dimmed backdrop (not the card) → close
   document.addEventListener('click', function (e) { if (!p.hidden && e.target !== g && !p.contains(e.target)) closeSettings(); });
   var rf = document.getElementById('rrefresh');   // ↻ (web shell rail only): POST /restart, poll /healthz, reload
-  if (rf) rf.onclick = function () { rf.disabled = true; try { fetch(kb() + '/restart', { method: 'POST' }).catch(function () {}); } catch (e) {}
-    var n = 0; (function again() { setTimeout(function () { n++; fetch(kb() + '/healthz', { cache: 'no-store' }).then(function (r) { if (r && r.ok) location.reload(); else if (n < 40) again(); }).catch(function () { if (n < 40) again(); }); }, 500); })(); };
+  if (rf) rf.onclick = function () { rf.disabled = true; try { fetch(ku('/restart'), { method: 'POST' }).catch(function () {}); } catch (e) {}
+    var n = 0; (function again() { setTimeout(function () { n++; fetch(ku('/healthz'), { cache: 'no-store' }).then(function (r) { if (r && r.ok) location.reload(); else if (n < 40) again(); }).catch(function () { if (n < 40) again(); }); }, 500); })(); };
   // ── token-usage analytics modal: a sessions-vs-judges bar chart over a selectable window ──
   var raBack = document.getElementById('ranalytics-back'), raOpen = document.getElementById('ra-open'),
     raClose = document.getElementById('ra-close'), raChart = document.getElementById('ra-chart'),
@@ -288,7 +296,7 @@ function initGear(post) {
     var ratio = sessTot ? (judgeTot / sessTot * 100) : 0;
     raNote.textContent = 'last ' + raState.periodLabel + ' · judges = ' + (sessTot ? ratio.toFixed(1) : '0') + '% of session ' + (raCost() ? 'cost' : 'tokens') + ' · combined ' + raFmt(sessTot + judgeTot); }
   function raFetch() { raState.loading = true; raRender();
-    fetch(kb() + '/analytics?window=' + raState.window, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { raState.loading = false; raState.data = d; raRender(); }).catch(function () { raState.loading = false; raChart.innerHTML = '<div class=ra-empty>analytics unavailable</div>'; raLegend.innerHTML = ''; raNote.textContent = ''; }); }
+    fetch(ku('/analytics?window=' + raState.window), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { raState.loading = false; raState.data = d; raRender(); }).catch(function () { raState.loading = false; raChart.innerHTML = '<div class=ra-empty>analytics unavailable</div>'; raLegend.innerHTML = ''; raNote.textContent = ''; }); }
   if (raOpen) raOpen.onclick = function (e) { e.stopPropagation(); raBack.hidden = false; p.hidden = true; raFetch(); };
   if (raClose) raClose.onclick = function () { raBack.hidden = true; };
   if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raBack.hidden = true; });

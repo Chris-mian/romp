@@ -87,7 +87,8 @@ class HeadlessRoutes(unittest.TestCase):
         import urllib.request, urllib.error
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path),
                                      method="POST", data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              "X-Romp-Token": km.TOKEN})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read().decode())

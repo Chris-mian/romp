@@ -35,7 +35,9 @@
 # to the drain whenever live injection isn't safe. Disable the push alone with
 # ~/.claude/romp-postal-nopush; disable everything with ~/.claude/romp-postal-off.
 
+import base64
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -68,6 +70,46 @@ PIDFILE = STATE / "server.pid"
 NAMES_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp" / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalServiceOff (legacy: postalOff)
+
+
+# ── serve-token gate (Jupyter's model; the same 0600 file the kernel mints) ─────
+# Loopback is reachable by EVERY local user on the machine, so the bus — which can wake sessions
+# and inject mail straight into their prompts — requires the machine's serve token on every
+# request except the /ping liveness probe. The 0600 file is the same-user trust boundary; kernel
+# and bus share it (whichever daemon starts first mints it, identical logic). A peer bus dialing
+# through an ssh forward authorizes with the DIALED machine's token (?token=), which rides the
+# kernel's /peer notifies and /tunnels rows.
+def _load_serve_token():
+    t = (os.environ.get("ROMP_SERVE_TOKEN") or "").strip()
+    if t:
+        return t
+    f = STATE.parent / "serve-token"              # ~/.local/state/romp/serve-token (STATE is romp/postal)
+    try:
+        v = f.read_text().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    v = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(v)
+        os.chmod(f, 0o600)
+    except OSError:
+        pass
+    return v
+
+
+SERVE_TOKEN = _load_serve_token()
+
+
+def _tok_eq(a, b):
+    """Constant-time compare (no timing oracle on the serve token); never raises on odd input."""
+    try:
+        return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
+    except Exception:
+        return False
+
 
 POLL = int(os.environ.get("ROMP_POSTAL_POLL", "30"))        # autostop poll interval (seconds)
 IDLE_GRACE = int(os.environ.get("ROMP_POSTAL_IDLE_GRACE", "2"))  # empty polls before the bus exits
@@ -303,8 +345,9 @@ _lock = threading.Lock()
 def _kernel_sessions():
     """LIVE romp sessions (tmux + SDK) from the kernel's unified GET /sessions — the kernel owns the backend
     query (TmuxBackend for tmux liveness + the SDK registry), so the bus enumerates sessions WITHOUT shelling
-    tmux and WITHOUT reading the SDK registry directly: ONE source. Loopback, token-free (the kernel's loopback
-    Host gate). [] if the kernel is unreachable (rare — the manager supervises it); the bus then shows no local
+    tmux and WITHOUT reading the SDK registry directly: ONE source. Loopback, authorized with X-Romp-Token
+    (the shared 0600 serve-token file — the kernel gates every request, loopback included). [] if the kernel
+    is unreachable (rare — the manager supervises it); the bus then shows no local
     agents until it's back, rather than reaching past the abstraction to tmux.
 
     ROMP_SESSIONS_FILE is a test seam (like ROMP_*_BIN): a JSON file of the same rows, read instead of the
@@ -318,7 +361,8 @@ def _kernel_sessions():
             return []
     import urllib.request
     try:
-        with urllib.request.urlopen(KERNEL_BASE + "/sessions", timeout=2) as r:
+        req = urllib.request.Request(KERNEL_BASE + "/sessions", headers={"X-Romp-Token": SERVE_TOKEN})
+        with urllib.request.urlopen(req, timeout=2) as r:
             data = json.loads(r.read().decode("utf-8"))
         return data if isinstance(data, list) else []
     except Exception:
@@ -341,7 +385,8 @@ def local_agents():
 
 
 def _kernel_post(path, body, timeout=2):
-    """POST a small JSON body to the kernel (loopback, token-free) — the bus's one-way control channel for the
+    """POST a small JSON body to the kernel (loopback, X-Romp-Token from the shared 0600 file) — the bus's
+    one-way control channel for the
     ops the kernel owns now that the bus never shells tmux: the working-note, mail delivery/wake, the
     status-bar chrome, and the resume-picker check. Returns the parsed JSON response dict, or None
     (unreachable kernel / non-2xx / parse error → the caller degrades). No-op (None) under the
@@ -351,7 +396,8 @@ def _kernel_post(path, body, timeout=2):
     import urllib.request
     try:
         req = urllib.request.Request(KERNEL_BASE + path, data=json.dumps(body).encode("utf-8"),
-                                     headers={"Content-Type": "application/json"}, method="POST")
+                                     headers={"Content-Type": "application/json",
+                                              "X-Romp-Token": SERVE_TOKEN}, method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if getattr(r, "status", 200) // 100 != 2:
                 return None
@@ -802,11 +848,24 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0) or 0)
         return json.loads(self.rfile.read(n)) if n else {}
 
+    def _authorized(self):
+        """Serve-token gate, every route but /ping (see the SERVE_TOKEN block). Local clients send
+        X-Romp-Token read from the 0600 file; a peer bus dials through the ssh forward with ?token=
+        (this machine's token, which its kernel learned at attach/checkin). No cookie form — no
+        browser ever talks to the bus."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if SERVE_TOKEN and _tok_eq((q.get("token") or [""])[0], SERVE_TOKEN):
+            return True
+        return bool(SERVE_TOKEN) and _tok_eq(self.headers.get("X-Romp-Token") or "", SERVE_TOKEN)
+
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/ping":
             return self._send({"ok": True})
+        if not self._authorized():
+            return self._send({"error": "token required (serve token, loopback included — "
+                               "~/.local/state/romp/serve-token)"}, 403)
         if u.path == "/peers":                     # peer-bus mode introspection (tests + the popover later)
             return self._send(peers_snapshot())
         if u.path == "/agents":
@@ -845,6 +904,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if not self._authorized():
+            return self._send({"error": "token required (serve token, loopback included — "
+                               "~/.local/state/romp/serve-token)"}, 403)
         try:
             data = self._body()
         except Exception:
@@ -1101,6 +1163,7 @@ class BusError(Exception):
 def _http(method, path, payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
+    headers["X-Romp-Token"] = SERVE_TOKEN            # same-machine client: the 0600 file is the credential
     req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -1147,12 +1210,15 @@ def is_client_only():
 PEERS = {}
 
 def peer_update(data):
-    """Apply one kernel notify. Returns (payload, status)."""
+    """Apply one kernel notify. Returns (payload, status). `token` is the PEER machine's serve token
+    (the kernel learned it at attach/checkin) — the dialer needs it because the peer's bus is
+    token-gated too. A token-less notify (e.g. a down transition) keeps the last known token."""
     host = str(data.get("host") or "").strip()
     port = data.get("port")
     if not host or not isinstance(port, int) or isinstance(port, bool) or not (0 < port < 65536):
         return {"error": "host and port required"}, 400
-    PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time())}
+    tok = str(data.get("token") or "") or (PEERS.get(host) or {}).get("token") or ""
+    PEERS[host] = {"port": port, "up": bool(data.get("up")), "at": int(time.time()), "token": tok}
     _peer_threads_reconcile(host)                    # an up peer gets its dialer; a down one is woken to exit
     return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
 
@@ -1444,8 +1510,12 @@ def peer_route(to):
         return hits[0]
     return None, hits
 
-def _peer_http(port, payload):
-    req = urllib.request.Request("http://127.0.0.1:%d/peer-exchange" % port,
+def _peer_http(port, payload, token=""):
+    """Dial a peer bus through the kernel's -L forward. `token` is the PEER machine's serve token
+    (?token= — the dialed bus validates against its own 0600 file); our X-Romp-Token would mean
+    nothing over there."""
+    path = "/peer-exchange" + (("?token=" + urllib.parse.quote(token)) if token else "")
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path),
                                  data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=EXCHANGE_WAIT + 10) as r:
@@ -1462,7 +1532,7 @@ def _peer_loop(host):
             break
         req = build_exchange_request(host, wait=True)
         try:
-            resp = _peer_http(p["port"], req)
+            resp = _peer_http(p["port"], req, p.get("token") or "")
         except urllib.error.HTTPError as e:
             if e.code == 409:
                 st = PEER_STATE.setdefault(host, {})
@@ -1506,12 +1576,14 @@ def _seed_peers_from_kernel():
     """A restarted bus starts with an empty peer table (the kernel notifies on TRANSITIONS). Best-effort
     seed from the kernel's /tunnels so peering resumes without waiting for the next transition."""
     try:
-        with urllib.request.urlopen(KERNEL_BASE + "/tunnels", timeout=3) as r:
+        req = urllib.request.Request(KERNEL_BASE + "/tunnels", headers={"X-Romp-Token": SERVE_TOKEN})
+        with urllib.request.urlopen(req, timeout=3) as r:
             rows = json.loads(r.read().decode() or "{}").get("tunnels") or []
         for row in rows:
             port = row.get("busPort")
             if row.get("host") and isinstance(port, int) and port:
-                peer_update({"host": row["host"], "port": port, "up": row.get("status") == "up"})
+                peer_update({"host": row["host"], "port": port, "up": row.get("status") == "up",
+                             "token": row.get("token") or ""})   # the peer's serve token — its bus is gated too
     except Exception:
         pass                                         # no kernel yet → the notify path fills the table
 

@@ -32,11 +32,13 @@ test("the gear opens on the shared {romp:'openSettings'} message on BOTH hosts",
   assert.ok(EXT.includes('{ romp: "openSettings" }'), "the VS Code menu must post the open message");
 });
 
-test("every gear fetch routes through the kernel base (VS Code's webview origin is synthetic)", () => {
-  assert.ok(!/fetch\(['"`]\//.test(GEAR), "no bare same-origin fetches in gear.js — use kb()");
-  const kbFetches = GEAR.match(/fetch\(kb\(\) \+/g) || [];
-  assert.ok(kbFetches.length >= 4, `expected the /palette, /models, /version, /analytics fetches via kb(), got ${kbFetches.length}`);
+test("every gear fetch routes through the kernel base + token (VS Code's webview origin is synthetic)", () => {
+  assert.ok(!/fetch\(['"`]\//.test(GEAR), "no bare same-origin fetches in gear.js — use ku()");
+  assert.ok(!/fetch\(kb\(\) \+/.test(GEAR), "kb()-only fetches skip the serve token — use ku()");
+  const kuFetches = GEAR.match(/fetch\(ku\(/g) || [];
+  assert.ok(kuFetches.length >= 4, `expected the /palette, /models, /version, /analytics fetches via ku(), got ${kuFetches.length}`);
   assert.ok(EXT.includes("window.__rompKernelBase="), "the VS Code feed builder must inject the base");
+  assert.ok(EXT.includes("window.__rompKernelToken="), "the VS Code feed builder must inject the serve token (the kernel gates every request, loopback included)");
   assert.ok(EXT.includes("connect-src ${kernelBase}"), "the feed webview CSP must allow the kernel origin");
 });
 

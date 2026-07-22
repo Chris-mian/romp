@@ -14,8 +14,14 @@ export function mediaSrc(name: string): string {
 // browser is served BY the kernel ('' → same-origin), but the VS Code
 // webview's synthetic origin needs the host-injected base — without it these
 // fetches fail silently and the features quietly vanish (the empty model
-// picker, the user 2026-07-13).
+// picker, the user 2026-07-13). The kernel gates every request on the serve
+// token, loopback included: the browser rides its cookie (seeded by the first
+// ?token= page load), but a webview's cross-origin fetch carries no cookie, so
+// the host also injects window.__rompKernelToken and it rides here as ?token=.
 export function kernelUrl(path: string): string {
-  const base = (typeof window !== "undefined" && (window as any).__rompKernelBase) || "";
-  return `${base}${path}`;
+  const w: any = typeof window !== "undefined" ? (window as any) : {};
+  const base = w.__rompKernelBase || "";
+  const tok = w.__rompKernelToken || "";
+  if (!tok) return `${base}${path}`;
+  return `${base}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(tok)}`;
 }

@@ -308,8 +308,11 @@ def _dist_ver():
 
 def _load_token():
     """The serve token, baked into launch so the human never passes --token: ROMP_SERVE_TOKEN if
-    set, else a stable random token persisted under the state dir. Required only for NON-local
-    reach; local clients pass on the Origin check + auto-injected cookie."""
+    set, else a stable random token persisted under the state dir at 0600 — file perms are the
+    same-user gate (Jupyter's model). Required on EVERY request, loopback included: loopback is
+    reachable by any local user, so a token-free loopback would let a same-host co-tenant drive
+    sessions. Local clients read the file (same user) and send X-Romp-Token; browsers carry
+    ?token= once and ride the auto-set cookie."""
     t = (os.environ.get("ROMP_SERVE_TOKEN") or "").strip()
     if t:
         return t
@@ -338,6 +341,31 @@ def _ct_eq(a, b):
         return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
     except Exception:
         return False
+
+
+# Unauthorized browser GET of "/" gets this instead of a bare 403 — Jupyter's login-page flow: paste
+# the token once, the redirect's ?token= sets the year-long cookie, never see this page again. Static,
+# self-contained (every other asset route is token-gated), leaks nothing. Colors follow the UI: the
+# accent button is --accent #9cd2ff on --accent-fg #0c1a2e.
+_TOKEN_LOGIN_HTML = """<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>romp</title>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;\
+background:#101418;color:#dfe7ee;font:15px/1.5 -apple-system,system-ui,sans-serif">
+<form style="text-align:center;max-width:26em;padding:2em" onsubmit="\
+location.replace('/?token='+encodeURIComponent(document.getElementById('t').value.trim()));return false">
+  <div style="font-size:1.6em;letter-spacing:.04em;margin-bottom:.4em">romp</div>
+  <div style="opacity:.8;margin-bottom:1.2em">This dashboard needs its access token &mdash; every
+  request is token-gated, loopback included.</div>
+  <input id="t" autofocus placeholder="paste token"
+    style="width:100%;box-sizing:border-box;padding:.55em .7em;border:1px solid #35414d;\
+border-radius:6px;background:#0c1117;color:#dfe7ee">
+  <button style="margin-top:.9em;padding:.5em 1.4em;border:0;border-radius:6px;\
+background:#9cd2ff;color:#0c1a2e;font-weight:600;cursor:pointer">Open</button>
+  <div style="opacity:.6;margin-top:1.2em;font-size:.9em">Get a ready-made link with
+  <code>romp --url</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
+</form>
+"""
 
 _clients = []                                # connected WS clients: {app, wid, send, alive}
 _clients_lock = threading.Lock()
@@ -3666,15 +3694,18 @@ def _tunnel_argv(r):
              "--", r["host"]])
 
 
-def _notify_bus_peer(host, port, up):
+def _notify_bus_peer(host, port, up, peer_token=""):
     """Tell the LOCAL bus about a peer bus endpoint (event: a tunnel transition, never a poll). True on
     ack. Guarded: postal being down must never break the tunnel supervisor — the caller records success
     and retries an unacked notify on the next pass. Stage 2's HELLO re-learns the table after a bus
-    restart; until then a restarted bus heals on the next tunnel transition or retry."""
+    restart; until then a restarted bus heals on the next tunnel transition or retry. Authorizes to the
+    local bus with OUR serve token; peer_token is the PEER machine's serve token (r["token"]), which the
+    bus needs to dial that peer's /peer-exchange through the tunnel — both buses are token-gated now."""
     try:
         conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
-        conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up)}),
-                     {"Content-Type": "application/json"})
+        conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up),
+                                                  "token": peer_token or ""}),
+                     {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
         ok = conn.getresponse().status == 200
         conn.close()
         return ok
@@ -3731,11 +3762,14 @@ def _checkin_payload(r):
 
 def _checkin_handshake(r):
     """Tell the hub (through our own -L to its kernel) where our reverse forwards landed and hand it
-    our token — the PUSH that replaces the hub ever fetching credentials. True on ack; the caller
-    records success per tunnel incarnation and retries otherwise."""
+    our token — the PUSH that replaces the hub ever fetching credentials. Authorizes with the HUB's
+    token (r["token"], fetched at attach — the hub requires it on every request, loopback included).
+    True on ack; the caller records success per tunnel incarnation and retries otherwise."""
+    import urllib.parse
     try:
         conn = http.client.HTTPConnection("127.0.0.1", r["local_port"], timeout=4)
-        conn.request("POST", "/checkin", json.dumps(_checkin_payload(r)),
+        p = "/checkin" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        conn.request("POST", p, json.dumps(_checkin_payload(r)),
                      {"Content-Type": "application/json"})
         ok = conn.getresponse().status == 200
         conn.close()
@@ -3747,9 +3781,11 @@ def _checkin_handshake(r):
 def _checkin_stop_hub(r):
     """Best-effort checkout notice while our tunnel still stands. A vanished tunnel needs none: the
     hub's supervisor sees the dead forward and marks us down on its own."""
+    import urllib.parse
     try:
         conn = http.client.HTTPConnection("127.0.0.1", r["local_port"], timeout=3)
-        conn.request("POST", "/checkin/stop", json.dumps({"host": _self_host()}),
+        p = "/checkin/stop" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        conn.request("POST", p, json.dumps({"host": _self_host()}),
                      {"Content-Type": "application/json"})
         conn.getresponse()
         conn.close()
@@ -4004,7 +4040,7 @@ def detach_remote(host):
         except Exception:
             pass
     if r and _postal_peers_on():
-        _notify_bus_peer(host, r.get("bus_port"), False)   # the peer is gone on purpose — tell the bus now
+        _notify_bus_peer(host, r.get("bus_port"), False, r.get("token") or "")   # the peer is gone on purpose — tell the bus now
     _remotes_save()
     return bool(r)
 
@@ -4404,13 +4440,13 @@ def _tunnel_supervisor():
                     if rsha is not None:
                         r["kernel_sha"] = rsha
                     peer_up, peer_known = (st == "up"), r.get("_peer_up")
-                    peer_port = r.get("bus_port")
+                    peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
                 if _postal_peers_on() and peer_up != peer_known:
                     # Peer-bus mode: the tunnel TRANSITION is the event the local bus keys its peer table
                     # on (reachable at 127.0.0.1:bus_port through the second -L). Outside the lock — it's
                     # an HTTP round-trip. Success is recorded so only transitions notify; a failed notify
                     # leaves _peer_up unset and retries next pass (the bus may have been mid-restart).
-                    if _notify_bus_peer(r["host"], peer_port, peer_up):
+                    if _notify_bus_peer(r["host"], peer_port, peer_up, peer_tok):
                         with _remotes_lock:
                             if r["host"] in _remotes:
                                 r["_peer_up"] = peer_up
@@ -13064,18 +13100,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    # ── serve-layer security (docs/read-side.md): Origin/Host gate always; token for non-local reach ──
-    def _is_local_host(self):
-        # Locality is judged by the REAL TCP peer address, never the client-settable
-        # Host header: a remote client can send `Host: localhost` to forge locality and
-        # skip the token (proven bypass). Only a loopback peer is trusted without a
-        # token; every off-box client (tailnet, 0.0.0.0, tunnel) must present it.
-        try:
-            peer = self.client_address[0]
-        except Exception:
-            peer = ""
-        return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-
+    # ── serve-layer security (docs/read-side.md): Origin/Host gate always; token required for ALL
+    # access, loopback included (Jupyter's model — loopback is shared by every local user on the
+    # machine, so it is not a trust boundary; the 0600 token file is the same-user gate) ──
     def _origin_ok(self):
         """Reject cross-site browser origins — the ClawJacked/WS hole (WS isn't covered by CORS, so
         this is the real gate). Allow same-origin, the local kernel origin, vscode-webview, and an
@@ -13103,18 +13130,22 @@ class Handler(BaseHTTPRequestHandler):
         """(ok, cookie_to_set, reason). A valid token IS sufficient auth and bypasses the Origin gate.
         This is what lets the FEDERATED dashboard work: a browser served by ANOTHER kernel opens a
         tunnel'd /ws (or fetch) here carrying ?token — a foreign Origin, but the unguessable token is
-        the credential, and a cross-site page can't forge it. Without a token the Origin gate always
-        applies (the ClawJacked/WS hole), and a non-local Host additionally requires the token. A valid
-        ?token also sets the cookie so a same-origin client never re-prompts."""
+        the credential, and a cross-site page can't forge it. The token is REQUIRED for every gated
+        route, loopback included (Jupyter's model: loopback is reachable by every local user, so the
+        0600 token file — not the socket — is the same-user trust boundary). Browsers present ?token
+        once and ride the auto-set cookie; local CLIs/hooks read the file and send X-Romp-Token (a
+        custom header forces a CORS preflight through this same gate, so a cross-site page can't
+        forge it either). Token-less browser traffic still hits the Origin gate first (the
+        ClawJacked/WS hole) so a denial names the real reason."""
         if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
             return True, TOKEN, ""                    # valid ?token → authorize (any origin) + set cookie
         if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
             return True, None, ""                     # valid token cookie → authorize (any origin)
+        if TOKEN and _ct_eq(self.headers.get("X-Romp-Token") or "", TOKEN):
+            return True, None, ""                     # header form — local CLI/hook/daemon clients
         if not self._origin_ok():
             return False, None, "cross-site origin"
-        if self._is_local_host():
-            return True, None, ""                    # local, same-origin → no token needed
-        return False, None, "token required for non-local access"
+        return False, None, "token required (loopback included; token file: ~/.local/state/romp/serve-token)"
 
     def _file_preview(self, q, head=False):
         """GET/HEAD /file — the preview bytes behind a chat path-thumbnail / feed artifact strip (the
@@ -13158,7 +13189,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Romp-Token")
         self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
@@ -13214,6 +13245,10 @@ class Handler(BaseHTTPRequestHandler):
             ok, self._set_cookie, why = self._authorize(q)
             self._cors_origin = self.headers.get("Origin") if ok else None   # echoed by _send (CORS delivery)
             if not ok:
+                if p == "/":
+                    # A bare-URL browser open lands here token-less: serve the paste-the-token page
+                    # (Jupyter's login flow) instead of a dead 403 — the redirect seeds the cookie.
+                    return self._send(200, _TOKEN_LOGIN_HTML, "text/html", cache="no-cache")
                 return self._send(403, "forbidden: " + why, "text/plain")
             if p == "/ws":
                 return self._ws()
@@ -13355,7 +13390,7 @@ class Handler(BaseHTTPRequestHandler):
                 # on the next backstop tick. It ALSO wakes the chat PUSHER, so a tmux turn completing/landing
                 # appears in the chat immediately (the common 'why hasn't it shown up yet' moment) rather than
                 # waiting out the poll — tmux's per-message event-driven path, the SDK live-tail's analogue.
-                # Cheap + idempotent; the loopback Host gate in _authorize already lets local hooks through.
+                # Cheap + idempotent; the hook authorizes with X-Romp-Token read from the 0600 token file.
                 _producer_wake.set()
                 _pusher_wake.set()
                 return self._send(200, json.dumps({"ok": True, "woke": True}), "application/json")
@@ -13365,8 +13400,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Obsidian track-changes plugin, romp-postal's delivery) can hand a session
                 # input WITHOUT touching tmux itself: the kernel owns the transport, routing
                 # to whichever backend drives the session. Body: {"id"|"name": <session>,
-                # "text": <body>}. The loopback Host gate in _authorize already lets local
-                # clients through (tailnet needs the token).
+                # "text": <body>}. Local tools authorize like every caller: the serve token
+                # (X-Romp-Token read from the 0600 file, or ?token=).
                 body = _parse_send_body(raw_body)
                 if not body:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
@@ -14060,15 +14095,17 @@ def main():
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
+    sys.stderr.write("romp-kernel: every request needs the serve token (loopback included) — "
+                     "browser entry: `romp --url`\n")
     if BIND != "127.0.0.1":
         # reachable off-box (tailnet/phone): the Origin gate blocks cross-site browsers token-free,
-        # and a token is REQUIRED for any non-local Host. Local 127.0.0.1 access still needs nothing.
-        sys.stderr.write("romp-kernel: bound %s — REMOTE access needs the token. Open from the phone:\n"
+        # and the token is required everywhere. Open from the phone:
+        sys.stderr.write("romp-kernel: bound %s — open from the phone:\n"
                          "  http://<this-host>:%d/?token=%s\n" % (BIND, PORT, TOKEN))
     if not os.environ.get("ROMP_KERNEL_NO_OPEN"):
         try:
             import webbrowser
-            webbrowser.open(url)
+            webbrowser.open(url + "/?token=" + TOKEN)   # seeds the year-long cookie on first open (Jupyter's URL flow)
         except Exception:
             pass
     try:

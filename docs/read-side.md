@@ -263,19 +263,24 @@ The Python kernel (`kernel/kernel.py`) closes it.
   origin plus known local client origins (the browser at the kernel's host, the
   `vscode-webview://` extension, the timeline), reject everything cross-site. This
   kills ClawJacked for free; legit local clients send the right Origin/Host.
-- **Token usable without breaking local clients.** `ROMP_SERVE_TOKEN` gates reach
-  beyond the validated local origin. Local clients auto-inject it (`?token=` once →
-  `SameSite=Strict` cookie) so enabling a token never 401s them into a respawn loop.
-  `healthz`/liveness must not break tokened clients.
-- **Token REQUIRED whenever the kernel itself binds beyond `127.0.0.1`**
-  (`ROMP_SERVE_HOST=0.0.0.0` — a test seam, not a user path). The Origin check is
-  the always-on floor; the token is the gate for non-local reach. The token is
-  baked into how the kernel launches (env/autostart), never a manual per-launch
-  flag. `tailscale serve` traffic arrives over loopback and is trusted as local —
-  its gate is tailnet device auth, which is why funnel (public internet through the
-  same proxy) must never be enabled for this port.
-- Regression test: a cross-site `/ws` upgrade with a foreign `Origin` must be
-  rejected.
+- **Token REQUIRED on every gated route, loopback included** (Jupyter's model:
+  loopback is one network stack shared by every local UID, so the `0600` token
+  file — not the socket — is the same-user trust boundary; the gate keeps a
+  same-host co-tenant out of `/send` and the bus). Accepted forms: `?token=`
+  (browser bootstrap, seeds a `SameSite=Strict` cookie so it never re-prompts),
+  the cookie, and `X-Romp-Token` (CLI/hooks/daemons, read from the file). The
+  token is baked into how the kernel launches (env/autostart), never a manual
+  per-launch flag; a bare browser open of `/` gets a paste-the-token login page
+  (`romp --url` prints the tokened link). Only the no-side-effect liveness
+  probes are exempt (`/healthz`, `/version`, `/busy`; bus `/ping`) so liveness
+  never breaks token-less monitors. `tailscale serve` traffic needs the token
+  once per device like any browser — and funnel (public internet through the
+  same proxy) must still never be enabled for this port, since the token would
+  then be the only gate with no device identity in front of it.
+- Regression tests: a cross-site `/ws` upgrade with a foreign `Origin` must be
+  rejected, and a token-less loopback request to any gated route must 403
+  (tests/test_kernel_auth_hardening.py, tests/test_kernel_ws_auth.py,
+  tests/test_postal_token.py).
 
 ## Naming
 

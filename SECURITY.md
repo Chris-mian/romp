@@ -4,60 +4,55 @@ romp runs a local kernel and a local message bus on your machine, and drives
 Claude Code sessions on your behalf. This document states the trust model it
 assumes, what that means on a shared machine, and how to report a vulnerability.
 
-## Trust model: one machine, one user
+## Trust model: token-gated, same-user by file permission
 
-romp is designed for a **single-user machine** — your laptop or a host only you
-log into. Two local services run there:
+Two local services run on your machine:
 
 - the **kernel** (dashboard/API) on `127.0.0.1:7433`, and
 - the **postal bus** (inter-session messaging) on `127.0.0.1` (a fixed local port).
 
 Both bind **loopback only** (`127.0.0.1`); neither is exposed to your network by
-default. The kernel's side-effecting routes (`/send`, `/interrupt`, `/end`,
-tunnel management) and the postal bus treat **any process that can reach
-loopback as authorized**. On a single-user machine that set is exactly "you and
-the programs you run," which is the intended boundary.
+default. On top of that, **every request requires the serve token — loopback
+included** (the model Jupyter uses, for the same reason: loopback is one network
+stack shared by every local UID, so it cannot be a trust boundary by itself).
 
-A serve token (`~/.local/state/romp/serve-token`, mode `0600`, compared with a
-constant-time check) additionally gates access when the kernel is reached
-**off-box** (e.g. through a `tailscale serve` proxy or an ssh tunnel), and an
-Origin/Host check protects the browser dashboard against cross-site requests.
-The token is *not* required for direct loopback requests — that is the
-single-user assumption above, made explicit.
+The token (`~/.local/state/romp/serve-token`) is 144-bit random, stored at mode
+`0600`, and compared with a constant-time check — **file permissions are the
+same-user gate**. Same-user clients (the CLI, hooks, the bus, the VS Code
+extension) read the file and send it as an `X-Romp-Token` header; the browser
+presents it once as `?token=` (print the ready-made link with `romp --url`, or
+paste the token into the login page a bare open of the dashboard serves) and
+rides an `HttpOnly` cookie afterwards. An Origin check additionally protects
+the browser surfaces against cross-site requests, including the WebSocket
+upgrade. The only token-exempt routes are the no-side-effect liveness probes:
+`/healthz`, `/version`, `/busy` on the kernel and `/ping` on the bus.
 
-## Shared / multi-user machines
+The practical consequence: another local user on a **shared machine** cannot
+reach your kernel or bus — `/send` (which injects text into a live Claude
+session that runs tools as you) and bus mail both require a token only your
+UID can read.
 
-On a host with **more than one human user**, the trust model above does not
-hold: `127.0.0.1` is a single network stack shared by every local UID, so
-another logged-in user can reach your kernel and bus. Because `/send` injects
-text into a live Claude session — which then runs tools and shell commands as
-you — the practical consequence is that **another local user could drive your
-agents**, i.e. run code as you. The postal bus likewise lets any local process
-spoof inter-session mail.
+## Residual cautions on shared machines
 
-There is no per-user loopback isolation on stock Linux or macOS, so the
-mitigation is **process/network isolation**, not a firewall rule:
-
-- **Preferred:** run romp only on a machine you alone log into.
-- **Linux, per-user isolation:** run romp inside a per-user **network namespace**
-  (`unshare -n`), a **rootless container**, or a **VM**, so its loopback is not
-  shared with other users' processes.
+- The token gate protects against other **non-root users**. Root (or the host
+  operator of a container/VM) can read any file and inspect any process — no
+  userspace design changes that. Don't keep long-lived credentials on hosts
+  whose root you don't trust.
 - **Do not** set `ROMP_SERVE_HOST` to `0.0.0.0` or a LAN address on an untrusted
-  network — that exposes the kernel beyond loopback. (It requires the serve
-  token, but still widens the surface; use an ssh tunnel or `tailscale serve`
-  instead, which keep the listener on loopback.)
-
-A code-level hardening — requiring the serve token even for loopback requests to
-side-effecting routes, and authenticating the bus — is a natural next step for
-multi-user support; it is deliberately not enabled today because local callers
-(the Stop hook, the CLI, bus clients) currently rely on unauthenticated
-loopback. If you need romp on a shared host, open an issue.
+  network — the token still gates every request, but it widens the surface; use
+  an ssh tunnel or `tailscale serve` instead, which keep the listener on
+  loopback.
+- For defense-in-depth on Linux you can still run romp inside a per-user
+  **network namespace** (`unshare -n`) or rootless container, so its loopback is
+  not even reachable by other users' processes.
 
 ## What is already hardened
 
 - **Loopback-only binds** for the kernel and bus (above).
-- **Serve token** for off-box access: 144-bit random, stored `0600`, constant-time
-  compare; Origin/Host gate on the dashboard.
+- **Serve token required on every request, loopback included**: 144-bit random,
+  stored `0600`, constant-time compare; Origin gate on the dashboard and the
+  WS upgrade. Federated (cross-machine) calls authorize with the remote
+  machine's token, carried over ssh tunnels the local machine initiates.
 - **Path-traversal guards** on every id/name/message-id that becomes a filesystem
   path component under the mail and outbox roots (`_safe_id`), so a crafted
   reference like `../../etc` is rejected before any path join.

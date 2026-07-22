@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Regression guards for two romp-kernel serve-layer hardening fixes:
+"""Regression guards for the romp-kernel serve-layer auth gate (_authorize):
 
   L2 — the serve token is compared in constant time (hmac.compare_digest), not
        with ==, so a network (tailnet) client gets no timing oracle on the token.
-  M3 — locality is judged by the REAL TCP peer address (self.client_address), NOT
-       the client-settable Host header. A remote client could otherwise send
-       `Host: localhost` to forge locality and skip the token gate entirely — a
-       proven bypass that reached authed routes (incl. POST /send = agent control)
-       when serving off-box (ROMP_SERVE_HOST=0.0.0.0). Only a loopback peer is
-       trusted without a token; every off-box client must present it.
+  Token-everywhere — the serve token is REQUIRED on every gated route, loopback
+       included (Jupyter's model: loopback is reachable by every local user on
+       the machine, so the 0600 token file — not the socket — is the same-user
+       trust boundary). The old loopback bypass (and with it the whole notion of
+       "locality") is gone: a token-less loopback request is denied, and the Host
+       header carries no authorization weight in any direction. Accepted forms:
+       ?token= (browser bootstrap, seeds the cookie), the romp_token cookie, and
+       the X-Romp-Token header (CLI/hooks/daemons).
 
 Synthetic only — no real session data; the gate decision touches no session state.
 Mirrors tests/test_kernel_ws_auth.py's module load order.
@@ -26,15 +28,22 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
+TOK = km.TOKEN
 
-def _inst(peer, host=None):
-    """A Handler with just enough state to call _is_local_host (no socket).
-    `peer` is the TCP client IP (self.client_address[0]); `host` is an optional
-    forged Host header that must have NO effect on the locality decision."""
+
+def _inst(peer="127.0.0.1", headers=None):
+    """A Handler with just enough state to call _authorize (no socket). `peer` is
+    the TCP client IP (self.client_address[0]); `headers` are the request headers
+    (Host / Origin / Cookie / X-Romp-Token)."""
     h = km.Handler.__new__(km.Handler)
     h.client_address = None if peer is None else (peer, 0)
-    h.headers = {} if host is None else {"Host": host}
+    h.headers = dict(headers or {})
     return h
+
+
+def _auth(peer="127.0.0.1", headers=None, token=None):
+    q = {"token": [token]} if token is not None else {}
+    return _inst(peer, headers)._authorize(q)
 
 
 class TokenCompare(unittest.TestCase):
@@ -48,27 +57,61 @@ class TokenCompare(unittest.TestCase):
         self.assertFalse(km._ct_eq("x", None))
 
 
-class LocalHostGate(unittest.TestCase):
-    def test_loopback_peer_is_local(self):
-        # A genuine loopback connection is trusted without a token, regardless of Host.
-        self.assertTrue(_inst("127.0.0.1")._is_local_host())
-        self.assertTrue(_inst("::1")._is_local_host())
-        self.assertTrue(_inst("::ffff:127.0.0.1")._is_local_host())
-        self.assertTrue(_inst("127.0.0.1", host="anything.example")._is_local_host())
+class TokenRequiredEverywhere(unittest.TestCase):
+    def test_tokenless_loopback_denied(self):
+        # THE hardening this file pins: a loopback peer with no credential is DENIED —
+        # loopback is shared by every local user, so it can't be a trust boundary. This
+        # is what keeps a same-host co-tenant out of every authed route reached through
+        # _authorize, incl. POST /send (prompt injection into live agents).
+        for peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            ok, _, why = _auth(peer=peer)
+            self.assertFalse(ok, "token-less loopback (%s) must be denied" % peer)
+            self.assertIn("token", why)
 
-    def test_remote_peer_not_local_even_with_spoofed_host(self):
-        # THE bypass regression: a remote client forging Host: localhost / 127.0.0.1
-        # must NOT be treated as local — it has to present the serve token. This is
-        # what protects every authed route reached through _authorize, incl. POST
-        # /send (prompt injection into live agents).
-        self.assertFalse(_inst("157.131.32.137", host="localhost")._is_local_host())
-        self.assertFalse(_inst("10.0.0.5", host="127.0.0.1")._is_local_host())
-        self.assertFalse(_inst("100.92.170.123", host="localhost:7433")._is_local_host())
-        self.assertFalse(_inst("203.0.113.9", host="::1")._is_local_host())
+    def test_forged_local_host_headers_do_not_authorize(self):
+        # The old M3 bypass, now moot by construction: Host carries no auth weight at all.
+        for host in ("localhost", "127.0.0.1", "localhost:7433", "::1"):
+            ok, _, _ = _auth(peer="203.0.113.9", headers={"Host": host})
+            self.assertFalse(ok, "Host: %s must not authorize" % host)
+        ok, _, _ = _auth(peer="127.0.0.1", headers={"Host": "localhost"})
+        self.assertFalse(ok, "a local Host on a loopback peer still needs the token")
 
-    def test_missing_or_empty_peer_fails_closed(self):
-        self.assertFalse(_inst(None, host="localhost")._is_local_host())
-        self.assertFalse(_inst("", host="localhost")._is_local_host())
+    def test_query_token_authorizes_and_seeds_cookie(self):
+        ok, cookie, _ = _auth(token=TOK)
+        self.assertTrue(ok)
+        self.assertEqual(cookie, TOK)     # ?token= sets the cookie so the browser never re-prompts
+
+    def test_cookie_authorizes(self):
+        ok, cookie, _ = _auth(headers={"Cookie": "romp_token=" + TOK})
+        self.assertTrue(ok)
+        self.assertIsNone(cookie)         # already has it — no re-set
+
+    def test_header_authorizes(self):
+        # X-Romp-Token: the CLI/hook/daemon form (read from the 0600 file). Safe to accept
+        # regardless of Origin: a cross-site page's custom header forces a CORS preflight,
+        # which runs this same gate and fails without the token.
+        ok, cookie, _ = _auth(headers={"X-Romp-Token": TOK})
+        self.assertTrue(ok)
+        self.assertIsNone(cookie)
+
+    def test_wrong_credentials_denied(self):
+        self.assertFalse(_auth(token="wrong")[0])
+        self.assertFalse(_auth(headers={"Cookie": "romp_token=wrong"})[0])
+        self.assertFalse(_auth(headers={"X-Romp-Token": "wrong"})[0])
+
+    def test_valid_token_bypasses_origin_gate_wrong_token_does_not(self):
+        # Federation: a foreign-Origin browser (served by ANOTHER kernel) carrying this
+        # kernel's token through the tunnel must authorize; without it the Origin gate holds.
+        ok, _, _ = _auth(headers={"Origin": "http://evil.example"}, token=TOK)
+        self.assertTrue(ok)
+        ok, _, why = _auth(headers={"Origin": "http://evil.example"}, token="wrong")
+        self.assertFalse(ok)
+        self.assertEqual(why, "cross-site origin")
+
+    def test_remote_peer_denied_without_token(self):
+        ok, _, why = _auth(peer="100.92.170.123")
+        self.assertFalse(ok)
+        self.assertIn("token", why)
 
 
 if __name__ == "__main__":

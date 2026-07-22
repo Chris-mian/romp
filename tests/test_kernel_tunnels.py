@@ -72,6 +72,7 @@ def _req(port, method, path, body=None):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"} if data is not None else {}
+    headers["X-Romp-Token"] = km.TOKEN     # the serve token gates every route, loopback included
     c.request(method, path, data, headers)
     resp = c.getresponse()
     raw = resp.read()

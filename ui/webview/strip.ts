@@ -9,6 +9,12 @@
 // Usage data: an initial GET /usage via the host-injected kernel base, then
 // live {type:"usage"} pushes relayed by the host from the timeline view's
 // forwards — the same event source the web rail rides.
+//
+// Every kernel fetch routes through media.ts kernelUrl(): it prepends the
+// host-injected base AND appends ?token= when the host injected one — the
+// kernel gates every request on the serve token (loopback included), and a
+// webview's cross-origin fetch carries no cookie.
+import { kernelUrl } from "./media";
 
 export type UsageWindow = {
   key: string;
@@ -74,7 +80,6 @@ export const STRIP_PANES: Array<{ key: string; label: string }> = [
 export function initStrip(openSettings: () => void, post?: (m: Record<string, unknown>) => void): void {
   if (!(window as any).__rompShowStrip) return;
   if (document.getElementById("romp-strip")) return;
-  const base = (window as any).__rompKernelBase || "";
 
   const strip = document.createElement("div");
   strip.id = "romp-strip";
@@ -93,7 +98,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
   refresh.addEventListener("click", (e) => {
     e.stopPropagation();
     refresh.disabled = true;
-    fetch(`${base}/restart`, { method: "POST" }).catch(() => { /* the reconnect machinery reports */ });
+    fetch(kernelUrl("/restart"), { method: "POST" }).catch(() => { /* the reconnect machinery reports */ });
     setTimeout(() => { refresh.disabled = false; }, 8000);   // pure failsafe re-arm; the reload normally lands first
   });
   // Remote kernels — the rail's #rail-net twin (same endpoints; the shell keeps
@@ -120,7 +125,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
   acts.append(refresh, net, gear);
   strip.append(usageWrap, panesWrap, acts);
   document.body.appendChild(strip);
-  initNetPopover(net, base, post);
+  initNetPopover(net, post);
 
   // The compress ladder, MEASURED (the user 2026-07-14): fixed width thresholds
   // stepped the labels down while free space remained (with every pane open there
@@ -217,7 +222,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
     else if (m.type === "stripPanes") renderPanes(m.hidden || {});        // which quick-opens to offer
   });
 
-  fetch(`${base}/usage`, { cache: "no-store" })
+  fetch(kernelUrl("/usage"), { cache: "no-store" })
     .then((r) => r.json())
     .then((u) => render(u))
     .catch(() => { /* the live pushes fill it in */ });
@@ -234,7 +239,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
 // client-diag.jsonl — the user reported the button doing nothing in VS Code
 // (2026-07-14) while every repro outside VS Code works, so the next report
 // comes with recorded evidence instead of guesses.
-function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Record<string, unknown>) => void) {
+function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unknown>) => void) {
   const pop = document.createElement("div");
   pop.id = "strip-net-pop";
   pop.hidden = true;
@@ -258,7 +263,7 @@ function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Reco
   const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel";
 
   function loadHosts() {
-    fetch(`${base}/ssh-hosts`, { cache: "no-store" }).then((r) => r.json()).then((d) => {
+    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
       const hs: string[] = (d && d.hosts) || [];
       sel.innerHTML = hs.length
         ? hs.map((h) => `<option value="${h}">${h}</option>`).join("")
@@ -270,7 +275,7 @@ function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Reco
     b.disabled = true;
     const prev = b.textContent;
     b.textContent = busyText;
-    fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) })
+    fetch(kernelUrl(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) })
       .then(() => schedule(600))
       .catch(() => { b.disabled = false; b.textContent = prev; });
   }
@@ -323,7 +328,7 @@ function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Reco
 
   let diagPending = false;   // report the first /tunnels outcome of each open, not every 3s poll
   function refresh() {
-    fetch(`${base}/tunnels`, { cache: "no-store" }).then((r) => r.json()).then((d) => {
+    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
       renderList(ts);
@@ -335,7 +340,7 @@ function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Reco
       list.textContent = "";
       const e = document.createElement("div");
       e.className = "sn-empty";
-      e.textContent = `Couldn't reach the kernel (${base || "same origin"}) — retrying…`;
+      e.textContent = `Couldn't reach the kernel (${(window as any).__rompKernelBase || "same origin"}) — retrying…`;
       list.appendChild(e);
       schedule(3000);
     });
@@ -370,7 +375,8 @@ function initNetPopover(button: HTMLButtonElement, base: string, post?: (m: Reco
       loadHosts();
       refresh();
     }
-    post?.({ type: "clientDiag", surface: "strip", what: "netToggle", data: { open: !pop.hidden, base } });
+    post?.({ type: "clientDiag", surface: "strip", what: "netToggle",
+             data: { open: !pop.hidden, base: (window as any).__rompKernelBase || "" } });
   });
   document.addEventListener("click", (e) => {
     if (!pop.hidden && !pop.contains(e.target as Node) && e.target !== button) setOpen(false);
