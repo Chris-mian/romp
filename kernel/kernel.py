@@ -11506,11 +11506,11 @@ _CHAT_MOBILE_CSS = (
     "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
     "#mhdr{display:flex;align-items:stretch;gap:6px;width:100%}"
     "#mcur{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;"
-    "background:#000;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
+    "background:#2a2a2a;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
     "font:600 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
-    # colored session: the identity color reads as the NAME (bold) on a black chip, with a hairline
-    # color border, not the color as a fill (the user 2026-07-22).
-    "#mcur.colored{background:#000;color:var(--cbg);border-color:var(--cbg)}"
+    # colored session: the identity color reads as the NAME (bold) on the same grey chip as the +/madd
+    # button, with a hairline color border, not the color as a fill (the user 2026-07-22).
+    "#mcur.colored{background:#2a2a2a;color:var(--cbg);border-color:var(--cbg)}"
     "#mcur .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}"
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
@@ -12654,6 +12654,9 @@ def _landing():
             # (body:not(.po-*) #x-pane{display:none}) must NOT leak in — the tab bar, not the rail's po-state,
             # governs which pane shows — so force chat/feed/timeline panes back to display:contents.
             ".pane{display:contents}"
+            # no pane focus RING on mobile (the user 2026-07-22): only one pane shows at a time, so it's
+            # always the focused one — the ring just draws a pointless blue border around the whole view.
+            ".pane.pane-focused::after{display:none}"
             # the Outline (fleet) rides the tab bar like every other pane (the user 2026-07-11: "I can't
             # access the outline view in the mobile UI" — it was desktop-only before)
             "#chat-pane,#fleet-pane,#feed-pane,#tl-pane{display:contents!important}"

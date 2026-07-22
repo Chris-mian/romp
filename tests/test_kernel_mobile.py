@@ -232,12 +232,23 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("--chip-bg", js)                    # reads each session's identity color
         self.assertIn("#mcur.colored", css)               # the current button wears that color
 
-    def test_current_session_title_is_bold_color_on_black(self):
-        # the user 2026-07-22: the mobile current-session title should read as the identity color in BOLD
-        # on a BLACK chip (with a hairline color border), not the color used as the fill.
+    def test_current_session_title_is_bold_color_on_the_grey_chip(self):
+        # the user 2026-07-22: the mobile current-session title reads as the identity color in BOLD on the
+        # SAME grey chip as the +/madd button (#2a2a2a), with a hairline color border, not the color as a fill.
         css = km._CHAT_MOBILE_CSS
-        self.assertIn("#mcur.colored{background:#000;color:var(--cbg);border-color:var(--cbg)}", css)
+        self.assertIn("#mcur.colored{background:#2a2a2a;color:var(--cbg);border-color:var(--cbg)}", css)
+        self.assertIn("#madd{flex:0 0 auto", css)                    # ...and the + button is that same grey
+        self.assertIn("background:#2a2a2a;color:#bbbbbb", css)       # (the shared chip grey)
         self.assertIn("white-space:nowrap;font-weight:700}", css)   # the .nm name span is bold
+
+    def test_no_pane_focus_ring_on_mobile(self):
+        # the user 2026-07-22: only one pane shows at a time on mobile, so the "which pane is focused" ring
+        # is meaningless — it just draws a blue border around the whole view. It's suppressed in the mobile
+        # media query while the desktop grid (many panes at once) keeps it.
+        html = km._landing()
+        self.assertIn(".pane.pane-focused::after{display:none}", html)   # killed on mobile
+        # the desktop ring itself still exists (outside the media query)
+        self.assertIn(".pane.pane-focused::after{content:'';", html)
 
     def test_picker_is_gated_on_touch_not_pane_width(self):
         # regression: the chat iframe is one of three desktop panes, so it's ALWAYS narrow. A bare
