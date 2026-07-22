@@ -6466,7 +6466,9 @@ BLOCK_BRIEF_SYS = (
     "label you weren't shown. It cites the single message the user should open for the fullest, most "
     "current context on the decision, usually where the question and its options were actually laid "
     "out; never a line that merely announces or hands off work about to start, however closely it "
-    "names the goal. This line is parsed off and never shown.")
+    "names the goal. This line is parsed off and never shown.\n\n"
+    "One last check before you send: if any [mN] labels appeared in <work>, the final line of your "
+    "reply must be exactly SOURCE: mN. Do not stop at the takeaway; the SOURCE line always comes last.")
 
 
 def brief_llm(goal_text, work_text, owed):

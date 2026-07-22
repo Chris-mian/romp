@@ -4516,6 +4516,24 @@ class SourceCitation(unittest.TestCase):
             self.assertNotIn("two labeled sections and nothing else", sys_prompt,
                              "the contradicting absolute shape claim is gone")
 
+    def test_briefer_repeats_the_source_line_at_the_very_end(self):
+        # Round-3 lever (2026-07-22): round 2's shape-sentence fix (test above) did NOT clear the briefer's
+        # cite-miss. The re-tally (judge-errors vs judge-usage since 07-17) still read briefer 3/200 = 1.5%
+        # "no SOURCE line", every one a complete decision brief that simply stopped at the takeaway. The
+        # pre-decided next lever repeats the requirement as the LAST thing the model reads (recency), after
+        # the section specs, so the trailing line is top-of-mind at generation time. Briefer-only: the
+        # distiller was clean post-fix (0 cite-miss), so its working prompt is left untouched.
+        tail = jd.BLOCK_BRIEF_SYS[-260:]
+        self.assertIn("final line of your", tail, "the reminder rides at the very end of the briefer prompt")
+        self.assertIn("SOURCE: mN", tail, "and it restates the exact required line")
+        self.assertIn("Do not stop at the takeaway", tail, "hammering the observed miss: ending on the takeaway")
+        # ADDITIVE, not a replacement: the detailed citation paragraph (which message to cite) still precedes it
+        self.assertLess(jd.BLOCK_BRIEF_SYS.index("complete **only**"),
+                        jd.BLOCK_BRIEF_SYS.rindex("SOURCE: mN"),
+                        "the terse end-reminder comes after the full citation paragraph, not instead of it")
+        self.assertNotIn("One last check before you send", jd.DISTILL_SYS,
+                         "the lever is briefer-only; the clean distiller prompt is not perturbed")
+
 
 class Distiller(unittest.TestCase):
     """The distiller (the user 2026-06-17): when a TOP completes, summarize the goal's full WORK history —
