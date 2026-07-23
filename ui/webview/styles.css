@@ -885,9 +885,13 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    anonymous gray dot, indistinguishable from every other rail glyph. The url is relative to the emitted
    dist/styles.css so it resolves against the kernel's /media AND the VS Code webview root; an absolute
    /media 404s in the webview's synthetic origin (same reasoning as .slash-spin above). */
-.dot.romp { background: #000; border: none; }
+/* The pale ring is the timeline's, matched exactly (the user 2026-07-23): romp-timeline-view draws every
+   dot with stroke #e8eef5, so the same event wears the same mark on both surfaces rather than a bordered
+   version there and a bare one here. inset:0 on the glyph because the border already eats 1px off the
+   11px box (box-sizing: border-box), so the swirl keeps the size it had before the ring arrived. */
+.dot.romp { background: #000; border: 1px solid #e8eef5; }
 .dot.romp::before {
-  content: ""; position: absolute; inset: 1px; border-radius: 50%;
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
   background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
 }
 /* user turns pad 14px on top (vs 9px for assistant), so nudge their dot + rail marker

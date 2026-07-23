@@ -49,5 +49,5 @@ test("the romp bubble is a gray, right-aligned bubble (inherits the non-injected
   assert.match(CSS, /\.romp-tag \{/);
   // its rail dot is the swirl in a dark disc since 2026-07-23, matching the timeline's romp glyph —
   // the bubble stays gray, but the dot is no longer anonymous. Pinned in rail-line-hover.test.ts.
-  assert.match(CSS, /\.dot\.romp \{ background: #000; border: none; \}/);
+  assert.match(CSS, /\.dot\.romp \{ background: #000; border: 1px solid #e8eef5; \}/);
 });

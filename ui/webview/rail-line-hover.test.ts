@@ -199,7 +199,8 @@ test("the rail strip navigates on click with the same payload as the dot", () =>
 
 test("a romp-injected turn's rail dot wears the swirl, as the timeline draws it", () => {
   // one kind of event should look like itself on both surfaces; it was an anonymous gray dot before
-  assert.match(CSS, /\.dot\.romp \{ background: #000; border: none; \}/);
+  assert.match(CSS, /\.dot\.romp \{ background: #000; border: 1px solid #e8eef5; \}/,
+    "the pale ring matches romp-timeline-view's stroke #e8eef5 on every dot");
   assert.match(CSS, /\.dot\.romp::before \{[\s\S]*?background: url\(\.\.\/media\/romp-swirl-glyph\.svg\) center \/ contain no-repeat;/);
   assert.doesNotMatch(CSS, /\.dot\.romp \{ background: var\(--dim\)/, "the anonymous gray dot is gone");
   // relative, not absolute: an absolute /media 404s in the VS Code webview's synthetic origin
