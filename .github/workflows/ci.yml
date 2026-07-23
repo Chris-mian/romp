@@ -4,16 +4,25 @@ name: CI
 # postal/), the shell surfaces (tmux hooks / postal / manager), and the VS Code
 # extension build.
 #
-# The Python and shell suites run on BOTH Linux and macOS. romp is a
-# macOS-first tool in practice (tmux + launchd), so a Linux-only gate misses the
-# platform most users are on. Python spans 3.10 (the floor docs/install.md
-# promises) through 3.13 (the dev version); the older versions run on Linux
-# only, since a version gap and a platform gap rarely fail the same way.
+# LINUX runs on every push and PR — it is free on a public repo, no minute cap.
+# macOS is BILLED even on a public repo (larger runners always are, at ~10x), and
+# the bats suite alone is ~16 macOS-minutes = ~160 billable minutes per run, so
+# it does NOT run automatically. Trigger it by hand from the Actions tab ("Run
+# workflow") when you want a cross-platform check before a release or after
+# touching a platform-sensitive surface (tmux, launchd, the folder opener).
+# On a macOS dev box, the pre-push hook runs the same suites locally, so the
+# common macOS-only breakages (a real browser opening, a tmux-binary dependency)
+# are caught before the push rather than waiting on this manual run.
+#
+# Python spans 3.10 (the floor docs/install.md promises) through 3.13 (the dev
+# version); the older versions run on Linux only, since a version gap and a
+# platform gap rarely fail the same way.
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:   # the manual on-switch for the macOS cells (see above)
 
 # A newer push to the same ref cancels the older in-flight run.
 concurrency:
@@ -33,7 +42,9 @@ jobs:
       # macOS-only break look identical if the matrix stops at the first.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS is in the matrix ONLY on a manual run (workflow_dispatch); a
+        # normal push/PR gets Linux alone. See the billing note in the header.
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
         python-version: ['3.10', '3.13']
         include:
           - os: ubuntu-latest
@@ -59,7 +70,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS only on a manual run (workflow_dispatch); see the header note.
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install bats + tmux (Linux)
