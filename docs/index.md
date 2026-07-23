@@ -39,14 +39,14 @@ Tracks all the work so you don't have to, generated automatically from the agent
 
 <video src="assets/guide/task-cards.mp4" autoplay loop muted playsinline width="100%"></video>
 
-## Context where you need it { .feature-h }
+## One card, three questions { .feature-h }
 
 What the agent did and why, without having to scroll through transcripts. One
 click flips a card between its background, its summary, and its sub-tasks.
 
 <video src="assets/guide/context-tabs.mp4" autoplay loop muted playsinline class="romp-card-demo"></video>
 
-## Coordination you can see { .feature-h }
+## Coordination in the open { .feature-h }
 
 Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.
 

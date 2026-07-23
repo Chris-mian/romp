@@ -22,7 +22,7 @@ Tracks all the work so you don't have to, generated automatically from the agent
 
 <img src="docs/assets/tile-tasks.png" alt="Work grouped into task cards" width="100%">
 
-### Context where you need it
+### One card, three questions
 
 What the agent did and why, without having to scroll through transcripts.
 
@@ -30,7 +30,7 @@ What the agent did and why, without having to scroll through transcripts.
 
 <img src="docs/assets/tile-context-summary.png" alt="A card's summary: what the agent did" width="100%">
 
-### Coordination you can see
+### Coordination in the open
 
 Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.
 
