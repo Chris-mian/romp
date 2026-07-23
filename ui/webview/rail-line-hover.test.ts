@@ -181,3 +181,27 @@ test("railLastDotFrom is the transcript's FINAL dot, so both callers land on it 
   assert.match(fn, /y = r\.top \+ r\.height \/ 2 - hostR\.top;/, "assigns, never returns early");
   assert.match(fn, /return y;/);
 });
+
+// --- the LINE clicks like its dots (the user 2026-07-23) -------------------------------------------
+// It already hovered like them and already wore cursor:pointer, so a click that did nothing read as
+// broken rather than as read-only.
+
+test("the rail strip navigates on click with the same payload as the dot", () => {
+  const fn = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
+  const clicks = fn.match(/postMessage\(\{ type: "dotOpen", sid: activeId, uuid, t, tlId \}\)/g) || [];
+  assert.equal(clicks.length, 2, "the dot AND the line both open the same target");
+  // both stop propagation so the click never doubles as a turn-body click
+  const railBlock = fn.slice(fn.indexOf('el("div", "rail-hit")'));
+  assert.match(railBlock, /addEventListener\("click", \(e\) => \{\s*\n\s*e\.stopPropagation\(\);/);
+  assert.match(railBlock, /rail\.title = "click: jump to this on the timeline \+ feed · hover: highlight there";/,
+    "the tooltip promises the click it now honours");
+});
+
+test("a romp-injected turn's rail dot wears the swirl, as the timeline draws it", () => {
+  // one kind of event should look like itself on both surfaces; it was an anonymous gray dot before
+  assert.match(CSS, /\.dot\.romp \{ background: #000; border: none; \}/);
+  assert.match(CSS, /\.dot\.romp::before \{[\s\S]*?background: url\(\.\.\/media\/romp-swirl-glyph\.svg\) center \/ contain no-repeat;/);
+  assert.doesNotMatch(CSS, /\.dot\.romp \{ background: var\(--dim\)/, "the anonymous gray dot is gone");
+  // relative, not absolute: an absolute /media 404s in the VS Code webview's synthetic origin
+  assert.doesNotMatch(CSS, /\.dot\.romp::before \{[^}]*url\(\/media/);
+});

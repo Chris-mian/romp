@@ -993,7 +993,14 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   // can't take pointer events — so a slim invisible hit strip overlays it; the dot's enlarged hit pad
   // stacks ABOVE the strip, so the dot always wins where they overlap.
   const rail = el("div", "rail-hit");
-  rail.title = "hover: highlight on the timeline + feed";
+  rail.title = "click: jump to this on the timeline + feed · hover: highlight there";
+  // The line CLICKS like its dots too (the user 2026-07-23). It already hovers like them, and a handle
+  // that highlights on hover but does nothing on click reads as broken rather than as read-only. Same
+  // dotOpen payload, so the line and the dot that begins its turn navigate to exactly the same place.
+  rail.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t, tlId });
+  });
   let railTimer: ReturnType<typeof setTimeout> | undefined;
   rail.addEventListener("mouseenter", () => {
     cancelHoverClear();

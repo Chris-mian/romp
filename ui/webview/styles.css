@@ -879,8 +879,17 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* your prompt — the SAME royal/indigo blue as your message bubble (#2b6cef), so the dot matches your
    chat box (the user 2026-06-15). Distinct from the cyan ✓ success disc (--check-bg #1EA1EB). */
 .dot.user { background: #2b6cef; border: none; }
-/* a romp-injected message (feed nudge) — a muted gray dot to match its gray bubble (the user 2026-06-19) */
-.dot.romp { background: var(--dim); border: none; }
+/* A romp-injected message (a nudge, a status note) wears the SWIRL in a dark disc — the same mark the
+   timeline already puts on a romp event (romp-timeline-view.js draws a black dot with the glyph inside),
+   so one kind of event looks like itself on both surfaces (the user 2026-07-23). It used to be an
+   anonymous gray dot, indistinguishable from every other rail glyph. The url is relative to the emitted
+   dist/styles.css so it resolves against the kernel's /media AND the VS Code webview root; an absolute
+   /media 404s in the webview's synthetic origin (same reasoning as .slash-spin above). */
+.dot.romp { background: #000; border: none; }
+.dot.romp::before {
+  content: ""; position: absolute; inset: 1px; border-radius: 50%;
+  background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
+}
 /* user turns pad 14px on top (vs 9px for assistant), so nudge their dot + rail marker
    down to sit on the bubble's first line */
 .turn-user .dot, .turn-user .time-marker { top: 20px; }
