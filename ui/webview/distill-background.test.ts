@@ -66,8 +66,9 @@ test("state: a single mutually-exclusive secChoice (bg | summary | subgoals | ta
 test("only ONE body shows at a time (or neither); no between-sections gap", () => {
   assert.match(FEED, /a\._bgBody\.style\.display = choice === "bg" \? "" : "none";/);
   assert.match(FEED, /\(a\._distill as HTMLElement\)\.style\.display = choice === "summary" \? "" : "none";/);
-  // the bg/summary body container hides unless one of THOSE two is open (the sub-goal tree is a separate el)
-  assert.match(FEED, /a\._secs\.style\.display = \(choice === "bg" \|\| choice === "summary"\) \? "" : "none";/);
+  // the body container hides unless a body that LIVES in it is open (the sub-goal tree is a separate el);
+  // "stall" joined 2026-07-23 — stallBody rides _secs too, and leaving it out was the dead-toggle bug
+  assert.match(FEED, /a\._secs\.style\.display = \(choice === "bg" \|\| choice === "summary" \|\| choice === "stall"\) \? "" : "none";/);
   assert.doesNotMatch(FEED, /fask-gapend/, "the between-sections gap is gone — only one body ever shows");
   assert.doesNotMatch(CSS, /fask-gapend/);
 });

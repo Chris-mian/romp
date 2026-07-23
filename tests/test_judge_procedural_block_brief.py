@@ -12,7 +12,9 @@ In the live case the subtree's 24k chars of work text held exactly one decision-
 belonged to another session's git-history audit, so that is what the card asserted.
 
 So: procedural-only blocks skip the briefer entirely. A goal blocked on a REAL question is untouched, and
-a goal blocked on both still briefs the real one. SYNTHETIC fixtures only.
+a goal blocked on both still briefs the real one. Since 2026-07-23 the card is no longer left MUTE for it:
+the STALLER speaks instead (promoted stall note, or its own where-this-stands prompt with the procedural
+why as <holding>) — see ProceduralBlockStillSpeaks in test_judge.py. SYNTHETIC fixtures only.
 """
 import os
 import unittest

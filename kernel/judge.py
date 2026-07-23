@@ -6959,6 +6959,14 @@ def _distill_session(fsid, path, now):
             n += 1; changed = True
             continue
         if blocked:
+            # A NEW block event since a "" settle re-opens the question (the user 2026-07-23, the launch-prep
+            # card): the "" sentinel means "distilled THAT episode, nothing to say" — it must not keep muting
+            # the card after a FRESH block lands (due moved), or a real owed decision shows neither line nor
+            # Distilling… spinner for as long as the retry window lasts (the "" is non-null, so the UI reads
+            # it as settled). Null it back to PENDING; the paths below re-settle or re-produce it.
+            if nodes[top].get("blockSummary") == "" and nodes[top].get("briefedMt") != due:
+                nodes[top]["blockSummary"] = None
+                changed = True
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
             blkd.sort(key=lambda d: d.get("mt", d.get("t", 0)))   # oldest→newest: a stable reading order
             # ONE sub-goal blocked → its blockWhy (as before). SEVERAL → the full (text, why) list, so the
@@ -6968,21 +6976,37 @@ def _distill_session(fsid, path, now):
             # Drop PROCEDURAL block reasons (procedural_block_why): romp's own "I followed up and gave up" /
             # "you hit stop" bookkeeping names no decision, so it can only push the briefer into inventing one
             # out of <work> — including a peer session's question that rode in on a delegated sub-goal.
-            proc_only = bool(blkd) and all(procedural_block_why(d.get("blockWhy")) for d in blkd)
+            proc_whys = [d.get("blockWhy") for d in blkd if procedural_block_why(d.get("blockWhy"))]
+            proc_only = bool(blkd) and len(proc_whys) == len(blkd)
             blkd = [d for d in blkd if not procedural_block_why(d.get("blockWhy"))]
             owed = ([(d.get("text", ""), d.get("blockWhy", "")) for d in blkd] if len(blkd) > 1
                     else blkd[0]["blockWhy"] if blkd else "")
-            if proc_only:                              # nothing SUBSTANTIVE is owed → no brief at all. The card
-                # keeps its blocked chip and its own history; it just stops asserting a decision nobody asked
-                # for. Same "" sentinel as below (drops the auto-line, never "(generating…)" forever), and the
-                # same don't-clobber rule, so a real brief from an EARLIER genuine block survives.
-                if nodes[top].get("blockSummary") is None:
-                    nodes[top]["blockSummary"] = ""
-                nodes[top]["briefedMt"] = due; changed = True
-                continue
+            if proc_only:                              # no SUBSTANTIVE decision is owed — but a card in Blocked
+                # must still say where things stand (the user 2026-07-23: every blocked card presents a
+                # distilled summary; the bare red chip over silence left look-alike cards inconsistent). A
+                # procedural block (failed nudge, mid-turn stop) ESCALATES A STALL, and the staller is the
+                # reader that speaks for stalls: keep a real brief from an earlier genuine block if one
+                # exists (don't-clobber, as before), else promote the staller's note from the very stall
+                # that escalated, else fall through to write one now with the staller's own prompt —
+                # grounded in the work, forbidden from inventing a decision (STALL_BRIEF_SYS), which is
+                # what feeding these whys to the BRIEFER used to do (the 2026-07-21 lesson).
+                if (nodes[top].get("blockSummary") or "").strip():
+                    nodes[top]["briefedMt"] = due; changed = True
+                    continue
+                _note = (nodes[top].get("stallSummary") or "").strip()
+                if _note:
+                    nodes[top]["blockSummary"] = _note   # same reader, same episode: the note IS the brief
+                    nodes[top]["briefedMt"] = due
+                    nodes[top]["briefFails"] = 0
+                    _node_warn_clear(nodes[top], "brief-failed")
+                    n += 1; changed = True
+                    continue
             if not work and not owed:                  # nothing to brief → settle: the "" sentinel means
                 # "distilled, no brief" so the card drops its auto-line instead of showing "(generating…)"
                 # forever. Stamp briefedMt so we don't retry; don't clobber a real brief from an earlier block.
+                # (proc_only with readable work falls PAST this to the staller-framed call below — work is
+                # non-empty; proc_only with none settles here like any other empty gather, owed being "" for
+                # it by construction.)
                 if _goal_has_recorded_work(store, top):   # recorded keys, none resolved → orphaned history:
                     _warn_history_unreadable(nodes[top], "briefer", now)   # fail LOUDLY, never a silent blank
                     _log_judge_error("briefer", fsid, "history-unreadable", goal=top,
@@ -6991,7 +7015,12 @@ def _distill_session(fsid, path, now):
                     nodes[top]["blockSummary"] = ""
                 nodes[top]["briefedMt"] = due; changed = True
                 continue
-            out = brief_llm(nodes[top].get("text", ""), work, owed)
+            # proc_only (no earlier brief, no stall note): the staller's where-this-stands prompt, with the
+            # NEWEST procedural why as <holding> verbatim — it already says whose move it is ("needs your
+            # direction"), and STALL_BRIEF_SYS restates <holding> faithfully rather than inventing an owed
+            # decision from <work>. Stored as the card's blockSummary through the same fail/retry path.
+            out = (stall_llm(nodes[top].get("text", ""), work, proc_whys[-1]) if proc_only
+                   else brief_llm(nodes[top].get("text", ""), work, owed))
             if not out:
                 if getattr(_judge_ctx, "paused", False):   # the call was SKIPPED (global retry-pause on), not
                     continue                               # tried — never count a pause-skip toward give-up, else
@@ -7003,7 +7032,7 @@ def _distill_session(fsid, path, now):
                     if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
                     nodes[top]["briefedMt"] = due; nodes[top]["briefFails"] = 0
-                    _log_judge_error("briefer", fsid, "give-up", goal=top,   # distinct from the retryable "call"
+                    _log_judge_error("staller" if proc_only else "briefer", fsid, "give-up", goal=top,   # distinct from the retryable "call"
                                      note="%d failed calls on this card; brief blanked, card warns; a fresh block re-arms" % fails)
                     _warn_summary_failed(nodes[top], "brief", now)   # fail LOUDLY: card warn + modal, no silent blank
                 else:
@@ -7020,7 +7049,7 @@ def _distill_session(fsid, path, now):
             nodes[top]["summaryAnchor"] = marks.map.get(src) or marks.newest()
             if marks.map and marks.map.get(src) is None:   # labels offered, no usable citation → log only:
                 # the stamp already grounded the anchor, so a card warn would be noise (the user 2026-07-21)
-                _log_judge_error("briefer", fsid, "cite-miss", goal=top, note="%s; %d labels offered; reply tail: %r" % (
+                _log_judge_error("staller" if proc_only else "briefer", fsid, "cite-miss", goal=top, note="%s; %d labels offered; reply tail: %r" % (
                     ("cited unoffered label %s" % src) if src else "no SOURCE line", len(marks.map), (raw or "")[-160:]))
             _node_warn_clear(nodes[top], "cite-miss")      # anchored either way → any older warn is over
             nodes[top]["briefedMt"] = due

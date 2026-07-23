@@ -33,6 +33,15 @@ test("it joins the ONE mutually-exclusive selection, so opening it closes the ot
   assert.match(FEED, /a\._stallBtn\.classList\.toggle\("on", choice === "stall"\);/);
 });
 
+test("opening the stall section shows the shared bodies CONTAINER, not just the body", () => {
+  // The 2026-07-23 dead-toggle bug: stallBody lives inside _secs, and _secs only showed for bg/summary —
+  // so clicking Stalled pressed the button .on while its body sat inside a display:none parent. "It
+  // selects but nothing happens" (the user, the very first click on the day-old section).
+  assert.match(FEED,
+    /a\._secs\.style\.display = \(choice === "bg" \|\| choice === "summary" \|\| choice === "stall"\) \? "" : "none";/,
+    "every choice whose body rides _secs must be in the container's show condition");
+});
+
 test("the button shows on the kernel's why alone, not on a judge-written note", () => {
   // The whole point is that a stalled card is never mute. The kernel knows the mechanical reason before the
   // staller is ever called, so the section must not wait on the LLM to have produced anything.
@@ -46,13 +55,15 @@ test("the body prefers the staller's note and falls back to the mechanical reaso
     "never '(generating…)' — there is always something true to say");
 });
 
-test("the toggle keeps the working colour in BOTH states", () => {
-  assert.match(CSS, /\.fask-stallbtn, \.fask-stallbtn\.on \{ color: var\(--st-working-bg\); border-color: var\(--st-working-bg\); \}/,
-    "selected or not, it stays yellow — it must still draw the eye while open");
-  assert.match(CSS, /\.fask-stallbtn\.on \{ background: rgba\(156, 210, 255, 0\.10\); font-weight: 600; \}/,
-    "only the FILL takes the accent wash, the same one every pressed toggle uses");
-  assert.doesNotMatch(CSS, /\.fask-stallbtn\.on \{[^}]*color: var\(--accent\)/,
-    "it must never inherit the accent TEXT the other selected toggles take");
+test("the toggle is a FILLED working-yellow status chip in BOTH states", () => {
+  // Filled at rest, not an outline: the outline version sat as quiet as its neighbours and the stall went
+  // unnoticed (the user 2026-07-23, round 2 — it should be "noticed when something is going on").
+  assert.match(CSS, /\.fask-stallbtn, \.fask-stallbtn\.on \{ color: var\(--st-working-fg\); background: var\(--st-working-bg\);/,
+    "selected or not, it wears the working status colours — a status, not a preference");
+  assert.match(CSS, /\.fask-stallbtn\.on \{ font-weight: 600; \}/,
+    "pressed adds only weight; the opened body below is the pressed cue");
+  assert.doesNotMatch(CSS, /\.fask-stallbtn[^{]*\{[^}]*var\(--accent\)/,
+    "it must never take the accent the other selected toggles use — yellow is a STATUS colour here");
 });
 
 test("the stall body reads exactly like the summary and background bodies", () => {
