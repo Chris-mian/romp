@@ -7460,6 +7460,33 @@ def _atom_user_text(a):
     return (c.strip() if isinstance(c, str) else None) or None
 
 
+def _atom_user_texts(a):
+    """EVERY text this user atom could have been echoed as: the joined text (above) AND each individual
+    text BLOCK. romp BUNDLES its injected messages — a restart notice, a background-task death notice and
+    an auto-nudge all arrive as three text blocks in ONE user record — but the optimistic echo holds only
+    the nudge body. _atom_user_text space-JOINS the blocks, so the echo's exact text was never a member of
+    the transcript set and the landing check ("et in tx_user_texts") could not fire. The echo then never
+    retired: it rode the bottom of the thread forever, still wearing its original SEND time, so a nudge
+    sent at 16:43 appeared BELOW a 17:00 answer (the user 2026-07-22). The FIFO floor can't save it either
+    — that was deliberately narrowed to PATH-BEARING echoes (2026-07-20) so a genuinely dropped send stays
+    visible. Per-block EXACT match, never a substring test: a bundled block is the very string that was
+    echoed, so this retires the delivered nudge without ever guessing about containment."""
+    if a.get("type") != "user":
+        return ()
+    out = []
+    joined = _atom_user_text(a)
+    if joined:
+        out.append(joined)
+    c = (a.get("message") or {}).get("content")
+    if isinstance(c, list):
+        for b in c:
+            if isinstance(b, dict) and b.get("type") == "text":
+                t = (b.get("text") or "").strip()
+                if t and t != joined:
+                    out.append(t)
+    return tuple(out)
+
+
 # Optimistic input echo for TMUX sends. The SDK backend echoes a composer message instantly via its own
 # _live store; tmux sends had NO echo, so a tmux send whose Enter dropped at the pane prompt was INVISIBLE
 # in the web chat — the user thought they'd replied (the user via bugs 2026-06-25). Mirror the SDK shape
@@ -7550,7 +7577,7 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     if not live:
         return session
     tx_uuids = {a.get("uuid") for turn in session["turns"] for a in turn["atoms"] if a.get("uuid")}
-    tx_texts = {t for turn in session["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
+    tx_texts = {t for turn in session["turns"] for a in turn["atoms"] for t in _atom_user_texts(a)}
     # FIFO floor: the newest GENUINE-HUMAN turn the transcript has — retires an input echo whose text can't
     # match because the transcript extracted an image path out of it (screenshots piling up at the bottom, the
     # user 2026-06-25). SDK-only semantics: TmuxBackend.prune_live IGNORES the floor, since a tmux echo must
@@ -7854,7 +7881,7 @@ def build_session(sid, now, tmux=None):
     busy = _session_working(parsed["turns"]) or compacting_now
     if not hasattr(be, "unqueue") and busy:
         already = {q.strip() for q in queued}
-        tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
+        tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] for t in _atom_user_texts(a)}
         for a in be.live_atoms(sid):
             et = (a.get("_echo_text") or "").strip()
             if et and et not in already and et not in tx_user:
