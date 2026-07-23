@@ -51,6 +51,10 @@ class StoreCas(unittest.TestCase):
         r1 = jd._disk_rev(SID)
         self.assertGreater(r1, 0, "a published store carries a revision")
         s = jd.load_goals(SID)
+        # A REAL change: since 2026-07-22 a save whose content matches disk is not a publish at all and
+        # leaves `rev` where it is (see tests/test_judge_store_noop_publish.py). `rev` counts publications.
+        jd.record_verdict(s, s["nodes"][self._nid(1)], "romp", "block", T0 + 30, why="needs a decision")
+        jd.rollup_status(s, session_closed=False)
         jd.save_goals(SID, s)
         self.assertGreater(jd._disk_rev(SID), r1, "each publish advances the revision")
 

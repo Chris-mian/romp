@@ -1699,6 +1699,29 @@ def _replay_overrides(fsid, store):
                 nd["mt"] = max(int(nd.get("mt") or 0), t)
 
 
+_NONCONTENT_KEYS = ("rev", "_baseRev")   # the revision counter + the transient CAS base: not store CONTENT
+
+
+def _store_content(store):
+    """A store's CONTENT, canonically ordered, minus the revision and the transient CAS key. Two stores with
+    the same content are the same publish however their keys happen to be ordered in memory."""
+    return json.dumps({k: v for k, v in store.items() if k not in _NONCONTENT_KEYS}, sort_keys=True)
+
+
+def _matches_disk(fsid, store):
+    """True when publishing `store` would write back exactly what the file already holds (see save_goals).
+    Anything unreadable, absent or unserializable answers False, so the real write still happens and still
+    raises on its own terms — a no-op check must never swallow a publish it merely failed to understand."""
+    try:
+        disk = json.loads((GOALDIR / (fsid + ".json")).read_text())
+    except Exception:
+        return False                                 # no file yet (a create), or unreadable → publish
+    try:
+        return _store_content(disk) == _store_content(store)
+    except (TypeError, ValueError):
+        return False
+
+
 def save_goals(fsid, store):
     """Publish the store, REBASING first if anyone else published while we held it (the user 2026-07-22).
 
@@ -1711,9 +1734,21 @@ def save_goals(fsid, store):
     Bounded retries, and no file lock (this codebase takes none), so a vanishingly small TOCTOU window
     remains between the last check and the rename — but a merged publish beats an unconditional stomp, and
     the override journal still backstops the state. Stores built without load_goals carry no `_baseRev`
-    and keep the old unconditional behavior (nothing to rebase onto)."""
+    and keep the old unconditional behavior (nothing to rebase onto).
+
+    A publish that would write back EXACTLY what the file already holds is skipped (the user 2026-07-22).
+    Callers save unconditionally on purpose — `_plan_session` ends every pass with a rollup + save whether or
+    not the pass placed anything — so an idle fleet rewrote ~24 stores with byte-identical content about ten
+    times a second, running `rev` counters past 10,000. The cost that actually bites is not the write: the
+    kernel's `_compact_goal_stores` skips a store whose mtime hasn't moved ("the steady state is just
+    stats"), and a no-op republish moved every mtime every pass, so the sweep re-processed the whole live
+    fleet forever. Skipping is safe precisely BECAUSE nothing changed: we have no events to contribute, so
+    declining to publish can neither lose our work nor clobber a concurrent writer's. `rev` does not advance
+    on a no-op, which is the honest reading of a counter that means "publications"."""
     GOALDIR.mkdir(parents=True, exist_ok=True)
-    base = store.pop("_baseRev", None)               # transient: never serialized
+    if "_baseRev" in store and _matches_disk(fsid, store):
+        return                                       # nothing of ours to publish → leave the file (and its
+    base = store.pop("_baseRev", None)               # mtime) alone.  transient: never serialized
     if base is not None:
         for _ in range(4):                           # a busy store settles in a pass or two
             disk = _disk_rev(fsid)
