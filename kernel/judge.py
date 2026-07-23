@@ -1356,6 +1356,7 @@ def _zero_based_tell(items):
 def _parse_plan(raw, menu_len, allow_extend=False):
     """Parse the planner's JSON reply into an ORDERED list of normalized ops, or None if nothing is
     usable. Expected: {"ops": [ {"why", "do": mint|sub|done|block|retitle|skip, ...}, ... ]}. Tolerant:
+    `awaiting` is the nudge phase's "still progressing, nothing owed to the user" verdict (2026-07-22).
     isolates the outermost {...} (ignoring code fences / surrounding prose), drops malformed ops but
     keeps the good ones, and a bad menu ref on a sub falls back to a mint (never orphan real work) while
     a bad ref on done/block/retitle drops that op. Exception: a 0/negative ref anywhere rejects the
@@ -1409,7 +1410,7 @@ def _parse_plan(raw, menu_len, allow_extend=False):
                 ops.append({"do": "sub", "why": why, "ref": r, "text": text})   # under a node minted earlier this reply
             else:
                 ops.append({"do": "mint", "why": why, "text": text})   # no valid parent → place it, never orphan
-        elif do in ("done", "block"):
+        elif do in ("done", "block", "awaiting"):
             g, r = _int(o, "goal"), _int(o, "ref")
             if g and 1 <= g <= menu_len:
                 ops.append({"do": do, "why": why, "goal": g})
@@ -2322,6 +2323,20 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
                 nodes[t]["mt"] = seg_t; touched = t   # the event materialized the flags (blockWhy = why)
                 if seg_id and seg_id not in (nodes[t].get("trail") or []):
                     nodes[t].setdefault("trail", []).append(seg_id)   # same: the blocking segment is history
+        elif do == "awaiting":
+            # AFFIRMATIVE "still progressing, nothing owed to the user" (the user 2026-07-22). Before this,
+            # a nudge reply that reported healthy progress ("in progress and self-driving, 11/203 done,
+            # I've set a watcher that wakes me when the run finishes") produced NO op at all — the phase
+            # was marked processed, the goal stayed 'working', and the kernel's nudge-failed stamp read
+            # that silence as "the response didn't resolve this; it needs your direction" and blocked on
+            # the user. Undetermined was indistinguishable from needs-you. An awaiting verdict makes the
+            # progressing case SAYABLE: it is the same ⏳ annotation the closer already stamps (never a
+            # state — see _fold_node), and _goal_awaiting_stamp already gates BOTH the auto-nudge fire
+            # path and _mark_nudge_failed's own escape, so recording it suppresses the false interrupt
+            # through machinery that already exists. Lifted by the closer's next audit of the goal.
+            t = _target(o)
+            if t and record_verdict(store, nodes[t], "planner", "awaiting", seg_t, why=o["why"], seg=seg_id):
+                touched = t                           # mt deliberately NOT bumped: an annotation, not work
         elif do == "extend":
             # A queued-fragment landing (the opener's sibling <note>, the user 2026-07-11): this message
             # is part of #goal's own ask — fresh evidence on the existing node, no new node. Trail + mt
@@ -2862,7 +2877,11 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "answer from the user (the why = that ask). Do **not** file a plain step that merely restates the "
                  "status — a finished-and-reported goal is done. **Exception**: only if the agent has genuinely "
                  "**resumed** real, still-unfinished work on the goal, keep it working — never force a false "
-                 "done/block. When the nudge enumerated the goal's unfinished pieces and the reply reports on "
+                 "done/block; and in that case say so explicitly with **awaiting** on #1, the why naming what "
+                 "it is waiting on or working through (a long run, a watcher it armed, a background task, a "
+                 "step still in progress). Emit awaiting whenever the reply shows the agent is progressing "
+                 "and needs **nothing** from the user — silence is not enough, because an unresolved nudge "
+                 "with no verdict is read as needing the user's direction. When the nudge enumerated the goal's unfinished pieces and the reply reports on "
                  "them, also resolve each reported piece on its **own** listed item: done where it is "
                  "delivered, done with the why saying so where the reply calls it obsolete or no longer "
                  "needed, block where it names something still needed from the user. A piece the reply does "
