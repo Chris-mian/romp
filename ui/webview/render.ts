@@ -1374,6 +1374,57 @@ function restampMarkers(root: HTMLElement): void {
   }
 }
 
+// STICKY rail stamp (the user 2026-07-22). restampMarkers' spacing pass keeps the rail from going more
+// than ~6 rows unstamped, but it can only stamp at a TURN boundary — so a single message taller than the
+// viewport has nowhere to put one, and scrolling through it leaves the rail blank with no time in sight.
+// This pins the current turn's HH:MM at the top of the gutter while you're inside it, and drops it the
+// moment that turn's own marker is on screen showing the time — so there is always exactly one stamp
+// visible, never two, and it hands off naturally as the next turn scrolls up.
+//
+// A fixed overlay on <body> (the glow-ruler pattern): #content holds the per-session view elements and is
+// rebuilt/swapped on pushes and tab switches, so an element parented there would be destroyed; positioning
+// off content.getBoundingClientRect() each paint keeps it aligned without owning any DOM inside the scroll.
+let railSticky: HTMLElement | null = null;
+function ensureRailSticky(): HTMLElement {
+  if (railSticky && railSticky.isConnected) return railSticky;
+  railSticky = el("div", "time-marker rail-sticky");
+  railSticky.style.display = "none";
+  document.body.appendChild(railSticky);
+  return railSticky;
+}
+
+function paintRailSticky(): void {
+  const stamp = ensureRailSticky();
+  const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
+  if (!content || !v || v.el.style.display === "none") { stamp.style.display = "none"; return; }
+  const cTop = content.getBoundingClientRect().top;
+  const fold = cTop + 2;                       // the reading edge: what you'd call "the top of the screen"
+  // the LAST turn starting at or above the fold is the one you're reading; its marker carries the time
+  let marker: HTMLElement | null = null;
+  let anyMarker: HTMLElement | null = null;
+  for (const t of Array.from(v.el.children) as HTMLElement[]) {
+    const m = t.firstChild as HTMLElement | null;
+    if (!m || m.nodeType !== 1 || !m.classList || !m.classList.contains("time-marker")) continue;
+    if (!anyMarker) anyMarker = m;             // any marker gives the gutter's real x geometry
+    const top = t.getBoundingClientRect().top;
+    if (top > fold) break;                     // past the fold; children are in document order
+    marker = m;
+  }
+  // Hand-off: if that turn's OWN marker is on screen AND actually showing a time, it does the job.
+  // A suppressed (same-minute) marker renders empty, so it does not count — that is precisely the case
+  // where the rail looks blank and the sticky stamp has to step in.
+  const hm = marker ? (marker.dataset.hm || "") : "";
+  const live = !!marker && !!marker.textContent && marker.getBoundingClientRect().top >= cTop;
+  if (!hm || live) { stamp.style.display = "none"; return; }
+  const g = (anyMarker || marker!).getBoundingClientRect();
+  stamp.textContent = hm;
+  stamp.style.left = g.left + "px";
+  stamp.style.width = g.width + "px";
+  stamp.style.top = (cTop + 6) + "px";
+  stamp.style.display = "";
+}
+
 // Debounced rAF wrapper — coalesces the many syncView calls of a busy tail into one
 // measure-and-restamp of the active view per frame.
 let restampPending = false;
@@ -1384,7 +1435,16 @@ function scheduleRestamp(): void {
     restampPending = false;
     const v = activeId ? views.get(activeId) : null;
     if (v) restampMarkers(v.el);
+    paintRailSticky();          // the reveal pass can change which markers show a time → re-evaluate
   });
+}
+
+// Scroll is the sticky stamp's primary driver, rAF-coalesced so a fast flick paints once per frame.
+let railStickyPending = false;
+function scheduleRailSticky(): void {
+  if (railStickyPending) return;
+  railStickyPending = true;
+  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); });
 }
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
@@ -4572,10 +4632,16 @@ window.addEventListener("resize", scheduleRestamp);
 // live-ask strip showing, the composer growing, a resize) — the ruler maps content-space → ruler-space, so
 // a plain scroll needs no repaint, but its viewport box and scrollHeight can move under it (link_audit's #4).
 window.addEventListener("resize", paintGlowRuler);
+window.addEventListener("resize", scheduleRailSticky);
 if (typeof ResizeObserver === "function") {
   const ro = new ResizeObserver(() => paintGlowRuler());
   const c = document.getElementById("content");
   if (c) ro.observe(c);
+}
+// the sticky rail stamp tracks the scroll it annotates (passive: it only measures, never blocks the scroll)
+{
+  const c = document.getElementById("content");
+  if (c) c.addEventListener("scroll", scheduleRailSticky, { passive: true });
 }
 // Boxes ABOVE the transcript grow/shrink → keep the chat text visually anchored (the user 2026-06-30 for
 // #tabbar; extended to #ledger 2026-07-05). Both are `flex: 0 0 auto` directly above the `flex: 1 1 auto`

@@ -852,6 +852,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   font-size: 0.76em; font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
   color: var(--dim);
 }
+/* Sticky rail stamp: a fixed overlay pinned to the top of the gutter while you scroll THROUGH a turn
+   taller than the viewport, so the rail always shows a time even when the turn's own marker has scrolled
+   off (the user 2026-07-22). Inherits the marker's type/colour from .time-marker; only its positioning
+   differs — it rides the viewport (fixed), not the scroll, and its left/top/width are set inline by
+   paintRailSticky off #content's live geometry. Passive: it never intercepts a click on what's behind it. */
+.rail-sticky {
+  position: fixed; z-index: 3; pointer-events: none;
+  color: var(--dim); opacity: 0.92;
+}
 /* match the dot's vertical position per turn type (default dot top:15, tool/thinking top:10) */
 .turn-tool .time-marker, .turn-thinking .time-marker { top: 10px; }
 .time-marker.day { color: var(--fg); font-weight: 700; }
