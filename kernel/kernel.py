@@ -1375,7 +1375,7 @@ def _goal_awaiting_stamp(nodes, top, children=None):
     return best[1] if best else None
 
 
-def _mark_nudge_failed(gid):
+def _mark_nudge_failed(gid, ev_t=None):
     """Stamp `failed` on `gid`'s nudge record — the nudge-RESPONSE turn completed (closer-settled, so the
     planner has processed it too) and the goal is STILL working-stalled: the one ask didn't resolve it, and
     per the anti-loop rule we never re-ask. Event-based — stamped at the tick's re-arm gate, whose
@@ -1418,9 +1418,14 @@ def _mark_nudge_failed(gid):
         nd = store.get("nodes", {}).get(gid)
         why = jd.NUDGE_BLOCK_WHY          # shared constant: the briefer recognizes it as PROCEDURAL and
         #                                   writes no decision brief, rather than inventing one from <work>
-        if nd is not None and jd.record_verdict(store, nd, "nudge", "block", now, why=why):
-            nd["mt"] = now                            # the event materialized blocked + blockWhy
-            jd.append_block(sid, gid, "nudge", why, now)   # journal before the save it protects: a judge
+        # EVIDENCE TIME = the nudge RESPONSE turn, not wall-clock `now` (the user 2026-07-22). The block's
+        # evidence IS that response; claiming `now` made the stamp structurally outrank the user's own
+        # reply floor (_block_is_stale voids a block only when ev_t <= followupAt), so a reply could NEVER
+        # void a nudge block — the one mechanism built to stop a judge re-blocking a just-answered card.
+        _ev = int(ev_t or now)
+        if nd is not None and jd.record_verdict(store, nd, "nudge", "block", _ev, why=why):
+            nd["mt"] = _ev                            # the event materialized blocked + blockWhy
+            jd.append_block(sid, gid, "nudge", why, _ev)  # journal before the save it protects: a judge
             #                                           pass holding this store across its model call
             #                                           erases the row on save; replay re-records it
             jd.rollup_status(store, False)
@@ -1906,6 +1911,131 @@ def _backend_rewind_pending(sid):
         return False
 
 
+# ── THE NUDGE IS A LAST RESORT (the user 2026-07-22) ────────────────────────────────────────────────
+# "Nudges should ALWAYS fire — never miss one, because a missed nudge means a card stalls in 'working'
+# and is never surfaced — but should ALWAYS wait until every other possibility for something to revive
+# the card is exhausted." The gates below the fire path already wait for SOME of the judge pipeline
+# (the closer on the latest turn, the planner's placements). These are the rest of the revivers.
+#
+# Every test is EVENT-based: a pending marker that the owning component CLEARS when it runs, so a
+# suppression here is temporary by construction — the nudge is deferred, never lost. The one time
+# threshold is the backstop below, and only for the reason the awaiting backstop already admits: a
+# WEDGED reviver is a MISSING event, and no event announces it.
+NUDGE_DEFER_BACKSTOP_SECS = 6 * 3600     # mirrors AWAITING_BACKSTOP_SECS, and for the same reason
+
+_task_plan_cache = {}                    # fsid -> ((mtime, count), plan | None)
+
+
+def _task_plan_cached(fsid):
+    """em.task_store_plan, mtime-cached on the task dir. The nudge tick runs twice a second per session
+    and the raw call lists a directory and reads every item file, so the gate has to be cheap. Returns
+    None when the session declared no plan (no dir). Re-raises OSError from a dir that EXISTS but can't
+    be listed — the authoritative source failing, which the caller treats as PENDING (never nudge on an
+    unreadable authority) rather than silently folding (repo policy)."""
+    d = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")) / "tasks" / str(fsid)
+    try:
+        key = (d.stat().st_mtime, len(os.listdir(d)))
+    except OSError:
+        if d.is_dir():
+            raise                                       # exists but unreadable → the caller must be loud
+        return None                                     # no dir at all → this session declared no plan
+    hit = _task_plan_cache.get(fsid)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    plan = em.task_store_plan(str(fsid))
+    if len(_task_plan_cache) > 256:
+        _task_plan_cache.clear()
+    _task_plan_cache[fsid] = (key, plan)
+    return plan
+
+
+def _plan_sync_pending(fsid, nodes):
+    """True while the agent's LIVE to-do store disagrees with the MIRROR romp judged from (`agentTask`
+    on each node). This is the 2026-07-22 false interrupt: rollup_status pins a top at 'working' whenever
+    any tracked item's mirror says "open", so a mirror that has not caught up is a card that may ALREADY
+    be finished — and the nudge read that stale 'working' and fired. _sync_declared_plan reconciles the
+    two on the next planner pass, so the disagreement is self-clearing. The nudge already reads this data
+    (_agent_open_set, for the message wording); this makes it a GATE."""
+    try:
+        live = _task_plan_cached(fsid)
+    except OSError:
+        return True                                     # authority unreadable → pending, never nudge on it
+    if live is None:
+        return False                                    # no declared plan → nothing can be stale
+    by_key = {str(t.get("key")): t for t in live if isinstance(t, dict)}
+    tracked = set()
+    for nd in nodes.values():
+        at = nd.get("agentTask")
+        if not isinstance(at, dict):
+            continue
+        k = str(at.get("key"))
+        tracked.add(k)
+        it = by_key.get(k)
+        if it is None:
+            continue                                    # tracked item gone from the store → pass reconciles
+        raw = str(it.get("status") or "pending")
+        if (raw not in ("completed", "cancelled", "deleted")) != (at.get("status") == "open"):
+            return True                                 # open/done disagree → a sync is due
+        if str(at.get("raw") or "") != raw:
+            return True                                 # same open/done, finer status moved (in_progress…)
+    return any(k not in tracked for k in by_key)         # a live item romp tracks no node for yet
+
+
+def _revivers_pending(sid, store, turns, gid):
+    """The first OTHER mechanism that could still move this card off 'working', or "" when they are all
+    exhausted. Ordered cheapest-first and short-circuiting, because this runs per goal per tick.
+
+    Deliberately NOT covered: run_propagate's cross-session link-back, which would mean scanning every
+    other session's store on every tick. That gap stays open and is noted in the plan."""
+    nodes = store.get("nodes") or {}
+    nd = nodes.get(gid) or {}
+    try:
+        if _retry_paused_on():
+            return "the judge tiers are paused (nothing could revive it)"
+        if _goals_snap[0] is not None or jd.active_runs():
+            return "a judge pass is mid-flight"
+        if nd.get("followupPending"):
+            return "your reply to the card is still being judged"
+        if nd.get("nodeComplete"):
+            return "the card is already complete and merely unsettled"
+        if _plan_sync_pending(sid, nodes):
+            return "the agent's to-do sync is due"
+        # DELIBERATELY NOT GATED HERE, though each really can still revive a card: the closer's unswept
+        # earlier turns and its steps-finished / evidence-starved nominations, the grouper and
+        # consolidator sigs, the unblocker's due-set, and an unfiled peer message. Every one of them
+        # signals "pending" by the ABSENCE of a marker (no umbSig/groupedSig/blockCheckT yet, a turn
+        # never swept), so on a young or quiet store they read pending FOREVER and would suppress the
+        # nudge unconditionally — trading this bug for the far worse one the user named: a card that
+        # stalls in 'working' and is never surfaced. They need a positive "this pass is due" signal
+        # before they can be gates; tracked, not shipped.
+    except Exception:
+        # never SILENTLY wave a nudge through on a gate error (the 2026-07-21 rule for the placement
+        # gate): treat the gate as open but say so, so the failure is visible in the log.
+        sys.stderr.write("nudge reviver gate (session %s): %s\n" % (sid, traceback.format_exc()))
+    return ""
+
+
+def _nudge_deferred_ok(gid, reason, now):
+    """True when a deferral has run past the backstop and the nudge must go anyway. A reviver that never
+    clears is a MISSING event — exactly the case the awaiting backstop exists for — and "never miss a
+    nudge" outranks "wait for everything" once the wait itself looks wedged. Returns (allow, first_at)."""
+    d = _auto_nudge_data()
+    dd = dict(d.get("deferred") or {})
+    if not reason:
+        if gid in dd:                                    # the reviver ran → forget the deferral
+            dd.pop(gid, None)
+            d["deferred"] = dd
+            _write_auto_nudge(d)
+        return True
+    first = dd.get(gid)
+    if not first:
+        dd[gid] = now
+        d["deferred"] = dd
+        _write_auto_nudge(d)
+        return False
+    return (now - int(first)) > NUDGE_DEFER_BACKSTOP_SECS
+
+
 def _auto_nudge_session(s, now, tmux, nudged, waitfor):
     """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
     walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
@@ -2033,6 +2163,13 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
             #                                          work it dispatched — not a stall. Restart-proof, unlike
             #                                          the session-level live gate above; lifted by exact
             #                                          events (next audited turn / done / block / user reply)
+        # LAST-RESORT GATE (the user 2026-07-22): every OTHER mechanism that could still move this card
+        # off 'working' must be exhausted first. This is what the 2026-07-22 false interrupt needed: the
+        # card's 'working' came from a STALE agent-to-do mirror, and the nudge fired before the sync that
+        # would have completed it. Backstopped, so a wedged reviver defers the nudge but can never lose it.
+        _defer = _revivers_pending(sid, store, turns, gid)
+        if _defer and not _nudge_deferred_ok(gid, _defer, now):
+            continue
         rec = nudged.get(gid) or {}
         # Fire at most ONCE per GENUINE stall — keyed on arm_id, the newest genuinely-triggered ended
         # turn. NEVER re-arm off romp's own turns: re-arming on the nudge-response was the ~5s runaway
@@ -2085,7 +2222,18 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
                     resp = None                        # minimal/legacy turn shapes → stamp-now, as before
                 if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
                     continue                           # the planner hasn't ruled on the response yet
-                _mark_nudge_failed(gid)
+                # UNDETERMINED IS NOT NEEDS-YOU (the user 2026-07-22). Every gate above is structural —
+                # "a response arrived", "the segment has a placements key" — and a placement key is
+                # recorded even for a SKIP, so a planner that ruled NOTHING satisfies them exactly as
+                # well as one that resolved the card. That turned "the judge declined to rule" into "the
+                # human is the bottleneck", and blocked cards whose replies said "nothing blocked on you"
+                # and "in progress, watcher armed". The stamp is the INTERRUPT, so it must be the LAST
+                # thing to act: it may only fire once every other reviver is exhausted (_revivers_pending
+                # is re-checked here because the fire gate and this writer read different moments).
+                _sdefer = _revivers_pending(sid, store, turns, gid)
+                if _sdefer and not _nudge_deferred_ok(gid, _sdefer, now):
+                    continue                           # something else can still move it → not needs-you
+                _mark_nudge_failed(gid, ev_t=(resp or {}).get("t") or lt.get("end") or lt.get("t"))
                 nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
                 fired = True                           # push so the chip/floor reaches the feed now
             continue
