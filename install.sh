@@ -37,6 +37,27 @@ for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
 done
 echo "  Symlinked romp hooks into ~/.claude/hooks/"
 
+# Install the git pre-push identifier hook. Symlinked into the SHARED git hooks
+# dir (git rev-parse --git-common-dir), so it fires from every worktree; the hook
+# self-locates the tree being pushed. ROMP_GITHOOK_DIR overrides the target (the
+# test harness points it at a temp dir so it never touches a real .git). Skipped
+# with ROMP_NO_GITHOOK, or when this isn't a git checkout (e.g. a tarball).
+if [[ -z "${ROMP_NO_GITHOOK:-}" && -f "$ROMP_DIR/.githooks/pre-push" ]]; then
+    githook_dir="${ROMP_GITHOOK_DIR:-}"
+    if [[ -z "$githook_dir" ]]; then
+        common="$(git -C "$ROMP_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+        if [[ -n "$common" ]]; then
+            case "$common" in /*) ;; *) common="$ROMP_DIR/$common" ;; esac
+            githook_dir="$common/hooks"
+        fi
+    fi
+    if [[ -n "$githook_dir" ]]; then
+        mkdir -p "$githook_dir"
+        ln -sf "$ROMP_DIR/.githooks/pre-push" "$githook_dir/pre-push"
+        echo "  Installed the git pre-push identifier hook"
+    fi
+fi
+
 # Register the hooks in ~/.claude/settings.json so Claude Code actually fires
 # them. Idempotent merge: adds only missing romp entries, never touches any
 # other hooks you have registered.

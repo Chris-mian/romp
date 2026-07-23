@@ -24,11 +24,14 @@ sudo apt install python3 nodejs npm
 ## Install
 
 ```bash
-git clone https://github.com/romp-on/romp.git
+git clone --depth 1 https://github.com/romp-on/romp.git
 cd romp
 ./install.sh
 export PATH="$PATH:$(pwd)/bin"   # add this line to your shell rc
 ```
+
+`--depth 1` clones only the latest commit, which is a few MB rather than the
+whole history; Romp behaves identically. Omit it if you want the full history.
 
 The installer registers Romp with Claude Code (the hooks, the postal service,
 the `romp` skills, and the VS Code / Cursor extension) and keeps the kernel
