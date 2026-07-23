@@ -29,32 +29,30 @@ Its key features:
 
 ## Every session, one view { .feature-h }
 
-Shows what's running, what's stuck, and what needs your attention.
+The timeline shows every session: what's running, what's idle, and what needs you.
 
 <video src="assets/guide/every-session-timeline.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ## Task management { .feature-h }
 
-Analyzes the agents' transcripts to track all the work, so you don't have to.
+Romp reads the agents' transcripts and tracks the work, so you don't have to.
 
 <video src="assets/guide/task-cards.mp4" autoplay loop muted playsinline width="100%"></video>
 
-Turns each task into a card with the key details: a background for why the work
-is happening, a summary of what the agent did, and the sub-goals completed
-along the way.
+A card shows each task with the essential information: why the work is
+happening, what the agent did, and the sub-tasks completed along the way.
 
 <video src="assets/guide/context-tabs.mp4" autoplay loop muted playsinline class="romp-card-demo"></video>
 
-## Navigate by time, task, or content { .feature-h }
-
-Organizes the same work three ways, each linked to the others. Whether you
-remember when something happened, which task it belonged to, or what was said,
-start there and drill down.
-
-<video src="assets/overview.mp4" autoplay loop muted playsinline width="100%"></video>
-
 ## Coordination you can see { .feature-h }
 
-Gives the agents a mailbox, so they can ask each other questions and hand off work.
+The Romp Postal Service lets agents ask each other questions and hand off work.
 
 <video src="assets/guide/coordination.mp4" autoplay loop muted playsinline width="100%"></video>
+
+## Navigate anywhere, detail on demand { .feature-h }
+
+Find any work by when it happened on the timeline or by the task it belonged
+to, then open it for the full detail.
+
+<video src="assets/guide/navigate.mp4" autoplay loop muted playsinline width="100%"></video>
