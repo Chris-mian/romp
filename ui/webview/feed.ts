@@ -1149,14 +1149,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // dispatched work in flight shows the spinning romp swirl saying what's happening. The whole ladder lives
   // in ./spin-caption so spin-caption.test.ts EXECUTES it — a source-regex pin is what let the recheck /
   // rejudging branches be silently wrong (the user 2026-07-21); see that file for the cases + the contract.
-  // The distiller line keys on the GENUINE resolution state (distillState), not the transient `column`:
-  // recheck/rejudging drop a still-blocked card to Working every time its session takes a turn, which used
-  // to flicker the decision brief OFF (the docs thread read "unblocked, no summary" — the user 2026-07-21).
-  // distillInputs (in ./distiller-line so the test EXECUTES the rule) maps state→(completed,blocked), with a
-  // column fallback for older/remote payloads that predate the field.
+  // distillInputs (in ./distiller-line so the test EXECUTES the rule) maps state→(completed,blocked). A card
+  // in the Working column yields neither: a summary describes work that has stopped, so it is withheld while
+  // the card is in motion and re-renders untouched when it settles (the user 2026-07-22). See that file for
+  // why this supersedes the 2026-07-21 pin-the-brief rule.
   const { completed: dCompleted, blocked: dBlocked } = distillInputs(it.distillState, it.column);
-  // The swirl and the brief are SIBLINGS (secs, then awaitSpin), so a re-judging card shows BOTH: the brief
-  // says what it's blocked on, the swirl says the judge is looking at it again (the user 2026-07-21).
+  // The card is not left mute in that window: the Working displacement only happens under recheck/rejudging,
+  // and both raise the "Analyzing…" swirl below, which says the judge is looking at it again.
   const spin = spinFor(it, distillPending(dCompleted, dBlocked, it.summary, it.blockSummary, !!it.blocked),
                        dCompleted);
   const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
@@ -1189,8 +1188,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.
   // The rule lives in ./distiller-line so distiller-line.test.ts can EXECUTE it (a regex pin let it silently
   // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
-  // Keyed on distillState (dCompleted/dBlocked), NOT it.column: a still-blocked card keeps its brief on
-  // screen through the recheck/rejudging Working flip instead of blanking it every turn (the user 2026-07-21).
   const distillShown = applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked,
                    it.summary, it.blockSummary);
   // The distiller line is a LINK: clicking it jumps to where the takeaway/brief was actually written — the

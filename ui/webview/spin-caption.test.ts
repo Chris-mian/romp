@@ -8,12 +8,14 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spinFor } from "./spin-caption";
+import { distillInputs, distillText, distillPending } from "./distiller-line";
 
-// --- THE REGRESSION: a re-judging card shows its brief AND its swirl ------------------------------
+// --- THE REGRESSION: a re-judging card always spins ----------------------------------------------
 // A blocked goal you replied to on the thread. The kernel moves it to Working while the reply is in
-// flight (build_feed: "The 'Re-judging…' swirl rides along in Working") and keeps distillState:"blocked"
-// so the decision brief stays on screen. Both must render: the brief is WHY it's blocked, the swirl is
-// that something is happening now. The card carries no other cue — the `↩ re-judging` chip is recheck-only.
+// flight (build_feed: "The 'Re-judging…' swirl rides along in Working"). Since 2026-07-22 the decision
+// brief is withheld for exactly that window (./distiller-line), which makes this swirl the ONLY thing on
+// the card saying it is in motion and still blocked underneath. The `↩ re-judging` chip is recheck-only,
+// so gating the swirl on anything would leave the card mute.
 test("a rejudging card WITH a decision brief still spins (the brief never suppresses the swirl)", () => {
   const s = spinFor({ rejudging: true, column: "working" }, false, false);
   assert.equal(s.caption, "Analyzing…", "a re-judging card must say it is being re-judged");
@@ -91,6 +93,23 @@ test("recheck/rejudging outrank the settle gap and the distiller", () => {
     /replied on this thread/);
   assert.match(spinFor({ recheck: true, judging: true, column: "working" }, true, false).tip,
     /followed up/);
+});
+
+// --- NEVER MUTE: withholding the line must not leave a silent card ---------------------------------
+// The 2026-07-22 change rests on one claim: a card only reaches the Working column while settled if
+// recheck or rejudging put it there, and both raise a caption. Execute the pair together — the exact
+// composition feed.ts runs — so the claim cannot rot into a blank card.
+test("a settled card displaced to Working loses its line but never its caption", () => {
+  for (const displaced of [{ recheck: true }, { rejudging: true }]) {
+    for (const state of ["blocked", "completed"] as const) {
+      const { completed, blocked } = distillInputs(state, "working");
+      assert.equal(distillText(completed, blocked, "a takeaway", "a decision brief"), "",
+        `${state} + ${JSON.stringify(displaced)}: the stale line is withheld`);
+      const s = spinFor({ ...displaced, column: "working" }, distillPending(completed, blocked, null, null), completed);
+      assert.equal(s.caption, "Analyzing…",
+        `${state} + ${JSON.stringify(displaced)}: ...and the card still says it is in motion`);
+    }
+  }
 });
 
 // --- wiring: feed.ts must actually call the module (the rule is useless unbound) --------------------

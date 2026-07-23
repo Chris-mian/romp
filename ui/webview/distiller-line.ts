@@ -6,26 +6,40 @@
 // THE CONTRACT (the test pins it behaviorally):
 //   - a COMPLETED item shows the distiller's takeaway (summary)
 //   - a BLOCKED item shows its decision brief (blockSummary)
+//   - a card sitting in the WORKING column shows neither, even when it is holding one
 //   - anything else shows nothing
 //   - it is shown ONLY when the distiller has produced a non-empty value (trimmed) — never a "(generating…)"
 //     placeholder (which used to stick)
 //   - it NEVER takes — and therefore can NEVER show — the planner's why-created/why-blocked/why-done
 //     rationale (the user dropped those, esp. under subgoals). The signature has no `why` by design.
 
-/** The (completed, blocked) inputs the distiller line keys on for a CARD, derived from the kernel's GENUINE
- *  resolution state (`distillState`) rather than the transient `column`. recheck/rejudging drop a still-blocked
- *  card to the Working column every time its session takes a turn, and keying the line on `column` blanked the
- *  decision brief each time — a busy session's blocked card read as "unblocked, no summary" (the docs thread,
- *  the user 2026-07-21). `distillState` rides the real block, so the brief stays put through the flip.
+/** The (completed, blocked) inputs the distiller line keys on for a CARD.
+ *
+ *  WORKING WINS. A card in the Working column shows no distilled line at all, whatever `distillState` says
+ *  underneath. A summary describes work that has stopped; the moment the card is working again it describes
+ *  a past that may no longer hold, and a card that reads "in motion" while displaying a settled takeaway is
+ *  just contradicting itself (the user 2026-07-22). Often nothing will have changed and the same brief comes
+ *  straight back when the card settles — that is fine. It is withheld while it cannot be vouched for, not
+ *  discarded: `summary`/`blockSummary` stay in the payload and re-render untouched on the way back.
+ *
+ *  This supersedes the 2026-07-21 rule that kept the brief pinned through the flip. That fix was aimed at a
+ *  real problem — recheck/rejudging drop a still-blocked card to Working every time its session takes a turn,
+ *  and the line, then keyed on `column`, blanked on each one, so a busy session's blocked card read as
+ *  "unblocked, no summary" (the docs thread). Pinning the brief cured the blanking but produced a card in
+ *  Working inexplicably wearing a summary. The card is not left mute in that window: the displacement only
+ *  ever happens under recheck/rejudging, and both raise the "Analyzing…" swirl (see ./spin-caption), so it
+ *  reads as in motion and being looked at rather than as unblocked.
+ *
+ *  `distillState` still earns its keep below: it is the GENUINE resolution state, so a card that is settled
+ *  but momentarily mis-columned by an older payload still resolves correctly.
  *
  *  Fallback: a payload with no `distillState` (an older build, or a remote kernel that predates the field →
- *  null/undefined) reads the old `column` meaning, so federation and cache-warm frames still render correctly.
- *  This is unambiguous: the kernel only emits `distillState:null` for a genuinely-working card, and a working
- *  card is never `column:"needs_input"`/"completed", so the fallback yields the same "show nothing" there. */
+ *  null/undefined) reads the old `column` meaning, so federation and cache-warm frames still render correctly. */
 export function distillInputs(
   distillState: "completed" | "blocked" | null | undefined,
   column: string,
 ): { completed: boolean; blocked: boolean } {
+  if (column === "working") return { completed: false, blocked: false };
   if (distillState === "completed") return { completed: true, blocked: false };
   if (distillState === "blocked") return { completed: false, blocked: true };
   return { completed: column === "completed", blocked: column === "needs_input" };

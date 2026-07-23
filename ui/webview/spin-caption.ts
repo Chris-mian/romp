@@ -18,8 +18,10 @@
 //   5. SETTLE GAP    — the turn finished, the closer's verdict hasn't landed
 //   6. DISTILLING    — a resolved card whose takeaway/brief hasn't been written yet
 //   … else no spin (an ordinary working card with its turn open).
-// 3 and 4 do NOT depend on whether a brief exists: a re-judging card needs BOTH its brief (why it was
-// blocked) and its swirl (that something is happening now).
+// 3 and 4 do NOT depend on whether a brief exists. That independence matters more since 2026-07-22, when
+// the brief stopped showing on a card displaced to Working at all (see ./distiller-line): these two are the
+// only branches that fire in that window, so the swirl is the sole thing saying the card is in motion and
+// still blocked underneath. Gating either on a brief would leave it silent.
 
 /** The card fields the ladder reads. Structural, so the test can pass plain objects. */
 export interface SpinItem {
