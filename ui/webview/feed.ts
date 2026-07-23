@@ -61,7 +61,7 @@ interface AskItem {
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
-  nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → "stalled" chip; the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
+  nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → red "follow-up failed" chip (renamed off "stalled" 2026-07-23 — that word is the yellow romp-holding section's now); the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
   stalled?: { why: string; since: number; note?: string | null } | null;   // romp's nudge gate is HOLDING this working card behind a reviver that isn't retiring, so nothing is moving it (kernel _stalled_goals; the user 2026-07-23). `why` = the kernel's mechanical reason, always present; `note` = the staller's plain-language version, null until the judge writes one. Drives the Stalled section button — its own colour, since this is romp being the bottleneck, not you
   interrupting?: boolean;                          // a user interrupt is IN FLIGHT (dispatched, not yet settled) → steady "interrupting…" badge from the click until it settles, THEN yields to `interrupted` — never flickering to "working" in between (kernel build_feed; the user 2026-07-07)
   interrupted?: boolean;                           // the user STOPPED this session mid-turn and hasn't messaged it since → "interrupted" badge; its quiet is user-chosen, auto-nudge holds off until their next message (kernel build_feed; the user 2026-07-05)
@@ -596,11 +596,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
   // sets the text/title when it shows for recheck.
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↩ re-judging"; fupBadge.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass"; fupBadge.style.display = "none";
-  // "stalled" (plans/stalled-open-todos-nudge.md; label per the user 2026-07-02): romp asked this stalled
-  // goal ONCE and the response didn't resolve it; per the anti-loop rule it is never re-asked, so the card
-  // says so instead.
-  const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "stalled";
-  nfBadge.title = "romp followed up on this stalled goal once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
+  // "follow-up failed" (plans/stalled-open-todos-nudge.md): romp asked this stalled goal ONCE and the
+  // response didn't resolve it; per the anti-loop rule it is never re-asked, so the card says so instead.
+  // RENAMED off "stalled" (the user 2026-07-23, superseding their 2026-07-02 label): that word now belongs
+  // exclusively to the yellow Stalled section — romp holding a WORKING card — and this chip means the
+  // opposite (romp already asked; the thread waits on YOU). One word per meaning, user-visible strings only.
+  const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "follow-up failed";
+  nfBadge.title = "romp followed up once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
   nfBadge.style.display = "none";
   // "interrupted" (the user 2026-07-05): the user stopped this session mid-turn and hasn't messaged it
   // since — its quiet is user-chosen, not a stall. Auto-nudge holds off until their next message, and
@@ -1142,26 +1144,26 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     a._followedup.style.display = "none";
   }
-  // "stalled" chip (plans/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the stall and
-  // it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07), so
-  // the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
+  // "follow-up failed" chip (plans/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the
+  // stall and it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07),
+  // so the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
   a._nudgeFailed.style.display = it.nudgeFailed ? "" : "none";
   // "interrupting…" — a stop is IN FLIGHT (the user 2026-07-07): steady from the click until the interrupt
   // settles, at which point the kernel drops `interrupting` and (if still quiet) sets `interrupted`. The
-  // stalled chip still outranks it; the two interrupt badges are mutually exclusive by construction (the
-  // kernel never sets both), and we hide the past-tense one while interrupting for belt-and-suspenders.
+  // follow-up-failed chip still outranks it; the two interrupt badges are mutually exclusive by construction
+  // (the kernel never sets both), and we hide the past-tense one while interrupting for belt-and-suspenders.
   (a._interrupting as HTMLElement).style.display =
     (it.interrupting && !it.nudgeFailed) ? "" : "none";
   // "interrupted" — the user stopped this session and hasn't re-engaged; quiet is user-chosen (the
-  // user 2026-07-05). The stalled/nudge-failed chips outrank it: they carry a romp-ask outcome, while
+  // user 2026-07-05). The follow-up-failed chip outranks it: it carries a romp-ask outcome, while
   // this only explains silence — never show both; nor alongside the in-flight "interrupting…" badge.
   (a._interrupted as HTMLElement).style.display =
     (it.interrupted && !it.interrupting && !it.nudgeFailed) ? "" : "none";
-  // the chip label says "stalled"; its tooltip carries the EVIDENCE — romp did follow up, and when
-  // (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
+  // the chip label says "follow-up failed"; its tooltip carries the EVIDENCE — romp did follow up, and
+  // when (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
   a._nudgeFailed.title = it.nudged && it.nudged.times.length
     ? `romp followed up ${it.nudged.count}× (${it.nudged.times.map(clockHM).join(", ")}); the response didn't resolve it and it won't be re-asked — it's waiting on you`
-    : "romp followed up on this stalled goal once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
+    : "romp followed up once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
   // "warning" chip: a judge stamped an anomaly on this goal — show the latest msg on hover, detail on click.
   // Data rides the card element so the click handler (wired once in build) always reads the current push.
   a._warnsData = it.warns || null;
@@ -1227,8 +1229,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const showBlk = !!it.blocked && !isApiErr && it.blocked.state !== "quarantine";
   a._blocked.style.display = showBlk ? "" : "none";
   if (showBlk && it.blocked) {
-    // "stalled" (plans/stalled-open-todos-nudge.md): not a live prompt — the session stopped with its own
-    // to-do items open and the one fork nudge didn't get them moving, so the card floors to Needs-you.
+    // live prompts only — the paused-stall badge retired with the floor (2026-07-07; a failed nudge now
+    // records a real block and the follow-up-failed CHIP carries that story)
     a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval"
       : "⏸ picker";
     a._blocked.title = it.blocked.what + " — click to jump to the prompt in the chat";

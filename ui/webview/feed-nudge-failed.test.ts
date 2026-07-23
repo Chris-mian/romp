@@ -1,10 +1,9 @@
-// The "stalled" chip + the "stalled" needs-you badge (plans/stalled-open-todos-nudge.md; chip label per
-// the user 2026-07-02): romp auto-nudges a stalled goal ONCE; if the response turn ends with the goal still
-// working-stalled, it is never re-asked — the card carries a red "stalled" pill instead. A FORK-flavored
-// failure (the goal had items the agent's OWN to-do list still marks open) additionally floors the card to
-// Needs-you, arriving with blocked.state === "stalled" → a "⏸ stalled" badge (and, via !!it.blocked, no
-// dangling "Distilling…" swirl on a card that has no brief coming); the chip then yields to the badge so
-// the card never says "stalled" twice. Source pin.
+// The red "follow-up failed" chip (plans/stalled-open-todos-nudge.md): romp auto-nudges a stalled goal
+// ONCE; if the response turn ends with the goal still working-stalled, it is never re-asked — the card
+// carries the red pill instead. RENAMED off "stalled" (the user 2026-07-23, superseding their 2026-07-02
+// label): "stalled" now belongs exclusively to the yellow Stalled section (romp holding a WORKING card),
+// and this chip means the opposite — romp already asked, the thread waits on YOU. Two surfaces, two words.
+// Source pin.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -13,11 +12,19 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("the stalled chip is built once and rides the wrapping chip row", () => {
+test("the follow-up-failed chip is built once and rides the wrapping chip row", () => {
   assert.match(FEED, /const nfBadge = el\("span", "fask-nudgefailed"\)/);
-  assert.match(FEED, /nfBadge\.textContent = "stalled"/, "the label is 'stalled' (the user 2026-07-02), no emoji/glyph");
+  assert.match(FEED, /nfBadge\.textContent = "follow-up failed"/,
+    "the label is 'follow-up failed' (the user 2026-07-23) — 'stalled' is the yellow section's word; no emoji/glyph");
   assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/);
   assert.match(FEED, /a\._nudgeFailed = nfBadge;/);
+});
+
+test("the chip and the Stalled section never share a word — one word per meaning", () => {
+  // the RED chip (waiting on you) must not say "stalled"; the YELLOW section (romp holding it) keeps it
+  assert.doesNotMatch(FEED, /nfBadge\.textContent = "stalled"/);
+  assert.match(FEED, /stallBtn\.textContent = "Stalled";/, "the yellow section keeps the word");
+  assert.doesNotMatch(FEED, /nfBadge\.title = "[^"]*stalled/, "the chip tooltip drops the word too");
 });
 
 test("it.nudgeFailed toggles the chip (the stalled FLOOR retired 2026-07-07: a failed nudge records a real block)", () => {
@@ -31,16 +38,16 @@ test("the chip has its own red pill style (waiting on the human now)", () => {
   assert.match(CSS, /\.fask-nudgefailed \{[^}]*color: #ff6a6a/);
 });
 
-// nudge HISTORY (the user 2026-07-02): the chip label says "stalled"; the EVIDENCE that romp did follow
-// up — how many times, and when — rides the card as `nudged` (kernel _nudge_times) and surfaces on the
-// chip tooltip + a modal line. Born of the SSH-thread confusion: two auto-nudges had fired, but nothing
-// card-side said so, so "stalled" read like romp never tried.
+// nudge HISTORY (the user 2026-07-02): the EVIDENCE that romp did follow up — how many times, and when —
+// rides the card as `nudged` (kernel _nudge_times) and surfaces on the chip tooltip + a modal line. Born
+// of the SSH-thread confusion: two auto-nudges had fired, but nothing card-side said so, so the chip read
+// like romp never tried.
 test("the card carries the auto-nudge history and the chip tooltip cites it", () => {
   assert.match(FEED, /nudged\?: \{ count: number; times: number\[\] \} \| null;/);
   assert.match(FEED, /a\._nudgeFailed\.title = it\.nudged && it\.nudged\.times\.length/,
     "with history the tooltip is dynamic…");
   assert.match(FEED, /romp followed up \$\{it\.nudged\.count\}× \(\$\{it\.nudged\.times\.map\(clockHM\)\.join\(", "\)\}\)/);
-  assert.match(FEED, /: "romp followed up on this stalled goal once; the response didn't resolve it/,
+  assert.match(FEED, /: "romp followed up once; the response didn't resolve it/,
     "…and the static wording stays as the no-history floor");
 });
 
