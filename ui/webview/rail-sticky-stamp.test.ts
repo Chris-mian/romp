@@ -23,14 +23,17 @@ test("the sticky stamp is a fixed overlay on <body>, not a child of the swapped 
 });
 
 test("the hand-off happens at the buffer line, with the crossed marker hidden", () => {
-  const fn = SRC.slice(SRC.indexOf("function paintRailSticky"), SRC.indexOf("// Debounced rAF wrapper"));
+  const end = SRC.indexOf("// Scroll is the sticky stamp's primary driver");
+  assert.ok(end > 0, "the slice end anchor still exists (else every assertion below matches the whole file)");
+  const fn = SRC.slice(SRC.indexOf("function paintRailSticky"), end);
   // the buffer line doubles as the sticky's rest position AND the hand-off threshold
   assert.match(fn, /const BUFFER = 6;/);
   assert.match(fn, /const line = cTop \+ BUFFER;/);
-  assert.match(fn, /if \(t\.getBoundingClientRect\(\)\.top <= line\) marker = m;/, "the turn whose content sits at the line");
-  // a real stamp LEADS while the topmost visible one is at or below the line; sticky takes over once it crosses
-  assert.match(fn, /leadTop = r\.top;/);
-  assert.match(fn, /const realLeads = leadTop !== null && leadTop >= line;/);
+  // the TRACKED turn's own stamp leads while it is at or below the line; the sticky takes over once it
+  // crosses. Keyed on the tracked marker, NOT on any stamp anywhere — a later time change further down the
+  // view must not blank the top slot, which would reintroduce the empty gap this exists to prevent.
+  assert.match(fn, /marker = m; markerTop = r\.top; markerShown = !!m\.textContent;/);
+  assert.match(fn, /const realLeads = markerShown && markerTop >= line;/);
   assert.match(fn, /if \(!hm \|\| realLeads\) \{/);
   // when the sticky leads, every marker that crossed ABOVE the line is hidden so no clipped duplicate shows
   assert.match(fn, /for \(const \[m, top\] of all\) m\.style\.visibility = top < line \? "hidden" : "";/);
@@ -45,8 +48,10 @@ test("scroll drives it (passive, rAF-coalesced) and a resize re-measures it", ()
   assert.match(SRC, /addEventListener\("scroll", scheduleRailSticky, \{ passive: true \}\)/,
     "passive: it measures, never blocks the scroll it annotates");
   assert.match(SRC, /window\.addEventListener\("resize", scheduleRailSticky\)/);
-  // the reveal pass can change which markers show a time, so the restamp rAF re-evaluates the sticky too
-  assert.match(SRC, /if \(v\) restampMarkers\(v\.el\);\s*\n\s*paintRailSticky\(\);/);
+  // one scheduler, not two: with the spacing pass gone there is nothing to re-run on render but the sticky
+  assert.doesNotMatch(SRC, /scheduleRestamp/, "the old restamp scheduler is gone");
+  assert.doesNotMatch(SRC, /restampMarkers/, "and so is the spacing pass it drove");
+  assert.doesNotMatch(SRC, /chooseStamps/, "render.ts no longer imports or calls it");
 });
 
 test("the CSS pins it to the viewport, above the rail, click-through", () => {
@@ -55,27 +60,26 @@ test("the CSS pins it to the viewport, above the rail, click-through", () => {
 });
 
 // ── executed replica of the selection + hand-off decision ────────────────────────────────────────────────
-// Faithful to paintRailSticky: line = cTop + BUFFER; marker = last turn whose top <= line (its time sits at
-// the line); leadTop = the topmost timed marker still on screen (mBottom > cTop, mTop < cBottom). A real stamp
-// LEADS while leadTop >= line; otherwise the sticky leads at the line and every marker with mTop < line is
-// hidden. A turn models {top} and its marker {id, hm, text, mTop, mBottom} in viewport coords.
+// Faithful to paintRailSticky: line = cTop + BUFFER; marker = the last turn whose top <= line (its time is
+// what sits at the top), tracked along with WHERE its own marker is and whether that marker is stamped. That
+// tracked marker leads while it is at or below the line; otherwise the sticky leads at the line and every
+// marker with mTop < line is hidden. A turn models {top} and its marker {id, hm, text, mTop, mBottom}.
 const BUFFER = 6;
 type Marker = { id: string; hm: string; text: string; mTop: number; mBottom: number };
 type Turn = { top: number; marker: Marker | null };
-function decideSticky(turns: Turn[], cTop: number, cBottom: number): { show: boolean; hm: string; hidden: string[] } {
+function decideSticky(turns: Turn[], cTop: number, _cBottom: number): { show: boolean; hm: string; hidden: string[] } {
   const line = cTop + BUFFER;
   let marker: Marker | null = null;
-  let leadTop: number | null = null;
+  let markerTop = 0, markerShown = false;
   const all: Marker[] = [];
   for (const t of turns) {
     const m = t.marker;
     if (!m) continue;
-    if (t.top <= line) marker = m;
     all.push(m);
-    if (m.text && leadTop === null && m.mBottom > cTop && m.mTop < cBottom) leadTop = m.mTop;
+    if (t.top <= line) { marker = m; markerTop = m.mTop; markerShown = !!m.text; }
   }
   const hm = marker ? (marker.hm || "") : "";
-  const realLeads = leadTop !== null && leadTop >= line;
+  const realLeads = markerShown && markerTop >= line;
   if (!hm || realLeads) return { show: false, hm: "", hidden: [] };
   // the code hides EVERY marker with top < line (so a straggler resets when it scrolls back); only the TIMED
   // ones are visually meaningful, so the replica reports those — hiding an empty same-minute marker is a no-op
@@ -89,13 +93,22 @@ test("executed: tall turn, no stamp on screen → the sticky leads, showing its 
   assert.deepEqual(decideSticky(turns, CTOP, CBOT), { show: true, hm: "09:12", hidden: [] });
 });
 
-test("executed: a real stamp resting BELOW the line leads — the sticky stays hidden (no double)", () => {
-  // the reported earlier double: a revealed same-minute neighbour sits at mTop 133 (>= line 106). No sticky.
-  const turns: Turn[] = [
-    { top: 96, marker: { id: "top", hm: "12:02", text: "", mTop: 111, mBottom: 124 } },
-    { top: 118, marker: { id: "nb", hm: "12:02", text: "12:02", mTop: 133, mBottom: 146 } },
-  ];
+test("executed: the tracked turn's own stamp resting BELOW the line leads — no sticky, no double", () => {
+  const turns: Turn[] = [{ top: 96, marker: { id: "own", hm: "12:02", text: "12:02", mTop: 111, mBottom: 124 } }];
   assert.deepEqual(decideSticky(turns, CTOP, CBOT), { show: false, hm: "", hidden: [] });
+});
+
+test("executed: a LATER time change further down must not blank the top slot", () => {
+  // The top turn is mid-minute (its own marker suppressed) and the next minute change sits 200px below.
+  // Deferring to that stamp would leave the top with no time at all — the exact gap this exists to prevent.
+  const turns: Turn[] = [
+    { top: 90, marker: { id: "top", hm: "12:02", text: "", mTop: 105, mBottom: 118 } },      // tracked, suppressed
+    { top: 300, marker: { id: "next", hm: "12:03", text: "12:03", mTop: 315, mBottom: 328 } }, // a different time
+  ];
+  const r = decideSticky(turns, CTOP, CBOT);
+  assert.equal(r.show, true, "the sticky still names the time at the top");
+  assert.equal(r.hm, "12:02");
+  assert.deepEqual(r.hidden, [], "and the later change keeps its own stamp — it is not a duplicate");
 });
 
 test("executed: the moment a stamp crosses ABOVE the line, the sticky takes over and hides it (eager)", () => {
@@ -140,22 +153,30 @@ test("executed: nothing scrolled to the line yet → no marker chosen, sticky hi
   assert.deepEqual(decideSticky(turns, CTOP, CBOT), { show: false, hm: "", hidden: [] });
 });
 
-test("executed property: exactly one stamp at the line, always — never a gap, never two on top of each other", () => {
-  // For each scroll state: EITHER a real stamp leads at/below the line (sticky off), OR the sticky leads and
-  // every marker above the line is hidden. There is no state with both a visible sticky and a visible marker
-  // above the line, and no state with neither (given a time exists).
+test("executed property: the top slot always holds exactly one time — never a gap, never a stacked pair", () => {
+  // Walk one stamp up through the whole scroll, plus a same-minute run. At EVERY position the slot is filled
+  // exactly once: either the tracked turn's own stamp sits at/below the line (sticky off), or the sticky holds
+  // the line and every marker that crossed above it is hidden.
+  const at = (mTop: number, text = "09:12"): Turn[] =>
+    [{ top: mTop - 15, marker: { id: "a", hm: "09:12", text, mTop, mBottom: mTop + 13 } }];
+  // A marker sits ~15px into its turn, so it belongs to the turn spanning the line only while
+  // mTop <= LINE + 15; above that the turn has not reached the line yet and an earlier one is tracked.
   const states: Turn[][] = [
-    [{ top: 40, marker: { id: "a", hm: "09:12", text: "", mTop: 55, mBottom: 68 } }],                 // tall: sticky
-    [{ top: 92, marker: { id: "a", hm: "09:12", text: "09:12", mTop: 133, mBottom: 146 } }],          // real below line
-    [{ top: 90, marker: { id: "a", hm: "09:12", text: "09:12", mTop: 102, mBottom: 115 } }],          // crossing: sticky
-    [{ top: 82, marker: { id: "a", hm: "09:12", text: "09:12", mTop: 96, mBottom: 109 } }],           // clipped: sticky
+    at(LINE + 15), at(LINE + 9), at(LINE + 1), at(LINE),      // scrolling up toward the line: the real stamp leads
+    at(LINE - 1), at(102), at(96), at(90),                    // crossed above it: the sticky leads, marker hidden
+    at(55, ""),                                               // mid same-minute run, nothing stamped → sticky
+    [                                                         // a same-minute run: only the first turn stamped
+      { top: 60, marker: { id: "first", hm: "12:02", text: "12:02", mTop: 75, mBottom: 88 } },
+      { top: 96, marker: { id: "m2", hm: "12:02", text: "", mTop: 111, mBottom: 124 } },
+    ],
   ];
   for (const turns of states) {
     const r = decideSticky(turns, CTOP, CBOT);
     const visibleAboveLine = turns.some((t) => t.marker && t.marker.text && !r.hidden.includes(t.marker.id)
                                           && t.marker.mTop < LINE && t.marker.mBottom > CTOP);
-    assert.equal(r.show && visibleAboveLine, false, "never a sticky AND a visible real stamp above the line");
-    assert.equal(!r.show && !turns.some((t) => t.marker && t.marker.text && t.marker.mBottom > CTOP && t.marker.mTop < CBOT), false,
-      "and never nothing: if the sticky is off, a real stamp is on screen to hold the slot");
+    assert.equal(r.show && visibleAboveLine, false, "never the sticky AND a visible real stamp above the line");
+    const trackedLeads = turns.filter((t) => t.marker && t.top <= LINE).slice(-1)
+      .some((t) => !!t.marker!.text && t.marker!.mTop >= LINE);
+    assert.equal(r.show || trackedLeads, true, "and never nothing: something always holds the slot");
   }
 });

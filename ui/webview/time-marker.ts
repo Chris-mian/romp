@@ -8,8 +8,8 @@ export const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "S
 export interface MarkerLabel {
   text: string; // "" → suppressed (same minute as the previous timed turn)
   day: boolean; // true → first turn of a past day; emphasise + show the date
-  hm: string;   // the bare "HH:MM", ALWAYS — what a suppressed turn shows if the
-                // spacing pass later lights it up (see chooseStamps).
+  hm: string;   // the bare "HH:MM", ALWAYS — a suppressed turn still carries its time so the
+                // sticky rail stamp can name the time at the top of the view.
   date: string; // the date word ("Yesterday" / "Mon" / "Jun 3") on a day marker, else "".
                 // Named so the renderer can stack it on its OWN line above hm — a combined
                 // "Yesterday · 21:24" overruns the narrow rail gutter and hits the dot.
@@ -22,7 +22,7 @@ export interface MarkerLabel {
 //      same-minute events (11:03, 11:03, 11:03, 11:04) shows the stamp only when it changes.
 //   3. Otherwise → "HH:MM".
 // `hm` is the bare "HH:MM" regardless of the rule, so a suppressed turn still carries the
-// time the spacing pass can reveal when too much vertical space has gone unstamped.
+// time the sticky rail stamp reads when that turn is the one at the top of the view.
 export function markerLabel(epoch: number, prevEpoch: number | null, nowMs: number): MarkerLabel {
   const d = new Date(epoch * 1000);
   const dayKey = (x: Date) => `${x.getFullYear()}/${x.getMonth()}/${x.getDate()}`;
@@ -45,24 +45,7 @@ export function markerLabel(epoch: number, prevEpoch: number | null, nowMs: numb
   return { text: time, day: false, hm: time, date: "" };
 }
 
-// Minute-change stamps alone can be too sparse: dozens of turns can land in one minute,
-// leaving a long unstamped scroll. After layout we walk the timed turns top→bottom and
-// reveal a suppressed stamp whenever more than `maxRows` one-line rows of vertical space
-// have passed since the last visible stamp — so the rail never goes more than ~maxRows
-// lines without telling you the time.
-//
-//   ys[i]   — vertical position (px) of turn i's dot, increasing down the rail.
-//   hard[i] — true if turn i already shows a stamp from markerLabel (minute/day change).
-//   oneRow  — px height of a single one-line turn (the rail's "one row" unit).
-//   maxRows — reveal once the gap since the last stamp reaches this many rows (default 6).
-// Returns a boolean per turn: should it show a stamp (hard stamps stay true).
-export function chooseStamps(ys: number[], hard: boolean[], oneRow: number, maxRows = 6): boolean[] {
-  const maxGap = maxRows * oneRow;
-  const show = hard.slice();
-  let lastY: number | null = null;
-  for (let i = 0; i < ys.length; i++) {
-    if (hard[i]) { lastY = ys[i]; continue; }
-    if (lastY == null || ys[i] - lastY >= maxGap) { show[i] = true; lastY = ys[i]; }
-  }
-  return show;
-}
+// (A chooseStamps() spacing pass used to live here: it re-revealed a suppressed same-minute stamp every
+// ~6 rows so the gutter never went long without a time. The sticky rail stamp now guarantees a time at the
+// top of the view at all times, which made those repeats pure noise — so the pass is gone and a stamp means
+// exactly one thing: the time CHANGED here (the user 2026-07-23). See paintRailSticky in render.ts.)

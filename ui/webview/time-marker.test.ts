@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { markerLabel, chooseStamps } from "./time-marker";
+import { markerLabel } from "./time-marker";
 
 // All epochs below are built from local-time components so the test is timezone-agnostic
 // (markerLabel reads getHours()/getMinutes()/getDate() in local time, matching the browser).
@@ -22,7 +22,7 @@ test("markerLabel: a run of same-minute turns shows the stamp only on the first"
   assert.equal(markerLabel(second, first, NOW).text, ""); // suppressed
 });
 
-test("markerLabel: a suppressed turn still carries its HH:MM in hm (for the spacing pass)", () => {
+test("markerLabel: a suppressed turn still carries its HH:MM in hm (for the sticky rail stamp)", () => {
   const first = at(2026, 5, 12, 11, 3, 5);
   const second = at(2026, 5, 12, 11, 3, 40);
   const r = markerLabel(second, first, NOW);
@@ -66,41 +66,23 @@ test("markerLabel: a new day still shows the date even when same minute as prev 
   assert.equal(r.text, "Yesterday · 11:03");
 });
 
-// --- chooseStamps: the vertical-space pass (oneRow = one-line-turn height) ---
+// --- a stamp marks a time CHANGE and nothing else (the user 2026-07-23) ---
+// The chooseStamps() spacing pass that used to re-reveal suppressed same-minute stamps every ~6 rows is
+// gone: the sticky rail stamp always shows the time at the top of the view, so repeating a time already
+// shown was noise. These pin that the suppression itself still holds across a long same-minute run.
 
-test("chooseStamps: a hard stamp every row leaves nothing to reveal", () => {
-  const ys = [0, 20, 40, 60];
-  const hard = [true, true, true, true];
-  assert.deepEqual(chooseStamps(ys, hard, 20, 6), [true, true, true, true]);
+test("a long same-minute run stamps only the first turn — no repeats down the rail", () => {
+  const base = at(2026, 5, 12, 11, 3);
+  const labels = [0, 5, 12, 20, 31, 44, 58].map((s, i, arr) =>
+    markerLabel(base + s, i === 0 ? null : base + arr[i - 1], NOW));
+  assert.equal(labels[0].text, "11:03", "the first turn of the minute carries the stamp");
+  assert.deepEqual(labels.slice(1).map((l) => l.text), ["", "", "", "", "", ""],
+    "every later turn in the same minute stays suppressed, however many there are");
+  assert.ok(labels.every((l) => l.hm === "11:03"), "but each still carries its time for the sticky to read");
 });
 
-test("chooseStamps: within 6 rows of the last stamp, soft turns stay hidden", () => {
-  // one hard stamp at the top, then 5 same-minute rows (20px each) → all within 6*20=120px
-  const ys = [0, 20, 40, 60, 80, 100];
-  const hard = [true, false, false, false, false, false];
-  assert.deepEqual(chooseStamps(ys, hard, 20, 6), [true, false, false, false, false, false]);
-});
-
-test("chooseStamps: a soft turn past the 6-row gap is revealed, and the gap resets", () => {
-  // rows every 20px; hard at 0. 120px (=6 rows) below it the gap is reached.
-  const ys = [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240];
-  const hard = ys.map(() => false);
-  hard[0] = true;
-  const show = chooseStamps(ys, hard, 20, 6);
-  // first reveal at y=120 (index 6), next at y=240 (index 12)
-  const revealed = show.map((s, i) => (s ? i : -1)).filter((i) => i >= 0);
-  assert.deepEqual(revealed, [0, 6, 12]);
-});
-
-test("chooseStamps: tall rows trip the space gap in fewer rows", () => {
-  // one hard stamp, then two 70px-tall rows: 140px > 120px → the 2nd is revealed
-  const ys = [0, 70, 140];
-  const hard = [true, false, false];
-  assert.deepEqual(chooseStamps(ys, hard, 20, 6), [true, false, true]);
-});
-
-test("chooseStamps: with no hard stamp anywhere, the very first row is revealed", () => {
-  const ys = [0, 20, 40];
-  const hard = [false, false, false];
-  assert.deepEqual(chooseStamps(ys, hard, 20, 6), [true, false, false]);
+test("the stamp returns exactly when the minute changes", () => {
+  const t1103 = at(2026, 5, 12, 11, 3), t1104 = at(2026, 5, 12, 11, 4);
+  assert.equal(markerLabel(t1104, t1103, NOW).text, "11:04", "a new minute is a real change → stamp it");
+  assert.equal(markerLabel(t1104 + 30, t1104, NOW).text, "", "still 11:04 → suppressed again");
 });

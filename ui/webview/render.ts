@@ -13,7 +13,7 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
-import { markerLabel, chooseStamps } from "./time-marker";
+import { markerLabel } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
@@ -1323,15 +1323,15 @@ function eventEpoch(ev: ChatEvent): number | null {
 // also shows the date, with emphasis. A run of same-minute turns shows the stamp only
 // on the first (the user 2026-06-12); see markerLabel() for the rules. A suppressed turn
 // keeps an EMPTY marker (so the dot keeps its column alignment) but stashes its HH:MM in
-// data-hm; restampMarkers() may later light it up if too much space has gone unstamped.
-// data-hard marks the markerLabel-assigned stamps, which the spacing pass never touches.
+// data-hm, which is what the sticky stamp reads to name the time at the top of the view.
+// Nothing re-reveals a suppressed marker: a stamp marks a time CHANGE and nothing else
+// (the user 2026-07-23) — see paintRailSticky for why the rail no longer needs repeats.
 function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
   const { text, day, hm, date } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
   if (day) m.classList.add("day");
   m.dataset.hm = hm;
   if (text) {
-    m.dataset.hard = "1";
     if (day && date) {
       // Two lines: the date floats on its own row ABOVE, the time stays on the dot's row —
       // a combined "Yesterday · 21:24" overruns the 58px gutter and collides with the dot.
@@ -1344,39 +1344,14 @@ function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
   return m;
 }
 
-// Post-layout spacing pass: minute-change stamps alone can leave a long unstamped scroll
-// when many turns share a minute. After render we measure each timed turn's vertical
-// position and reveal a suppressed stamp wherever >6 one-line rows have passed without one
-// (the user 2026-06-12). Markers are absolutely-positioned in the gutter, so toggling their
-// text never reflows the rail — the measurement is stable and the pass is idempotent
-// (soft reveals are cleared and recomputed each run; data-hard stamps are left alone).
-function restampMarkers(root: HTMLElement): void {
-  const ms: HTMLElement[] = [];
-  const ys: number[] = [];
-  const hard: boolean[] = [];
-  let prevY: number | null = null;
-  let oneRow = Infinity;
-  for (const t of Array.from(root.children) as HTMLElement[]) {
-    const m = t.firstChild as HTMLElement | null;
-    if (!m || m.nodeType !== 1 || !m.classList.contains("time-marker")) continue;
-    const y = t.getBoundingClientRect().top;
-    if (prevY != null) oneRow = Math.min(oneRow, y - prevY);
-    prevY = y;
-    if (m.dataset.hard !== "1") { m.textContent = ""; m.classList.remove("auto"); } // reset soft reveal
-    ms.push(m); ys.push(y); hard.push(m.dataset.hard === "1");
-  }
-  if (!ms.length) return;
-  if (!isFinite(oneRow) || oneRow <= 0) oneRow = 24;       // single row / degenerate → a sane default
-  oneRow = Math.max(18, Math.min(oneRow, 80));             // clamp against noisy extremes
-  const show = chooseStamps(ys, hard, oneRow, 6);
-  for (let i = 0; i < ms.length; i++) {
-    if (!hard[i] && show[i]) { ms[i].textContent = ms[i].dataset.hm || ""; ms[i].classList.add("auto"); }
-  }
-}
-
-// STICKY rail stamp (the user 2026-07-22). restampMarkers' spacing pass keeps the rail from going more
-// than ~6 rows unstamped, but it can only stamp at a TURN boundary — so a single message taller than the
-// viewport has nowhere to put one, and scrolling through it leaves the rail blank with no time in sight.
+// STICKY rail stamp (the user 2026-07-22). A stamp can only sit at a TURN boundary, so a single message
+// taller than the viewport has nowhere to put one, and scrolling through it left the rail blank.
+//
+// This is why the rail no longer repeats a time it has already shown. There used to be a post-layout
+// spacing pass that re-revealed a suppressed same-minute stamp every ~6 rows, purely so the gutter never
+// went long without telling you the time. The sticky guarantees that outright — there is ALWAYS a stamp at
+// the top of the view — so repeating "12:02" every few dots was noise (the user 2026-07-23). Now a stamp
+// means exactly one thing: the time CHANGED here. Everything else is the sticky's job.
 // This pins the current turn's HH:MM at the top of the gutter while you're inside it, and drops it the
 // moment that turn's own marker is on screen showing the time — so there is always exactly one stamp
 // visible, never two, and it hands off naturally as the next turn scrolls up.
@@ -1402,27 +1377,31 @@ function paintRailSticky(): void {
   const cTop = cRect.top, cBottom = cRect.bottom;
   const BUFFER = 6;                             // the gap kept above the sticky; ALSO the hand-off line
   const line = cTop + BUFFER;                   // where the sticky rests, and where a real stamp hands off to it
-  // One pass, all reads (no interleaved writes): the turn spanning the LINE (its time is what sits at the top),
-  // the topmost real stamp still on screen, the gutter x, and every marker's top for the visibility pass below.
+  // One pass, all reads (no interleaved writes): the turn spanning the LINE (its time is what sits at the top)
+  // along with whether its OWN marker is showing and where, the gutter x, and every marker's top for the
+  // visibility pass below.
   let marker: HTMLElement | null = null;
   let anyMarker: HTMLElement | null = null;
-  let leadTop: number | null = null;           // top of the topmost timed marker still on screen (bottom > cTop)
+  let markerTop = 0, markerShown = false;      // the tracked turn's own marker: where it is, and is it stamped
   const all: Array<[HTMLElement, number]> = []; // [marker, top] for the visibility pass
   for (const t of Array.from(v.el.children) as HTMLElement[]) {
     const m = t.firstChild as HTMLElement | null;
     if (!m || m.nodeType !== 1 || !m.classList || !m.classList.contains("time-marker")) continue;
     if (!anyMarker) anyMarker = m;             // any marker gives the gutter's real x geometry
-    if (t.getBoundingClientRect().top <= line) marker = m;   // the turn whose content sits at the line
     const r = m.getBoundingClientRect();
     all.push([m, r.top]);
-    if (m.textContent && leadTop === null && r.bottom > cTop && r.top < cBottom) leadTop = r.top;
+    if (t.getBoundingClientRect().top <= line) {          // the turn whose content sits at the line
+      marker = m; markerTop = r.top; markerShown = !!m.textContent;
+    }
   }
   const hm = marker ? (marker.dataset.hm || "") : "";
-  // A real stamp LEADS the top slot as long as the topmost visible one sits at or below the line — it scrolls
-  // up freely until it reaches the line. The instant it crosses ABOVE the line (leadTop < line), the sticky
-  // takes the slot at the same line showing the same time, so the swap is invisible: no gap, no clipped
-  // sliver sliding past (the user 2026-07-23). If no real stamp is on screen at all, the sticky leads outright.
-  const realLeads = leadTop !== null && leadTop >= line;
+  // The tracked turn's OWN stamp leads the top slot while it is at or below the line — it scrolls up freely
+  // until it reaches the line, and the instant it crosses ABOVE (markerTop < line) the sticky takes the same
+  // slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
+  // Deliberately keyed on the TRACKED turn's marker, not on any stamp anywhere: a LATER time change further
+  // down the view is a different time, so it must not blank the top — that would leave the slot empty, which
+  // is the whole thing the sticky exists to prevent.
+  const realLeads = markerShown && markerTop >= line;
   if (!hm || realLeads) {
     stamp.style.display = "none";
     for (const [m] of all) m.style.visibility = "";   // real stamp leads → nothing suppressed
@@ -1440,21 +1419,10 @@ function paintRailSticky(): void {
   stamp.style.display = "";
 }
 
-// Debounced rAF wrapper — coalesces the many syncView calls of a busy tail into one
-// measure-and-restamp of the active view per frame.
-let restampPending = false;
-function scheduleRestamp(): void {
-  if (restampPending) return;
-  restampPending = true;
-  requestAnimationFrame(() => {
-    restampPending = false;
-    const v = activeId ? views.get(activeId) : null;
-    if (v) restampMarkers(v.el);
-    paintRailSticky();          // the reveal pass can change which markers show a time → re-evaluate
-  });
-}
-
-// Scroll is the sticky stamp's primary driver, rAF-coalesced so a fast flick paints once per frame.
+// Scroll is the sticky stamp's primary driver, and a re-render moves the geometry under it — both funnel
+// here, rAF-coalesced so a fast flick and a busy tail each paint once per frame. (This used to be two
+// wrappers: one re-ran the spacing pass on re-render, one repainted the sticky on scroll. With the spacing
+// pass gone there is only one thing left to do, so there is only one scheduler.)
 let railStickyPending = false;
 function scheduleRailSticky(): void {
   if (railStickyPending) return;
@@ -4313,7 +4281,7 @@ function toggleToolGroup(key: string): void {
   // the compact rebuild past the cache guard (a plain tab switch leaves stale false → reuses the cache).
   if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
   if (content) content.scrollTop = top;
-  scheduleRestamp();
+  scheduleRailSticky();
 }
 
 // Re-render every view from scratch (used when a setting like compact flips): reset each view so the
@@ -4587,7 +4555,7 @@ function landActive(content: HTMLElement | null, v: View): void {
     else content.scrollTop = v.scrollTop;
   }
   v.shown = true;
-  scheduleRestamp();
+  scheduleRailSticky();
 }
 
 // Scroll ANCHORING for scrolled-up re-renders (the user 2026-07-05). "Appended content is below the
@@ -4637,12 +4605,12 @@ function appendActive() {
   updateStatusline();
   if (stick) content.scrollTop = content.scrollHeight;
   else if (!(v && restoreScrollAnchor(content, v, anchor))) content.scrollTop = before;
-  scheduleRestamp();
+  scheduleRailSticky();
 }
 
 // Row heights change when the pane is resized (text re-wraps), so the spacing-based
 // stamps must be recomputed against the new layout.
-window.addEventListener("resize", scheduleRestamp);
+window.addEventListener("resize", scheduleRailSticky);
 // Reposition/repaint the overview ruler whenever the window OR the #content box changes (the ledger or
 // live-ask strip showing, the composer growing, a resize) — the ruler maps content-space → ruler-space, so
 // a plain scroll needs no repaint, but its viewport box and scrollHeight can move under it (link_audit's #4).
@@ -4740,7 +4708,7 @@ function virtualizeToViewport(): void {
         const yNow = anchor.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
         content.scrollTop = yNow - beforeY;
       }
-      scheduleRestamp();
+      scheduleRailSticky();
     } finally {
       hideLoadingPill();
       revirtBusy = false;   // always release, even if a render threw — a wedged flag = no more loading
