@@ -154,7 +154,20 @@ class DeferBackstop(Base):
 
     def test_first_deferral_holds_the_nudge(self):
         self.assertFalse(km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW))
-        self.assertEqual(self._d["deferred"][GID], NOW, "the first deferral is stamped")
+        # the record carries WHY it deferred, not just when (2026-07-23) — the stall note is grounded in it
+        self.assertEqual(self._d["deferred"][GID],
+                         {"at": NOW, "why": "the agent's to-do sync is due", "seen": 1},
+                         "the first deferral is stamped with its reason")
+
+    def test_a_legacy_bare_int_deferral_still_backstops(self):
+        # A live state file written before the record grew a reason still holds bare epoch ints; reading one
+        # must keep working (and never crash the tick), it just has no why to tell the card about.
+        self._d["deferred"] = {GID: NOW}
+        self.assertFalse(km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 5),
+                         "an int record is read as a deferral that started at that time")
+        self.assertTrue(km._nudge_deferred_ok(GID, "the agent's to-do sync is due",
+                                              NOW + km.NUDGE_DEFER_BACKSTOP_SECS + 1),
+                        "…and its backstop still fires")
 
     def test_a_deferral_past_the_backstop_fires_anyway(self):
         km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW)
@@ -166,6 +179,60 @@ class DeferBackstop(Base):
         km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW)
         self.assertTrue(km._nudge_deferred_ok(GID, "", NOW + 5))
         self.assertNotIn(GID, self._d.get("deferred") or {})
+
+
+class StalledGoals(Base):
+    """The user 2026-07-23: a card romp is HOLDING must be able to say why. The nudge gate already knows;
+    it just wasn't writing it down, so a working card sat silent while nothing moved it."""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_data, self._saved_write = km._auto_nudge_data, km._write_auto_nudge
+        self._d = {"nudged": {}}
+        km._auto_nudge_data = lambda: self._d
+        km._write_auto_nudge = lambda d: self._d.update(d)
+
+    def tearDown(self):
+        km._auto_nudge_data, km._write_auto_nudge = self._saved_data, self._saved_write
+        super().tearDown()
+
+    def test_one_deferral_is_not_yet_a_stall(self):
+        # Most reasons are momentary — "a judge pass is mid-flight" is true of every working goal for the
+        # length of any pass — and clear on the next run. Calling that a stall would light every card.
+        km._nudge_deferred_ok(GID, "a judge pass is mid-flight", NOW)
+        self.assertEqual(km._stalled_goals(), {}, "a reason seen ONCE is churn, not a wedge")
+
+    def test_the_same_reason_twice_is_a_stall(self):
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW)
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30)
+        self.assertEqual(km._stalled_goals(),
+                         {GID: {"why": "the agent's to-do sync is due", "since": NOW}},
+                         "a reason that survived the next gate run is a wedge, dated from when it started")
+
+    def test_a_reason_that_changes_restarts_the_count_but_not_the_clock(self):
+        km._nudge_deferred_ok(GID, "a judge pass is mid-flight", NOW)
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30)
+        self.assertEqual(km._stalled_goals(), {}, "bouncing between reasons is not wedged on either one")
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 60)
+        self.assertEqual(km._stalled_goals()[GID]["since"], NOW,
+                         "…but the card HAS been stuck since the first deferral, so the clock is kept")
+
+    def test_the_reviver_clearing_ends_the_stall(self):
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW)
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30)
+        self.assertTrue(km._stalled_goals())
+        km._nudge_deferred_ok(GID, "", NOW + 60)
+        self.assertEqual(km._stalled_goals(), {},
+                         "the stall ends on the reviver running — nobody has to erase the note")
+
+    def test_a_long_wedge_stops_rewriting_the_record(self):
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW)
+        writes = []
+        km._write_auto_nudge = lambda d: (writes.append(1), self._d.update(d))
+        for i in range(6):
+            km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30 * (i + 1))
+        self.assertEqual(len(writes), 1,
+                         "the run count stops at the threshold — a wedge is not a file write per tick")
 
 
 class StampEvidenceTime(unittest.TestCase):
