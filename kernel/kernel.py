@@ -12615,7 +12615,11 @@ window.addEventListener("message",function(ev){var m=ev.data;if(!m||!panel)retur
 if(m.type==="data")panel.update(m.data);
 else if(m.type==="bars"&&panel.applyBars)panel.applyBars(m);
 else if(m.type==="activeChat"&&panel.setActiveChat)panel.setActiveChat(m.activeChat);
-else if(m.type==="hover"&&panel.setHover)panel.setHover(m);});
+else if(m.type==="hover"&&panel.setHover)panel.setHover(m);
+// chat rail CLICK -> pan + pulse (the user 2026-07-23). Must mirror timeline-boot.ts's dispatchFrame:
+// this inline copy serves the browser, that one the VS Code webview. net-popover-known.test.ts's sibling
+// timeline-boot.test.ts pins the pair.
+else if(m.type==="revealEvent"&&panel.revealEvent)panel.revealEvent(m.sid,m.t,m.id);});
 window.__rompTimelineOpenExternal=function(url){try{var u=new URL(url);if(u.protocol==="vscode:"){var q=u.searchParams;
 post({type:"deepLink",session:q.get("session"),anchor:q.get("anchor")||undefined,anchorT:Number(q.get("anchorT"))||undefined,anchorKind:q.get("anchorKind")||undefined,compose:q.get("compose")==="1"});
 if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},"*");return;}}catch(e){}window.open(url,"_blank");};
@@ -14710,6 +14714,21 @@ class Handler(BaseHTTPRequestHandler):
             uuids = _segment_atom_uuids(gsid, seg_ids, time.time()) if gsid else []
             groups = [{"sid": gsid, "uuids": uuids}] if uuids else []
             _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
+        elif msg and msg.get("type") == "dotOpen":
+            # chat rail CLICK → NAVIGATE the other two panes (the user 2026-07-23): the timeline pans to
+            # that moment and pulses its glyph, and the feed scrolls to the card(s) covering it and
+            # pulses them. The hover equivalents only PAINT what is already on screen; this one MOVES
+            # both panes. Resolution is the hover's, so a click lands on exactly what the hover just lit:
+            # the atom uuid → its segment → the tops whose subtree trail covers that segment.
+            # Nothing consumed `dotOpen` before this: the click was inert in the browser, and in VS Code
+            # it only revealed the feed pane without selecting anything inside it.
+            hsid, huuid = str(msg.get("sid") or ""), str(msg.get("uuid") or "")
+            seg_id, _ = _segment_of_uuid(hsid, huuid, time.time()) if (hsid and huuid) else (None, [])
+            _send_to_app("feed", {"type": "revealCards",
+                                  "keys": _cards_for_segments(hsid, [seg_id]) if seg_id else []})
+            # tlId names the exact glyph; the timeline falls back to (sid, t) when a click carries none.
+            _send_to_app("timeline", {"type": "revealEvent", "sid": hsid, "t": msg.get("t"),
+                                      "id": msg.get("tlId"), "nonce": _next_nonce()})
         elif msg and msg.get("type") in ("dotHover", "ledgerHover"):
             # chat message / TOC-bullet hover → light the matching timeline glyph. The event/bullet
             # carries tlId (build_session): a prompt → the DOT, work → the BAR. Absent → clear.

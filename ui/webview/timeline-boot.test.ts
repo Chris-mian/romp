@@ -148,3 +148,35 @@ test("the view prefers the host usage hook over the iframe-parent forward", () =
   assert.ok(parentFwd > 0, "web-shell forward must remain");
   assert.ok(hook < parentFwd, "the host hook must be checked before the parent forward");
 });
+
+// ---- 4. chat rail CLICK → pan + pulse the timeline (the user 2026-07-23) ----
+// The click deliberately does NOT go through focusEvent, which also calls openChat: the click came from
+// the chat, so that would scroll the pane the user is already reading back to where they clicked.
+
+test("dispatchFrame routes revealEvent to the panel, passing (sid, t, id)", () => {
+  const calls: any[] = [];
+  const panel = { revealEvent: (sid: string, t: number, id: string) => calls.push([sid, t, id]) };
+  assert.equal(dispatchFrame(panel, { type: "revealEvent", sid: "s1", t: 1700, id: "g7" }), true);
+  assert.deepEqual(calls, [["s1", 1700, "g7"]]);
+});
+
+test("dispatchFrame ignores revealEvent on a panel too old to have it, rather than throwing", () => {
+  assert.equal(dispatchFrame({}, { type: "revealEvent", sid: "s1", t: 1 }), false);
+});
+
+test("the kernel's inline boot dispatches revealEvent too, so the browser is not left behind", () => {
+  // Two copies of this dispatch exist: timeline-boot.ts (VS Code webview) and the kernel's inline
+  // _TIMELINE_BOOT (browser). A handler added to one and not the other is a silently half-shipped feature.
+  const bootStart = KERNEL.indexOf("_TIMELINE_BOOT = ");
+  const boot = KERNEL.slice(bootStart, KERNEL.indexOf('"""', bootStart + 60));
+  assert.match(boot, /m\.type==="revealEvent"&&panel\.revealEvent\)panel\.revealEvent\(m\.sid,m\.t,m\.id\)/);
+});
+
+test("the view exposes revealEvent, and it never drives the chat", () => {
+  const i = VIEW.indexOf("revealEvent(sid, t, id) {");
+  assert.ok(i > 0, "the shared view must define revealEvent");
+  const body = VIEW.slice(i, VIEW.indexOf("\n  }", i));
+  assert.match(body, /this\._panToTime\(tt\)/, "it pans to the moment");
+  assert.match(body, /this\._pulseFocus\(/, "...and pulses the glyph there");
+  assert.doesNotMatch(body, /openChat/, "but never calls back into the chat the click came from");
+});

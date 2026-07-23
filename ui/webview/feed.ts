@@ -10,6 +10,7 @@ import { distillText, distillInputs, applyDistillLine, distillPending } from "./
 import { spinFor } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes } from "./host-prefix";
+import { extHoverMatches } from "./card-key";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
@@ -2942,6 +2943,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     extHoverKeys = new Set(Array.isArray(m.keys) ? m.keys.map(String) : []);
     extHoverEid = typeof m.eid === "string" && m.eid ? m.eid : null;
     applyExtHover();
+  } else if (m.type === "revealCards") {
+    // chat rail CLICK → scroll to the card(s) covering that turn and pulse them (the user 2026-07-23).
+    // Distinct from hoverCards, which only outlines whatever is already on screen: this one MOVES the
+    // feed. A turn can belong to several cards; all of them pulse, and the first is what we scroll to.
+    revealCards(new Set(Array.isArray(m.keys) ? m.keys.map(String) : []));
   } else if (m.type === "openCard" && typeof m.key === "string") {
     // rail-dot click → open this card's modal (key is fullscreenAskId-shaped:
     // ask itemId, "i:<itemId>" standalone, "g:<turnId>" group). hl = the clicked
@@ -3017,11 +3023,30 @@ let extHoverKeys = new Set<string>();
 let extHoverEid: string | null = null;
 function applyExtHover() {
   document.querySelectorAll<HTMLElement>("[data-key]").forEach((c) => {
-    c.classList.toggle("dot-hl", extHoverKeys.has(c.dataset.key || ""));
+    // via extHoverMatches, NOT a raw set lookup: the host names cards by goal-node id and the DOM keys
+    // them by render namespace ("a:<itemId>"), so comparing them directly never matched and the whole
+    // timeline→feed / chat→feed highlight was dead (see ./card-key).
+    c.classList.toggle("dot-hl", extHoverMatches(c.dataset.key, extHoverKeys));
   });
   document.querySelectorAll<HTMLElement>("[data-eid]").forEach((c) => {
     c.classList.toggle("dot-hl", !!extHoverEid && c.dataset.eid === extHoverEid);
   });
+}
+
+// Scroll to the named cards and pulse them. Same key bridge as the hover (./card-key), so it lands on
+// exactly the cards a hover would have outlined. The class is removed and re-added across a forced
+// reflow, or a second click on the same card would re-add a class it already has and CSS would replay
+// nothing — the "clicked again and it didn't flash" bug this shape avoids.
+function revealCards(keys: Set<string>) {
+  const hits = Array.from(document.querySelectorAll<HTMLElement>("[data-key]"))
+    .filter((c) => extHoverMatches(c.dataset.key, keys));
+  if (!hits.length) return;
+  hits[0].scrollIntoView({ block: "center", behavior: "smooth" });
+  for (const c of hits) {
+    c.classList.remove("card-pulse");
+    void c.offsetWidth;
+    c.classList.add("card-pulse");
+  }
 }
 
 // Keep "Xm ago" honest between host pushes (host reposts ~1×/min for color fade).

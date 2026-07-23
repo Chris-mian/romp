@@ -1698,6 +1698,23 @@ class TimelinePanel {
       this.openChat((lane && this._laneTid(lane)) || sid, undefined, false, false, f.t, f.anchor === 'prompt' ? 'user' : undefined);
     }
   }
+  // Pan to an event and pulse it, and do NOTHING else — the chat-rail click's landing (the user
+  // 2026-07-23). focusEvent is the wrong tool for that click: it also calls openChat, and the click came
+  // FROM the chat, so it would scroll the pane the user is already reading back to where they clicked.
+  // Resolution mirrors focusEvent's: prefer the exact id-join, fall back to (sid, t); a non-typed target
+  // pulses its work BAR, a typed/queued one its start DOT.
+  revealEvent(sid, t, id) {
+    if (!this.data || !this.data.sessions) return;
+    const tb = id ? this._focusTargetById(id) : null;
+    const lane = tb ? tb.sid : this._laneForFocusSid(sid);
+    const tt = tb ? tb.t : t;
+    if (tt == null) return;
+    this._panToTime(tt);
+    if (lane) this.selectedSid = lane;
+    this.draw();                                    // refreshes _geom/_vis, which _pulseFocus reads
+    const onWork = !!(tb && tb.src && tb.src !== 'typed' && tb.src !== 'queued');
+    this._pulseFocus(lane, tt, onWork ? tb : null);
+  }
   // Flash the focused event + scroll it into view. Called AFTER draw() so _geom (time→x) and _vis
   // (lane index) are current. Two shapes: a prompt focus pulses a RING on its start dot; a reply/work
   // focus (workTurn given) pulses an OUTLINE over the whole work BAR (start→end) — so the confirm lands

@@ -979,10 +979,12 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   });
   if (dot) {
     dot.classList.add("dot-nav");
-    dot.title = "click: open the feed card · hover: highlight on the timeline + feed";
+    dot.title = "click: jump to this on the timeline + feed · hover: highlight there";
     dot.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t });
+      // tlId rides along so the timeline can land on the EXACT glyph instead of the nearest thing at t —
+      // the same id the hover already sends. Without it the kernel could only offer a bare time.
+      if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t, tlId });
     });
   }
   // The rail LINE is a nav handle too (the user 2026-07-02): hovering EXACTLY on the line segment lights

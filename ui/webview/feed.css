@@ -816,6 +816,22 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    card(s) built from the turn whose rail dot is hovered in the chat panel */
 .dot-hl { outline: 1.5px solid rgba(255, 255, 255, 0.9); outline-offset: 1px; }
 
+/* Click a chat rail entry → the feed scrolls here and this pulses (the user 2026-07-23). Accent blue,
+   because it is a "look here" cue and not a status; a card's own colours keep their meanings. An
+   outline rather than a border or box-shadow, so it costs no layout and cannot nudge the column while
+   it plays. It sits ABOVE .dot-hl in the file so the pulse wins when a card is also hover-outlined. */
+@keyframes romp-card-pulse {
+  0%   { outline-color: var(--accent, #9cd2ff); }
+  70%  { outline-color: var(--accent, #9cd2ff); }
+  100% { outline-color: rgba(156, 210, 255, 0); }
+}
+.card-pulse { outline: 2.5px solid transparent; outline-offset: 2px; animation: romp-card-pulse 1.4s ease-out; }
+/* Reduced motion still gets an answer, just not an animated one: the pulse IS the acknowledgement that
+   the click landed, so dropping it altogether would leave the click looking ignored. */
+@media (prefers-reduced-motion: reduce) {
+  .card-pulse { animation: none; outline-color: var(--accent, #9cd2ff); }
+}
+
 /* (help overlay removed 2026-06-14 — the feed is self-explanatory now) */
 
 /* colored words inside the help overlay — render the word in the color it wears

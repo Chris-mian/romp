@@ -36,6 +36,10 @@ export function dispatchFrame(panel: any, m: any): boolean {
   if (m.type === "bars" && panel.applyBars) { panel.applyBars(m); return true; }
   if (m.type === "activeChat" && panel.setActiveChat) { panel.setActiveChat(m.activeChat); return true; }
   if (m.type === "hover" && panel.setHover) { panel.setHover(m); return true; }
+  // chat rail CLICK → pan to that moment and pulse it (the user 2026-07-23). Deliberately not the
+  // `focus` path: focusEvent also drives openChat, and the click came FROM the chat, so that would be a
+  // round trip back into the pane the user is already looking at. revealEvent pans + pulses only.
+  if (m.type === "revealEvent" && panel.revealEvent) { panel.revealEvent(m.sid, m.t, m.id); return true; }
   return false;
 }
 
