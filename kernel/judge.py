@@ -3014,6 +3014,10 @@ def _sdk_last_sid(sid):
 
 _discover_lock = threading.Lock()
 _discover_cache = {"fp": None, "result": None}        # fingerprint → cached discover() result (see _discover_fingerprint)
+_namefp_memo = {}    # names/ entry -> (its mtime, resolved project dir or None) — the fingerprint runs on
+#                      EVERY discover() call, so re-reading each entry every time was the kernel's hottest
+#                      call; keyed on the entry's own mtime, evicted when the entry goes away. Bounded by
+#                      the number of live names/ entries, never by uptime.
 
 
 def _discover_fingerprint():
@@ -3025,7 +3029,17 @@ def _discover_fingerprint():
     change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover.
     The signature also carries each session's diverged SDK lastSid (mtime-memoized, see _sdk_last_sid): an
     SDK /clear fork changes the ANCHOR entry's path without necessarily adding a dir entry the walk would
-    see in time (the registry write races the new transcript's creation), so the VALUE itself is signed."""
+    see in time (the registry write races the new transcript's creation), so the VALUE itself is signed.
+
+    Each entry's CONTENT is memoized against its own mtime (the user 2026-07-22, whose fans were running).
+    This runs on every discover() call — cache HIT included, since it IS the validity check — and it used to
+    re-open and re-read every entry each time, then discard the text. On a fleet with ~226 entries that
+    profiled as the kernel's single hottest Python call (`open` in pathlib, ~110% of one core, essentially
+    the whole of a pegged core); memoizing took it 7.85ms → 0.76ms per call. Same exact-change idiom as
+    _sdk_last_sid above, NOT a time heuristic. The memo caches the RESOLVED project dir (realpath + the
+    encode are pure derivations of a launch dir that only changes when the entry is rewritten), but the dir's
+    MTIME is re-stat'd every call without exception: that is the fork signal this whole fingerprint exists to
+    catch, and caching it would blind discover() to new forks."""
     try:
         entries = sorted(NAMES.iterdir())
     except OSError:
@@ -3036,18 +3050,28 @@ def _discover_fingerprint():
             mt = f.stat().st_mtime
         except OSError:
             continue
-        try:
-            parts = f.read_text().rstrip("\n").split("\t")
-            cdir = parts[1] if len(parts) > 1 else ""
-        except Exception:
-            cdir = ""
-        pm = 0
-        if cdir:
+        hit = _namefp_memo.get(f.name)
+        if hit is not None and hit[0] == mt:
+            pdir = hit[1]
+        else:
             try:
-                pm = os.stat(_proj_dir(cdir)).st_mtime          # a new fork in this project bumps the DIR mtime
+                parts = f.read_text().rstrip("\n").split("\t")
+                cdir = parts[1] if len(parts) > 1 else ""
+            except Exception:
+                cdir = ""
+            pdir = _proj_dir(cdir) if cdir else None
+            _namefp_memo[f.name] = (mt, pdir)
+        pm = 0
+        if pdir is not None:
+            try:
+                pm = os.stat(pdir).st_mtime                     # a new fork in this project bumps the DIR mtime
             except OSError:
                 pm = 0
         fp.append((f.name, mt, pm, _sdk_last_sid(f.name) or ""))
+    if len(_namefp_memo) > len(fp):                             # a retired session's entry is gone from the
+        live = {row[0] for row in fp}                           # walk → evict it, so the memo stays bounded
+        for name in [k for k in _namefp_memo if k not in live]:  # by the sessions that currently EXIST
+            del _namefp_memo[name]
     return tuple(fp)
 
 
