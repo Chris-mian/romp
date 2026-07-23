@@ -72,7 +72,6 @@ interface AskItem {
               tooLong?: boolean;   // apiError: a "prompt is too long" error (on you → compact) vs a transient API error
               spendLimit?: boolean;   // apiError: a monthly spend cap (on you → raise it, never auto-retried; the user 2026-07-14)
               toName?: string; toSid?: string;    // parkedHandoff adds to*
-              ctx?: number | null; reason?: string;   // largeResume (resume-gate) adds last-known ctx% + reason
               mid?: string; frm?: string; to?: string; origin?: string; body?: string };   // quarantine (held peer mail) adds these
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
@@ -621,9 +620,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
   // RESUME-GATE buttons (the user 2026-07-21): a boot-deferred high-context session — Proceed reloads it now,
   // Compact on resume /compacts first so future turns shrink (still one reload now), Skip leaves it dormant.
-  const rgProceed = el("button", "fdismiss frg") as HTMLButtonElement; rgProceed.textContent = "Proceed"; rgProceed.title = "resume now — reloads this session's full context"; rgProceed.style.display = "none";
-  const rgCompact = el("button", "fdismiss frg") as HTMLButtonElement; rgCompact.textContent = "Compact on resume"; rgCompact.title = "resume, then /compact first so later turns are smaller (still one reload now)"; rgCompact.style.display = "none";
-  const rgSkip = el("button", "fdismiss frg") as HTMLButtonElement; rgSkip.textContent = "Skip"; rgSkip.title = "leave this session dormant — no reload"; rgSkip.style.display = "none";
   // QUARANTINE buttons (per-host trust): a held message from a DIRECTED peer — Approve delivers it,
   // Edit opens the modal to change the text before delivering, Deny drops it. Human-in-the-loop is the
   // whole point of directed trust, so nothing reaches the session until one of these is clicked.
@@ -654,7 +650,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
-  actions.append(apiRetry, revive, rgProceed, rgCompact, rgSkip, qApprove, qEdit, qDeny);
+  actions.append(apiRetry, revive, qApprove, qEdit, qDeny);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -827,7 +823,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
-  a._rgProceed = rgProceed; a._rgCompact = rgCompact; a._rgSkip = rgSkip;
   a._qApprove = qApprove; a._qEdit = qEdit; a._qDeny = qDeny; a._qBody = qbody;
   a._delegations = delegations;
   a._checklist = checklist;
@@ -1178,7 +1173,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const isApiErr = it.blocked?.state === "apiError";
   // the resume-gate card carries its own explanatory text + Proceed/Compact/Skip buttons, so the ⏸ chip
   // (which only speaks permission/picker) would just misread — suppress it there (the user 2026-07-21).
-  const showBlk = !!it.blocked && !isApiErr && it.blocked.state !== "largeResume" && it.blocked.state !== "quarantine";
+  const showBlk = !!it.blocked && !isApiErr && it.blocked.state !== "quarantine";
   a._blocked.style.display = showBlk ? "" : "none";
   if (showBlk && it.blocked) {
     // "stalled" (plans/stalled-open-todos-nudge.md): not a live prompt — the session stopped with its own
@@ -1272,36 +1267,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       a._revive.disabled = true; a._revive.textContent = "Reviving…";
     };
   }
-  // RESUME-GATE → Proceed / Compact on resume / Skip (the user 2026-07-21). Proceed reloads the session
-  // now; Compact /compacts first so future turns shrink; Skip leaves it dormant. The kernel-side gate then
-  // spawns (card vanishes as the real session takes over) or drops it. The card's generic Clear is hidden
-  // here — Skip is its dismissal, and Clear would hide the card while leaving the session gated internally.
-  const isResumeGate = it.blocked?.state === "largeResume";
-  const rgBtns: [HTMLButtonElement, string, string][] = [
-    [a._rgProceed as HTMLButtonElement, "proceed", "Resuming…"],
-    [a._rgCompact as HTMLButtonElement, "compact", "Compacting…"],
-    [a._rgSkip as HTMLButtonElement, "skip", "Skipped"],
-  ];
-  for (const [btn, choice, busy] of rgBtns) {
-    btn.style.display = isResumeGate ? "" : "none";
-    if (isResumeGate) {
-      btn.disabled = false;
-      btn.onclick = (ev: Event) => {
-        ev.stopPropagation();
-        vscodeApi?.postMessage({ type: "resumeGate", id: it.sid, choice });
-        for (const [b] of rgBtns) b.disabled = true;   // one decision per card; acknowledge immediately
-        btn.textContent = busy;
-        // OPTIMISTIC CLEAR (the user 2026-07-21): the decision is made — the card leaves NOW, not after the
-        // kernel resolves the gate and pushes a feed without it. Same machinery as the Clear button:
-        // pendingCleared suppresses it from any push that still carries it (auto-pruned once the kernel drops
-        // the gate), the .dismissing animation plays, then the card is removed and the local asks pruned.
-        card.dispatchEvent(new MouseEvent("mouseleave"));   // flush the cross-surface hover highlight
-        pendingCleared.add(it.itemId);
-        card.classList.add("dismissing");
-        setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); dropDismissed([it.itemId]); } }, 180);
-      };
-    }
-  }
   // QUARANTINE (per-host trust) → Approve / Edit / Deny a held message from a DIRECTED peer. The body is
   // read-only (peer content, never auto-run); Edit unlocks it; Approve delivers the textarea's value
   // (edited or not), Deny drops it. No optimistic clear — the next kernel push removes the card on success,
@@ -1327,7 +1292,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…"); };
     a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); decide("deny", "Denying…"); };
   }
-  (a._clr as HTMLElement).style.display = (isResumeGate || isQuar) ? "none" : "";
+  (a._clr as HTMLElement).style.display = isQuar ? "none" : "";
 
   // (Follow-up is modal-only now — no card button; the body click opens the modal. the user 2026-06-16.)
   // the user's handoff spec (2026-06-10): every session this ask was handed to,

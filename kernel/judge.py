@@ -6527,6 +6527,29 @@ def distill_llm(goal_text, work_text, done_why="", prior_summary=""):
     return _judge_run(_triage_model(), DISTILL_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
 
 
+# PROCEDURAL block reasons — romp's OWN bookkeeping, authored by the kernel, not a question the user was
+# ever asked. Defined here so the kernel that writes them and the briefer that reads them can never drift.
+# They say only that romp gave up following up, or that you hit stop; they name NO decision. The briefer's
+# contract is "lead with exactly what they must decide", so handing it one of these as <owed> forces it to
+# source a decision from <work> instead — and <work> is the goal's whole SUBTREE, which can legitimately
+# contain a PEER session's relayed question (a delegated sub-goal's reply). That is how a "Remote host
+# attachment feature" card came to show a decision brief about scrubbing a contributor's email address out
+# of commit authorship: the only decision-shaped material in 24k chars of work text belonged to another
+# session entirely (the user 2026-07-22). A goal blocked ONLY procedurally therefore gets no brief at all,
+# rather than a confident invented one.
+NUDGE_BLOCK_WHY = ("romp followed up once and the response didn't resolve this; "
+                   "it won't be re-asked — it needs your direction")
+INTERRUPT_BLOCK_WHY = "you stopped this session mid-turn — it's waiting on your next instruction"
+_PROCEDURAL_BLOCK_WHYS = (NUDGE_BLOCK_WHY, INTERRUPT_BLOCK_WHY)
+
+
+def procedural_block_why(why):
+    """True if `why` is romp's own procedural block bookkeeping rather than a decision the user was asked
+    for. EXACT match on the kernel-authored constants: a real question that merely resembles one of these
+    is still a real question, so nothing fuzzy belongs here."""
+    return (why or "").strip() in _PROCEDURAL_BLOCK_WHYS
+
+
 # The BLOCK-DISTILLER (the user 2026-06-18, via business): the done-distiller's twin for a BLOCKED top.
 # It reads the same whole-goal work history PLUS the owed question (blockWhy) and writes a true DECISION
 # BRIEF — what the user must decide, the options, only the context needed — stored as node["blockSummary"]
@@ -6713,8 +6736,21 @@ def _distill_session(fsid, path, now):
             # brief writes one short paragraph per blocked thing the user can answer on its own, instead of
             # cramming every owed decision into a single paragraph (the user 2026-07-21). A lone block reads
             # identically to before (blkd[0] is the only, hence the latest, element).
+            # Drop PROCEDURAL block reasons (procedural_block_why): romp's own "I followed up and gave up" /
+            # "you hit stop" bookkeeping names no decision, so it can only push the briefer into inventing one
+            # out of <work> — including a peer session's question that rode in on a delegated sub-goal.
+            proc_only = bool(blkd) and all(procedural_block_why(d.get("blockWhy")) for d in blkd)
+            blkd = [d for d in blkd if not procedural_block_why(d.get("blockWhy"))]
             owed = ([(d.get("text", ""), d.get("blockWhy", "")) for d in blkd] if len(blkd) > 1
                     else blkd[0]["blockWhy"] if blkd else "")
+            if proc_only:                              # nothing SUBSTANTIVE is owed → no brief at all. The card
+                # keeps its blocked chip and its own history; it just stops asserting a decision nobody asked
+                # for. Same "" sentinel as below (drops the auto-line, never "(generating…)" forever), and the
+                # same don't-clobber rule, so a real brief from an EARLIER genuine block survives.
+                if nodes[top].get("blockSummary") is None:
+                    nodes[top]["blockSummary"] = ""
+                nodes[top]["briefedMt"] = due; changed = True
+                continue
             if not work and not owed:                  # nothing to brief → settle: the "" sentinel means
                 # "distilled, no brief" so the card drops its auto-line instead of showing "(generating…)"
                 # forever. Stamp briefedMt so we don't retry; don't clobber a real brief from an earlier block.

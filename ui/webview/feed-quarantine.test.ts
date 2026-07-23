@@ -23,7 +23,7 @@ test("the blocked type carries the quarantine fields", () => {
 
 test("Approve/Deny post a quarantineDecision with the textarea value; Edit unlocks the textarea", () => {
   assert.match(FEED, /const isQuar = it\.blocked\?\.state === "quarantine"/);
-  // the block chip is suppressed for a quarantine card (like largeResume)
+  // the block chip is suppressed for a quarantine card — its own buttons carry the decision
   assert.match(FEED, /it\.blocked\.state !== "quarantine"/);
   // the verdict carries the (possibly edited) textarea value
   assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "quarantineDecision", mid, action, text: qBody\.value \}\)/);

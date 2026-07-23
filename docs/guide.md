@@ -98,6 +98,14 @@ Nudging holds off while you are actively driving a session, and it re-arms only
 after a real turn ends, so it never talks over you and never loops on its own
 messages.
 
+A session can also be waiting on something that is not you. When it dispatches
+work and pauses for the result, it shows a green **Awaiting** chip on the fleet
+rail, on the chat statusline above the message box, and on its timeline lane,
+where the pending stretch is drawn faded. Awaiting never means it needs you: it
+means the work is in flight until what the session sent for comes back. The
+chip clears on the session's next turn, when the task finishes or blocks, when
+you clear the card, or as soon as you reply.
+
 ## Messaging between agents (the Romp Postal Service)
 
 Sessions message each other through a mailbox Romp gives them, and every
@@ -184,6 +192,14 @@ Setup is one install and one click:
 
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
+
+The popover remembers every host you have attached. Detaching one moves it to a
+**Previously attached** list rather than dropping it, so bringing it back is one
+click (**Re-attach**) instead of hunting through the ssh-config dropdown — and it
+keeps the trust level you last chose, so a machine you marked `trusted` doesn't
+quietly come back as `directed`. **Forget** removes a host from that list; it
+does nothing to the machine itself. Every status word and button in the popover
+explains itself on hover, so none of this needs the command line.
 
 #### Trust levels: hold untrusted mail for approval
 

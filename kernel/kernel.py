@@ -1416,8 +1416,8 @@ def _mark_nudge_failed(gid):
         sid = gid.rsplit(":", 1)[0]
         store = jd.load_goals(sid)
         nd = store.get("nodes", {}).get(gid)
-        why = ("romp followed up once and the response didn't resolve this; "
-               "it won't be re-asked — it needs your direction")
+        why = jd.NUDGE_BLOCK_WHY          # shared constant: the briefer recognizes it as PROCEDURAL and
+        #                                   writes no decision brief, rather than inventing one from <work>
         if nd is not None and jd.record_verdict(store, nd, "nudge", "block", now, why=why):
             nd["mt"] = now                            # the event materialized blocked + blockWhy
             jd.append_block(sid, gid, "nudge", why, now)   # journal before the save it protects: a judge
@@ -1454,7 +1454,7 @@ def _record_interrupt_block(sid):
     if not gid:
         return None
     nd = store["nodes"][gid]
-    why = "you stopped this session mid-turn — it's waiting on your next instruction"
+    why = jd.INTERRUPT_BLOCK_WHY      # shared constant, PROCEDURAL (see judge.procedural_block_why)
     now = int(time.time())
     if not jd.record_verdict(store, nd, "interrupt", "block", now, why=why):
         return None
@@ -2625,7 +2625,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
-              "endSession", "renameSession", "resumeGate")
+              "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -2770,14 +2770,6 @@ def _drive(msg, client):
         _mark_views_dirty()
     elif t == "cancelAsk":
         be.on_ask(sid, "cancel"); _mark_views_dirty()     # a cancel answers nothing — no Working prediction
-    elif t == "resumeGate" and msg.get("choice") in ("proceed", "compact", "skip"):
-        # the user decided on a boot-gated high-context resume (the user 2026-07-21): proceed / compact /
-        # skip. SDK-only (only SDK sessions get gated); resolve_resume_gate spawns it (the card then
-        # vanishes as the real session card takes over) or leaves it dormant. skip also dismisses the card.
-        _sb = _sdk()
-        if _sb:
-            _sb.resolve_resume_gate(sid, str(msg["choice"]))   # skip pops it from the gated set → card vanishes
-        _mark_views_dirty()
     elif t == "askText" and msg.get("text"):
         _mid = _picker_mid_series(sid)
         be.on_ask(sid, "text", str(msg["text"]))
@@ -3644,6 +3636,12 @@ def _tmux_sessions():
 # STATE/remotes.json so attached hosts survive a kernel restart (the supervisor re-spawns their procs).
 
 REMOTES_FILE = jd.STATE / "remotes.json"
+# Hosts you have EVER attached, kept after detach (the user 2026-07-22: the popover should list past
+# hosts as persistent entries, not make you re-find them in the ssh-config dropdown). Separate from
+# remotes.json on purpose: that file is the LIVE set the supervisor polls, and a remembered host has
+# no tunnel to poll. Also remembers the trust level, so re-attaching a box you had marked `trusted`
+# doesn't silently drop back to `directed`.
+KNOWN_FILE = jd.STATE / "remotes-known.json"
 BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))      # this laptop's postal bus (reverse-forwarded)
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
@@ -3888,6 +3886,7 @@ def set_trust(host, level):
             return None, "no attached host '%s'" % host
         r["trust"] = level
     _remotes_save()
+    _known_note(host, level)               # the remembered entry tracks the level, so a re-attach keeps it
     _tunnel_wake.set()                     # a prompt supervisor pass pushes the new level to the bus
     with _remotes_lock:
         return (_remote_public(_remotes[host]) if host in _remotes else None), None
@@ -4137,13 +4136,17 @@ def attach_remote(host, kernel_port=None):
                  "local_port": _free_port(), "bus_port": _free_port(), "token": "", "proc": None,
                  # A newly attached host is DIRECTED by default (safe-by-default federation): its mail is
                  # held for human approval, never auto-injected. Raise to trusted for a box you control.
-                 "trust": "directed",
+                 # A host you attached BEFORE keeps the level you chose then — re-attaching a box you
+                 # deliberately marked `trusted` must not silently drop it back to directed.
+                 "trust": known_trust(host) or "directed",
                  # phase the browser popover surfaces: authorizing (ssh + token) → connecting
                  # (tunnel up, waiting for the port) → up. See _LANDING_REMOTES_JS's LBL map.
                  "status": "authorizing", "detail": "", "sids": []}
             _remotes[host] = r
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
+        _attach_trust = r.get("trust")
+    _known_note(host, _attach_trust)               # remember it for the popover's past-hosts list
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
     # BOOTSTRAP: no token yet (the kernel there never ran) or nothing listening on its port → start
     # romp-serve over ssh and wait for the port, so "install romp on the box, click attach" is the
@@ -4180,11 +4183,84 @@ def attach_remote(host, kernel_port=None):
     return pub
 
 
+_known = {}                    # host -> {host, lastAttachedAt, trust} — see KNOWN_FILE
+_known_lock = threading.Lock()
+
+
+def _known_load():
+    try:
+        rows = json.loads(KNOWN_FILE.read_text())
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    with _known_lock:
+        for row in rows:
+            if isinstance(row, dict) and row.get("host"):
+                _known[row["host"]] = {"host": row["host"],
+                                       "lastAttachedAt": row.get("lastAttachedAt") or 0,
+                                       "trust": row.get("trust") or "directed"}
+
+
+def _known_save():
+    with _known_lock:
+        rows = sorted(_known.values(), key=lambda k: -(k.get("lastAttachedAt") or 0))
+    try:
+        _atomic_write(KNOWN_FILE, json.dumps(rows))
+    except Exception:
+        sys.stderr.write("known-hosts save: %s\n" % traceback.format_exc())
+
+
+def _known_note(host, trust=None):
+    """Record (or refresh) a host you attached. Called on attach and whenever its trust changes, so the
+    remembered entry always carries the level you last chose for it."""
+    host = (host or "").strip()
+    if not host:
+        return
+    with _known_lock:
+        e = _known.setdefault(host, {"host": host, "lastAttachedAt": 0, "trust": "directed"})
+        e["lastAttachedAt"] = int(time.time())
+        if trust:
+            e["trust"] = trust
+    _known_save()
+
+
+def known_trust(host):
+    """The trust level remembered for a host from its last attachment, or None if it's new here."""
+    with _known_lock:
+        e = _known.get((host or "").strip())
+    return (e or {}).get("trust")
+
+
+def known_forget(host):
+    """Drop a remembered host (the popover's Forget). True if it was there."""
+    host = (host or "").strip()
+    with _known_lock:
+        gone = _known.pop(host, None) is not None
+    if gone:
+        _known_save()
+    return gone
+
+
+def list_known():
+    """Remembered hosts that are NOT currently attached — the popover's 'previously attached' rows.
+    An attached host already has a live row, so listing it twice would just be noise."""
+    with _remotes_lock:
+        live = set(_remotes)
+    with _known_lock:
+        rows = [dict(e) for h, e in _known.items() if h not in live]
+    return sorted(rows, key=lambda k: -(k.get("lastAttachedAt") or 0))
+
+
 def detach_remote(host):
-    """Detach a remote: kill its tunnel proc and forget it."""
+    """Detach a remote: kill its tunnel proc and forget it. The host stays in the KNOWN list (with the
+    trust you last set), so the popover can offer a one-click re-attach instead of sending you back to
+    the ssh-config dropdown."""
     host = (host or "").strip()
     with _remotes_lock:
         r = _remotes.pop(host, None)
+    if r:
+        _known_note(host, r.get("trust"))          # remember it (and its level) on the way out
     if r and r.get("proc"):
         try:
             r["proc"].terminate()
@@ -4437,7 +4513,15 @@ def _update_remote(host):
         # can't run (or the port never returns) we relaunch romp-serve bare as a last resort so the host isn't
         # left dead. The port poll confirms whichever path brought it back.
         'if [ ! -x "$R/bin/romp-serve" ]; then echo "NOLAUNCH:$NEW"; exit 0; fi; '
-        'pkill -f "bin/romp-kernel" 2>/dev/null; '
+        # SELF-MATCH GUARD. `pkill -f` matches its pattern against every process's FULL COMMAND LINE —
+        # including this apply script's own, because the pattern text sits literally inside it. The plain
+        # spelling therefore killed the apply shell AT THIS LINE, before it could restart the kernel or
+        # echo SYNCED. The reset had already run, so the code really was synced, but romp reported
+        # "remote apply failed" and left the host with NO kernel — both halves of "pushes always fail and
+        # it's never clear why", plus the recurring dead remote, from this one line (the user 2026-07-22).
+        # `romp-kern[e]l` is a regex that still matches the real process (romp-kernel) while NOT matching
+        # this script's own text (romp-kern[e]l), so pkill can no longer take itself down.
+        'pkill -f "bin/romp-kern[e]l" 2>/dev/null; '
         'if command -v node >/dev/null 2>&1 && [ -x "$R/bin/romp-manager" ]; then "$R/bin/romp-manager" ensure >>"$LOGDIR/update.log" 2>&1 || true; fi; '
         'UP=0; for i in 1 2 3 4 5 6 7 8; do sleep 1; if bash -c "exec 3<>/dev/tcp/127.0.0.1/%d" 2>/dev/null; then UP=1; break; fi; done; '
         'if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null &  sleep 1; fi; '
@@ -7368,6 +7452,33 @@ def _atom_user_text(a):
     return (c.strip() if isinstance(c, str) else None) or None
 
 
+def _atom_user_texts(a):
+    """EVERY text this user atom could have been echoed as: the joined text (above) AND each individual
+    text BLOCK. romp BUNDLES its injected messages — a restart notice, a background-task death notice and
+    an auto-nudge all arrive as three text blocks in ONE user record — but the optimistic echo holds only
+    the nudge body. _atom_user_text space-JOINS the blocks, so the echo's exact text was never a member of
+    the transcript set and the landing check ("et in tx_user_texts") could not fire. The echo then never
+    retired: it rode the bottom of the thread forever, still wearing its original SEND time, so a nudge
+    sent at 16:43 appeared BELOW a 17:00 answer (the user 2026-07-22). The FIFO floor can't save it either
+    — that was deliberately narrowed to PATH-BEARING echoes (2026-07-20) so a genuinely dropped send stays
+    visible. Per-block EXACT match, never a substring test: a bundled block is the very string that was
+    echoed, so this retires the delivered nudge without ever guessing about containment."""
+    if a.get("type") != "user":
+        return ()
+    out = []
+    joined = _atom_user_text(a)
+    if joined:
+        out.append(joined)
+    c = (a.get("message") or {}).get("content")
+    if isinstance(c, list):
+        for b in c:
+            if isinstance(b, dict) and b.get("type") == "text":
+                t = (b.get("text") or "").strip()
+                if t and t != joined:
+                    out.append(t)
+    return tuple(out)
+
+
 # Optimistic input echo for TMUX sends. The SDK backend echoes a composer message instantly via its own
 # _live store; tmux sends had NO echo, so a tmux send whose Enter dropped at the pane prompt was INVISIBLE
 # in the web chat — the user thought they'd replied (the user via bugs 2026-06-25). Mirror the SDK shape
@@ -7458,7 +7569,7 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     if not live:
         return session
     tx_uuids = {a.get("uuid") for turn in session["turns"] for a in turn["atoms"] if a.get("uuid")}
-    tx_texts = {t for turn in session["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
+    tx_texts = {t for turn in session["turns"] for a in turn["atoms"] for t in _atom_user_texts(a)}
     # FIFO floor: the newest GENUINE-HUMAN turn the transcript has — retires an input echo whose text can't
     # match because the transcript extracted an image path out of it (screenshots piling up at the bottom, the
     # user 2026-06-25). SDK-only semantics: TmuxBackend.prune_live IGNORES the floor, since a tmux echo must
@@ -7762,7 +7873,7 @@ def build_session(sid, now, tmux=None):
     busy = _session_working(parsed["turns"]) or compacting_now
     if not hasattr(be, "unqueue") and busy:
         already = {q.strip() for q in queued}
-        tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
+        tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] for t in _atom_user_texts(a)}
         for a in be.live_atoms(sid):
             et = (a.get("_echo_text") or "").strip()
             if et and et not in already and et not in tx_user:
@@ -9625,7 +9736,6 @@ def build_feed(now, tmux=None):
                                 % (ph["fromName"], ph["toName"])},
             "column": "needs_input",
             "tree": []})
-    asks.extend(_resume_gate_asks(now, cleared))
     # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
     # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
     asks.extend(_quarantine_cards(now, cleared))
@@ -9849,44 +9959,6 @@ def _postal_messages(now, alive_sids, id2name):
                     "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
                     "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)})
     out.sort(key=lambda m: m["sent"])
-    return out
-
-
-def _resume_gate_asks(now, cleared):
-    """RESUME-GATE cards (the user 2026-07-21): boot reconcile DEFERRED these high-context SDK sessions
-    instead of re-hydrating each one's full transcript unbidden (a cold-cache usage spike on a login/kernel
-    restart). One needs_input card each → Proceed / Compact on resume / Skip (resumeGate drive op). itemId
-    "resume:<sid>" so a Skip/clear can key on it. Only SDK sessions are ever gated (_sdk() may be None).
-    Extracted from build_feed so it's unit-testable against a stubbed gated_resumes()."""
-    out = []
-    sdkbe = _sdk()
-    for g in (sdkbe.gated_resumes() if sdkbe else []):
-        gsid = g.get("sid")
-        if not gsid:
-            continue
-        item_id = "resume:" + gsid
-        if item_id in cleared:
-            continue
-        gname = _name_of(gsid) or gsid[:8]
-        _ctx = g.get("ctx")
-        ctxpct = int(round(_ctx)) if isinstance(_ctx, (int, float)) else None
-        _cs = ("%d" % ctxpct) if ctxpct is not None else "?"
-        gt = g.get("t") or now
-        out.append({
-            "itemId": item_id, "sid": gsid, "name": gname, "color": _name_color(gsid),
-            "text": "Resume %s? It was ~%s%% full of context last time it ran." % (gname, _cs),
-            "t": gt, "live": False,
-            "trgb": list(cm.age_rgb(now - gt, _colormap())),
-            "turnId": item_id, "origin": None,
-            "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
-            "nudged": None,
-            "blocked": {"state": "largeResume", "ctx": ctxpct, "reason": g.get("reason"),
-                        "what": "resuming reloads this session's full transcript (~%s%% of the window, "
-                                "last known) — a cold-cache usage hit. Proceed, compact on resume to shrink "
-                                "it first, or skip to leave it dormant." % _cs},
-            "column": "needs_input",
-            "tree": []})
     return out
 
 
@@ -10500,17 +10572,24 @@ PRICE_TTL = 6 * 3600
 DEFAULT_MODEL_PRICES = {   # $/token: input, output, cache write (5m), cache read. Starting points only —
                            # the LiteLLM refresh overwrites these with the live feed (which carries the
                            # exact ids), so they just need to be sane when offline / before the first fetch.
+    "claude-fable-5":            {"in": 10e-6, "out": 50e-6, "cache_w": 12.5e-6, "cache_r": 1e-6},
     "claude-opus-4-8":           {"in": 5e-6, "out": 25e-6, "cache_w": 6.25e-6, "cache_r": 0.5e-6},
+    "claude-sonnet-5":           {"in": 3e-6, "out": 15e-6, "cache_w": 3.75e-6, "cache_r": 0.3e-6},
     "claude-sonnet-4-6":         {"in": 3e-6, "out": 15e-6, "cache_w": 3.75e-6, "cache_r": 0.3e-6},
     "claude-haiku-4-5-20251001": {"in": 1e-6, "out": 5e-6,  "cache_w": 1.25e-6, "cache_r": 0.1e-6},
-}
+}   # Sonnet 5 is listed at its STANDARD rate, not the introductory one, so the table stays right
+    # once the intro period ends; the feed refresh corrects it either way while the intro is live.
 _price_cache = {"t": 0, "remote": {}}   # remote feed prices, refreshed on a TTL in the background
 
 
 def _price_sig(name):
-    """(family, major, minor) of an Anthropic model id, or None — opus/sonnet/haiku + the first X-Y
-    version pair (so 'claude-opus-4-8' → ('opus','4','8'), the feed's 'claude-opus-4-1' → (...,'1'))."""
-    m = re.search(r"(opus|sonnet|haiku)\D*(\d+)[.\-](\d+)", (name or "").lower())
+    """(family, major, minor) of an Anthropic model id, or None. Families: fable/opus/sonnet/haiku.
+    The minor is OPTIONAL so single-number ids sign too ('claude-opus-4-8' → ('opus','4','8'),
+    'claude-sonnet-5' → ('sonnet','5',None), 'claude-fable-5' → ('fable','5',None)); it is capped at
+    two digits so a trailing DATE is not mistaken for one ('claude-sonnet-5-20260101' still signs as
+    ('sonnet','5',None), and 'claude-haiku-4-5-20251001' as ('haiku','4','5')). Matching stays
+    conservative: a differing minor is a DIFFERENT signature, never a silent near-miss."""
+    m = re.search(r"(fable|opus|sonnet|haiku)\D*(\d+)(?:[.\-](\d{1,2})(?!\d))?", (name or "").lower())
     return (m.group(1), m.group(2), m.group(3)) if m else None
 
 
@@ -10569,12 +10648,13 @@ def _model_prices(now=None):
 
 
 def _price_for(model, prices):
-    """The price row for a model: exact id, else any priced model of the same family (opus/sonnet/haiku)
-    so a differently-dated id still gets a sane rate, else None (uncounted — defensive)."""
+    """The price row for a model: exact id, else any priced model of the same family
+    (fable/opus/sonnet/haiku) so a differently-dated id still gets a sane rate, else None
+    (uncounted — defensive)."""
     if model in prices:
         return prices[model]
     m = (model or "").lower()
-    for fam in ("opus", "sonnet", "haiku"):
+    for fam in ("fable", "opus", "sonnet", "haiku"):
         if fam in m:
             for k, v in prices.items():
                 if fam in k.lower():
@@ -12689,6 +12769,14 @@ var hs=(d&&d.hosts)||[];var mru=mruHost();
 if(mru&&hs.indexOf(mru)>=0){hs=[mru].concat(hs.filter(function(h){return h!==mru;}));}   // most-recently-connected first, not just ssh-config order
 hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+(h===mru?' \\u00b7 recent':'')+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
 var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
+// Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
+var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
+authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
+connecting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
+starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
+'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine\\u2019s romp there and boots it.',
+down:'The ssh tunnel is not up. romp keeps retrying; check that `ssh <host>` works from a terminal.',
+error:'The connection failed. Hover the status text for the reason romp got back.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
 function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (its Start button fast-polls on click)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
@@ -12702,13 +12790,13 @@ var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function
 paintIcon(ts.some(function(t){return t.status==='up';}),busy);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+' \\u2014 '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts);
+if(!back.hidden)render(ts,(d&&d.known)||[]);
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule(busy?600:3000);
 }).catch(function(){schedule(3000);});}
-function render(ts){list.innerHTML='';
-if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
+function render(ts,known){list.innerHTML='';known=known||[];
+if(!ts.length&&!known.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
@@ -12724,11 +12812,11 @@ w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'b
 var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+' \\u2014 this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
 ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
-var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s romp to '+t.host+' + restart it\">Push</button>':'';
+var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are NOT sent \\u2014 commit first. It refuses if that machine has its own commits.\">Push</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
-var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"Update '+t.host+' to this machine\\u2019s romp, then start its kernel\">Start</button>':'';
+var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"No kernel is answering on '+t.host+'. This pushes this machine\\u2019s romp there and boots its kernel.\">Start</button>':'';
 // keep connected (peer-bus check-in, stage 3): publish THIS machine to that host over our own
 // outbound ssh. Only for hosts WE attach; a row that checked in to us is labeled instead.
 var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions, its bus peers with yours, and this attach auto-reconnects. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
@@ -12737,10 +12825,22 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publi
 var tcur=t.trust||'directed';
 var trust='<select class=rnet-trust data-t=\"'+t.host+'\" title=\"Federation trust \\u2014 trusted: full two-way postal (a box you control); directed: its mail is held for your approval; isolated: dashboard only, no postal\">'+
 ['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select>';
-row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-trust+keep+upd+strt+'<button data-h=\"'+t.host+'\">Detach</button>';
+row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
+trust+keep+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 list.appendChild(row);});
+// PREVIOUSLY ATTACHED (the user 2026-07-22): hosts you attached before, kept after detach so they are
+// one click away instead of buried in the ssh-config dropdown. Dimmed, and each remembers the trust
+// level you last set for it — re-attaching a box you marked `trusted` will not silently drop to directed.
+if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
+hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
+list.appendChild(hd);
+known.forEach(function(k){var kr=document.createElement('div');kr.className='rnet-row rnet-known';
+kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
+'<span class=nm><b>'+k.host+'</b> <span class=st title=\"Trust level remembered from the last time this host was attached; re-attaching restores it.\">not attached \\u00b7 '+(k.trust||'directed')+'</span></span>'+
+'<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
+'<button data-fg=\"'+k.host+'\" title=\"Remove '+k.host+' from this list. It does not touch the host itself; attaching again will re-add it.\">Forget</button>';
+list.appendChild(kr);});}
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
 s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -12751,6 +12851,14 @@ if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d
 c.disabled=false;refresh();}).catch(function(){c.checked=!c.checked;c.disabled=false;alert('keep-connected on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
 b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
+// Re-attach a remembered host: the SAME /tunnels attach the dropdown drives, so the kernel restores
+// its remembered trust level on the way in. Forget only drops it from the list.
+list.querySelectorAll('button[data-ra]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-ra');
+b.disabled=true;b.textContent='Attaching\\u2026';icon.classList.add('busy');
+try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}
+fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){schedule(600);refresh();}).catch(function(){b.disabled=false;b.textContent='Retry';});};});
+list.querySelectorAll('button[data-fg]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-fg');
+b.disabled=true;fetch('/tunnels/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){b.disabled=false;});};});
 list.querySelectorAll('button[data-s]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-s');
 b.disabled=true;b.textContent='Starting\\u2026';schedule(600);   // fast poll so the 'starting' phase shows live
 fetch('/tunnels/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
@@ -13103,6 +13211,13 @@ def _landing():
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
             ".rnet-trust:disabled{opacity:0.55;cursor:default}"
+            # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
+            # history you can act on and never as something currently connected. Hover restores full
+            # opacity (they're interactive, not decoration).
+            ".rnet-khead{color:#6e7681;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;"
+            "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
+            ".rnet-known{opacity:0.62}"
+            ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
@@ -13613,7 +13728,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")
             if p == "/tunnels":                               # attached remote kernels + state (drives the federated dashboard)
+                # `known` = hosts attached before but not now, so the popover can list them as persistent
+                # re-attach rows instead of making you re-find them in the ssh-config dropdown.
                 return self._send(200, json.dumps({"tunnels": list_remotes(),
+                                                   "known": list_known(),
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
@@ -13876,6 +13994,18 @@ class Handler(BaseHTTPRequestHandler):
                 if pub is None:
                     return self._send(404, json.dumps({"ok": False, "error": "no attached host '%s' — attach it first" % host}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/forget":
+                # Drop a remembered (previously-attached) host from the popover's list. Body: {"host"}.
+                # Only touches the memory — a currently-attached host is detached, not forgotten.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "forgotten": known_forget(host)}),
+                                  "application/json")
             if u.path == "/tunnels/trust":
                 # Set an attached host's federation trust level (the per-host selector). Body:
                 # {"host", "trust": trusted|directed|isolated}. directed holds inbound mail for approval.
@@ -14424,6 +14554,7 @@ def main():
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
+    _known_load()                                              # remembered past hosts (popover's re-attach rows)
     _remotes_load()                                            # re-attach remote kernels from a prior run
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
