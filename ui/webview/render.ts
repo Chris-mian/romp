@@ -1400,35 +1400,43 @@ function paintRailSticky(): void {
   if (!content || !v || v.el.style.display === "none") { stamp.style.display = "none"; return; }
   const cRect = content.getBoundingClientRect();
   const cTop = cRect.top, cBottom = cRect.bottom;
-  const fold = cTop + 2;                       // the reading edge: what you'd call "the top of the screen"
-  // Two things in one pass: the LAST turn starting at or above the fold (the one you're reading — its marker
-  // carries the time to pin), and whether ANY real timestamp is currently visible in the viewport.
+  const BUFFER = 6;                             // the gap kept above the sticky; ALSO the hand-off line
+  const line = cTop + BUFFER;                   // where the sticky rests, and where a real stamp hands off to it
+  // One pass, all reads (no interleaved writes): the turn spanning the LINE (its time is what sits at the top),
+  // the topmost real stamp still on screen, the gutter x, and every marker's top for the visibility pass below.
   let marker: HTMLElement | null = null;
   let anyMarker: HTMLElement | null = null;
-  let timedVisible = false;
+  let leadTop: number | null = null;           // top of the topmost timed marker still on screen (bottom > cTop)
+  const all: Array<[HTMLElement, number]> = []; // [marker, top] for the visibility pass
   for (const t of Array.from(v.el.children) as HTMLElement[]) {
     const m = t.firstChild as HTMLElement | null;
     if (!m || m.nodeType !== 1 || !m.classList || !m.classList.contains("time-marker")) continue;
     if (!anyMarker) anyMarker = m;             // any marker gives the gutter's real x geometry
-    if (t.getBoundingClientRect().top <= fold) marker = m;   // the turn spanning the top of the view
-    // A real timestamp is on screen if the marker RENDERS a time (suppressed same-minute stamps are empty)
-    // and its glyph intersects the content viewport — even partially occluded at the top edge still counts.
-    if (m.textContent) {
-      const r = m.getBoundingClientRect();
-      if (r.bottom > cTop && r.top < cBottom) { timedVisible = true; break; }   // one is enough; stop looking
-    }
+    if (t.getBoundingClientRect().top <= line) marker = m;   // the turn whose content sits at the line
+    const r = m.getBoundingClientRect();
+    all.push([m, r.top]);
+    if (m.textContent && leadTop === null && r.bottom > cTop && r.top < cBottom) leadTop = r.top;
   }
-  // The sticky exists for exactly one case: scrolling through a turn tall enough that NO timestamp is on
-  // screen (the user 2026-07-22: "I don't actually see a timestamp"). So it defers the moment ANY real stamp
-  // is visible — the one the tracked turn owns, a restamp-revealed neighbour, or the previous one still
-  // partially in view. That kills the transient double-stamp where the sticky and a real marker both showed.
   const hm = marker ? (marker.dataset.hm || "") : "";
-  if (!hm || timedVisible) { stamp.style.display = "none"; return; }
+  // A real stamp LEADS the top slot as long as the topmost visible one sits at or below the line — it scrolls
+  // up freely until it reaches the line. The instant it crosses ABOVE the line (leadTop < line), the sticky
+  // takes the slot at the same line showing the same time, so the swap is invisible: no gap, no clipped
+  // sliver sliding past (the user 2026-07-23). If no real stamp is on screen at all, the sticky leads outright.
+  const realLeads = leadTop !== null && leadTop >= line;
+  if (!hm || realLeads) {
+    stamp.style.display = "none";
+    for (const [m] of all) m.style.visibility = "";   // real stamp leads → nothing suppressed
+    return;
+  }
+  // The sticky leads: pin it at the line and hide every marker that has crossed ABOVE it, so the real stamp
+  // handing off never shows a clipped duplicate beside the sticky. Markers at or below the line stay visible —
+  // they are the genuine lower stamps, not doubles.
+  for (const [m, top] of all) m.style.visibility = top < line ? "hidden" : "";
   const g = (anyMarker || marker!).getBoundingClientRect();
   stamp.textContent = hm;
   stamp.style.left = g.left + "px";
   stamp.style.width = g.width + "px";
-  stamp.style.top = (cTop + 6) + "px";
+  stamp.style.top = line + "px";
   stamp.style.display = "";
 }
 
