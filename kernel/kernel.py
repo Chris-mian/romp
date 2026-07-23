@@ -13049,7 +13049,7 @@ var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function
 paintIcon(ts.some(function(t){return t.status==='up';}),busy);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+' \\u2014 '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts,(d&&d.known)||[]);
+if(!back.hidden)render(ts,(d&&d.known)||[],pmode);   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule(busy?600:3000);
@@ -13061,7 +13061,11 @@ schedule(busy?600:3000);
 if(!back.hidden){list.innerHTML='';var er=document.createElement('div');er.className='rnet-empty';
 er.textContent='Could not load remotes: '+((e&&(e.message||e.name))||e);list.appendChild(er);}
 schedule(3000);});}
-function render(ts,known){list.innerHTML='';known=known||[];
+// pmode (peer-bus mode) is computed in refresh()'s own callback, so it is NOT in scope here — reading it
+// as a free variable threw ReferenceError on EVERY render, after list.innerHTML='' had already cleared the
+// list and before any row was appended. The panel therefore showed an empty host list no matter how many
+// hosts were attached, and the bare catch swallowed the error (the user 2026-07-22). Take it as a param.
+function render(ts,known,pmode){list.innerHTML='';known=known||[];
 if(!ts.length&&!known.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
