@@ -189,6 +189,23 @@ const pendingMoveAck = new Map<string, number>();      // card itemId → the bu
 //  - "answer": a picker/permission answer resolved the session's live block — no chip, and the prediction
 //    YIELDS to the first authoritative payload (see reconcileFollowMove). The revert is SILENT: an unheeded
 //    answer re-shows the ⏸ blocked card, which IS the signal — unlike a message, nothing can be lost.
+// Sub-goals the user crossed off in the modal whose kernel ack hasn't landed yet. Sticky rather than a
+// one-shot DOM edit: the feed re-renders on every kernel push, and a push already in flight when the
+// click happened still carries the OLD tree, so a one-shot paint would flip the tick straight back off
+// (the user 2026-07-23). An entry survives until the authoritative tree agrees, or until the kernel says
+// it disagrees — nodeOverrideResult, whose failure path reverts it and says why out loud.
+const pendingDone = new Set<string>();
+function reconcilePendingDone(asks: AskItem[]) {
+  if (!pendingDone.size) return;
+  const seen = new Map<string, string>();               // nodeId -> its status in this payload
+  for (const a of asks) for (const n of a.tree || []) seen.set(n.id, n.status);
+  for (const id of Array.from(pendingDone)) {
+    const st = seen.get(id);
+    // done → the kernel caught up, drop the optimistic flag. Absent → the node is gone from the tree
+    // entirely, so there is nothing left to paint and holding the flag would leak it forever.
+    if (st === "done" || st === undefined) pendingDone.delete(id);
+  }
+}
 type MoveKind = "followup" | "plain" | "answer";
 const pendingMoveKind = new Map<string, MoveKind>();
 function clearFollowMove(itemId: string) {
@@ -1791,6 +1808,11 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
 
 function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, briefs: Map<string, AskQuestion>, seen: Set<string>, depth: number, parentWho: string) {
   const repeat = seen.has(node.id);
+  // An optimistically-done sub-goal reads as done for this whole render, by rewriting the node rather
+  // than patching the DOM after the fact: the mark, the strike-through class, the "Blocked" label and
+  // the action buttons all derive from status, so one substitution keeps them agreeing instead of three
+  // separate edits that can drift from how a genuinely-done node draws (see pendingDone).
+  if (!repeat && pendingDone.has(node.id) && node.status !== "done") node = { ...node, status: "done" };
   const nodeKey = it.itemId + ":" + node.id;
   const expandable = !repeat && (node.children || []).length > 0;
   const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : "") + (node.derived ? " derived" : "") + (node.auth ? " auth-" + node.auth : ""));
@@ -1864,7 +1886,16 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
       done.title = node.status === "question"
         ? "mark this sub-goal done — it stops blocking and the thread's other work continues"
         : "mark this sub-goal done — you're asserting it's finished";
-      done.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
+      // Crosses off IMMEDIATELY, then reconciles (the user 2026-07-23, for whom this felt very slow): the
+      // click used to post and paint nothing, so the tick waited on a store write, a rollup and a full
+      // feed rebuild. Drop and Check status beside it already acknowledged instantly; this was the odd
+      // one out. The kernel's ack is what clears or reverts it — see nodeOverrideResult.
+      done.onclick = (ev) => {
+        ev.stopPropagation();
+        pendingDone.add(node.id);
+        vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" });
+        renderModal();   // repaint through the same path a real done takes, so it looks identical
+      };
       // "Drop": the item-level clear (the user 2026-07-20: 'drop = an item-level clear which just checks
       // it off') — checks it off as no-longer-needed via the same user-authority seam as a card Clear.
       // Acknowledges instantly (fades + checks the line); the kernel push confirms.
@@ -2921,6 +2952,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     // guess (see reconcileFollowMove); a kernel too old to send one reads as 0 and simply never confirms
     // an acked prediction early, leaving the backstop to retire it.
     reconcileFollowMove(incomingAsks, typeof m.buildId === "number" ? m.buildId : 0);
+    reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
     // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
     if (pendingRestored.size) {
@@ -2943,6 +2975,16 @@ window.addEventListener("message", (e: MessageEvent) => {
     extHoverKeys = new Set(Array.isArray(m.keys) ? m.keys.map(String) : []);
     extHoverEid = typeof m.eid === "string" && m.eid ? m.eid : null;
     applyExtHover();
+  } else if (m.type === "nodeOverrideResult" && typeof m.nodeId === "string") {
+    // The kernel's verdict on a Done click. Agreement is silent — the optimistic tick simply stays until
+    // the next payload carries it for real. Disagreement REVERTS the tick and says why, out loud: a
+    // cross-off that quietly un-crossed itself a second later would be worse than the slow version it
+    // replaced (fail loudly, CLAUDE.md).
+    if (!m.ok) {
+      pendingDone.delete(m.nodeId);
+      renderModal();
+      feedToast("couldn't mark that sub-goal done: " + (String(m.error || "") || "the kernel refused it"));
+    }
   } else if (m.type === "revealCards") {
     // chat rail CLICK → scroll to the card(s) covering that turn and pulse them (the user 2026-07-23).
     // Distinct from hoverCards, which only outlines whatever is already on screen: this one MOVES the

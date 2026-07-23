@@ -136,7 +136,10 @@ class OptimisticMutationsDirtyTheViews(unittest.TestCase):
     def test_clear_and_undo_mark_dirty(self):
         src = inspect.getsource(km.Handler._dispatch_ws)
         for op in ('"askClear"', '"clearAll"', '"undoClear"', '"nodeOverride"', '"dismissLane"'):
-            seg = src.split(op)[1].split("elif")[0]
+            # up to the next TOP-LEVEL handler, not the next "elif": a handler may branch internally
+            # (nodeOverride distinguishes resolve from clear, and resolve from an already-resolved node),
+            # and splitting on a bare "elif" cut the segment short at the first nested branch.
+            seg = src.split(op)[1].split("elif msg and")[0]
             self.assertIn("_mark_views_dirty()", seg,
                           "%s writes state no sig sees — it must dirty-rebuild the views" % op)
 

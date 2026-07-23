@@ -13563,6 +13563,13 @@ def _landing():
             ".rnet-more{background:none;border:none;color:var(--accent);font:inherit;cursor:pointer;padding:0;margin-left:6px}"
             ".rnet-more:hover{text-decoration:underline}"
             ".rnet-sub{color:#9aa0a6;font-size:11.5px;line-height:1.45;margin:-6px 0 11px}"
+            # The fold runs to a few short paragraphs and a list, so give them spacing of their own rather
+            # than the browser's 1em block margins, which are enormous next to 11.5px text. No new font
+            # size: the lead-ins are bold at the same size (CLAUDE.md's one-size-per-information-type).
+            ".rnet-sub p{margin:0 0 7px}"
+            ".rnet-sub ul{margin:0 0 7px;padding-left:15px}"
+            ".rnet-sub li{margin:0 0 3px}"
+            ".rnet-sub b{color:#c8ccd0}"
             ".rnet-sub[hidden]{display:none}"
             ".rnet-sub code,.rnet-hint code{background:#2a2a2a;border-radius:3px;padding:0 3px}"
             # "+ Add a host" is a quiet, full-width affordance under the list; it becomes the input row
@@ -13873,9 +13880,32 @@ def _landing():
             # to what is in ~/.ssh/config.
             "<div class=rnet-gist>Another machine's romp sessions, in your tabs and timeline."
             "<button id=rnet-more class=rnet-more aria-expanded=false>How it works</button></div>"
-            "<div class=rnet-sub id=rnet-sub hidden>romp opens an ssh tunnel to the host and reads the romp "
-            "kernel running there. Its sessions show up prefixed <code>host:</code>, and its agents can "
-            "message yours as far as that host's mail setting allows.</div>"
+            # The fold carries the REAL explanation (the user 2026-07-23): what the connection is worth in
+            # security terms, and what each per-host setting means and when to reach for it. Those settings
+            # are a boundary, not a preference, and a dropdown reading "directed" cannot say so by itself.
+            # Kept faithful to docs/guide.md, which is the authoritative version.
+            "<div class=rnet-sub id=rnet-sub hidden>"
+            "<p><b>How it connects.</b> romp opens an ssh tunnel to the host and reads the romp kernel "
+            "running there; its sessions then show up prefixed <code>host:</code>. The tunnel supplies the "
+            "encryption and the machine identity, and a token read over that same ssh authorizes at the far "
+            "end, so dashboard traffic never crosses the network in the open. Root on a machine can read any "
+            "file on it, including that token, so federate boxes whose root you trust and keep only scoped, "
+            "revocable credentials on them.</p>"
+            "<p><b>Their mail</b> decides what reaches your agents from that host. A message that lands in an "
+            "agent's context can steer it, so this is a boundary rather than a preference.</p>"
+            "<ul>"
+            "<li><b>trusted</b> is full two-way postal, for a machine you control.</li>"
+            "<li><b>directed</b> lets you send work to its sessions while its mail to you waits as a "
+            "needs-you card to approve, edit or deny. It is the default, and the right setting for rented or "
+            "shared compute: you can drive the box, it cannot drive you.</li>"
+            "<li><b>isolated</b> is no postal at all. Its sessions still appear in your dashboard.</li>"
+            "</ul>"
+            "<p><b>Share my sessions there</b> publishes this machine to that host over your own outbound "
+            "ssh, so its dashboard gains your sessions and its bus peers with yours. Turn it on for a machine "
+            "you sit at and want your own fleet visible from. Leave it off for a box you only want to watch, "
+            "since attaching already gives you that. The credentials flow outward from whoever switches it "
+            "on, so the far end never holds a way back in here.</p>"
+            "</div>"
             # The LIST is the panel's subject, so it comes first and the add control sits under it as a
             # secondary action (the user 2026-07-22, who wanted rows and a +, not a permanent dropdown).
             "<div id=rnet-list></div>"
@@ -14576,8 +14606,29 @@ class Handler(BaseHTTPRequestHandler):
             # modal surgical override: cross a node off (op:resolve → nodeComplete) or drop it
             # (op:clear → the user-authority clear verdict, same seam as a card Clear, scoped to the
             # one sub — 'drop = an item-level clear which just checks it off', the user 2026-07-20).
-            if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
-                _mark_views_dirty()
+            if msg.get("op") == "resolve":
+                # ACK the resolve, always (the user 2026-07-23). The modal crosses the sub-goal off the
+                # instant you click and waits to hear back, so silence is the one answer it cannot use:
+                # _resolve_node returning False did nothing and said nothing, leaving an optimistic tick
+                # with no state behind it. Distinguish the two Falses, because only one is a failure —
+                # an already-complete node means the state the click asked for already holds.
+                _rsid, _rnid = str(msg["sid"]), str(msg["nodeId"])
+                try:
+                    _nd = jd.load_goals(_rsid).get("nodes", {}).get(_rnid)
+                    if _nd is None:
+                        _rok, _rerr = False, "that sub-goal is no longer in this session's goal store"
+                    elif _nd.get("nodeComplete"):
+                        _rok, _rerr = True, ""            # already crossed off; nothing to do, nothing wrong
+                    elif _resolve_node(_rsid, _rnid):
+                        _rok, _rerr = True, ""
+                        _mark_views_dirty()
+                    else:
+                        _rok, _rerr = False, "the goal store would not accept that change"
+                except Exception as _e:
+                    _rok, _rerr = False, (str(_e) or _e.__class__.__name__)
+                    sys.stderr.write("nodeOverride resolve: %s\n" % traceback.format_exc())
+                _send_to_app("feed", {"type": "nodeOverrideResult", "nodeId": _rnid,
+                                      "op": "resolve", "ok": _rok, "error": _rerr})
             elif msg.get("op") == "clear":
                 _gone = _subtree_item_ids(str(msg["nodeId"]))
                 _clear_all([str(msg["nodeId"])])

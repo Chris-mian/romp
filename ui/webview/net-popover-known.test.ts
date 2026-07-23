@@ -134,3 +134,33 @@ test("both copies fail LOUDLY when the tunnels refresh throws", () => {
   assert.match(STRIP, /Couldn't reach the kernel/);
   assert.match(STRIP, /Fail loudly/);
 });
+
+test("the How-it-works fold explains the security posture and every per-host setting", () => {
+  // A dropdown reading "directed" cannot say that it is a boundary rather than a preference, and the
+  // panel is where the decision is actually made, so the explanation belongs here and not only in the
+  // guide (the user 2026-07-23). Kept faithful to docs/guide.md, which stays authoritative.
+  const i = KERNEL.indexOf("<div class=rnet-sub id=rnet-sub hidden>");
+  assert.ok(i > 0, "the fold exists");
+  const fold = KERNEL.slice(i, KERNEL.indexOf("</div>", KERNEL.indexOf("Share my sessions there</b>", i)));
+  // 1. what the connection is worth: what protects it, and what it cannot protect against
+  assert.match(fold, /never crosses the network in the open/, "what the tunnel + token buy you");
+  assert.match(fold, /Root on a machine can read any /, "...and the limit of that");
+  assert.match(fold, /including that token, so federate boxes whose root you trust/);
+  // 2. each mail level, with WHEN to use it (a definition alone does not settle the choice)
+  assert.match(fold, /<b>trusted<\/b> is full two-way postal, for a machine you control/);
+  // (the kernel source splits this sentence across adjacent python string literals, so match the halves)
+  assert.match(fold, /<b>directed<\/b> lets you send work to its sessions/);
+  assert.match(fold, /shared compute: you can drive the box, it cannot drive you/, "when to reach for it");
+  assert.match(fold, /<b>isolated<\/b> is no postal at all/);
+  assert.match(fold, /It is the default/, "which one you get if you never touch it");
+  // 3. the check-in box, which points the OTHER way and is the easiest to misread
+  assert.match(fold, /<b>Share my sessions there<\/b> publishes this machine to that host/);
+  assert.match(fold, /Leave it off for a box you only want to watch/, "when NOT to use it");
+});
+
+test("the fold stays folded: the panel still opens on one gist line", () => {
+  // Progressive disclosure (CLAUDE.md) — the explanation got longer, so this matters more, not less.
+  assert.match(KERNEL, /<div class=rnet-sub id=rnet-sub hidden>/, "hidden until asked for");
+  assert.match(KERNEL, /<div class=rnet-gist>Another machine's romp sessions, in your tabs and timeline\./);
+  assert.match(KERNEL, /\.rnet-sub p\{margin:0 0 7px\}/, "and its paragraphs are spaced for 11.5px text");
+});
