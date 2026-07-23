@@ -1975,12 +1975,21 @@ _TASK_DONE_STATUSES = ("completed", "cancelled", "deleted")   # a to-do in one o
 
 
 def _plan_sync_pending(fsid, nodes):
-    """True while the agent's LIVE to-do store disagrees with the MIRROR romp judged from (`agentTask`
-    on each node). This is the 2026-07-22 false interrupt: rollup_status pins a top at 'working' whenever
-    any tracked item's mirror says "open", so a mirror that has not caught up is a card that may ALREADY
-    be finished — and the nudge read that stale 'working' and fired. _sync_declared_plan reconciles the
-    two on the next planner pass, so the disagreement is self-clearing. The nudge already reads this data
-    (_agent_open_set, for the message wording); this makes it a GATE."""
+    """True ONLY when a card's 'working' might be STALE — actually already FINISHED — so that nudging it
+    would be the 2026-07-22 false interrupt. rollup_status pins a top at 'working' off any tracked item
+    whose agentTask MIRROR still says "open"; that mirror is stale when the LIVE to-do store has since
+    finished the item (completed/cancelled/deleted). The incident: the nudge read that stale 'working',
+    fired, and stamped a needs-you block on a card the session went on to finish by itself. That one case
+    defers the nudge until the next planner pass reconciles the mirror — self-clearing, never lost.
+
+    Everything else deliberately does NOT defer. An item both sides still call OPEN is a card that is
+    LEGITIMATELY working, and a session that stopped with open work is EXACTLY the stall the nudge exists
+    to surface: it fires, and if the one ask doesn't resolve it, _mark_nudge_failed escalates the card to
+    blocked/needs-you (the user 2026-07-23). Gating the nudge on "there is open work" — or on a live item
+    romp has no node for yet — signals pending by the ABSENCE of a marker, which reads pending FOREVER on
+    a quiet store and suppresses the nudge unconditionally: the strictly worse bug the last-resort commit
+    (c91c996) explicitly refused to trade for, and the one an earlier over-broad version of this gate hit
+    (completed to-dos, then open untracked ones, wedged idle cards permanently in 'working')."""
     try:
         live = _task_plan_cached(fsid)
     except OSError:
@@ -1988,28 +1997,19 @@ def _plan_sync_pending(fsid, nodes):
     if live is None:
         return False                                    # no declared plan → nothing can be stale
     by_key = {str(t.get("key")): t for t in live if isinstance(t, dict)}
-    tracked = set()
     for nd in nodes.values():
         at = nd.get("agentTask")
-        if not isinstance(at, dict):
-            continue
-        k = str(at.get("key"))
-        tracked.add(k)
-        it = by_key.get(k)
+        if not isinstance(at, dict) or at.get("status") != "open":
+            continue                                    # only an OPEN mirror can pin a FALSE 'working'
+        it = by_key.get(str(at.get("key")))
         if it is None:
-            continue                                    # tracked item gone from the store → pass reconciles
-        raw = str(it.get("status") or "pending")
-        if (raw not in _TASK_DONE_STATUSES) != (at.get("status") == "open"):
-            return True                                 # open/done disagree → a sync is due
-        if str(at.get("raw") or "") != raw:
-            return True                                 # same open/done, finer status moved (in_progress…)
-    # An untracked live item is only a sync DUE when it is still OPEN: a finished to-do (completed/cancelled/
-    # deleted) whose card was long since cleared will never be re-minted a node, so counting it here left the
-    # gate stuck True forever — permanently deferring the auto-nudge on ANY idle session that had ever
-    # completed a to-do (the user 2026-07-23: cards stuck 'working', never nudged, no stall surfaced, no
-    # spinner). Only an untracked OPEN item is work the planner still owes a node.
-    return any(k not in tracked and str(by_key[k].get("status") or "pending") not in _TASK_DONE_STATUSES
-               for k in by_key)
+            continue                                    # item gone from the store → the planner reconciles;
+            #                                             deferring on an ABSENT item is the pending-forever trap
+        if str(it.get("status") or "pending") in _TASK_DONE_STATUSES:
+            return True                                 # mirror says open, live store FINISHED it → 'working'
+            #                                             may be stale: wait for the sync rather than nudge a
+            #                                             card that is already done
+    return False
 
 
 def _revivers_pending(sid, store, turns, gid):

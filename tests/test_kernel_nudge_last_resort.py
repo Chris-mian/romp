@@ -75,13 +75,25 @@ class Base(unittest.TestCase):
 
 
 class PlanSyncGate(Base):
-    """G1 — the incident. The nudge already READ the agent-to-do data (for message wording); now it gates."""
+    """G1 — the incident. rollup_status pins a top at 'working' off any tracked item whose agentTask MIRROR
+    says "open"; the mirror is stale when the LIVE store has since FINISHED that item. That one case — the
+    card may already be done — is the ONLY thing this gate defers on. Open work is real work: a card both
+    sides still call open is legitimately working, and a session that stopped with open work is exactly the
+    stall the nudge must fire on (the user 2026-07-23, reversing the earlier over-broad open-work gates)."""
 
     def test_a_stale_mirror_defers_the_nudge(self):
         self._write_tasks([("11", "completed")])            # the live store says DONE
         st = _store(agentTask={"key": "11", "status": "open", "raw": "in_progress"})   # mirror says open
         self.assertTrue(km._plan_sync_pending(SID, st["nodes"]))
         self.assertIn("to-do sync", km._revivers_pending(SID, st, _turns(), GID))
+
+    def test_a_mirror_that_says_done_never_defers(self):
+        # a mirror whose status is not "open" cannot pin a false 'working' (rollup_status keys off open),
+        # so a disagreement in the store-open direction is not this gate's concern — the card isn't working
+        # because of it.
+        self._write_tasks([("11", "in_progress")])
+        st = _store(agentTask={"key": "11", "status": "done", "raw": "completed"})
+        self.assertFalse(km._plan_sync_pending(SID, st["nodes"]))
 
     def test_an_agreeing_mirror_does_not_defer(self):
         self._write_tasks([("11", "in_progress")])
@@ -90,29 +102,29 @@ class PlanSyncGate(Base):
         self.assertEqual(km._revivers_pending(SID, st, _turns(), GID), "",
                          "an up-to-date mirror leaves the nudge free to fire")
 
-    def test_a_finer_status_move_also_defers(self):
-        # both still 'open', but pending -> in_progress means the sync has not landed
+    def test_a_finer_status_move_within_open_does_not_defer(self):
+        # both sides still 'open' (pending vs in_progress): the card is LEGITIMATELY working, so the nudge
+        # must be free to fire even though the finer status has not synced. Open work is not a stale-working.
         self._write_tasks([("11", "in_progress")])
         st = _store(agentTask={"key": "11", "status": "open", "raw": "pending"})
-        self.assertTrue(km._plan_sync_pending(SID, st["nodes"]))
+        self.assertFalse(km._plan_sync_pending(SID, st["nodes"]))
 
-    def test_a_live_item_romp_tracks_no_node_for_defers(self):
+    def test_a_live_item_romp_tracks_no_node_for_does_not_defer(self):
+        # an untracked live item is new work the planner has not minted a node for yet — it cannot make the
+        # card falsely 'working' (rollup keys off tracked mirrors), and gating on "romp has no node yet"
+        # reads pending FOREVER on any item the planner won't mint. A stalled session with open work must
+        # still nudge (and, unresolved, escalate to blocked) — the whole point of the last resort.
         self._write_tasks([("11", "pending")])
-        self.assertTrue(km._plan_sync_pending(SID, _store()["nodes"]))
-
-    def test_a_completed_untracked_item_does_not_defer(self):
-        # the 2026-07-23 wedge: a FINISHED to-do whose romp card was long since cleared stays untracked
-        # forever — it will never be re-minted a node. Counting it as "a sync due" pinned the gate True and
-        # deferred the auto-nudge until the 6h backstop, so an idle session with a 'working' card was never
-        # nudged and never surfaced as stalled. A done item romp has no node for is history, not a pending sync.
-        self._write_tasks([("11", "completed")])
         self.assertFalse(km._plan_sync_pending(SID, _store()["nodes"]))
+        self.assertEqual(km._revivers_pending(SID, _store(), _turns(), GID), "")
 
-    def test_an_open_untracked_item_still_defers_past_completed_ones(self):
-        # the fix must not blind the gate to genuinely new work: an OPEN untracked item is a node the planner
-        # still owes, even when finished to-dos sit beside it.
+    def test_completed_and_open_untracked_items_alike_do_not_defer(self):
+        # the 2026-07-23 wedge and its generalization: NEITHER a finished untracked to-do (history, never
+        # re-minted) NOR an open untracked one (new work) is a stale-working signal. Counting either pinned
+        # the gate True forever, so an idle session that had ever declared a to-do was never nudged and never
+        # surfaced as stalled (no spinner either, since no pass runs on an idle session).
         self._write_tasks([("1", "completed"), ("2", "completed"), ("3", "pending")])
-        self.assertTrue(km._plan_sync_pending(SID, _store()["nodes"]))
+        self.assertFalse(km._plan_sync_pending(SID, _store()["nodes"]))
 
     def test_idle_session_with_finished_todos_and_agreeing_mirror_is_free_to_nudge(self):
         # the real-world shape: many completed untracked to-dos plus the still-open ones tracked by mirrors
@@ -128,7 +140,18 @@ class PlanSyncGate(Base):
         store = {"rompUuid": SID, "seq": 1, "nodes": nodes, "placements": {},
                  "status": {nid: "working" for nid in nodes}}
         self.assertEqual(km._revivers_pending(SID, store, _turns(), SID + ":n12"), "",
-                         "an idle session whose only untracked to-dos are finished must be free to nudge")
+                         "an idle session working on open to-dos must be free to nudge")
+
+    def test_stale_mirror_beside_open_work_still_defers(self):
+        # the gate stays sharp for the case it exists for: even amid legitimately-open work, ONE tracked
+        # mirror that says open while the live store finished that item means a card may be done → defer.
+        self._write_tasks([("11", "in_progress"), ("12", "completed")])
+        nodes = {}
+        for k, mstatus, raw in (("11", "open", "in_progress"), ("12", "open", "in_progress")):
+            nid = SID + ":n" + k
+            nodes[nid] = {"id": nid, "parentId": None, "t": T0, "mt": T0, "text": "step " + k,
+                          "log": [], "agentTask": {"key": k, "status": mstatus, "raw": raw}}
+        self.assertTrue(km._plan_sync_pending(SID, nodes))       # n12's mirror is stale-open over a done item
 
     def test_no_declared_plan_is_not_pending(self):
         self.assertFalse(km._plan_sync_pending(SID, _store()["nodes"]),
