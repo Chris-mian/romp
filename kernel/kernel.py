@@ -1970,6 +1970,10 @@ def _task_plan_cached(fsid):
     return plan
 
 
+_TASK_DONE_STATUSES = ("completed", "cancelled", "deleted")   # a to-do in one of these is finished: it needs
+#                          no romp node and will never get one, so its absence from the mirror is not a stall
+
+
 def _plan_sync_pending(fsid, nodes):
     """True while the agent's LIVE to-do store disagrees with the MIRROR romp judged from (`agentTask`
     on each node). This is the 2026-07-22 false interrupt: rollup_status pins a top at 'working' whenever
@@ -1995,11 +1999,17 @@ def _plan_sync_pending(fsid, nodes):
         if it is None:
             continue                                    # tracked item gone from the store → pass reconciles
         raw = str(it.get("status") or "pending")
-        if (raw not in ("completed", "cancelled", "deleted")) != (at.get("status") == "open"):
+        if (raw not in _TASK_DONE_STATUSES) != (at.get("status") == "open"):
             return True                                 # open/done disagree → a sync is due
         if str(at.get("raw") or "") != raw:
             return True                                 # same open/done, finer status moved (in_progress…)
-    return any(k not in tracked for k in by_key)         # a live item romp tracks no node for yet
+    # An untracked live item is only a sync DUE when it is still OPEN: a finished to-do (completed/cancelled/
+    # deleted) whose card was long since cleared will never be re-minted a node, so counting it here left the
+    # gate stuck True forever — permanently deferring the auto-nudge on ANY idle session that had ever
+    # completed a to-do (the user 2026-07-23: cards stuck 'working', never nudged, no stall surfaced, no
+    # spinner). Only an untracked OPEN item is work the planner still owes a node.
+    return any(k not in tracked and str(by_key[k].get("status") or "pending") not in _TASK_DONE_STATUSES
+               for k in by_key)
 
 
 def _revivers_pending(sid, store, turns, gid):

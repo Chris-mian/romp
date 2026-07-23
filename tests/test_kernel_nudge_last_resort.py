@@ -100,6 +100,36 @@ class PlanSyncGate(Base):
         self._write_tasks([("11", "pending")])
         self.assertTrue(km._plan_sync_pending(SID, _store()["nodes"]))
 
+    def test_a_completed_untracked_item_does_not_defer(self):
+        # the 2026-07-23 wedge: a FINISHED to-do whose romp card was long since cleared stays untracked
+        # forever — it will never be re-minted a node. Counting it as "a sync due" pinned the gate True and
+        # deferred the auto-nudge until the 6h backstop, so an idle session with a 'working' card was never
+        # nudged and never surfaced as stalled. A done item romp has no node for is history, not a pending sync.
+        self._write_tasks([("11", "completed")])
+        self.assertFalse(km._plan_sync_pending(SID, _store()["nodes"]))
+
+    def test_an_open_untracked_item_still_defers_past_completed_ones(self):
+        # the fix must not blind the gate to genuinely new work: an OPEN untracked item is a node the planner
+        # still owes, even when finished to-dos sit beside it.
+        self._write_tasks([("1", "completed"), ("2", "completed"), ("3", "pending")])
+        self.assertTrue(km._plan_sync_pending(SID, _store()["nodes"]))
+
+    def test_idle_session_with_finished_todos_and_agreeing_mirror_is_free_to_nudge(self):
+        # the real-world shape: many completed untracked to-dos plus the still-open ones tracked by mirrors
+        # that AGREE with the live store. Nothing is actually out of sync, so the nudge must be free to fire.
+        self._write_tasks([("1", "completed"), ("2", "completed"), ("3", "completed"),
+                           ("12", "in_progress"), ("13", "pending"), ("14", "pending")])
+        nodes = {}
+        for k, raw in (("12", "in_progress"), ("13", "pending"), ("14", "pending")):
+            nid = SID + ":n" + k
+            nodes[nid] = {"id": nid, "parentId": None, "t": T0, "mt": T0, "text": "step " + k,
+                          "log": [], "agentTask": {"key": k, "status": "open", "raw": raw}}
+        self.assertFalse(km._plan_sync_pending(SID, nodes))
+        store = {"rompUuid": SID, "seq": 1, "nodes": nodes, "placements": {},
+                 "status": {nid: "working" for nid in nodes}}
+        self.assertEqual(km._revivers_pending(SID, store, _turns(), SID + ":n12"), "",
+                         "an idle session whose only untracked to-dos are finished must be free to nudge")
+
     def test_no_declared_plan_is_not_pending(self):
         self.assertFalse(km._plan_sync_pending(SID, _store()["nodes"]),
                          "a session that never declared a to-do list has nothing to be stale")
