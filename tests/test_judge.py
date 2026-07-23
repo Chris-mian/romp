@@ -4225,6 +4225,104 @@ class DeltaScopedDistill(unittest.TestCase):
         self.assertEqual(jd._distill_due_t(store, g, False), T0, "completed side falls back to mt without a settle")
 
 
+class ProceduralBlockStillSpeaks(unittest.TestCase):
+    """A goal blocked ONLY by romp's own bookkeeping (a failed nudge, a mid-turn stop) still presents a
+    where-this-stands line on its card (the user 2026-07-23: every card in Blocked shows a distilled
+    summary of what moves it — a bare red chip over silence left look-alike cards inconsistent). The
+    BRIEFER is still never called for these (the 2026-07-21 invented-decision lesson holds); the line
+    comes from the STALLER's vocabulary: an existing stall note is promoted, else the staller's prompt
+    writes one from the work with the procedural why as <holding> verbatim. And a "" sentinel settled in
+    an EARLIER episode re-opens to pending when a FRESH block event lands, so a real owed decision never
+    stays muted behind an old "nothing to say" (the launch-prep card). SYNTHETIC fixtures only."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._saved_stall = jd.stall_llm
+        self._saved_brief = jd.brief_llm
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)
+
+    def tearDown(self):
+        jd.STATE = self._saved_state
+        jd.stall_llm = self._saved_stall
+        jd.brief_llm = self._saved_brief
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _run(self, node_extra=None, block_why=None, block_at=None, stall_ret=None, brief_ret=None):
+        records = [uline(T0, "please do the thing", "u1", ps="typed"),
+                   aline(T0 + 10, "worked on the thing, stopped midway", "a1", "u1", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        g = SID + ":g1"
+        why = jd.NUDGE_BLOCK_WHY if block_why is None else block_why
+        node = {"id": g, "text": "the goal", "parentId": None, "nodeComplete": False,
+                "blocked": True, "blockWhy": why, "cleared": False,
+                "trail": [sg["id"] for sg in segs], "t": T0, "mt": T0 + 20,
+                "log": [{"kind": "block", "src": "nudge", "why": why, "at": block_at or (T0 + 20)}]}
+        node.update(node_extra or {})
+        store = {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": g, "placements": {},
+                 "status": {g: "blocked"}, "nodes": {g: node}}
+        jd.save_goals(SID, store)
+        calls = {"stall": [], "brief": []}
+        jd.stall_llm = lambda goal_text, work_text, holding: (
+            calls["stall"].append(holding) or
+            ("BACKGROUND: b.\nTAKEAWAY: stall take.\nSOURCE: m1" if stall_ret is None else stall_ret))
+        jd.brief_llm = lambda goal_text, work_text, owed: (
+            calls["brief"].append(owed) or
+            ("BACKGROUND: b.\nTAKEAWAY: brief take.\nSOURCE: m1" if brief_ret is None else brief_ret))
+        jd._distill_session(SID, str(path), NOW)
+        return calls, jd.load_goals(SID)["nodes"][g]
+
+    def test_a_nudge_only_block_promotes_the_existing_stall_note(self):
+        # the escalated stall already carries the staller's note — same reader, same episode: it IS the brief
+        calls, node = self._run(node_extra={"stallSummary": "the note that says where this stands"})
+        self.assertEqual(node["blockSummary"], "the note that says where this stands")
+        self.assertEqual(calls["stall"], [], "no call needed — the note already exists")
+        self.assertEqual(calls["brief"], [], "the briefer is still never called on a procedural block")
+
+    def test_a_nudge_only_block_with_no_note_speaks_via_the_stallers_prompt(self):
+        calls, node = self._run()
+        self.assertEqual(calls["brief"], [], "the briefer stays out of it (the 2026-07-21 lesson)")
+        self.assertEqual(calls["stall"], [jd.NUDGE_BLOCK_WHY],
+                         "the procedural why is the <holding>, passed verbatim")
+        self.assertEqual(node["blockSummary"], "stall take.")
+        self.assertEqual(node["background"], "b.")
+
+    def test_an_earlier_genuine_brief_survives_the_escalation(self):
+        calls, node = self._run(node_extra={"blockSummary": "decide X or Y",
+                                            "stallSummary": "a newer stall note"})
+        self.assertEqual(node["blockSummary"], "decide X or Y",
+                         "don't-clobber: a real brief from an earlier genuine block outranks the note")
+        self.assertEqual(calls["stall"], [])
+        self.assertEqual(calls["brief"], [])
+
+    def test_a_fresh_real_block_reopens_a_settled_blank(self):
+        # the launch-prep shape: a procedural block settled the brief to "" (that episode had nothing to
+        # say), then a REAL decision landed later in the subtree — "" must not keep muting the card
+        ask = "should the release gate be hard, warn-only, or manual?"
+        calls, node = self._run(
+            block_why=ask, block_at=T0 + 40,
+            node_extra={"blockSummary": "", "briefedMt": T0 + 20,
+                        "log": [{"kind": "block", "src": "interrupt", "why": jd.INTERRUPT_BLOCK_WHY, "at": T0 + 20},
+                                {"kind": "block", "src": "closer", "why": ask, "at": T0 + 40}]})
+        self.assertEqual(calls["brief"], [ask], "the fresh substantive block reaches the briefer")
+        self.assertEqual(node["blockSummary"], "brief take.")
+
+    def test_a_failed_call_after_a_reopen_stays_pending_not_blank(self):
+        # while the retry window lasts the card must read PENDING (Distilling… spinner) — null, never the
+        # "" sentinel, which the UI reads as "settled, nothing to say"
+        ask = "should the release gate be hard, warn-only, or manual?"
+        calls, node = self._run(
+            block_why=ask, block_at=T0 + 40, brief_ret="",
+            node_extra={"blockSummary": "", "briefedMt": T0 + 20,
+                        "log": [{"kind": "block", "src": "interrupt", "why": jd.INTERRUPT_BLOCK_WHY, "at": T0 + 20},
+                                {"kind": "block", "src": "closer", "why": ask, "at": T0 + 40}]})
+        self.assertEqual(calls["brief"], [ask])
+        self.assertIsNone(node.get("blockSummary"), "null = honestly pending; the spinner shows, not silence")
+        self.assertEqual(node.get("briefFails"), 1, "the retry counter runs; the cap still settles later")
+
+
 class KnownTargetContext(unittest.TestCase):
     """End-to-end over two REAL _plan_session passes (the user 2026-07-01), so a follow-up's target goal
     has a genuine trail segment, not a synthetic id: the planner gets that goal's own raw history

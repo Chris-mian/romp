@@ -281,14 +281,16 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   background: rgba(156, 210, 255, 0.10); font-weight: 600; }
 /* STALLED (the user 2026-07-23) — the one toggle that keeps its OWN colour in every state. The others turn
    accent-blue when selected, which is the app's "this is the one you picked" language; a stall is not a
-   preference, it is something wrong, so it stays working-yellow (--st-working-bg, the status colour for a
-   card that is supposed to be moving) whether open or shut. Selecting it swaps only the FILL to the same
-   accent wash every other pressed toggle uses, so it still reads as pressed while its text and border keep
-   drawing the eye. Yellow is a STATUS colour here, which is exactly what it is used for. */
-.fask-stallbtn, .fask-stallbtn.on { color: var(--st-working-bg); border-color: var(--st-working-bg); }
-.fask-stallbtn:hover, .fask-stallbtn.on:hover { color: var(--st-working-fg); background: var(--st-working-bg);
+   preference, it is something wrong, so it wears working-yellow (--st-working-bg, the status colour for a
+   card that is supposed to be moving). FILLED at rest, not an outline: the outline version sat as quiet as
+   its neighbours and the stall went unnoticed (the user 2026-07-23, round 2 — "so that it's noticed when
+   something is going on"). It reads like the working status chip because that is what it is: a status, not
+   a preference. Pressed adds only weight; the opened body below is the pressed cue. */
+.fask-stallbtn, .fask-stallbtn.on { color: var(--st-working-fg); background: var(--st-working-bg);
   border-color: var(--st-working-bg); }
-.fask-stallbtn.on { background: rgba(156, 210, 255, 0.10); font-weight: 600; }
+.fask-stallbtn:hover, .fask-stallbtn.on:hover { color: var(--st-working-fg); background: var(--st-working-bg);
+  border-color: var(--st-working-bg); filter: brightness(1.08); }
+.fask-stallbtn.on { font-weight: 600; }
 .fask-secs .fask-distill { min-width: 0; margin: 0; }
 /* the background body is typographically IDENTICAL to the summary (.fask-distill) — same font size,
    line height, color, opacity (the user 2026-07-02: one text style for both sections) */

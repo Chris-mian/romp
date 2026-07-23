@@ -989,8 +989,11 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
   taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
   taskBtn.onclick = pick("tasks");
-  // the bg/summary BODIES container shows only when one of those two is open (the tree is a separate element)
-  a._secs.style.display = (choice === "bg" || choice === "summary") ? "" : "none";
+  // the bg/summary/stall BODIES container shows only when one of those is open (the tree is a separate
+  // element). "stall" MUST be here: stallBody lives inside _secs, so without it the Stalled toggle pressed
+  // .on while its body stayed inside a display:none parent — the button "selected but nothing happened"
+  // (the user 2026-07-23, the very first click on the day-old section).
+  a._secs.style.display = (choice === "bg" || choice === "summary" || choice === "stall") ? "" : "none";
   // the inline sub-goal TREE (in _checklist), shown only when choice === "subgoals". Whole subtree, indented
   // by depth, with the outline's ▶/▼ disclosure triangles to fold branches (the user 2026-07-08). Same
   // inclusion rules as the modal's renderTreeNode: skip handoffs, a node reached under two parents renders
