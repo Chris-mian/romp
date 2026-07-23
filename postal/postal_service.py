@@ -273,6 +273,36 @@ def read_box(sid, consume):
         _mark_pending(sid)         # cleared the box -> drop the marker (no-op if more arrived)
     return out
 
+def restore(sid, mid):
+    """UNCLAIM a consumed message: move cur/<mid> back to new/ under its ORIGINAL id.
+
+    The counterpart to read_box(consume=True). A consuming drain is a CLAIM, not a delivery — the
+    claimer may fail to hand the mail over (the kernel can't inject safely), and then the claim has
+    to be rolled back. Rolling it back by re-sending through deliver() mints a NEW id and logs a
+    NEW "sent" event, which is what made a timeline message arc click land nowhere: the arc is drawn
+    from the message log, so every deferred push drew ANOTHER arc for the same message, and only the
+    id from the FINAL attempt was the one that reached the recipient's transcript. Every earlier
+    arc pointed at an id no transcript would ever carry (the user 2026-07-23). Keeping the id makes
+    one message one arc, and that arc lands. Restoring the FILE also keeps the original headers
+    (X-Park, X-Kind, Date), which the re-send dropped.
+
+    Returns True iff the message was put back."""
+    if not _safe_id(sid) or not _safe_id(mid):
+        return False
+    src = MAILROOT / sid / "cur" / mid
+    if not src.is_file():                # recalled/swept while we held it — nothing to put back
+        return False
+    try:
+        (MAILROOT / sid / "new").mkdir(parents=True, exist_ok=True)
+        src.rename(MAILROOT / sid / "new" / mid)
+    except OSError:
+        return False
+    # The exec stamp said "the recipient read it"; it didn't. Retract it so the sender's receipt
+    # reads pending again (_sent_receipts drops an exec that a later unexec retracts).
+    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
+    _mark_pending(sid)                   # new/ is non-empty again -> raise the marker
+    return True
+
 # ───────────────────────── formatting (shared) ─────────────────────────
 #
 # CONSUMER CONTRACT (stable — don't break without pinging dependents, e.g. vs_app2's
@@ -562,6 +592,8 @@ def _sent_receipts(mid):
             sent[e["id"]] = e
         elif ev == "exec":
             execs[e["id"]] = e["t"]
+        elif ev == "unexec":                         # a claimed-then-rolled-back drain (see restore):
+            execs.pop(e["id"], None)                 # it was never read, so the receipt goes back to pending
         elif ev == "recall":
             recalls[e["id"]] = e["t"]
         elif ev == "relayed":                        # peer-bus: the far host's end-to-end delivery ack
@@ -796,8 +828,14 @@ def _push(sid, agent):
         resp = _kernel_post("/deliver", {"id": sid, "text": format_push(msgs)}, timeout=12)
         if resp and resp.get("injected"):
             return True
-        for m in msgs:                                        # not injected → put it back for the drain
-            deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""), kind=m.get("kind", ""))
+        # Not injected → UNCLAIM: put each message back under its ORIGINAL id (restore), so a
+        # deferred push doesn't mint a second identity for the same message. Only if the file is
+        # gone (recalled/swept mid-push) do we fall back to a re-send, which costs a new id but
+        # never loses the mail.
+        for m in msgs:
+            if not restore(sid, m.get("id", "")):
+                deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""),
+                        park=m.get("park", False), kind=m.get("kind", ""))
         _log("push to %s deferred; %d msg(s) restored for the drain backstop" % (sid, len(msgs)))
         return False
     except Exception as e:

@@ -10322,6 +10322,8 @@ def _postal_messages(now, alive_sids, id2name):
             sent[o["id"]] = o
         elif o.get("ev") == "exec" and o.get("id"):
             execd[o["id"]] = o.get("t")
+        elif o.get("ev") == "unexec" and o.get("id"):    # a drain that CLAIMED the mail then rolled back
+            execd.pop(o["id"], None)                     # (postal restore) — it never reached the recipient
     cutoff, out = now - TL_HORIZON, []
     msgsum = _msg_summaries()                           # {id: Haiku caption} → the timeline shows it over the raw body
     for mid, e in sent.items():
