@@ -1416,8 +1416,8 @@ def _mark_nudge_failed(gid):
         sid = gid.rsplit(":", 1)[0]
         store = jd.load_goals(sid)
         nd = store.get("nodes", {}).get(gid)
-        why = ("romp followed up once and the response didn't resolve this; "
-               "it won't be re-asked — it needs your direction")
+        why = jd.NUDGE_BLOCK_WHY          # shared constant: the briefer recognizes it as PROCEDURAL and
+        #                                   writes no decision brief, rather than inventing one from <work>
         if nd is not None and jd.record_verdict(store, nd, "nudge", "block", now, why=why):
             nd["mt"] = now                            # the event materialized blocked + blockWhy
             jd.append_block(sid, gid, "nudge", why, now)   # journal before the save it protects: a judge
@@ -1454,7 +1454,7 @@ def _record_interrupt_block(sid):
     if not gid:
         return None
     nd = store["nodes"][gid]
-    why = "you stopped this session mid-turn — it's waiting on your next instruction"
+    why = jd.INTERRUPT_BLOCK_WHY      # shared constant, PROCEDURAL (see judge.procedural_block_why)
     now = int(time.time())
     if not jd.record_verdict(store, nd, "interrupt", "block", now, why=why):
         return None
