@@ -62,6 +62,7 @@ interface AskItem {
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
   nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → "stalled" chip; the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
+  stalled?: { why: string; since: number; note?: string | null } | null;   // romp's nudge gate is HOLDING this working card behind a reviver that isn't retiring, so nothing is moving it (kernel _stalled_goals; the user 2026-07-23). `why` = the kernel's mechanical reason, always present; `note` = the staller's plain-language version, null until the judge writes one. Drives the Stalled section button — its own colour, since this is romp being the bottleneck, not you
   interrupting?: boolean;                          // a user interrupt is IN FLIGHT (dispatched, not yet settled) → steady "interrupting…" badge from the click until it settles, THEN yields to `interrupted` — never flickering to "working" in between (kernel build_feed; the user 2026-07-07)
   interrupted?: boolean;                           // the user STOPPED this session mid-turn and hasn't messaged it since → "interrupted" badge; its quiet is user-chosen, auto-nudge holds off until their next message (kernel build_feed; the user 2026-07-05)
   retrying?: { since?: number | null; count?: number } | null;   // the OPEN turn is inside an api-retry storm (kernel _session_retrying, live backend state) → "⚠ retrying since HH:MM" chip on the working card; without it a storm reads as plain healthy Working (the user 2026-07-09)
@@ -711,6 +712,12 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the inline sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no
   // sub-goals. Wired in applySections alongside Background/Summary (one open at a time, or none).
   const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
+  // "Stalled" — the FIFTH mutually-exclusive section (the user 2026-07-23): romp is holding this card and
+  // nothing is moving it. Same press-toggle interaction as Background/Summary, but it keeps the WORKING
+  // colour in both states (see .fask-stallbtn) so it still draws the eye while open — the one section whose
+  // point is that something is wrong. Filled in applySections.
+  const stallBtn = el("button", "fask-secbtn fask-stallbtn"); stallBtn.textContent = "Stalled"; stallBtn.style.display = "none";
+  const stallBody = el("div", "fask-stall-body");
   // "Waiting on task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
   // the mini spinning swirl inside) that replaces the old boxed awaiting caption when live bg TASKS exist;
   // click expands the task list in the checklist spot, same interaction as Sub-goals. Filled in applySections.
@@ -722,10 +729,10 @@ function makeAskCard(it: AskItem): HTMLElement {
   // they exist), a small nav line at the BOTTOM of the summary body — click opens the modal, where the
   // artifacts render as previews. Filled in applySections; shows only with the summary section.
   const artline = el("div", "fask-artline nav"); artline.style.display = "none";
-  secs.append(bgBody, distill, artline);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
+  secs.append(bgBody, distill, stallBody, artline);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
   // now that the toggles exist, populate row3: Background · Summary · Sub-goals · Waiting-on-task — GROUPED
   // left, wrapping together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
-  row3.append(bgBtn, takeBtn, subBtn, taskBtn, actions);
+  row3.append(bgBtn, takeBtn, stallBtn, subBtn, taskBtn, actions);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -846,6 +853,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
   a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn; a._subBtn = subBtn;
+  a._stallBtn = stallBtn; a._stallBody = stallBody;
   a._taskBtn = taskBtn; a._taskLbl = taskLbl;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
@@ -858,9 +866,18 @@ function makeAskCard(it: AskItem): HTMLElement {
 // which the footer "Collapsed" toggle sets: OFF → "summary" open (a completed card's takeaway shows); ON →
 // "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
 // (click the open one → off; click another → switch) that survives the mode.
-const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "none" {
+const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none">();
+function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
   return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
+}
+// The Stalled body's text: the staller's plain-language note when the judge has written one, else the
+// kernel's own mechanical reason. Never a waiting-on-the-judge placeholder — a stalled card always has
+// something true to say about why it is stuck, because the kernel knew the reason before the judge was
+// ever asked. That is the whole point of grounding this surface in the mechanical why.
+function stallText(st: { why: string; note?: string | null } | null | undefined): string {
+  if (!st) return "";
+  const note = (st.note || "").trim();
+  return note || ("Nothing is moving this: romp is waiting on " + st.why + ".");
 }
 // Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08, who referred to the
 // little triangle-y icons from the outline view). A node is COLLAPSED by default; membership here means the
@@ -904,12 +921,16 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const taskList = ((it.awaiting && it.awaiting.tasks) || []).filter(Boolean);
   const hasTasks = taskList.length > 0;
   // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
+  // the stall note (the user 2026-07-23) — shown whenever the kernel says romp is holding this card, with
+  // or without a judge-written note, since `why` alone already answers "why is nothing happening"
+  const stall = it.stalled && it.stalled.why ? it.stalled : null;
   let choice = resolveSec(id);
   if (choice === "bg" && !bg) choice = "none";
   if (choice === "summary" && !distillShown) choice = "none";
   if (choice === "subgoals" && !hasSubs) choice = "none";
   if (choice === "tasks" && !hasTasks) choice = "none";
-  const pick = (want: "bg" | "summary" | "subgoals" | "tasks") => (ev: Event) => {
+  if (choice === "stall" && !stall) choice = "none";
+  const pick = (want: "bg" | "summary" | "subgoals" | "tasks" | "stall") => (ev: Event) => {
     ev.stopPropagation();
     secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
     applySections(a, it, distillShown);
@@ -929,6 +950,16 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   a._takeBtn.title = choice === "summary" ? "hide the summary" : "show the summary";
   (a._distill as HTMLElement).style.display = choice === "summary" ? "" : "none";
   a._takeBtn.onclick = pick("summary");
+  // Stalled toggle — same press-toggle as the others; its colour is the difference (see .fask-stallbtn)
+  a._stallBtn.style.display = stall ? "" : "none";
+  a._stallBtn.classList.toggle("on", choice === "stall");
+  a._stallBtn.setAttribute("aria-pressed", choice === "stall" ? "true" : "false");
+  a._stallBtn.title = stall
+    ? (choice === "stall" ? "hide why this is stalled" : "romp is holding this — show why")
+    : "";
+  a._stallBody.style.display = choice === "stall" ? "" : "none";
+  if (choice === "stall") a._stallBody.textContent = stallText(stall);
+  a._stallBtn.onclick = pick("stall");
   // "N artifacts" under the summary (the user 2026-07-08): the kernel already existence-filtered the
   // distiller's list, so a count here is always openable. Click → the modal, where they render as previews.
   const artline = a._artline as HTMLElement;
