@@ -1594,8 +1594,10 @@ def append_override(fsid, node_id, op, t):
     store in memory across a model call — a stale pass save erases the flag write AND its diary event,
     leaving nothing to re-derive the action from. The journal is the durable truth: load_goals replays
     it idempotently, so a clobbered override re-applies on the very next load (the cleared.jsonl
-    pattern — the event is the write). Ops: resolve, followup, move; kernel-side block verdicts ride
-    append_block and an undo-clear restore rides append_restore below (it must carry node payloads)."""
+    pattern — the event is the write). Ops: resolve, followup, move, unclear (the undo-clear's
+    un-seal verdict — the restore row alone re-inserts a node still flag-cleared, the user 2026-07-23);
+    kernel-side block verdicts ride append_block and an undo-clear restore rides append_restore below
+    (it must carry node payloads)."""
     d = _overrides_dir()
     d.mkdir(parents=True, exist_ok=True)
     with (d / (fsid + ".jsonl")).open("a") as f:
@@ -1641,11 +1643,15 @@ def _replay_overrides(fsid, store):
     the store is still returned. Entries are rare (one manual click each), so the journal is never
     pruned — replay is a few dict lookups.
 
-    The SUPERSEDE guard on the event ops: a USER event at-or-after the entry means the entry is
-    already history — either the original write survived (its own user twin carries this exact ev_t)
-    or a later user action outranks it; replaying past THAT would undo the user's newer gesture (e.g.
-    re-complete a card they deliberately reopened). Judge events do not cancel a replay: the user
-    event is appended anyway and the fold's authority rules arbitrate."""
+    The SUPERSEDE guard on the event ops: a STRICTLY-LATER user event means a newer gesture outranks
+    the entry — replaying past it would undo what the user did next (e.g. re-complete a card they
+    deliberately reopened). An EQUAL-time user event is not that: it is either the entry's own
+    survived twin (matched exactly — same kind and flags at this ev_t → skip as already applied) or a
+    DIFFERENT same-second gesture, which must not eat this one (the user 2026-07-23: an undo-clear and
+    a card reply in the same second are two gestures, and the old >= guard silently dropped the
+    reply's replay, bouncing the card back mid-pass). Judge events do not cancel a replay: the user
+    event is appended anyway and the fold's authority rules arbitrate. `block` keeps at-or-after: a
+    user reply in the same second as a nudge stamp genuinely answers it."""
     fp = _overrides_dir() / (fsid + ".jsonl")
     if not fp.is_file():
         return
@@ -1676,16 +1682,20 @@ def _replay_overrides(fsid, store):
         nd = store.get("nodes", {}).get(ev.get("node"))
         if nd is None:
             continue
-        superseded = any(e.get("src") == "user" and int(e.get("ev_t") or 0) >= t
-                         for e in (nd.get("log") or []))
+        uev = [e for e in (nd.get("log") or []) if e.get("src") == "user"]
+        later = any(int(e.get("ev_t") or 0) > t for e in uev)   # a NEWER user gesture outranks this entry
+        def _twin(kind, **flags):                      # the entry's own survived write: same kind, same
+            # ev_t, same flag signature (msg/undo stored only when True — an absent key reads False)
+            return any(e.get("kind") == kind and int(e.get("ev_t") or 0) == t
+                       and all(bool(e.get(k)) == v for k, v in flags.items()) for e in uev)
         if op == "resolve":
-            if nd.get("nodeComplete") or superseded:
+            if nd.get("nodeComplete") or later or _twin("done"):
                 continue
             if record_verdict(store, nd, "user", "done", t,
                               why=nd.get("doneWhy") or "Resolved by the user."):
                 nd["mt"] = t
         elif op in ("followup", "move"):
-            if superseded:
+            if later or _twin("reopen", msg=(op == "followup"), undo=False):
                 continue
             if op == "move" and not may_apply(store, nd, "user", "reopen"):
                 continue                               # view-cleared stays sealed, exactly like user_move
@@ -1694,12 +1704,30 @@ def _replay_overrides(fsid, store):
             _unblock_subtree(store, ev["node"], t,
                              "answered by the user's reply to the card" if op == "followup"
                              else "moved to Working by the user")
+        elif op == "unclear":
+            # The undo-clear's un-seal (_mark_nodes_cleared value=False), replayed so a pre-restore
+            # snapshot/clobbered store un-clears exactly as the live one did (the user 2026-07-23: the
+            # restore row alone re-inserts the node still flag-cleared, and the user's follow-up reopen
+            # then bounced off the seal mid-pass). Voided only by a LATER user clear — a strictly-later
+            # reopen (e.g. the card reply seconds after the restore) must NOT eat it, so `later` is
+            # deliberately not consulted. was_done mirrors _mark_nodes_cleared: re-settle a completed
+            # top so the restored card returns to Completed, not Working.
+            if _twin("reopen", undo=True) or any(e.get("kind") == "clear"
+                                                 and int(e.get("ev_t") or 0) > t for e in uev):
+                continue                               # survived, or re-dismissed since
+            was_done = nd.get("parentId") is None and (
+                store.get("status", {}).get(ev.get("node")) == "completed" or nd.get("nodeComplete"))
+            if record_verdict(store, nd, "user", "reopen", t, why="undo clear", undo=True):
+                if was_done and not nd.get("settledDone"):
+                    record_verdict(store, nd, "romp", "settle", t)
         elif op == "block":
-            # A kernel-side block (append_block). `superseded` doubles as the answer guard: the user's
-            # reply at/after the stamp answered the ask, so replaying would re-block past their reopen.
+            # A kernel-side block (append_block). The answer guard keeps AT-OR-AFTER (>= via later|eq):
+            # a user reply in the same second as the nudge stamp genuinely answered it, so replaying
+            # would re-block past their reopen.
             src = ev.get("src") or "nudge"
-            if superseded or any(e.get("src") == src and e.get("kind") == "block"
-                                 and int(e.get("ev_t") or 0) == t for e in (nd.get("log") or [])):
+            if later or any(int(e.get("ev_t") or 0) == t for e in uev) or any(
+                    e.get("src") == src and e.get("kind") == "block"
+                    and int(e.get("ev_t") or 0) == t for e in (nd.get("log") or [])):
                 continue                               # answered since, or the original write survived
             if record_verdict(store, nd, src, "block", t, why=ev.get("why")):
                 nd["mt"] = max(int(nd.get("mt") or 0), t)

@@ -41,8 +41,9 @@ test("kernel: a user write is marked so it punches through a mid-flight judge pa
   assert.match(KERNEL, /at = time\.time\(\)\s+# stamped BEFORE the reads/);
   // …and re-punched whenever the MARK moves, so a second gesture in one long pass lands too (test_kernel.py)
   assert.match(KERNEL, /if mark >= _goals_snap_at\[0\] and _goals_snap_done\.get\(sid\) != mark:/);
-  // every user gesture that writes a goal store marks it: reply, Move to Working, and crossing a node off
-  assert.equal((KERNEL.match(/^\s+_note_user_goal_write\(sid\)/gm) || []).length, 3);
+  // every user gesture that writes a goal store marks it: reply, Move to Working, crossing a node off,
+  // and (2026-07-23) restoring a dismissed card — the un-clear that used to wait out the whole pass
+  assert.equal((KERNEL.match(/^\s+_note_user_goal_write\(sid\)/gm) || []).length, 4);
 });
 
 test("kernel: the feed payload carries the build id, claimed BEFORE the read it describes", () => {

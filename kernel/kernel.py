@@ -6835,10 +6835,12 @@ def _feed_goals(sid):
         if snap is not None and sid in snap:
             store, mark = snap[sid], _user_goal_write.get(str(sid), 0.0)
             if mark >= _goals_snap_at[0] and _goals_snap_done.get(sid) != mark:
-                _goals_snap_done[sid] = mark
                 try:
-                    jd._replay_overrides(sid, store)   # the reopen/move/resolve event, applied by the judge's own code
+                    jd._replay_overrides(sid, store)   # the reopen/move/resolve/unclear event, applied by the judge's own code
                     jd.rollup_status(store, False)     # …and the card's column follows it (the user just acted → working)
+                    _goals_snap_done[sid] = mark       # done ONLY on success: a failed replay must retry on the
+                    #                                    next read, not burn the mark and serve the pre-gesture
+                    #                                    card for the whole pass (the user 2026-07-23)
                 except Exception:
                     sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
             return store
@@ -8869,9 +8871,18 @@ def _mark_nodes_cleared(item_ids, value):
                 # gate passes because _undo_clear appends the cleared.jsonl undo rows BEFORE this runs)
                 was_done = nd.get("parentId") is None and (
                     store.get("status", {}).get(iid) == "completed" or nd.get("nodeComplete"))
-                jd.record_verdict(store, nd, "user", "clear" if value else "reopen", now,
-                                  why="cleared from the feed" if value else "undo clear",
-                                  undo=not value)     # an undo-restore asserts nothing about doneness
+                applied = jd.record_verdict(store, nd, "user", "clear" if value else "reopen", now,
+                                            why="cleared from the feed" if value else "undo clear",
+                                            undo=not value)   # an undo-restore asserts nothing about doneness
+                if not value and applied:
+                    # Journal the UN-CLEAR (the user 2026-07-23, the restore-then-reply flicker): the
+                    # restore journal row carries only the ARCHIVED node payload — still flag-cleared —
+                    # so a mid-pass replay onto a pre-restore snapshot rebuilt the card sealed and the
+                    # user's follow-up reopen bounced off it (working → completed → working on the
+                    # board). The unclear row makes the un-seal itself replayable, with the verdict's
+                    # exact `now` so replay's twin check matches the survived original. Journal-first:
+                    # this precedes the save below, the write a racing pass save could clobber.
+                    jd.append_override(sid, iid, "unclear", now)
                 if not value and was_done and not nd.get("settledDone"):
                     # restore COMPLETION stickily (the user 2026-06-27): the undo-reopen restored the
                     # pre-clear state from its snapshot, but a top that had never settled (the ≈5% gap)
@@ -8888,6 +8899,13 @@ def _mark_nodes_cleared(item_ids, value):
             closed = False
         jd.rollup_status(store, closed)
         jd.save_goals(sid, store)
+        if not value:
+            # A restore is a USER GESTURE and must never wait out a judge pass (the same rule as a card
+            # reply, the user 2026-07-21/23): punch it through the pre-pass snapshot and push now. The
+            # clear direction needs neither — cleared.jsonl is read live, so hiding is already instant.
+            _note_user_goal_write(sid)
+    if not value:
+        _mark_views_dirty()
 
 
 def _clear_ask(item_id):
