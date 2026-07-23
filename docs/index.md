@@ -11,7 +11,7 @@ background a decision needs, and coordinating handoffs of work and context.
 
 Romp simplifies and automates this management: it tracks every agent and its
 tasks, surfaces what needs your attention, and keeps them moving and working
-together. You stay focused on what you're trying to accomplish.
+together. *You* stay focused on what you're trying to accomplish.
 
 Romp is built on top of Claude Code: the agents Romp manages are ordinary
 sessions, gathered into one live dashboard.
@@ -27,33 +27,34 @@ Its key features:
 <!-- Feature sections. Real captures live in docs/assets/; the README points at the same files.
      The docs home embeds the MP4 in a <video> for the last feature; the README embeds the GIF. -->
 
-## Every session, one timeline { .feature-h }
+## Every session, one view { .feature-h }
 
-What's running, what's stuck, and what needs your attention.
+Shows what's running, what's stuck, and what needs your attention.
 
 <video src="assets/guide/every-session-timeline.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ## Task management { .feature-h }
 
-Tracks all the work so you don't have to, generated automatically from the agents' transcripts.
+Analyzes the agents' transcripts to track all the work, so you don't have to.
 
 <video src="assets/guide/task-cards.mp4" autoplay loop muted playsinline width="100%"></video>
 
-## One card, three questions { .feature-h }
-
-What the agent did and why, without having to scroll through transcripts. One
-click flips a card between its background, its summary, and its sub-tasks.
+Turns each task into a card with the key details: a background for why the work
+is happening, a summary of what the agent did, and the sub-goals completed
+along the way.
 
 <video src="assets/guide/context-tabs.mp4" autoplay loop muted playsinline class="romp-card-demo"></video>
 
-## Coordination in the open { .feature-h }
+## Navigate by time, task, or content { .feature-h }
 
-Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.
-
-<video src="assets/guide/coordination.mp4" autoplay loop muted playsinline width="100%"></video>
-
-## Detail on demand { .feature-h }
-
-Hover a work bar, open a summary, expand a tool call.
+Organizes the same work three ways, each linked to the others. Whether you
+remember when something happened, which task it belonged to, or what was said,
+start there and drill down.
 
 <video src="assets/overview.mp4" autoplay loop muted playsinline width="100%"></video>
+
+## Coordination you can see { .feature-h }
+
+Gives the agents a mailbox, so they can ask each other questions and hand off work.
+
+<video src="assets/guide/coordination.mp4" autoplay loop muted playsinline width="100%"></video>

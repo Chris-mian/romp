@@ -4,45 +4,43 @@
 
 AI agents like Claude Code can work autonomously for long stretches, allowing several to be run in parallel. But this parallelism creates new management work: tracking what the agents are doing, scrolling through transcripts to find the background a decision needs, and coordinating handoffs of work and context.
 
-Romp simplifies and automates this management: it tracks every agent and its tasks, surfaces what needs your attention, and keeps them moving and working together. You stay focused on what you're trying to accomplish.
+Romp simplifies and automates this management: it tracks every agent and its tasks, surfaces what needs your attention, and keeps them moving and working together. *You* stay focused on what you're trying to accomplish.
 
 <!-- Feature sections. Real captures live in docs/assets/; docs/index.md points at the same
      files. The README shows the GIF for the last feature (GitHub autoplays it in <img>);
      docs/index.md embeds the MP4 in a <video>. -->
 
-### Every session, one timeline
+### Every session, one view
 
-What's running, what's stuck, and what needs your attention.
+Shows what's running, what's stuck, and what needs your attention.
 
 <img src="docs/assets/tile-glance.png" alt="Every session with its status in one view" width="100%">
 
 ### Task management
 
-Tracks all the work so you don't have to, generated automatically from the agents' transcripts.
+Analyzes the agents' transcripts to track all the work, so you don't have to.
 
 <img src="docs/assets/tile-tasks.png" alt="Work grouped into task cards" width="100%">
 
-### One card, three questions
-
-What the agent did and why, without having to scroll through transcripts.
+Turns each task into a card with the key details: a background for why the work is happening, a summary of what the agent did, and the sub-goals completed along the way.
 
 <img src="docs/assets/tile-context-background.png" alt="A card's background: why the work is happening" width="100%">
 
 <img src="docs/assets/tile-context-summary.png" alt="A card's summary: what the agent did" width="100%">
 
-### Coordination in the open
+### Navigate by time, task, or content
 
-Agents asking each other questions and handing off tasks, through a mailbox Romp gives them.
+Organizes the same work three ways, each linked to the others. Whether you remember when something happened, which task it belonged to, or what was said, start there and drill down.
+
+<img src="docs/assets/overview.gif" alt="Walkthrough: hovering work bars, opening summaries, expanding tool calls" width="100%">
+
+### Coordination you can see
+
+Gives the agents a mailbox, so they can ask each other questions and hand off work.
 
 <img src="docs/assets/tile-coordination-timeline.png" alt="A message crossing between two sessions on the timeline" width="100%">
 
 <img src="docs/assets/tile-coordination-chat.png" alt="The same message, shown in the chat" width="100%">
-
-### Detail on demand
-
-Hover a work bar, open a summary, expand a tool call.
-
-<img src="docs/assets/overview.gif" alt="Walkthrough: hovering work bars, opening summaries, expanding tool calls" width="100%">
 
 Romp works with Claude Code today. It adds all of this on top of the sessions you already run, without changing how you work.
 
