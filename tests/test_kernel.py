@@ -5942,6 +5942,48 @@ class HostSuspend(unittest.TestCase):
         finally:
             km._downtime[:] = saved
 
+    def test_awake_spans_drops_dark_wake_slivers_carrying_no_activity(self):
+        # The user 2026-07-23: overnight work bars at 5am and 6am with the lid shut, all redrawing the SAME
+        # finished work. macOS dark-wake stirs the host every few minutes while it sleeps, so ONE overnight
+        # suspension lands in the log as a chain of naps with ~45s awake slivers between them; excision alone
+        # read every sliver as work and drew a bar per sliver, each carrying the segment's one prompt/summary.
+        saved = list(km._downtime)
+        km._downtime[:] = [(1000.0, 2000.0), (2045.0, 3000.0), (3045.0, 4000.0), (4045.0, 5000.0)]
+        try:
+            acts = [100.0, 500.0, 900.0, 5100.0, 5400.0]   # work before the lid shut, then after the real wake
+            self.assertEqual(km._awake_spans(100, 5400, acts), [[100, 1000], [5000, 5400]],
+                             "the dark-wake slivers hold no atoms → no bars; pre-sleep and post-wake work kept")
+            self.assertEqual(km._awake_spans(100, 5400),
+                             [[100, 1000], [2000, 2045], [3000, 3045], [4000, 4045], [5000, 5400]],
+                             "acts=None keeps the raw awake split — callers with no atom times are unchanged")
+        finally:
+            km._downtime[:] = saved
+
+    def test_awake_spans_keeps_a_wake_stretch_that_carries_activity(self):
+        # The other side of the same rule, so the drop can never over-reach: a stretch the host really did
+        # work in (an auto-nudge that fired while the lid was shut) has atoms, so it stays a bar.
+        saved = list(km._downtime)
+        km._downtime[:] = [(1000.0, 2000.0), (2045.0, 3000.0)]
+        try:
+            self.assertEqual(km._awake_spans(100, 3200, [100.0, 2020.0, 3100.0]),
+                             [[100, 1000], [2000, 2045], [3000, 3200]],
+                             "an atom inside a short wake stretch makes it real work → kept")
+        finally:
+            km._downtime[:] = saved
+
+    def test_awake_spans_never_drops_a_segment_entirely(self):
+        # The never-drop rule survives the activity filter: a segment whose atoms land in no surviving span
+        # still renders its leading span, exactly as a sleep covering the whole span always has.
+        saved = list(km._downtime)
+        km._downtime[:] = [(1000.0, 2000.0)]
+        try:
+            self.assertEqual(km._awake_spans(100, 2500, [7777.0]), [[100, 1000]],
+                             "no span carries activity → the leading span survives")
+            self.assertEqual(km._awake_spans(100, 900, [None, 200.0]), [[100, 900]],
+                             "an atom with no timestamp is skipped, not crashed on")
+        finally:
+            km._downtime[:] = saved
+
 
 class SessionListNameCollision(unittest.TestCase):
     """Regression (the user 2026-06-22): two functions were both named _session_list — the picker payload

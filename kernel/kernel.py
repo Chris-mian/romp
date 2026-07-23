@@ -11,7 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:7433
 """
-import json, os, re, signal, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, re, signal, sys, time, threading, traceback, base64, bisect, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -197,7 +197,7 @@ def _last_plain_user_turn_t(turns):
     return best
 
 
-def _awake_spans(start, end):
+def _awake_spans(start, end, acts=None):
     """Split a work span [start, end] into the sub-spans the host was AWAKE for, EXCISING every recorded
     suspension that overlaps it. A segment that kept working after the lid reopened thus renders as one bar
     PER awake stretch (the frozen gaps drop out), so work done AFTER waking is not erased.
@@ -206,7 +206,17 @@ def _awake_spans(start, end):
     first nap and dropped every later awake stretch, so hours of real post-wake work vanished from the lane
     while the captioner kept captioning the still-open segment (the user 2026-06-22). No overlapping
     suspension → [[start, end]] (the common case). A sleep covering the whole span still yields the leading
-    point so the segment never drops entirely. Pure over _downtime; unit-tested."""
+    point so the segment never drops entirely. Pure over _downtime; unit-tested.
+
+    `acts` — the segment's ACTIVITY times (its atoms' `t`). AWAKE IS NOT WORKING, and excision alone assumed
+    it was: macOS dark-wake stirs the host for ~45s every few minutes with the lid shut, so one suspension
+    lands in the log as a chain of naps with awake slivers between them. A segment left open across a night
+    was therefore cut into ~18 slivers and drew a bar for EVERY one, each carrying that segment's single
+    prompt/summary — the same finished work redrawn down the whole night, at 5am and 6am, while nobody was
+    at the machine (the user 2026-07-23). A span now survives only if some activity actually falls inside
+    it, which is the difference between a real post-wake stretch (atoms) and a dark-wake sliver (none).
+    Every span keeps its awake bounds; this only drops the empty ones. acts=None → the raw awake split
+    (callers with no atom times in hand). Nothing survives → the leading span, per the never-drop rule."""
     if end <= start:
         return [[start, end]]
     naps = sorted((max(start, s), min(end, e)) for (s, e) in _downtime if s < end and e > start)
@@ -217,7 +227,15 @@ def _awake_spans(start, end):
         cur = max(cur, e)
     if cur < end:
         spans.append([cur, end])
-    return spans or [[start, end]]
+    if not spans:
+        return [[start, end]]
+    if acts:
+        ts = sorted(t for t in acts if t is not None)
+        # bisect, not a scan per span: a long segment carries hundreds of atoms and every lane's every
+        # segment runs this on each bars build.
+        live = [sp for sp in spans if bisect.bisect_left(ts, sp[0]) < bisect.bisect_right(ts, sp[1])]
+        spans = live or spans[:1]
+    return spans
 
 
 def _record_suspend(iv):
@@ -11211,8 +11229,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             for si, seg in enumerate(segs):
                 # A bar must not span a host sleep. EXCISE every suspension inside the segment → one bar per
                 # awake stretch, so work done AFTER the lid reopened isn't erased (the user 2026-06-22). The
-                # asleep gaps between pieces read as idle (and collapse under 'collapse gaps').
-                spans = _awake_spans(seg["t"], seg["end"])
+                # asleep gaps between pieces read as idle (and collapse under 'collapse gaps'). The segment's
+                # atom times go in too: an awake stretch with NO activity in it is a dark-wake sliver, not
+                # work, and drawing it redrew this segment's summary all night long (the user 2026-07-23).
+                spans = _awake_spans(seg["t"], seg["end"], [a.get("t") for a in seg["atoms"]])
                 last_t = max(last_t or 0, spans[-1][1])            # the true work END (last awake activity) — drives the lane `since`
                 seg_ends[seg["t"]] = spans[-1][1]                  # a completion mark lands at its segment's END (after the work)
                 if not with_bars:
