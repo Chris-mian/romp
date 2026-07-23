@@ -1398,25 +1398,32 @@ function paintRailSticky(): void {
   const content = document.getElementById("content");
   const v = activeId ? views.get(activeId) : null;
   if (!content || !v || v.el.style.display === "none") { stamp.style.display = "none"; return; }
-  const cTop = content.getBoundingClientRect().top;
+  const cRect = content.getBoundingClientRect();
+  const cTop = cRect.top, cBottom = cRect.bottom;
   const fold = cTop + 2;                       // the reading edge: what you'd call "the top of the screen"
-  // the LAST turn starting at or above the fold is the one you're reading; its marker carries the time
+  // Two things in one pass: the LAST turn starting at or above the fold (the one you're reading — its marker
+  // carries the time to pin), and whether ANY real timestamp is currently visible in the viewport.
   let marker: HTMLElement | null = null;
   let anyMarker: HTMLElement | null = null;
+  let timedVisible = false;
   for (const t of Array.from(v.el.children) as HTMLElement[]) {
     const m = t.firstChild as HTMLElement | null;
     if (!m || m.nodeType !== 1 || !m.classList || !m.classList.contains("time-marker")) continue;
     if (!anyMarker) anyMarker = m;             // any marker gives the gutter's real x geometry
-    const top = t.getBoundingClientRect().top;
-    if (top > fold) break;                     // past the fold; children are in document order
-    marker = m;
+    if (t.getBoundingClientRect().top <= fold) marker = m;   // the turn spanning the top of the view
+    // A real timestamp is on screen if the marker RENDERS a time (suppressed same-minute stamps are empty)
+    // and its glyph intersects the content viewport — even partially occluded at the top edge still counts.
+    if (m.textContent) {
+      const r = m.getBoundingClientRect();
+      if (r.bottom > cTop && r.top < cBottom) { timedVisible = true; break; }   // one is enough; stop looking
+    }
   }
-  // Hand-off: if that turn's OWN marker is on screen AND actually showing a time, it does the job.
-  // A suppressed (same-minute) marker renders empty, so it does not count — that is precisely the case
-  // where the rail looks blank and the sticky stamp has to step in.
+  // The sticky exists for exactly one case: scrolling through a turn tall enough that NO timestamp is on
+  // screen (the user 2026-07-22: "I don't actually see a timestamp"). So it defers the moment ANY real stamp
+  // is visible — the one the tracked turn owns, a restamp-revealed neighbour, or the previous one still
+  // partially in view. That kills the transient double-stamp where the sticky and a real marker both showed.
   const hm = marker ? (marker.dataset.hm || "") : "";
-  const live = !!marker && !!marker.textContent && marker.getBoundingClientRect().top >= cTop;
-  if (!hm || live) { stamp.style.display = "none"; return; }
+  if (!hm || timedVisible) { stamp.style.display = "none"; return; }
   const g = (anyMarker || marker!).getBoundingClientRect();
   stamp.textContent = hm;
   stamp.style.left = g.left + "px";
