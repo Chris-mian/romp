@@ -311,3 +311,21 @@ are per-user (the token file) and per-machine (the trust level).
 
 Full details, including how to report a vulnerability, are in
 [SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md).
+
+## How many tokens does Romp use?
+
+The judges read your transcripts to build the task cards, so Romp spends tokens
+on top of the sessions you run yourself. In practice that stays modest, because
+the judging runs on cheaper models than the work: the high-volume indexing tier
+is Haiku, the judgment tier is Sonnet, while your own sessions use whatever you
+picked for them.
+
+That split is the recommendation, not just the default. Keep the judges on the
+smaller models and the work on the larger ones: Haiku and Sonnet for judging,
+Opus or Fable for the work itself. Both are yours to change from the gear, under
+**Indexing model** and **Triage model**.
+
+You don't have to take any of that on trust. The analytics modal reports what you
+actually spent over any period, separating your sessions from the judge pipeline
+and breaking the pipeline down per judge and per tier, with a toggle between
+tokens and dollars.
