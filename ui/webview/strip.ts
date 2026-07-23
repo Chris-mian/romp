@@ -257,7 +257,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   const LBL: Record<string, string> = {
     up: "connected", authorizing: "authorizing…", connecting: "connecting…", starting: "connecting…",
     "no-kernel": "kernel not answering", down: "disconnected", error: "error",
-    "gave-up": "not connected — click Attach",
+    "gave-up": "stopped trying",
   };
   // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
   // Mirrors the web popover's TIP map — the two copies must say the same thing.
@@ -269,7 +269,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     "no-kernel": "The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine's romp there and boots it.",
     down: "The ssh tunnel is not up. romp is still retrying for now; check that `ssh <host>` works from a terminal.",
     error: "The connection failed. Hover the status text for the reason romp got back.",
-    "gave-up": "romp tried this host and stopped — it is no longer dialing in the background. It will try again on the next kernel start, or click Attach to try now.",
+    "gave-up": "romp tried this host, gave up, and is no longer dialing it in the background. It tries again on the next kernel start, or attach it again to try now.",
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = (ms: number) => { clearTimeout(timer); if (!pop.hidden) timer = setTimeout(refresh, ms); };
@@ -324,11 +324,16 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
       const trust = document.createElement("select");
       trust.className = "sn-trust";
-      trust.title = "Federation trust — trusted: full two-way postal (a box you control); "
-        + "directed: its mail is held for your approval; isolated: dashboard only, no postal";
+      trust.title = `What happens to postal mail from ${t.host}. trusted: delivered straight to `
+        + "your sessions. directed: held for your approval. isolated: none, dashboard only.";
+      // Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
+      // dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
+      const TRUSTW: Record<string, string> = {
+        trusted: "trusted (auto-accept)", directed: "directed (held for you)", isolated: "isolated (no mail)",
+      };
       for (const lvl of ["trusted", "directed", "isolated"]) {
         const o = document.createElement("option");
-        o.value = lvl; o.textContent = lvl;
+        o.value = lvl; o.textContent = TRUSTW[lvl];
         if ((t.trust || "directed") === lvl) o.selected = true;
         trust.appendChild(o);
       }
@@ -345,7 +350,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         const u = document.createElement("button");
         u.textContent = "Push";
         u.title = `Push this machine's committed romp to ${t.host} and restart its kernel, so it runs exactly this code. `
-          + `Uncommitted local edits are NOT sent — commit first. It refuses if that machine has its own commits.`;
+          + `Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.`;
         u.addEventListener("click", () => act("/tunnels/update", t.host, u, "Pushing…"));
         r.appendChild(u);
       }

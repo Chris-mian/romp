@@ -3837,7 +3837,7 @@ def _tmux_sessions():
 
 REMOTES_FILE = jd.STATE / "remotes.json"
 # Hosts you have EVER attached, kept after detach (the user 2026-07-22: the popover should list past
-# hosts as persistent entries, not make you re-find them in the ssh-config dropdown). Separate from
+# hosts as persistent entries, not make you retype them). Separate from
 # remotes.json on purpose: that file is the LIVE set the supervisor polls, and a remembered host has
 # no tunnel to poll. Also remembers the trust level, so re-attaching a box you had marked `trusted`
 # doesn't silently drop back to `directed`.
@@ -4469,7 +4469,7 @@ def list_known():
 def detach_remote(host):
     """Detach a remote: kill its tunnel proc and forget it. The host stays in the KNOWN list (with the
     trust you last set), so the popover can offer a one-click re-attach instead of sending you back to
-    the ssh-config dropdown."""
+    the add box."""
     host = (host or "").strip()
     with _remotes_lock:
         r = _remotes.pop(host, None)
@@ -13025,21 +13025,40 @@ _LANDING_REMOTES_JS = """
 (function(){
 var icon=document.getElementById('rail-net'),back=document.getElementById('rnet-back');
 if(!icon||!back)return;
-var hostSel=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
-list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x');
-function open(){back.hidden=false;loadHosts();refresh();}
+var hostIn=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
+list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x'),dl=document.getElementById('rnet-hosts'),
+plus=document.getElementById('rnet-plus'),addBox=document.getElementById('rnet-add'),hint=document.getElementById('rnet-hint'),
+more=document.getElementById('rnet-more'),sub=document.getElementById('rnet-sub');
+// The add form is a DISCLOSURE, not permanent furniture: the panel's subject is the hosts you have, and
+// adding one is an occasional act (the user 2026-07-22). showAdd(false) on every open so it never reopens
+// holding a stale typed value; render() opens it by itself when the list is empty, so the empty panel
+// still offers its one useful action instead of dead-ending.
+function showAdd(on){if(!addBox)return;addBox.hidden=!on;hint.hidden=!on;plus.hidden=!!on;
+if(on&&hostIn){hostIn.value=hostIn.value||mruHost();try{hostIn.focus();hostIn.select();}catch(e){}}}
+var _autoAdd=false;
+function open(){back.hidden=false;_autoAdd=false;showAdd(false);loadHosts();refresh();}
 function close(){back.hidden=true;}
+if(plus)plus.onclick=function(){showAdd(true);};
+// "How it works" — the gist reads by itself; the mechanics are one click under it.
+if(more)more.onclick=function(){var on=sub.hidden;sub.hidden=!on;more.setAttribute('aria-expanded',on?'true':'false');
+more.textContent=on?'Hide':'How it works';};
 icon.onclick=function(e){e.stopPropagation();if(back.hidden)open();else close();};
 window.__rompOpenNet=open;   // the mobile bottom bar's Net button (the rail is hidden there)
 back.onclick=function(e){if(e.target===back)close();};
 if(x)x.onclick=close;
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
 function mruHost(){try{return localStorage.getItem('romp:lastRemoteHost')||'';}catch(e){return '';}}
+// SUGGESTIONS, not the menu. The box takes any ssh target: attach_remote validates it with _safe_ssh_host
+// and hands it to ssh as a positional arg, so ~/.ssh/config is one source of completions rather than the
+// set of machines you can reach. Hosts you attached before are the other source, and that is what makes a
+// typed-in host stick: attaching records it in remotes-known.json, so it completes from then on.
+var _cfg=[],_seen=[];
+function fillHosts(){if(!dl)return;var hs=[];
+[[mruHost()],_seen,_cfg].forEach(function(g){(g||[]).forEach(function(h){if(h&&hs.indexOf(h)<0)hs.push(h);});});   // most-recently-connected first, not just ssh-config order
+dl.innerHTML=hs.map(function(h){return '<option value=\"'+h+'\"></option>';}).join('');}
 function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-var hs=(d&&d.hosts)||[];var mru=mruHost();
-if(mru&&hs.indexOf(mru)>=0){hs=[mru].concat(hs.filter(function(h){return h!==mru;}));}   // most-recently-connected first, not just ssh-config order
-hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+(h===mru?' \\u00b7 recent':'')+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
-var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error','gave-up':'not connected \\u2014 click Attach'};
+_cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(){});}
+var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error','gave-up':'stopped trying'};
 // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
 var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
 authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
@@ -13048,7 +13067,7 @@ starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its p
 'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine\\u2019s romp there and boots it.',
 down:'The ssh tunnel is not up. romp is still retrying for now; check that `ssh <host>` works from a terminal.',
 error:'The connection failed. Hover the status text for the reason romp got back.',
-'gave-up':'romp tried this host and stopped \\u2014 it is no longer dialing in the background. It will try again on the next kernel start, or click Attach to try now.'};
+'gave-up':'romp tried this host, gave up, and is no longer dialing it in the background. It tries again on the next kernel start; Retry tries now.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
 function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel'&&s!=='gave-up';}   // mid-attach (authorizing/connecting); no-kernel and gave-up are SETTLED (no marching dashes)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
@@ -13061,7 +13080,7 @@ var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function
 // (the user 2026-07-12: the icon should visibly move while it's connecting)
 paintIcon(ts.some(function(t){return t.status==='up';}),busy);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count
-icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+' \\u2014 '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
+icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
 if(!back.hidden)render(ts,(d&&d.known)||[],pmode);   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
@@ -13079,8 +13098,16 @@ schedule(3000);});}
 // list and before any row was appended. The panel therefore showed an empty host list no matter how many
 // hosts were attached, and the bare catch swallowed the error (the user 2026-07-22). Take it as a param.
 function render(ts,known,pmode){list.innerHTML='';known=known||[];
-if(!ts.length&&!known.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
-ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
+// Every host romp knows about feeds the add box's completions, so a machine you typed in once is a
+// couple of keystrokes the next time even after you forget its exact spelling.
+_seen=ts.map(function(t){return t.host;}).concat(known.map(function(k){return k.host;}));fillHosts();
+if(!ts.length&&!known.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='Nothing attached yet.';list.appendChild(e);
+// An empty panel must not dead-end: open the add form for them, but only once per opening, or the 3s
+// refresh would re-focus and re-select the box out from under someone mid-type.
+if(addBox&&addBox.hidden&&!_autoAdd){_autoAdd=true;showAdd(true);}
+return;}
+ts.forEach(function(t){var item=document.createElement('div');item.className='rnet-item';
+var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
 var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':(t.status==='down'||t.status==='gave-up')?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
@@ -13092,28 +13119,41 @@ var ver='';
 if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
 if(typeof bb==='number'&&typeof ab==='number'){
 w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
-var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+' \\u2014 this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
+var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
 ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
-var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are NOT sent \\u2014 commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
 var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"No kernel is answering on '+t.host+'. This pushes this machine\\u2019s romp there and boots its kernel.\">Start</button>':'';
-// keep connected (peer-bus check-in, stage 3): publish THIS machine to that host over our own
-// outbound ssh. Only for hosts WE attach; a row that checked in to us is labeled instead.
-var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions and its bus peers with yours. This is NOT the reconnect setting \\u2014 use Attach/Detach for that. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
+// A host that gave up is no longer being dialed, so the row itself has to offer the way back in. It used
+// to say "click Attach" and point at a control that now lives behind +, which would have been a dead end.
+var retry=(t.status==='gave-up')?'<button data-ra=\"'+t.host+'\" title=\"Dial '+t.host+' again now. romp stopped after '+(t.maxTries||5)+' tries; this restarts that budget.\">Retry</button>':'';
+// The check-in publishes THIS machine TO that host, which is the opposite direction from everything else
+// in the row. Its old label, "keep connected", read as the reconnect setting so plainly that the tooltip
+// had to spend a sentence saying what it was NOT. Name it for what it does instead.
+var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Publish this machine to '+t.host+' over your own outbound ssh, so its dashboard gains your sessions and its bus peers with yours. Uncheck to be forgotten there. Attach and Detach control the other direction.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>Share my sessions there</label>':'';
 // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is HELD for
 // your approval, never auto-injected; isolated = dashboard only, no postal. The gate lives in the bus.
+// Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
+// dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
+var TRUSTW={trusted:'trusted (auto-accept)',directed:'directed (held for you)',isolated:'isolated (no mail)'};
 var tcur=t.trust||'directed';
-var trust='<select class=rnet-trust data-t=\"'+t.host+'\" title=\"Federation trust \\u2014 trusted: full two-way postal (a box you control); directed: its mail is held for your approval; isolated: dashboard only, no postal\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select>';
+var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=rnet-trust data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select></span>';
+// Line 1 is what this host is doing right now plus the acts you perform on it; line 2 is the pair of
+// settings you set once and leave. They shared a single flat row before, which gave Detach the same
+// weight as a dropdown, and on a phone pushed it off the edge entirely.
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-trust+keep+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
-list.appendChild(row);});
+retry+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
+item.appendChild(row);
+var r2=document.createElement('div');r2.className='rnet-row2';r2.innerHTML=trust+keep;
+item.appendChild(r2);
+list.appendChild(item);});
 // PREVIOUSLY ATTACHED (the user 2026-07-22): hosts you attached before, kept after detach so they are
-// one click away instead of buried in the ssh-config dropdown. Dimmed, and each remembers the trust
+// one click away instead of something you retype. Dimmed, and each remembers the trust
 // level you last set for it — re-attaching a box you marked `trusted` will not silently drop to directed.
 if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
 hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
@@ -13134,7 +13174,8 @@ if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d
 c.disabled=false;refresh();}).catch(function(){c.checked=!c.checked;c.disabled=false;alert('keep-connected on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
 b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
-// Re-attach a remembered host: the SAME /tunnels attach the dropdown drives, so the kernel restores
+// Re-attach a remembered host (and Retry on a host that gave up): the SAME /tunnels attach the add box
+// drives, so the kernel restores
 // its remembered trust level on the way in. Forget only drops it from the list.
 list.querySelectorAll('button[data-ra]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-ra');
 b.disabled=true;b.textContent='Attaching\\u2026';icon.classList.add('busy');
@@ -13154,12 +13195,20 @@ fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json
 if(d&&d.ok){b.textContent='Pushed';schedule(2000);}   // the remote restarts + re-polls → the flag clears itself
 else{b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
 }).catch(function(){b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed to reach the kernel.');});};});}
-attach.onclick=function(){var h=hostSel.value;if(!h)return;
+attach.onclick=function(){var h=(hostIn.value||'').trim();if(!h)return;
 try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}   // remember for MRU-first ordering next time
 attach.disabled=true;attach.textContent='Attaching\\u2026';
 icon.classList.add('busy');var mb=mnet();if(mb)mb.classList.add('busy');   // motion starts on the CLICK (ack now); the next /tunnels poll re-derives it
-fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){
-attach.disabled=false;attach.textContent='Attach';refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';});};
+// A typed host can simply be wrong (a typo, or a string ssh cannot parse — the kernel rejects those in
+// _safe_ssh_host), which never used to be possible when the only way in was picking from a dropdown.
+// Say so instead of quietly restoring the button and leaving an unchanged list to explain itself.
+fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+attach.disabled=false;attach.textContent='Attach';
+if(d&&d.ok){hostIn.value='';showAdd(false);}   // it has a row of its own now, so the form's work is done
+else{alert('Could not attach '+h+': '+((d&&d.error)||'unknown'));}
+refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';
+alert('Could not attach '+h+': the kernel did not answer.');});};
+if(hostIn)hostIn.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();attach.click();}});
 refresh();   // self-schedules (fast while attaching, slow keep-alive otherwise) so the rail icon's connected-state highlight stays current even while closed
 })();
 """
@@ -13477,28 +13526,54 @@ def _landing():
             ".rnet-top span{flex:1 1 auto}"
             "#rnet-x{background:none;border:none;color:#9aa0a6;font-size:16px;line-height:1;cursor:pointer;padding:0 2px}"
             "#rnet-x:hover{color:#fff}"
-            ".rnet-sub{color:#9aa0a6;font-size:11.5px;line-height:1.45;margin-bottom:11px}"
-            ".rnet-sub code{background:#2a2a2a;border-radius:3px;padding:0 3px}"
-            ".rnet-add{display:flex;gap:6px;margin-bottom:9px}"
-            "#rnet-host{flex:1 1 auto;min-width:0;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px}"
+            # One family of sizes, by information type (CLAUDE.md): 11.5px for the panel's own explanatory
+            # text (gist, expanded prose, add-form hint), 11px for per-row status and settings.
+            ".rnet-gist{color:#9aa0a6;font-size:11.5px;line-height:1.45;margin-bottom:11px}"
+            ".rnet-more{background:none;border:none;color:var(--accent);font:inherit;cursor:pointer;padding:0;margin-left:6px}"
+            ".rnet-more:hover{text-decoration:underline}"
+            ".rnet-sub{color:#9aa0a6;font-size:11.5px;line-height:1.45;margin:-6px 0 11px}"
+            ".rnet-sub[hidden]{display:none}"
+            ".rnet-sub code,.rnet-hint code{background:#2a2a2a;border-radius:3px;padding:0 3px}"
+            # "+ Add a host" is a quiet, full-width affordance under the list; it becomes the input row
+            # on click. Never a dead end: with nothing attached it opens itself (see the JS).
+            ".rnet-plus{display:block;width:100%;margin-top:11px;background:none;color:#9aa0a6;"
+            "border:1px dashed #3a3a3a;border-radius:6px;padding:5px 8px;font:inherit;cursor:pointer;text-align:center}"
+            ".rnet-plus:hover{color:#e8eaed;border-color:#4a4a52}"
+            ".rnet-plus[hidden]{display:none}"
+            ".rnet-add{display:flex;gap:6px;margin-top:11px;padding-top:11px;border-top:1px solid #2a2a2a}"
+            ".rnet-add[hidden]{display:none}"
+            "#rnet-host{flex:1 1 auto;min-width:0;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px;font:inherit}"
             "#rnet-attach{flex:0 0 auto;background:var(--accent);color:var(--accent-fg);border:none;border-radius:6px;padding:4px 12px;font-weight:600;cursor:pointer}"
             "#rnet-attach:disabled{opacity:0.5;cursor:default}"
-            "#rnet-list{display:flex;flex-direction:column;gap:5px}"
+            ".rnet-hint{color:#6e7681;font-size:11.5px;line-height:1.45;margin-top:6px}"
+            ".rnet-hint[hidden]{display:none}"
+            # A host is one ITEM of two lines: what it is doing + the actions on line 1, the settings that
+            # persist for it on line 2. They used to share one flat row, which put "Detach" at the same
+            # visual weight as a dropdown you set once and forget.
+            "#rnet-list{display:flex;flex-direction:column;gap:9px}"
             ".rnet-row{display:flex;align-items:center;gap:7px}"
+            ".rnet-item{display:flex;flex-direction:column}"
+            # Wrapping here is unconditional, not part of the phone media query below: both settings carry
+            # white-space:nowrap, so on any panel too narrow for the pair (94% of a small desktop window
+            # does it, not just a phone) the second one is simply cut off at the panel's edge.
+            ".rnet-row2{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;margin:4px 0 0 14px}"
+            ".rnet-set{display:flex;align-items:center;gap:5px;color:#6e7681;font-size:11px;white-space:nowrap}"
+            ".rnet-lbl{color:#6e7681;font-size:11px}"
             ".rnet-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}"
             ".rnet-row .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".rnet-row .st{color:#999;font-size:11px}"
             ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
             ".rnet-row button:disabled{opacity:0.55;cursor:default}"
-            # On a phone the panel is ~360px but a host row packs trust + keep + Push + Start + Detach, all
-            # flex:0 0 auto. With no wrap the row overflowed and Detach sat off the right edge — so on mobile
-            # the panel looked like it offered nothing but Attach (the user 2026-07-22, who could not find any
-            # way to stop reconnecting). Let the row wrap and give the name its own full line.
+            # On a phone the panel is ~360px. Splitting the settings onto their own line already takes the
+            # squeeze off line 1, but keep the wrap as a backstop: a host row previously packed trust +
+            # keep + Push + Start + Detach as flex:0 0 auto, overflowed, and put Detach off the right edge,
+            # so the panel looked like it offered nothing but Attach (the user 2026-07-22, who could not
+            # find any way to stop reconnecting).
             "@media (pointer:coarse),(max-width:560px){"
             ".rnet-row{flex-wrap:wrap}"
             ".rnet-row .nm{flex:1 0 100%}"
             "}"
-            ".rnet-keep{display:flex;align-items:center;gap:4px;color:#999;font-size:11px;flex:0 0 auto;cursor:pointer;white-space:nowrap}"
+            ".rnet-keep{display:flex;align-items:center;gap:5px;color:#6e7681;font-size:11px;flex:0 0 auto;cursor:pointer;white-space:nowrap}"
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
             ".rnet-trust:disabled{opacity:0.55;cursor:default}"
@@ -13758,10 +13833,25 @@ def _landing():
             # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
             "<div id=rnet-back hidden><div id=rnet-panel>"
             "<div class=rnet-top><span>Remote kernels</span><button id=rnet-x aria-label=Close>×</button></div>"
-            "<div class=rnet-sub>Federate another machine's romp over SSH — its sessions appear here prefixed "
-            "<code>host:</code> and can message yours. Reads <code>~/.ssh/config</code>.</div>"
-            "<div class=rnet-add><select id=rnet-host></select><button id=rnet-attach>Attach</button></div>"
+            # Message first, mechanics one click away (CLAUDE.md's progressive-disclosure rule). The old
+            # subtitle led with the machinery ("Federate another machine's romp over SSH") and spent its
+            # last sentence on an implementation note that is now simply false: you are no longer limited
+            # to what is in ~/.ssh/config.
+            "<div class=rnet-gist>Another machine's romp sessions, in your tabs and timeline."
+            "<button id=rnet-more class=rnet-more aria-expanded=false>How it works</button></div>"
+            "<div class=rnet-sub id=rnet-sub hidden>romp opens an ssh tunnel to the host and reads the romp "
+            "kernel running there. Its sessions show up prefixed <code>host:</code>, and its agents can "
+            "message yours as far as that host's mail setting allows.</div>"
+            # The LIST is the panel's subject, so it comes first and the add control sits under it as a
+            # secondary action (the user 2026-07-22, who wanted rows and a +, not a permanent dropdown).
             "<div id=rnet-list></div>"
+            "<button id=rnet-plus class=rnet-plus>+ Add a host</button>"
+            "<div class=rnet-add id=rnet-add hidden>"
+            "<input id=rnet-host list=rnet-hosts placeholder='hostname or user@host' "
+            "autocapitalize=off autocorrect=off spellcheck=false>"
+            "<datalist id=rnet-hosts></datalist><button id=rnet-attach>Attach</button></div>"
+            "<div class=rnet-hint id=rnet-hint hidden>Any ssh target you could type after <code>ssh</code>: a "
+            "<code>~/.ssh/config</code> alias, or <code>user@host</code>. Hosts you attach are remembered here.</div>"
             "</div></div>"
             # two separate <script> tags so a throw in the desktop splitter script can never disable
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
@@ -14020,7 +14110,7 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/json", cache="no-cache")
             if p == "/tunnels":                               # attached remote kernels + state (drives the federated dashboard)
                 # `known` = hosts attached before but not now, so the popover can list them as persistent
-                # re-attach rows instead of making you re-find them in the ssh-config dropdown.
+                # re-attach rows instead of making you retype them.
                 return self._send(200, json.dumps({"tunnels": list_remotes(),
                                                    "known": list_known(),
                                                    "peersMode": _postal_peers_on()}),
@@ -14248,7 +14338,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path == "/tunnels":
                 # Attach a remote kernel: open its ssh tunnels + fetch its token so the browser can merge
-                # its fleet. Body: {"host": <ssh alias>, "kernelPort"?: <remote port>}. The blocking ssh
+                # its fleet. Body: {"host": <any ssh target>, "kernelPort"?: <remote port>}. The blocking ssh
                 # round-trip (token fetch) is fine on the threaded server. Returns the public tunnel row.
                 try:
                     body = json.loads(raw_body or b"{}")

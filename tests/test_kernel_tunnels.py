@@ -151,6 +151,21 @@ class TunnelConcierge(unittest.TestCase):
         status, body = _req(self.port, "POST", "/tunnels", {})
         self.assertEqual(status, 400)
 
+    def test_a_target_absent_from_ssh_config_attaches_and_is_remembered(self):
+        # ssh takes any target you could type after `ssh`, so ~/.ssh/config supplies completions rather
+        # than the set of reachable machines. The popover's box is free text on the strength of that, and
+        # `known` is what makes a typed host stick: romp's own list of boxes, no config entry needed.
+        target = "someone@198.51.100.7"       # TEST-NET-3, and absent from this test's ssh_config
+        self.assertNotIn(target, km._ssh_config_hosts())
+        status, body = _req(self.port, "POST", "/tunnels", {"host": target})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["tunnel"]["host"], target)
+        _req(self.port, "POST", "/tunnels/detach", {"host": target})   # `known` lists past hosts, not live ones
+        _, listing = _req(self.port, "GET", "/tunnels")
+        self.assertIn(target, {k["host"] for k in listing["known"]},
+                      "an attached host is remembered, so it need only ever be typed once")
+
 
 class HostForSidMap(unittest.TestCase):
     """The host↔sid map the wake-router (Phase 3) reads. Populated by the supervisor's poll; here we set it

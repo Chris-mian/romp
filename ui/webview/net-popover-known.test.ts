@@ -55,7 +55,7 @@ test("both copies explain every status on hover, with the same wording", () => {
 test("both copies explain the destructive/confusing controls on hover", () => {
   for (const [name, src] of [["kernel", KERNEL], ["strip", STRIP]] as const) {
     // Push: the two things that actually surprise people — uncommitted work isn't sent, and it refuses
-    assert.ok(src.includes("Uncommitted local edits are NOT sent"), `${name}: Push warns about uncommitted work`);
+    assert.ok(src.includes("Uncommitted local edits are not sent"), `${name}: Push warns about uncommitted work`);
     // Detach: says the host is REMEMBERED, so it doesn't read as destructive
     assert.ok(src.includes("previously-attached host"), `${name}: Detach says the host is remembered`);
     // Forget: says it doesn't touch the host itself
@@ -70,22 +70,45 @@ test("both copies explain the destructive/confusing controls on hover", () => {
 test("both copies label the gave-up state and treat it as SETTLED, not busy", () => {
   for (const [name, src] of [["web", KERNEL], ["strip", STRIP]] as const) {
     assert.match(src, /gave-up/, `${name}: the status is known to the popover`);
-    assert.match(src, /no longer dialing in the background/, `${name}: explains it stopped on hover`);
+    assert.match(src, /no longer dialing it in the background/, `${name}: explains it stopped on hover`);
   }
-  // the same label in each copy — kernel.py escapes the em-dash for its inline JS, so match around it
-  assert.match(KERNEL, /not connected[^']*click Attach/, "web label");
-  assert.match(STRIP, /not connected — click Attach/, "strip label");
+  // the same label in each copy. It used to read "not connected, click Attach" and point at a control
+  // that the web panel now keeps behind +; that copy names the state and the row carries the action.
+  assert.match(KERNEL, /'gave-up':'stopped trying'/, "web label");
+  assert.match(STRIP, /"gave-up": "stopped trying"/, "strip label");
+  assert.match(KERNEL, /data-ra=\\"'\+t\.host\+'\\" title=\\"Dial /, "the web row offers Retry");
   assert.match(KERNEL, /s!=='no-kernel'&&s!=='gave-up'/, "web busyStatus excludes it");
   assert.match(STRIP, /s !== "no-kernel" && s !== "gave-up"/, "strip busy() excludes it");
   assert.match(KERNEL, /t\.status==='down'\|\|t\.status==='gave-up'\)\?'background:#8a8a8a'/, "web dot is gray");
   assert.match(STRIP, /t\.status === "down" \|\| t\.status === "gave-up"\) \? "#8a8a8a"/, "strip dot is gray");
 });
 
-test("the keep-connected tooltip no longer claims to be the reconnect switch", () => {
-  // it is the peer-bus publish flag; saying "this attach auto-reconnects" sent the user hunting for a
-  // reconnect setting that was never there
+test("the check-in control is named for what it does, not for what it is not", () => {
+  // It publishes THIS machine to the remote. Called "keep connected" it read as the reconnect setting so
+  // plainly that the tooltip had to spend a sentence denying that, and the user still went hunting for a
+  // reconnect switch that was never there. The label now says the direction out loud.
   assert.doesNotMatch(KERNEL, /this attach auto-reconnects/);
-  assert.match(KERNEL, /NOT the reconnect setting/);
+  assert.doesNotMatch(KERNEL, /keep connected<\/label>/, "the misleading label is gone");
+  assert.match(KERNEL, /Share my sessions there<\/label>/, "it says which way the sharing goes");
+  assert.match(KERNEL, /Publish this machine to '\+t\.host/, "and the tooltip leads with that");
+});
+
+test("the panel opens on the host list, with adding a host one click away", () => {
+  // Progressive disclosure (CLAUDE.md): the panel's subject is the machines you have, so the list comes
+  // first and the always-on ssh-config dropdown becomes a + that opens an input (the user 2026-07-22).
+  assert.match(KERNEL, /<button id=rnet-plus class=rnet-plus>\+ Add a host<\/button>/);
+  assert.match(KERNEL, /<div class=rnet-add id=rnet-add hidden>/, "the form starts collapsed");
+  assert.doesNotMatch(KERNEL, /<select id=rnet-host>/, "no permanent dropdown");
+});
+
+test("the host box takes any ssh target, with ~/.ssh/config only suggesting", () => {
+  // ssh reaches a machine whether or not it has a config entry, so the config supplies completions and
+  // romp's own remembered hosts supply the rest. A <datalist> is exactly that: suggestions over free text.
+  assert.match(KERNEL, /<input id=rnet-host list=rnet-hosts placeholder='hostname or user@host'/);
+  assert.match(KERNEL, /<datalist id=rnet-hosts><\/datalist>/);
+  assert.match(KERNEL, /var h=\(hostIn\.value\|\|''\)\.trim\(\);/, "the typed value is what gets attached");
+  // and a typo has to be reported, which was impossible to make when the only way in was a dropdown
+  assert.match(KERNEL, /alert\('Could not attach '\+h/, "a refused attach says so");
 });
 
 test("a host row wraps on a phone so Detach is reachable", () => {
@@ -94,6 +117,9 @@ test("a host row wraps on a phone so Detach is reachable", () => {
   assert.match(KERNEL, /@media \(pointer:coarse\),\(max-width:560px\)\{/);
   assert.match(KERNEL, /\.rnet-row\{flex-wrap:wrap\}/);
   assert.match(KERNEL, /\.rnet-row \.nm\{flex:1 0 100%\}/);
+  // The settings line wraps UNCONDITIONALLY, not just under that query: both of its controls carry
+  // white-space:nowrap, and 94% of a small desktop window is narrow enough to cut the second one off.
+  assert.match(KERNEL, /\.rnet-row2\{display:flex;align-items:center;flex-wrap:wrap;/);
 });
 
 test("both copies fail LOUDLY when the tunnels refresh throws", () => {
