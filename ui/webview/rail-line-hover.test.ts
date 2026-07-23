@@ -20,7 +20,7 @@ test("every nav-able turn grows a rail hit strip, wired like the dot", () => {
   // instant feedback is a dot-anchored band too — never the old per-turn slice that flashed an
   // arbitrary chopped bit before the segment band landed (the user 2026-07-02 ×3); segment-wide with a
   // nearest-dot fallback since 2026-07-17
-  assert.match(SRC, /railPromptDotAbove\(first, hostR\) \?\? railDotAbove/, "edges via the shared railBandEdges");
+  assert.match(SRC, /railPromptDotAbove\(first, hostR\) \?\? railFirstDotIn/, "edges via the shared railBandEdges");
   assert.match(SRC, /drawRailBand\(host, hostR, turn, e\.top, e\.bottom, true\);/);
   assert.doesNotMatch(fn, /rail-glow/, "the box-bounded slice glow is gone");
 });
@@ -46,8 +46,8 @@ test("the local band spans the hovered turn's WHOLE segment — prompt dot to ne
   // the live tail; a window cut with no prompt rendered falls back to the nearest-dot span.
   // Since 2026-07-23 that span is computed by railBandEdges, which the FAN-BACK uses too — the half of
   // this fix that was missing, and why the highlight still shrank a beat after landing.
-  assert.match(SRC, /railPromptDotAbove\(first, hostR\) \?\? railDotAbove\(first, hostR\) \?\? railDotBelow/);
-  assert.match(SRC, /railPromptDotBelow\(last, hostR\) \?\? railDotBelow\(last, hostR\) \?\? railLastDotFrom/);
+  assert.match(SRC, /railPromptDotAbove\(first, hostR\) \?\? railFirstDotIn\(first, hostR\)/);
+  assert.match(SRC, /railPromptDotBelow\(last, hostR\) \?\? railLastDotFrom\(last, hostR\)/);
   assert.match(SRC, /\.dot\.user, \.dot\.romp/, "prompt dots = human/answered-ask (user) + injected (romp)");
   // entering a target swaps the highlight atomically: any previous fan-back band + rings drop in the
   // same frame the new local band paints
@@ -90,8 +90,8 @@ test("every band edge lands ON A DOT — and ONLY between dots (no lineless glow
   assert.match(fn, /const e = railBandEdges\(first, last, hostR\);/, "edges via the shared rule");
   assert.match(fn, /if \(!e\) continue;/, "no dots → no band, never a box edge");
   const edges = SRC.slice(SRC.indexOf("function railBandEdges"), SRC.indexOf("return { top, bottom };"));
-  assert.match(edges, /railDotAbove\(first, hostR\) \?\? railDotBelow\(first, hostR\)/, "any-dot fallbacks kept");
-  assert.match(edges, /railDotBelow\(last, hostR\) \?\? railLastDotFrom\(last, hostR\)/);
+  assert.match(edges, /railFirstDotIn\(first, hostR\)/, "dot-anchored fallback at the window's head");
+  assert.match(edges, /railLastDotFrom\(last, hostR\) \?\? railDotAbove\(last, hostR\)/, "...and at its tail");
   assert.match(SRC, /paintRailBand\(\);\s*\/\/ one continuous measured band/, "painted with every glow application");
   assert.match(CSS, /\.rail-band \{ position: absolute; width: 4px;/, "the thickened-rail band (4px vs the rail's 2px)");
   assert.match(CSS, /\.rail-band \{[^}]*pointer-events: none/, "the band never intercepts the strip's hover");
@@ -144,9 +144,40 @@ test("both bands take their edges from railBandEdges, so neither can shrink the 
 
 test("railBandEdges prefers PROMPT dots, since a segment is a prompt-to-prompt unit", () => {
   const fn = SRC.slice(SRC.indexOf("function railBandEdges"), SRC.indexOf("return { top, bottom };"));
-  assert.match(fn, /railPromptDotAbove\(first, hostR\) \?\? railDotAbove/, "prompt first, any-dot as fallback");
-  assert.match(fn, /railPromptDotBelow\(last, hostR\) \?\? railDotBelow/);
+  assert.match(fn, /railPromptDotAbove\(first, hostR\) \?\? railFirstDotIn/, "prompt first, then the window head");
+  assert.match(fn, /railPromptDotBelow\(last, hostR\) \?\? railLastDotFrom/, "prompt first, then the window tail");
   // still dot-anchored at the ends: a band may never run past the last dot into the stubbed tail
   assert.match(fn, /railLastDotFrom\(last, hostR\)/);
   assert.match(fn, /if \(top == null \|\| bottom == null \|\| bottom <= top\) return null;/, "no inverted band");
+});
+
+// --- EVERY fallback must be invariant in its argument, or the rule is shared in name only -----------
+// The two callers pass different turns for the same hover: the local paint knows only the turn under the
+// pointer, the fan-back knows the whole glowed run. A walk measured RELATIVE to its argument therefore
+// gives them different answers and the flicker returns. On the live tail, where no prompt dot follows,
+// the bottom used to fall through railDotBelow — "the next dot below" — so the band landed short and grew
+// a tick later (the user 2026-07-23, second recording).
+
+test("no fallback in railBandEdges is measured relative to its own argument", () => {
+  const fn = SRC.slice(SRC.indexOf("function railBandEdges"), SRC.indexOf("return { top, bottom };"));
+  // railDotBelow(first) and railDotBelow(last) both answer "the next dot from HERE", which differs per
+  // caller. Neither may appear; the fixed-point walks (railFirstDotIn / railLastDotFrom) replace them.
+  assert.doesNotMatch(fn, /railDotBelow\(/, "a relative downward walk would reintroduce the tail flicker");
+  assert.doesNotMatch(fn, /railDotAbove\(first, hostR\)/, "...and a relative upward walk, the head one");
+});
+
+test("railFirstDotIn is a fixed point: the window's first dot, not a walk from the turn", () => {
+  const i = SRC.indexOf("function railFirstDotIn");
+  const fn = SRC.slice(i, SRC.indexOf("\n}", i));
+  assert.match(fn, /host\.querySelector<HTMLElement>\("\.turn \.dot"\)/, "scans the host from the top");
+  assert.doesNotMatch(fn, /previousElementSibling|nextElementSibling/, "no sibling walk — that is what varies");
+});
+
+test("railLastDotFrom is the transcript's FINAL dot, so both callers land on it on the live tail", () => {
+  const j = SRC.indexOf("function railLastDotFrom");
+  const fn = SRC.slice(j, SRC.indexOf("\n}", j));
+  // it keeps assigning as it walks and returns the LAST hit, so any starting turn in the tail agrees
+  assert.match(fn, /for \(let n: Element \| null = turn; n; n = n\.nextElementSibling\)/);
+  assert.match(fn, /y = r\.top \+ r\.height \/ 2 - hostR\.top;/, "assigns, never returns early");
+  assert.match(fn, /return y;/);
 });

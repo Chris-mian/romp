@@ -1051,13 +1051,36 @@ function instantLocalBand(turn: HTMLElement): void {
 //
 // Prompt dots are the right boundary because a segment IS a prompt-to-prompt unit: the walk lands on the
 // same place the kernel's segment ends, whereas "nearest dot" lands on whatever glyph happens to be
-// closest. The any-dot walks remain as fallbacks at the transcript's ends, where no bounding prompt
-// exists — a band still may never extend past the last dot into the stubbed lineless tail.
+// closest. A band still may never extend past the last dot into the stubbed lineless tail.
+//
+// EVERY fallback has to be invariant in `first`/`last` too, or the rule is shared in name only. The two
+// callers pass different turns for the same hover — the local paint knows only the turn under the
+// pointer, the fan-back knows the whole glowed run — so any walk measured RELATIVE to its argument gives
+// the two different answers and the flicker comes back. That is why the bottom cannot fall through
+// railDotBelow: on the live tail, where no prompt dot follows, "the next dot below" is the next glyph for
+// the local paint and a later one for the fan-back, so the band landed short and then grew a tick later
+// (the user 2026-07-23, second recording — the residue of the first fix). railLastDotFrom is the
+// transcript's FINAL dot from any starting turn in the tail, so both callers land on it exactly.
+// railPromptDot{Above,Below} and railDotAbove are already invariant this way: every turn in a segment
+// walks back to the same prompt, and forward to the same next prompt.
 function railBandEdges(first: HTMLElement, last: HTMLElement, hostR: DOMRect): { top: number; bottom: number } | null {
-  const top = railPromptDotAbove(first, hostR) ?? railDotAbove(first, hostR) ?? railDotBelow(first, hostR);
-  const bottom = railPromptDotBelow(last, hostR) ?? railDotBelow(last, hostR) ?? railLastDotFrom(last, hostR);
+  // The top's fallback is the FIRST dot in the loaded window, not a walk back from `first`: when no prompt
+  // is rendered above (a scroll window cut mid-segment) the segment began before what is on screen, so the
+  // window's first dot is its visible start — and, being fixed, it is the same answer for both callers.
+  const top = railPromptDotAbove(first, hostR) ?? railFirstDotIn(first, hostR);
+  const bottom = railPromptDotBelow(last, hostR) ?? railLastDotFrom(last, hostR) ?? railDotAbove(last, hostR);
   if (top == null || bottom == null || bottom <= top) return null;
   return { top, bottom };
+}
+// The first dot in the turn's host, scanning from the top. Fixed for the whole window, so both callers
+// resolve it identically no matter which turn each of them happens to hold.
+function railFirstDotIn(turn: HTMLElement, hostR: DOMRect): number | null {
+  const host = turn.parentElement;
+  if (!host) return null;
+  const d = host.querySelector<HTMLElement>(".turn .dot");
+  if (!d) return null;
+  const r = d.getBoundingClientRect();
+  return r.top + r.height / 2 - hostR.top;
 }
 function clearLocalBand(): void {
   document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
