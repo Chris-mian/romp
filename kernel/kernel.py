@@ -13053,7 +13053,14 @@ if(!back.hidden)render(ts,(d&&d.known)||[]);
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule(busy?600:3000);
-}).catch(function(){schedule(3000);});}
+// FAIL LOUDLY (the user 2026-07-22). This used to swallow EVERY error and just reschedule, so when the
+// refresh threw, render() never ran, the list sat empty, and a broken panel was indistinguishable from
+// one with no hosts attached — through any number of reloads and kernel restarts. Name it instead, in
+// the console AND in the panel itself, so a failing refresh can never masquerade as an empty one.
+}).catch(function(e){try{console.error('romp: remotes refresh failed',e);}catch(_){}
+if(!back.hidden){list.innerHTML='';var er=document.createElement('div');er.className='rnet-empty';
+er.textContent='Could not load remotes: '+((e&&(e.message||e.name))||e);list.appendChild(er);}
+schedule(3000);});}
 function render(ts,known){list.innerHTML='';known=known||[];
 if(!ts.length&&!known.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';

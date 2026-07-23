@@ -93,3 +93,16 @@ test("a host row wraps on a phone so Detach is reachable", () => {
   assert.match(KERNEL, /\.rnet-row\{flex-wrap:wrap\}/);
   assert.match(KERNEL, /\.rnet-row \.nm\{flex:1 0 100%\}/);
 });
+
+test("both copies fail LOUDLY when the tunnels refresh throws", () => {
+  // The web popover used to `.catch(function(){schedule(3000);})` — swallowing every error and just
+  // rescheduling. When the refresh threw, render() never ran and the list sat empty, so a BROKEN panel
+  // looked exactly like one with no hosts attached, surviving any number of reloads and kernel restarts
+  // (the user 2026-07-22, who could not tell the two apart for hours). strip.ts already did this right.
+  assert.doesNotMatch(KERNEL, /\}\)\.catch\(function\(\)\{schedule\(3000\);\}\);\}/, "no silent swallow");
+  assert.match(KERNEL, /console\.error\('romp: remotes refresh failed'/, "names it in the console");
+  assert.match(KERNEL, /Could not load remotes: /, "...and in the panel itself");
+  // the VS Code copy's existing loud path stays
+  assert.match(STRIP, /Couldn't reach the kernel/);
+  assert.match(STRIP, /Fail loudly/);
+});
