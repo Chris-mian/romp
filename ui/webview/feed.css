@@ -219,8 +219,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fitem.ask, .fitem.fgroup { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.5); }
 .fitem.ask.pinned  { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.85); }   /* pinned: bolded, persistent */
 /* effective focus: full-opacity same colour, thickened a touch by a 1px same-colour ring (a bolder highlight
-   without a layout-shifting border-width change), plus the hover lift — the user 2026-07-15 */
-.fitem.ask.focused {
+   without a layout-shifting border-width change), plus the hover lift — the user 2026-07-15.
+   A CROSS-PANE hover (a chat rail dot, a timeline bar) lands on this same rule rather than wearing a look
+   of its own (the user 2026-07-23): it used to paint the neutral white .dot-hl outline, which read as a
+   different kind of event from hovering the card with the mouse when it means exactly the same thing.
+   Sharing the selector is what stops the two drifting apart again. Placed after .pinned and at equal
+   specificity, so a pinned card still bolds to full when another pane hovers it. */
+.fitem.ask.focused, .fitem.ask.dot-hl, .fitem.fgroup.dot-hl {
   border-color: rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255));
   box-shadow: 0 0 0 1px rgb(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255)), 0 2px 7px rgba(0, 0, 0, 0.30);
 }
@@ -812,14 +817,17 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fx-body.loading { color: var(--dim); font-style: italic; animation: fpulse 1.1s ease-in-out infinite; }
 @keyframes fpulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.95; } }
 
-/* white outline mirroring the timeline's hover highlight — applied to the
-   card(s) built from the turn whose rail dot is hovered in the chat panel */
-.dot-hl { outline: 1.5px solid rgba(255, 255, 255, 0.9); outline-offset: 1px; }
+/* Cross-pane hover, on things that are NOT cards: the rows and sub-goal lines inside an open modal, which
+   carry no session colour of their own, so a neutral outline is all they can wear. A CARD is excluded and
+   bolds its own colour instead, up with .fitem.ask.focused (the user 2026-07-23) — the white outline read
+   as a different kind of event from a plain mouse hover when it means the same thing. */
+.dot-hl:not(.fitem) { outline: 1.5px solid rgba(255, 255, 255, 0.9); outline-offset: 1px; }
 
 /* Click a chat rail entry → the feed scrolls here and this pulses (the user 2026-07-23). Accent blue,
    because it is a "look here" cue and not a status; a card's own colours keep their meanings. An
-   outline rather than a border or box-shadow, so it costs no layout and cannot nudge the column while
-   it plays. It sits ABOVE .dot-hl in the file so the pulse wins when a card is also hover-outlined. */
+   outline rather than a border or box-shadow, so it costs no layout, cannot nudge the column while it
+   plays, and reads on top of a card that is simultaneously cross-pane hovered — that highlight bolds the
+   border and box-shadow, leaving the outline free. */
 @keyframes romp-card-pulse {
   0%   { outline-color: var(--accent, #9cd2ff); }
   70%  { outline-color: var(--accent, #9cd2ff); }

@@ -43,9 +43,11 @@ test("the border colour is CSS-driven from the channels: 0.5α at rest", () => {
 
 test("the highlight BOLDS the same colour (no white ring): pinned 0.85α, focused full + a same-colour ring", () => {
   assert.match(CSS, /\.fitem\.ask\.pinned  \{ border-color: rgba\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\), 0\.85\); \}/);
-  // focused = full-opacity border AND a 1px same-colour ring (a touch bolder, no layout shift)
-  assert.match(CSS, /\.fitem\.ask\.focused \{[\s\S]*?border-color: rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\);/);
-  assert.match(CSS, /\.fitem\.ask\.focused \{[\s\S]*?box-shadow: 0 0 0 1px rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\), 0 2px 7px/);
+  // focused = full-opacity border AND a 1px same-colour ring (a touch bolder, no layout shift). The
+  // selector also carries .dot-hl since 2026-07-23, so a hover from another pane looks like a mouse
+  // hover instead of the old neutral white outline — matched loosely so it survives further sharing.
+  assert.match(CSS, /\.fitem\.ask\.focused[^{]*\{[\s\S]*?border-color: rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\);/);
+  assert.match(CSS, /\.fitem\.ask\.focused[^{]*\{[\s\S]*?box-shadow: 0 0 0 1px rgb\(var\(--card-r, 255\), var\(--card-g, 255\), var\(--card-b, 255\)\), 0 2px 7px/);
   // no white ring anywhere in the highlight
-  assert.doesNotMatch(CSS, /\.fitem\.ask\.focused \{[^}]*#fff/);
+  assert.doesNotMatch(CSS, /\.fitem\.ask\.focused[^{]*\{[^}]*#fff/);
 });

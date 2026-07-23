@@ -95,3 +95,28 @@ test("the rail dot's click sends tlId, and its tooltip promises navigation rathe
   assert.match(RENDER, /postMessage\(\{ type: "dotOpen", sid: activeId, uuid, t, tlId \}\)/);
   assert.match(RENDER, /dot\.title = "click: jump to this on the timeline \+ feed · hover: highlight there";/);
 });
+
+// --- the cross-pane hover LOOKS like a plain mouse hover (the user 2026-07-23) ---------------------
+// Hovering a chat rail dot or a timeline bar means the same thing as putting the mouse on the card, so
+// it must not wear a different look. It used to paint a neutral white outline that belonged to no card.
+
+test("a cross-pane hover bolds the card's own session colour, sharing the .focused rule", () => {
+  // Sharing the SELECTOR (not copying the declarations) is what stops the two drifting apart again.
+  assert.match(FEEDCSS, /\.fitem\.ask\.focused, \.fitem\.ask\.dot-hl, \.fitem\.fgroup\.dot-hl \{/);
+  const i = FEEDCSS.indexOf(".fitem.ask.focused, .fitem.ask.dot-hl");
+  const rule = FEEDCSS.slice(i, FEEDCSS.indexOf("}", i));
+  assert.match(rule, /border-color: rgb\(var\(--card-r/, "full-opacity session colour, as on mouse hover");
+  assert.match(rule, /box-shadow: 0 0 0 1px rgb\(var\(--card-r/, "and the same 1px same-colour ring");
+});
+
+test("the white outline no longer lands on a card, only on the modal rows that have no colour", () => {
+  assert.match(FEEDCSS, /\.dot-hl:not\(\.fitem\) \{ outline: 1\.5px solid rgba\(255, 255, 255, 0\.9\)/);
+  assert.doesNotMatch(FEEDCSS, /^\.dot-hl \{/m, "the unscoped white-outline rule is gone");
+});
+
+test("a pinned card still bolds to full when another pane hovers it", () => {
+  // .pinned holds the same property at 0.85α and equal specificity, so only source order decides. The
+  // shared rule has to stay BELOW it or a pinned card would ignore the hover entirely.
+  assert.ok(FEEDCSS.indexOf(".fitem.ask.pinned") < FEEDCSS.indexOf(".fitem.ask.focused, .fitem.ask.dot-hl"),
+    "the shared highlight must come after .pinned");
+});
