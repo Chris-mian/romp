@@ -1038,9 +1038,26 @@ function instantLocalBand(turn: HTMLElement): void {
   document.querySelectorAll(".rail-band").forEach((n) => n.remove());   // -local AND the previous fan-back
   clearRailRings();
   const hostR = host.getBoundingClientRect();
-  const top = railPromptDotAbove(turn, hostR) ?? railDotAbove(turn, hostR);
-  const bottom = railPromptDotBelow(turn, hostR) ?? railLastDotFrom(turn, hostR);
-  if (top != null && bottom != null && bottom > top) drawRailBand(host, hostR, turn, top, bottom, true);
+  const e = railBandEdges(turn, turn, hostR);
+  if (e) drawRailBand(host, hostR, turn, e.top, e.bottom, true);
+}
+
+// ONE edge rule for BOTH bands — the instant local paint above and the kernel's fan-back in
+// paintRailBand. They used to compute their edges differently: the local one walked to the bounding
+// PROMPT dots, the fan-back to the nearest dot of ANY kind around the turns the kernel had glowed. The
+// fan-back's answer is therefore never larger and is usually smaller, so hovering the rail lit a whole
+// segment and then visibly gave part of it back a moment later (the user 2026-07-23, who asked that a
+// highlight land once, atomically, and stay). Sharing the rule is what makes the second paint a no-op.
+//
+// Prompt dots are the right boundary because a segment IS a prompt-to-prompt unit: the walk lands on the
+// same place the kernel's segment ends, whereas "nearest dot" lands on whatever glyph happens to be
+// closest. The any-dot walks remain as fallbacks at the transcript's ends, where no bounding prompt
+// exists — a band still may never extend past the last dot into the stubbed lineless tail.
+function railBandEdges(first: HTMLElement, last: HTMLElement, hostR: DOMRect): { top: number; bottom: number } | null {
+  const top = railPromptDotAbove(first, hostR) ?? railDotAbove(first, hostR) ?? railDotBelow(first, hostR);
+  const bottom = railPromptDotBelow(last, hostR) ?? railDotBelow(last, hostR) ?? railLastDotFrom(last, hostR);
+  if (top == null || bottom == null || bottom <= top) return null;
+  return { top, bottom };
 }
 function clearLocalBand(): void {
   document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
@@ -1195,13 +1212,13 @@ function paintRailBand(): void {
     if (!glowed.length) continue;
     const hostR = v.el.getBoundingClientRect();
     const first = glowed[0], last = glowed[glowed.length - 1];
-    // dots ONLY — the band exists solely between dots (the user 2026-07-03: the rail line itself is
-    // stubbed after the last event, so nothing may glow over that lineless space; an unterminated tail
-    // isn't a unit yet). No bounding dot below → clamp to the run's own last dot; none at all → no band.
-    const top = railDotAbove(first, hostR) ?? railDotBelow(first, hostR);
-    const bottom = railDotBelow(last, hostR) ?? railDotAbove(last, hostR);
-    if (top == null || bottom == null) continue;
-    drawRailBand(v.el, hostR, first, top, bottom, false);
+    // Same edge rule as the instant local band (railBandEdges) so this repaint changes nothing visible —
+    // it used to walk to the nearest dot of any kind and hand back part of the highlight the local paint
+    // had just drawn. Dots only either way (the user 2026-07-03: the rail line is stubbed after the last
+    // event, so nothing may glow over that lineless space; an unterminated tail isn't a unit yet).
+    const e = railBandEdges(first, last, hostR);
+    if (!e) continue;
+    drawRailBand(v.el, hostR, first, e.top, e.bottom, false);
   }
 }
 

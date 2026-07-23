@@ -20,8 +20,8 @@ test("every nav-able turn grows a rail hit strip, wired like the dot", () => {
   // instant feedback is a dot-anchored band too — never the old per-turn slice that flashed an
   // arbitrary chopped bit before the segment band landed (the user 2026-07-02 ×3); segment-wide with a
   // nearest-dot fallback since 2026-07-17
-  assert.match(fn, /\?\? railDotAbove\(turn, hostR\)/);
-  assert.match(fn, /drawRailBand\(host, hostR, turn, top, bottom, true\);/);
+  assert.match(SRC, /railPromptDotAbove\(first, hostR\) \?\? railDotAbove/, "edges via the shared railBandEdges");
+  assert.match(SRC, /drawRailBand\(host, hostR, turn, e\.top, e\.bottom, true\);/);
   assert.doesNotMatch(fn, /rail-glow/, "the box-bounded slice glow is gone");
 });
 
@@ -44,8 +44,10 @@ test("the local band spans the hovered turn's WHOLE segment — prompt dot to ne
   // not atomic. The local band now approximates the kernel's segment: nearest prompt dot at-or-above
   // (.dot.user / .dot.romp) down to the next prompt dot below, clamped to the transcript's last dot on
   // the live tail; a window cut with no prompt rendered falls back to the nearest-dot span.
-  assert.match(SRC, /const top = railPromptDotAbove\(turn, hostR\) \?\? railDotAbove\(turn, hostR\);/);
-  assert.match(SRC, /const bottom = railPromptDotBelow\(turn, hostR\) \?\? railLastDotFrom\(turn, hostR\);/);
+  // Since 2026-07-23 that span is computed by railBandEdges, which the FAN-BACK uses too — the half of
+  // this fix that was missing, and why the highlight still shrank a beat after landing.
+  assert.match(SRC, /railPromptDotAbove\(first, hostR\) \?\? railDotAbove\(first, hostR\) \?\? railDotBelow/);
+  assert.match(SRC, /railPromptDotBelow\(last, hostR\) \?\? railDotBelow\(last, hostR\) \?\? railLastDotFrom/);
   assert.match(SRC, /\.dot\.user, \.dot\.romp/, "prompt dots = human/answered-ask (user) + injected (romp)");
   // entering a target swaps the highlight atomically: any previous fan-back band + rings drop in the
   // same frame the new local band paints
@@ -85,9 +87,11 @@ test("every band edge lands ON A DOT — and ONLY between dots (no lineless glow
   assert.match(SRC, /function railDotAbove\(turn: HTMLElement, hostR: DOMRect\)/);
   assert.match(SRC, /function railDotBelow\(turn: HTMLElement, hostR: DOMRect\)/);
   const fn = SRC.slice(SRC.indexOf("function paintRailBand"), SRC.indexOf("function paintGlowRuler"));
-  assert.match(fn, /const top = railDotAbove\(first, hostR\) \?\? railDotBelow\(first, hostR\);/);
-  assert.match(fn, /const bottom = railDotBelow\(last, hostR\) \?\? railDotAbove\(last, hostR\);/);
-  assert.match(fn, /if \(top == null \|\| bottom == null\) continue;/, "no dots → no band, never a box edge");
+  assert.match(fn, /const e = railBandEdges\(first, last, hostR\);/, "edges via the shared rule");
+  assert.match(fn, /if \(!e\) continue;/, "no dots → no band, never a box edge");
+  const edges = SRC.slice(SRC.indexOf("function railBandEdges"), SRC.indexOf("return { top, bottom };"));
+  assert.match(edges, /railDotAbove\(first, hostR\) \?\? railDotBelow\(first, hostR\)/, "any-dot fallbacks kept");
+  assert.match(edges, /railDotBelow\(last, hostR\) \?\? railLastDotFrom\(last, hostR\)/);
   assert.match(SRC, /paintRailBand\(\);\s*\/\/ one continuous measured band/, "painted with every glow application");
   assert.match(CSS, /\.rail-band \{ position: absolute; width: 4px;/, "the thickened-rail band (4px vs the rail's 2px)");
   assert.match(CSS, /\.rail-band \{[^}]*pointer-events: none/, "the band never intercepts the strip's hover");
@@ -111,11 +115,38 @@ test("the hover strip exists only where the line does (the last turn's 16px stub
   assert.match(CSS, /\.turn:not\(:has\(~ \.turn\)\)::before \{ bottom: auto; height: 16px; \}/);
   assert.doesNotMatch(CSS, /\.turn:last-child::before/, "the fragile :last-child stub is gone");
   // local hover past the last dot draws nothing — there is no complete inter-dot span there
-  const wire = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
-  assert.match(wire, /if \(top != null && bottom != null && bottom > top\) drawRailBand\(host, hostR, turn, top, bottom, true\);/);
+  // the guard lives in railBandEdges now, so BOTH bands honour it rather than only the local one
+  assert.match(SRC, /if \(top == null \|\| bottom == null \|\| bottom <= top\) return null;/);
+  const ilb2 = SRC.slice(SRC.indexOf("function instantLocalBand"), SRC.indexOf("function clearLocalBand"));
+  assert.match(ilb2, /if \(e\) drawRailBand\(host, hostR, turn, e\.top, e\.bottom, true\);/);
 });
 
 test("the strip hugs the line and never steals the dot's hover", () => {
   assert.match(CSS, /\.rail-hit \{ position: absolute; left: 7px; top: 0; bottom: 0; width: 9px; cursor: pointer; z-index: 0; \}/);
   assert.match(CSS, /\.dot\.dot-nav \{ cursor: pointer; z-index: 1; \}/, "the dot stacks above the strip");
+});
+
+// --- the band lands ONCE: local paint and fan-back must agree (the user 2026-07-23) ----------------
+// Hovering the rail lit a whole segment and then visibly gave part of it back a moment later. The two
+// paints computed their edges differently: the instant local one walked to the bounding PROMPT dots, the
+// kernel's fan-back to the nearest dot of ANY kind around the turns it had glowed. That answer is never
+// larger and usually smaller, so the second paint shrank the first. One shared rule is the fix.
+
+test("both bands take their edges from railBandEdges, so neither can shrink the other", () => {
+  const local = SRC.slice(SRC.indexOf("function instantLocalBand"), SRC.indexOf("function clearLocalBand"));
+  assert.match(local, /const e = railBandEdges\(turn, turn, hostR\);/, "the instant local paint");
+  const fan = SRC.slice(SRC.indexOf("function paintRailBand"), SRC.indexOf("// ---- overview ruler"));
+  assert.match(fan, /const e = railBandEdges\(first, last, hostR\);/, "the kernel's fan-back");
+  // and neither keeps a private edge calculation that could drift back apart
+  assert.doesNotMatch(fan, /const top = railDotAbove\(first, hostR\)/, "the old any-dot walk is gone");
+  assert.doesNotMatch(local, /const top = railPromptDotAbove\(turn, hostR\)/, "the old local walk is gone");
+});
+
+test("railBandEdges prefers PROMPT dots, since a segment is a prompt-to-prompt unit", () => {
+  const fn = SRC.slice(SRC.indexOf("function railBandEdges"), SRC.indexOf("return { top, bottom };"));
+  assert.match(fn, /railPromptDotAbove\(first, hostR\) \?\? railDotAbove/, "prompt first, any-dot as fallback");
+  assert.match(fn, /railPromptDotBelow\(last, hostR\) \?\? railDotBelow/);
+  // still dot-anchored at the ends: a band may never run past the last dot into the stubbed tail
+  assert.match(fn, /railLastDotFrom\(last, hostR\)/);
+  assert.match(fn, /if \(top == null \|\| bottom == null \|\| bottom <= top\) return null;/, "no inverted band");
 });
