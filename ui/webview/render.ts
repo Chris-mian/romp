@@ -56,7 +56,9 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
+  // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
+  // timeline arc into it still lands (see _hydrate_postal's unresolved path)
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -1433,6 +1435,11 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const romp = !!ev.romp;
     const injected = !ev.human && !romp;
     const turn = el("div", "turn turn-user" + (romp ? " romp" : injected ? " injected" : ""));
+    // Unresolved postal ids ride the raw turn so a timeline message arc can still land on it. Without
+    // this the arc pointed at a turn with nothing to match and the click died silently (the user
+    // 2026-07-23). A hydrated card sets data-mid in renderPostalService instead.
+    if (ev.mid) turn.dataset.mid = ev.mid;
+    if (ev.mids && ev.mids.length) turn.dataset.mids = ev.mids.join(" ");
     // Prompts ride the rail like every other turn: their own dot + a left-gutter HH:MM marker (added in
     // renderEvent). Genuine prompts get the solid blue dot; a romp injection a gray dot; harness notes the
     // hollow ring used by assistant turns.
@@ -3808,8 +3815,13 @@ function scrollToAnchor(uuid: string): boolean {
   // cards also carry data-mid). A postal deep-link — the timeline connector / feed delegation — passes the
   // message id; matching it to the card's data-mid lands on the EXACT message, not a nearest-time guess that
   // can drift onto an unrelated turn that happens to be near in time (the user 2026-06-20).
+  // data-mids is the UNHYDRATED case: a turn whose message ids the kernel could not resolve into cards
+  // still carries them, so the arc into it stays landable rather than pointing at a turn that cannot
+  // answer to it (the user 2026-07-23). `~=` matches one whitespace-separated token, and a message id
+  // never contains whitespace.
   let target = (v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
-                || v?.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
+                || v?.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)
+                || v?.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
   // Deep-link into history the window doesn't currently cover (the head/tail folded into a spacer): find the
   // event, render a fresh window AROUND its unit, then re-query — the "load it when you jump there" behaviour.
   // (No match anywhere → genuinely off the active path; stash for the next render pass.)

@@ -4938,9 +4938,14 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual((out[0]["direction"], out[0]["peer"], out[0]["body"]), ("out", "beta", "hi there"))
 
     def test_hydrate_postal_passes_through_unresolved(self):
-        """A marker with no matching log entry, or a plain event, stays unchanged (never half-rendered)."""
+        """A marker with no matching log entry stays a plain event (never half-rendered) — but KEEPS its
+        ids, so a deep-link carrying the message id can still land on the turn (2026-07-23). It used to be
+        returned byte-identical, which silently cost the turn its only handle. A plain event is untouched."""
         ev = {"kind": "user", "md": "hi <!-- romp-msg-id: missing -->", "uuid": "u9"}
-        self.assertEqual(km._hydrate_postal([ev], {}), [ev], "unresolved marker → unchanged")
+        out = km._hydrate_postal([ev], {})
+        self.assertEqual([e["kind"] for e in out], ["user"], "unresolved marker → still not a card")
+        self.assertEqual(out[0]["md"], ev["md"], "...and the body is unchanged")
+        self.assertEqual((out[0]["mid"], out[0]["mids"]), ("missing", ["missing"]), "but the id survives")
         plain = {"kind": "assistant", "md": "just a reply", "uuid": "a1"}
         self.assertEqual(km._hydrate_postal([plain], {}), [plain], "a non-postal event is untouched")
 

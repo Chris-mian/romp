@@ -6468,6 +6468,23 @@ def _hydrate_postal(events, index):
                                   "park": rec["park"], "ts": ev.get("ts"), "uuid": ev.get("uuid")})
             if len(cards) == len(ids):                   # all-or-nothing: a partial log never half-renders
                 out.extend(cards); continue
+            # NOT every id resolved. The turn still passes through unhydrated — a half-rendered card run
+            # would be worse — but it must not also lose the ids, which is what made a timeline message
+            # arc click land nowhere: the arc draws from the message log, the click carries the message
+            # id, and the chat matches it against the turn's data-mid, so an event that quietly dropped
+            # its ids left an arc pointing at a turn that could never answer to it (the user 2026-07-23,
+            # via romp_docs, whose demo kernel made it visible). Carrying them keeps the deep-link
+            # landable on the raw turn, which is the whole promise the timeline makes.
+            _mids = [m for m in ids if m]
+            if _mids:
+                ev = dict(ev)
+                ev["mid"] = _mids[0]                     # the single-id case, which is the common one
+                ev["mids"] = _mids                       # every id, so any arc into this turn can match
+                # Fail LOUDLY (CLAUDE.md): a logged id that will not resolve is a real inconsistency
+                # between the message log and this session's view of it, and it used to pass in silence.
+                sys.stderr.write("postal hydrate: %d of %d message id(s) unresolved on %s (%s)\n"
+                                 % (len(ids) - len(cards), len(ids), ev.get("uuid") or "?",
+                                    ",".join(m for m in _mids if m not in {c["mid"] for c in cards})))
         out.append(ev)
     return out
 
