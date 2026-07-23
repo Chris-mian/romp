@@ -257,6 +257,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   const LBL: Record<string, string> = {
     up: "connected", authorizing: "authorizing…", connecting: "connecting…", starting: "connecting…",
     "no-kernel": "kernel not answering", down: "disconnected", error: "error",
+    "gave-up": "not connected — click Attach",
   };
   // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
   // Mirrors the web popover's TIP map — the two copies must say the same thing.
@@ -266,12 +267,13 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     connecting: "The ssh tunnel is up; waiting for the remote kernel to answer on its port.",
     starting: "The ssh tunnel is up; waiting for the remote kernel to answer on its port.",
     "no-kernel": "The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine's romp there and boots it.",
-    down: "The ssh tunnel is not up. romp keeps retrying; check that `ssh <host>` works from a terminal.",
+    down: "The ssh tunnel is not up. romp is still retrying for now; check that `ssh <host>` works from a terminal.",
     error: "The connection failed. Hover the status text for the reason romp got back.",
+    "gave-up": "romp tried this host and stopped — it is no longer dialing in the background. It will try again on the next kernel start, or click Attach to try now.",
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = (ms: number) => { clearTimeout(timer); if (!pop.hidden) timer = setTimeout(refresh, ms); };
-  const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel";
+  const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel" && s !== "gave-up";
 
   function loadHosts() {
     fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
@@ -308,7 +310,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       dot.className = "sn-dot";
       dot.style.background = t.status === "up" ? "var(--accent, #9cd2ff)"
         : (t.status === "error" || t.status === "no-kernel") ? "#E5534B"
-        : t.status === "down" ? "#8a8a8a" : "transparent";
+        : (t.status === "down" || t.status === "gave-up") ? "#8a8a8a" : "transparent";
       if (dot.style.background === "transparent") dot.style.boxShadow = "inset 0 0 0 1.5px var(--accent, #9cd2ff)";
       dot.title = TIP[t.status] || "";
       const nm = document.createElement("span");

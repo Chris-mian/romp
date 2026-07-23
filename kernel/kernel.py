@@ -3842,6 +3842,11 @@ REMOTES_FILE = jd.STATE / "remotes.json"
 # no tunnel to poll. Also remembers the trust level, so re-attaching a box you had marked `trusted`
 # doesn't silently drop back to `directed`.
 KNOWN_FILE = jd.STATE / "remotes-known.json"
+# Reconnect is BOUNDED (the user 2026-07-22): try a host on every kernel start, then give up and wait for
+# an explicit Attach — an unreachable box used to be retried forever (backoff capped at 5min, no give-up),
+# so a machine that was simply off sat there re-dialing all day with nothing in the UI saying so. The
+# budget resets on each boot (_remotes_load) and on a manual attach, so "try again" is always one click.
+TUNNEL_MAX_TRIES = 5
 BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))      # this laptop's postal bus (reverse-forwarded)
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
@@ -4277,7 +4282,11 @@ def _remote_public(r):
             "trust": r.get("trust") or "directed",   # per-host federation trust: trusted|directed|isolated
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
             "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
-            "kernelDate": drift["date"]}
+            "kernelDate": drift["date"],
+            # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
+            # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
+            "gaveUp": bool(r.get("gave_up")), "fails": int(r.get("fails") or 0),
+            "maxTries": TUNNEL_MAX_TRIES}
 
 
 def _remotes_save():
@@ -4312,6 +4321,8 @@ def _remotes_load():
             r["proc"], r["status"] = None, "down"
             r["booting"] = False       # transient in-flight Start flag — persisted mid-boot it would
             #                            freeze the row's status against the supervisor forever
+            r["fails"], r["next_try"] = 0, 0   # every kernel start gets a FRESH reconnect budget...
+            r.pop("gave_up", None)             # ...so a host that gave up last run is tried again now
             r.setdefault("sids", [])
             r.setdefault("trust", "directed")   # pre-trust remotes.json rows read as directed (safe default)
             r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
@@ -4345,6 +4356,9 @@ def attach_remote(host, kernel_port=None):
             _remotes[host] = r
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
+        # An explicit Attach is the "try again" gesture, so it re-arms a row that gave up (see TUNNEL_MAX_TRIES)
+        r["fails"], r["next_try"] = 0, 0
+        r.pop("gave_up", None)
         _attach_trust = r.get("trust")
     _known_note(host, _attach_trust)               # remember it for the popover's past-hosts list
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
@@ -4842,11 +4856,20 @@ def _tunnel_supervisor():
                         # BACK OFF re-spawns (exponential, capped 5min) so an unreachable host isn't hammered
                         # every tick — repeated ssh attempts can trip the remote sshd's rate-limit (the user
                         # 2026-06-30). A healthy tunnel resets the backoff below.
-                        if now >= r.get("next_try", 0):
+                        if r.get("gave_up"):
+                            # spent its budget — stay quiet until an explicit Attach (or the next boot)
+                            r["status"] = "gave-up"
+                            skip = True
+                        elif now >= r.get("next_try", 0):
                             fails = r.get("fails", 0)
-                            r["next_try"] = now + min(300, 15 * (2 ** min(fails, 5)))
-                            r["fails"] = fails + 1
-                            _spawn_tunnel(r)
+                            if fails >= TUNNEL_MAX_TRIES:
+                                r["gave_up"] = True            # stop dialing; the row now says "click Attach"
+                                r["status"] = "gave-up"
+                                skip = True
+                            else:
+                                r["next_try"] = now + min(300, 15 * (2 ** min(fails, 5)))
+                                r["fails"] = fails + 1
+                                _spawn_tunnel(r)
                         else:
                             if r.get("status") != "error":
                                 r["status"] = "down"
@@ -4870,6 +4893,7 @@ def _tunnel_supervisor():
                         #                                    a Start in flight (`booting`) owns the row's phase
                     if st == "up":
                         r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff
+                        r.pop("gave_up", None)             # ...and re-arm the budget for a later drop
                         if r.get("detail"):
                             r["detail"] = ""               # any parked error/hint is moot once it answers
                     elif st == "no-kernel" and not r.get("booting"):
@@ -13002,17 +13026,18 @@ function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){ret
 var hs=(d&&d.hosts)||[];var mru=mruHost();
 if(mru&&hs.indexOf(mru)>=0){hs=[mru].concat(hs.filter(function(h){return h!==mru;}));}   // most-recently-connected first, not just ssh-config order
 hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+(h===mru?' \\u00b7 recent':'')+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
-var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
+var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error','gave-up':'not connected \\u2014 click Attach'};
 // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
 var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
 authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
 connecting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
 starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
 'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine\\u2019s romp there and boots it.',
-down:'The ssh tunnel is not up. romp keeps retrying; check that `ssh <host>` works from a terminal.',
-error:'The connection failed. Hover the status text for the reason romp got back.'};
+down:'The ssh tunnel is not up. romp is still retrying for now; check that `ssh <host>` works from a terminal.',
+error:'The connection failed. Hover the status text for the reason romp got back.',
+'gave-up':'romp tried this host and stopped \\u2014 it is no longer dialing in the background. It will try again on the next kernel start, or click Attach to try now.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
-function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (its Start button fast-polls on click)
+function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel'&&s!=='gave-up';}   // mid-attach (authorizing/connecting); no-kernel and gave-up are SETTLED (no marching dashes)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
 function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
 function paintIcon(up,busy){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
@@ -13034,7 +13059,7 @@ if(!ts.length&&!known.length){var e=document.createElement('div');e.className='r
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
-var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
+var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':(t.status==='down'||t.status==='gave-up')?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
 // version drift: an up remote running a DIFFERENT commit than this kernel names HOW it differs — 'behind N
 // commits' (a push delivers exactly those), 'ahead N commits'/'diverged' (it has commits this repo lacks — a
 // push would clobber them, and the kernel refuses), or 'different build' (its sha is unknown here, e.g. it was
@@ -13053,7 +13078,7 @@ var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host
 var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"No kernel is answering on '+t.host+'. This pushes this machine\\u2019s romp there and boots its kernel.\">Start</button>':'';
 // keep connected (peer-bus check-in, stage 3): publish THIS machine to that host over our own
 // outbound ssh. Only for hosts WE attach; a row that checked in to us is labeled instead.
-var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions, its bus peers with yours, and this attach auto-reconnects. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
+var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Check-in: publish this machine to '+t.host+' over your own outbound ssh \\u2014 its dashboard gains your sessions and its bus peers with yours. This is NOT the reconnect setting \\u2014 use Attach/Detach for that. Uncheck to be forgotten there.\"><input type=checkbox data-k=\"'+t.host+'\"'+(t.checkin?' checked':'')+'>keep connected</label>':'';
 // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is HELD for
 // your approval, never auto-injected; isolated = dashboard only, no postal. The gate lives in the bus.
 var tcur=t.trust||'directed';
@@ -13441,6 +13466,14 @@ def _landing():
             ".rnet-row .st{color:#999;font-size:11px}"
             ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
             ".rnet-row button:disabled{opacity:0.55;cursor:default}"
+            # On a phone the panel is ~360px but a host row packs trust + keep + Push + Start + Detach, all
+            # flex:0 0 auto. With no wrap the row overflowed and Detach sat off the right edge — so on mobile
+            # the panel looked like it offered nothing but Attach (the user 2026-07-22, who could not find any
+            # way to stop reconnecting). Let the row wrap and give the name its own full line.
+            "@media (pointer:coarse),(max-width:560px){"
+            ".rnet-row{flex-wrap:wrap}"
+            ".rnet-row .nm{flex:1 0 100%}"
+            "}"
             ".rnet-keep{display:flex;align-items:center;gap:4px;color:#999;font-size:11px;flex:0 0 auto;cursor:pointer;white-space:nowrap}"
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
