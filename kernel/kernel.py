@@ -2625,7 +2625,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
-              "endSession", "renameSession", "resumeGate")
+              "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -2770,14 +2770,6 @@ def _drive(msg, client):
         _mark_views_dirty()
     elif t == "cancelAsk":
         be.on_ask(sid, "cancel"); _mark_views_dirty()     # a cancel answers nothing — no Working prediction
-    elif t == "resumeGate" and msg.get("choice") in ("proceed", "compact", "skip"):
-        # the user decided on a boot-gated high-context resume (the user 2026-07-21): proceed / compact /
-        # skip. SDK-only (only SDK sessions get gated); resolve_resume_gate spawns it (the card then
-        # vanishes as the real session card takes over) or leaves it dormant. skip also dismisses the card.
-        _sb = _sdk()
-        if _sb:
-            _sb.resolve_resume_gate(sid, str(msg["choice"]))   # skip pops it from the gated set → card vanishes
-        _mark_views_dirty()
     elif t == "askText" and msg.get("text"):
         _mid = _picker_mid_series(sid)
         be.on_ask(sid, "text", str(msg["text"]))
@@ -9744,7 +9736,6 @@ def build_feed(now, tmux=None):
                                 % (ph["fromName"], ph["toName"])},
             "column": "needs_input",
             "tree": []})
-    asks.extend(_resume_gate_asks(now, cleared))
     # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
     # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
     asks.extend(_quarantine_cards(now, cleared))
@@ -9968,44 +9959,6 @@ def _postal_messages(now, alive_sids, id2name):
                     "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
                     "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)})
     out.sort(key=lambda m: m["sent"])
-    return out
-
-
-def _resume_gate_asks(now, cleared):
-    """RESUME-GATE cards (the user 2026-07-21): boot reconcile DEFERRED these high-context SDK sessions
-    instead of re-hydrating each one's full transcript unbidden (a cold-cache usage spike on a login/kernel
-    restart). One needs_input card each → Proceed / Compact on resume / Skip (resumeGate drive op). itemId
-    "resume:<sid>" so a Skip/clear can key on it. Only SDK sessions are ever gated (_sdk() may be None).
-    Extracted from build_feed so it's unit-testable against a stubbed gated_resumes()."""
-    out = []
-    sdkbe = _sdk()
-    for g in (sdkbe.gated_resumes() if sdkbe else []):
-        gsid = g.get("sid")
-        if not gsid:
-            continue
-        item_id = "resume:" + gsid
-        if item_id in cleared:
-            continue
-        gname = _name_of(gsid) or gsid[:8]
-        _ctx = g.get("ctx")
-        ctxpct = int(round(_ctx)) if isinstance(_ctx, (int, float)) else None
-        _cs = ("%d" % ctxpct) if ctxpct is not None else "?"
-        gt = g.get("t") or now
-        out.append({
-            "itemId": item_id, "sid": gsid, "name": gname, "color": _name_color(gsid),
-            "text": "Resume %s? It was ~%s%% full of context last time it ran." % (gname, _cs),
-            "t": gt, "live": False,
-            "trgb": list(cm.age_rgb(now - gt, _colormap())),
-            "turnId": item_id, "origin": None,
-            "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
-            "nudged": None,
-            "blocked": {"state": "largeResume", "ctx": ctxpct, "reason": g.get("reason"),
-                        "what": "resuming reloads this session's full transcript (~%s%% of the window, "
-                                "last known) — a cold-cache usage hit. Proceed, compact on resume to shrink "
-                                "it first, or skip to leave it dormant." % _cs},
-            "column": "needs_input",
-            "tree": []})
     return out
 
 

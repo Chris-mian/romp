@@ -101,10 +101,10 @@ class _BackendSurface(unittest.TestCase):
 
 class _RestoredQueue(unittest.TestCase):
     """A /compact that arrives via the PERSISTED QUEUE, not send() (the user 2026-07-22). send() is what
-    sets _compacting, but a restored queue is seeded straight into _pending by __init__ — and that is the
-    path the resume gate's "compact on resume" uses (resolve_resume_gate prepends '/compact' to
-    reg['queue'], then spawns). The flag stayed False for the whole compaction: the chip read plain
-    "working" for minutes, and drive ops that should have parked were fed into the compacting CLI."""
+    sets _compacting, but a restored queue is seeded straight into _pending by __init__ — any /compact
+    still queued when the kernel died comes back that way. The flag stayed False for the whole compaction:
+    the chip read plain "working" for minutes, and drive ops that should have parked were fed into the
+    compacting CLI. (Surfaced via the since-removed resume gate, which queued /compact exactly so.)"""
 
     def _session(self, queue):
         return sb.SdkSession(_FakeBackend(tempfile.mkdtemp()),
@@ -116,8 +116,8 @@ class _RestoredQueue(unittest.TestCase):
         self.assertTrue(s._compacting,
                         "a queued /compact brackets the compaction even though it never went through send()")
 
-    def test_the_resume_gate_shape_counts_compact_ahead_of_the_backlog(self):
-        # exactly what resolve_resume_gate writes: /compact prepended to the restored backlog
+    def test_compact_ahead_of_a_restored_backlog_still_counts(self):
+        # /compact at the head of a queue that also carries real turns
         s = self._session(["/compact", "carry on with the benchmark"])
         self.assertTrue(s._compacting)
 
