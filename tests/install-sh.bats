@@ -13,6 +13,9 @@ setup() {
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME"
     export ROMP_NO_SERVICE=1 ROMP_NO_EXT=1 ROMP_NO_SDK=1
+    # Redirect the git pre-push hook symlink into a temp dir so install.sh never
+    # writes into the REAL repo's .git/hooks while these tests run.
+    export ROMP_GITHOOK_DIR="$TEST_DIR/githooks"
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -197,4 +200,65 @@ PY
     [ "$status" -ne 0 ]                            # the failure still surfaces
     [ "$(cat "$EXT/package.json")" = "$before" ]   # ...and the trap still restored
     [ ! -f "$EXT/package.json.orig" ]
+}
+
+# ── git pre-push identifier hook ──────────────────────────────────────
+# The repo may go public and history is permanent, so a personal identifier must
+# never leave the machine. install.sh symlinks .githooks/pre-push into the shared
+# git hooks dir; the hook runs tests/test_no_personal_identifiers.py and blocks a
+# push that would leak one. (ROMP_GITHOOK_DIR redirects the target in setup().)
+
+@test "install.sh: symlinks the pre-push hook into the git hooks dir" {
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -L "$ROMP_GITHOOK_DIR/pre-push" ]
+    [[ "$(readlink "$ROMP_GITHOOK_DIR/pre-push")" == *"/.githooks/pre-push" ]]
+}
+
+@test "install.sh: ROMP_NO_GITHOOK skips the pre-push hook" {
+    ROMP_NO_GITHOOK=1 run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ ! -e "$ROMP_GITHOOK_DIR/pre-push" ]
+}
+
+# Behaviour of the hook itself, exercised through a real `git push` to a bare
+# remote, with a SYNTHETIC denylist (never a real identifier) via XDG_CONFIG_HOME.
+setup_hook_repo() {
+    export XDG_CONFIG_HOME="$TEST_DIR/cfg"
+    mkdir -p "$XDG_CONFIG_HOME/romp"
+    printf 'ZZBANNEDZZ\n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
+    git init -q "$TEST_DIR/remote.git" --bare
+    WORK="$TEST_DIR/work"
+    git init -q "$WORK"
+    git -C "$WORK" config user.email t@e.invalid
+    git -C "$WORK" config user.name t
+    mkdir -p "$WORK/tests"
+    cp "$ROMP_DIR/tests/test_no_personal_identifiers.py" "$WORK/tests/"
+    cp "$ROMP_DIR/.githooks/pre-push" "$WORK/.git/hooks/pre-push"
+    git -C "$WORK" remote add origin "$TEST_DIR/remote.git"
+}
+
+@test "pre-push hook: allows a push when the tree is clean" {
+    setup_hook_repo
+    echo "clean" > "$WORK/ok.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm clean
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push hook: blocks a push that would leak an identifier" {
+    setup_hook_repo
+    printf 'leak ZZBANNEDZZ here\n' > "$WORK/leak.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"BLOCKED"* ]]
+}
+
+@test "pre-push hook: --no-verify bypasses the block" {
+    setup_hook_repo
+    printf 'leak ZZBANNEDZZ here\n' > "$WORK/leak.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
+    run git -C "$WORK" push --no-verify origin HEAD:main
+    [ "$status" -eq 0 ]
 }

@@ -55,11 +55,14 @@ You run Romp yourself, on your laptop or a server, with no hosted service in bet
 ## Quick start
 
 ```bash
-git clone https://github.com/romp-on/romp.git
+git clone --depth 1 https://github.com/romp-on/romp.git
 cd romp
 ./install.sh
 export PATH="$PATH:$(pwd)/bin"   # add this to your shell rc
 ```
+
+`--depth 1` grabs just the latest commit (a few MB instead of the full
+history); Romp runs the same either way. Drop it if you want the whole history.
 
 Run `romp launch`. It opens the dashboard in your browser and prints the link
 too — the link carries a one-time access token, and after that first open plain
