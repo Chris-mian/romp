@@ -49,6 +49,12 @@ MOCK
     export TMUX="fake"
     export MOCK_SESSION_NAME="test"
     export MOCK_IS_ROMP=1
+    # The hook takes the SDK path (touching tmux NOT AT ALL) when Claude Code's own
+    # CLAUDE_CODE_ENTRYPOINT is sdk*. Left INHERITED, that makes this suite non-hermetic:
+    # it passes on CI, where the var is unset, and fails 25 tests for anyone running it
+    # from inside an SDK-backed romp session, where it is "sdk-py". Default it to the
+    # tmux path here; the two tests that exercise the SDK path export it themselves.
+    unset CLAUDE_CODE_ENTRYPOINT
 }
 
 teardown() {

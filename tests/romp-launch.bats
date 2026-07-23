@@ -53,10 +53,34 @@ teardown() { rm -rf "$TEST_DIR"; }
 }
 
 @test "romp launch still prints the URL when no opener exists" {
+    # ROMP_OPENER= (set, empty) means "no opener", which PATH alone CANNOT express:
+    # macOS ships /usr/bin/open, so the previous `rm $MOCK/open` + PATH=...:/usr/bin
+    # form fell through to the REAL opener and launched an actual browser on every
+    # macOS run. Linux has no `open`, which is why only macOS was affected.
     rm "$MOCK/open"
-    PATH="$MOCK:/usr/bin:/bin" run "$ROMP_SCRIPT" launch
+    ROMP_OPENER= run "$ROMP_SCRIPT" launch
     [ "$status" -eq 0 ]
     [[ "$output" == *"http://127.0.0.1:7433/?token=TESTTOKEN123"* ]]
+    [[ "$output" == *"couldn't open a browser automatically"* ]]
+}
+
+@test "romp launch opens nothing when no opener exists, even where a real one is on PATH" {
+    # The regression guard for the above: assert the real opener was never reached.
+    # $MOCK/open stays in place and must NOT be called.
+    ROMP_OPENER= run "$ROMP_SCRIPT" launch
+    [ "$status" -eq 0 ]
+    [ ! -s "$OPEN_LOG" ] || false
+}
+
+@test "romp launch honours a custom ROMP_OPENER" {
+    cat > "$MOCK/mybrowser" <<'MOCK'
+#!/bin/sh
+echo "$@" >> "$OPEN_LOG"
+MOCK
+    chmod +x "$MOCK/mybrowser"
+    ROMP_OPENER=mybrowser run "$ROMP_SCRIPT" launch
+    [ "$status" -eq 0 ]
+    [[ "$(cat "$OPEN_LOG")" == *"token=TESTTOKEN123"* ]]
 }
 
 @test "romp launch fails loudly when no token has been minted yet" {

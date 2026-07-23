@@ -414,9 +414,36 @@ class SdkMetadataParity(unittest.TestCase):
         repo = os.path.dirname(BIN)   # the romp repo itself
         expected = subprocess.run(["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
                                   capture_output=True, text=True).stdout.strip()
+        # `rev-parse --abbrev-ref HEAD` reports the literal string "HEAD" on a DETACHED head, which is
+        # not a branch name. _git_branch maps that to '' by contract, so the expectation has to make the
+        # same mapping or this test can only pass on an attached checkout. Every `pull_request` CI run is
+        # detached (actions/checkout builds the merge commit), so the unnormalized form failed 100% of PRs
+        # while passing every push to main.
+        if expected == "HEAD":
+            expected = ""
         self.assertEqual(km._git_branch(repo), expected, "branch comes straight from the folder, no transcript")
         self.assertEqual(km._git_branch(tempfile.mkdtemp()), "", "not a repo → ''")
         self.assertEqual(km._git_branch(""), "", "no dir → ''")
+
+    def test_git_branch_is_empty_on_a_detached_head(self):
+        """Detached HEAD → '' is the CONTRACT (kernel _git_branch docstring), not an accident. Pinned on a
+        purpose-built repo so it holds regardless of how the checkout running these tests is shaped."""
+        import subprocess, tempfile
+        d = tempfile.mkdtemp()
+        # -c identity so this never depends on (or is polluted by) the machine's global git config.
+        git = ["git", "-C", d, "-c", "user.email=romp-test@example.invalid", "-c", "user.name=romp test"]
+        subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
+        open(os.path.join(d, "f"), "w").write("x")
+        subprocess.run(git + ["add", "f"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "c"], check=True, capture_output=True)
+        # _git_branch caches per cwd keyed on .git/HEAD's mtime. Both calls here land in the same test, so
+        # on a coarse-granularity filesystem the two HEAD writes could share an mtime and serve a stale hit.
+        # Clear between calls: this test is about the branch derivation, not the cache.
+        km._branch_cache.clear()
+        self.assertNotEqual(km._git_branch(d), "", "attached: a real branch name")
+        subprocess.run(git + ["checkout", "-q", "--detach"], check=True, capture_output=True)
+        km._branch_cache.clear()
+        self.assertEqual(km._git_branch(d), "", "detached HEAD is not a branch name")
 
     def test_open_eager_connects_sdk_branch_fallback_and_ctx_passthrough(self):
         with open(os.path.join(BIN, "romp-kernel")) as f:

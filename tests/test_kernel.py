@@ -5317,6 +5317,15 @@ class ViewBuilder(unittest.TestCase):
         # the user 2026-06-17: a dead session is TIMELINE-ONLY — no auto chat tab. It gets a read-only
         # tab ONLY on demand (View read-only → _kept_open); ×-close forgets it (timeline-only again).
         saved = set(km._kept_open)
+        # tmux={} is AMBIGUOUS to _alive_sessions: "zero live sessions" (trust it, show nothing) vs
+        # "no tmux here at all" (headless → fall back to every file-derived session). It disambiguates
+        # with _has_tmux(), i.e. whether a tmux BINARY exists on the machine running the tests. Left
+        # inherited, this test therefore asserts the opposite thing on a box without tmux: the fallback
+        # fires, SID comes back alive, and "not auto-kept as a tab" fails. Ubuntu runners ship tmux and
+        # macOS runners do not, so it passed on Linux CI and failed on macOS CI. Pin it: this test is
+        # about _kept_open in a tmux-capable environment, not about the headless fallback.
+        saved_has = km._has_tmux
+        km._has_tmux = lambda: True
         try:
             km._kept_open.discard(SID)
             tabs = lambda: {x["sid"] for x in km._chat_tab_sessions(NOW, {})}   # tmux={} → SID is dead
@@ -5326,7 +5335,23 @@ class ViewBuilder(unittest.TestCase):
             km._kept_open.discard(SID)                   # ×-close
             self.assertNotIn(SID, tabs(), "×-close forgets it → timeline-only again")
         finally:
+            km._has_tmux = saved_has
             km._kept_open.clear(); km._kept_open.update(saved)
+
+    def test_headless_box_falls_back_to_file_derived_sessions(self):
+        """The other side of that ambiguity, which nothing covered: with NO tmux binary, an empty tmux
+        map means headless, not 'zero sessions', so surfaces fall back to file-derived sessions rather
+        than going blank. This is what made the test above machine-dependent, so pin both directions."""
+        saved_has = km._has_tmux
+        try:
+            km._has_tmux = lambda: False
+            self.assertIn(SID, {s["sid"] for s in km._alive_sessions(NOW, {})},
+                          "no tmux at all → fall back so a headless box isn't blank")
+            km._has_tmux = lambda: True
+            self.assertNotIn(SID, {s["sid"] for s in km._alive_sessions(NOW, {})},
+                             "tmux present + empty result → a genuine zero, show nothing")
+        finally:
+            km._has_tmux = saved_has
 
     def test_chat_chip_maps_tmux_state(self):
         # the chat chip maps tmux state: permission -> awaiting, plus model/effort/ctx for the statusline

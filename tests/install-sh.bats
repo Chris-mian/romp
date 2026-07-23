@@ -139,3 +139,62 @@ assert "my-own-hook.sh" in stop, stop
 assert any(c.endswith("tmux-status.sh") for c in stop), stop
 PY
 }
+
+# ── vscode-extension/install.sh: the build version is stamped, never committed ──
+# The editor caches extension code BY VERSION, so each install must carry a strictly
+# newer one; that number used to be written back into package.json and committed,
+# which produced a version-churn commit per install and a package.json version that
+# read like a romp release version without being one. The stamp now lives only in the
+# packaged .vsix. These pin that: package.json comes back byte-identical, and the
+# stamp it briefly held is strictly greater than the committed baseline.
+
+ext_setup() {   # a throwaway copy so nothing here can touch the real extension dir
+    EXT="$TEST_DIR/ext"
+    mkdir -p "$EXT"
+    cp "$ROMP_DIR/vscode-extension/install.sh" "$EXT/install.sh"
+    printf '{\n  "name": "romp-chat-view",\n  "version": "0.4.0"\n}\n' > "$EXT/package.json"
+    echo 'require("fs").writeFileSync("dist.marker","built")' > "$EXT/esbuild.js"
+    # stub the toolchain the script shells out to; real node does the stamping
+    mkdir -p "$TEST_DIR/stub"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/stub/npm"
+    printf '#!/bin/sh\ntouch romp-chat-view.vsix\nexit 0\n' > "$TEST_DIR/stub/npx"
+    chmod +x "$TEST_DIR/stub/npm" "$TEST_DIR/stub/npx"
+    export PATH="$TEST_DIR/stub:$PATH"
+}
+
+@test "vscode-extension/install.sh: restores package.json, leaving the committed version untouched" {
+    ext_setup
+    before="$(cat "$EXT/package.json")"
+    ROMP_EXT_PACKAGE_ONLY=1 run "$EXT/install.sh"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$EXT/package.json")" = "$before" ]   # byte-identical
+    [ ! -f "$EXT/package.json.orig" ]              # no scratch file left behind
+    [[ "$output" == *"build version -> 0.4."* ]]
+    [[ "$output" == *"not committed"* ]]
+}
+
+@test "vscode-extension/install.sh: the stamped version is strictly newer than the committed baseline" {
+    ext_setup
+    ROMP_EXT_PACKAGE_ONLY=1 run "$EXT/install.sh"
+    [ "$status" -eq 0 ]
+    stamped="$(echo "$output" | sed -n 's/.*build version -> \([0-9.]*\).*/\1/p')"
+    [ -n "$stamped" ]
+    python3 - "$stamped" <<'PY'
+import sys
+base = (0, 4, 0)                       # the committed baseline in this fixture
+got = tuple(int(x) for x in sys.argv[1].split("."))
+assert got[:2] == base[:2], f"major.minor must not move (a lower one reads as a DOWNGRADE): {got}"
+assert got > base, f"stamp must be strictly newer than the baseline: {got} !> {base}"
+PY
+}
+
+@test "vscode-extension/install.sh: restores package.json even when packaging FAILS" {
+    ext_setup
+    printf '#!/bin/sh\nexit 3\n' > "$TEST_DIR/stub/npx"   # vsce package blows up mid-run
+    chmod +x "$TEST_DIR/stub/npx"
+    before="$(cat "$EXT/package.json")"
+    ROMP_EXT_PACKAGE_ONLY=1 run "$EXT/install.sh"
+    [ "$status" -ne 0 ]                            # the failure still surfaces
+    [ "$(cat "$EXT/package.json")" = "$before" ]   # ...and the trap still restored
+    [ ! -f "$EXT/package.json.orig" ]
+}

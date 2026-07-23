@@ -1,9 +1,19 @@
 # Peer postal buses: store-and-forward, no master, check-in trust
 
-Status: SIGNED OFF 2026-07-20 — the four open decisions were resolved with the
-user in chat; the staged build is a go.
+Status: BUILT (2026-07-20). Peer-bus mode is the default; the code this doc
+explains lives in `postal/postal_service.py` and `kernel/kernel.py`.
 
-## Resolved decisions (the user, 2026-07-20)
+> **Superseded in part.** The security model described here has since been
+> tightened, and this doc is kept for its *design reasoning*, not as a current
+> description of how access control works. Two things changed after it was
+> written: the serve token is now required on **every** kernel request,
+> loopback included, and cross-host postal is gated by a **per-host trust
+> level** (trusted / directed / isolated) rather than the single "checked in
+> means full drive" rule below. For the model romp actually runs, read
+> `SECURITY.md` and the trust-levels section of `docs/guide.md`. Where the two
+> disagree, those are right and this is history.
+
+## Resolved decisions (2026-07-20)
 
 1. **Check-in is automatic, surfaced in the network popover.** No command
    ritual: each known remote row gets a "keep connected" checkbox. Checked →
@@ -12,15 +22,18 @@ user in chat; the staged build is a go.
    (tunnel down, token invalidated). `romp checkin`/`checkout` remain as the
    plumbing the checkbox drives. The persisted flag lives with the remotes
    registry so it survives restarts.
-2. **Full drive for the hub.** While checked in, the hub (and the phone
-   through it) can fully drive the laptop's romp sessions — required for
-   answering a blocked laptop card from the phone. The trade-off (hub
-   compromise = laptop session drive, never shell) is accepted; scoped
-   view-only tokens stay a later hardening option.
-3. **Merged view everywhere.** The same check-in tunnel also carries the hub's
-   fleet back to the laptop, so whichever dashboard is open shows everything.
-4. **The phone keeps Tailscale** (phone + server only; the laptop no longer
-   needs Tailscale at all). No internet-exposed ingress.
+2. **Full drive for a checked-in host.** While checked in, the stable machine
+   can fully drive the mobile machine's romp sessions — required for answering
+   a blocked card from a phone-sized client. *(This is the part most changed
+   since: per-host trust levels now decide what a peer may do, and a
+   `directed` host's mail is held for approval rather than delivered. See
+   `SECURITY.md`.)*
+3. **Merged view everywhere.** The same check-in tunnel also carries the
+   stable machine's fleet back to the mobile one, so whichever dashboard is
+   open shows everything.
+4. **No internet-exposed ingress.** Reach between machines rides an outbound
+   ssh the mobile machine opens, or an existing private network; nothing
+   listens on a public address.
 
 ## The problems this removes
 
@@ -32,10 +45,10 @@ and cross-machine reach piggybacks on an attacher-initiated ssh:
    it were local (remotes deliberately run no bus of their own). When the
    attacher sleeps or leaves, the remote's sessions lose postal entirely —
    including messages between two sessions on the *same* remote machine.
-2. **Trust flows the wrong way for a hub.** Making the always-on server the
-   attacher requires the server to hold ssh credentials into every other
-   machine, including personal laptops. A compromised always-on box then owns
-   everything that ever attached from it.
+2. **Trust flows the wrong way for a hub.** Making an always-on server the
+   attacher requires that server to hold ssh credentials into every other
+   machine. A compromised always-on box then owns everything that ever
+   attached from it.
 3. **Standalone is a special case.** A machine that is usually a "remote" has no
    bus when its link is down, so taking the laptop somewhere else silently
    breaks local messaging.
@@ -141,12 +154,16 @@ registry, same federation rows, same `host:name` sessions), marks it down when
 the forward drops (event: connection death), and never initiates anything. The
 mobile side supervises its own ssh (respawn on drop while checked in).
 
-Trust consequences, stated plainly: the hub holds no way into the mobile
-machine's shell, but a checked-in token does let anyone who controls the hub
-view and drive the mobile machine's *romp sessions* while the check-in is up.
-That is inherent in wanting the merged view from the hub. Mitigations staged
-for later if wanted: per-checkin scoped tokens (view-only), and a one-tap
+Trust consequences, stated plainly: the stable machine holds no way into the
+mobile machine's shell, but handing it a serve token does let whoever controls
+it view and drive the mobile machine's *romp sessions* while the check-in is
+up. That is inherent in wanting a merged view from the other end. Mitigations
+named here as future work: per-checkin scoped tokens (view-only), and a one-tap
 "check out" that kills the tunnel and invalidates the handed token.
+
+*(Since written: per-host trust levels — trusted / directed / isolated — now
+govern what a peer host may do, and `directed` holds incoming mail for approval
+instead of delivering it. `SECURITY.md` is authoritative.)*
 
 ### 3b. Spoke-to-spoke relay through a shared peer (added after the user's
 ### mechanics question, 2026-07-20)
