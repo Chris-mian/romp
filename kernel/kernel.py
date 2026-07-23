@@ -1789,6 +1789,58 @@ def _mark_awaiting_backstop(gid, at):
     _write_auto_nudge(d)
 
 
+def _lift_spent_awaiting(now, tmux):
+    """Retire a goal's ⏳ awaiting stamp once the dispatches it was waiting on have RETURNED (the user
+    2026-07-22). The closer's lift is bounded to the goals a turn actually WORKED ON (`touched`), which is
+    right for goals merely riding the menu — but it means a goal the session ABANDONED keeps its stamp
+    forever. A live case: a goal stamped "waiting on two dispatched investigations" at 12:26; both
+    notifications landed by 12:31; the session went idle at 12:32 and filed its later work under other
+    goals, so no closer pass ever revisited that goal. Four and a half hours later the card still claimed
+    the wait, with an empty task list behind it.
+
+    The retraction is the EVENT, never a timer: the <task-notification> that answered each dispatch is in
+    the transcript, and _scan_bg_tasks already pairs launches to results. SELF-SCOPING, so the broader
+    awaiting flavors are untouched: we lift only when this goal DID dispatch background work of its own by
+    stamp time and every one of those has come back. A stamp naming a CI run, a scheduled check-back or a
+    peer handoff owns no such dispatches, so it never matches and keeps its stamp — those still rely on the
+    6h backstop below, which is exactly the case a timer is the only tool for.
+
+    Dormant sessions are skipped: their tasks died with their CLI, so the death notice is the truth there,
+    not a lift (same rule as _session_awaiting's source 0.75)."""
+    for s in _alive_sessions(now, tmux):
+        sid = s["sid"]
+        try:
+            if tmux.get(sid) is None:                 # dormant → its tasks died with the CLI, don't rule
+                continue
+            store = jd.load_goals(sid)
+            nodes = store.get("nodes") or {}
+            stamped = [nd for nd in nodes.values()
+                       if nd.get("awaitingWhy") and nd.get("awaitingAt") and not nd.get("rolledUp")]
+            if not stamped:
+                continue
+            every = _bg_scan_all_cached(s["path"])
+            if not every:
+                continue
+            running = {t.get("id") for t in every if t.get("status") == "running"}
+            changed = False
+            for nd in stamped:
+                at, born = nd.get("awaitingAt") or 0, nd.get("t") or 0
+                # the dispatches this goal owns: launched during its life, at or before the stamp it explains
+                own = [t for t in every if born <= (t.get("t") or 0) <= at]
+                if not own:                           # nothing dispatched → not a background wait; leave it
+                    continue
+                if any(t.get("id") in running for t in own):
+                    continue                          # at least one is genuinely still out
+                if jd.record_verdict(store, nd, "romp", "awaiting", now, lift=True):
+                    changed = True
+            if changed:
+                jd.rollup_status(store, False)
+                jd.save_goals(sid, store)
+                _mark_views_dirty()
+        except Exception:
+            sys.stderr.write("awaiting-lift (session %s): %s\n" % (sid or "?", traceback.format_exc()))
+
+
 def _awaiting_backstop_tick(now, tmux):
     """Slow one-shot wake for a LIVE session asleep behind a stale awaiting stamp (see the block comment
     above). NEVER a needs-you floor — the wait was legitimate; the agent re-checks and decides (proceed,
@@ -5672,7 +5724,7 @@ def _read_task_output(of):
     return data
 
 
-def _scan_bg_tasks(path):
+def _scan_bg_tasks(path, want_all=False):
     """Walk the transcript pairing async LAUNCHES with their <task-notification> results, and surface a task
     ONLY while it's still RUNNING (in flight across turns). A finished task drops out of the box the instant
     its result lands — the box is a live "what's running now" indicator, and a task's COMPLETION is already
@@ -5741,6 +5793,12 @@ def _scan_bg_tasks(path):
                     _mark(_parse_task_notification(o.get("content") or ""))
     except OSError:
         return []
+    if want_all:
+        # EVERY task the transcript knows, launch-ordered, each carrying its launch `t` and its CURRENT
+        # status (still "running", or the terminal status its notification reported). The awaiting-stamp
+        # lift (_lift_spent_awaiting) needs the RETURNED ones too: "this goal's dispatches have all come
+        # back" is precisely the event that ends a wait, and the running-only view cannot express it.
+        return [tasks[tid] for tid in order]
     keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running"]
     keep.reverse()
     return keep[:60]
@@ -5775,6 +5833,30 @@ def _bg_scan_cached(path):
         if len(_bgtasks_cache) > 256:
             _bgtasks_cache.clear()
         _bgtasks_cache[path] = (key, scan)
+    return scan
+
+
+_bgall_cache = {}             # path -> ((mtime,size), [every task, launch-ordered])
+
+
+def _bg_scan_all_cached(path):
+    """Every background task the transcript records (launch-ordered, each with its launch `t` and current
+    status), mtime+size cached like _bg_scan_cached. Its own cache: the running-only view is read on every
+    push, this one only by the awaiting-stamp lift, and sharing one entry would make each invalidate the
+    other's shape."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _bgall_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    scan = _scan_bg_tasks(path, want_all=True)
+    if key is not None:
+        if len(_bgall_cache) > 256:
+            _bgall_cache.clear()
+        _bgall_cache[path] = (key, scan)
     return scan
 
 
@@ -11949,6 +12031,10 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+        try:                                  # EXACT retraction first: dispatches returned → the stamp is spent
+            _lift_spent_awaiting(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("awaiting-lift: %s\n" % traceback.format_exc())
         try:                                  # slow one-shot wake for a session asleep behind a stale awaiting stamp
             _awaiting_backstop_tick(int(time.time()), _tmux_sessions())
         except Exception:
