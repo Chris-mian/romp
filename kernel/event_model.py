@@ -652,7 +652,16 @@ class FileAdapter:
                                                                    if len(btext) > SKILL_MD_CAP else ""),
                                 "message": {"role": "assistant", "content": [], "stop_reason": None}})
                     continue
-                if r.get("isMeta") is True:
+                # A postal DELIVERY is a message, not harness noise, even though the CLI flags it isMeta:
+                # Claude Code hands romp mail to a session as Stop-hook feedback, and that record carries
+                # isMeta, so this skip ate every hook-delivered message whole. It never became an atom, so
+                # no user event reached _hydrate_postal, no incoming card was built, and nothing carried
+                # the message id — which is why a timeline arc into one of these landed nowhere while the
+                # transcript plainly contained it (the user 2026-07-23; romp_docs found the record).
+                # Deliveries arriving by other paths were unaffected, which is why it failed for some
+                # messages and not others. Keyed on the romp-msg-id marker, so only real mail is admitted
+                # and the `<command-…>` echoes and caveats stay skipped.
+                if r.get("isMeta") is True and not POSTAL_RE.search(btext):
                     continue   # `<command-…>` echoes / caveats — harness noise, not a message
                 if r.get("isCompactSummary") is True:
                     continue   # the compaction SUMMARY payload — kept in the graph (above) but not an atom;
