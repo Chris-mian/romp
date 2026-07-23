@@ -452,6 +452,7 @@ class TimelinePanel {
     this._lockNow = false;
     this._compactClicked = {};   // sid → click ts: show the compacting cue OPTIMISTICALLY until the real state catches up
     this._pendingFlags = {};     // sid → {flag: value}: an optimistic eye-toggle held STICKY across pushes until the kernel's data confirms it (no flicker-back)
+    this._dismissed = new Set(); // sids cleared via the dead-lane Clear pill, held STICKY the same way (see _reconcileDismissed)
     // "Collapse idle gaps" now lives in the SETTINGS dialog (romp:settings.collapseGaps), moved out of the
     // timeline toolbar (the user 2026-06-25). Read it fresh here + re-read on the 'storage' event so a toggle
     // in the gear iframe live-syncs. (CSTORE is the legacy per-view key — honoured as a one-time fallback so
@@ -1236,6 +1237,7 @@ class TimelinePanel {
     this.data = data;
     if (data.cmapGrad) this._cmapGrad = data.cmapGrad;   // compaction-sweep colormap gradient (persists across the lighter {type:bars} pushes)
     this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
+    this._reconcileDismissed();      // ...and a Cleared dead lane, so a stale/merged push can't pop it back
     this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
     // Live-edge baseline: the edge free-runs off a FIXED anchor and each poll rebases it MONOTONICALLY
     // (reanchorEdge) — it catches up forward when behind but NEVER moves backward, so bursty/jittery/
@@ -2080,6 +2082,25 @@ class TimelinePanel {
     }
   }
 
+  // Clear (dead-lane dismiss) needs the SAME stickiness as the eye toggle, and for the same reason: the
+  // optimistic removal at the click site only edits the CURRENT frame, and update()'s wholesale
+  // `this.data = data` puts the lane straight back. Any payload still carrying it wins — the kernel's own
+  // in-flight push, or (much more often, with a flapping remote) the federation manager re-emitting a
+  // MERGED timeline built from its cached per-host snapshots, which still hold the pre-dismissal local
+  // one. That is the "click Clear → it pops back → a second later it goes away on its own" bug (the user
+  // 2026-07-22). So hold each cleared sid and re-apply the removal onto every push until either the
+  // kernel drops the lane (confirmed) or it comes back LIVE (a revive, which by the kernel's own rule
+  // un-dismisses it). Called from update() right after this.data = data.
+  _reconcileDismissed() {
+    if (!this._dismissed.size || !this.data || !Array.isArray(this.data.sessions)) return;
+    const byId = new Map(this.data.sessions.map((s) => [s.id, s]));
+    for (const id of Array.from(this._dismissed)) {
+      const s = byId.get(id);
+      if (!s || s.live) this._dismissed.delete(id);   // kernel caught up, or the sid revived → stop holding it
+    }
+    if (this._dismissed.size) this.data.sessions = this.data.sessions.filter((s) => !this._dismissed.has(s.id));
+  }
+
   // Persist a per-session flag. Web dashboard: the host WS hook (→ kernel setSessionFlag → rebuild feed).
   // Obsidian/headless fallback: write the same session-flags.json the kernel's build_feed reads.
   _setSessionFlag(s, flag, value) {
@@ -2655,8 +2676,10 @@ class TimelinePanel {
         });
         chit.addEventListener('pointerdown', (e) => {
           e.stopPropagation(); this.hideTip();
-          // optimistic: drop it from the current frame so it vanishes at once; the kernel's next push (now
-          // excluding the dismissed sid) is authoritative, and a restart — forgetting it — brings it back.
+          // optimistic: drop it from the current frame so it vanishes at once, and hold it in _dismissed so
+          // a stale or federation-merged push can't put it back before the kernel confirms (_reconcileDismissed).
+          // A restart — forgetting it kernel-side — still brings it back, as designed.
+          this._dismissed.add(s.id);
           if (this.data && this.data.sessions) this.data.sessions = this.data.sessions.filter((x) => x.id !== s.id);
           this._dismissLane(s.id); this.draw();
         });
