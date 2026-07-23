@@ -8067,16 +8067,29 @@ def _stamp_interrupt_causes(events):
     for i, ev in enumerate(events):
         if not ev.get("interruptMarker"):
             continue
+        settles = []                                      # null settle-replies closing THIS cut turn
         for nxt in events[i + 1:]:
+            if nxt.get("kind") == "assistant" and nxt.get("interruptSettle"):
+                settles.append(nxt)
             if nxt.get("kind") != "user":
                 continue                                  # the settle-reply / thinking between marker and notice
             if nxt.get("rompSystem"):
                 body = nxt.get("md") or ""
-                if INTR_RESTART_SIG in body:              # same signatures the nudge gate reads (_interrupt_cause)
-                    ev["interruptCause"] = "restart"
-                elif INTR_CRASH_SIG in body:
-                    ev["interruptCause"] = "crash"
+                cause = ("restart" if INTR_RESTART_SIG in body else    # same signatures the nudge gate
+                         "crash" if INTR_CRASH_SIG in body else None)  # reads (_interrupt_cause)
+                if cause:
+                    ev["interruptCause"] = cause
+                    # A MACHINE cut leaves no "no response — turn settled" line (the user 2026-07-22): romp
+                    # restarted itself, so that line narrates romp's own plumbing, not anything the user did,
+                    # and the marker above already reads "interrupted — kernel restart". A GENUINE user stop
+                    # keeps it, where it IS feedback that the interrupt landed and the turn closed clean.
+                    # Dropped SERVER-side: rendering it hidden would leave a zero-height turn whose rail
+                    # time-marker restampMarkers still measures (at y=0), throwing off the spacing pass.
+                    for s in settles:
+                        s["_dropSettle"] = True
             break                                         # first user-role event decides; a typed prompt = user stop
+    if any(e.get("_dropSettle") for e in events):
+        events[:] = [e for e in events if not e.get("_dropSettle")]
     return events
 
 
