@@ -13452,7 +13452,14 @@ def _landing():
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
             "html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}"
-            ".col{display:flex;flex-direction:column;height:100vh}"
+            # A hair of breathing room down the right edge (the user 2026-07-23). The panes tiled flush to
+            # the window, so whatever sits hard right inside them — a feed card's controls, the timeline's
+            # lock padlock at the now-edge, the rail's own right-pinned actions — was pressed against the
+            # frame or clipped by it. One place fixes all three: .col wraps the pane row, the timeline band
+            # and the bottom rail alike. border-box so the strip comes OUT of the 100vh box instead of
+            # adding to it and overflowing. Deliberately tiny — a visible margin would read as a design
+            # element rather than as slack.
+            ".col{display:flex;flex-direction:column;height:100vh;box-sizing:border-box;padding-right:3px}"
             # the shell is a single flex row: far-left pane rail, then up to FOUR independently-toggled panes
             # (chat | fleet | feed | timeline, fixed order) separated by draggable gutters (the user 2026-06-24).
             # The timeline is just the 4th pane now — no more bottom band / minimize button.
@@ -13670,7 +13677,10 @@ def _landing():
             # never scrolls (panes scroll inside their iframes).
             "html,body{height:100vh;height:var(--app-h,100dvh);overflow:hidden}"
             "body{display:flex;flex-direction:column;height:100vh;height:var(--app-h,100dvh)}"
-            ".col{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;height:auto;padding-bottom:var(--mtabs-h,2.6em)}"
+            # padding-right is a DESKTOP-only strip: one pane fills the screen here, and a 3px sliver of
+            # backdrop down the edge would read as a rendering fault rather than as slack. The desktop
+            # rule's longhand survives this block unless it is named, so name it.
+            ".col{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;height:auto;padding-right:0;padding-bottom:var(--mtabs-h,2.6em)}"
             ".row{flex:1 1 auto;min-height:0;display:block}"
             ".gv,.gh,.pane-rail{display:none}"
             # mobile uses the bottom tab switcher, not the rail: dissolve the .pane wrappers (so the iframes

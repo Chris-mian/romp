@@ -106,6 +106,24 @@ class LandingShell(unittest.TestCase):
         self.assertIn("src=/feed", html)
         self.assertIn("src=/timeline", html)
 
+    def test_the_shell_leaves_a_hair_of_slack_down_the_right_edge(self):
+        # The panes tiled flush to the window, so whatever sat hard right inside one — a feed card's
+        # controls, the timeline's lock padlock at the now-edge, the rail's right-pinned actions — was
+        # pressed against the frame or clipped by it (the user 2026-07-23). .col is the one wrapper that
+        # covers the pane row, the timeline band and the bottom rail together.
+        html = km._landing()
+        self.assertIn(".col{display:flex;flex-direction:column;height:100vh;box-sizing:border-box;padding-right:3px}", html)
+        # border-box, or the strip ADDS to the 100vh box and the shell overflows instead of insetting
+        self.assertIn("box-sizing:border-box;padding-right:3px", html)
+
+    def test_the_right_edge_strip_is_desktop_only(self):
+        # One pane fills a phone screen, so a 3px sliver of backdrop down its edge reads as a rendering
+        # fault, not as slack. The desktop longhand survives the media query unless it is named there.
+        html = km._landing()
+        i = html.index("@media (max-width:820px),(pointer:coarse)")
+        mobile = html[i:i + 2000]
+        self.assertIn("padding-right:0", mobile, "the mobile .col must cancel the desktop strip")
+
     def test_mobile_pane_has_explicit_height_not_auto(self):
         # regression: the mobile pane was sized with height:auto + bottom offset; mobile browsers read
         # height:auto on an iframe as "size to content" and collapse it (chat shrank to its tab bar).
