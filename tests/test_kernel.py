@@ -2258,7 +2258,9 @@ class ViewBuilder(unittest.TestCase):
             restore()
 
     def test_auto_nudge_fires_for_every_working_top(self):
-        # all of a session's WORKING top goals get nudged each stop — not just the first (the user 2026-06-28).
+        # all of a session's WORKING top goals get nudged each stop — not just the first (the user
+        # 2026-06-28) — and same-tick fires COALESCE into ONE bundled message (the user 2026-07-24)
+        # instead of N separate status checks: both goal ids ride the one send.
         self._open_turn_transcript(ended=True); km._parse_cache.clear()
         lt = km._parse(str(self.tpath), SID, NOW)["turns"][-1]["id"]
         g1, g2 = SID + ":g1", SID + ":g2"
@@ -2271,7 +2273,7 @@ class ViewBuilder(unittest.TestCase):
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             bodies = [b for (_n, b) in sent]
-            self.assertEqual(len(sent), 2, "BOTH working tops nudged in one stop, not just the first")
+            self.assertEqual(len(sent), 1, "same-tick nudges bundle into ONE message, never N sends")
             self.assertTrue(any("romp-goal-id: " + g1 in b for b in bodies), "g1 nudged")
             self.assertTrue(any("romp-goal-id: " + g2 in b for b in bodies), "g2 nudged")
         finally:

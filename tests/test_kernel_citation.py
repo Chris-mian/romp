@@ -130,11 +130,16 @@ class FollowupPreview(unittest.TestCase):
         self.assertIn("> please ship the thing by friday", body, "no summary yet → the minting quote")
 
     def test_a_nudge_keeps_its_own_context_not_the_summary(self):
-        # only TYPED follow-ups switch to the summary; a nudge (injected) keeps the minting quote
+        # only TYPED follow-ups switch to the summary — and since 2026-07-24 a nudge (injected) quotes
+        # the goal's TITLE form, not the minting message either: the raw mint head is often a truncated
+        # mid-conversation fragment, and a nudge is romp speaking, not the user re-raising their thread.
+        # The summary stays out regardless: a stale takeaway ("Shipped v2.") on a reopened goal would
+        # tell the agent the work is done in the same breath as asking why it isn't.
         km.jd.load_goals = lambda fsid: {"nodes": {SID + ":g1": {
             "text": "Ship the thing", "quote": "please ship the thing by friday", "summary": "Shipped v2."}}}
         body = km._followup_body(SID + ":g1", None, "status?", injected=True)
-        self.assertIn("> please ship the thing by friday", body, "a nudge still quotes the minting message")
+        self.assertIn("> Ship the thing", body, "a nudge quotes the goal title form")
+        self.assertNotIn("please ship the thing by friday", body, "never the raw minting fragment (2026-07-24)")
         self.assertNotIn("Shipped v2.", body)
 
 

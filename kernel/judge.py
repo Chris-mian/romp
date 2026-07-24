@@ -1218,7 +1218,12 @@ PLAN_SYS = (
     '- {\"why\",\"do\":\"done\",\"goal\":<n>}: open goal/step #n is now finished. Mark done eagerly: '
     "the moment a segment delivers a goal's outcome (committed, shipped, tested, or answered), done it "
     "in this reply; don't leave finished work open for a later pass to notice. If the segment "
-    "discharges a whole ask, done the top-level goal. An explanation or answer to a user's question "
+    "discharges a whole ask, done the top-level goal. A segment often resolves more than the card it "
+    "files under: a reply that covers several topics may, in passing, deliver **another** listed card's "
+    "outcome — answer the question it tracks, ship its deliverable, or plainly report it finished. Scan "
+    "every listed card for this and emit a done on each one this segment resolved, in the same reply; "
+    "filing under one card never exempts the other cards the segment settled. "
+    "An explanation or answer to a user's question "
     "counts as done: once you have fully answered, with nothing left for the user to act on, the goal "
     "is done. But if the answer, plan, or scoping writeup ends by asking the user to approve or decide "
     "a clear next step (\"want me to build this?\", \"which option?\", \"shall I proceed?\"), that is a "
@@ -2890,7 +2895,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
 
 def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False,
              goal_history="", goal_num=None, agent_open_nums=None, followup=False,
-             live=False, cleared_context="", lifted_blocks=None):
+             live=False, cleared_context="", lifted_blocks=None, bundled=False):
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
     '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
     (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
@@ -2904,7 +2909,9 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     this call (the caller then enforces that restriction when applying ops). When `live` (the user cleared
     this OPEN segment's card mid-work, the user 2026-07-05) a <note> demands one fresh mint-or-sub NOW,
     with cleared_context riding as <recently-cleared> so a dismissed card is never re-created as if it
-    were a new ask. Cap is generous (a multi-op reply is long)."""
+    were a new ask. `bundled` (the user 2026-07-24): this nudge was one of several coalesced into ONE
+    message, so the reply may cover other goals too — a <note> scopes the ruling to #1's own thread.
+    Cap is generous (a multi-op reply is long)."""
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
     if goal_num:
         if goal_history:
@@ -2968,6 +2975,14 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "delivered, done with the why saying so where the reply calls it obsolete or no longer "
                  "needed, block where it names something still needed from the user. A piece the reply does "
                  "not mention keeps its state.</note>")
+        if bundled:
+            # a coalesced multi-goal nudge (the user 2026-07-24): the ONE reply covers several separate
+            # goals, but each goal gets its own scoped call — keep this call's ruling on its own thread
+            user += ("\n<note>This nudge bundled status checks on **several** separate goals, and the reply "
+                     "may cover them all. Only goal #1's own thread is being judged in this call — the other "
+                     "bundled goals are ruled separately. Resolve #1 from the part of the reply about **its** "
+                     "work; never emit ops recording another bundled goal's status, and never mark #1 "
+                     "done or blocked off a statement that is about a different goal.</note>")
         if agent_open_nums:
             nums = ", ".join("#%d" % n for n in agent_open_nums)
             # the FORK-nudge blocked branch (plans/stalled-open-todos-nudge.md, the user 2026-07-02): these
@@ -4412,6 +4427,16 @@ def _materialize_node(nd):
     return f
 
 
+def _bundle_keys(seg_id, targets):
+    """[(target, place_key)] for a (possibly bundled) nudge unit, in PROCESSING order. The FIRST target
+    owns the bare seg_id — the unit's own collection key (_unit_key), back-compat with every recorded
+    store — and later targets take seg_id#n2/#n3… so each ruling dedups independently. The bare key is
+    ordered LAST: it is what re-collects the whole unit, so a crash mid-bundle leaves the unit
+    re-examinable and the per-target placed-check skips the targets already ruled (the user 2026-07-24)."""
+    keyed = [(t, seg_id if i == 0 else "%s#n%d" % (seg_id, i + 1)) for i, t in enumerate(targets)]
+    return keyed[1:] + keyed[:1]
+
+
 def _unit_key(seg_id, phase):
     """The (segment-id, phase) dedup key in placements (the user 2026-06-21): the WORK-run keeps the bare
     seg_id (back-compat — existing stores' placements[seg_id] already mean 'work placed'); the PROMPT-run
@@ -4734,68 +4759,82 @@ def _plan_session(fsid, path, now):
             save_goals(fsid, store)
             continue
         if phase == "nudge":                          # romp NUDGE → RESOLVE the goal (done/block over a plain step)
-            target = followup
-            if not (target and target in store["nodes"]):
+            # A BUNDLED nudge (several same-tick nudges coalesced into one message, the user 2026-07-24) —
+            # or the SDK queue folding two separately-sent nudges into one turn — carries SEVERAL
+            # romp-goal-id markers on one trigger. Resolve EACH listed goal against the one response, each
+            # with its own scoped menu and its own planner call. Placement keys: the FIRST target keeps the
+            # bare seg_id (the unit's own collection key, back-compat with every recorded store), later
+            # targets take seg_id#n2/#n3…; the bare key is processed LAST so a crash mid-bundle leaves the
+            # unit re-collectable, and the per-target placed-check below skips the targets already ruled.
+            _tseg = seg_by_id.get(seg_id)
+            targets = [t for t in (_seg_followup_all(_tseg) if _tseg else [])
+                       if t in store["nodes"]] \
+                or ([followup] if followup and followup in store["nodes"] else [])
+            if not targets:
                 continue                              # no resolvable target → skip (re-examinable)
-            # An auto-nudge must NOT reopen an already-RESOLVED goal (the user 2026-06-30). The nudge fires on a
-            # 'working' goal, but a later pass (grouper/consolidate/re-roll) can complete it in the window before
-            # this response is processed; the old unconditional _reopen below then UN-completed it, and a "blocked
-            # on you" reply re-blocked it — a completed→blocked flip, which must never happen. If the goal is
-            # already done, the nudge is moot (its "what's the status?" is answered by completion): record the
-            # unit processed and place NOTHING, leaving the completed goal completed.
-            _nkids = {}
-            for _nid, _nd in store["nodes"].items():
-                _nkids.setdefault(_nd.get("parentId"), []).append(_nid)
-            # ...UNLESS the target's subtree still holds an item the agent's OWN to-do list marks open
-            # (authoritative-open, the user 2026-07-02): a flat-DONE'd + settled umbrella with live to-dos
-            # under it reads WORKING on the board (rollup's open_task authority), and the FORK nudge exists
-            # precisely to resolve those items — the done/settled markers are the stale part, not the nudge.
-            # Without this the moot-guard discarded every nudge response on that goal shape before the
-            # planner ran (track g9: "Blocked on you: the push" was never applied), so the goal could never
-            # reach blocked.
-            _stack, _open_items = [target], []
-            while _stack:
-                _x = _stack.pop()
-                if (store["nodes"].get(_x, {}).get("agentTask") or {}).get("status") == "open":
-                    _open_items.append(_x)
-                _stack.extend(_nkids.get(_x, []))
-            if (not _open_items and not _fold_node(store["nodes"][target])["held"]
-                    and (_subtree_done(store["nodes"], _nkids, target)
-                         or store["nodes"][target].get("settledDone"))):
-                # (held check 2026-07-07: a user reopen no verdict has answered means the user asserted
-                # NOT done — an all-done subtree under it is exactly why they were asked; never moot.)
-                store["placements"][seg_id] = None
+            for target, _pkey in _bundle_keys(seg_id, targets):
+                if _placed_key(store["placements"], _pkey, live):
+                    continue                          # this target already ruled (crash-resume mid-bundle)
+                # An auto-nudge must NOT reopen an already-RESOLVED goal (the user 2026-06-30). The nudge fires on a
+                # 'working' goal, but a later pass (grouper/consolidate/re-roll) can complete it in the window before
+                # this response is processed; the old unconditional _reopen below then UN-completed it, and a "blocked
+                # on you" reply re-blocked it — a completed→blocked flip, which must never happen. If the goal is
+                # already done, the nudge is moot (its "what's the status?" is answered by completion): record the
+                # unit processed and place NOTHING, leaving the completed goal completed.
+                _nkids = {}
+                for _nid, _nd in store["nodes"].items():
+                    _nkids.setdefault(_nd.get("parentId"), []).append(_nid)
+                # ...UNLESS the target's subtree still holds an item the agent's OWN to-do list marks open
+                # (authoritative-open, the user 2026-07-02): a flat-DONE'd + settled umbrella with live to-dos
+                # under it reads WORKING on the board (rollup's open_task authority), and the FORK nudge exists
+                # precisely to resolve those items — the done/settled markers are the stale part, not the nudge.
+                # Without this the moot-guard discarded every nudge response on that goal shape before the
+                # planner ran (track g9: "Blocked on you: the push" was never applied), so the goal could never
+                # reach blocked.
+                _stack, _open_items = [target], []
+                while _stack:
+                    _x = _stack.pop()
+                    if (store["nodes"].get(_x, {}).get("agentTask") or {}).get("status") == "open":
+                        _open_items.append(_x)
+                    _stack.extend(_nkids.get(_x, []))
+                if (not _open_items and not _fold_node(store["nodes"][target])["held"]
+                        and (_subtree_done(store["nodes"], _nkids, target)
+                             or store["nodes"][target].get("settledDone"))):
+                    # (held check 2026-07-07: a user reopen no verdict has answered means the user asserted
+                    # NOT done — an all-done subtree under it is exactly why they were asked; never moot.)
+                    store["placements"][_pkey] = None
+                    save_goals(fsid, store)
+                    continue
+                _reopen(store, target, by="nudge", now=seg_t)         # unseal if the closer already completed it (refused if view-cleared)
+                sub = [nd for nd in open_menu(store)       # SCOPED menu: the goal + its open descendants, goal first (#1)
+                       if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
+                sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
+                if not sub or sub[0]["id"] != target:
+                    continue                          # goal not open (e.g. view-cleared) → don't plan
+                hist = _goal_work_text(store, seg_by_id, target, GOAL_HISTORY_CHARS)
+                # name the menu items that mirror the agent's OWN still-open to-dos: the note (plan_llm) makes
+                # the planner block at least one of them when the reply names a blocker instead of continuing —
+                # the agent cannot self-block a to-do, so the planner is where "blocked" gets said (design/
+                # stalled-open-todos-nudge.md, the user 2026-07-02).
+                _agent_nums = [i + 1 for i, _snd in enumerate(sub)
+                               if (store["nodes"].get(_snd["id"], {}).get("agentTask") or {}).get("status") == "open"]
+                ops = _parse_plan(plan_llm(text, _menu_text(store, sub), nudge=True,
+                                           goal_history=hist, goal_num=1, agent_open_nums=_agent_nums,
+                                           bundled=len(targets) > 1), len(sub)) or []
+                # the must-resolve note pushes DONE/BLOCK on the goal; a MINT is re-rooted as a sub under it, and a
+                # genuine-progress SUB files under it too. Skips drop. NO empty-reply fallback (the user 2026-06-22):
+                # an unresolved nudge applies NOTHING — apply_plan with empty ops marks the phase processed
+                # (placements[key]=None) and adds no node, leaving the goal open for a later real resolution.
+                # The old fallback appended a spurious "followed up" sub that never resolved the goal, so a
+                # done-asserting reply that emitted no done op got demoted to a step → status stayed 'working' →
+                # auto-nudge re-armed forever (infinite nudge loop on a genuinely-finished goal).
+                ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
+                       if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
+                ops = _restrict_retitle(ops, 1)          # goal_num=1 above → retitle is only valid on #1
+                apply_plan(store, seg_id, seg_t, ops, sub, place_key=_pkey, prompt_uuid=trig, quote=vq)
+                placed += 1
+                _group_store(store, fsid, now)
                 save_goals(fsid, store)
-                continue
-            _reopen(store, target, by="nudge", now=seg_t)         # unseal if the closer already completed it (refused if view-cleared)
-            sub = [nd for nd in open_menu(store)       # SCOPED menu: the goal + its open descendants, goal first (#1)
-                   if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
-            sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
-            if not sub or sub[0]["id"] != target:
-                continue                              # goal not open (e.g. view-cleared) → don't plan
-            hist = _goal_work_text(store, seg_by_id, target, GOAL_HISTORY_CHARS)
-            # name the menu items that mirror the agent's OWN still-open to-dos: the note (plan_llm) makes
-            # the planner block at least one of them when the reply names a blocker instead of continuing —
-            # the agent cannot self-block a to-do, so the planner is where "blocked" gets said (design/
-            # stalled-open-todos-nudge.md, the user 2026-07-02).
-            _agent_nums = [i + 1 for i, _snd in enumerate(sub)
-                           if (store["nodes"].get(_snd["id"], {}).get("agentTask") or {}).get("status") == "open"]
-            ops = _parse_plan(plan_llm(text, _menu_text(store, sub), nudge=True,
-                                       goal_history=hist, goal_num=1, agent_open_nums=_agent_nums), len(sub)) or []
-            # the must-resolve note pushes DONE/BLOCK on the goal; a MINT is re-rooted as a sub under it, and a
-            # genuine-progress SUB files under it too. Skips drop. NO empty-reply fallback (the user 2026-06-22):
-            # an unresolved nudge applies NOTHING — apply_plan with empty ops marks the phase processed
-            # (placements[seg_id]=None) and adds no node, leaving the goal open for a later real resolution.
-            # The old fallback appended a spurious "followed up" sub that never resolved the goal, so a
-            # done-asserting reply that emitted no done op got demoted to a step → status stayed 'working' →
-            # auto-nudge re-armed forever (infinite nudge loop on a genuinely-finished goal).
-            ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
-                   if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
-            ops = _restrict_retitle(ops, 1)              # goal_num=1 above → retitle is only valid on #1
-            apply_plan(store, seg_id, seg_t, ops, sub, prompt_uuid=trig, quote=vq)
-            placed += 1
-            _group_store(store, fsid, now)
-            save_goals(fsid, store)
             continue
         if followup and followup in store["nodes"]:   # tagged follow-up: file under the target — a STRONG
             # prior, no longer a straitjacket (the user 2026-07-03): the user replies to cards out of habit,
@@ -7415,6 +7454,26 @@ def _seg_followup(seg):
         return None
     m = FOLLOWUP_RE.search(_atom_text(trig))
     return m.group(1) if m else None
+
+
+def _seg_followup_all(seg):
+    """EVERY goal-node id on the segment's trigger, in order, deduped ([] when none). A single follow-up
+    or nudge carries ONE romp-goal-id, but a BUNDLED nudge (several same-tick nudges coalesced into one
+    message, the user 2026-07-24) — or the SDK queue folding two separately-SENT nudge messages into one
+    turn (observed 2026-07-23: the fold hid the second goal from _seg_followup's first-match parse, so
+    its response was never found and the goal was stamped nudge-failed against a reply that resolved
+    it) — carries several. _seg_followup stays the single PRIMARY id (the first listed) for consumers
+    with one-target semantics; resolution paths iterate this instead."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    if not trig:
+        return []
+    out, seen = [], set()
+    for m in FOLLOWUP_RE.finditer(_atom_text(trig)):
+        if m.group(1) not in seen:
+            seen.add(m.group(1))
+            out.append(m.group(1))
+    return out
 
 
 def _seg_nudge(seg):

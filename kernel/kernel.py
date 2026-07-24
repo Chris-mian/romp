@@ -576,6 +576,11 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
     _mint_quote — the user's own words, the user 2026-07-01 g13) when there's no summary yet, then for legacy
     nodes to the enriched title form: the node's text, the TOP goal it sits under, its status, and the
     planner's one-line why (the user 2026-06-17). None of these → the text alone (no empty quote).
+    A NUDGE (`injected`) on a FLAT goal quotes the enriched TITLE form directly — never the mint quote
+    (the user 2026-07-24): the raw minting head is often a truncated mid-conversation fragment, and the
+    same goal flipped between title and raw forms across two nudges as its sub-pieces closed, which read
+    incoherent. The planner's title + why is goal-grounded and concise; the mint quote stays the TYPED
+    follow-up's fallback only (its own-words rationale is about the user's voice, not romp's).
     When a NUDGE (`injected` — the Nudge button OR the background auto-nudge, which both land here with iid =
     the TOP goal) targets a HIERARCHICAL goal, the quote ENUMERATES its unfinished lower-level nodes and the
     body asks for a status on each, with the top goal as context — so the session reports on the specific
@@ -635,15 +640,18 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             # session pulls the full thread from its own history. Falls back to the minting quote below when
             # there's no summary yet (a still-working card). Nudges (injected) keep their own context.
             quote.append(str(nd.get("summary") or nd.get("blockSummary")).strip())
-        elif str(nd.get("quote") or "").strip():
+        elif not injected and str(nd.get("quote") or "").strip():
             # No distilled summary yet → the node's cached minting-message VERBATIM head (judge _mint_quote; the
             # user 2026-07-01, g13): quote the user's OWN WORDS back — how a person re-raises a thread — instead
             # of the planner's paraphrased title with "(under X, done)" tags and why, which read report-like and
             # used terminology the user never typed. No status annotations: the body carries the actual ask.
+            # TYPED follow-ups only (the user 2026-07-24): a NUDGE is romp speaking, not the user re-raising —
+            # it falls through to the title form below (see the docstring).
             quote.append(str(nd["quote"]).strip())
         elif head:
-            # legacy node minted before quotes were cached → the enriched title form (title + place +
-            # status + the planner's why), still better than a bare ≤10-word line.
+            # legacy node minted before quotes were cached, or a NUDGE on a flat goal (the user 2026-07-24)
+            # → the enriched title form (title + place + status + the planner's why), still better than a
+            # bare ≤10-word line — and for a nudge, better than the raw minting fragment.
             tags, top, seen = [], str(iid), set()      # walk to the TOP goal this node sits under
             while nodes.get(top, {}).get("parentId") and top not in seen:
                 seen.add(top); top = nodes[top]["parentId"]
@@ -676,6 +684,51 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             "relevant to your work — ignore them -->"
             + ("<!-- romp-injected -->" if injected else "") + ("<!-- romp-auto -->" if auto else "")
             + "<!-- romp-goal-id: " + str(iid) + " -->")
+    return msg + "\n\n" + tail
+
+
+def _nudge_bundle_body(gids, nodes, stalled_gids):
+    """ONE pane message for several same-tick auto-nudges (the user 2026-07-24). A session that comes to
+    rest with several top goals still 'working' used to get one message PER goal — on 2026-07-23 a session
+    with three open goals took three separate status checks in the same second, and the SDK queue then
+    folded two of them into one turn of concatenated boilerplate anyway. Bundling is the designed version:
+    a numbered quote block naming each goal (title + the planner's why — the same precedence as the
+    single-goal nudge, never the raw minting message), each goal's unfinished sub-pieces indented under it,
+    ONE shared ask, and a marker tail carrying EVERY goal id — the judge resolves each id against the one
+    response (_seg_followup_all). Event-based: bundles exactly what fired this tick, no wait-window.
+    `stalled_gids` is the subset whose subtree holds items the agent's OWN to-do list still marks open
+    (the FORK case, plans/stalled-open-todos-nudge.md) — their numbers get the continue-or-name-the-blocker
+    ask as one extra line, since the plain status form and the fork can share a bundle."""
+    quote, stall_nums = [], []
+    for i, gid in enumerate(gids, 1):
+        nd = nodes.get(str(gid)) or {}
+        head = str(nd.get("text", "")).strip() or "(unnamed goal)"
+        why = str(nd.get("why") or "").strip()
+        quote.append("%d. %s" % (i, head) + ((" — " + why) if why else ""))
+        subs = _open_leaves_for_nudge(nodes, str(gid))
+        CAP = 6                                        # tighter than the single-goal 12: N goals share one message
+        for lid in subs[:CAP]:
+            ld = nodes.get(lid, {})
+            lt = str(ld.get("text", "")).strip() or "(unnamed)"
+            lw = (ld.get("blockWhy") if ld.get("blocked") else ld.get("why")) or ""
+            lw = (" — " + lw.strip()) if lw.strip() else ""
+            quote.append("   • " + lt + (" (blocked)" if ld.get("blocked") else "") + lw)
+        if len(subs) > CAP:
+            quote.append("   • …and %d more" % (len(subs) - CAP))
+        if gid in stalled_gids:
+            stall_nums.append(i)
+    body = ("Status check on the %d separate goals above, each still open. For each numbered goal: "
+            "what's done, what's left, and is anything blocked waiting on a decision from me? If one is "
+            "already finished or no longer needed, say so and why." % len(gids))
+    if stall_nums:
+        body += ("\n\nUnder %s there are items still open on your own to-do list: if you don't need "
+                 "anything from me, please continue that work now; if any item is blocked, tell me which "
+                 "one and exactly what you need from me to finish it."
+                 % ", ".join("#%d" % n for n in stall_nums))
+    msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
+    tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
+            "relevant to your work — ignore them --><!-- romp-injected --><!-- romp-auto -->"
+            + "".join("<!-- romp-goal-id: %s -->" % g for g in gids))
     return msg + "\n\n" + tail
 
 
@@ -1343,8 +1396,8 @@ def _auto_resume_session_retry(now, tmux):
         _mark_views_dirty()      # the flag lives in a file the fleet sig doesn't watch → dirty-rebuild the chat status
 
 
-def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None):
-    """Record an auto-nudge of `gid`: {count, lastTurnId, armAtoms}. `count` is the TOTAL fired (the climbing
+def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None, at=None):
+    """Record an auto-nudge of `gid`: {count, lastTurnId, armAtoms, at}. `count` is the TOTAL fired (the climbing
     escalation alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and
     re-arms only on a genuinely NEW ended turn — and NEVER on the agent's own nudge-response turn (see the
     tick's _turn_romp_injected gate). A stall that persists without genuine new work becomes a real BLOCK
@@ -1352,13 +1405,18 @@ def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None):
     writes a fresh record, so any earlier `failed` flag resets with the new episode. Bounded to recent
     goals. (The old per-record `stalled` flag fed build_feed's needs-you floor; both retired 2026-07-07 —
     the block verdict supersedes them.) `armAtoms` is the arming turn's atom count at fire time — the
-    failed-stamp's response-arrival gate compares against it (the 2026-07-19 network g1 race)."""
+    failed-stamp's response-arrival gate compares against it (the 2026-07-19 network g1 race). `at` is the
+    fire time — the failed-stamp's parse-lag guard measures its 6h backstop from it (the user 2026-07-24:
+    a stamp raced the parse of a second, still-landing nudge turn and blocked two goals whose response
+    resolved them; the guard waits for the response segment to become VISIBLE, bounded by the backstop)."""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     nudged.pop(gid, None)
     rec = {"count": count, "lastTurnId": turn_id}
     if isinstance(arm_atoms, int):
         rec["armAtoms"] = arm_atoms
+    if at is not None:
+        rec["at"] = int(at)
     nudged[gid] = rec                                       # reinsert → most-recent
     if len(nudged) > 3000:                                  # bounded; drop the oldest
         nudged = dict(list(nudged.items())[-3000:])
@@ -2130,11 +2188,68 @@ def _stalled_goals():
     return out
 
 
+def _nudge_response_ready(turns, store, rec, gid, now):
+    """The nudge-failed stamp's structural gates, as one testable decision: (ready, resp_seg).
+    ready False → skip this tick; ready True → every gate passed and the stamp may proceed
+    (resp is the goal's nudge-response segment, or None only where legacy stamp-now behavior is
+    preserved). Three gates, all event-based:
+
+    RESPONSE-ARRIVAL (the user 2026-07-19, the network g1 manufactured block): the fire and the
+    stamp are separate ticks, and the parse between them can lag the transcript — g1's stamp ran
+    16s after its fire against a parse that still ENDED AT THE ARMING TURN (the injected nudge,
+    let alone the reply "All done — nothing is blocked on you", hadn't reached it), so the
+    no-visible-segment fallback recorded "the response didn't resolve this" against a response
+    that resolved everything. The response's ARRIVAL in the parse is the event to wait for: a
+    turn newer than the arming turn (a romp-opened response) or the arming turn grown past its
+    fire-time atom count (the SDK fold). armAtoms unchanged AND still the last turn = nothing has
+    happened since the fire → not ready. Records without armAtoms (pre-gate fires) keep stamp-now.
+
+    PLACEMENT (the user 2026-07-09, the g143 phantom stall): closer-settled does NOT imply the
+    planner processed the nudge RESPONSE — g143 stamped 'failed' at 16:06 while the planner's
+    resolve landed at 16:10, a four-minute phantom "stalled". The planner's own "processed" event
+    is the response segment's PLACEMENT: while this goal's nudge segment is visible but unplaced,
+    the response is still in the judge's queue → not ready. The segment lookup scans from the
+    ARMING turn forward (it used to be a flat last-4-turns window) and matches the goal against
+    ALL ids on the trigger (_seg_followup_all) — a BUNDLED nudge, or the SDK queue folding two
+    separately-sent nudges into one turn, carries several ids, and the old first-id-only match
+    made every non-first goal invisible here (2026-07-23: a folded second nudge's goal was
+    stamped failed against a response that plainly resolved it).
+
+    PARSE-LAG (the user 2026-07-24, same incident): a MODERN record (armAtoms present) was sent
+    with the goal-id marker by construction, so its response segment WILL become visible — a
+    missing segment means the parse hasn't caught up (2026-07-23: the stamp ran while a second
+    nudge turn was still landing, saw no segment for its goal, and blocked it via the old
+    stamp-now fallback). Not ready until the segment shows, bounded by the 6h deferral backstop
+    from the fire time (rec["at"]) so a genuinely lost send still surfaces as needs-you instead
+    of hiding forever. Legacy records (no armAtoms / no at) keep the stamp-now behavior."""
+    _arm_atoms = rec.get("armAtoms")
+    _ai = next((i for i in range(len(turns) - 1, -1, -1)
+                if turns[i].get("id") == rec.get("lastTurnId")), None)
+    if isinstance(_arm_atoms, int) and _ai is not None and _ai == len(turns) - 1 \
+            and len(turns[_ai].get("atoms") or []) <= _arm_atoms:
+        return False, None                             # the response isn't in the parse yet
+    try:
+        _scan = turns[_ai:] if _ai is not None else turns[-4:]   # arm turn included: the SDK fold lands there
+        resp = next((s2 for tn2 in reversed(_scan) for s2 in jd._segs(tn2, store)
+                     if jd._seg_nudge(s2) and gid in jd._seg_followup_all(s2)), None)
+    except Exception:
+        resp = None                                    # minimal/legacy turn shapes → stamp-now, as before
+    if resp is None and isinstance(_arm_atoms, int) \
+            and (now - (rec.get("at") or 0)) <= NUDGE_DEFER_BACKSTOP_SECS:
+        return False, None                             # modern fire, segment not visible yet → parse lag
+    if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
+        return False, resp                             # the planner hasn't ruled on the response yet
+    return True, resp
+
+
 def _auto_nudge_session(s, now, tmux, nudged, waitfor):
     """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
     walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
     failures per session (see the tick's loop). Mutates `nudged` (the tick's in-memory mirror);
-    returns True when it fired a nudge or stamped a failure — the tick pushes once at the end."""
+    returns True when it fired a nudge or stamped a failure — the tick pushes once at the end.
+    Same-tick fires COALESCE: every goal due this tick goes out as ONE bundled message (see
+    _nudge_bundle_body), after a last-moment store re-read drops any goal the judges resolved
+    while the tick was deciding (_nudge_fire_list — the user 2026-07-24)."""
     fired = False
     sid = s["sid"]
     if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
@@ -2240,7 +2355,9 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
     # per turn, count climbing), until the session moves each to blocked/completed. Skip a top whose only
     # open work is delegated to peers, or that's awaiting a pre-question peer reply. NO optimistic_followup:
     # an auto-nudge must NOT paint the "Followed up"/re-checking chip — that's reserved for the user's OWN
-    # follow-ups (the user 2026-06-28).
+    # follow-ups (the user 2026-06-28). Due goals COLLECT into to_fire and go out ONCE after the loop —
+    # several in the same tick bundle into one message (the user 2026-07-24) instead of N separate ones.
+    to_fire = []                                     # [(gid, count, stalled)] due THIS tick
     for gid in list(nodes):
         nd = nodes[gid]
         if nd.get("parentId") is not None or nd.get("cleared") or gid in cleared:
@@ -2282,40 +2399,10 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
             # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
             # so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
             if rec and not rec.get("failed"):
-                # RESPONSE-ARRIVAL GATE (the user 2026-07-19, the network g1 manufactured block): the
-                # fire and this stamp are separate ticks, and the parse between them can lag the
-                # transcript — g1's stamp ran 16s after its fire against a parse that still ENDED AT
-                # THE ARMING TURN (the injected nudge, let alone the reply "All done — nothing is
-                # blocked on you", hadn't reached it), so the no-visible-segment fallback below
-                # recorded "the response didn't resolve this" against a response that resolved
-                # everything — blocking a finished card the closer was about to close. The response's
-                # ARRIVAL in the parse is the event to wait for: a turn newer than the arming turn
-                # (a romp-opened response) or the arming turn grown past its fire-time atom count
-                # (the SDK fold). armAtoms unchanged AND still the last turn = nothing has happened
-                # since the fire → skip, re-check next tick. Records without armAtoms (pre-gate
-                # fires) keep the stamp-now behavior.
-                _arm_atoms = rec.get("armAtoms")
-                if isinstance(_arm_atoms, int):
-                    _at = next((tn2 for tn2 in reversed(turns)
-                                if tn2.get("id") == rec.get("lastTurnId")), None)
-                    if _at is not None and _at is turns[-1] \
-                            and len(_at.get("atoms") or []) <= _arm_atoms:
-                        continue                       # the response isn't in the parse yet
-                # PLACEMENT GATE (the user 2026-07-09, the g143 phantom stall): closer-settled does NOT
-                # imply the planner processed the nudge RESPONSE — the closer and planner gate on
-                # different work, and on g143 this stamped 'failed' at 16:06 while the planner's
-                # resolve landed at 16:10: a four-minute phantom "stalled". The planner's own
-                # "processed" event is the response segment's PLACEMENT: while the parsed turns show
-                # this goal's nudge segment still unplaced, the response is still in the judge's queue —
-                # skip and re-check next tick (event-based, no timer). No visible nudge segment
-                # (parse lag, pre-marker history) keeps the stamp-now behavior.
-                try:
-                    resp = next((s2 for tn2 in reversed(turns[-4:]) for s2 in jd._segs(tn2, store)
-                                 if jd._seg_nudge(s2) and jd._seg_followup(s2) == gid), None)
-                except Exception:
-                    resp = None                        # minimal/legacy turn shapes → stamp-now, as before
-                if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
-                    continue                           # the planner hasn't ruled on the response yet
+                ready, resp = _nudge_response_ready(turns, store, rec, gid, now)
+                if not ready:
+                    continue                           # the response hasn't arrived / hasn't been ruled /
+                #                                        the parse hasn't caught up — re-check next tick
                 # UNDETERMINED IS NOT NEEDS-YOU (the user 2026-07-22). Every gate above is structural —
                 # "a response arrived", "the segment has a placements key" — and a placement key is
                 # recorded even for a SKIP, so a planner that ruled NOTHING satisfies them exactly as
@@ -2340,14 +2427,50 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
         # self-mark a to-do blocked (Claude Code has no such state), so the fork elicits the blocker the
         # planner's nudge-mode note then applies as a block. _followup_body's quote already enumerates the
         # goal's unfinished sub-nodes, naming the open items.
-        stalled = gid in _agent_open_set(nodes, _kids)
+        to_fire.append((gid, count, gid in _agent_open_set(nodes, _kids)))
+    if to_fire:
+        # LAST-MOMENT RE-READ (the user 2026-07-24): the closer/planner run concurrently with this tick,
+        # and a nudge once fired in the same second the closer marked its goal done — the tick's store
+        # snapshot predated the verdict, so romp status-checked a goal that was being completed as it
+        # asked. The verdict's LANDING is the event; re-reading the store at send time keys on it and
+        # closes the race to the file write itself. An unreadable re-read fires on the tick's snapshot,
+        # as before — never silently drops the nudge.
+        try:
+            to_fire = _nudge_fire_list(jd.load_goals(sid), to_fire)
+        except Exception:
+            pass
+    if len(to_fire) == 1:
+        gid, count, stalled = to_fire[0]
         text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
         Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
-        _mark_auto_nudged(gid, arm_id, count, len(arm.get("atoms") or []))   # {count, lastTurnId, armAtoms} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
+    elif to_fire:
+        # BUNDLE (the user 2026-07-24): several goals due in the SAME tick → ONE message naming them all,
+        # instead of N separate status checks the SDK queue would fold into concatenated boilerplate anyway.
+        Sessions.backend_for(sid).send(sid, _nudge_bundle_body(
+            [f[0] for f in to_fire], nodes, {f[0] for f in to_fire if f[2]}))
+    for gid, count, stalled in to_fire:
+        _mark_auto_nudged(gid, arm_id, count, len(arm.get("atoms") or []), at=now)   # {count, lastTurnId, armAtoms, at} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
         _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
         nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
         fired = True
     return fired
+
+
+def _nudge_fire_list(fresh, to_fire):
+    """The subset of this tick's due nudges still worth sending, judged against a FRESH store read
+    (the closer-race guard — see the call site). A goal the judges moved off plain 'working' since the
+    tick's snapshot — completed, blocked, cleared, or status-rolled — gets no status check: the answer
+    already landed. Pure and store-shaped for tests."""
+    nodes, status = fresh.get("nodes", {}) or {}, fresh.get("status", {}) or {}
+    keep = []
+    for f in to_fire:
+        if f[0] not in nodes:
+            continue                                 # gone from the fresh store: cleared + compacted mid-tick
+        nd = nodes[f[0]]
+        if status.get(f[0], "working") == "working" and not nd.get("cleared") \
+                and not nd.get("nodeComplete") and not nd.get("blocked"):
+            keep.append(f)
+    return keep
 
 
 WORKING_DIR = jd.STATE / "working"     # backend-agnostic working-note store (working/<sid> files): the
