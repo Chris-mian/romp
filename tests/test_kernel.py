@@ -1105,6 +1105,8 @@ class ViewBuilder(unittest.TestCase):
             "rompUuid": SID, "seq": 2, "lastNode": top, "nodes": nodes,
             "placements": placements, "status": status}))
         km._task_seg_cache.clear()
+        km._BG_TOPS_CACHE.clear()          # both classifier caches key on store/transcript file stats —
+        km._SESSION_STAMP_CACHE.clear()    # cleared so a same-stat rewrite can't serve a stale verdict
         saved = km._tmux_sessions
         km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
                                            "context": None, "compactPct": None, "color": None,
@@ -1139,12 +1141,16 @@ class ViewBuilder(unittest.TestCase):
         # the user 2026-07-17 (quartz): a campaign watcher relaunched after a kernel restart —
         # 89s NEWER than an unrelated card's block — re-dressed that genuine needs-you as "waiting on
         # campaign 3 watcher events". Ownership now decides: the launch places on the OTHER top, so the
-        # blocked card keeps its block while the owning card floors to awaiting.
+        # blocked card keeps its block.
         blocked, other = self._blocked_card_with_bg_task(T0 + 200, owner="other", second_top=True)
         self.assertEqual(blocked["column"], "needs_input", "an unrelated dispatch never masks a needs-you")
         self.assertIsNone(blocked["awaiting"], "no straw badge borrowed from another card's task")
-        self.assertEqual(other["column"], "working", "the owning card is the one in motion")
-        self.assertIsNotNone(other["awaiting"], "…and it wears the awaiting badge")
+        # Under the service split (the user 2026-07-24) the owning card no longer wears a badge either:
+        # its launch is PLACED and its top carries no ⏳ stamp, so the judge — who audited past the
+        # launch — did not affirm any wait. The process is the session's furniture (the bgServices chip);
+        # a genuinely awaited task earns the badge through the closer's stamp instead (tested below).
+        self.assertEqual(other["column"], "working", "the owning card stays plainly in motion")
+        self.assertIsNone(other["awaiting"], "placed + unstamped = a service, not a wait")
 
     def test_a_block_never_yields_to_an_unattributable_dispatch(self):
         # conservative failure: a launch that resolves to NO placement (not yet placed, a pre-fork
@@ -1161,21 +1167,126 @@ class ViewBuilder(unittest.TestCase):
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
         launch_seg = em.segments(session["turns"][0])[0]["id"]
         top, sub = SID + ":top", SID + ":sub"
-        store = {"rompUuid": SID, "seq": 2, "lastNode": top,
-                 "nodes": {top: {"id": top, "text": "run the campaign", "parentId": None, "nodeComplete": False,
-                                 "blocked": False, "cleared": False, "trail": [], "t": T0},
-                           sub: {"id": sub, "text": "launch the watcher", "parentId": top, "nodeComplete": False,
-                                 "blocked": False, "cleared": False, "trail": [], "t": T0}},
-                 "placements": {launch_seg: sub}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
+            {"rompUuid": SID, "seq": 2, "lastNode": top,
+             "nodes": {top: {"id": top, "text": "run the campaign", "parentId": None, "nodeComplete": False,
+                             "blocked": False, "cleared": False, "trail": [], "t": T0},
+                       sub: {"id": sub, "text": "launch the watcher", "parentId": top, "nodeComplete": False,
+                             "blocked": False, "cleared": False, "trail": [], "t": T0}},
+             "placements": {launch_seg: sub}, "status": {}}))
         km._task_seg_cache.clear()
+        km._BG_TOPS_CACHE.clear()
+        km._SESSION_STAMP_CACHE.clear()
         saved = km._tmux_sessions
         km._tmux_sessions = lambda: {SID: {"bgTasks": [
             {"desc": "campaign watcher", "since": T0 + 200, "toolUseId": "tu_a1_0"},
             {"desc": "mystery task", "since": T0 + 300, "toolUseId": "tu_never_seen"}]}}
         try:
-            ps = km._parse(str(self.tpath), SID, NOW)
-            self.assertEqual(km._bg_owner_tops(SID, ps, store), {top: T0 + 200},
+            tasks = km._bg_live_norm(SID, str(self.tpath))
+            self.assertEqual(km._bg_owner_tops(SID, str(self.tpath), tasks),
+                             {top: {"since": T0 + 200, "descs": ["campaign watcher"]}},
                              "the launch attributes through the sub's placement to its TOP; the unknown id to nothing")
+            # and the unknown id is exactly what stays PENDING (awaited-conservative)
+            self.assertEqual([t["tid"] for t in km._bg_pending(SID, str(self.tpath), tasks)],
+                             ["tu_never_seen"])
+        finally:
+            km._tmux_sessions = saved
+
+    def test_a_placed_unstamped_task_is_a_service_not_a_wait(self):
+        # the user 2026-07-24: a dev server (mkdocs serve) wore 'Waiting on task' long after the judge
+        # had audited its launch — no goal was waiting on it; the server is the session's furniture,
+        # more persistent than any goal. Once the launch is PLACED and its top carries NO live ⏳ stamp,
+        # the task stops feeding EVERY awaiting source (card pill, session chip, timeline lane, the
+        # auto-nudge exemption) and surfaces as the neutral per-session bgServices chip instead.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        launch_seg = em.segments(session["turns"][0])[0]["id"]
+        top = SID + ":top"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
+            {"rompUuid": SID, "seq": 1, "lastNode": top,
+             "nodes": {top: {"id": top, "text": "revise the docs", "parentId": None, "nodeComplete": False,
+                             "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}},
+             "placements": {launch_seg: top}, "status": {top: "working"}}))
+        km._task_seg_cache.clear()
+        km._BG_TOPS_CACHE.clear()
+        km._SESSION_STAMP_CACHE.clear()
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None,
+                                           "bgTasks": [{"desc": "mkdocs serve 2>&1", "type": "local_bash",
+                                                        "since": T0 + 200, "toolUseId": "tu_a1_0",
+                                                        "lastTool": ""}]}}
+        try:
+            self.assertIsNone(km._session_awaiting(SID, str(self.tpath), True),
+                              "a judged service never lights the session-level awaiting signal")
+            feed = km.build_feed(NOW)
+            card = next(a for a in feed["asks"] if a["itemId"] == top)
+            self.assertEqual(card["column"], "working")
+            self.assertIsNone(card["awaiting"], "no 'Waiting on task' dressing over a judged service")
+            self.assertIn("mkdocs serve 2>&1", sum(feed["bgServices"].values(), []),
+                          "the process surfaces as the neutral session chip instead")
+        finally:
+            km._tmux_sessions = saved
+
+    def test_a_placed_task_under_a_stamped_top_stays_awaited(self):
+        # the same placement, but the CLOSER affirmed the wait (a live ⏳ stamp on the placed node):
+        # the card floors to awaiting off the stamp, the pill lists the task, and nothing lands in
+        # bgServices — the judge's verdict, not the task's mere existence, decides which face shows.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        launch_seg = em.segments(session["turns"][0])[0]["id"]
+        top = SID + ":top"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
+            {"rompUuid": SID, "seq": 1, "lastNode": top,
+             "nodes": {top: {"id": top, "text": "run the campaign", "parentId": None, "nodeComplete": False,
+                             "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0,
+                             "awaitingWhy": "waiting on the campaign watcher", "awaitingAt": T0 + 250}},
+             "placements": {launch_seg: top}, "status": {top: "working"}}))
+        km._task_seg_cache.clear()
+        km._BG_TOPS_CACHE.clear()
+        km._SESSION_STAMP_CACHE.clear()
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None,
+                                           "bgTasks": [{"desc": "campaign watcher", "type": "local_bash",
+                                                        "since": T0 + 200, "toolUseId": "tu_a1_0",
+                                                        "lastTool": ""}]}}
+        try:
+            feed = km.build_feed(NOW)
+            card = next(a for a in feed["asks"] if a["itemId"] == top)
+            self.assertEqual(card["column"], "working", "awaiting is a working flavor")
+            self.assertIsNotNone(card["awaiting"], "the closer's stamp floors the card")
+            self.assertEqual(card["awaiting"]["why"], "waiting on the campaign watcher")
+            self.assertEqual(card["awaiting"]["tasks"], ["campaign watcher"],
+                             "the pill lists the judge-affirmed task")
+            self.assertEqual(feed["bgServices"], {}, "an awaited task is never a service")
+        finally:
+            km._tmux_sessions = saved
+
+    def test_a_service_only_session_gets_no_phantom_awaiting_card(self):
+        # every goal cleared + a judged-service process still up: the ephemeral 'Waiting on a background
+        # task' placeholder must NOT appear (a server never exits, so it used to sit there forever); the
+        # chip carries the information without inventing a wait.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        launch_seg = em.segments(session["turns"][0])[0]["id"]
+        top = SID + ":top"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
+            {"rompUuid": SID, "seq": 1, "lastNode": top,
+             "nodes": {top: {"id": top, "text": "revise the docs", "parentId": None, "nodeComplete": True,
+                             "blocked": False, "cleared": True, "trail": [], "t": T0, "mt": T0}},
+             "placements": {launch_seg: top}, "status": {top: "cleared"}}))
+        km._task_seg_cache.clear()
+        km._BG_TOPS_CACHE.clear()
+        km._SESSION_STAMP_CACHE.clear()
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None,
+                                           "bgTasks": [{"desc": "mkdocs serve 2>&1", "type": "local_bash",
+                                                        "since": T0 + 200, "toolUseId": "tu_a1_0",
+                                                        "lastTool": ""}]}}
+        try:
+            feed = km.build_feed(NOW)
+            self.assertNotIn("awaiting:" + SID, [a["itemId"] for a in feed["asks"]],
+                             "no permanent phantom card for a process nobody waits on")
+            self.assertIn("mkdocs serve 2>&1", sum(feed["bgServices"].values(), []))
         finally:
             km._tmux_sessions = saved
 
@@ -1939,18 +2050,20 @@ class ViewBuilder(unittest.TestCase):
     def test_awaiting_task_descs_read_the_live_snapshot(self):
         # The feed's "Waiting on task" pill (the user 2026-07-13) expands the live bg-task DESCRIPTIONS —
         # straight from the backend snapshot's bgTasks (the CLI task-lifecycle set); a desc-less task gets
-        # a generic label; tmux sessions / unknown sids read [].
+        # a generic label; tmux sessions / unknown sids read []. Tasks with no launch id can't be
+        # classified (2026-07-24: the service split) → pending → still AWAITED, listed as before.
         saved = km._tmux_sessions
         km._tmux_sessions = lambda: {SID: {"bgTasks": [{"task_id": "t1", "desc": "Watch for round3 copy"},
                                                        {"task_id": "t2", "desc": ""}]}}
         try:
-            self.assertEqual(km._awaiting_task_descs(SID), ["Watch for round3 copy", "background task"])
+            self.assertEqual(km._awaiting_task_descs(SID, "/nonexistent"),
+                             ["Watch for round3 copy", "background task"])
         finally:
             km._tmux_sessions = saved
-        self.assertEqual(km._awaiting_task_descs("00000000-0000-0000-0000-000000000000"), [])
+        self.assertEqual(km._awaiting_task_descs("00000000-0000-0000-0000-000000000000", "/nonexistent"), [])
         # build_feed attaches the list on awaiting cards, beside the why (source pin)
         src = Path(BIN, "romp-kernel").read_text()
-        self.assertIn('"awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid)}', src)
+        self.assertIn('"awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid, s["path"])}', src)
 
     def test_provisional_card_shows_the_message_caption_once_it_lands(self):
         # The user 2026-06-19: the card reads the captioner's persisted MESSAGE caption ('<segid>#p') — the

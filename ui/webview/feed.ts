@@ -410,6 +410,12 @@ let sessionOrder: string[] = [];
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
+// session name -> live background-process descriptions the JUDGE classified as services (kernel bgServices:
+// a dev server the session keeps around — nobody waits on it, so it is session furniture, not a status).
+// Rendered as a neutral chip on the grouped-mode session header; flat mode has no headers (the chat view's
+// background-task box still lists the processes there).
+let bgServicesMap: Record<string, string[]> = {};
+const openBgSvc = new Set<string>();   // sids with the chip's process list expanded — survives re-renders
 // names of sessions idle-but-AWAITING background work (the user 2026-07-13): the same dot in straw —
 // matching the chat chip's Awaiting color — so a held session reads differently from a working one.
 let awaitingSet = new Set<string>();
@@ -2436,8 +2442,14 @@ const sessHeadEls = new Map<string, HTMLElement>();
 function makeSessHead(): HTMLElement {
   const h = el("div", "feed-sess-head");
   const nm = el("a", "fname"); nm.title = "open this session";
-  h.append(nm);
-  (h as any)._name = nm;
+  // Neutral background-process chip (the user 2026-07-24): processes this session keeps running that the
+  // judge classified as SERVICES (kernel bgServices — a dev server nobody waits on). Session furniture, so
+  // it rides the header, never a card, and wears NO waiting/urgency framing — the .fask-secbtn chip
+  // vocabulary, dim by default. Click expands the process list (keyed expand, survives re-renders).
+  const svc = el("button", "fask-secbtn feed-sess-svcbtn"); svc.style.display = "none";
+  const svcList = el("div", "feed-sess-svclist"); svcList.style.display = "none";
+  h.append(nm, svc, svcList);
+  (h as any)._name = nm; (h as any)._svc = svc; (h as any)._svcList = svcList;
   return h;
 }
 function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
@@ -2447,6 +2459,23 @@ function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
   nm.classList.toggle("dead", !e.live);
   nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
   setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  const svc = (h as any)._svc as HTMLElement, svcList = (h as any)._svcList as HTMLElement;
+  const procs = e.live ? bgServicesMap[e.name] || [] : [];
+  const open = procs.length > 0 && openBgSvc.has(e.sid);
+  svc.style.display = procs.length ? "" : "none";
+  svc.textContent = procs.length === 1 ? "background process" : procs.length + " background processes";
+  svc.title = open ? "hide the processes" : "processes this session keeps running — click to list";
+  svc.classList.toggle("on", open);
+  svc.setAttribute("aria-pressed", open ? "true" : "false");
+  svc.onclick = (ev) => {
+    ev.stopPropagation();   // the expand IS the acknowledgement: local state + immediate re-render
+    if (openBgSvc.has(e.sid)) openBgSvc.delete(e.sid); else openBgSvc.add(e.sid);
+    render();
+  };
+  svcList.style.display = open ? "" : "none";
+  if (open) svcList.replaceChildren(...procs.map((d) => {
+    const r = el("div", "feed-sess-svcrow"); r.textContent = d; return r;
+  }));
 }
 
 // UndoClear (top right): restore the most recently cleared card — the host pops
@@ -3081,6 +3110,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
     awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // straw awaiting dots (the user 2026-07-13)
+    bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;

@@ -39,7 +39,9 @@ test("a name+dot header entry opens each session's run; only runs that exist get
   assert.match(FEED, /setWorkDot\(nm, dotFor\(e\.name\)\);/);   // work OR awaiting dot — straw when idle-but-awaiting (the user 2026-07-13)
   // headers aren't cards: the column count chips exclude them
   assert.match(FEED, /const nCards = \(es: Entry\[\]\) => es\.filter\(\(e\) => e\.kind !== "sess"\)\.length;/);
-  assert.match(CSS, /\.feed-sess-head \{ display: flex; align-items: center;/);
+  // flex-wrap: the header hosts the background-process chip's expandable list on its own full-width
+  // line (feed-bg-service-chip.test.ts, the user 2026-07-24)
+  assert.match(CSS, /\.feed-sess-head \{ display: flex; flex-wrap: wrap; align-items: center;/);
 });
 
 test("grouped cards drop their own name row; Clear re-homes beside the timestamp (guarded move)", () => {

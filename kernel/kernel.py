@@ -5826,23 +5826,23 @@ def _pending_queued(path):
 _api_err_cache = {}           # path -> ((mtime, size), err|None)
 
 
-_SESSION_STAMP_CACHE = {}    # sid -> ((goals mtime,size, overrides mtime,size), why) — see _session_stamp_cached
+_SESSION_STAMP_CACHE = {}    # sid -> ((goals mtime,size, overrides mtime,size), ((gid, at, why), stamped tops)) — see _session_stamp_read
 
 
-def _session_stamp_full(sid):
-    """(gid, awaitingAt, why) of the freshest durable ⏳ awaiting stamp across ALL of a session's goals, or
-    (None, None, None) — the SESSION-level twin of _goal_awaiting_stamp, so the rail chip and timeline lane
-    (which read _session_awaiting, not the per-goal stamp) light up the same restart-proof awaiting the feed
-    card already shows off the stamp (the user 2026-07-22). mtime-cached on the goal-store + override-journal
-    files so an ordinary idle session — which falls through every live source to here every render — does not
-    reparse the store each tick. _session_stamp_cached returns just the why (the display surfaces); the
-    awaiting backstop needs the gid + awaitingAt too."""
+def _session_stamp_read(sid):
+    """ONE cached store read under both stamp views: the freshest live ⏳ stamp (gid, awaitingAt, why) AND
+    the frozenset of TOP ancestors carrying any live stamp in their subtree. The tuple is the SESSION-level
+    twin of _goal_awaiting_stamp, so the rail chip and timeline lane (which read _session_awaiting, not the
+    per-goal stamp) light up the same restart-proof awaiting the feed card already shows off the stamp (the
+    user 2026-07-22); the top set is the bg-task classifier's judge-affirmed-wait test (_bg_split). mtime-
+    cached on the goal-store + override-journal files so an ordinary idle session — which falls through
+    every live source to here every render — does not reparse the store each tick."""
     sid = str(sid)
     try:
         gs = (jd.GOALDIR / (sid + ".json")).stat()
         gkey = (gs.st_mtime, gs.st_size)
     except Exception:
-        return (None, None, None)                      # no store yet → nothing to stamp
+        return ((None, None, None), frozenset())       # no store yet → nothing to stamp
     try:
         ostt = (jd._overrides_dir() / (sid + ".jsonl")).stat()
         okey = (ostt.st_mtime, ostt.st_size)
@@ -5852,7 +5852,7 @@ def _session_stamp_full(sid):
     hit = _SESSION_STAMP_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
-    full = (None, None, None)
+    full, tops = (None, None, None), set()
     try:                                               # load_goals (not a raw read) so overrides replay —
         nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
         best = None
@@ -5860,12 +5860,32 @@ def _session_stamp_full(sid):
             if nd.get("awaitingWhy") and not nd.get("rolledUp"):
                 cand = (nd.get("awaitingAt") or 0, nid, nd["awaitingWhy"])
                 best = cand if best is None else max(best, cand)
+                top, seen = nid, set()                 # stamped node → its TOP ancestor (cycle-guarded)
+                while top in nodes and nodes[top].get("parentId") is not None and top not in seen:
+                    seen.add(top)
+                    top = nodes[top]["parentId"]
+                tops.add(top)
         if best:
             full = (best[1], best[0], best[2])         # (gid, at, why)
     except Exception:
-        full = (None, None, None)
-    _SESSION_STAMP_CACHE[sid] = (key, full)
-    return full
+        full, tops = (None, None, None), set()
+    val = (full, frozenset(tops))
+    _SESSION_STAMP_CACHE[sid] = (key, val)
+    return val
+
+
+def _session_stamp_full(sid):
+    """(gid, awaitingAt, why) of the freshest durable ⏳ awaiting stamp across ALL of a session's goals, or
+    (None, None, None). _session_stamp_cached returns just the why (the display surfaces); the awaiting
+    backstop needs the gid + awaitingAt too."""
+    return _session_stamp_read(sid)[0]
+
+
+def _session_stamped_tops(sid):
+    """The TOP node ids whose subtree carries a live ⏳ stamp — the classifier's judge-affirmed-wait test
+    (_bg_split): a placed launch owned by one of these tops is AWAITED, any other placed launch is a
+    SERVICE."""
+    return _session_stamp_read(sid)[1]
 
 
 def _session_stamp_cached(sid):
@@ -5885,14 +5905,22 @@ def _session_awaiting(sid, path, idle, stamp=False):
          timer/watcher it launched is in motion, not on you (the user 2026-07-11: nimbus set a 20-minute
          campaign timer and read as plain idle + a stale Needs-you). This REVERSES the 2026-07-07
          exclusion, which guarded against the old transcript scrape's ghosts ("things that maybe never
-         finish") — the lifecycle set can't ghost (its tasks die with the CLI, terminals clear it), though
-         a genuinely long-lived server the agent leaves running WILL hold awaiting until it's stopped;
-         accepted, refinement noted (gate on tasks launched as the turn's closing act if it misfires).
+         finish") — the lifecycle set can't ghost (its tasks die with the CLI, terminals clear it).
+         Only the PENDING tasks count — ones whose launch the judge hasn't PLACED yet (_bg_pending, the
+         conservative pre-verdict window). Once the launch is placed, the wait's story belongs to the
+         judge: an affirmed wait reaches every consumer as the closer's ⏳ stamp (source 2 / the feed's
+         per-goal floor), and a placed launch with NO stamp is a SERVICE the session keeps around (a dev
+         server the user will eventually stop) — the neutral session chip's territory (_bg_service_descs),
+         never the awaiting badge, never the auto-nudge exemption. This is the refinement the old note
+         here foresaw ("a genuinely long-lived server WILL hold awaiting"), keyed on the judge's verdict
+         for the launching turn rather than a launch-shape heuristic (the user 2026-07-24: mkdocs serve
+         wore 'Waiting on task' — the task is the session's furniture, not something any goal waits on).
       0.75 the TRANSCRIPT's own launch↔notification pairing (_bg_scan_cached) — the DURABLE twin of 0.5,
          consulted only for a LIVE CLI that carries no lifecycle set (a tmux session, whose CLI outlives
          kernel restarts and has no SDK task stream; an SDK backend gap mid-reattach). Ghost-gated by the
          CLI spawn stamp when one exists. A DORMANT session never reaches it: its tasks died with its CLI,
-         so the death notice — not awaiting — is the truth there.
+         so the death notice — not awaiting — is the truth there. Same pending-only rule as 0.5 (the
+         scan rows carry the same launching tool_use id the lifecycle set does).
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
       2. the JUDGE's durable ⏳ stamp (_session_stamp_cached), OPT-IN via stamp=True — the closer's awaiting
          verdict, materialized in the goal store, so it OUTLIVES a kernel restart (sources 0-1 die with the
@@ -5921,23 +5949,16 @@ def _session_awaiting(sid, path, idle, stamp=False):
         # normally runs inside an open turn → idle=False → this branch never ran) — count via len().
         n = len(subs)
         return "%d background agent%s still working" % (n, "" if n == 1 else "s")
-    bg = tm.get("bgTasks")
-    if bg:
-        d0 = str((bg[0] or {}).get("desc") or "").strip()
-        if len(bg) == 1:
-            return "waiting on a background task%s" % ((": " + d0) if d0 else "")
-        return "waiting on %d background tasks%s" % (len(bg), (" — " + d0 + ", …") if d0 else "")
-    if live is not None and "bgTasks" not in live and path:
-        # Source 0.75 — a live CLI with NO lifecycle set (tmux; SDK mid-reattach): the transcript's own
-        # launch↔notification pairing, ghost-gated by the CLI spawn stamp when one exists. When the
-        # snapshot DOES carry a bgTasks key (SDK), its empty set is authoritative — never overridden here.
-        sp = _sdk_spawned_at(sid)
-        run = [tk for tk in _bg_scan_cached(path) if not (sp and tk.get("t") and tk["t"] < sp)]
-        if run:
-            d0 = str(run[0].get("summary") or "").strip()
-            if len(run) == 1:
+    tasks = _bg_live_norm(sid, path)
+    if tasks:
+        # Sources 0.5/0.75 — only the PENDING tasks (launch not yet placed) count; a placed launch's
+        # story belongs to the judge's verdicts (see the docstring's 0.5 entry for the full rule).
+        pending = _bg_pending(sid, path, tasks)
+        if pending:
+            d0 = pending[0]["desc"]
+            if len(pending) == 1:
                 return "waiting on a background task%s" % ((": " + d0) if d0 else "")
-            return "waiting on %d background tasks%s" % (len(run), (" — " + d0 + ", …") if d0 else "")
+            return "waiting on %d background tasks%s" % (len(pending), (" — " + d0 + ", …") if d0 else "")
     ov = _states_awaiting_overlay(sid)
     if ov is not None:                                # a producer is writing overlay records → trust it
         return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
@@ -5951,15 +5972,67 @@ def _session_awaiting(sid, path, idle, stamp=False):
     return None
 
 
-def _awaiting_task_descs(sid):
-    """The live background-task DESCRIPTIONS for a session (the CLI's task-lifecycle set, via the backend
-    snapshot's bgTasks) — the feed's 'Waiting on task' pill expands them as a list (the user 2026-07-13).
-    [] for tmux sessions / no live tasks."""
-    out = []
-    for t in (_tmux_sessions().get(str(sid)) or {}).get("bgTasks") or []:
-        d = str((t or {}).get("desc") or "").strip()
-        out.append(d or "background task")
-    return out
+def _bg_live_norm(sid, path):
+    """A session's LIVE background tasks, normalized to {tid, desc, t} across BOTH sources: the backend
+    snapshot's lifecycle set (source 0.5 — toolUseId/desc/since; a present-but-empty set is authoritative,
+    never overridden) or, for a live CLI carrying no lifecycle set (tmux; SDK mid-reattach), the
+    transcript's launch↔notification pairing ghost-gated by the CLI spawn stamp (source 0.75 — id/summary/
+    launch t). [] for a dormant session: its tasks died with its CLI."""
+    live = _tmux_sessions().get(str(sid))
+    if live is None:
+        return []
+    if "bgTasks" in live:
+        return [{"tid": t.get("toolUseId"), "desc": str(t.get("desc") or "").strip(),
+                 "t": int(t.get("since") or 0)}
+                for t in live.get("bgTasks") or [] if isinstance(t, dict)]
+    if not path:
+        return []
+    sp = _sdk_spawned_at(sid)
+    return [{"tid": tk.get("id"), "desc": str(tk.get("summary") or "").strip(), "t": int(tk.get("t") or 0)}
+            for tk in _bg_scan_cached(path) if not (sp and tk.get("t") and tk["t"] < sp)]
+
+
+def _bg_pending(sid, path, tasks):
+    """The live tasks whose launch the judge has NOT yet placed — the AWAITED-conservative set sources
+    0.5/0.75 count (a task with no resolvable tool_use id can't be classified → pending too)."""
+    placed = _bg_placed_tops(sid, path, [t["tid"] for t in tasks])
+    return [t for t in tasks if not t["tid"] or t["tid"] not in placed]
+
+
+def _bg_split(sid, path, tasks):
+    """(awaited, services): the semantic split of the live background-task set, keyed on the JUDGE's
+    verdict — the mechanical lifecycle set answers 'is it still running', the judge answers 'does anyone
+    care' (the user 2026-07-24):
+      - PENDING (launch not yet placed) → AWAITED: the judge hasn't spoken; conservative default, keeps
+        the pre-verdict window exactly as loud as before.
+      - placed under a top carrying a live ⏳ stamp → AWAITED: the closer affirmed the wait.
+      - placed with NO stamp → a SERVICE: the closer audited past the launch without saying awaiting
+        (its stamp/lift is exact there), so nobody is waiting on this process — it is the session's
+        furniture (a dev server), the neutral chip's territory, never the awaiting badge."""
+    placed = _bg_placed_tops(sid, path, [t["tid"] for t in tasks])
+    stamped = _session_stamped_tops(sid)
+    awaited, services = [], []
+    for t in tasks:
+        top = placed.get(t["tid"]) if t["tid"] else None
+        (services if top and top not in stamped else awaited).append(t)
+    return awaited, services
+
+
+def _awaiting_task_descs(sid, path):
+    """The AWAITED live background-task DESCRIPTIONS for a session — the feed's 'Waiting on task' pill
+    expands them as a list (the user 2026-07-13). Judged-unawaited leftovers (a dev server the session
+    keeps around) are SERVICES (_bg_service_descs, the session chip), never listed here. [] when no
+    awaited tasks are live."""
+    awaited, _ = _bg_split(sid, path, _bg_live_norm(sid, path))
+    return [t["desc"] or "background task" for t in awaited]
+
+
+def _bg_service_descs(sid, path):
+    """The live background-task descriptions the judge classified as SERVICES (_bg_split) — persistent
+    processes the session keeps around, surfaced as the feed's neutral per-session chip (bgServices in
+    the payload), not as any waiting state."""
+    _, services = _bg_split(sid, path, _bg_live_norm(sid, path))
+    return [t["desc"] or "background task" for t in services]
 
 
 _task_seg_cache = {}          # (fsid, toolUseId) -> seg id — a launch's segment never changes (positives only)
@@ -5987,43 +6060,93 @@ def _seg_of_tool_uses(ps, store, tool_ids):
     return found
 
 
-def _bg_owner_tops(fsid, ps, store):
-    """Attribute each LIVE background task to the top goal card whose own subtree DISPATCHED it: the
-    task's launching tool_use id (bgTasks[].toolUseId) → the transcript segment holding that tool_use
-    (_seg_of_tool_uses, cached — a launch's segment never changes) → the store's placement for that
-    segment → the placed node's top ancestor. Returns {top node id: newest owned dispatch time}.
+_BG_TOPS_CACHE = {}    # sid -> ((transcript stat, goals stat, overrides stat, tid tuple), {tid: top})
+
+
+def _bg_placed_tops(sid, path, tids):
+    """{tid: owning top node id} for the live background-task launches the JUDGE has PLACED: launch
+    tool_use id → the transcript segment holding it (_seg_of_tool_uses via _task_seg_cache — a launch's
+    segment never changes) → the store's placement for that segment → the placed node's top ancestor.
+
+    A tid ABSENT from the result is a launch the judge hasn't spoken for yet (segment unparsed or
+    unplaced, no goal store, unreadable evidence) — the AWAITED-conservative default every consumer
+    keys on. Cached on the transcript + goal-store + override-journal file stats and the tid set (the
+    _session_stamp_read pattern): an idle session hits this every render, and load_goals is a full
+    read + override replay."""
+    sid = str(sid)
+    tids = tuple(sorted(t for t in tids if t))
+    if not tids or not path:
+        return {}
+    try:
+        st = os.stat(path)
+        tkey = (st.st_mtime, st.st_size)
+    except OSError:
+        tkey = None
+    try:
+        gs = (jd.GOALDIR / (sid + ".json")).stat()
+        gkey = (gs.st_mtime, gs.st_size)
+    except Exception:
+        return {}                                    # no store yet → nothing placed
+    try:
+        ostt = (jd._overrides_dir() / (sid + ".jsonl")).stat()
+        okey = (ostt.st_mtime, ostt.st_size)
+    except Exception:
+        okey = None                                  # no override journal is normal
+    key = (tkey, gkey, okey, tids)
+    hit = _BG_TOPS_CACHE.get(sid)
+    if hit and hit[0] == key:
+        return hit[1]
+    out = {}
+    try:
+        ps = _parse(path, sid, time.time())
+        store = jd.load_goals(sid)
+        nodes = (store or {}).get("nodes") or {}
+        placements = store.get("placements") or {}
+        need = [t for t in tids if (sid, t) not in _task_seg_cache]
+        if need and ps and nodes:
+            for tid, sgid in _seg_of_tool_uses(ps, store, need).items():
+                _task_seg_cache[(sid, tid)] = sgid
+        for tid in tids:
+            sgid = _task_seg_cache.get((sid, tid))
+            if not sgid:
+                continue                             # unresolvable launch → unplaced (see docstring)
+            nid = next((v for v in (jd._placement_of(placements, sgid + suf)
+                                    for suf in ("", "#live", "#p", "#d")) if v), None)
+            seen = set()                             # placed node → its top ancestor (cycle-guarded)
+            while nid in nodes and nodes[nid].get("parentId") is not None and nid not in seen:
+                seen.add(nid)
+                nid = nodes[nid]["parentId"]
+            if nid in nodes:
+                out[tid] = nid
+    except Exception:
+        return {}                                    # unreadable evidence → nothing placed (conservative)
+    _BG_TOPS_CACHE[sid] = (key, out)
+    return out
+
+
+def _bg_owner_tops(fsid, path, tasks):
+    """Attribute each LIVE background task (_bg_live_norm rows) to the top goal card whose own subtree
+    DISPATCHED it, via _bg_placed_tops. Returns {top: {"since": newest owned dispatch t, "descs": [...]}}.
 
     This is the OWNERSHIP the awaiting floor's blocked-yield needs (the user 2026-07-17, quartz):
     the 2026-07-15 event-order guard (dispatch newer than block → the block is stale) compared times
     ONLY, session-wide — so a watcher relaunched after a kernel restart (89s after an unrelated card's
     block) re-dressed a genuine needs-you as the straw awaiting badge. Ownership makes the yield exact:
     only a task dispatched from the blocked card's own thread can prove that card moved on. A task whose
-    launch can't be resolved to a placement (tmux, a pre-fork transcript, not yet placed) attributes to
+    launch can't be resolved to a placement (a pre-fork transcript, not yet placed) attributes to
     NOTHING — the conservative failure: an unproven dispatch never masks a block (fail loudly beats a
-    silent wrong 'waiting'), while the judge's own unblock path retires genuinely stale blocks."""
+    silent wrong 'waiting'), while the judge's own unblock path retires genuinely stale blocks. The
+    yield deliberately counts SERVICE-classified tasks too — it keys on 'this thread moved past the
+    block' (the dispatch event), not on whether anyone still waits on the dispatch."""
     out = {}
-    tasks = [t for t in (_tmux_sessions().get(str(fsid)) or {}).get("bgTasks") or []
-             if isinstance(t, dict) and t.get("toolUseId")]
-    nodes = (store or {}).get("nodes") or {}
-    if not tasks or not ps or not nodes:
-        return out
-    need = [t["toolUseId"] for t in tasks if (fsid, t["toolUseId"]) not in _task_seg_cache]
-    if need:
-        for tid, sgid in _seg_of_tool_uses(ps, store, need).items():
-            _task_seg_cache[(fsid, tid)] = sgid
-    placements = store.get("placements") or {}
+    placed = _bg_placed_tops(fsid, path, [t["tid"] for t in tasks])
     for t in tasks:
-        sgid = _task_seg_cache.get((fsid, t["toolUseId"]))
-        if not sgid:
-            continue                                 # unresolvable launch → owns nothing (see docstring)
-        nid = next((v for v in (jd._placement_of(placements, sgid + suf)
-                                for suf in ("", "#live", "#p", "#d")) if v), None)
-        seen = set()                                 # placed node → its top ancestor (cycle-guarded)
-        while nid in nodes and nodes[nid].get("parentId") is not None and nid not in seen:
-            seen.add(nid)
-            nid = nodes[nid]["parentId"]
-        if nid in nodes:
-            out[nid] = max(out.get(nid, 0), int(t.get("since") or 0))
+        top = placed.get(t["tid"]) if t["tid"] else None
+        if not top:
+            continue
+        rec = out.setdefault(top, {"since": 0, "descs": []})
+        rec["since"] = max(rec["since"], int(t.get("t") or 0))
+        rec["descs"].append(t["desc"] or "background task")
     return out
 
 
@@ -9765,7 +9888,9 @@ def _awaiting_card(s, name, color, fsid, live, now, why):
     this the feed showed NOTHING while the timeline showed the wait — the "there's no card there" hole.
 
     Ephemeral by construction: the caller only builds it while sess_awaiting_why is set, so it drops the
-    instant the task settles; and the had_working gate means a real working/awaiting card always wins. No
+    instant the task settles — or the instant the judge classifies the task as a SERVICE (_bg_split: a
+    long-lived server nobody waits on shows as the session chip, never a permanent card here); and the
+    had_working gate means a real working/awaiting card always wins. No
     goal node (empty tree), open-on-click like the provisional placeholder; `awaiting.tasks` drives the
     card's compact "Waiting on task" pill (feed.ts), which lists the live task descriptions."""
     if not live:                                     # a dead session isn't awaiting anything live
@@ -9788,7 +9913,7 @@ def _awaiting_card(s, name, color, fsid, live, now, why):
             # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
             # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
             # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
-            "awaiting": {"why": why, "tasks": _awaiting_task_descs(fsid)},
+            "awaiting": {"why": why, "tasks": _awaiting_task_descs(fsid, s["path"])},
             "provisional": True, "judging": False, "tree": []}
 
 
@@ -9980,6 +10105,7 @@ def build_feed(now, tmux=None):
     # Zero cost when off: no rows read, no key emitted.
     dbg_rows = _judge_error_rows(now) if jd._debug_mode() else None
     asks, working, awaiting = [], [], []
+    bg_services = {}          # session name -> live SERVICE descs (judge-classified, _bg_split) → the neutral chip
     alive = _alive_sessions(now, tmux)               # hard filter: living sessions only
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
     _stalls = _stalled_goals()                       # goals romp's nudge gate is holding → the card's Stalled section
@@ -10195,9 +10321,10 @@ def build_feed(now, tmux=None):
             if f in nodes and status.get(f) not in ("completed", "cleared"):
                 perm_top = f
         # AWAITING signal (event-model, the user 2026-06-22): the session is paused on AGENT work it
-        # dispatched — a WORKING flavor, never needs-input. Sourced from the live subagent snapshot or the
-        # SDK producer's states overlay; None when actively working. Leftover run_in_background SHELL tasks
-        # do NOT count (the user 2026-07-07) — see _session_awaiting.
+        # dispatched — a WORKING flavor, never needs-input. Sourced from the live subagent snapshot, the
+        # PENDING background tasks (launch not yet judge-placed; a placed launch's story belongs to the
+        # judge's stamp or the service chip — see _session_awaiting/_bg_split), or the SDK producer's
+        # states overlay; None when actively working.
         # Computed BEFORE the API-error floor, which must yield to it (the user 2026-07-05).
         sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         if sess_awaiting_why and not who_working:
@@ -10222,9 +10349,16 @@ def build_feed(now, tmux=None):
                 api_top = f
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
-        # Which top cards OWN a live background task (launch tool_use → placement → top), for the
-        # blocked-yield below. Only consulted while the session-level awaiting signal is up.
-        owned_since = _bg_owner_tops(fsid, ps, store) if sess_awaiting_why else {}
+        # The live background-task set, once per session: OWNERSHIP for the blocked-yield below (any live
+        # task counts there — the yield keys on the dispatch event, not on classification), and the
+        # judge-classified SERVICES for the neutral per-session chip (the user 2026-07-24). Idle-gated
+        # like the awaiting signal: an actively producing turn is just working.
+        live_tasks = _bg_live_norm(fsid, s["path"]) if (ps and not who_working) else []
+        owned = _bg_owner_tops(fsid, s["path"], live_tasks) if live_tasks else {}
+        if live_tasks and live:
+            svc = _bg_service_descs(fsid, s["path"])
+            if svc:
+                bg_services[name] = svc
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
@@ -10254,10 +10388,18 @@ def build_feed(now, tmux=None):
             #    after the block — an ask newer than the dispatch is live (nimbus ended its turn asking
             #    the user questions while its own background timer ran).
             _await_ok = bool(sess_awaiting_why)
-            if _await_ok and col == "blocked":
+            _owned_why = None
+            if col == "blocked":
                 _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
                               if nodes[x].get("blocked") and not _closure_done(x)] or [0])
-                _await_ok = owned_since.get(nid, -1) >= _blk_t
+                _own = owned.get(nid)
+                # The yield stands on ownership + event order ALONE (no session-awaiting gate): under the
+                # service split, a placed launch no longer feeds sess_awaiting_why, but a dispatch from
+                # the blocked card's own thread still proves the thread moved past the block.
+                _await_ok = bool(_own) and _own["since"] >= _blk_t
+                if _await_ok:
+                    _owned_why = "waiting on a background task%s" % (
+                        (": " + _own["descs"][0]) if _own["descs"] else "")
             # The JUDGE's durable ⏳ stamp (the closer's awaiting verdict, kernel/judge.py): this goal's
             # latest audited turn ended waiting on async work it set in motion. Store-backed, so it holds
             # across kernel restarts — exactly where the live snapshot signals above go dark and a
@@ -10290,7 +10432,7 @@ def build_feed(now, tmux=None):
                 sgoal = jd.load_goals(psid).get("nodes", {}).get(gid) if gid else None
                 if sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared") and gid not in cleared:
                     origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
-            await_why = (sess_awaiting_why or _stamp_why or _deleg_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph (None for the postal-only case → the waitingOn chip names the peer)
+            await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
             # such node in its subtree — else (working/awaiting) its LAST ACTIVITY (the newest mt anywhere in
@@ -10503,7 +10645,7 @@ def build_feed(now, tmux=None):
                 # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):
                 # when present the card wears the compact "Waiting on task" pill (expands to this list, like
                 # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
-                "awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid)} if col == "awaiting" else None),
+                "awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
@@ -10605,6 +10747,9 @@ def build_feed(now, tmux=None):
     asks.extend(_quarantine_cards(now, cleared))
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
+            # session name -> live judge-classified SERVICE descs (a dev server the session keeps around;
+            # _bg_split) → the grouped-mode session header's neutral chip, never a waiting state (2026-07-24)
+            "bgServices": bg_services,
             "dismissedCount": len(cleared), "showDismissed": False,
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
@@ -11872,7 +12017,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "id": sid, "name": name, "live": live, "state": state, "awaitingBg": awaiting_bg,
             # the live bg-task descriptions behind awaitingBg (the user 2026-07-13): the lane draws the
             # idle-but-waiting stretch as a thin dashed segment whose hover lists exactly what's pending
-            "awaitingTasks": (_awaiting_task_descs(sid) if awaiting_bg else []),
+            "awaitingTasks": (_awaiting_task_descs(sid, s["path"]) if awaiting_bg else []),
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
