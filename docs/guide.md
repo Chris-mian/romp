@@ -2,7 +2,7 @@
 
 This guide covers how to use Romp, and how its back end works.
 
-## The Romp UI
+## The Romp dashboard (the front end)
 
 Romp gathers all your Claude Code sessions into a single dashboard, with four
 complementary views of what the agents are doing:
@@ -29,9 +29,12 @@ keep every card current.
 
 Cards sit in three columns:
 
-- **Working** — the session is actively working on the task.
-- **Blocked** — it needs your input to move on.
-- **Completed** — done, ready for you to review and clear.
+- <span class="romp-chip romp-chip-working">Working</span> — the session is
+  actively working on the task.
+- <span class="romp-chip romp-chip-blocked">Blocked</span> — it needs your
+  input to move on.
+- <span class="romp-chip romp-chip-completed">Completed</span> — done, ready
+  for you to review and clear.
 
 ![The feed's three columns, with the cues on a card](assets/guide/feed-annotated.png){ width="100%" }
 
@@ -79,7 +82,7 @@ Romp asks the agent, item by item, where each open piece stands: continue what
 it can, and say what blocks the rest.
 
 - If the agent can keep going, it does, and you were never interrupted.
-- If something needs you, the card flips to **Blocked** and names exactly what
+- If something needs you, the card flips to <span class="romp-chip romp-chip-blocked">Blocked</span> and names exactly what
   it needs.
 
 Nudging engages only when you are not actively messaging the session, so it
@@ -87,11 +90,11 @@ never talks over you and never loops on its own messages.
 
 A session can also be waiting on something unrelated to you: it dispatches work
 into the background, then pauses for the result. In that case it shows an
-<span class="romp-chip-await">Awaiting</span> chip. The chip clears on the
+<span class="romp-chip romp-chip-await">Awaiting</span> chip. The chip clears on the
 session's next turn, when the task finishes or blocks, when you clear the card,
 or as soon as you reply.
 
-## Messaging between agents (the Romp Postal Service)
+## Inter-agent communication (the Romp Postal Service)
 
 Sessions message each other through a mailbox Romp gives them, and every
 exchange is visible to you. Each session gets mail tools: send a message to a
@@ -103,7 +106,11 @@ The timeline draws an arc for each message. Hover one for its gist:
 
 <video src="../assets/guide/coordination.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
-The recipient sees it in its chat, with the sender and the kind on the card:
+Underneath, a local message bus writes the message into a mailbox on disk that
+belongs to the recipient, then either types it straight into that session if it
+is sitting idle, or leaves it to be collected when the session's current turn
+ends. The recipient reads it in its chat, on a card naming the sender and the
+kind:
 
 ![A message from another session, as the recipient's chat shows it](assets/guide/postal-chat.png){ width="100%" }
 
@@ -116,8 +123,8 @@ Every message declares its kind:
 The same mailbox is on the command line, for you and for scripts:
 
 ```bash
-romp --mail send --kind question api "Which auth approach did we settle on?"
-romp --mail inbox
+romp --mail send --kind question api "Which auth approach did we settle on?"   # send, to the session named "api"
+romp --mail inbox                                                              # read this session's messages, and clear them
 ```
 
 The full mail surface, shell and in-session, is in the
@@ -127,51 +134,47 @@ silently parking mail.
 
 ## Sessions, revival, and search
 
-A Romp session is a name that outlives any one conversation. Its identity
-survives `/clear`, relaunches, and kernel restarts, and each name keeps its own
-color on every surface, so `api` is the same `api` wherever you see it.
+A Romp session is a name, not a conversation. The name survives `/clear`,
+relaunches, and kernel restarts, so `api` is the same `api` whenever you come
+back to it.
 
-Type a closed session's name into the picker and it offers to revive it: the
-session comes back live with its history intact. Stepping away, or shutting the
-laptop, costs nothing.
+Closed sessions come back. Type a closed session's name into the picker and Romp
+offers to revive it, with its history intact.
 
-The picker matches against every session, live or closed. As sessions run, a
+Search reaches inside sessions, not just across their names. As sessions run, a
 lightweight index judge writes each one a headline and an abstract of what it
-did, so the search reaches inside a session's work, and many sessions stay
-navigable months later.
+did, so searching for the work finds the session that did it, months later.
 
 ### Session backends
 
 Sessions run on one of two backends, chosen per session:
 
-- **Agent SDK (the default, strongly recommended).** The kernel drives the
-  session through the Claude Agent SDK: a direct programmatic connection, with
-  native pickers, queued sends, and model switching. Sessions started from the
-  dashboard use this.
-- **tmux.** A regular Claude Code terminal session running inside tmux. Romp has
-  no direct connection to it, so it works by reading what appears in the
-  terminal and on disk, and delivers messages and nudges by injecting
-  keystrokes. That makes it inherently less reliable and less responsive than
-  the SDK: scraping a terminal has edge cases a real API does not, and updates
-  wait on the transcript reaching disk.
+- **SDK (the default, strongly recommended).** The kernel manages the Claude
+  Code session through the Claude Agent SDK.
+- **tmux.** A Claude Code session running in a terminal inside tmux. Run
+  `romp <name>` and that terminal session joins the dashboard like any other, so
+  you can work in the terminal directly and still see it in Romp. The cost is
+  that Romp has no direct connection to it: it reads what appears in the
+  terminal and on disk, and sends messages and nudges by injecting keystrokes.
+  That makes it less reliable and less responsive than the SDK, since scraping a
+  terminal has edge cases a real API does not, and updates wait on the
+  transcript reaching disk.
 
-The tmux backend exists for when you want the session in an actual terminal: run
-`romp <name>` and that terminal session shows up on the dashboard like any
-other. The two interleave freely, so a terminal session can sit alongside SDK
-sessions.
+The two backends interleave freely, so terminal sessions and SDK sessions sit
+side by side on the dashboard and message each other like any other pair.
 
-## Where Romp runs
+## The Romp kernel (the back end)
 
-You run Romp on your own machine; there is no hosted service in between. The
-kernel runs there and serves the dashboard on `127.0.0.1:7433`. Everything Romp
-stores stays local; the only traffic that leaves your machine is `claude`
-itself, both the agents' own model calls and the LLM calls in Romp's judge
-pipeline.
+The kernel is the program that runs your agents, watches their work, and serves
+the dashboard at `127.0.0.1:7433`. You run it on your own machine, with no
+hosted service in between. Everything Romp stores stays local; the only traffic
+that leaves your machine is `claude` itself, both the agents' own model calls and
+the LLM calls in Romp's judge pipeline.
 
-### Attaching another machine
+### Remote kernels
 
-Each machine runs its own kernel. Attach one and its sessions join your
-dashboard:
+You can also run a kernel on another machine and attach it to your dashboard, so
+one front end drives agents on several machines at once:
 
 - Its sessions appear as `host:name` tabs and timeline lanes next to your local
   ones, and you drive them from the same chat.
@@ -181,21 +184,20 @@ dashboard:
 
 To attach a host:
 
-1. On the remote machine, clone romp and run `./install.sh` (`ROMP_NO_EXT=1`
-   skips the editor extension on a machine with no VS Code or Cursor). Make
-   sure `ssh <host>` works non-interactively.
-2. In your dashboard, click the network button and attach the host. It is at
-   the bottom right, beside the settings gear:
+1. **Install Romp on the remote machine**, the same way you installed it here
+   (see [Install](install.md)). Romp connects to it over ssh in the background,
+   so `ssh <host>` also has to work without prompting you for anything: set up
+   key-based login first if it does not.
+2. **Attach it from your dashboard.** Click the network button, at the bottom
+   right beside the settings gear:
 
 ![The network button](assets/guide/network-icon.png){ width="72" }
 
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
 
-The popover remembers every host you have attached. Detaching one moves it to a
-**Previously attached** list rather than dropping it, so bringing it back is one
-click (**Re-attach**), and it keeps the trust level you last chose. **Forget**
-removes a host from that list; it does nothing to the machine itself.
+Romp remembers every host you attach, so bringing one back later is a click, and
+it returns with the trust level you last gave it.
 
 Each attached host carries a trust level that governs its mail; see
 [Security and trust](#security-and-trust).
@@ -220,33 +222,39 @@ local messaging; connecting only adds reach.
 
 ## Reaching the dashboard
 
-The kernel serves the dashboard on `127.0.0.1` and never listens beyond it. You
-reach it in a browser tab, in the VS Code / Cursor extension, or from your phone
-over Tailscale.
+You reach the dashboard in a browser tab, in the VS Code / Cursor extension, or
+from your phone.
 
 ### Your phone
 
-Let [Tailscale](https://tailscale.com) carry the traffic: `tailscale serve`
-proxies HTTPS at your machine's tailnet name to the loopback port, on the
-machine itself.
+The dashboard is a web page, so your phone can run the front end against a
+kernel on another machine. The obstacle is reaching that machine: the kernel
+listens only on `127.0.0.1`, which your phone is not on.
+
+[Tailscale](https://tailscale.com) closes that gap, and is free for personal
+use. It puts your own devices on a private encrypted network, so your phone can
+reach your laptop directly whatever network either one is on. Install it on both
+devices, sign in to the same account on each, and enable **HTTPS Certificates**
+in the Tailscale admin console, which `tailscale serve` needs.
+
+Then, on the machine running the kernel:
 
 ```bash
-tailscale serve --bg 7433     # https://<machine>.<tailnet>.ts.net -> 127.0.0.1:7433
+tailscale serve --bg 7433     # let your other devices reach the dashboard
 tailscale serve status        # show the active proxy
 tailscale serve reset         # back to local-only
 ```
 
-On the phone's first open, append the access token:
-`https://<machine>.<tailnet>.ts.net/?token=<token>`, with the token from
-`romp launch` (or paste it into the page a bare open serves). A year-long cookie
-remembers the phone after that.
+On the phone, open `https://<machine>.<tailnet>.ts.net/?token=<token>`, taking
+the token from `romp launch`. A year-long cookie remembers the phone after that,
+so later opens need no token.
 
-Only devices signed into your tailnet can connect, through WireGuard device
-identity plus TLS; nothing is opened to your LAN or the internet, and the proxy
-persists across restarts of both Tailscale and the kernel. Do not use
-`tailscale funnel`, the public-internet variant: the token would then be the
-only thing between the internet and your agents, with no device identity in
-front of it.
+Only devices signed in to your Tailscale account can reach the dashboard:
+Tailscale checks each device's identity and encrypts the traffic between them,
+and nothing is exposed to your local network or to the internet. The proxy
+survives restarts of both Tailscale and the kernel. Do not use `tailscale
+funnel`, the public-internet variant: it would leave the token as the only thing
+between the internet and your agents, with no device check in front of it.
 
 ## Security and trust
 
@@ -258,8 +266,8 @@ demand a token on every request, local ones included. Loopback is not a
 security boundary: on a multi-user machine every local account can reach your
 ports, so without this any other user could inject prompts into your live
 sessions. The token is 144-bit random and lives at
-`~/.local/state/romp/serve-token` with mode `0600`; file permissions are the
-actual gate. Local tools (the CLI, hooks, the bus, the editor extension) read
+`~/.local/state/romp/serve-token` with mode `0600` (readable only by your own
+user account). Local tools (the CLI, hooks, the bus, the editor extension) read
 that file and send it automatically, so you never type it. Only liveness probes
 (`/healthz`, `/version`, `/busy`, and the bus's `/ping`) are exempt.
 
@@ -272,25 +280,30 @@ authorizes at the far end. Check-in reverses the direction, so credentials
 always flow outward from the machine that initiates, and a hub never holds a way
 in.
 
-**Trust levels for attached hosts.** A message that reaches an agent's context
-can steer it, so each attached host carries a trust level, set on its row in the
-network popover and remembered per host:
+**Trust levels for attached hosts.** Attaching two kernels lets their sessions
+message each other, which means a session on the remote machine can put text
+into a local session's context, and text in an agent's context can steer it. So
+each attached host carries a trust level, set on its row in the network popover
+and remembered per host:
 
-- **trusted** — full two-way postal, for a machine you control.
+- **trusted** — sessions on both machines message each other freely, as if they
+  were on the same machine. For a machine you fully control.
 - **directed** (the default for a newly attached host) — you can send work to
-  its sessions, but its mail to you is held for approval. Each held message
+  its sessions, but its mail back to you is held for approval: each held message
   becomes a needs-you card with **Approve**, **Edit**, and **Deny**, so a person
-  decides before that host's content reaches one of your agents. This is the
-  posture for rented or shared compute.
-- **isolated** — no postal at all; the host's sessions still show in the
-  dashboard, but its bus never peers with yours.
+  decides before that host's content reaches one of your agents. For rented or
+  shared compute.
+- **isolated** — no messaging in either direction. Its sessions still show in
+  your dashboard, but the two mail systems never connect. For a machine you want
+  to watch and nothing more.
 
-**What this does not protect against.** Root on a machine can read any file
-(including the token) and inspect any process, so don't keep long-lived
-credentials on a machine whose root you don't trust. Anything already running as
-*you* can read the token: same-machine sessions are separated by policy, not by
-this boundary. The enforceable lines are per-user (the token file) and
-per-machine (the trust level).
+**What this does not protect against.** Anyone with administrator access to a
+machine can read any file on it, the token included, so don't keep long-lived
+credentials on a machine you don't trust that far. Any program already running
+under your own user account can read the token too, so two sessions on the same
+machine are separated by policy rather than by this boundary. The lines Romp can
+actually enforce are per-user (the token file) and per-machine (the trust
+level).
 
 Full details, including how to report a vulnerability, are in
 [SECURITY.md](https://github.com/romp-on/romp/blob/main/SECURITY.md).

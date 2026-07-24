@@ -16,11 +16,12 @@ together. *You* stay focused on what you're trying to accomplish.
 Romp is built on top of Claude Code: the agents Romp manages are ordinary
 sessions, gathered into one live dashboard.
 
-You control where each half of Romp lives. The dashboard opens in a browser, in
-the VS Code / Cursor extension, or on [a phone](guide.md#your-phone). The part
-that drives the agents runs on your laptop, on a server, or on [several machines
-at once](guide.md#attaching-another-machine): agents on different machines
-message each other, and you steer them all from one place.
+You control where each half of Romp lives. The dashboard, its front end, opens
+in a browser, in the VS Code / Cursor extension, or on
+[a phone](guide.md#your-phone). The back end that drives the agents runs on your
+laptop, on a server, or on [several machines at once](guide.md#remote-kernels):
+agents on different machines message each other, and you steer them all from one
+place.
 
 Its key features:
 
