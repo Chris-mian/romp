@@ -719,7 +719,7 @@ def _nudge_bundle_body(gids, nodes, stalled_gids):
     quote, stall_nums = [], []
     for i, gid in enumerate(gids, 1):
         nd = nodes.get(str(gid)) or {}
-        head = str(nd.get("text", "")).strip() or "(unnamed goal)"
+        head = str(nd.get("text", "")).strip() or "(untitled)"
         why = str(nd.get("why") or "").strip()
         quote.append("%d. %s" % (i, head) + ((" — " + why) if why else ""))
         # CAP 6, tighter than the single-goal 12: N goals share one message
@@ -9535,7 +9535,7 @@ def _clear_wrap_body(gids, nodes):
     quote = []
     for i, gid in enumerate(gids, 1):
         nd = nodes.get(str(gid)) or {}
-        head = str(nd.get("text", "")).strip() or "(unnamed goal)"
+        head = str(nd.get("text", "")).strip() or "(untitled)"
         why = str(nd.get("why") or "").strip()
         quote.append(("%d. %s" % (i, head)) if len(gids) > 1 else head)
         if why:

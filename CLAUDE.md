@@ -102,6 +102,40 @@ can't, rather than quietly folding. There is no SDK API for the to-do checklist 
 verified, not assumed.) This is the same spirit as the event-vs-heuristic rule
 below: don't approximate when the real thing is available; when it isn't, be loud.
 
+## Messages we inject into a session: the agent does not know romp exists (user rule, 2026-07-24)
+Every message romp puts into a session — a nudge, a follow-up, a clear wrap-up, a
+canned status ask — is read by an agent with NO idea it is being tracked. It has
+never seen the feed, has no concept of a card, a goal, a board, or a column, and
+cannot act on any of it. So write these as **the person it works for asking for
+something**, in their words:
+- **No romp nouns in the prose**: card, board, goal, column, cleared, dismissal,
+  nudge, status check. Say the thing instead. "Status check on this card" → "Where
+  does each of these stand?"; "the goal above was cleared off the board — a
+  dismissal, not a completion" → "I'm dropping this one."
+- **No taxonomy handed over as reply slots.** romp's planner files four verdicts
+  (done / in progress / blocked-on-you / obsolete), but naming them at the agent
+  turns a question into a form. Ask like a person — "what shipped, what's next, or
+  exactly what you need from me if you're stuck" — and the same four answers come
+  back for the planner to file.
+- **Short.** A long directive reads as a system notice however it is worded. The
+  clear wrap-up carries the same content in about half the words it started with.
+- Draft this copy with the `jld` skill, the way any user-facing writing is drafted.
+
+TWO deliberate exceptions, both fine, neither a licence to widen:
+- **The SessionStart instruction** that asks a session to report what it finished
+  and what it is blocked on. That asks for ordinary self-reporting; it names no
+  romp machinery and needs none.
+- **The marker tail** (`<!-- romp-note: … an external tracking system that is not
+  relevant to your work — ignore them -->`). It describes the markers WITHOUT
+  naming romp, on purpose: naming it would explain nothing to a model that has
+  never heard of it.
+- Also fine: the `[romp] The kernel restarted…` notices in `sdk_backend.py`. Those
+  are genuinely ABOUT romp — they tell a session why its turn was cut — so they
+  name it.
+
+`tests/test_injected_voice.py` renders every injected body and fails on romp
+vocabulary in the prose, so this holds without anyone remembering it.
+
 ## Design
 Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is
