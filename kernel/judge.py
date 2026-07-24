@@ -4135,6 +4135,26 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
     #                                                     from its partial log would wipe real legacy state)
 
 
+def _brief_superseded(nodes, sub, prev_bm):
+    """True when a KEPT decision brief predates a later unblock/reopen anywhere in the card's subtree —
+    the asks it presents were ANSWERED after it was written, so keeping it re-surfaces decisions the
+    user already made. The incident (the user 2026-07-24): a card's 09:44 brief asked for a go-ahead;
+    the user gave it at 09:55 ("answered in passing … wired in", an unblock); a 10:59 procedural
+    nudge-block then re-displayed the SAME brief under a fresh needs-you chip — a two-hour-old ask
+    reported as new. The don't-clobber keep is right for proc-only episodes with NO intervening
+    answer; an unblock/reopen after the brief's own stamp (briefedMt, ev_t timebase) is the exact
+    event that makes the kept text stale. `sub` = the top + its whole subtree (the brief's asks live
+    on sub-goals). Never-briefed (prev_bm falsy) → nothing to supersede."""
+    if not prev_bm:
+        return False
+    for nid in sub:
+        for e in (nodes.get(nid) or {}).get("log") or []:
+            if e.get("kind") in ("unblock", "reopen") \
+                    and (e.get("ev_t") or e.get("at") or 0) > prev_bm:
+                return True
+    return False
+
+
 def _fold_node(nd):
     """THE AUTHORITY (P3.3, the user 2026-07-06): a node's verdict state AND its derived user-action /
     display stamps, as ONE pure fold over its log — _materialize_from_log rewrites the whole flag cache
@@ -7084,11 +7104,15 @@ def _distill_session(fsid, path, now):
                 # distilled summary; the bare red chip over silence left look-alike cards inconsistent). A
                 # procedural block (failed nudge, mid-turn stop) ESCALATES A STALL, and the staller is the
                 # reader that speaks for stalls: keep a real brief from an earlier genuine block if one
-                # exists (don't-clobber, as before), else promote the staller's note from the very stall
-                # that escalated, else fall through to write one now with the staller's own prompt —
-                # grounded in the work, forbidden from inventing a decision (STALL_BRIEF_SYS), which is
-                # what feeding these whys to the BRIEFER used to do (the 2026-07-21 lesson).
-                if (nodes[top].get("blockSummary") or "").strip():
+                # exists (don't-clobber, as before) — UNLESS an unblock/reopen landed after that brief was
+                # written (_brief_superseded, the user 2026-07-24): a kept brief whose asks were since
+                # ANSWERED re-surfaces decisions the user already made, wearing a fresh needs-you chip.
+                # Then: promote the staller's note from the very stall that escalated, else fall through
+                # to write one now with the staller's own prompt — grounded in the work, forbidden from
+                # inventing a decision (STALL_BRIEF_SYS), which is what feeding these whys to the BRIEFER
+                # used to do (the 2026-07-21 lesson).
+                if (nodes[top].get("blockSummary") or "").strip() \
+                        and not _brief_superseded(nodes, sub, nodes[top].get("briefedMt")):
                     nodes[top]["briefedMt"] = due; changed = True
                     continue
                 _note = (nodes[top].get("stallSummary") or "").strip()
