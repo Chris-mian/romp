@@ -195,10 +195,10 @@ To attach a host:
 1. On the remote machine, clone romp and run `./install.sh` (`ROMP_NO_EXT=1`
    skips the editor extension on a machine with no VS Code or Cursor). Make
    sure `ssh <host>` works non-interactively.
-2. In your dashboard, click the network button at the bottom right and attach
-   the host.
+2. In your dashboard, click the network button and attach the host. It is at
+   the bottom right, beside the settings gear:
 
-![The network button, bottom right, is where machines attach](assets/guide/network-button.png){ width="100%" }
+![The network button](assets/guide/network-icon.png){ width="72" }
 
 The attach fetches the remote kernel's token over ssh, opens the tunnels, and
 starts the remote kernel if it isn't running.
