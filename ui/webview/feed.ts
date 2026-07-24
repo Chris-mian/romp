@@ -14,6 +14,7 @@ import { extHoverMatches } from "./card-key";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
+import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState } from "./feed-view-state";
 
 // (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
 // items: [] permanently — goal cards are the only feed unit — so its types, renderers, expand/detail
@@ -889,6 +890,52 @@ function stallText(st: { why: string; note?: string | null } | null | undefined)
 // the modal's one-level view. Empty default = everything collapsed. (Its OWN state, not the modal's
 // `collapsedNodes`, which uses the inverse sense + its own seeding.)
 const cardTreeExpanded = new Set<string>();
+
+// ── disclosure state across a reload (the user 2026-07-24) ────────────────────────────────────────────
+// A kernel restart reloads this page, which used to wipe every section you had opened. The five collections
+// above are exactly the state worth carrying: what the USER chose to open. Everything else module-level here
+// is a DOM cache or an in-flight optimistic record, and restoring those would resurrect predictions made
+// against a kernel that no longer exists — see feed-view-state.ts.
+(function hydrateViewState() {
+  let st;
+  try { st = parseViewState(localStorage.getItem(VIEW_STATE_KEY)); } catch { return; }   // private mode / blocked storage → run without it
+  for (const [k, v] of Object.entries(st.sec)) secChoice.set(k, v as ReturnType<typeof resolveSec>);
+  for (const k of st.tree) cardTreeExpanded.add(k);
+  for (const k of st.nodes) collapsedNodes.add(k);
+  for (const k of st.logs) nodeLogOpen.add(k);
+  for (const k of st.asks) expandedAsks.add(k);
+})();
+
+function currentViewState(): FeedViewState {
+  const sec: Record<string, string> = {};
+  secChoice.forEach((v, k) => { sec[k] = v; });
+  return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen], asks: [...expandedAsks] };
+}
+
+// Written at the END of every render rather than from each toggle handler: the feed re-renders on every
+// interaction anyway, so this cannot miss a mutation site as hand-placed save() calls would. render() also
+// runs on every kernel push, so the write is gated on the serialised value actually CHANGING — that makes it
+// effectively event-driven on real state change, not a per-push localStorage write.
+let lastViewWrite = "";
+function persistViewState(): void {
+  const json = serializeViewState(capViewState(currentViewState()));
+  if (json === lastViewWrite) return;
+  lastViewWrite = json;
+  try { localStorage.setItem(VIEW_STATE_KEY, json); } catch { /* quota / private mode → the feed still works */ }
+}
+
+// Self-clean, event-based: the kernel's payload names the full live card set, so anything whose card is gone
+// (cleared, archived) is dropped now. `live` must be the UNFILTERED payload — see pruneViewState.
+function pruneViewStateTo(live: Set<string>): void {
+  const kept = pruneViewState(currentViewState(), live);
+  const keep = (s: Set<string>, xs: string[]) => { s.clear(); for (const k of xs) s.add(k); };
+  secChoice.clear();
+  for (const [k, v] of Object.entries(kept.sec)) secChoice.set(k, v as ReturnType<typeof resolveSec>);
+  keep(cardTreeExpanded, kept.tree);
+  keep(collapsedNodes, kept.nodes);
+  keep(nodeLogOpen, kept.logs);
+  keep(expandedAsks, kept.asks);
+}
 
 // Fill + wire the card's THREE mutually-exclusive sections — Background, Summary, Sub-goals (the user
 // 2026-07-08). At most ONE open at a time (or none): clicking the open one closes it, clicking another
@@ -2875,6 +2922,7 @@ function render() {
   prevItemKey = curItemKey;   // remember this render's identity map for the next FLIP-across-identity
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
   applyExtHover(); // reconcile/renderModal may have rebuilt nodes — re-apply the rail-dot outlines (cards AND modal rows)
+  persistViewState();   // whatever the user opened survives the reload a kernel restart brings (no-op unless it changed)
 }
 
 window.addEventListener("keydown", (e) => {
@@ -3010,6 +3058,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
     // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
     // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
+    // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
+    // incomingAsks, deliberately — not `visible` below: `#only=` hides cards without ending them, and
+    // pruning against the filtered list would throw away the hidden cards' sections. Event-based: a card
+    // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer.
+    pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
     const only = onlyTag();
     const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
     asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
