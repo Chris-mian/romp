@@ -53,6 +53,21 @@ flowchart LR
     classDef user fill:#fce7f3,stroke:#db2777,color:#111827
 ```
 
+## What the installer sets up
+
+`install.sh` registers the Claude Code hooks, the postal MCP config, and the
+`romp` skills; builds the editor extension; and installs a login service that
+keeps the kernel up. It is idempotent: re-running adds only what is missing, and
+it never touches hooks you registered yourself.
+
+It installs nothing into your Python. The kernel and CLI are standard library
+only; the one dependency of the [SDK backend](guide.md#session-backends)
+(`claude-agent-sdk`) lives in a dedicated venv under `~/.local/state/romp/`,
+built against the newest Python 3.10+ on the machine and rebuilt automatically
+when that Python changes.
+
+## The rest of this section
+
 The rest of this section drills into each piece:
 
 - [Judges](judges.md): the full roster, who each judge is and when it runs.
