@@ -9155,6 +9155,105 @@ def _clear_all(item_ids):
         for iid in item_ids:
             f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
     _mark_nodes_cleared(item_ids, True)               # durable node flag → no grouper re-wrap, no column bounce
+    _clear_wrap_notify(item_ids)                      # ONE-round wrap-up to live sessions whose OPEN card this
+    #                                                   dismissed (the user 2026-07-24); after the flags land, so
+    #                                                   any response processing sees the cleared state
+
+
+def _clear_wrap_targets(item_ids):
+    """{sid: [gid, ...]} — which of the just-cleared ids deserve the one-round wrap-up directive: TOP
+    goals that were still OPEN at the clear (not complete, not settled — i.e. cleared out of Working or
+    Needs-You, the user 2026-07-24: clearing a Done card is curation, clearing an open one may be
+    discarding real in-flight work). Skips, each deliberate:
+    - no node / a sub-goal / an empty title: stream items and subtree riders aren't cards;
+    - completed or settled tops: nothing in flight to lose;
+    - pure-delegation tops: the work lives with the PEER, whose linked copy rides the same clear batch
+      (_delegation_linked_ids) and notifies THAT session — telling the sender to stop work it never had
+      is noise;
+    - clearWrap-born decision cards (judge apply_plan stamps them): the ONE-round rule — the wrap-up's
+      own keep-or-discard card, when cleared, is final. No second loop, ever."""
+    out, cache = {}, {}
+    for iid in item_ids:
+        sid = str(iid).rsplit(":", 1)[0]
+        if sid not in cache:
+            try:
+                cache[sid] = jd.load_goals(sid).get("nodes", {})
+            except Exception:
+                cache[sid] = {}
+        nd = cache[sid].get(iid)
+        if nd is None or nd.get("parentId") is not None or not str(nd.get("text") or "").strip():
+            continue
+        if nd.get("nodeComplete") or nd.get("settledDone") or nd.get("clearWrap"):
+            continue
+        if _pure_delegation_top(cache[sid], iid):
+            continue
+        out.setdefault(sid, []).append(iid)
+    return out
+
+
+def _clear_wrap_body(gids, nodes):
+    """The ONE-round wrap-up directive for a clear of still-OPEN card(s) — the safety net for the
+    July-22 lost-prototype post-mortem (a card cleared 3 minutes after its build started; the only copy
+    was uncommitted worktree edits, which evaporated). The user clears cards they distrust, so some
+    clears catch real work: the message tells the session to STOP, park any unfinished artifacts on a
+    branch, and surface AT MOST one final keep-or-discard decision — like a file-delete confirm, routed
+    once through the agent (the user 2026-07-24). Deliberately NOT a nudge status check, and it carries
+    NO romp-goal-id markers: a goal-id would make the follow-up judge reopen the cleared goal and file
+    the reply under it — the resurrection the anti-loop design rules out. The judge recognizes the
+    romp-clear-wrap marker instead (plan_units' note): a nothing-pending reply files nothing; a parked-
+    WIP reply mints ONE new decision card, stamped clearWrap so clearing IT is terminal."""
+    quote = []
+    for i, gid in enumerate(gids, 1):
+        nd = nodes.get(str(gid)) or {}
+        head = str(nd.get("text", "")).strip() or "(unnamed goal)"
+        why = str(nd.get("why") or "").strip()
+        quote.append(("%d. %s" % (i, head)) if len(gids) > 1 else head)
+        if why:
+            quote.append(("   " + why) if len(gids) > 1 else why)
+    one = len(gids) == 1
+    body = (("The goal above was" if one else "The %d goals above were" % len(gids))
+            + " just cleared off the board while still open — a dismissal, not a completion. Treat "
+            + ("it" if one else "each")
+            + " as intentionally closed: stop any remaining work on "
+            + ("it" if one else "them")
+            + ", and do not reopen or continue "
+            + ("it" if one else "them")
+            + ". One-time check, in case this clear caught real work in flight: if you are holding "
+              "unfinished artifacts from "
+            + ("this goal" if one else "any of these goals")
+            + " (uncommitted edits, a half-built prototype, a worktree draft), preserve them now — "
+              "commit them to a branch — and reply with one final decision for me: what you parked, "
+              "where it lives, and whether I should discard it or have you finish it. If nothing is "
+              "pending, say so in one line. This check will not repeat; do not ask again afterwards.")
+    msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
+    tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
+            "relevant to your work — ignore them --><!-- romp-injected --><!-- romp-clear-wrap -->")
+    return msg + "\n\n" + tail
+
+
+def _clear_wrap_notify(item_ids):
+    """Send the one-round wrap-up (see _clear_wrap_body) to each LIVE session whose still-open card the
+    clear batch dismissed. LIVE only: a dead session has no agent holding uncommitted state to ask, and
+    reviving one over a board tidy-up would be a false interrupt. The UNDO path sends nothing — an undo
+    restores the card, and the user's own follow-up is what resumes the thread. Never raises: a failed
+    notify must not break the clear itself (the clear is the user's gesture; this is best-effort
+    insurance behind it). The mute flow (_set_session_flag hideFromFeed) seals goals WITHOUT this —
+    muting is 'stop tracking', not 'stop working'."""
+    try:
+        targets = _clear_wrap_targets(item_ids)
+        if not targets:
+            return
+        live = _tmux_sessions()
+        for sid, gids in targets.items():
+            if live.get(str(sid)) is None:
+                continue
+            try:
+                nodes = jd.load_goals(sid).get("nodes", {})
+                Sessions.backend_for(sid).send(sid, _clear_wrap_body(gids, nodes))
+            except Exception:
+                sys.stderr.write("clear-wrap notify (session %s): %s\n" % (sid, traceback.format_exc()))
+    except Exception:
+        sys.stderr.write("clear-wrap notify: %s\n" % traceback.format_exc())
 
 
 def _undo_clear():

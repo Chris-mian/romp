@@ -702,6 +702,8 @@ FOLLOWUP_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")              # the tagged
 NUDGE_MARKER_RE = re.compile(r"<!--\s*romp-injected\s*-->")        # a romp NUDGE (auto-nudge / Nudge button), the user 2026-06-22
 ROMP_SYSTEM_RE = re.compile(r"<!--\s*romp-system\s*-->")           # a kernel STATUS notice (restart/resume) — untargeted, no goal;
                                                                    #   its segment gets the housekeeping note (the user 2026-07-08, g133)
+ROMP_CLEARWRAP_RE = re.compile(r"<!--\s*romp-clear-wrap\s*-->")    # the ONE-round wrap-up of cleared-open card(s) (the user 2026-07-24) —
+                                                                   #   deliberately NO romp-goal-id, so nothing reopens the cleared goal
 _FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-(?:goal-id:[^>]*|injected|note:[^>]*)\s*-->")  # romp markers, stripped from model-facing text
 
 
@@ -2298,7 +2300,7 @@ def _same_title_site(nodes, parent, text):
     return None
 
 
-def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None, quote=None):
+def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None, quote=None, clear_wrap=False):
     """Apply an ORDERED list of planner ops for one segment (idempotent per place_key via placements).
     Each op's one-sentence rationale is PERSISTED: a created node carries `why`; a block carries
     `blockWhy`; a done carries `doneWhy` — so the feed can show WHY a card is blocked/done and reveal
@@ -2312,7 +2314,10 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
     None for an autonomous/continuation segment with no distinct trigger, or for a caller that predates this.
     `quote` (_mint_quote; the user 2026-07-01, g13) is the trigger's VERBATIM head, stored on every node
     created by this call as node["quote"] — follow-ups/nudges quote the user's own words back instead of the
-    planner's paraphrased title. None/'' → no field; the kernel falls back to the title form."""
+    planner's paraphrased title. None/'' → no field; the kernel falls back to the title form.
+    `clear_wrap` (the user 2026-07-24): this segment is the one-round wrap-up of cleared card(s) — every
+    node it creates carries clearWrap, so the kernel's clear-notify treats clearing THAT card as terminal
+    (the one-and-only-one-loop rule; see kernel _clear_wrap_targets)."""
     nodes, placements = store["nodes"], store["placements"]
     place_key = place_key if place_key is not None else seg_id
     created = []                                       # nodes minted/subbed in THIS reply, in order (for "ref")
@@ -2325,10 +2330,13 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             # every ancestor walk (found 2026-07-07 — the frozen full-suite runs)
             store["seq"] += 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-        nodes[nid] = GuardedNode({"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                      "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
-                      "quote": quote or None,             # the minting message's verbatim head (g13)
-                      "t": seg_t, "mt": seg_t, "why": why, "log": []})  # an empty diary at birth = diary-era node (2026-07-07)
+        payload = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                   "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
+                   "quote": quote or None,               # the minting message's verbatim head (g13)
+                   "t": seg_t, "mt": seg_t, "why": why, "log": []}  # an empty diary at birth = diary-era node (2026-07-07)
+        if clear_wrap:
+            payload["clearWrap"] = True                # born from a clear wrap-up → clearing it is final (no second round)
+        nodes[nid] = GuardedNode(payload)
         created.append(nid)
         return nid
 
@@ -3525,6 +3533,17 @@ def plan_units(session, store=None):
                                  "re-verifying, or tidying up after the interruption, **skip** it — file "
                                  "nothing and mint nothing. Only work that advances an open goal, or a "
                                  "genuinely **new** thread of work, belongs on the board.\n\n") + work_text
+                elif _seg_clearwrap(seg):                 # the ONE-round wrap-up of cleared card(s) (the user
+                    # 2026-07-24): a nothing-pending reply files nothing; a parked-WIP reply becomes exactly
+                    # one keep-or-discard decision card, blocked on the user. Never the cleared goal reborn.
+                    work_text = ("Note: this stretch is the one-time wrap-up of goals the user just "
+                                 "**cleared** off their board — a dismissal, not a completion. Never "
+                                 "re-create or reopen the cleared goals themselves. If the wrap-up parked "
+                                 "unfinished work (e.g. committed a draft to a branch) and asks whether to "
+                                 "keep or discard it, mint exactly **one** new top-level goal for that "
+                                 "decision and block it on the user — the why is the keep-or-discard "
+                                 "question itself, naming where the work is parked. If it reports nothing "
+                                 "pending, **skip** — file nothing and mint nothing.\n\n") + work_text
                 out.append((seg["id"], "work", seg["t"], work_text, human, followup, trig, vq))   # ENDED segment → WORK-run
     return out
 
@@ -4988,7 +5007,8 @@ def _plan_session(fsid, path, now):
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
         ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
         ops = _card_route_subs(store, ops, menu)       # card-first: route subs to the card, then the placer
-        apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
+        apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq,
+                   clear_wrap=_seg_clearwrap(seg_by_id.get(seg_id) or {}))   # a wrap-up's decision card is terminal (2026-07-24)
         if any(o.get("do") == "done" for o in ops):    # a post-closure done → the closer re-looks before any nudge
             _invalidate_closure(store, session, seg_t)
         placed += 1
@@ -7494,6 +7514,19 @@ def _seg_system(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and ROMP_SYSTEM_RE.search(_atom_text(trig)))
+
+
+def _seg_clearwrap(seg):
+    """True if this segment's trigger is the kernel's ONE-round clear wrap-up (the romp-clear-wrap
+    marker; the user 2026-07-24): the user cleared still-open card(s), and the session was told once to
+    stop, park any unfinished artifacts, and surface at most one keep-or-discard decision. Untargeted BY
+    DESIGN (no romp-goal-id — a goal-id would reopen the cleared goal and file the reply under it, the
+    resurrection the clear must rule out); plan_units prepends the wrap-up note, and apply_plan stamps
+    any node minted from the reply `clearWrap` so clearing THAT card is terminal. Mirrors _seg_system's
+    lookup."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    return bool(trig and ROMP_CLEARWRAP_RE.search(_atom_text(trig)))
 
 
 def _parse_courier(raw, menu_len):
