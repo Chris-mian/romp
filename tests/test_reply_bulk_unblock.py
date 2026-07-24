@@ -120,8 +120,8 @@ class WiringPins(unittest.TestCase):
         # judge side: the nudge planner resolves each reported piece on its own item, obsolete included
         self.assertIn("also resolve each reported piece on its **own** listed item", self.SRC)
         # kernel side: both nudge bodies invite the drop shape, so the reply can actually say it
-        self.assertIn("If a piece is obsolete and no longer needed, say so", self.KSRC)
-        self.assertIn("If one is no longer needed, say so and why.", self.KSRC)
+        self.assertIn("If one is no longer needed, just say so", self.KSRC)
+        self.assertIn("If one is no longer needed, just say so.", self.KSRC)
 
 
 if __name__ == "__main__":
