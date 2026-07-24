@@ -114,6 +114,13 @@ def strip_ansi(s: str) -> str:
 # invoking Skill tool event, collapsed by default.
 SKILL_CONTENT_RE = re.compile(r"^\s*Base directory for this skill:")
 SKILL_MD_CAP = 16000              # transport cap for the joined skill markdown (skills run ~2-15k chars)
+# An image fed to the model via a tool (a Read of a PNG, a screenshot) — Claude Code emits a synthetic
+# user record carrying JUST this human-readable placeholder alongside the image block. On disk it's isMeta
+# (skipped below), but that flag is absent on the SDK live stream, so the twin skip in sdk_backend keys on
+# this pattern instead; matching here too keeps the two adapters in lockstep and covers any Claude build
+# that omits isMeta on the record. The `:` after Image distinguishes it from the composer's `[Image #N]`
+# paste chips, which never stand alone as a whole turn.
+IMG_ECHO_RE = re.compile(r"^\[Image:[^\]]*\]$")
 SUMMARY_CAP = 8000                # cap the compaction-summary text attached to a compact_boundary atom (a raw
 #   summary runs ~16k chars; the head carries the key sections, and it re-ships with the tail — keep it bounded)
 
@@ -661,6 +668,9 @@ class FileAdapter:
                 # Deliveries arriving by other paths were unaffected, which is why it failed for some
                 # messages and not others. Keyed on the romp-msg-id marker, so only real mail is admitted
                 # and the `<command-…>` echoes and caveats stay skipped.
+                if IMG_ECHO_RE.match(btext) and not has_tool_result:
+                    continue   # synthetic image-read placeholder (twin of sdk_backend's _IMG_ECHO_RE) — the
+                               # tool that fed the image already shows; on disk it's also isMeta (below)
                 if r.get("isMeta") is True and not POSTAL_RE.search(btext):
                     continue   # `<command-…>` echoes / caveats — harness noise, not a message
                 if r.get("isCompactSummary") is True:
