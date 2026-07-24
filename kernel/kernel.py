@@ -7738,15 +7738,67 @@ def _working_now(sid):
     return _session_working(session["turns"])
 
 
+def _limit_hold(sid):
+    """Is this session's input HELD because the ACCOUNT cannot serve it yet — a 5h/7d rate window sitting
+    at its cap, or the monthly spend cap? Returns the hold {reason, resetsAt, what} or None.
+
+    The gap this closes (the user 2026-07-24): hitting a usage limit turned every following gesture into
+    its own failure. /compact came back refused ("this would take you over your limit"), the message typed
+    after it went straight out to the API and landed as a red API-error card, and the order the user meant
+    to say things in was lost. None of that needed a human — the account simply could not serve a request
+    yet. So input parks in the SAME FIFO a compaction parks it in and delivers in press order once the
+    account can serve again. Messages and slash commands alike: the limit is on the ACCOUNT, so /compact,
+    /model and /effort are exactly as un-servable as a message, and they hold their place in the sequence.
+
+    RELEASE is read from the event, never a timer romp invents:
+      - a rate window carries the API's own resetsAt, and _usage().limited goes false the moment that
+        stamp passes, so the producer tick drains the queue within one pass of the reset;
+      - a spend cap has no readable reset (it lifts when the user raises it), so the hold rides the
+        retry-pause _auto_pause_on_spend_limit engaged and lifts when that lifts: the user resumes it, or
+        _auto_resume_retry sees a session serve a request again.
+    fable is excluded exactly as _auto_pause_on_limit excludes it — that window is model-scoped, so a
+    session on any other model is still servable.
+
+    The hold is never silent: it rides the `queued` event onto every parked bubble (so the chat says what
+    the queue is waiting for and until when), and every bubble keeps its ✕ — whatever romp is holding, the
+    user can see it and drop it."""
+    try:
+        u = _usage() or {}
+    except Exception:
+        return None                                   # unreadable usage → never invent a hold
+    lim = u.get("limited") or {}
+    resets = [(u.get(k) or {}).get("resetsAt") for k in ("fiveHour", "sevenDay") if lim.get(k)]
+    if resets:
+        known = [r for r in resets if isinstance(r, (int, float)) and r > 0]
+        return {"reason": "limit",
+                # both windows capped at once → the queue can only move when the LATER one resets; a
+                # window with no readable stamp (absent, or a 0 that means "unreported", never the
+                # epoch) → nothing to count down to, so promise no clock rather than a wrong one.
+                "resetsAt": max(known) if len(known) == len(resets) else None,
+                "what": "waiting for your usage limit to reset"}
+    spend = _retry_paused_on() and _retry_pause_reason() == "spend"
+    if not spend:
+        path = _path_of(sid)                          # the pause is account-wide, but the transcript is the
+        e = _api_error(path) if path else None        # first place the cap shows — hold from that edge too
+        spend = bool(e and e.get("spendLimit"))
+    if spend:
+        return {"reason": "spend", "resetsAt": None,
+                "what": "waiting for your monthly spend limit to be raised"}
+    return None
+
+
 def _ops_gate(sid):
     """Should a drive op PARK instead of firing? Whenever the session is NOT quiet — compacting OR an
-    open turn (which includes the interrupt-settling window) — and, for strict press-order, whenever a
-    queue ALREADY exists (the user 2026-07-02 ×2, who interrupted, picked a model, and sent a message — the
-    model never registered and the message vanished; input fired into a busy/tearing-down session races
-    and drops. Now EVERY drive op lands as a visible queued chip and delivers in the sequence pressed).
-    Interrupt itself is the one exception — it must always fire immediately (the escape hatch)."""
+    open turn (which includes the interrupt-settling window) — whenever the ACCOUNT can't serve a request
+    at all (_limit_hold: a usage limit / spend cap, the user 2026-07-24), and, for strict press-order,
+    whenever a queue ALREADY exists (the user 2026-07-02 ×2, who interrupted, picked a model, and sent a
+    message — the model never registered and the message vanished; input fired into a busy/tearing-down
+    session races and drops. Now EVERY drive op lands as a visible queued chip and delivers in the
+    sequence pressed). Interrupt itself is the one exception — it must always fire immediately (the
+    escape hatch), and it is what a user reaches for when they want the storm to stop, not the queue."""
     sid = str(sid)
-    return _compacting_now(sid) or _working_now(sid) or bool(_pending_ops.get(sid))
+    return (_compacting_now(sid) or _working_now(sid) or bool(_pending_ops.get(sid))
+            or _limit_hold(sid) is not None)
 
 
 def _park_op(sid, op):
@@ -7862,14 +7914,17 @@ def _send_or_park(be, sid, text, echo=None):
     2026-07-02: a mid-compaction send's live-tail echo opened a turn that KILLED the 'compacting' cue — a
     parked send lands no echo atom, so the cue stays and the send shows as a queued bubble in park order);
     (b) a kernel FIFO already EXISTS for this sid (a parked drive op / earlier held send is ahead — stay
-    behind it in press order); or (c) the backend can't forward its own sends AND a turn is open (tmux: hold
+    behind it in press order); (b2) the ACCOUNT can't serve a request at all (_limit_hold — a usage limit
+    or spend cap, the user 2026-07-24: sending into one just buys a red API-error card, and a
+    forwards_sends backend would hand it straight over, so this arm has to sit ahead of that check); or
+    (c) the backend can't forward its own sends AND a turn is open (tmux: hold
     while working, and _apply_pending_ops MERGES the held run into one message at turn end). Otherwise hand
     it over NOW — a forwards_sends backend (SDK) takes a send even mid-turn and forwards it at the next tool
     boundary, folds several queued sends into one turn, and holds them across an interrupt (the user
     2026-07-17: "get user messages in as soon as possible; we don't have to interrupt but get them in"); the
     still-waiting message renders as a queued bubble (its echo is suppressed) until it forwards. `echo` is
     the _optimistic_echo author stamped when the send actually fires (None = the backend echoes for itself)."""
-    if _compacting_now(sid) or _pending_ops.get(sid):
+    if _compacting_now(sid) or _pending_ops.get(sid) or _limit_hold(sid):
         _park_op(sid, ("send", text, echo))
         return
     if _working_now(sid) and not _forwards_sends(be):
@@ -7931,14 +7986,16 @@ def _apply_pending_ops():
     "compact, then two messages, then a model pick" lands as pressed. A leading RUN of consecutive sends
     is delivered together, not one turn each (_deliver_send_batch — the user 2026-07-17, who wanted them sent all at
     once; the SDK folds the run into one turn, tmux merges it). Event-gated throughout (_compacting
-    + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes); a dead
+    + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes, plus
+    _limit_hold's account gate — a queue held by a usage limit drains on the pass after the API's own
+    reset stamp passes, so the whole sequence goes in at the reset in the order it was typed); a dead
     session's queue is dropped (fails once, logged), never retried."""
     for sid, ops in list(_pending_ops.items()):
         if not ops:
             _pending_ops.pop(sid, None)
             continue
-        if _compacting_now(sid) or _working_now(sid):
-            continue
+        if _compacting_now(sid) or _working_now(sid) or _limit_hold(sid):
+            continue                                  # …or the account can't serve a request yet
         try:
             be = Sessions.backend_for(sid)
             while ops:
@@ -8873,7 +8930,13 @@ def build_session(sid, now, tmux=None):
                     del qmsgs[i]
                     break
         if qmsgs:                                         # don't emit an empty "queued" (folding the running /compact could empty it)
-            events.append({"kind": "queued", "texts": qmsgs})
+            # `held` = WHY the queue isn't moving, when the cause is the ACCOUNT rather than this session
+            # (the user 2026-07-24): a queue sitting for hours with no stated cause reads as romp having
+            # eaten the messages, so the head names the limit and counts down to the API's own reset.
+            # Merged inline, NOT built as a local first: the compacting/retrying/reconnecting notices are
+            # ordered ahead of this bubble by SOURCE-PINNED tests that match this exact append literal.
+            _hold = _limit_hold(sid)
+            events.append({"kind": "queued", "texts": qmsgs, **({"held": _hold} if _hold else {})})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
     # API-error gate just below can use it (it's also read later for the chip + work-timer base).
     open_now = _session_working(session["turns"])
@@ -9331,7 +9394,14 @@ def _clear_wrap_body(gids, nodes):
     NO romp-goal-id markers: a goal-id would make the follow-up judge reopen the cleared goal and file
     the reply under it — the resurrection the anti-loop design rules out. The judge recognizes the
     romp-clear-wrap marker instead (plan_units' note): a nothing-pending reply files nothing; a parked-
-    WIP reply mints ONE new decision card, stamped clearWrap so clearing IT is terminal."""
+    WIP reply mints ONE new decision card, stamped clearWrap so clearing IT is terminal.
+
+    VOICE (the user 2026-07-24): it reads as the user's own short message, because the session does not
+    know it is being tracked by romp. The first draft narrated the goal system at it ("the goal above was
+    cleared off the board", "a dismissal, not a completion") — machinery the agent has no idea exists,
+    which reads as a system notice rather than the person it works for asking for something. Say the ask
+    the way a human would: drop this, park what you have, tell me once. No romp nouns (goal, card, board,
+    clear), no directive register, and short — the whole point survives in about half the words."""
     quote = []
     for i, gid in enumerate(gids, 1):
         nd = nodes.get(str(gid)) or {}
@@ -9341,20 +9411,13 @@ def _clear_wrap_body(gids, nodes):
         if why:
             quote.append(("   " + why) if len(gids) > 1 else why)
     one = len(gids) == 1
-    body = (("The goal above was" if one else "The %d goals above were" % len(gids))
-            + " just cleared off the board while still open — a dismissal, not a completion. Treat "
-            + ("it" if one else "each")
-            + " as intentionally closed: stop any remaining work on "
-            + ("it" if one else "them")
-            + ", and do not reopen or continue "
-            + ("it" if one else "them")
-            + ". One-time check, in case this clear caught real work in flight: if you are holding "
-              "unfinished artifacts from "
-            + ("this goal" if one else "any of these goals")
-            + " (uncommitted edits, a half-built prototype, a worktree draft), preserve them now — "
-              "commit them to a branch — and reply with one final decision for me: what you parked, "
-              "where it lives, and whether I should discard it or have you finish it. If nothing is "
-              "pending, say so in one line. This check will not repeat; do not ask again afterwards.")
+    them = "it" if one else "them"
+    body = ("I'm dropping %s. Stop work on %s and don't pick %s back up.\n\n"
+            "If you have work in progress on %s, commit it to a branch so it isn't lost, then reply "
+            "once: what you parked, where it is, and whether I should throw it away or have you "
+            "finish it. If there's nothing pending, say so in one line. Just the one reply, no need "
+            "to follow up after that."
+            % ("this one" if one else "these", them, them, them if one else "any of them"))
     msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
     tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
             "relevant to your work — ignore them --><!-- romp-injected --><!-- romp-clear-wrap -->")
@@ -14864,8 +14927,13 @@ class Handler(BaseHTTPRequestHandler):
                             "the remote kernel for this session (%s) isn't answering — message not delivered"
                             % r.get("host", "?")}), "application/json")
                     return self._send(200, json.dumps({"ok": True}), "application/json")
-                Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
-                return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble
+                # PARKS like a composer send (the user 2026-07-24), through the same FIFO: a message handed
+                # in by a local tool while the account is rate-limited — or while the session compacts —
+                # waits its turn instead of buying a red API-error card. ok:true still means ACCEPTED,
+                # which is all it ever meant on this route. No optimistic echo: an external/postal send
+                # isn't a human composer bubble.
+                _send_or_park(Sessions.backend_for(sid), sid, body["text"])
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path in ("/interrupt", "/end"):
                 # Headless session control (2026-07-05): interrupt/end existed ONLY as WS drive ops, so
                 # a session could be FED without a browser (POST /send, postal) but never STOPPED — a

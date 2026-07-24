@@ -25,7 +25,7 @@ import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview } from "./preview";
 import { hostNameNodes } from "./host-prefix";
 import { mediaSrc, kernelUrl } from "./media";
-import { initStrip } from "./strip";
+import { initStrip, fmtReset } from "./strip";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -117,7 +117,10 @@ type ChatEvent = (
   // there's nothing confirmed to cancel); `bare` drops the "N queued messages" header, since with nothing
   // known-queued we can't claim that. Reconciled out once the kernel's payload carries the message (see
   // reconcileOptimistic). Neither field is ever sent to/from the kernel.
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean }[]; ts?: string; uuid?: string; bare?: boolean }
+  // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
+  // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
+  // for, and how long is left when the API reported a reset (the user 2026-07-24).
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string } }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -2202,8 +2205,17 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     // arrived is sent as a message, not eaten as the answer, and the session can't take it until the question
     // is resolved — so the queue is really "after you answer" (the user 2026-07-16).
     const pendingAsk = !!activeId && liveAsks.has(activeId);
+    // A queue held by the ACCOUNT (usage limit / spend cap) says so, and outranks the pending-ask note:
+    // that queue isn't moving whatever you answer. A stack of bubbles sitting for hours with no stated
+    // cause reads as romp having eaten the messages (the user 2026-07-24). The countdown rides the API's
+    // own reset stamp — when it didn't report one (a spend cap never does), say the reason and no more.
+    const askNote = (pendingAsk ? " · sends after you answer" : "");
+    const held = ev.held;
+    const why = held
+      ? ` · ${held.what}` + (held.resetsAt ? ` · in ${fmtReset(held.resetsAt, Math.floor(Date.now() / 1000))}` : "")
+      : askNote;
     const label = el("span");
-    label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}` + (pendingAsk ? " · sends after you answer" : "");
+    label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}` + why;
     head.appendChild(label);
     turn.appendChild(head);
   }

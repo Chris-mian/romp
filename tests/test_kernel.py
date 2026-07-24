@@ -23,6 +23,13 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ["ROMP_SERVE_TOKEN"] = "testtok"            # known token for the serve-security test
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
+# The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
+# tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
+# covers. Neutralize it here: left live, these tests would read the REAL machine's usage.json and
+# start parking — correctly, but for a reason none of them is about — the moment that account hit a
+# limit. Pinning it off keeps them hermetic.
+km._limit_hold = lambda sid: None
+
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
 T0 = NOW - 3600

@@ -132,3 +132,44 @@ test("the queued turn + bubbles are styled (so the dot is actually visible)", ()
   assert.match(CSS, /\.queued-head/);
   assert.match(CSS, /\.queued-bubble/);
 });
+
+// ---- a queue the ACCOUNT is holding (the user 2026-07-24) --------------------------------------------
+// Hitting a usage limit turned every following gesture into its own failure: /compact came back refused
+// ("this would take you over your limit"), the message typed after it went straight out and landed as a red
+// API-error card, and the order the user meant to say things in was lost. Now a limit parks it ALL in the
+// same FIFO a compaction parks it in — messages and slash commands alike, since the limit is on the ACCOUNT
+// — and the queued bubbles say what they are waiting for instead of just sitting there.
+
+test("the kernel parks every drive op while the account can't serve one, and drains at the reset", () => {
+  assert.match(KERNEL, /def _limit_hold\(sid\):/);
+  assert.match(KERNEL, /or _limit_hold\(sid\) is not None\)/, "the gate /model, /effort and /compact pass");
+  // the send path needs its OWN arm, ahead of the forwards_sends handoff: an SDK backend takes a send even
+  // mid-turn, so without this the message goes straight out and comes back an API error
+  assert.match(KERNEL, /if _compacting_now\(sid\) or _pending_ops\.get\(sid\) or _limit_hold\(sid\):/);
+  assert.match(KERNEL, /if _compacting_now\(sid\) or _working_now\(sid\) or _limit_hold\(sid\):/, "the drain gate");
+  // RELEASE rides the API's own stamp — no romp-invented timer, and no clock promised without one
+  assert.match(KERNEL, /"resetsAt": max\(known\) if len\(known\) == len\(resets\) else None,/);
+  assert.match(KERNEL, /known = \[r for r in resets if isinstance\(r, \(int, float\)\) and r > 0\]/);
+});
+
+test("a held queue says WHY it isn't moving, and outranks the pending-ask note", () => {
+  assert.match(RENDER, /held\?: \{ reason: string; resetsAt\?: number \| null; what: string \}/);
+  assert.match(RENDER, /const askNote = \(pendingAsk \? " · sends after you answer" : ""\);/);
+  assert.match(RENDER, /\? ` · \$\{held\.what\}` \+ \(held\.resetsAt \? ` · in \$\{fmtReset\(held\.resetsAt, Math\.floor\(Date\.now\(\) \/ 1000\)\)\}` : ""\)/);
+});
+
+// Executed replica of the head-suffix decision — the branchy bit, run rather than only pinned.
+test("the head suffix: the hold beats the ask note, and no reset stamp means no countdown", () => {
+  const suffix = (held: { what: string; resetsAt?: number | null } | undefined, pendingAsk: boolean) => {
+    const askNote = (pendingAsk ? " · sends after you answer" : "");
+    return held ? ` · ${held.what}` + (held.resetsAt ? " · in 42m" : "") : askNote;
+  };
+  assert.equal(suffix(undefined, false), "");
+  assert.equal(suffix(undefined, true), " · sends after you answer");
+  assert.equal(suffix({ what: "waiting for your usage limit to reset", resetsAt: 1784930000 }, true),
+    " · waiting for your usage limit to reset · in 42m",
+    "the limit is what the queue waits on, not the question — answering it would move nothing");
+  assert.equal(suffix({ what: "waiting for your monthly spend limit to be raised", resetsAt: null }, false),
+    " · waiting for your monthly spend limit to be raised",
+    "a spend cap has no readable reset — say the reason, promise no clock");
+});

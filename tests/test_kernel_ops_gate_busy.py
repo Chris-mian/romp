@@ -22,6 +22,13 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 km = SourceFileLoader("romp_kernel_opsbusy", os.path.join(BIN, "romp-kernel")).load_module()
 
+# The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
+# tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
+# covers. Neutralize it here: left live, these tests would read the REAL machine's usage.json and
+# start parking — correctly, but for a reason none of them is about — the moment that account hit a
+# limit. Pinning it off keeps them hermetic.
+km._limit_hold = lambda sid: None
+
 SID = "11111111-2222-3333-4444-555555555555"
 
 
