@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # romp pre-push hook: refuse to push if any file carries a personal identifier.
 #
-# This repo may go public, and history is permanent. tests/test_no_personal_
-# identifiers.py scans every tracked + untracked file for this machine's own
-# identifiers (hostname, home path, and the strings in ~/.config/romp/private-
-# strings.txt). Running it here catches a leak BEFORE it leaves the machine,
-# where it can still be fixed, instead of after it is public.
+# A no-op unless you supply the scan yourself. The repo may go public and history
+# is permanent, so this runs tests/test_no_personal_identifiers.py — which scans
+# every tracked + untracked file for THIS machine's own identifiers (hostname,
+# home path, and the strings in ~/.config/romp/private-strings.txt) — to catch a
+# leak before it leaves the machine, while it can still be fixed.
+#
+# That scan is personal and machine-specific, so it is NOT tracked in the repo:
+# one machine's hostname and home path mean nothing on anyone else's clone. Drop
+# your own copy at tests/test_no_personal_identifiers.py to arm this hook; with
+# no such file it exits 0 and stays out of your way.
 #
 # Fast (~0.1s), so it is safe on every push. Bypass a false positive with
 # `git push --no-verify`. Installed by install.sh (symlinked into the shared
@@ -17,7 +22,7 @@ root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$root" ] || exit 0                       # not in a work tree → nothing to scan
 
 check="$root/tests/test_no_personal_identifiers.py"
-[ -f "$check" ] || exit 0                       # e.g. a partial checkout without tests/
+[ -f "$check" ] || exit 0                       # no personal scan on this clone → nothing to do
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "romp pre-push: python3 not found — SKIPPING the identifier scan." >&2

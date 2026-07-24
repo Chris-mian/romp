@@ -6,3 +6,7 @@ __pycache__/
 .DS_Store
 # local Claude Code state — git worktree checkouts (machine-specific), never committed
 .claude/
+# A personal, machine-specific check: it scans for THIS machine's hostname, home
+# path and private strings, none of which mean anything on anyone else's clone.
+# Untracked on purpose so a contributor's test run never trips over it.
+tests/test_no_personal_identifiers.py

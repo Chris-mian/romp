@@ -203,10 +203,11 @@ PY
 }
 
 # ── git pre-push identifier hook ──────────────────────────────────────
-# The repo may go public and history is permanent, so a personal identifier must
-# never leave the machine. install.sh symlinks .githooks/pre-push into the shared
-# git hooks dir; the hook runs tests/test_no_personal_identifiers.py and blocks a
-# push that would leak one. (ROMP_GITHOOK_DIR redirects the target in setup().)
+# install.sh symlinks .githooks/pre-push into the shared git hooks dir. The hook
+# runs tests/test_no_personal_identifiers.py when that file is present and blocks
+# a push that would leak one of YOUR OWN identifiers. The scan is a personal,
+# machine-specific check, so it is deliberately not tracked (see .gitignore) and
+# the hook is a no-op without it. (ROMP_GITHOOK_DIR redirects the target below.)
 
 @test "install.sh: symlinks the pre-push hook into the git hooks dir" {
     run "$ROMP_DIR/install.sh"
@@ -224,6 +225,9 @@ PY
 # Behaviour of the hook itself, exercised through a real `git push` to a bare
 # remote, with a SYNTHETIC denylist (never a real identifier) via XDG_CONFIG_HOME.
 setup_hook_repo() {
+    # Nothing to exercise on a clone that carries no scan of its own.
+    [ -f "$ROMP_DIR/tests/test_no_personal_identifiers.py" ] \
+        || skip "no identifier scan present (it is a local-only check)"
     export XDG_CONFIG_HOME="$TEST_DIR/cfg"
     mkdir -p "$XDG_CONFIG_HOME/romp"
     printf 'ZZBANNEDZZ\n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
