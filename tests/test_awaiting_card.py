@@ -23,7 +23,7 @@ class AwaitingCard(unittest.TestCase):
         # stub both so the card is a pure function of its inputs (no live session / backend needed).
         self._parse, self._descs = km._parse, km._awaiting_task_descs
         km._parse = lambda path, fsid, now: {"turns": [{"t": 1000}]}
-        km._awaiting_task_descs = lambda fsid: ["watching CI run"]
+        km._awaiting_task_descs = lambda fsid, path=None: ["watching CI run"]
 
     def tearDown(self):
         km._parse, km._awaiting_task_descs = self._parse, self._descs

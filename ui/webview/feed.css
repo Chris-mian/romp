@@ -183,9 +183,18 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 /* the by-session header on the column BACKDROP opening that session's run of cards: identity-colored
    name + the working dot; cards under it drop their own name row. NO font-size of its own (the user
    2026-07-13): it wears the base size + weight the CARD TITLES render at, so the two read as one rank. */
-.feed-sess-head { display: flex; align-items: center; gap: 6px; margin: 9px 3px 0; font-weight: 600; }
+.feed-sess-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 9px 3px 0; font-weight: 600; }
 .feed-sess-head .fname { font-size: inherit; }   /* not .fname's 0.92em — the header matches the card titles exactly */
 .feed-sess-head:first-child { margin-top: 2px; }
+/* the neutral background-process chip on the header (kernel bgServices): a process the session KEEPS
+   (a dev server the judge classified as nobody-waits). Reuses the .fask-secbtn chip vocabulary — dim,
+   0.74em, accent only while its list is open (a selected toggle, the accent's job) — and un-bolds from
+   the header's 600 so it reads as a label, not a second title. NO waiting/urgency framing anywhere. */
+.feed-sess-svcbtn { font-weight: 400; }
+/* the expanded process list: its own full-width line under the header (flex-basis:100%), section-body
+   sized (0.86em, matches .fask-awaiting) and dim — mechanics one click away, quiet by default. */
+.feed-sess-svclist { flex-basis: 100%; font-weight: 400; font-size: 0.86em; color: var(--dim); }
+.feed-sess-svcrow { padding: 1px 0 1px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 /* wraps: when the name + "↪ from <peer>" provenance + the reopened/Followed-up chips can't all fit on
