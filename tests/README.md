@@ -17,5 +17,4 @@ Every bug fix or feature change lands with a test (repo rule). Four suites:
 - **`manager-restart.test.js`** — the node supervisor (`bin/romp-manager`).
 
 `fixtures/` must stay SYNTHETIC: invented prompts, placeholder UUIDs, hostname
-`TESTHOST` — never real session data. `test_no_personal_identifiers.py`
-enforces this mechanically; run it before committing new fixtures.
+`TESTHOST` — never real session data.

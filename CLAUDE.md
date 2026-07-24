@@ -42,13 +42,14 @@ This repo may go public; assume every commit is permanent and world-readable.
   catches it. Reuse the neutral demo domain the doc screenshots use (a
   `notes-api` with `web`/`api`/`tests` sessions) rather than inventing per-test
   worlds.
-- `tests/test_no_personal_identifiers.py` enforces this mechanically (local
-  hostname, home path, plus the coined names in the UNTRACKED
-  `~/.config/romp/private-strings.txt` — that list lives outside the repo on
-  purpose, since it enumerates the very strings we're hiding); run it before
-  committing. It scans text files only — it can NOT see into binary media, so
-  screenshots/recordings under `docs/assets/` must be eyeballed for on-screen
-  session content before release.
+- The maintainer's clone carries an UNTRACKED `tests/test_no_personal_identifiers.py`
+  that scans for that machine's own hostname, home path and private strings, wired
+  into the pre-push hook. It is deliberately not in the repo: those strings are
+  specific to one machine and mean nothing on anyone else's clone, so a
+  contributor's test run must never trip over it. Where it is absent, the hook and
+  its tests no-op. Either way it is a backstop, not the rule — the rule is the
+  bullets above. It also reads text only, so screenshots and recordings under
+  `docs/assets/` must be eyeballed for on-screen session content before release.
 
 ## Worktrees — work on an isolated worktree by default (user rule, 2026-06-29)
 Do ALL non-trivial work on its own git worktree, not the shared main tree — concurrent
