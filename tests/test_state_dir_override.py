@@ -107,5 +107,48 @@ class ShellAndNodeSourcePins(unittest.TestCase):
         self.assertIn("process.env.ROMP_STATE_DIR || path.join(base, 'romp')", tl)
 
 
+class VisibilityScoping(unittest.TestCase):
+    """Phase 2 (plans/multi-kernel.md): two kernels must not see each other's sessions. The projects
+    root honors CLAUDE_CONFIG_DIR (unscoped, both kernels judge every transcript on the machine —
+    double LLM spend), and the tmux runner takes ROMP_TMUX_SOCKET (unscoped, both kernels inject
+    nudges into the same panes)."""
+
+    def test_projects_root_honors_claude_config_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            for module in ("kernel/event_model.py", "kernel/judge.py"):
+                got = _derive(module, "PROJECTS",
+                              {"_HOME": td, "CLAUDE_CONFIG_DIR": td + "/cfg",
+                               "ROMP_STATE_DIR": td + "/st"})
+                self.assertEqual(got, td + "/cfg/projects", module)
+                got = _derive(module, "PROJECTS", {"_HOME": td, "ROMP_STATE_DIR": td + "/st"})
+                self.assertEqual(got, td + "/.claude/projects", "%s default unchanged" % module)
+
+    def test_sdk_backend_transcript_path_honors_claude_config_dir(self):
+        src = (ROOT / "bin/romp_sdk_backend.py").read_text()
+        self.assertIn('os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")', src)
+
+    def test_tmux_runner_takes_the_per_kernel_socket(self):
+        # source-level: the argv builder is the ONE tmux seam (test_session_api's guard), and it must
+        # read the socket at CALL time so a profile's env drives it without re-import.
+        src = (ROOT / "kernel/kernel.py").read_text()
+        self.assertIn('sock = os.environ.get("ROMP_TMUX_SOCKET")', src)
+        self.assertIn('(["tmux", "-L", sock] if sock else ["tmux"]) + list(args)', src)
+        # functional: build the argv both ways without importing the kernel (import runs boot
+        # reconcile against the live fleet) — execute just the builder body.
+        ns = {"os": os}
+        exec("def _tmux_argv(args):\n"
+             "    sock = os.environ.get('ROMP_TMUX_SOCKET')\n"
+             "    return (['tmux', '-L', sock] if sock else ['tmux']) + list(args)", ns)
+        old = os.environ.pop("ROMP_TMUX_SOCKET", None)
+        try:
+            self.assertEqual(ns["_tmux_argv"](["ls"]), ["tmux", "ls"])
+            os.environ["ROMP_TMUX_SOCKET"] = "romp-alt"
+            self.assertEqual(ns["_tmux_argv"](["ls"]), ["tmux", "-L", "romp-alt", "ls"])
+        finally:
+            os.environ.pop("ROMP_TMUX_SOCKET", None)
+            if old is not None:
+                os.environ["ROMP_TMUX_SOCKET"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

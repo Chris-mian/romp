@@ -3544,15 +3544,26 @@ class TmuxBackend(sb.SessionBackend):
     PEER_CAP = 10                                                     # max peers on the status-bar "talking to" line
 
     # ── the SOLE raw-tmux primitives ──
+    @staticmethod
+    def _tmux_argv(args):
+        """['tmux', ...] with the per-kernel server socket when ROMP_TMUX_SOCKET is set
+        (plans/multi-kernel.md phase 2): an aux kernel runs its sessions on its OWN tmux server
+        (-L), so two kernels never see or nudge each other's panes — and since that server is
+        started by this kernel, its sessions inherit the profile env (ROMP_STATE_DIR /
+        CLAUDE_CONFIG_DIR) for free. Read at call time, not import, so tests can flip it. Unset →
+        the default server, exactly as before."""
+        sock = os.environ.get("ROMP_TMUX_SOCKET")
+        return (["tmux", "-L", sock] if sock else ["tmux"]) + list(args)
+
     def _run(self, args, t=3):
         try:
-            return subprocess.run(["tmux"] + list(args), capture_output=True, text=True, timeout=t)
+            return subprocess.run(self._tmux_argv(args), capture_output=True, text=True, timeout=t)
         except Exception:
             return None
 
     def _fire(self, args, t=3):                          # fire-and-forget (no captured output needed)
         try:
-            subprocess.run(["tmux"] + list(args), timeout=t)
+            subprocess.run(self._tmux_argv(args), timeout=t)
         except Exception:
             pass
 

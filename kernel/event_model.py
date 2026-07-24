@@ -31,7 +31,7 @@ from pathlib import Path
 HOME     = Path.home()
 STATE    = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root override (plans/multi-kernel.md)
                 or Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp")
-PROJECTS = HOME / ".claude" / "projects"
+PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(HOME / ".claude")) / "projects"   # per-kernel Claude root (plans/multi-kernel.md phase 2)
 NAMES    = STATE / "names"
 STATES_DIR   = STATE / "states"
 MESSAGES_LOG = STATE / "timeline" / "messages.jsonl"

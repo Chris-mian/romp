@@ -91,7 +91,7 @@ _romp_free_title() {   # <new-sid> <name>
         # last-use date from the (uniquely-named) transcript's mtime; the [[ -f ]]
         # guard tolerates an unmatched glob under any shell glob setting.
         tp=""
-        for _c in "$HOME/.claude/projects"/*/"$bsid".jsonl; do [[ -f "$_c" ]] && { tp="$_c"; break; }; done
+        for _c in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"/*/"$bsid".jsonl; do [[ -f "$_c" ]] && { tp="$_c"; break; }; done
         d="$(_romp_date_of "${tp:-$f}")"
         _romp_record "$bsid" "${nm}-${d}" "$edir" "$ebg" "$efg"
     done
@@ -358,7 +358,7 @@ _romp_render_row() {
 _romp_resume_rows() {   # <live-newline-list> <fs>
     ROMP_NAMES_DIR="$ROMP_NAMES_DIR" ROMP_ARCHIVE_DIR="$ROMP_ARCHIVE_DIR" \
     ROMP_CAPTIONS_DIR="$ROMP_CAPTIONS_DIR" \
-    ROMP_PROJECTS_DIR="${ROMP_PROJECTS_DIR:-$HOME/.claude/projects}" \
+    ROMP_PROJECTS_DIR="${ROMP_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" \
     ROMP_LIVE="$1" ROMP_FS="$2" python3 - <<'PY' 2>/dev/null || true
 import os, sys, json, re
 

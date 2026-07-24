@@ -34,7 +34,7 @@ try:
 except OSError:
     pass
 NAMES    = STATE / "names"
-PROJECTS = HOME / ".claude" / "projects"
+PROJECTS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(HOME / ".claude")) / "projects"   # per-kernel Claude root (plans/multi-kernel.md phase 2)
 CAPDIR   = STATE / "captions"            # the new summaries/ — one .jsonl per transcript, keyed by unit id
 ARCHDIR  = STATE / "archive"             # per-session {headline, abstract} (replaces digest/), keyed by rompUuid
 GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), keyed by rompUuid

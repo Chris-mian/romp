@@ -143,7 +143,8 @@ def transcript_path(cwd: str, fsid: str) -> str:
     Realpath first (a symlinked launch dir writes under the PHYSICAL path), then every
     non-alphanumeric char becomes '-' (matches the CLI exactly; '_' and ' ' included)."""
     proj = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(os.path.expanduser(cwd or "~")))
-    return os.path.join(os.path.expanduser("~/.claude/projects"), proj, fsid + ".jsonl")
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"),
+                    "projects", proj, fsid + ".jsonl")   # per-kernel Claude root (plans/multi-kernel.md phase 2)
 
 
 def last_record_uuid(path, tail_bytes: int = 262144) -> str:
