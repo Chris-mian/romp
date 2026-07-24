@@ -25,8 +25,9 @@ def _token():
     if t:
         return t
     try:
-        base = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local/state"))
-        return (base / "romp" / "serve-token").read_text().strip()
+        root = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root (plans/multi-kernel.md)
+                    or Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local/state")) / "romp")
+        return (root / "serve-token").read_text().strip()
     except OSError:
         return ""
 

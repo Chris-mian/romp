@@ -32,14 +32,14 @@ PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd):$PATH"
 # We persist <uuid> -> "<name>\t<dir>" so `romp resume` can offer YOUR session
 # names instead of Claude's auto-generated summaries. One file per id keeps
 # concurrent sessions from racing on a shared file.
-ROMP_NAMES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
+ROMP_NAMES_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/names"
 
 # The judges' per-session index the resume picker reads to show what a stopped
 # session was about: the archiver's headline (archive/<sid>.json — the session's
 # through-line) with the latest turn caption (captions/<sid>.jsonl) as the
 # fallback — see _romp_resume_rows.
-ROMP_ARCHIVE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/archive"
-ROMP_CAPTIONS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/captions"
+ROMP_ARCHIVE_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/archive"
+ROMP_CAPTIONS_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/captions"
 
 _romp_record() {   # <sid> <name> <dir> [bg] [fg] — write/replace the map entry
     local sid="$1" nm="$2" dir="$3" bg="${4:-}" fg="${5:-}"
@@ -49,7 +49,7 @@ _romp_record() {   # <sid> <name> <dir> [bg] [fg] — write/replace the map entr
     # captions, and postal message bodies. 0700 on the root blocks other local
     # users from reading anything beneath it (the traverse bit is enough).
     # Idempotent; best-effort.
-    chmod 700 "${XDG_STATE_HOME:-$HOME/.local/state}/romp" 2>/dev/null || true
+    chmod 700 "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}" 2>/dev/null || true
     printf '%s\t%s\t%s\t%s\n' "$nm" "$dir" "$bg" "$fg" > "$ROMP_NAMES_DIR/$sid"
 }
 
@@ -666,7 +666,7 @@ fi
 # as the kernel's _load_token: env override, else the state file.
 _romp_token() {
     if [[ -n "${ROMP_SERVE_TOKEN:-}" ]]; then printf '%s' "$ROMP_SERVE_TOKEN"; return; fi
-    cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token" 2>/dev/null || true
+    cat "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/serve-token" 2>/dev/null || true
 }
 
 # `romp --url` — print the tokened dashboard URL, nothing else (scripting/piping; `romp launch` is the
@@ -820,7 +820,7 @@ fi
 # 2026-07-09). Read live by the kernel + judge (mtime-cached) — no restart needed.
 if [[ "${1:-}" == "--debug" ]]; then
     shift
-    _dbg_conf="${XDG_STATE_HOME:-$HOME/.local/state}/romp/debug-mode.json"
+    _dbg_conf="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/debug-mode.json"
     case "${1:-status}" in
         on)
             mkdir -p "$(dirname "$_dbg_conf")"
@@ -865,7 +865,7 @@ case "${1:-}" in
                # kernel?" is one command (tail) instead of forensics. Best-effort: never blocks the
                # restart itself.
                {
-                   _ra_dir="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+                   _ra_dir="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
                    mkdir -p "$_ra_dir"
                    _ra_sid="${CLAUDE_CODE_SESSION_ID:-}"
                    _ra_name=""
@@ -1098,7 +1098,7 @@ else
         # switch). Read the mirror when it exists; the hardcoded fallback below is the default
         # "romp" set, for a machine whose kernel never booted.
         _palette=(); _fg=()
-        _palfile="${XDG_STATE_HOME:-$HOME/.local/state}/romp/palette-colors"
+        _palfile="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/palette-colors"
         if [[ -r "$_palfile" ]]; then
             while IFS=$'\t' read -r _pb _pf; do
                 [[ "$_pb" == \#* ]] && { _palette+=("$_pb"); _fg+=("${_pf:-white}"); }

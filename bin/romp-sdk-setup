@@ -8,7 +8,7 @@
 # python changes (say a 3.12 lands next to the 3.8 the venv was built with), the venv is REBUILT to
 # match. Idempotent; the tmux backend is unaffected whether or not this is run. Re-run to upgrade.
 set -euo pipefail
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+STATE="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
 VENV="$STATE/sdkvenv"
 
 # The Agent SDK needs python >= 3.10; some hosts pin the system python3 older (Ubuntu 20.04 = 3.8)

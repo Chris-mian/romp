@@ -1511,7 +1511,8 @@ class TimelinePanel {
       if (typeof process === 'undefined' || !process.versions || !process.versions.electron) return;
       const fs = require('fs'), path = require('path'), os = require('os');
       const base = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
-      const f = path.join(base, 'romp', 'session-order.json'), tmp = f + '.tmp';
+      const root = process.env.ROMP_STATE_DIR || path.join(base, 'romp');   // per-kernel state root (plans/multi-kernel.md)
+      const f = path.join(root, 'session-order.json'), tmp = f + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(order));
       fs.renameSync(tmp, f);
     } catch (e) { /* no host hook + no Node → can't persist; the drag still reordered visually until next poll */ }

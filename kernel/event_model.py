@@ -29,7 +29,8 @@ from datetime import datetime
 from pathlib import Path
 
 HOME     = Path.home()
-STATE    = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp"
+STATE    = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root override (plans/multi-kernel.md)
+                or Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp")
 PROJECTS = HOME / ".claude" / "projects"
 NAMES    = STATE / "names"
 STATES_DIR   = STATE / "states"

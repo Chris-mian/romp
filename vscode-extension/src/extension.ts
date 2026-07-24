@@ -42,7 +42,8 @@ function serveToken(): string {
   if (env) return env;
   try {
     const base = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-    return fs.readFileSync(path.join(base, "romp", "serve-token"), "utf8").trim();
+    const root = process.env.ROMP_STATE_DIR || path.join(base, "romp");   // per-kernel state root (plans/multi-kernel.md)
+    return fs.readFileSync(path.join(root, "serve-token"), "utf8").trim();
   } catch {
     return "";
   }

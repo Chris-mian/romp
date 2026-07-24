@@ -4185,7 +4185,7 @@ def _fetch_remote_token(host):
     """Read the remote kernel's serve-token over ssh so the browser can authorize against it (the token
     bypasses the Origin gate — see _authorize). Best-effort: '' if ssh fails or the file is absent (the
     tunnel still opens; the dashboard just can't authorize until romp is set up on the remote)."""
-    cmd = 'cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token"'
+    cmd = 'cat "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/serve-token"'
     try:
         r = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, cmd],
                            capture_output=True, text=True, timeout=20)
@@ -4428,7 +4428,7 @@ def _start_remote_kernel(host):
            'if [ -z "$S" ]; then for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
            'if [ -x "$d/bin/romp-serve" ]; then S="$d/bin/romp-serve"; break; fi; done; fi; '
            'if [ -z "$S" ]; then echo NOROMP; exit 0; fi; '
-           'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; '
+           'LOGDIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"; mkdir -p "$LOGDIR"; '
            'nohup "$S" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "STARTED:$S"')
     try:
         r = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, cmd], capture_output=True, text=True, timeout=25)
@@ -5042,7 +5042,7 @@ def _update_remote(host):
         return False, "git push to %s failed: %s" % (host, (_ssh_err(p.stderr) or p.stdout or "").strip()[:160])
     # (3) verify no divergence, reset the remote to the pushed HEAD, clean up, restart
     apply_cmd = (
-        'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; R=%s; '
+        'LOGDIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"; mkdir -p "$LOGDIR"; R=%s; '
         'if ! git -C "$R" merge-base --is-ancestor HEAD %s 2>/dev/null; then '
         'git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; echo DIVERGED; exit 0; fi; '
         'git -C "$R" reset --hard %s >/dev/null 2>&1 || { git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; echo RESETFAIL; exit 0; }; '

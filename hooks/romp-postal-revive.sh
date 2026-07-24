@@ -32,7 +32,7 @@ case "$source_kind" in resume|startup) ;; *) exit 0 ;; esac
 
 # Fast path: nothing pending for this session -> nothing to do. The marker is
 # on-disk so this needs no tmux vars and no bus round-trip.
-pending="${XDG_STATE_HOME:-$HOME/.local/state}/romp/postal/mail-pending/$sid"
+pending="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/postal/mail-pending/$sid"
 [[ -f "$pending" ]] || exit 0
 
 # romp sessions only — identified by the @romp flag, not the name.

@@ -26,7 +26,7 @@ set -eu
 MANAGER="${1:?romp-node-launch: manager path required}"
 shift
 
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+STATE="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
 ROMP_NODE="$STATE/romp-node"
 sys_node="$(command -v node 2>/dev/null || true)"
 

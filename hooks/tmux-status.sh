@@ -99,7 +99,7 @@ if [[ "$DISPLAY_TMUX" == 1 ]]; then
     # failure here can never break status reporting. (Headless/SDK sessions are untouched: the SDK
     # backend owns identity via its registry's lastSid.)
     if [[ -n "$HOOK_SID" && -n "$sid" && "$HOOK_SID" != "$sid" ]]; then
-        ndir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
+        ndir="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/names"
         if [[ -f "$ndir/$sid" && ! -e "$ndir/$HOOK_SID" ]]; then
             cp "$ndir/$sid" "$ndir/$HOOK_SID" 2>/dev/null || true
         fi
@@ -110,7 +110,7 @@ if [[ "$DISPLAY_TMUX" == 1 ]]; then
 else
     sid="$ROMP_SESSION_ID"
     # No tmux var to diff against — read the last recorded state instead.
-    prev=$(tail -1 "${XDG_STATE_HOME:-$HOME/.local/state}/romp/states/$sid.jsonl" 2>/dev/null \
+    prev=$(tail -1 "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/states/$sid.jsonl" 2>/dev/null \
         | sed -n 's/.*"state":"\([^"]*\)".*/\1/p' || true)
 fi
 # Compaction is STICKY: once PreCompact set state=compacting, ONLY PostCompact ends it. A postal
@@ -122,7 +122,7 @@ if [[ "$prev" == "compacting" && "$EVENT" != "PostCompact" ]]; then
     state="compacting"; emoji="⇲"
 fi
 if [[ -n "$sid" && "$prev" != "$state" ]]; then
-    sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
+    sdir="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/states"
     mkdir -p "$sdir"
     printf '{"t":%s,"state":"%s"}\n' "$now" "$state" >> "$sdir/$sid.jsonl"
 fi
@@ -138,7 +138,7 @@ fi
 # SubagentStart/Stop snapshot) leave an idle session 'working'. So we ignore the Stop payload's
 # `background_tasks` and only clear a stale awaiting:true (transition-only, so the log stays lean).
 if [[ "$EVENT" == "Stop" && -n "$sid" ]]; then
-    sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
+    sdir="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/states"
     prev_aw=$(grep -oE '"awaiting":(true|false)' "$sdir/$sid.jsonl" 2>/dev/null | tail -1 | sed 's/.*://' || true)
     if [[ "$prev_aw" == "true" ]]; then
         mkdir -p "$sdir"

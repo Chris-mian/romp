@@ -31,6 +31,9 @@ from pathlib import Path
 
 def state_dir():
     home = Path(os.environ.get("HOME") or Path.home())
+    override = os.environ.get("ROMP_STATE_DIR")   # per-kernel state root (plans/multi-kernel.md)
+    if override:
+        return Path(override)
     base = os.environ.get("XDG_STATE_HOME") or str(home / ".local/state")
     return Path(base) / "romp"
 

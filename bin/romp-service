@@ -21,7 +21,7 @@ done
 ROMP_DIR="$(cd "$(dirname "$src")/.." && pwd)"
 MANAGER="${ROMP_MANAGER_BIN:-$ROMP_DIR/bin/romp-manager}"
 LABEL="com.romp.manager"
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+STATE="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
 LOG="$STATE/manager.log"
 # macOS Full Disk Access identity: the login agent runs the manager THROUGH this
 # thin launcher, which execs it under a romp-owned copy of node at $ROMP_NODE

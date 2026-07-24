@@ -41,7 +41,8 @@ import os, re, sys, time, subprocess
 from pathlib import Path
 
 HOME    = Path.home()
-STATE   = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp"
+STATE   = Path(os.environ.get("ROMP_STATE_DIR")   # per-kernel state root override (plans/multi-kernel.md)
+               or Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp")
 PIDFILE = STATE / "idle-dots.pid"
 
 STALE_AFTER_SECS = 3600          # 1h — matches dashboard STALE_AFTER_SECS + timeline STALE

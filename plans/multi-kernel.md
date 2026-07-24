@@ -81,6 +81,23 @@ ROMP_POSTAL_PORT, ROMP_STATE_DIR, CLAUDE_CONFIG_DIR, ROMP_TMUX_SOCKET). `romp ke
 add|remove|list`. `romp refresh` already restarts all registry entries. Each aux kernel gets its
 own serve-token (falls out of the state root) and its own postal bus.
 
+Phase-3 rider (the user via romp_docs, 2026-07-24, reproduced end to end): `romp --refresh`
+restarts kernels but NEVER the manager, and bin/romp-manager reads KERNEL_PORT once at manager
+start — so after the port renumber the long-lived launchd manager kept respawning kernels on the
+OLD port while every fresh process printed the new one (right URL, nothing behind it; fixed only
+by romp-service reinstall). Two obligations for the registry design: (1) the manager re-reads
+kernels.json + its env-derived defaults AT EVERY SPAWN, never caching spec values at manager
+start, so a config change is picked up by the next restart of that kernel; (2) --refresh either
+restarts the manager too or DETECTS that bin/romp-manager (or its baked defaults) changed since
+the manager started and says so loudly — silently respawning with stale config is exactly what
+the authoritative-sources rule forbids. Test shape: manager holds port P, disk changes to Q,
+--refresh runs → the kernel must not come up on P silently.
+
+Env-propagation note (phase 1 finding): children inherit the KERNEL's process env, so SDK
+sessions of an aux kernel get ROMP_STATE_DIR/CLAUDE_CONFIG_DIR for free; tmux sessions inherit
+from the tmux SERVER, so the per-profile socket (phase 2) is also what carries the profile env —
+each profile's tmux server is started by its own kernel.
+
 **Phase 4 — account surfacing.** Kernel reads its config dir's `.claude.json` `oauthAccount` and
 exposes account identity in its state payload; dashboard shows it (exact surface TBD with the ui
 session — glanceable, one-line, progressive disclosure).
