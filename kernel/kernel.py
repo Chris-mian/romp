@@ -5971,23 +5971,59 @@ def _parse_task_notification(txt):
             "output_file": fld("output-file"), "tool_use_id": fld("tool-use-id")}
 
 
+_task_out_cache = {}                                  # output-file path -> ((mtime, size), tail)
+
+
 def _read_task_output(of):
     """The TAIL of a background task's output file (the expand-to-details body), capped. Reads only the last
-    ~8KB off the end so a huge (e.g. training) log never gets read whole every push. '' if unreadable."""
+    ~8KB off the end so a huge (e.g. training) log never gets read whole every push. '' if unreadable.
+    Memoized on (mtime, size): build_session reads this for every completed-task turn on EVERY push, and a
+    finished command's file no longer changes — so the tail is read once, then served from cache until the
+    file grows (a still-running task) or is replaced. size-keyed, so a growing log re-reads correctly."""
     if not of:
         return ""
     try:
+        st = os.stat(of)
+    except OSError:
+        return ""
+    key = (st.st_mtime, st.st_size)
+    hit = _task_out_cache.get(of)
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
         with open(of, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            sz = f.tell()
-            f.seek(max(0, sz - 8000))
+            f.seek(max(0, st.st_size - 8000))
             raw = f.read()
     except OSError:
         return ""
     data = raw.decode("utf-8", "replace").strip()
     if len(data) > 4000:
         data = "…(truncated)\n" + data[-4000:]
+    if len(_task_out_cache) > 256:
+        _task_out_cache.clear()
+    _task_out_cache[of] = (key, data)
     return data
+
+
+def _task_outputs_for(reminders, path):
+    """For each task-notification reminder carried by a user turn, the {tool_use_id: {command, output}} its
+    chat card expands into: the shell command from the launch record (the mtime-cached bg scan) plus the
+    output file's tail. The webview can't read the output file, so the kernel joins it here from the
+    AUTHORITATIVE launch↔notification pairing (the user 2026-07-23, who wanted the background-command card to
+    open to real detail instead of re-printing its one-line summary). {} when no reminder is a
+    task-notification, or nothing readable was found. `reminders` are the INNER XML (outer wrapper already
+    peeled by _split_reminders), so re-wrap before parsing."""
+    out = {}
+    for r in reminders:
+        note = _parse_task_notification("<task-notification>%s</task-notification>" % r)
+        tid = (note or {}).get("tool_use_id")
+        if not tid:
+            continue
+        cmd = next((tk.get("command") or "" for tk in _bg_scan_all_cached(path) if tk.get("id") == tid), "")
+        tail = _read_task_output(note.get("output_file"))
+        if cmd or tail:
+            out[tid] = {"command": cmd, "output": tail}
+    return out
 
 
 def _scan_bg_tasks(path, want_all=False):
@@ -8380,6 +8416,10 @@ def build_session(sid, now, tmux=None):
                         if prompt or reminders or imgs:
                             ev = {"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
                                   "human": author == "human" or bool(imgs), "reminders": reminders}
+                            if reminders:                # join each task-notification to its command + output tail
+                                to = _task_outputs_for(reminders, sess["path"])
+                                if to:
+                                    ev["taskOutputs"] = to
                             # The CLI's own stop record ("[Request interrupted by user]" / "… for tool use]")
                             # is an EVENT, not something the user typed — flag it so the chat renders a slim
                             # interrupt marker on the rail instead of a person-blue bubble (the user 2026-07-02).

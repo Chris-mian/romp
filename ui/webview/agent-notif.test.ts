@@ -20,10 +20,38 @@ const NOTIF = [
 test("pulls the agent name, status, and final result out of a task-notification", () => {
   const a = parseAgentNotif(NOTIF);
   assert.ok(a, "a task-notification parses");
+  assert.equal(a!.kind, "agent");
   assert.equal(a!.label, "widget audit", "the agent name comes from the summary");
   assert.equal(a!.status, "completed");
+  assert.equal(a!.detail, "completed", "an agent's detail is its status word");
+  assert.equal(a!.toolUseId, "toolu_0abcDEF123", "the tool-use-id join key is kept");
   assert.match(a!.result, /Found 3 widgets/, "the result is the agent's final message");
   assert.doesNotMatch(a!.result, /task-id|tool-use-id|output-file|<note>/, "internal ids + boilerplate dropped");
+});
+
+test("a background command notification parses to a clean label + exit-code detail, not a repeated summary", () => {
+  // the shape that made the old card print its summary twice (the user 2026-07-23): no <result>, the detail
+  // lives in the command + output the kernel joins in by tool-use-id (ev.taskOutputs), not in this XML.
+  const notif = [
+    "<task-id>abcabc123</task-id>",
+    "<tool-use-id>toolu_9zzz888</tool-use-id>",
+    "<output-file>/tmp/TESTHOST/tasks/abcabc123.output</output-file>",
+    "<status>completed</status>",
+    '<summary>Background command "measure the watch-loop rate" completed (exit code 0)</summary>',
+  ].join("\n");
+  const a = parseAgentNotif(notif);
+  assert.ok(a);
+  assert.equal(a!.kind, "command");
+  assert.equal(a!.label, "measure the watch-loop rate", "the label is the description, NOT the whole summary");
+  assert.equal(a!.detail, "exit 0", "the compact detail is the exit code, read at a glance");
+  assert.equal(a!.result, "", "a command has no result field — its detail is command+output");
+  assert.equal(a!.toolUseId, "toolu_9zzz888");
+});
+
+test("a non-zero exit shows in the detail", () => {
+  const a = parseAgentNotif('<task-id>x</task-id><status>completed</status>'
+    + '<summary>Background command "flaky check" completed (exit code 2)</summary>');
+  assert.equal(a!.detail, "exit 2");
 });
 
 test("a plain <system-reminder> (no task-id / Agent summary) is NOT an agent card", () => {
@@ -35,6 +63,7 @@ test("falls back gracefully when the summary isn't the canonical Agent \"…\" s
   // still a task-notification (has a <task-id>), but the summary lacks the Agent "…" quote
   const a = parseAgentNotif('<task-id>22223333</task-id><status>failed</status><summary>background sweep came to rest</summary>');
   assert.ok(a);
+  assert.equal(a!.kind, "task");
   assert.equal(a!.label, "background sweep", "strips the 'came to rest' tail for a label");
   assert.equal(a!.status, "failed");
   assert.equal(a!.result, "", "no <result> → empty");
@@ -46,16 +75,30 @@ const CSS = fs.readFileSync(path.join(process.cwd(), "..", "ui", "webview", "sty
 
 test("render.ts splits agent notifications out of the reminders into agent notice cards", () => {
   assert.match(RENDER, /const a = parseAgentNotif\(r\);/);
-  assert.match(RENDER, /turn\.appendChild\(renderAgentNotif\(a,/);
+  // the card is fed the event's taskOutputs so a command can expand to its shell + output tail
+  assert.match(RENDER, /turn\.appendChild\(renderAgentNotif\(a, ev\.taskOutputs,/);
   assert.match(RENDER, /else plain\.push\(r\);/);
   // the leftover plain reminders now get their OWN muted notice card too (not the old italic fold)
   assert.match(RENDER, /noticeCard\(\{ variant: "reminder", chip: "system"/);
   assert.match(RENDER, /\$\{n\} reminder/);
-  // an agent notif IS a notice card now (the accent-blue variant), not a bare foldable
-  assert.match(RENDER, /noticeCard\(\{ variant: "agent", chip: "agent"/);
+  // an agent notif IS a notice card now (accent-blue); the chip is "task" for a command, "agent" for an agent
+  assert.match(RENDER, /const chip = a\.kind === "agent" \? "agent" : "task";/);
+  assert.match(RENDER, /noticeCard\(\{ variant: "agent", chip, head, body/);
 });
 
-test("styles define the agent notice card in the romp accent", () => {
+test("the card gist never re-prints its body — the head is label+detail, the body is result or command/output", () => {
+  // the double-print bug (the user 2026-07-23): the old card put the summary on BOTH the head gist and the
+  // body. The head is now the compact "label · detail"; the body is the RESULT (agent) or the command +
+  // output tail (command), and is omitted entirely when there is nothing more than the gist.
+  assert.match(RENDER, /const head = a\.detail \? `\$\{a\.label\} · \$\{a\.detail\}` : a\.label;/);
+  assert.match(RENDER, /collapsible: hasBody/);
+  assert.doesNotMatch(RENDER, /p\.textContent = a\.summary/);   // the old "print the summary again" body is gone
+  // a flat card (no body) drops the whole body wrapper so there is no stray padding
+  assert.match(RENDER, /if \(hasBody\) \{ const bodyEl = el\("div", "notice-body"\)/);
+});
+
+test("styles define the agent notice card in the romp accent and the command detail sub-labels", () => {
   assert.match(CSS, /\.notice-card-agent \{ border-left-color: var\(--accent\); \}/);
   assert.match(CSS, /\.notice-chip-agent \{ color: var\(--accent\)/);
+  assert.match(CSS, /\.notice-sub \{/);
 });

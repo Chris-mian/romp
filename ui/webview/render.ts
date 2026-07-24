@@ -55,10 +55,14 @@ marked.use({
 // ("Other"), and is empty while the question is still pending (multi-select answers arrive pre-split).
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
+// A completed background command's detail, keyed by its tool-use-id — the shell it ran + its output tail,
+// joined in by the kernel (build_session's taskOutputs) so the inline completion card can expand into it.
+type TaskOutputs = Record<string, { command: string; output: string }>;
+
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -639,10 +643,10 @@ function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chi
   if (o.head) { const h = el("span", "notice-head-text"); h.textContent = o.head; headEl.appendChild(h); }
   card.appendChild(headEl);
 
-  const bodyEl = el("div", "notice-body"); bodyEl.appendChild(o.body);
-  card.appendChild(bodyEl);
+  const hasBody = o.body.childNodes.length > 0;   // gist-only notice → skip the wrapper, render flat
+  if (hasBody) { const bodyEl = el("div", "notice-body"); bodyEl.appendChild(o.body); card.appendChild(bodyEl); }
 
-  if (collapsible) {
+  if (collapsible && hasBody) {
     card.classList.add("notice-collapsible");
     applyFold(card, "notice-open", o.key);                 // keyed: an expanded card stays open across pushes
     if (caret) caret.textContent = card.classList.contains("notice-open") ? "▾" : "▸";
@@ -659,17 +663,30 @@ function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chi
   return turn;
 }
 
-// A backgrounded agent's completion (<task-notification>) → an accent-blue notice card: an "agent" chip +
-// the agent name·status gist on the head, its final message (markdown) as the collapsed body — no raw XML,
-// no internal ids (the user 2026-06-30). The pure parse lives in agent-notif.ts (testable); this owns the DOM.
-function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
-  const gist = `"${a.label}" · ${a.status || "returned"}`;
+// A backgrounded task's completion (<task-notification>) → an accent-blue notice card. The HEAD is a
+// glanceable gist — the task's own name and a compact status ("desc · exit 0", "agent name · completed") —
+// NOT the whole summary sentence. The collapsible BODY is the real detail, one click away (the user
+// 2026-07-23, who saw a card that printed the same summary twice and couldn't open it for more):
+//   - an AGENT: its final message (markdown);
+//   - a background COMMAND: the shell command it ran + its output tail, joined in by the kernel via
+//     tool-use-id (ev.taskOutputs — the client can't read the output file itself).
+// When there is genuinely nothing more than the gist, the card renders FLAT (no caret, no repeated body) —
+// honest, and no dead-end. The pure parse lives in agent-notif.ts (testable); this owns the DOM.
+function renderAgentNotif(a: AgentNotif, outputs?: TaskOutputs, key?: string): HTMLElement {
+  const chip = a.kind === "agent" ? "agent" : "task";       // a Bash command is a task, not an "agent"
+  const head = a.detail ? `${a.label} · ${a.detail}` : a.label;
   const body = el("div", "notice-md md");
-  if (a.result) { body.innerHTML = md(a.result); highlight(body); }
-  else { const p = el("div", "notice-plain"); p.textContent = a.summary; body.appendChild(p); }
-  // collapsible only when there's more than the gist to show (a bare summary IS the gist → show it flat)
-  return noticeCard({ variant: "agent", chip: "agent", head: gist, body, key,
-                      collapsible: !!a.result, nested: true });   // rendered inside the carrying user turn
+  const extra = a.toolUseId && outputs ? outputs[a.toolUseId] : undefined;
+  let hasBody = false;
+  if (a.result) {                                           // an agent's final message
+    body.innerHTML = md(a.result); highlight(body); hasBody = true;
+  } else if (extra && (extra.command || extra.output)) {    // a command's shell + output tail
+    if (extra.command) { const lbl = el("div", "notice-sub"); lbl.textContent = "command"; body.appendChild(lbl); body.appendChild(preEl(extra.command)); }
+    if (extra.output) { const lbl = el("div", "notice-sub"); lbl.textContent = "output"; body.appendChild(lbl); body.appendChild(preEl(extra.output)); }
+    hasBody = true;
+  }
+  return noticeCard({ variant: "agent", chip, head, body, key,
+                      collapsible: hasBody, nested: true });   // flat when the gist is all there is; rendered inside the carrying user turn
 }
 
 // ---- path-source pasted images ----
@@ -1602,7 +1619,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       const plain: string[] = [];
       ev.reminders.forEach((r, i) => {
         const a = parseAgentNotif(r);
-        if (a) turn.appendChild(renderAgentNotif(a, ev.uuid ? "agn:" + ev.uuid + ":" + i : undefined));
+        if (a) turn.appendChild(renderAgentNotif(a, ev.taskOutputs, ev.uuid ? "agn:" + ev.uuid + ":" + i : undefined));
         else plain.push(r);
       });
       if (plain.length) {

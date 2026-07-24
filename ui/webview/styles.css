@@ -1404,6 +1404,10 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .notice-md.md > :first-child { margin-top: 0; }
 .notice-md.md > :last-child { margin-bottom: 0; }
 .notice-plain { color: var(--dim); }
+/* a small dim heading inside an agent/task notice body, marking the "command" / "output" sections of a
+   background command's detail — no new font-size (inherits), per the one-size-per-info-type rule */
+.notice-sub { color: var(--dim); opacity: 0.7; margin: 6px 0 2px; }
+.notice-sub:first-child { margin-top: 0; }
 
 /* agent notices — the romp accent blue (a backgrounded agent came to rest) */
 .notice-card-agent { border-left-color: var(--accent); }
