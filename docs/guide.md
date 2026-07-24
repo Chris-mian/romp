@@ -38,15 +38,16 @@ Cards sit in three columns:
 
 ![The feed's three columns, with the cues on a card](assets/guide/feed-annotated.png){ width="100%" }
 
-**Background** is why the agent is taking the action, and **Summary** is what it
-did. When a task divides naturally into parts, the card's **Sub-goals** button
+<span class="romp-btn">Background</span> is why the agent is taking the action,
+and <span class="romp-btn">Summary</span> is what it did. When a task divides
+naturally into parts, the card's <span class="romp-btn">Sub-goals</span> button
 opens them.
 
 Cards follow the work rather than the session: one session can hold several
 tasks, and a task can be handed from one session to another.
 
-**Clear** a card when you are done with it. A cleared card is archived, and no
-more work is added to it.
+Press <span class="romp-btn">Clear</span> on a card when you are done with it. A
+cleared card is archived, and no more work is added to it.
 
 ### The timeline
 

@@ -242,6 +242,21 @@
   font-weight: 600;
   white-space: nowrap;
 }
+/* Buttons named in prose, drawn the way the card draws them: an outlined pill,
+   dim until hover. Mirrors feed.css .fask-secbtn / .fdismiss (1px border on
+   --card-border, 6px radius, dim text). Use for Background, Summary, Sub-goals,
+   Clear — anything the reader is meant to go and click. */
+.romp-btn {
+  display: inline-block;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  padding: 0.05em 0.55em;
+  font-size: 0.85em;
+  color: var(--md-default-fg-color--light, #9aa0a6);
+  white-space: nowrap;
+  line-height: 1.5;
+}
+
 .romp-chip-working   { background: #e0b020; color: #332600; }
 .romp-chip-blocked   { background: #c0392b; color: #ffffff; }
 .romp-chip-completed { background: #2b7fb8; color: #ffffff; }
@@ -260,7 +275,12 @@
    rendered SVG, so they hold whichever party would otherwise win. Node labels
    go dark; EDGE labels are deliberately separate, since they sit on the page's
    dark background and get a light chip of their own instead. */
-:root {
+   Material defines its --md-mermaid-* variables under `:root>*`, i.e. on <body>,
+   not on <html>. A `:root` override therefore LOSES: not on specificity, but on
+   tree position, since the closer ancestor's value is the one the diagram
+   inherits. Match their selector so ours is the closer-or-equal definition and,
+   loading later, the winning one. */
+:root, :root > * {
   --md-mermaid-label-fg-color: #111827;
   --md-mermaid-label-bg-color: #e5e7eb;
 }
