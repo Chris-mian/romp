@@ -84,5 +84,19 @@ class BlockSince(unittest.TestCase):
                          "no block rows → the node's own mt")
 
 
+class DoneSince(unittest.TestCase):
+    """_done_since — the takeaway's per-paragraph stamp twin: when each completed outcome landed."""
+
+    def test_newest_done_event_wins(self):
+        nd = {"log": [{"kind": "done", "ev_t": T0 + 5, "at": T0 + 6},
+                      {"kind": "reopen", "ev_t": T0 + 40, "at": T0 + 40},
+                      {"kind": "done", "ev_t": T0 + 80, "at": T0 + 81}], "mt": T0}
+        self.assertEqual(jd._done_since(nd), T0 + 80)
+
+    def test_fallbacks_mirror_block_since(self):
+        self.assertEqual(jd._done_since({"log": [{"kind": "done", "at": T0 + 9}]}), T0 + 9)
+        self.assertEqual(jd._done_since({"log": [], "mt": T0 + 2}), T0 + 2)
+
+
 if __name__ == "__main__":
     unittest.main()

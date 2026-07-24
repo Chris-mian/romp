@@ -4143,6 +4143,14 @@ def _block_since(nd):
     return max(ts) if ts else (nd.get("mt") or nd.get("t") or 0)
 
 
+def _done_since(nd):
+    """The node's newest DONE event time (ev_t, arrival fallback) — when its outcome actually landed.
+    Feeds the takeaway's per-paragraph "Nm ago" stamps (the user 2026-07-24); mt/t fallback for
+    legacy nodes. The done twin of _block_since."""
+    ts = [(e.get("ev_t") or e.get("at") or 0) for e in (nd.get("log") or []) if e.get("kind") == "done"]
+    return max(ts) if ts else (nd.get("mt") or nd.get("t") or 0)
+
+
 def _brief_superseded(nodes, sub, prev_bm):
     """True when a KEPT decision brief predates a later unblock/reopen anywhere in the card's subtree —
     the asks it presents were ANSWERED after it was written, so keeping it re-surfaces decisions the
@@ -6703,7 +6711,12 @@ DISTILL_SYS = (
     "TAKEAWAY: the one thing the user would most want to know now that it's done: what came of it, plus "
     "the idea or reasoning behind it when that's the interesting part. Write for someone who wants the "
     "point, not the process. If the goal was a question, give the answer. Be as brief as the point "
-    "allows, usually one sentence and at most two or three; the user can click through for detail.\n\n"
+    "allows, usually one sentence and at most two or three; the user can click through for detail. "
+    "When <completed-items> lists more than one item, the goal may have delivered several separate "
+    "outcomes: if they are one story, write the single takeaway as usual; if they are genuinely "
+    "separate outcomes the user would weigh independently, write one short paragraph per item, in the "
+    "order given, each leading with that item's own outcome and separated from the next by a blank "
+    "line. Never pad a single story into per-item paragraphs.\n\n"
     "When the work PRODUCED standalone output files the user would open to see a result — a plot image, "
     "a PDF report, an exported document, a generated screenshot — add one line after the takeaway that "
     "is exactly ARTIFACTS: followed by their paths, comma-separated, transcribed character-for-character "
@@ -6722,14 +6735,23 @@ DISTILL_SYS = (
     "work about to start, however closely it names the goal. This line is parsed off and never shown.")
 
 
-def distill_llm(goal_text, work_text, done_why="", prior_summary=""):
+def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None):
     """The distiller's key-takeaway for one completed goal from the TRIAGE-tier model (Sonnet). '' on
     failure. done_why = the closer's completion verdict (the node's doneWhy), fed as <completed> ground
     truth so the summary reflects what was ACCOMPLISHED even when the work history is thin or mostly the
-    pre-completion discussion (else the distiller can summarize a finished goal as 'still in design')."""
+    pre-completion discussion (else the distiller can summarize a finished goal as 'still in design').
+    `items` (the user 2026-07-24): the goal's completed sub-outcomes as (text, doneWhy) pairs, oldest
+    done first — rendered as a numbered <completed-items> list so a multi-outcome goal MAY split its
+    takeaway one paragraph per item in that order (DISTILL_SYS leaves it the model's call: a single
+    story stays one takeaway). The caller stamps summaryParts in the same order; the feed's
+    count-match gate stamps per-paragraph ages only when the model actually split."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>" % (goal_text, work_text)
     if done_why:
         user += "\n<completed>\n%s\n</completed>" % done_why
+    if items and len(items) > 1:
+        user += "\n<completed-items>\n%s\n</completed-items>" % "\n".join(
+            "%d. %s: %s" % (i + 1, (tx or "this piece").strip(), (w or "").strip())
+            for i, (tx, w) in enumerate(items))
     if prior_summary:
         user += ("\n<prior-summary>\n%s\n</prior-summary>"
                  "\n<note>The user has already read <prior-summary>; it covers everything before their "
@@ -7213,9 +7235,17 @@ def _distill_session(fsid, path, now):
                                  note="recorded trail/placements resolved to no live segment; summary blanked")
             if nodes[top].get("summary") is None:
                 nodes[top]["summary"] = ""
+            nodes[top]["summaryParts"] = None
             nodes[top]["distilledMt"] = due; changed = True
             continue
-        out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "", prior_summary=prior)
+        # completed sub-outcomes, oldest done first (the user 2026-07-24): offered to the distiller as
+        # <completed-items>; if it splits the takeaway per item, summaryParts below stamps each
+        # paragraph with its own done time. A goal with 0-1 such subs distills exactly as before.
+        _dsubs = sorted([nodes[x] for x in sub
+                         if x != top and nodes[x].get("nodeComplete")
+                         and str(nodes[x].get("doneWhy") or "").strip()], key=_done_since)
+        out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "", prior_summary=prior,
+                          items=[(d.get("text", ""), d.get("doneWhy", "")) for d in _dsubs])
         if not out:
             if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure — don't count it toward
                 continue                               # give-up (leave summary null → re-enters once unpaused)
@@ -7223,6 +7253,7 @@ def _distill_session(fsid, path, now):
             if fails >= DISTILL_FAIL_CAP:              # gave up after K tries → SELF-HEAL to the "" sentinel
                 if nodes[top].get("summary") is None:  # so the card stops showing "(generating…)" forever
                     nodes[top]["summary"] = ""
+                    nodes[top]["summaryParts"] = None
                 nodes[top]["distilledMt"] = due; nodes[top]["distillFails"] = 0
                 _log_judge_error("distiller", fsid, "give-up", goal=top,
                                  note="%d failed calls on this card; summary blanked, card warns; a re-completion re-arms" % fails)
@@ -7236,6 +7267,8 @@ def _distill_session(fsid, path, now):
         out, arts = _split_artifacts(out)           # optional produced-files line (before the section split — it trails the takeaway)
         bg, out = _split_sections(out)
         nodes[top]["summary"] = out                 # full text — NEVER truncate a takeaway mid-word (the user 2026-07-06)
+        nodes[top]["summaryParts"] = ([{"id": d["id"], "since": _done_since(d)} for d in _dsubs]
+                                      if len(_dsubs) > 1 else None)   # same order as <completed-items>; the feed's count-match gate decides whether the model actually split
         nodes[top]["artifacts"] = arts or None      # files the work PRODUCED (paths as written in <work>) — the kernel existence-filters at feed build (the user 2026-07-08)
         nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         # the takeaway's cited source, else the WRITE-TIME deterministic stamp: the newest labeled atom

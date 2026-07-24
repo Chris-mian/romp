@@ -15,13 +15,21 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "judge.py"), "utf8");
 
-test("the AskItem declares briefParts in the kernel's shape", () => {
+test("the AskItem declares briefParts and summaryParts in the kernel's shape", () => {
   assert.match(FEED, /briefParts\?: \{ id\?: string; since: number \}\[\] \| null;/);
+  assert.match(FEED, /summaryParts\?: \{ id\?: string; since: number \}\[\] \| null;/);
 });
 
-test("the kernel ships briefParts beside the decision brief", () => {
-  assert.ok(KERNEL.includes('"briefParts": nodes[nid].get("briefParts") or None'),
-    "build_feed's ask payload carries the per-paragraph stamps");
+test("the kernel ships briefParts and summaryParts beside the brief and takeaway", () => {
+  assert.ok(KERNEL.includes('"briefParts": nodes[nid].get("briefParts") or None'));
+  assert.ok(KERNEL.includes('"summaryParts": nodes[nid].get("summaryParts") or None'));
+});
+
+test("the distiller side is the model's call — split per item or stay one story", () => {
+  assert.ok(JUDGE.includes("Never pad a single story into per-item paragraphs."),
+    "DISTILL_SYS offers the per-item form without forcing takeaway bloat");
+  assert.ok(JUDGE.includes('nodes[top]["summaryParts"] = ([{"id": d["id"], "since": _done_since(d)} for d in _dsubs]'),
+    "summaryParts written in <completed-items> order with each item's own done time");
 });
 
 test("the judge stores one {id, since} per owed item, in order, multi-item only", () => {
@@ -31,9 +39,11 @@ test("the judge stores one {id, since} per owed item, in order, multi-item only"
     "single-item briefs store nothing — the card header's age is that stamp (the user's rule)");
 });
 
-test("the renderer gates on blocked + multi-item + an exact paragraph-count match", () => {
-  assert.ok(FEED.includes("if (distillShown && dBlocked && !dCompleted && bp && bp.length > 1)"),
-    "blocked briefs only, never a completed takeaway; single ask keeps the header age");
+test("the renderer gates on state-matched parts + multi-item + an exact paragraph-count match", () => {
+  assert.ok(FEED.includes("const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;"),
+    "parts must belong to the state being shown: briefParts <-> blocked brief, summaryParts <-> takeaway");
+  assert.ok(FEED.includes("if (distillShown && bp && bp.length > 1)"),
+    "multi-item only; a single ask keeps the header age");
   assert.ok(FEED.includes("if (paras.length === bp.length)"),
     "the model may merge paragraphs — a missing stamp beats a wrong one");
   assert.match(FEED, /split\(\/\\n\\s\*\\n\/\)/, "paragraphs split on blank lines, the brief's own separator");

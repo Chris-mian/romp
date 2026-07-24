@@ -80,6 +80,7 @@ interface AskItem {
   artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   briefParts?: { id?: string; since: number }[] | null;   // MULTI-item brief: one {id, since} per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null/absent = single ask, the card header's age is the stamp (the user 2026-07-24)
+  summaryParts?: { id?: string; since: number }[] | null;   // the DONE twin: per-paragraph done-event stamps for a takeaway the distiller split by <completed-items> (the user 2026-07-24)
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the completion turn's wrap-up block (kernel build_feed completed pin; cited/latest-prose fallbacks — the user 2026-07-14)
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
@@ -1249,13 +1250,15 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // owed item IN ORDER (judge BLOCK_BRIEF_SYS 2026-07-21 + briefParts), so each paragraph can wear
   // the age of ITS OWN ask — the exact block-event time — and a stale re-surfaced ask shows its real
   // age at a glance (the incident: a card re-displayed a brief whose go-ahead was given two hours
-  // earlier). Three deliberate gates: BLOCKED brief only (a completed takeaway never wears these),
+  // earlier). The DONE side mirrors it: a takeaway the distiller split by <completed-items> ships
+  // summaryParts, each paragraph stamped with its own done-event time. Deliberate gates: the parts
+  // must belong to the STATE being shown (briefParts ↔ blocked brief, summaryParts ↔ takeaway),
   // multi-item only (a single ask keeps just the card header's age — the user's rule), and the
   // paragraph count must MATCH briefParts (the model may merge items; a missing stamp beats a wrong
   // one — then the plain applyDistillLine text above stands untouched). Rebuilt every push, so the
   // ages tick live like every other relAge on the card.
-  const bp = it.briefParts;
-  if (distillShown && dBlocked && !dCompleted && bp && bp.length > 1) {
+  const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;
+  if (distillShown && bp && bp.length > 1) {
     const paras = distillShown.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
     if (paras.length === bp.length) {
       const dle = a._distill as HTMLElement;

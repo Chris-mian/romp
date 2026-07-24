@@ -10445,6 +10445,7 @@ def build_feed(now, tmux=None):
                 "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "briefParts": nodes[nid].get("briefParts") or None,   # MULTI-item brief: [{id, since}] one per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null for single-item briefs, whose stamp is the card header's age (the user 2026-07-24)
+                "summaryParts": nodes[nid].get("summaryParts") or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "artifacts": _feed_artifacts(nodes[nid].get("artifacts"), fsid),   # files the work PRODUCED (distiller ARTIFACTS line), existence-filtered NOW — "N artifacts" under the summary; previews in the modal (the user 2026-07-08)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
