@@ -20,7 +20,13 @@
 #   - Cheap on tokens — only the relevant slice is sent, MCP off, trivial turns
 #     skipped, SHORT prompts shown verbatim (no model call), output capped.
 #
-# Disable any time:   touch ~/.claude/romp-summarize-off     (rm to re-enable)
+# DEPRECATED, DEFAULT OFF (the user 2026-07-24): the live tmux phrase is a relic of the
+# tmux-only era — the SDK backend is the normal way to run now and the kernel's index
+# judges write the durable captions — so this hook must not spend tokens by default.
+# It stays behind an OPT-IN switch and is marked for removal:
+#   Enable:    touch ~/.claude/romp-summarize-on      (rm to turn it back off)
+# (The old opt-OUT file ~/.claude/romp-summarize-off is retired: absence of the -on
+#  file IS off, so a fresh install spends nothing on any tmux path.)
 set -uo pipefail
 
 # THE ANNOUNCER's model: the live phrase is latency-critical and display-only,
@@ -31,7 +37,8 @@ ANNOUNCER_MODEL="claude-haiku-4-5"
 # TMUX unset + ROMP_SUMMARIZING=1, so its OWN hooks land here and bail on these
 # two guards — that's the recursion guard (don't summarize the summarizer).
 [[ -n "${ROMP_SUMMARIZING:-}" ]] && exit 0
-[[ -f "$HOME/.claude/romp-summarize-off" ]] && exit 0
+# OPT-IN gate (deprecated feature, default off — see the header): no switch file, no work, no tokens.
+[[ -f "$HOME/.claude/romp-summarize-on" ]] || exit 0
 
 # Headless romp session (no tmux): there is no status line to paint the live phrase
 # on, so this hook has nothing to do — the kernel's always-on index judges produce
