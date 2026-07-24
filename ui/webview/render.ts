@@ -55,10 +55,14 @@ marked.use({
 // ("Other"), and is empty while the question is still pending (multi-select answers arrive pre-split).
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
+// A completed background command's detail, keyed by its tool-use-id — the shell it ran + its output tail,
+// joined in by the kernel (build_session's taskOutputs) so the inline completion card can expand into it.
+type TaskOutputs = Record<string, { command: string; output: string }>;
+
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -639,10 +643,10 @@ function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chi
   if (o.head) { const h = el("span", "notice-head-text"); h.textContent = o.head; headEl.appendChild(h); }
   card.appendChild(headEl);
 
-  const bodyEl = el("div", "notice-body"); bodyEl.appendChild(o.body);
-  card.appendChild(bodyEl);
+  const hasBody = o.body.childNodes.length > 0;   // gist-only notice → skip the wrapper, render flat
+  if (hasBody) { const bodyEl = el("div", "notice-body"); bodyEl.appendChild(o.body); card.appendChild(bodyEl); }
 
-  if (collapsible) {
+  if (collapsible && hasBody) {
     card.classList.add("notice-collapsible");
     applyFold(card, "notice-open", o.key);                 // keyed: an expanded card stays open across pushes
     if (caret) caret.textContent = card.classList.contains("notice-open") ? "▾" : "▸";
@@ -659,17 +663,30 @@ function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chi
   return turn;
 }
 
-// A backgrounded agent's completion (<task-notification>) → an accent-blue notice card: an "agent" chip +
-// the agent name·status gist on the head, its final message (markdown) as the collapsed body — no raw XML,
-// no internal ids (the user 2026-06-30). The pure parse lives in agent-notif.ts (testable); this owns the DOM.
-function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
-  const gist = `"${a.label}" · ${a.status || "returned"}`;
+// A backgrounded task's completion (<task-notification>) → an accent-blue notice card. The HEAD is a
+// glanceable gist — the task's own name and a compact status ("desc · exit 0", "agent name · completed") —
+// NOT the whole summary sentence. The collapsible BODY is the real detail, one click away (the user
+// 2026-07-23, who saw a card that printed the same summary twice and couldn't open it for more):
+//   - an AGENT: its final message (markdown);
+//   - a background COMMAND: the shell command it ran + its output tail, joined in by the kernel via
+//     tool-use-id (ev.taskOutputs — the client can't read the output file itself).
+// When there is genuinely nothing more than the gist, the card renders FLAT (no caret, no repeated body) —
+// honest, and no dead-end. The pure parse lives in agent-notif.ts (testable); this owns the DOM.
+function renderAgentNotif(a: AgentNotif, outputs?: TaskOutputs, key?: string): HTMLElement {
+  const chip = a.kind === "agent" ? "agent" : "task";       // a Bash command is a task, not an "agent"
+  const head = a.detail ? `${a.label} · ${a.detail}` : a.label;
   const body = el("div", "notice-md md");
-  if (a.result) { body.innerHTML = md(a.result); highlight(body); }
-  else { const p = el("div", "notice-plain"); p.textContent = a.summary; body.appendChild(p); }
-  // collapsible only when there's more than the gist to show (a bare summary IS the gist → show it flat)
-  return noticeCard({ variant: "agent", chip: "agent", head: gist, body, key,
-                      collapsible: !!a.result, nested: true });   // rendered inside the carrying user turn
+  const extra = a.toolUseId && outputs ? outputs[a.toolUseId] : undefined;
+  let hasBody = false;
+  if (a.result) {                                           // an agent's final message
+    body.innerHTML = md(a.result); highlight(body); hasBody = true;
+  } else if (extra && (extra.command || extra.output)) {    // a command's shell + output tail
+    if (extra.command) { const lbl = el("div", "notice-sub"); lbl.textContent = "command"; body.appendChild(lbl); body.appendChild(preEl(extra.command)); }
+    if (extra.output) { const lbl = el("div", "notice-sub"); lbl.textContent = "output"; body.appendChild(lbl); body.appendChild(preEl(extra.output)); }
+    hasBody = true;
+  }
+  return noticeCard({ variant: "agent", chip, head, body, key,
+                      collapsible: hasBody, nested: true });   // flat when the gist is all there is; rendered inside the carrying user turn
 }
 
 // ---- path-source pasted images ----
@@ -1602,7 +1619,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       const plain: string[] = [];
       ev.reminders.forEach((r, i) => {
         const a = parseAgentNotif(r);
-        if (a) turn.appendChild(renderAgentNotif(a, ev.uuid ? "agn:" + ev.uuid + ":" + i : undefined));
+        if (a) turn.appendChild(renderAgentNotif(a, ev.taskOutputs, ev.uuid ? "agn:" + ev.uuid + ":" + i : undefined));
         else plain.push(r);
       });
       if (plain.length) {
@@ -1995,14 +2012,35 @@ function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLEleme
   const txt = el("span", "retrying-text");
   const info = ev.info || {};
   const n = info.attempt || ev.retries || 0;
-  // "attempt 3 of 10 · next try in ~4s" — the payload's own numbers when present (the user 2026-07-10);
-  // the countdown re-derives from the epoch each re-render (pushes are frequent), so it stays honest
-  // without a client timer.
   let head = n > 1 ? `API retrying — attempt ${n}` : "API retrying";
   if (n > 1 && info.max) head += ` of ${info.max}`;
-  const waitS = info.retryAt ? Math.ceil(info.retryAt - Date.now() / 1000) : 0;
-  txt.textContent = head + (waitS > 0 ? ` — next try in ~${waitS}s…` : "…");
+  txt.textContent = head;
   line.appendChild(txt);
+  // LIVE countdown to the next attempt (the user 2026-07-24). It used to re-derive only on re-render, so it
+  // sat frozen at "next try in ~3s" for the whole backoff — a number that never moves reads as broken, and
+  // says nothing about whether anything is still happening. Now the epoch rides a data attr and
+  // retryingTick() rewrites this span every second, exactly like the API-error card's countdown. `~` is
+  // dropped: a ticking number is precise enough to speak plainly.
+  if (info.retryAt) {
+    const cd = el("span", "retrying-countdown");
+    cd.dataset.retryAt = String(info.retryAt);
+    cd.textContent = retryingCountdownText(info.retryAt);
+    line.appendChild(cd);
+  }
+  // Stop control (the user 2026-07-24, who wanted the API-error card's stop/resume reach here too). The
+  // storm lives INSIDE the CLI's own backoff — the SDK exposes no API to abort or accelerate it (verified
+  // against the installed claude_agent_sdk: no max_retries, no retry control, only interrupt()) — so the one
+  // honest lever is to INTERRUPT the stalled turn. That is a real mechanism, not a placebo: it cuts the turn
+  // AND marks the thread retry-suppressed, so romp's own auto-retry loop won't relapse into the storm
+  // afterwards. Once stopped the session lands blocked/interrupted, where the existing card's "Retry now" +
+  // resume controls take over — so stop → manual retry → resume is a closed loop across the two states.
+  // Delegated via data-act (never a per-render listener): the transcript tail rebuilds on every kernel push,
+  // and a rebuilt node eats a mid-press click — the "had to click it several times" bug (CLAUDE.md).
+  const stop = el("button", "retrying-stop") as HTMLButtonElement;
+  stop.dataset.act = "stopRetrying";
+  stop.textContent = "Stop retrying";
+  stop.title = "interrupt this stalled turn and stop the backoff — romp's auto-retry stays off for this session until you send a message";
+  line.appendChild(stop);
   line.title = "the API returned a retryable error (rate-limit / overload); the CLI is backing off and retrying — any message you send lands once it recovers";
   turn.appendChild(line);
   // The error behind the backoff, when the payload names it — status code and/or message on its own muted
@@ -2016,6 +2054,26 @@ function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLEleme
     turn.appendChild(err);
   }
   return turn;
+}
+
+// The next-attempt countdown's text. Past due (the attempt is firing, or the CLI slipped its own estimate)
+// reads "retrying now…" rather than a stuck "0s" or a negative — the wait is over either way, and the loader
+// dots beside it already say something is in flight.
+function retryingCountdownText(retryAt: number): string {
+  const s = Math.ceil(retryAt - Date.now() / 1000);
+  return s > 0 ? `— next try in ${s}s…` : "— retrying now…";
+}
+
+// Tick every .retrying-countdown once a second (driven by the same 1s interval as the API-error countdown —
+// one timer for both, no second scheduler). Each span carries its own retryAt epoch, so this is a pure
+// re-read of the authoritative number the CLI reported: no client-side drift, and a card whose event has
+// gone stale still counts down to the moment it was told.
+function retryingTick(): void {
+  for (const n of Array.from(document.querySelectorAll(".retrying-countdown"))) {
+    const cd = n as HTMLElement;
+    const at = Number(cd.dataset.retryAt);
+    if (at) cd.textContent = retryingCountdownText(at);
+  }
 }
 
 // The persistent counterpart of renderRetrying (the user 2026-07-08): once a stalled api_retry turn resumes
@@ -2346,7 +2404,7 @@ function apiRetryTick(): void {
     }
   }
 }
-setInterval(apiRetryTick, 1000);
+setInterval(() => { apiRetryTick(); retryingTick(); }, 1000);   // ONE 1s timer drives both countdowns
 
 function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   if (ev.name === "AskUserQuestion") { const a = renderAsk(ev); if (a) return a; }
@@ -6953,6 +7011,19 @@ setupSettings();
       const cwd = el.dataset.cwd; if (!cwd || !vscodeApi) return;
       const id = el.dataset.id;
       vscodeApi.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd });
+    },
+    // "Stop retrying" on the live api_retry element (the user 2026-07-24). The CLI owns the backoff and the
+    // SDK exposes no handle on it, so the honest stop is the SAME interrupt the stop button and Ctrl+C send:
+    // it cuts the stalled turn and marks the thread retry-suppressed, so romp's auto-retry won't relapse.
+    // Delegated (not a per-render listener) because the transcript tail rebuilds on every push. Acknowledge
+    // at once — disable + relabel — so it never reads as unresponsive while the interrupt is in flight; the
+    // element vanishes on the next push when the storm ends, so no self-restore is needed.
+    stopRetrying: (el) => {
+      if (!activeId || !vscodeApi) return;
+      vscodeApi.postMessage({ type: "interrupt", id: activeId });
+      const b = el as HTMLButtonElement;
+      b.disabled = true;
+      b.textContent = "Stopping…";
     },
     // ✕ on a queued bubble (the user 2026-07-08): cancel the queued message/command. Delegated here —
     // NOT a per-render listener on the bubble — because the transcript tail rebuilds on every push and

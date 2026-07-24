@@ -72,8 +72,8 @@ through to `install.sh`:
 ### Ports
 
 - `ROMP_KERNEL_PORT=<port>` moves the kernel and its dashboard off the default
-  `7433`.
-- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `47100`.
+  `29855`.
+- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`.
 
 Set these if something else on the machine already holds the default. Both have
 to agree across everything that talks to the kernel, so export them where the

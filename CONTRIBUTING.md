@@ -1,21 +1,12 @@
 # Contributing
 
-Thanks for looking at romp.
+Thanks for looking at Romp.
 
-**This is a personal side project.** Bug reports and pull requests are genuinely
+This is a personal side project. Bug reports and pull requests are
 welcome, and I'd rather hear about a problem than not. Responses may be slow, and
-I may not get to everything. That's the honest expectation to set rather than
-promise a turnaround I can't keep.
+I may not get to everything. 
 
-## Reporting a bug
-
-Open an issue and include:
-
-- the output of `romp --version` (it reports the working tree, the running
-  kernel, and the built bundles separately, and a mismatch between them is a
-  common cause of "the UI doesn't match the code")
-- your OS and Python version
-- what you expected and what happened
+If you're interested in reporting bugs and making PRs, please try to reproduce them or ground your suggestions With the latest code at the tip of the main branch rather than a tagged release version.
 
 ## Running the tests
 
@@ -38,18 +29,3 @@ produced confusing failures:
   to file-derived sessions. Tests that care now pin this explicitly; if you add
   one that calls into session liveness, pin it too rather than inheriting the
   machine's state.
-
-## A note on what goes in the repo
-
-romp reads real session data (prompts, transcripts, messages), and none of it
-belongs in the repository. Test fixtures are synthetic: invented prompt text,
-placeholder UUIDs, hostname `TESTHOST`. `tests/test_no_personal_identifiers.py`
-enforces this mechanically against your own machine's identifiers, and you can
-add your own strings to `~/.config/romp/private-strings.txt` (untracked, one per
-line) so the check covers whatever is specific to you.
-
-## Pull requests
-
-`main` requires a PR with passing CI. Branch, push, open a PR, and let the checks
-run. If a change fixes a bug or adds behaviour, it should land with a test that
-covers it.

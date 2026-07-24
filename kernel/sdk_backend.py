@@ -215,6 +215,14 @@ _CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local
 # in skillMd — the kernel folds it into the invoking Skill tool event, collapsed by default.
 _SKILL_CONTENT_RE = re.compile(r"^\s*Base directory for this skill:")
 _SKILL_MD_CAP = 16000
+# An image fed to the model via a tool (a Read of a PNG, a screenshot) — Claude Code emits a synthetic
+# UserMessage carrying JUST this human-readable placeholder alongside the image block. On the transcript
+# the record is isMeta and the file adapter skips it; on the STREAM the flag is absent, so without this
+# it fell through to a raw user atom and rendered as a bare "you typed this" bubble mid-conversation (the
+# tool that fed the image already shows in the rail). Twin of the event model's IMG_ECHO_RE skip. The
+# `:` after Image is what tells it apart from the composer's `[Image #N]` paste chips, which never stand
+# alone as a whole turn anyway.
+_IMG_ECHO_RE = re.compile(r"^\[Image:[^\]]*\]$")
 
 
 def _note_skill_tool_ids(atom, ids):
@@ -281,6 +289,8 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
         if _CMD_WRAP_RE.match(text):                 # the remaining wrappers (message/args/contents/caveat) — noise
             return None
         has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        if text and not has_tool_result and _IMG_ECHO_RE.match(text):
+            return None                              # the synthetic image-read placeholder — harness noise, not a message
         if text and not has_tool_result and \
                 (_SKILL_CONTENT_RE.match(text) or
                  getattr(msg, "parent_tool_use_id", None) in (skill_tool_ids or ())):

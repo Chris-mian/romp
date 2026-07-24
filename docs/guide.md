@@ -166,7 +166,7 @@ side by side on the dashboard and message each other like any other pair.
 ## The Romp kernel (the back end)
 
 The kernel is the program that runs your agents, watches their work, and serves
-the dashboard at `127.0.0.1:7433`. You run it on your own machine, with no
+the dashboard at `127.0.0.1:29855`. You run it on your own machine, with no
 hosted service in between. Everything Romp stores stays local; the only traffic
 that leaves your machine is `claude` itself, both the agents' own model calls and
 the LLM calls in Romp's judge pipeline.
@@ -251,7 +251,7 @@ in the Tailscale admin console, which `tailscale serve` needs.
 Then, on the machine running the kernel:
 
 ```bash
-tailscale serve --bg 7433     # let your other devices reach the dashboard
+tailscale serve --bg 29855    # let your other devices reach the dashboard
 tailscale serve status        # show the active proxy
 tailscale serve reset         # back to local-only
 ```

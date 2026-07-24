@@ -30,7 +30,7 @@ const fs = require('fs');
 
 const HOST = '127.0.0.1';
 const CONTROL_PORT = Number(process.env.ROMP_MANAGER_PORT) || 7432;
-const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || 7433;
+const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || 29855;
 
 // $TMUX scrub (2026-07-20): a manager launched by hand from INSIDE a tmux session leaks $TMUX to
 // its kernels and their SDK-session children — whose tmux-status hooks then resolve `#S` to

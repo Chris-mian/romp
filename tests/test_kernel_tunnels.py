@@ -177,7 +177,7 @@ class HostForSidMap(unittest.TestCase):
         km._remotes.clear()
 
     def test_host_for_sid_resolves_remote_else_none(self):
-        km._remotes["gpu1"] = {"host": "gpu1", "kernel_port": 7433, "local_port": 9001,
+        km._remotes["gpu1"] = {"host": "gpu1", "kernel_port": 29855, "local_port": 9001,
                                "token": "t", "proc": None, "status": "up",
                                "detail": "", "sids": ["aaaa-1111"]}
         self.assertIs(km._host_for_sid("aaaa-1111"), km._remotes["gpu1"])
@@ -220,7 +220,7 @@ class WakeRouter(unittest.TestCase):
         self.port = self.srv.server_address[1]
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         # register the remote, pointing its -L local_port at the stub, owning REMOTE_SID
-        km._remotes["gpu1"] = {"host": "gpu1", "kernel_port": 7433, "local_port": self.remote_port,
+        km._remotes["gpu1"] = {"host": "gpu1", "kernel_port": 29855, "local_port": self.remote_port,
                                "token": "", "proc": None, "status": "up", "detail": "",
                                "sids": [self.REMOTE_SID]}
 
@@ -300,10 +300,10 @@ class ReapStrayTunnels(unittest.TestCase):
     def test_kills_only_matching_orphan_tunnels(self):
         BUS = km.BUS_PORT
         fake_ps = "\n".join([
-            "  12345 /usr/bin/ssh -N -T -L 50512:127.0.0.1:7433 -R %d:127.0.0.1:%d TESTHOST" % (BUS, BUS),  # orphan → kill
-            "  22222 ssh -N -T -L 9:127.0.0.1:7433 -R %d:127.0.0.1:%d otherhost" % (BUS, BUS),           # other host → keep
+            "  12345 /usr/bin/ssh -N -T -L 50512:127.0.0.1:29855 -R %d:127.0.0.1:%d TESTHOST" % (BUS, BUS),  # orphan → kill
+            "  22222 ssh -N -T -L 9:127.0.0.1:29855 -R %d:127.0.0.1:%d otherhost" % (BUS, BUS),           # other host → keep
             "  33333 ssh TESTHOST",                                                                          # user's own ssh → keep
-            "  %d ssh -N -T -L 1:127.0.0.1:7433 -R %d:127.0.0.1:%d TESTHOST" % (os.getpid(), BUS, BUS),      # us → keep
+            "  %d ssh -N -T -L 1:127.0.0.1:29855 -R %d:127.0.0.1:%d TESTHOST" % (os.getpid(), BUS, BUS),      # us → keep
         ])
 
         class _R:

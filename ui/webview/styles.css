@@ -799,6 +799,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* the error behind the backoff (kernel retryInfo, the user 2026-07-10) — same 0.9em as the retrying line
    (one size per information type), muted so the amber headline stays the signal */
 .retrying-err { margin-top: 2px; color: color-mix(in srgb, #e67e22 55%, var(--dim)); font-size: 0.9em; overflow-wrap: anywhere; }
+/* the LIVE next-attempt countdown (the user 2026-07-24) — inherits the retrying line's size/weight (it IS
+   that line's text, not a new information type); tabular digits so the ticking number never jitters the row */
+.retrying-countdown { font-variant-numeric: tabular-nums; }
+/* "Stop retrying" — the SAME neutral/dim control chrome as the API-error card's stop (a control matches a
+   control), so the two cards' actions read as one family rather than two inventions */
+.retrying-stop { margin-left: 4px; font-size: 11px; padding: 2px 11px; border-radius: 5px; cursor: pointer;
+  color: var(--dim); background: transparent; border: 1px solid var(--rail); }
+.retrying-stop:hover:not(:disabled) { color: var(--fg); border-color: var(--dim); background: rgba(255, 255, 255, 0.06); }
+.retrying-stop:disabled { opacity: 0.55; cursor: default; }
 /* the persistent "Recovered after N retries" marker left where output resumed — muted, static, one line */
 /* the durable "effort set to X" note shares the retried note's slim rail treatment (the user 2026-07-16) */
 .turn-retried, .turn-effort { padding-top: 4px; padding-bottom: 4px; }
@@ -1404,6 +1413,10 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .notice-md.md > :first-child { margin-top: 0; }
 .notice-md.md > :last-child { margin-bottom: 0; }
 .notice-plain { color: var(--dim); }
+/* a small dim heading inside an agent/task notice body, marking the "command" / "output" sections of a
+   background command's detail — no new font-size (inherits), per the one-size-per-info-type rule */
+.notice-sub { color: var(--dim); opacity: 0.7; margin: 6px 0 2px; }
+.notice-sub:first-child { margin-top: 0; }
 
 /* agent notices — the romp accent blue (a backgrounded agent came to rest) */
 .notice-card-agent { border-left-color: var(--accent); }

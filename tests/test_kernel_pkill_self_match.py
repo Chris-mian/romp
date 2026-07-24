@@ -67,7 +67,7 @@ class ApplyScriptPkillPattern(unittest.TestCase):
         script = _apply_script()
         pat = re.search(r'pkill -f "([^"]+)"', script).group(1)
         for real in ("/usr/bin/python3 /home/u/GitRepos/romp/bin/romp-kernel",
-                     "python3.12 /home/u/romp/bin/romp-kernel --port 7433"):
+                     "python3.12 /home/u/romp/bin/romp-kernel --port 29855"):
             self.assertIsNotNone(re.search(pat, real),
                                  "pattern %r must still kill the real kernel (%r)" % (pat, real))
 

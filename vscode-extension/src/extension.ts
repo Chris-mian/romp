@@ -146,7 +146,7 @@ function cfgPort(key: "kernelPort" | "managerPort", env: string | undefined, dfl
   if (typeof v === "number" && v > 0) return v;
   return Number(env) || dflt;
 }
-function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT, 7433); }
+function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT, 29855); }
 function managerPort(): number { return cfgPort("managerPort", process.env.ROMP_MANAGER_PORT, 7432); }
 
 let ctx: vscode.ExtensionContext;

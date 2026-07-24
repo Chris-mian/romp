@@ -17,7 +17,7 @@ set -uo pipefail
 # exist", and a wake is cheap + idempotent on the kernel side.
 cat >/dev/null 2>&1 || true
 
-port="${ROMP_SERVE_PORT:-7433}"
+port="${ROMP_SERVE_PORT:-29855}"
 # The kernel gates every request on the serve token, loopback included (Jupyter's model) — read it
 # the way the kernel resolves it: env override, else the 0600 state file. Missing token → the poke
 # 403s silently, same posture as no kernel at all (the 20s backstop covers it).

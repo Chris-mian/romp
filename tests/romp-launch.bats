@@ -13,7 +13,7 @@ setup() {
     export XDG_STATE_HOME="$TEST_DIR/state"
     mkdir -p "$XDG_STATE_HOME/romp"
     printf 'TESTTOKEN123\n' > "$XDG_STATE_HOME/romp/serve-token"
-    export ROMP_KERNEL_PORT=7433
+    export ROMP_KERNEL_PORT=29855
     # a fake opener on PATH that records that it was called, instead of opening a real browser
     MOCK="$TEST_DIR/mock"; mkdir -p "$MOCK"
     export OPEN_LOG="$TEST_DIR/open.log"
@@ -33,7 +33,7 @@ teardown() { rm -rf "$TEST_DIR"; }
 @test "romp launch prints the tokened URL" {
     run "$ROMP_SCRIPT" launch
     [ "$status" -eq 0 ]
-    [[ "$output" == *"http://127.0.0.1:7433/?token=TESTTOKEN123"* ]]
+    [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]
 }
 
 @test "romp launch opens a browser on a local machine" {
@@ -46,7 +46,7 @@ teardown() { rm -rf "$TEST_DIR"; }
 @test "romp launch on a remote/ssh box prints the URL but opens nothing" {
     SSH_CONNECTION="10.0.0.1 1 10.0.0.2 22" run "$ROMP_SCRIPT" launch
     [ "$status" -eq 0 ]
-    [[ "$output" == *"http://127.0.0.1:7433/?token=TESTTOKEN123"* ]]   # the link is ALWAYS printed
+    [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]   # the link is ALWAYS printed
     [[ "$output" == *"remote/headless"* ]]
     [[ "$output" == *"ssh -N -L"* ]]                                    # tells you how to reach it
     [ ! -s "$OPEN_LOG" ] || false                                       # never opened a browser
@@ -60,7 +60,7 @@ teardown() { rm -rf "$TEST_DIR"; }
     rm "$MOCK/open"
     ROMP_OPENER= run "$ROMP_SCRIPT" launch
     [ "$status" -eq 0 ]
-    [[ "$output" == *"http://127.0.0.1:7433/?token=TESTTOKEN123"* ]]
+    [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]
     [[ "$output" == *"couldn't open a browser automatically"* ]]
 }
 
@@ -93,6 +93,6 @@ MOCK
 @test "romp --url stays print-only (no browser, bare URL for scripts)" {
     run "$ROMP_SCRIPT" --url
     [ "$status" -eq 0 ]
-    [ "$output" = "http://127.0.0.1:7433/?token=TESTTOKEN123" ]         # exactly the URL, nothing else
+    [ "$output" = "http://127.0.0.1:29855/?token=TESTTOKEN123" ]         # exactly the URL, nothing else
     [ ! -s "$OPEN_LOG" ] || false
 }

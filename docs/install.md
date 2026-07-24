@@ -55,7 +55,7 @@ romp launch
 ```
 
 This opens the dashboard using an access token. The first open trades the token
-for a cookie, so `http://127.0.0.1:7433/` works from then on.
+for a cookie, so `http://127.0.0.1:29855/` works from then on.
 
 On a remote machine, `romp launch` prints the link rather than opening a
 browser, along with how to reach it from your laptop.

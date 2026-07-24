@@ -57,7 +57,7 @@ This clones Romp to `~/romp`, checks out the newest release, installs it, and ad
 
 Run `romp launch`. It opens the dashboard in your browser and prints the link
 too — the link carries a one-time access token, and after that first open plain
-`http://127.0.0.1:7433/` works (a cookie remembers you). Start a session.
+`http://127.0.0.1:29855/` works (a cookie remembers you). Start a session.
 
 ## Docs
 

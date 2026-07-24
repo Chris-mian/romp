@@ -31,7 +31,7 @@ test("agent + reminder notices are NESTED (bare card, no inner turn/dot) so they
   // the fix (the user 2026-07-06): these are appended INSIDE the carrying user turn, so a turn-in-a-turn drew
   // a 2nd rail + dot, indented another 24px → the card floated off the timeline. Nested = bare card.
   assert.match(NOTICE, /if \(o\.nested\) return card;/);
-  assert.match(RENDER, /variant: "agent", chip: "agent"[\s\S]*?nested: true/);
+  assert.match(RENDER, /variant: "agent", chip, head, body[\s\S]*?nested: true/);
   assert.match(RENDER, /variant: "reminder", chip: "system"[\s\S]*?nested: true/);
   assert.match(CSS, /\.notice-nested \{ margin-top: 8px; \}/);
   // the standalone (romp system) path still keeps its own rail dot
@@ -46,8 +46,9 @@ test("the collapse is KEYED (survives re-render) and driven by the head, not a s
   assert.match(NOTICE, /headEl\.addEventListener\("click"/);
 });
 
-test("agent notices use the accent-blue variant", () => {
-  assert.match(AGENT, /noticeCard\(\{ variant: "agent", chip: "agent"/);
+test("agent notices use the accent-blue variant; the chip reads 'task' for a command, 'agent' for an agent", () => {
+  assert.match(AGENT, /noticeCard\(\{ variant: "agent", chip, head, body/);
+  assert.match(AGENT, /const chip = a\.kind === "agent" \? "agent" : "task";/);
   assert.match(CSS, /\.notice-card-agent \{ border-left-color: var\(--accent\); \}/);
   assert.match(CSS, /\.notice-chip-agent \{ color: var\(--accent\)/);
 });

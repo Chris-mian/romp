@@ -8,7 +8,7 @@ assumes, what that means on a shared machine, and how to report a vulnerability.
 
 Two local services run on your machine:
 
-- the **kernel** (dashboard/API) on `127.0.0.1:7433`, and
+- the **kernel** (dashboard/API) on `127.0.0.1:29855`, and
 - the **postal bus** (inter-session messaging) on `127.0.0.1` (a fixed local port).
 
 Both bind **loopback only** (`127.0.0.1`); neither is exposed to your network by

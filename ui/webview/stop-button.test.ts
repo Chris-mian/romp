@@ -13,9 +13,11 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the stop button posts the same interrupt message as the composer's Ctrl+C", () => {
   assert.match(RENDER, /function stopButton\(state\?: ChipState\)/);
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "interrupt", id: activeId \}\)/);
-  // there are exactly two interrupt senders now: the composer Ctrl+C and this button
+  // three interrupt senders now, all the SAME path: the composer Ctrl+C, this button, and the retrying
+  // card's "Stop retrying" (the user 2026-07-24 — the CLI owns the api_retry backoff and the SDK exposes no
+  // handle on it, so interrupting the stalled turn is the one honest stop).
   const senders = RENDER.match(/postMessage\(\{ type: "interrupt", id: activeId \}\)/g) || [];
-  assert.equal(senders.length, 2, "Ctrl+C and the stop button — same interrupt path");
+  assert.equal(senders.length, 3, "Ctrl+C, the stop button, and Stop retrying — one interrupt path");
 });
 
 test("the button renders while busy (working/compacting) AND while stuck retrying/blocked, never when idle", () => {

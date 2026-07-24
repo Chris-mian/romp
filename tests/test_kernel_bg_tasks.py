@@ -306,5 +306,48 @@ class DurableAwaitingSource(unittest.TestCase):
             os.unlink(path)
 
 
+class TaskOutputsForCard(unittest.TestCase):
+    """_task_outputs_for joins a completed background command's notification to its shell command (from the
+    launch scan) and its output-file tail, so the inline completion card can EXPAND to real detail instead of
+    re-printing its one-line summary (the user 2026-07-23). Keyed by the notification's inner tool-use-id."""
+
+    def _inner(self, tid, outfile, summary):
+        # the INNER notification XML, as _split_reminders hands it to build_session (outer wrapper peeled)
+        return ("<task-id>bkv4ddzb1</task-id>\n<tool-use-id>%s</tool-use-id>\n<output-file>%s</output-file>\n"
+                "<status>completed</status>\n<summary>%s</summary>" % (tid, outfile, summary))
+
+    def test_joins_command_and_output_tail_by_tool_use_id(self):
+        SUM = 'Background command "measure the watch-loop rate" completed (exit code 0)'
+        out = tempfile.NamedTemporaryFile(mode="w", suffix=".output", delete=False)
+        out.write("measuring...\nrate = 3.2/s\n"); out.close()
+        path = _write([_launch(tid=TUSE, cmd="python measure.py", desc="measure the watch-loop rate"),
+                       _notif_str(tid=TUSE, outfile=out.name, summary=SUM)])
+        try:
+            to = km._task_outputs_for([self._inner(TUSE, out.name, SUM)], path)
+        finally:
+            os.unlink(path); os.unlink(out.name)
+        self.assertIn(TUSE, to)
+        self.assertEqual(to[TUSE]["command"], "python measure.py", "the shell command comes from the launch record")
+        self.assertIn("rate = 3.2/s", to[TUSE]["output"], "the output tail is read from the file")
+
+    def test_a_reminder_that_is_not_a_task_notification_is_ignored(self):
+        self.assertEqual(km._task_outputs_for(["Your context is getting full."], "/nonexistent"), {},
+                         "a plain reminder contributes no task output")
+
+    def test_the_output_read_invalidates_when_the_file_changes(self):
+        out = tempfile.NamedTemporaryFile(mode="w", suffix=".output", delete=False)
+        out.write("first\n"); out.close()
+        try:
+            a = km._read_task_output(out.name)
+            self.assertEqual(km._read_task_output(out.name), a, "an unchanged file serves from cache")
+            with open(out.name, "w") as f:
+                f.write("second, longer content\n")   # size changes → the (mtime,size) key misses → re-read
+            b = km._read_task_output(out.name)
+        finally:
+            os.unlink(out.name)
+        self.assertIn("first", a)
+        self.assertIn("second, longer content", b, "a changed file re-reads, never a stale cache hit")
+
+
 if __name__ == "__main__":
     unittest.main()

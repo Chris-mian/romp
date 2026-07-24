@@ -235,6 +235,24 @@ class LiveTail(unittest.TestCase):
         m = _UserMessage([_TextBlock("<local-command-caveat>whatever</local-command-caveat>")])
         self.assertIsNone(sb.msg_to_atom(m, "s", "f", 5), "non-invocation/output wrappers stay dropped, like the file adapter")
 
+    def test_image_read_placeholder_is_dropped(self):
+        # A Read of an image makes Claude Code stream a synthetic UserMessage carrying only this
+        # placeholder alongside the image block. On disk it's isMeta (the file adapter skips it), but the
+        # STREAM has no such flag, so as a raw user atom it rendered as a bare "you typed this" bubble
+        # mid-conversation (the user 2026-07-23, who saw the box and asked what it was). The tool that fed
+        # the image already shows in the rail, so the echo is dropped.
+        m = _UserMessage([_TextBlock("[Image: original 2496x572, displayed at 2000x458. "
+                                     "Multiply coordinates by 1.25 to map to original image.]")])
+        self.assertIsNone(sb.msg_to_atom(m, "s", "f", 5), "the synthetic image-read echo is not a message")
+
+    def test_image_paste_chip_is_not_dropped(self):
+        # A composer paste chip is `[Image #N]` (no colon) and always rides WITH the human's typed text,
+        # never alone — so it must NOT be swept up by the echo skip. A genuine human turn survives.
+        m = _UserMessage([_TextBlock("look at [Image #1] and tell me what's wrong")])
+        a = sb.msg_to_atom(m, "s", "f", 5)
+        self.assertIsNotNone(a)
+        self.assertEqual(a["type"], "user")
+
     def test_live_store_and_prune(self):
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         be._live["s"] = {"a1": {"uuid": "a1", "t": 2}, "echo:x": {"uuid": "echo:x", "t": 1, "_echo_text": "hi"}}

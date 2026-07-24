@@ -51,7 +51,7 @@ def _probe_kernel():
     ('stale', url) when only /healthz answers (a kernel predating /version → restart it), or
     ('down', None) when nothing is listening."""
     import urllib.request
-    for u in ["http://127.0.0.1:7433", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]:
+    for u in ["http://127.0.0.1:29855", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]:
         try:
             with urllib.request.urlopen(u + "/version", timeout=1.5) as resp:
                 d = json.loads(resp.read().decode())

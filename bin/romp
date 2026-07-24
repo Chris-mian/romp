@@ -676,7 +676,7 @@ if [[ "${1:-}" == "--url" ]]; then
     if [[ -z "$_tok" ]]; then
         echo "romp --url: no serve token yet (start romp first — the kernel mints it)" >&2; exit 1
     fi
-    echo "http://127.0.0.1:${ROMP_KERNEL_PORT:-7433}/?token=$_tok"
+    echo "http://127.0.0.1:${ROMP_KERNEL_PORT:-29855}/?token=$_tok"
     exit 0
 fi
 
@@ -687,7 +687,7 @@ fi
 # doesn't pretend: it prints the URL plus the two ways to actually reach it from your laptop.
 if [[ "${1:-}" =~ ^(--)?(launch|open)$ ]]; then
     _tok="$(_romp_token)"
-    _kport="${ROMP_KERNEL_PORT:-7433}"
+    _kport="${ROMP_KERNEL_PORT:-29855}"
     if [[ -z "$_tok" ]]; then
         echo "romp launch: no serve token yet — start romp first (\`romp --on\`), then re-run." >&2
         exit 1
@@ -741,7 +741,7 @@ if [[ "${1:-}" =~ ^(--)?(checkin|checkout)$ ]]; then
     _verb="${1#--}"; shift
     _host="${1:-}"
     if [[ -z "$_host" ]]; then echo "usage: romp $_verb <host>" >&2; exit 2; fi
-    _kport="${ROMP_KERNEL_PORT:-7433}"
+    _kport="${ROMP_KERNEL_PORT:-29855}"
     _on="false"; [[ "$_verb" == "checkin" ]] && _on="true"
     _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/tunnels/checkin" \
                   -H "X-Romp-Token: $(_romp_token)" \
@@ -765,7 +765,7 @@ if [[ "${1:-}" =~ ^(--)?(send|interrupt|end)$ ]]; then
     _who="${1:-}"
     if [[ -z "$_who" ]]; then echo "usage: romp $_verb <session> $([[ "$_verb" == send ]] && echo '<text>')" >&2; exit 2; fi
     shift
-    _kport="${ROMP_KERNEL_PORT:-7433}"
+    _kport="${ROMP_KERNEL_PORT:-29855}"
     if [[ "$_verb" == "send" ]]; then
         _text="$*"
         if [[ -z "$_text" ]]; then echo "usage: romp send <session> <text>" >&2; exit 2; fi
