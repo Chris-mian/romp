@@ -1,5 +1,10 @@
 # The judge pipeline
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp.
+    Describes the system as of **2026-07-20**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
+
 Every state on the board is a replay of appended events. Judges append, your
 actions append, and nothing edits state in place, so any behavior can be
 walked back to the events that produced it. This page shows who appends what,
@@ -40,62 +45,14 @@ systems, so each gets its own figure.
 **The caption tier** (green) writes the words you read — chat, timeline,
 search — and never touches a card. Every arrow is unconditional.
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-flowchart LR
-    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
-    M --> GI["gister:<br/>topic phrase: the Analyzing<br/>card + the timeline dot"]:::idx
-    E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
-    CA -->|"the turn's captions,<br/>oldest first"| AR["archiver:<br/>session headline<br/>+ abstract"]:::idx
-    linkStyle default stroke-width:2.5px
-    classDef idx fill:#d1fae5,stroke:#059669,color:#111827
-    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
-    classDef user fill:#fce7f3,stroke:#db2777,color:#111827
-```
+![Which judge tier runs on which trigger](assets/diagrams/judge-pipeline.svg){ width="100%" }
 
 **The board tier** (blue) files and rules. A solid arrow always follows; a
 dashed arrow fires only when the gray gate on its path holds — the gates
 are deterministic checks, not model calls, and they are why nothing here
 follows the clock.
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-flowchart LR
-    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det
-    M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board right now<br/>(<code>mint</code> or <code>sub</code> only)"]:::llm
-    E --> PL["planner:<br/>file what the work did<br/>(<code>mint</code>, <code>sub</code>, <code>done</code>, <code>block</code>, <code>retitle</code>, <code>skip</code>)"]:::planner
-    E --> X["turn<br/>ends"]:::det
-    X --> CL["closer:<br/>end-of-turn audit of the goals the<br/>turn touched (<code>done</code>, <code>block</code>, or omit)"]:::closer
-    PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
-    X ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
-    X ~~~ TODO[("the agent's<br/>to-do list")]:::data --> SYNC["plan-sync:<br/>mirror each item as a card;<br/>open items pin theirs to Working"]:::det
-    CO ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
-    PP & PL & CL & CO & SYNC & YOU --> OG{"the set of open<br/>cards changed?"}:::det
-    OG -.-> GR["grouper:<br/>nest related<br/>open cards"]:::llm
-    PL & CL & YOU --> CG{"the set of completed<br/>cards changed?"}:::det
-    CG -.-> CN["consolidator:<br/>the same,<br/>done column"]:::llm
-    PL & CL & YOU --> DG{"a card completed<br/>and settled?"}:::det
-    DG -.-> DI["distiller:<br/>background<br/>+ takeaway"]:::llm
-    PL & CL --> BG{"a card<br/>blocked?"}:::det
-    BG -.-> BR["briefer:<br/>the decision<br/>brief"]:::llm
-    X --> UG{"an open blocked sub, and<br/>ended turns newer than<br/>its block or last check?"}:::det
-    UG -.-> UN["unblocker:<br/>lift a sub-block the conversation<br/>answered in passing (<code>lift</code>, <code>hold</code>)"]:::llm
-    subgraph LEGEND["legend"]
-        direction LR
-        LS1["·"]:::det -->|"always follows"| LS2["·"]:::det
-        LD1["·"]:::det -.->|"only if the<br/>gate holds"| LD2["·"]:::det
-    end
-    linkStyle default stroke-width:2.5px
-    linkStyle 6,13,19,23,27 stroke:#60a5fa
-    linkStyle 14,20,24,28 stroke:#1e40af
-    linkStyle 17,21,25 stroke:#db2777
-    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
-    classDef planner fill:#dbeafe,stroke:#60a5fa,stroke-width:3px,color:#111827
-    classDef closer fill:#dbeafe,stroke:#1e40af,stroke-width:3px,color:#111827
-    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
-    classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
-    classDef user fill:#fce7f3,stroke:#db2777,color:#111827
-```
+![Every judge trigger, tier by tier: what fires the planner, closer, opener, courier, plan-sync and the gated caption judges](assets/diagrams/judge-pipeline-2.svg){ width="100%" }
 
 Edge colors trace sources, nothing more: the planner's arrows wear the
 light blue of its border, the closer's the dark blue of its border, yours
@@ -156,22 +113,7 @@ For each segment the planner answers: which open card could not be called
 done without this work? No card qualifies, mint a new one. Everything after
 that answer is mechanical, including where inside the card the work lands.
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-flowchart TD
-    M["a segment's work"]:::det --> Q{"which card needs it?"}:::llm
-    Q -->|none| MINT["mint a new card"]:::det
-    Q -->|"card #n"| K{"open sub-goals<br/>inside #n?"}:::det
-    K -->|no| CARD["file at the card"]:::det
-    K -->|yes| P["placer (LLM):<br/>highest level that fits"]:::llm
-    P --> CARD2["file inside the card"]:::det
-    CARD --> G{"exact same title as<br/>parent or open sibling?"}:::det
-    CARD2 --> G
-    G -->|yes| REUSE["land on that node,<br/>mint nothing"]:::det
-    G -->|no| NEW["new node"]:::det
-    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
-    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
-```
+![The card state machine](assets/diagrams/judge-pipeline-3.svg){ width="100%" }
 
 Timing details that matter when auditing: a user message is placed twice.
 The opener files it the moment it lands (card level only, so the board
@@ -190,21 +132,7 @@ is a fold over that log. A direct state write raises at the write site. The
 grouper and consolidator never appear as sources: they move whole subtrees,
 they never judge.
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-stateDiagram-v2
-    [*] --> Open : mint
-    Open --> Done : done
-    Open --> Blocked : block
-    Blocked --> Open : unblock, or your reply
-    Done --> Open : reopen
-    Done --> Settled : settle
-    Settled --> Open : follow-up
-    Open --> Cleared : clear
-    Done --> Cleared : clear
-    Blocked --> Cleared : clear
-    Cleared --> Open : undo
-```
+![How a block is raised and lifted](assets/diagrams/judge-pipeline-4.svg){ width="100%" }
 
 Three derived flags answer the questions the chart cannot:
 
@@ -235,16 +163,7 @@ send call itself; the courier takes the declaration as a strong prior and
 reads the body for the receiving-side truth. Only a real handoff makes
 cards: one in each tree, linked, and the link checks itself off.
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-flowchart TD
-    S["send_message(to, body, kind)<br/>kind: delegate, coordinate, or question"]:::det --> C{"courier: did work<br/>actually change hands?"}:::llm
-    C -->|yes| P["goal planted in the recipient's tree<br/>+ tracking node in the sender's"]:::det
-    C -->|no| N["no card: the exchange<br/>stays in chat"]:::det
-    P --> D["recipient completes the goal;<br/>the sender's tracker checks off<br/>by itself (deterministic)"]:::det
-    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
-    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
-```
+![How a completed card settles](assets/diagrams/judge-pipeline-5.svg){ width="100%" }
 
 ## Walk any surprise back to its cause
 

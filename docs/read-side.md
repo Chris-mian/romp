@@ -1,5 +1,10 @@
 # The read side: the kernel, the UI, and the three panes
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp.
+    Describes the system as of **2026-07-24**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
+
 Architecture deep dive. Layer 3 turns the records written by the event model
 (`event-model.md`) and the summarizer layer (`docs/judges.md`) into the three
 web-UI panes you look at: the **feed**, the **chat**, and the **timeline**.
@@ -287,15 +292,3 @@ The Python kernel (`kernel/kernel.py`) closes it.
 - **kernel** — the one always-on core (Layer 1 + Layer 2 + HTTP/WS serving).
 - **ui/** — the front-end package (the three panes).
 - **Romp Postal Service** — always-on messaging infra, below Layer 2.
-
-## Open questions
-
-- **Live permission-prompt content** may live only in tmux, not the transcript;
-  the chip state is safe (from `states/`), but rendering *what* is being asked in
-  chat for a bare permission prompt may need a fallback.
-- **Read-federation** (one local view spanning multiple machines' records) — to be
-  designed when the SSH-forward-a-second-view stopgap proves insufficient.
-- **The "settled" gate's exact definition** now that it lives in Layer 2 (see
-  `docs/judges.md`).
-- **Where the comms-approval prompt surfaces** (the UI, the requesting session, or
-  both) and how the approved-edge + alive-gating state is stored in postal.

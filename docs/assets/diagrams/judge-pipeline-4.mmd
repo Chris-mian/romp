@@ -1,0 +1,13 @@
+%%{init: {'theme':'dark'}}%%
+stateDiagram-v2
+    [*] --> Open : mint
+    Open --> Done : done
+    Open --> Blocked : block
+    Blocked --> Open : unblock, or your reply
+    Done --> Open : reopen
+    Done --> Settled : settle
+    Settled --> Open : follow-up
+    Open --> Cleared : clear
+    Done --> Cleared : clear
+    Blocked --> Cleared : clear
+    Cleared --> Open : undo

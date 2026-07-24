@@ -3,6 +3,8 @@
 !!! note "Optional reading"
     You don't need any of this to use Romp. The Internals section is here for
     when you're curious how the task layer works under the hood.
+    Describes the system as of **2026-07-20**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
 
 > The picture first: [judge-pipeline.md](judge-pipeline.md) is the one-page
 > diagram map (when each judge runs, card-first filing, the state machine,
@@ -249,7 +251,7 @@ While the account usage window is exhausted, the rate gate skips every call
 across every session and logs one `rate-limited` row per window; gate skips count
 toward nothing.
 
-## Not judges, but often confused with them
+## Other machinery that reads the same data
 
 - **rollup_status**: pure code. Folds each node's diary into its state and
   each card's subtree into a column (see goal-state.md). Self-healing, and

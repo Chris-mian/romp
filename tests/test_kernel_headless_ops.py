@@ -30,6 +30,13 @@ os.environ["XDG_STATE_HOME"] = _STATE_TMP
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 km = SourceFileLoader("romp_kernel_headless", os.path.join(BIN, "romp-kernel")).load_module()
 
+# The ACCOUNT gate (_limit_hold: a usage limit / monthly spend cap parks every drive op, tested in
+# tests/test_kernel_limit_queue.py) is a SEPARATE axis from the compaction/busy gates this module
+# covers. Neutralize it here: left live, these tests would read the REAL machine's usage.json and
+# start parking — correctly, but for a reason none of them is about — the moment that account hit a
+# limit. Pinning it off keeps them hermetic.
+km._limit_hold = lambda sid: None
+
 
 class PendingOpsPersistence(unittest.TestCase):
     def setUp(self):

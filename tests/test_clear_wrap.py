@@ -17,6 +17,8 @@ The invariants:
 - The message carries romp-clear-wrap + romp-injected and NO romp-goal-id: a goal-id would make the
   follow-up judge reopen the cleared goal, the resurrection the clear must rule out.
 - Dead sessions get nothing; a failed send never breaks the clear; the undo path sends nothing.
+- It reads as the user's own short message. The session does not know romp is tracking it, so the prose
+  carries none of romp's vocabulary (goal, card, board, clear) and none of its directive register.
 """
 import json
 import os
@@ -96,11 +98,12 @@ class ClearWrapBody(unittest.TestCase):
         out = km._clear_wrap_body([G_OPEN], _nodes())
         self.assertIn("> Build the sticky timestamp", out)
         self.assertIn("> Prototype the floating stamp.", out, "the planner's why rides as context")
-        self.assertIn("cleared off the board while still open", out)
-        self.assertIn("dismissal, not a completion", out)
-        self.assertIn("commit them to a branch", out, "parking WIP on a branch is the loss-proofing")
-        self.assertIn("one final decision", out, "exactly one keep-or-discard round")
-        self.assertIn("do not ask again", out)
+        self.assertIn("I'm dropping this one", out)
+        self.assertIn("Stop work on it", out)
+        self.assertIn("commit it to a branch", out, "parking WIP on a branch is the loss-proofing")
+        self.assertIn("reply once", out, "exactly one keep-or-discard round")
+        self.assertIn("throw it away or have you finish it", out, "the decision the reply must carry")
+        self.assertIn("no need to follow up after that", out)
 
     def test_bundle_numbers_the_goals(self):
         nodes = _nodes()
@@ -108,7 +111,26 @@ class ClearWrapBody(unittest.TestCase):
         out = km._clear_wrap_body([G_OPEN, SID + ":g9"], nodes)
         self.assertIn("> 1. Build the sticky timestamp", out)
         self.assertIn("> 2. Write the migration guide", out)
-        self.assertIn("The 2 goals above were", out)
+        self.assertIn("I'm dropping these", out)
+        self.assertIn("Stop work on them", out)
+        self.assertIn("work in progress on any of them", out)
+
+    def test_it_reads_as_a_human_ask_not_a_system_notice(self):
+        # the user 2026-07-24: the session has no idea romp is tracking it, so the message must not
+        # narrate the goal machinery at it ("the goal above was cleared off the board — a dismissal,
+        # not a completion"). It is the person it works for asking for something, in their words.
+        # Prose only: the marker tail is a hidden HTML comment and names romp on purpose.
+        prose = km._clear_wrap_body([G_OPEN], _nodes()).split("<!--")[0].lower()
+        for jargon in ("goal", "board", "card", "clear", "dismiss", "romp"):
+            self.assertNotIn(jargon, prose,
+                             "%r is romp's vocabulary, not the user's — the session doesn't know the "
+                             "tracking system exists" % jargon)
+
+    def test_it_stays_short(self):
+        # succinctness is the point, not a nicety: a long directive reads as a system notice however
+        # it is worded. The first draft ran ~110 words; hold the rewrite near half that.
+        body = km._clear_wrap_body([G_OPEN], _nodes()).split("<!--")[0].split("\n\n", 1)[1]
+        self.assertLess(len(body.split()), 75, "the ask fits in a short human message")
 
     def test_markers_wrap_but_never_goal_id(self):
         out = km._clear_wrap_body([G_OPEN], _nodes())

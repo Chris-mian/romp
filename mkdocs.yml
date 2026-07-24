@@ -72,4 +72,3 @@ nav:
       - How a card gets its state: goal-state.md
       - The event model: event-model.md
       - The read side: read-side.md
-      - The SDK session backend: sdk-backend.md

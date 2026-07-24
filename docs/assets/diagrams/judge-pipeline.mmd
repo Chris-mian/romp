@@ -1,0 +1,10 @@
+%%{init: {'theme':'dark'}}%%
+flowchart LR
+    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det --> X["turn<br/>ends"]:::det
+    M --> GI["gister:<br/>topic phrase: the Analyzing<br/>card + the timeline dot"]:::idx
+    E --> CA["captioner:<br/>one line, what<br/>got done"]:::idx
+    CA -->|"the turn's captions,<br/>oldest first"| AR["archiver:<br/>session headline<br/>+ abstract"]:::idx
+    linkStyle default stroke-width:2.5px
+    classDef idx fill:#d1fae5,stroke:#059669,color:#111827
+    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
+    classDef user fill:#fce7f3,stroke:#db2777,color:#111827

@@ -1,0 +1,36 @@
+%%{init: {'theme':'dark'}}%%
+flowchart LR
+    M["message<br/>lands"]:::user --> W["work runs<br/>(the segment)"]:::det --> E["segment<br/>ends"]:::det
+    M -.->|"work still running,<br/>not a follow-up"| PP["opener:<br/>put the ask on the board right now<br/>(<code>mint</code> or <code>sub</code> only)"]:::llm
+    E --> PL["planner:<br/>file what the work did<br/>(<code>mint</code>, <code>sub</code>, <code>done</code>, <code>block</code>, <code>retitle</code>, <code>skip</code>)"]:::planner
+    E --> X["turn<br/>ends"]:::det
+    X --> CL["closer:<br/>end-of-turn audit of the goals the<br/>turn touched (<code>done</code>, <code>block</code>, or omit)"]:::closer
+    PL -.->|"its card has<br/>open sub-goals"| PC["placer:<br/>pick the level<br/>inside that card"]:::llm
+    X ~~~ MAIL[("peer mail")]:::data --> CO["courier:<br/>real handoff? goal in the recipient's<br/>tree + tracker in the sender's"]:::llm
+    X ~~~ TODO[("the agent's<br/>to-do list")]:::data --> SYNC["plan-sync:<br/>mirror each item as a card;<br/>open items pin theirs to Working"]:::det
+    CO ~~~ YOU["you:<br/>clear, resolve,<br/>move, reply"]:::user
+    PP & PL & CL & CO & SYNC & YOU --> OG{"the set of open<br/>cards changed?"}:::det
+    OG -.-> GR["grouper:<br/>nest related<br/>open cards"]:::llm
+    PL & CL & YOU --> CG{"the set of completed<br/>cards changed?"}:::det
+    CG -.-> CN["consolidator:<br/>the same,<br/>done column"]:::llm
+    PL & CL & YOU --> DG{"a card completed<br/>and settled?"}:::det
+    DG -.-> DI["distiller:<br/>background<br/>+ takeaway"]:::llm
+    PL & CL --> BG{"a card<br/>blocked?"}:::det
+    BG -.-> BR["briefer:<br/>the decision<br/>brief"]:::llm
+    X --> UG{"an open blocked sub, and<br/>ended turns newer than<br/>its block or last check?"}:::det
+    UG -.-> UN["unblocker:<br/>lift a sub-block the conversation<br/>answered in passing (<code>lift</code>, <code>hold</code>)"]:::llm
+    subgraph LEGEND["legend"]
+        direction LR
+        LS1["·"]:::det -->|"always follows"| LS2["·"]:::det
+        LD1["·"]:::det -.->|"only if the<br/>gate holds"| LD2["·"]:::det
+    end
+    linkStyle default stroke-width:2.5px
+    linkStyle 6,13,19,23,27 stroke:#60a5fa
+    linkStyle 14,20,24,28 stroke:#1e40af
+    linkStyle 17,21,25 stroke:#db2777
+    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
+    classDef planner fill:#dbeafe,stroke:#60a5fa,stroke-width:3px,color:#111827
+    classDef closer fill:#dbeafe,stroke:#1e40af,stroke-width:3px,color:#111827
+    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
+    classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
+    classDef user fill:#fce7f3,stroke:#db2777,color:#111827
