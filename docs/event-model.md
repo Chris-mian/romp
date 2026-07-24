@@ -1,5 +1,10 @@
 # Event model: the bottom-layer schema
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp.
+    Describes the system as of **2026-07-21**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
+
 Architecture deep dive: the pinned schema for the bottom layer of romp — how a
 session's transcript becomes a structured, queryable model of turns and atoms.
 
@@ -369,13 +374,3 @@ file-substrate recovery:
 Everything else is the streaming API. The model is not a parallel invention; it
 is the streaming message protocol with a stable identity on top and a thin file
 adapter underneath that reconstructs what a stream would have streamed.
-
-## Open questions
-
-- **Agent SDK vs hand-rolled stream-json client** for the future
-  headless-with-parity substrate. Both yield the same message types; the SDK adds
-  typed objects, `canUseTool`/permission callbacks (which make AskUserQuestion
-  work headless), and hooks.
-- **Higher-layer sub-segmentation.** Whether summaries / timeline split a turn at
-  an absorbed message or a decision atom, or treat the whole `end_turn`-bounded
-  turn as one unit. The bottom layer preserves the information either way.

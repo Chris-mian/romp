@@ -1,7 +1,9 @@
 # Reference
 
-This page lists every command and knob. Everything here runs on the machine
-that hosts the kernel.
+This page lists every command and knob. It is here for driving Romp from the
+terminal, for scripting against it, and for debugging: you do not need any of it
+for ordinary use, where the user interface covers everything. Everything here
+runs on the machine that hosts the kernel.
 
 ## The `romp` command
 
@@ -15,7 +17,15 @@ that hosts the kernel.
 | `romp update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
 | `romp --version` | Version report across the moving parts |
 
-## Mail from the shell
+## The Romp Postal Service
+
+How sessions message each other, from either side. Inside a session it is an MCP
+server, so an agent calls the tools below directly; from a terminal the same
+mailbox is behind `romp --mail`. See
+[Inter-agent communication](guide.md#inter-agent-communication-the-romp-postal-service)
+for what it is for.
+
+### Mail from the terminal
 
 ```bash
 romp --mail send [--kind delegate|coordinate|question] <name> "<text>"
@@ -24,7 +34,7 @@ romp --mail agents                # who is live, their branch and working-note
 romp --mail working "<note>"      # publish what this session is working on
 ```
 
-## Mail inside a session (MCP tools)
+### Mail inside a session (MCP tools)
 
 | Tool | What it does |
 |---|---|
@@ -85,9 +95,16 @@ State is written under `${XDG_STATE_HOME:-~/.local/state}/romp/`. Transcripts
 are read in place from where Claude Code writes them (`~/.claude/projects/`)
 and never copied.
 
-## Kill switches
+## Switches
 
-`touch` to disable, `rm` to re-enable, effective immediately:
+Effective immediately, no restart.
 
-- `~/.claude/romp-summarize-off`: the live tmux activity phrase
+`touch` to **disable**, `rm` to re-enable:
+
 - `~/.claude/romp-postal-off`: the postal service
+
+`touch` to **enable**, `rm` to turn back off:
+
+- `~/.claude/romp-summarize-on`: the live tmux activity phrase. Off by default,
+  because it spends tokens on every turn and the SDK backend reports what a
+  session is doing without it. Deprecated, and due for removal.

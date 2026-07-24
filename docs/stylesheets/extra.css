@@ -247,3 +247,48 @@
 .romp-chip-completed { background: #2b7fb8; color: #ffffff; }
 .romp-chip-ready     { background: #2b7fb8; color: #ffffff; }
 .romp-chip-await     { background: #54b204; color: #0c1a00; }
+
+/* ── Mermaid legibility ───────────────────────────────────────────────
+   Every node in our diagrams carries an explicit LIGHT fill (the classDef
+   `fill:` values in architecture.md and judge-pipeline.md), so its label has to
+   be dark. Three parties fight over that colour — the diagram's own
+   `theme:'dark'` directive, Material's --md-mermaid-* variables, and the
+   classDef `color:` — and on the dark scheme the light one was winning, leaving
+   near-white text on pale boxes that could not be read (2026-07-24).
+
+   Settle it here rather than upstream of the cascade: these rules apply to the
+   rendered SVG, so they hold whichever party would otherwise win. Node labels
+   go dark; EDGE labels are deliberately separate, since they sit on the page's
+   dark background and get a light chip of their own instead. */
+:root {
+  --md-mermaid-label-fg-color: #111827;
+  --md-mermaid-label-bg-color: #e5e7eb;
+}
+.mermaid .node .nodeLabel,
+.mermaid .node .nodeLabel p,
+.mermaid .node .nodeLabel code,
+.mermaid .node text,
+.mermaid .cluster .nodeLabel {
+  color: #111827 !important;
+  fill: #111827 !important;
+}
+/* Edge labels: dark text on a light chip, and a size up — at the inherited size
+   a two-line label like "its card has open sub-goals" was the smallest type on
+   the page. */
+.mermaid .edgeLabel,
+.mermaid .edgeLabel p,
+.mermaid .edgeLabel span,
+.mermaid .edgeLabel foreignObject div {
+  color: #111827 !important;
+  fill: #111827 !important;
+  background: #e5e7eb !important;
+  font-size: 0.95em !important;
+  line-height: 1.35 !important;
+}
+/* `<code>` inside a node label must not keep the site's code colours, which are
+   tuned for the dark page, not for a pale node. */
+.mermaid .node code,
+.mermaid .edgeLabel code {
+  background: rgba(0, 0, 0, 0.07) !important;
+  color: #111827 !important;
+}

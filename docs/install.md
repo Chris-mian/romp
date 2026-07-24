@@ -46,7 +46,7 @@ export PATH="$PATH:$HOME/romp/bin"
 ## First run
 
 The installer starts Romp's back end automatically and keeps it running. To
-connect to it, open the front end in your browser or in your editor.
+connect to it, open the user interface in your browser or in your editor.
 
 ### In a browser
 
@@ -54,7 +54,7 @@ connect to it, open the front end in your browser or in your editor.
 romp launch
 ```
 
-This opens the dashboard using an access token. The first open trades the token
+This opens Romp using an access token. The first open trades the token
 for a cookie, so `http://127.0.0.1:29855/` works from then on.
 
 On a remote machine, `romp launch` prints the link rather than opening a

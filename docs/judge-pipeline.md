@@ -1,5 +1,10 @@
 # The judge pipeline
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp.
+    Describes the system as of **2026-07-20**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
+
 Every state on the board is a replay of appended events. Judges append, your
 actions append, and nothing edits state in place, so any behavior can be
 walked back to the events that produced it. This page shows who appends what,

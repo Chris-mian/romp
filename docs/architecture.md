@@ -3,6 +3,8 @@
 !!! note "Optional reading"
     You don't need any of this to use Romp. The Internals section is here for
     when you're curious how it works under the hood.
+    Describes the system as of **2026-07-23**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
 
 Romp is one always-on **kernel**: a single Python process that reads each
 session's Claude Code transcript, builds an event tree, runs the **judges**
@@ -76,5 +78,3 @@ The rest of this section drills into each piece:
 - [How a card gets its state](goal-state.md): the state model, chip by chip.
 - [The event model](event-model.md): the bottom-layer event tree.
 - [The read side](read-side.md): the kernel and the panes.
-- [The SDK session backend](sdk-backend.md): how the default backend drives the
-  Agent SDK.

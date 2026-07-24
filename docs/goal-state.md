@@ -1,5 +1,10 @@
 # How a card gets its state
 
+!!! note "Optional reading"
+    You don't need any of this to use Romp.
+    Describes the system as of **2026-07-20**; the behaviour it documents moves,
+    so treat anything here as a snapshot rather than a contract.
+
 The state model, the "constitution": what moves a card, every chip it can
 wear, and the edge-case rules. Companions:
 [judge-pipeline.md](judge-pipeline.md) (the diagram map) and
@@ -114,13 +119,18 @@ Chips on cards:
   in Needs-you with this chip as the explanation. Yields once a real judge
   verdict takes over. Tooltip carries the nudge history.
 - **re-judging** (dotted): you answered a soft-blocked card with a
-  targeted reply; it de-urgents into Working pending the re-judge.
+  targeted reply; it de-urgents into
+  <span class="romp-chip romp-chip-working">Working</span> pending the re-judge.
 - **Re-judging swirl**: a plain thread reply is in flight on a blocked
   card; returns on its own if the judge holds the block.
-- **awaiting**: waiting on dispatched/background/delegated work. A Working
-  flavor, never Needs-you; only humans block.
-- **waiting on peer**: an unanswered question out to a live peer.
-- **from peer**: courier provenance; this goal was delegated in.
+- **Awaiting background work**: dispatched or delegated work is outstanding. A
+  <span class="romp-chip romp-chip-working">Working</span> flavor, never
+  Needs-you, since only humans block. It reads as a box in the card body rather
+  than a header chip; the header chip was removed in July 2026 for saying the
+  same thing twice.
+- <span class="romp-chip romp-chip-await">Awaiting *peer*</span>: an unanswered
+  question is out to a live peer, named in its own color. When the wait is
+  mutual, the same chip reads **Deadlock *peer*** instead.
 - **warning** (yellow, clickable): a judge stamped an anomaly (e.g. a
   cite-miss); click for detail.
 - **working dot** before a session name: that session is working right

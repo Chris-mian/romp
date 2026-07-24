@@ -2,9 +2,9 @@
 
 This guide covers how to use Romp, and how its back end works.
 
-## The Romp dashboard (the front end)
+## The Romp user interface
 
-Romp gathers all your Claude Code sessions into a single dashboard, with four
+Romp gathers all your Claude Code sessions into one interface, with four
 complementary views of what the agents are doing:
 
 - **[The chat](#the-chat)** is the regular interface for talking to a coding
@@ -71,6 +71,61 @@ find past work: the search box reaches every session, live or closed.
 
 ![The outline: each session's tasks as a tree](assets/guide/outline.png){ width="100%" }
 
+## Remote access
+
+You reach Romp in a browser tab, in the VS Code / Cursor extension, or from your
+phone.
+
+### From your phone
+
+The user interface is a web page, so your phone can run it against a kernel on
+another machine. The obstacle is reaching that machine: the kernel listens only
+on `127.0.0.1`, which your phone is not on.
+
+[Tailscale](https://tailscale.com) closes that gap, and is free for personal
+use. It puts your own devices on a private encrypted network, so your phone can
+reach your laptop directly whatever network either one is on. Install it on both
+devices and sign in to the same account on each. In the Tailscale admin console,
+enable **HTTPS Certificates**, and leave **MagicDNS** on (it is on by default):
+the `ts.net` certificate names come from MagicDNS, so turning it off makes
+certificate provisioning fail in confusing ways.
+
+Then, on the machine running the kernel:
+
+```bash
+tailscale serve --bg 29855    # let your other devices reach Romp
+tailscale serve status        # show the active proxy
+tailscale serve reset         # back to local-only
+```
+
+The bare-port form needs Tailscale 1.56 or newer; on older clients write
+`tailscale serve https / http://127.0.0.1:29855`.
+
+On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
+page asking for your access token; paste in the one `romp launch` prints. A
+year-long cookie remembers the phone afterwards. Prefer this to putting
+`?token=<token>` in the address, which works but leaves the token in your
+browser history and in anything you share the link through. The cookie is itself
+a credential, so only do this on a phone you control.
+
+Only devices signed in to your Tailscale account can reach Romp: Tailscale
+checks each device's identity and encrypts the traffic between them, and nothing
+is exposed to your local network or to the internet. The proxy survives restarts
+of both Tailscale and the kernel.
+
+Two settings are worth changing while you are in the admin console. Turn on
+**device approval**, so a new device has to be approved before it can join, and
+leave key expiry enabled on the phone. Do not use `tailscale funnel`, the
+public-internet variant: it would leave the token as the only thing between the
+internet and your agents, with no device check in front of it.
+
+!!! warning "If other people are on your tailnet"
+
+    `tailscale serve` exposes Romp to **every** device on the tailnet, not just
+    yours. On a family or team tailnet, the access token becomes the only thing
+    standing between other members and your agents. Either keep the tailnet to
+    your own devices, or write an ACL restricting the kernel machine to them.
+
 ## Automatic nudges
 
 Agents stall: they hit an API error, they get interrupted, or they end a turn
@@ -107,10 +162,9 @@ The timeline draws an arc for each message. Hover one for its gist:
 <video src="../assets/guide/coordination.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
 Underneath, a local message bus writes the message into a mailbox on disk that
-belongs to the recipient, then either types it straight into that session if it
-is sitting idle, or leaves it to be collected when the session's current turn
-ends. The recipient reads it in its chat, on a card naming the sender and the
-kind:
+belongs to the recipient, then delivers it: straight away if that session is
+idle, otherwise when its current turn ends. The recipient reads it in its chat,
+on a card naming the sender and the kind:
 
 ![A message from another session, as the recipient's chat shows it](assets/guide/postal-chat.png){ width="100%" }
 
@@ -152,7 +206,7 @@ Sessions run on one of two backends, chosen per session:
 - **SDK (the default, strongly recommended).** The kernel manages the Claude
   Code session through the Claude Agent SDK.
 - **tmux.** A Claude Code session running in a terminal inside tmux. Run
-  `romp <name>` and that terminal session joins the dashboard like any other, so
+  `romp <name>` and that terminal session joins the interface like any other, so
   you can work in the terminal directly and still see it in Romp. The cost is
   that Romp has no direct connection to it: it reads what appears in the
   terminal and on disk, and sends messages and nudges by injecting keystrokes.
@@ -161,111 +215,72 @@ Sessions run on one of two backends, chosen per session:
   transcript reaching disk.
 
 The two backends interleave freely, so terminal sessions and SDK sessions sit
-side by side on the dashboard and message each other like any other pair.
+side by side in the interface and message each other like any other pair.
 
 ## The Romp kernel (the back end)
 
 The kernel is the program that runs your agents, watches their work, and serves
-the dashboard at `127.0.0.1:29855`. You run it on your own machine, with no
+the user interface at `127.0.0.1:29855`. You run it on your own machine, with no
 hosted service in between. Everything Romp stores stays local; the only traffic
 that leaves your machine is `claude` itself, both the agents' own model calls and
 the LLM calls in Romp's judge pipeline.
 
-### Remote kernels
+### Linking kernels on other machines
 
-You can also run a kernel on another machine and attach it to your dashboard, so
-one front end drives agents on several machines at once:
+Run kernels on as many machines as you like and drive them from one interface.
+A linked kernel's sessions appear as `host:name` tabs and timeline lanes beside
+your local ones, its cards share the feed, and its sessions message yours, so an
+agent on your desktop can hand work to one on the server.
 
-- Its sessions appear as `host:name` tabs and timeline lanes next to your local
-  ones, and you drive them from the same chat.
-- Its task cards share the feed.
-- Sessions message each other across machines through the same postal service,
-  so an agent on your desktop can hand work to one on the server.
+How you link a machine depends on whether you can reach it, which is a fact
+about where it sits on the network rather than what kind of computer it is:
 
-To attach a host:
+- **A machine you can reach** — a server, at an address you can `ssh` to. Your
+  kernel opens the connection. This is **attaching**.
+- **A machine you cannot reach** — a laptop, which moves between networks and
+  usually sits behind a router that accepts no incoming connections. It opens
+  the connection instead, to a machine that is always on. This is **checking
+  in**, and the always-on machine is the **hub**.
 
-1. **Install Romp on the remote machine**, the same way you installed it here
-   (see [Install](install.md)). Romp connects to it over ssh in the background,
-   so `ssh <host>` also has to work without prompting you for anything: set up
-   key-based login first if it does not.
-2. **Attach it from your dashboard.** Click the network button, at the bottom
+"Hub" and "laptop" are roles, not hardware: the hub is usually just the server
+you already attach to, and any machine can play either part.
+
+The direction the connection opens does not limit what flows over it. A single
+ssh connection carries both, so either way you drive the far kernel and mail
+travels in both directions.
+
+**To attach a machine you can reach:**
+
+1. **Install Romp on it**, the same way you installed it here (see
+   [Install](install.md)). Romp connects over ssh in the background, so
+   `ssh <host>` has to work without prompting you for anything; set up key-based
+   login first if it does not.
+2. **Attach it from your interface.** Click the network button, at the bottom
    right beside the settings gear:
 
 ![The network button](assets/guide/network-icon.png){ width="72" }
 
-The attach fetches the remote kernel's token over ssh, opens the tunnels, and
-starts the remote kernel if it isn't running.
+Romp fetches that kernel's token over ssh, opens the connection, and starts the
+remote kernel if it isn't already running.
 
-Romp remembers every host you attach, so bringing one back later is a click, and
-it returns with the trust level you last gave it.
+**To check in a machine you cannot reach:** tick **keep connected** on the hub's
+row in that machine's network popover, or run `romp checkin <hub>`. The hub can
+then see and drive its sessions whenever it is online, from whatever network it
+is on. Because the laptop is the end that connects, the hub never holds a way in
+to it; untick the box (or `romp checkout <hub>`) and the hub forgets it.
 
-Each attached host carries a trust level that governs its mail; see
-[Security and trust](#security-and-trust).
+Each linked host carries a trust level that governs its mail; see
+[Security and trust](#security-and-trust). Detaching keeps the host on a list,
+so re-linking later is one click and it returns with the trust level you last
+gave it.
 
-### Attaching a laptop, or any machine you cannot reach
+Mail for a machine that is offline waits in an outbox and delivers when it comes
+back. If it returns and the session you addressed is gone, that refusal comes
+back to you. Every machine runs its own postal bus, so a laptop with no
+connection at all still has full local messaging; linking only adds reach.
 
-Attaching assumes you can reach the other machine. That holds for a server,
-which sits at a fixed address, and fails for a laptop, which changes networks,
-has no stable address, and usually sits behind a router that accepts no incoming
-connections at all.
-
-Which machine opens the connection, though, is a separate question from which
-way traffic then flows. One ssh connection carries both directions at once: a
-forward, so your dashboard reaches the other kernel, and a reverse forward, so
-the other machine's postal bus reaches yours. Whichever machine can do the
-reaching opens the connection, and both ends still get everything they need.
-
-So for a laptop, the laptop opens the connection, to an always-on machine acting
-as a hub. Tick **keep connected** on the hub's row in the network popover (or run
-`romp checkin <hub>`): the laptop's connection gains reverse forwards for its own
-kernel and postal bus, then tells the hub which ports those landed on and hands
-over its dashboard token. The hub's dashboard can then see and drive the
-laptop's sessions whenever the laptop is online, from whatever network it is on.
-
-Because the laptop is the end doing the connecting, the hub never holds a way in
-to it. Untick the box (or run `romp checkout <hub>`) and the hub forgets the
-laptop and its token.
-
-Mail for a machine that is offline waits in an outbox and delivers when it
-reconnects, or bounces back if the recipient is gone for good. Every machine runs
-its own postal bus, so a laptop with no connection at all still has full local
-messaging; connecting only adds reach.
-
-## Reaching the dashboard
-
-You reach the dashboard in a browser tab, in the VS Code / Cursor extension, or
-from your phone.
-
-### Your phone
-
-The dashboard is a web page, so your phone can run the front end against a
-kernel on another machine. The obstacle is reaching that machine: the kernel
-listens only on `127.0.0.1`, which your phone is not on.
-
-[Tailscale](https://tailscale.com) closes that gap, and is free for personal
-use. It puts your own devices on a private encrypted network, so your phone can
-reach your laptop directly whatever network either one is on. Install it on both
-devices, sign in to the same account on each, and enable **HTTPS Certificates**
-in the Tailscale admin console, which `tailscale serve` needs.
-
-Then, on the machine running the kernel:
-
-```bash
-tailscale serve --bg 29855    # let your other devices reach the dashboard
-tailscale serve status        # show the active proxy
-tailscale serve reset         # back to local-only
-```
-
-On the phone, open `https://<machine>.<tailnet>.ts.net/?token=<token>`, taking
-the token from `romp launch`. A year-long cookie remembers the phone after that,
-so later opens need no token.
-
-Only devices signed in to your Tailscale account can reach the dashboard:
-Tailscale checks each device's identity and encrypts the traffic between them,
-and nothing is exposed to your local network or to the internet. The proxy
-survives restarts of both Tailscale and the kernel. Do not use `tailscale
-funnel`, the public-internet variant: it would leave the token as the only thing
-between the internet and your agents, with no device check in front of it.
+The mechanics, including how the tunnels and the check-in handshake work, are in
+[How Romp works](architecture.md).
 
 ## Security and trust
 
@@ -304,9 +319,9 @@ and remembered per host:
   becomes a needs-you card with **Approve**, **Edit**, and **Deny**, so a person
   decides before that host's content reaches one of your agents. For rented or
   shared compute.
-- **isolated** — no messaging in either direction. Its sessions still show in
-  your dashboard, but the two mail systems never connect. For a machine you want
-  to watch and nothing more.
+- **isolated** — no messaging in either direction. Its sessions still appear in
+  your interface, but the two mail systems never connect. For gathering kernels
+  that have nothing to do with each other into one place to work from.
 
 **What this does not protect against.** Anyone with administrator access to a
 machine can read any file on it, the token included, so don't keep long-lived
