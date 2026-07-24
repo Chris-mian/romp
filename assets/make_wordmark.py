@@ -26,19 +26,22 @@ Run:  python make_wordmark.py
 Renders one master (flat #0e1116 background — needed so the letters can be thinned
 to the swirl's line weight via a background-colored text-stroke), then derives three
 outputs from it:
-  - romp-wordmark.png (here) — the README hero, on the flat dark banner.
+  - romp-wordmark.png (here) — the flat-dark-banner master, kept as the source the
+    other two derive from and copied to the dashboard media (below).
   - ../vscode-extension/media/romp-wordmark.png — the same mark recolored to the feed
     pane's gray, served at /media for the dashboard's inbox-zero empty state.
   - ../docs/assets/brand/romp-wordmark.png — the dark banner knocked out to a
-    transparent background for the (dark-only) docs home, so the wordmark blends into
-    the page instead of sitting on a darker rectangle.
+    transparent background. This backs BOTH the docs home and the README hero, so it
+    has to read on a light background too, not just the dark docs page.
 
 The recolor and the knockout both work by matching the flat #0e1116 field (and its
 anti-aliased fringe, via -fuzz) with ImageMagick — the swirl "o" is composited from a
 transparent master, so its dark vortex is #0e1116 showing through and knocks out with
 the rest. True Chrome-rendered transparency can't work directly: the letters are
 thinned by a #0e1116 text-stroke, so a transparent page would expose dark outlines.
-The docs site is dark-only, so the residual fringe stays invisible against the page.
+In practice the residual edge fringe is faint enough to read cleanly on white as well
+as dark (verified on GitHub's light theme for the README); the swirl "o" vortex shows
+as a soft gray swirl on light, which reads as intended rather than as an artifact.
 """
 import base64
 import os

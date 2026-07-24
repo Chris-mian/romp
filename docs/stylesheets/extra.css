@@ -228,3 +228,22 @@
     display: block;
   }
 }
+
+/* Inline status chips for prose: naming a chip in the text draws it the way the
+   UI draws it, so the reader matches word to pixel without a legend lookup. The
+   hexes are mirrored from the app (feed.css .fcol-chip-*, styles.css --st-*)
+   because the docs site does not load the app's stylesheet — keep them in step.
+   Working/Blocked/Completed are the feed's column chips; Ready shares the
+   completed blue; Awaiting is the romp brand green (--st-awaitbg-bg). */
+.romp-chip {
+  border-radius: 999px;
+  padding: 0.05em 0.5em;
+  font-size: 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.romp-chip-working   { background: #e0b020; color: #332600; }
+.romp-chip-blocked   { background: #c0392b; color: #ffffff; }
+.romp-chip-completed { background: #2b7fb8; color: #ffffff; }
+.romp-chip-ready     { background: #2b7fb8; color: #ffffff; }
+.romp-chip-await     { background: #54b204; color: #0c1a00; }

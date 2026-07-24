@@ -12,8 +12,9 @@ const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeli
 test("the WORKING badge appends the live Task-subagent count when there are any", () => {
   // reads the count off the session's live `subagents` array (threaded by the kernel from the SDK snapshot)
   assert.match(SRC, /s\.subagents && s\.subagents\.length/);
-  // singular/plural, appended to the Working label like Compacting's " 40%"
-  assert.match(SRC, /'Working · ' \+ n \+ \(n === 1 \? ' agent' : ' agents'\)/);
+  // singular/plural, appended to the Working label like Compacting's " 40%". "subagent", not "agent":
+  // the session itself is the agent, and these are the Task-spawned children under it (the user 2026-07-24).
+  assert.match(SRC, /'Working · ' \+ n \+ \(n === 1 \? ' subagent' : ' subagents'\)/);
   // blank suffix when none → the badge stays a plain "Working"
   assert.match(SRC, /n \? 'Working · '[\s\S]*?: 'Working'/);
 });

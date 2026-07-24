@@ -33,6 +33,7 @@ extra_css:
 
 extra_javascript:
   - javascripts/tabsync.js
+  - javascripts/lazyvideo.js
 
 markdown_extensions:
   - admonition

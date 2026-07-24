@@ -278,7 +278,7 @@ function badgeFor(s) {
     // Live Task-subagent count (SDK only) rides the WORKING badge —
     // so "what's actually running" is glanceable, the transparency the tmux backend never had. Blank when none.
     const n = (s.subagents && s.subagents.length) || 0;
-    m = { label: n ? 'Working · ' + n + (n === 1 ? ' agent' : ' agents') : 'Working', kind: 'working' };
+    m = { label: n ? 'Working · ' + n + (n === 1 ? ' subagent' : ' subagents') : 'Working', kind: 'working' };
   }
   else if (s.state === 'retrying') m = { label: 'Retrying', kind: 'retrying' };   // amber, distinct from the red BLOCKED — a soft API-retry stall (api 2026-06-23)
   // the lane state IS the chat chip now (the kernel's shared _session_chip, the user 2026-07-03) — the

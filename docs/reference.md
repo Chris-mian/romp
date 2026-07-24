@@ -35,39 +35,6 @@ romp --mail working "<note>"      # publish what this session is working on
 | `check_sent()` | Whether your sent messages were read yet |
 | `recall_message(to, id?)` | Unsend a message the recipient hasn't read |
 
-## Session backends
-
-Sessions run on one of two backends, chosen per session:
-
-- **Agent SDK (the default, strongly recommended).** The kernel drives the
-  session through the Claude Agent SDK: a direct programmatic connection, with
-  native pickers, queued sends, and model switching. Sessions started from the
-  dashboard use this.
-- **tmux.** A regular Claude Code terminal session running inside tmux. Romp
-  has no direct connection to it, so it works by reading what appears in the
-  terminal and on disk, and delivers messages and nudges by injecting
-  keystrokes. That makes it inherently less reliable and less responsive than
-  the SDK: scraping a terminal has edge cases a real API does not, and updates
-  wait on the transcript reaching disk.
-
-The tmux backend exists for when you want the session in an actual terminal:
-run `romp <name>` and that terminal session shows up on the dashboard like any
-other. The two interleave freely, so a terminal session can sit alongside SDK
-sessions; it just won't be as smooth as they are.
-
-## What the installer sets up
-
-`install.sh` registers the Claude Code hooks, the postal MCP config, and the
-`romp` skills; builds the editor extension; and installs a login service that
-keeps the kernel up. It is idempotent: re-running adds only what is missing,
-and it never touches hooks you registered yourself.
-
-It installs nothing into your Python. The kernel and CLI are standard library
-only; the one dependency of the [SDK backend](#session-backends)
-(`claude-agent-sdk`) lives in a dedicated venv under `~/.local/state/romp/`,
-built against the newest Python 3.10+ on the machine and rebuilt
-automatically when that Python changes.
-
 ## Configuration
 
 ### Folder click, in your terminal or editor
@@ -88,19 +55,29 @@ code {dir}                          # VS Code instead
 
 ### Install-time switches
 
-- `ROMP_NO_SERVICE=1 ./install.sh` skips the login service.
-- `ROMP_NO_EXT=1 ./install.sh` skips the VS Code / Cursor extension.
-- `ROMP_NO_SDK=1 ./install.sh` skips the SDK backend's venv (tmux sessions
-  still work).
+For `./install.sh`:
 
-### Judge models, and what they cost
+- `ROMP_NO_SERVICE=1` skips the login service.
+- `ROMP_NO_EXT=1` skips the VS Code / Cursor extension.
+- `ROMP_NO_SDK=1` skips the SDK backend's venv (tmux sessions still work).
 
-Romp's judges read your transcripts to build the task cards, so they spend
-tokens beyond your own sessions. The defaults keep that cheap: the high-volume
-indexing tier runs on Haiku, the judgment tier on Sonnet. Change either from
-the gear ("Indexing model" and "Triage model"). The analytics modal shows
-actual usage over any period, your sessions against the judge pipeline broken
-out per judge and per tier, and toggles between tokens and dollars.
+For the one-line installer (`bootstrap.sh`), which passes all of the above
+through to `install.sh`:
+
+- `ROMP_DIR=<path>` where to clone; default `~/romp`.
+- `ROMP_REF=<tag|branch>` install a specific ref; default is the newest `v*`
+  release tag, falling back to `main` when none is published.
+- `ROMP_NO_PATH=1` leaves your shell rc alone.
+
+### Ports
+
+- `ROMP_KERNEL_PORT=<port>` moves the kernel and its dashboard off the default
+  `29855`.
+- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`.
+
+Set these if something else on the machine already holds the default. Both have
+to agree across everything that talks to the kernel, so export them where the
+whole environment sees them rather than for one command.
 
 ## Where things live
 

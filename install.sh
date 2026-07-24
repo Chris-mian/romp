@@ -10,6 +10,19 @@
 set -euo pipefail
 ROMP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# This script installs the clone it lives in, so it must be RUN from one. Piped
+# (`curl ... | bash`), $0 is "bash" and ROMP_DIR silently becomes the caller's
+# cwd. And since `ln -s` happily links a nonexistent target, that would point
+# every hook in ~/.claude at a dangling path and break Claude Code. Check for a
+# file only the repo has, and send them to bootstrap.sh instead.
+if [[ ! -x "$ROMP_DIR/bin/romp" ]]; then
+    echo "install.sh: this doesn't look like a romp clone ($ROMP_DIR)." >&2
+    echo "  install.sh installs the clone it lives in; it cannot be piped from curl." >&2
+    echo "  To install from scratch:" >&2
+    echo "    curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash" >&2
+    exit 1
+fi
+
 # Preflight — name anything missing up front, with the exact remedy, instead
 # of failing later at runtime. We deliberately do NOT auto-install system
 # packages (surprising, and the right package manager varies); we check and

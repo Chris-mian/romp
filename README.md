@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/romp-wordmark.png" alt="romp" width="440">
+  <img src="docs/assets/brand/romp-wordmark.png" alt="romp" width="440">
 </p>
 
 AI agents like Claude Code can work autonomously for long stretches, allowing several to be run in parallel. But this parallelism creates new management work: tracking what the agents are doing, scrolling through transcripts to find the background a decision needs, and coordinating handoffs of work and context.
@@ -50,14 +50,10 @@ You run Romp yourself, on your laptop or a server, with no hosted service in bet
 ## Quick start
 
 ```bash
-git clone --depth 1 https://github.com/romp-on/romp.git
-cd romp
-./install.sh
-export PATH="$PATH:$(pwd)/bin"   # add this to your shell rc
+curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash
 ```
 
-`--depth 1` grabs just the latest commit (a few MB instead of the full
-history); Romp runs the same either way. Drop it if you want the whole history.
+This clones Romp to `~/romp`, checks out the newest release, installs it, and adds `bin/` to your shell rc. Open a new terminal afterwards. [Installing by hand](docs/install.md#installing-by-hand) works too.
 
 Run `romp launch`. It opens the dashboard in your browser and prints the link
 too — the link carries a one-time access token, and after that first open plain

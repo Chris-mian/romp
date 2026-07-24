@@ -16,11 +16,12 @@ together. *You* stay focused on what you're trying to accomplish.
 Romp is built on top of Claude Code: the agents Romp manages are ordinary
 sessions, gathered into one live dashboard.
 
-Where Romp runs and how you open it are both up to you. Run it on your laptop,
-on a server, or across [several machines at once](guide.md#more-machines-one-place):
+You control where each half of Romp lives. The dashboard, its front end, opens
+in a browser, in the VS Code / Cursor extension, or on
+[a phone](guide.md#your-phone). The back end that drives the agents runs on your
+laptop, on a server, or on [several machines at once](guide.md#remote-kernels):
 agents on different machines message each other, and you steer them all from one
-place. Open the dashboard in a browser, on [a phone](guide.md#your-phone), or in
-the VS Code / Cursor extension.
+place.
 
 Its key features:
 
@@ -31,28 +32,28 @@ Its key features:
 
 The timeline shows every session: what's running, what's idle, and what needs you.
 
-<video src="assets/guide/every-session-timeline.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="assets/guide/every-session-timeline.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
 ## Task management { .feature-h }
 
 Romp reads the agents' transcripts and tracks the work, so you don't have to.
 
-<video src="assets/guide/task-cards.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="assets/guide/task-cards.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
 A card shows each task with the essential information: why the work is
 happening, what the agent did, and the sub-tasks completed along the way.
 
-<video src="assets/guide/context-tabs.mp4" autoplay loop muted playsinline class="romp-card-demo"></video>
+<video src="assets/guide/context-tabs.mp4" controls loop muted playsinline preload="none" data-romp-autoplay class="romp-card-demo"></video>
 
 ## Coordination you can see { .feature-h }
 
 The Romp Postal Service lets agents ask each other questions and hand off work.
 
-<video src="assets/guide/coordination.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="assets/guide/coordination.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
 ## Navigate anywhere, detail on demand { .feature-h }
 
 Find any work by when it happened on the timeline or by the task it belonged
 to, then open it for the full detail.
 
-<video src="assets/guide/navigate.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="assets/guide/navigate.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
