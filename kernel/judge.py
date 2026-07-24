@@ -6829,8 +6829,17 @@ def _distill_due_t(store, nid, blocked):
     never `mt` (the user 2026-07-08, the Proton-card regression): since the diary flip an event-only
     reopen→settle cycle bumps no cache stamp, so an mt-keyed gate slept through re-completions and the
     card kept its stale pre-follow-up summary. Completed side = the settle event (settledAt); blocked
-    side = the newest block event anywhere in the subtree (the block that owes the brief can sit on a
-    descendant). Falls back to mt only when the store predates those events entirely."""
+    side = the newest block event among the nodes STILL blocked (the block that owes the brief can sit
+    on a descendant). Falls back to mt only when the store predates those events entirely.
+
+    STILL blocked, not ever blocked (the user 2026-07-23, the launch-prep card again): a block the fold
+    has since closed is dead history, and counting it pinned `due` to the newest DEAD block. A mid-turn
+    stop blocked the top for 52 seconds, was briefed to the "" sentinel and unblocked — and because that
+    dead interrupt was newer than the real owed decision sitting on a descendant, briefedMt == due
+    forever, so the card never re-entered the distiller and sat in Blocked saying nothing. Reading only
+    open blocks keys `due` to the same set the brief's owed question comes from (`blkd`), which is the
+    invariant that broke. `blocked` is the materialized fold, so an unblock closes the episode by
+    history, not by flag-poking."""
     nodes = store["nodes"]
     nd = nodes.get(nid) or {}
     if not blocked:
@@ -6842,11 +6851,12 @@ def _distill_due_t(store, nid, blocked):
     stack = [nid]
     while stack:
         x = stack.pop()
-        for e in (nodes.get(x, {}).get("log") or []):
-            if e.get("kind") == "block":
-                t = e.get("ev_t") or e.get("at") or 0
-                if best is None or t > best:
-                    best = t
+        if nodes.get(x, {}).get("blocked"):
+            for e in (nodes.get(x, {}).get("log") or []):
+                if e.get("kind") == "block":
+                    t = e.get("ev_t") or e.get("at") or 0
+                    if best is None or t > best:
+                        best = t
         stack.extend(kids.get(x, []))
     return best or nd.get("mt")
 

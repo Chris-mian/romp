@@ -4214,15 +4214,19 @@ class DeltaScopedDistill(unittest.TestCase):
             jd.distill_llm("g", "w", "dw")
             self.assertNotIn("prior-summary", m.call_args.args[2])
 
-    def test_blocked_due_time_is_the_newest_subtree_block_event(self):
+    def test_blocked_due_time_is_the_newest_open_subtree_block_event(self):
         g, c = SID + ":g1", SID + ":g2"
         store = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "placements": {}, "status": {},
                  "nodes": {g: {"id": g, "text": "top", "parentId": None, "mt": T0, "log": []},
-                           c: {"id": c, "text": "sub", "parentId": g, "mt": T0,
+                           c: {"id": c, "text": "sub", "parentId": g, "mt": T0, "blocked": True,
                                "log": [{"src": "planner", "kind": "block", "ev_t": T0 + 300, "at": T0 + 301}]}}}
         self.assertEqual(jd._distill_due_t(store, g, True), T0 + 300,
                          "the brief gate keys on the block event, wherever in the subtree it sits")
         self.assertEqual(jd._distill_due_t(store, g, False), T0, "completed side falls back to mt without a settle")
+        store["nodes"][g].update(blocked=False, log=[{"src": "interrupt", "kind": "block", "ev_t": T0 + 400},
+                                                     {"src": "user", "kind": "unblock", "ev_t": T0 + 410}])
+        self.assertEqual(jd._distill_due_t(store, g, True), T0 + 300,
+                         "a block the fold has closed is history — it must not outrank the one still owed")
 
 
 class ProceduralBlockStillSpeaks(unittest.TestCase):
@@ -4321,6 +4325,95 @@ class ProceduralBlockStillSpeaks(unittest.TestCase):
         self.assertEqual(calls["brief"], [ask])
         self.assertIsNone(node.get("blockSummary"), "null = honestly pending; the spinner shows, not silence")
         self.assertEqual(node.get("briefFails"), 1, "the retry counter runs; the cap still settles later")
+
+
+class DeadBlockNeverPinsTheBrief(unittest.TestCase):
+    """A blocked card's brief is due against the newest STILL-OPEN block, never the newest block ever
+    recorded (the user 2026-07-23, the launch-prep card again). A mid-turn stop blocked the TOP, was
+    briefed to the "" sentinel, and was unblocked a minute later when the user re-engaged — but that dead
+    interrupt was NEWER than the real owed decision sitting on a descendant, so briefedMt == due forever:
+    the card never re-entered the distiller and sat in Blocked saying nothing, out of reach even of the
+    fresh-block reopen (which needs due to MOVE). Reading only open blocks keys `due` to the same set the
+    owed question comes from. SYNTHETIC fixtures only."""
+
+    ASK = "should the release gate hard-block the tag, warn only, or stay a manual checklist?"
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._saved_brief = jd.brief_llm
+        self._saved_stall = jd.stall_llm
+        self._td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self._td))
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        jd.brief_llm = self._saved_brief
+        jd.stall_llm = self._saved_stall
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _store(self, kid_open=True):
+        """A top whose own interrupt block was unblocked (dead, T0+40) over a descendant's substantive
+        block that nobody answered (live, T0+30) — the card the user found silent in Blocked."""
+        records = [uline(T0, "please get the repo ready to publish", "u1", ps="typed"),
+                   aline(T0 + 10, "worked through the checklist, then stopped", "a1", "u1", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        top, kid = SID + ":g1", SID + ":g2"
+        nodes = {
+            top: {"id": top, "text": "get the repo ready to publish", "parentId": None,
+                  "nodeComplete": False, "blocked": False, "cleared": False,
+                  "trail": [sg["id"] for sg in segs], "t": T0, "mt": T0 + 60,
+                  "blockSummary": "", "briefedMt": T0 + 40,
+                  "log": [{"ev_t": T0 + 40, "at": T0 + 40, "src": "interrupt", "kind": "block",
+                           "why": jd.INTERRUPT_BLOCK_WHY},
+                          {"ev_t": T0 + 50, "at": T0 + 50, "src": "user", "kind": "unblock",
+                           "why": "you re-engaged"}]},
+            kid: {"id": kid, "text": "the release gate's strictness", "parentId": top,
+                  "nodeComplete": False, "blocked": kid_open, "blockWhy": self.ASK, "cleared": False,
+                  "trail": [], "t": T0, "mt": T0 + 30,
+                  "log": [{"ev_t": T0 + 30, "at": T0 + 30, "src": "closer", "kind": "block",
+                           "why": self.ASK}]
+                        + ([] if kid_open else [{"ev_t": T0 + 35, "at": T0 + 35, "src": "unblocker",
+                                                 "kind": "unblock", "why": "answered in passing"}])},
+        }
+        store = {"rompUuid": SID, "seq": 2, "placementsV": jd.PLACEMENTS_V, "lastNode": kid,
+                 "placements": {}, "status": {top: "blocked"}, "nodes": nodes}
+        jd.save_goals(SID, store)
+        return str(path), jd.load_goals(SID), top
+
+    def test_due_reads_the_live_block_not_the_newer_dead_one(self):
+        _path, store, top = self._store()
+        self.assertEqual(jd._distill_due_t(store, top, True), T0 + 30,
+                         "the descendant's unanswered block owes the brief; the unblocked interrupt is history")
+
+    def test_the_owed_decision_reaches_the_briefer_past_a_dead_interrupt(self):
+        path, _store, top = self._store()
+        calls = []
+        jd.brief_llm = lambda goal_text, work_text, owed: (
+            calls.append(owed) or "BACKGROUND: b.\nTAKEAWAY: decide the gate.\nSOURCE: m1")
+        jd.stall_llm = lambda *a, **k: self.fail("the staller does not speak for a substantive block")
+        jd._distill_session(SID, path, NOW)
+        node = jd.load_goals(SID)["nodes"][top]
+        self.assertEqual(calls, [self.ASK], "the card re-enters the distiller and briefs the real question")
+        self.assertEqual(node["blockSummary"], "decide the gate.",
+                         "a card in Blocked always says what moves it")
+        self.assertEqual(node["briefedMt"], T0 + 30, "stamped at the block it briefed, so it settles there")
+
+    def test_nothing_blocked_falls_back_to_mt(self):
+        # the live-picker floor briefs a focus goal no stored block covers: with every block closed there
+        # is no block event to key on, and mt is the episode stamp that path documents
+        _path, store, top = self._store(kid_open=False)
+        self.assertEqual(jd._distill_due_t(store, top, True), store["nodes"][top]["mt"])
+
+    def test_an_ordinary_live_block_on_the_top_is_unchanged(self):
+        _path, store, top = self._store()
+        jd.record_verdict(store, store["nodes"][top], "closer", "block", T0 + 70, why=self.ASK)
+        jd.save_goals(SID, store)
+        store = jd.load_goals(SID)
+        self.assertTrue(store["nodes"][top]["blocked"], "the re-block landed")
+        self.assertEqual(jd._distill_due_t(store, top, True), T0 + 70,
+                         "the top's own newest OPEN block still wins, exactly as before")
 
 
 class KnownTargetContext(unittest.TestCase):
