@@ -69,6 +69,16 @@ through to `install.sh`:
   release tag, falling back to `main` when none is published.
 - `ROMP_NO_PATH=1` leaves your shell rc alone.
 
+### Ports
+
+- `ROMP_KERNEL_PORT=<port>` moves the kernel and its dashboard off the default
+  `7433`.
+- `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `47100`.
+
+Set these if something else on the machine already holds the default. Both have
+to agree across everything that talks to the kernel, so export them where the
+whole environment sees them rather than for one command.
+
 ## Where things live
 
 State is written under `${XDG_STATE_HOME:-~/.local/state}/romp/`. Transcripts

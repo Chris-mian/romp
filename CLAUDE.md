@@ -58,15 +58,25 @@ broad `git add` will sweep up your work). Conventions:
   session's name, e.g. session `bugsdk2` → branch `bugsdk2`, dir `../romp-bugsdk2`
   (`git worktree add -b <session> ../romp-<session> HEAD`). So a glance at
   `git worktree list` says who owns what.
-- **Standing green light to merge.** When the work is done and tests pass, merge it back
-  to `main` and push — no need to ask first. (This is explicit standing permission from
-  the user; the usual "branch first / ask before committing" caution is lifted here.)
-- **Clean up when finished.** After merging, remove the worktree
+- **Never commit on the shared `main` checkout** (user rule, 2026-07-24). Branches and
+  worktrees are how work happens here, with no "quick one in main" exception. A commit
+  that lands on the local `main` branch and is not pushed immediately makes local `main`
+  diverge from `origin/main`, and then every peer session is stuck: they cannot push,
+  cannot fast-forward, and cannot reset the shared tree without destroying whatever
+  uncommitted edits other sessions are holding in it. This happened on 2026-07-24 (six
+  docs commits stranded on local `main`, already duplicated on a PR branch, blocking two
+  other sessions).
+- **Standing green light to publish.** When the work is done and tests pass, publish it
+  without asking: push your branch, then merge it on the remote or open a PR. If `main`
+  itself needs moving, do that in a throwaway worktree at `origin/main` and push right
+  away, so local `main` is never left ahead of `origin/main`.
+- **Clean up when finished.** After publishing, remove the worktree
   (`git worktree remove ../romp-<session>`) and delete its branch — don't leave stale
   worktrees lying around.
-- **Exception:** a quick, already-in-flight change in the main tree (or an explicit
-  "do this in main") can stay there — commit it promptly with a focused `git add <paths>`
-  (never `git add -A`, which sweeps peers' edits). See [[shared-worktree-use-isolated]].
+- **When you do touch the shared tree** (reading, or an explicit "do this in main"), use
+  a focused `git add <paths>` — never `git add -A`, which sweeps peers' edits — and never
+  `git reset --hard` or `git clean` there: other sessions' uncommitted work lives in that
+  tree and it is not yours to discard. See [[shared-worktree-use-isolated]].
 
 ## Testing
 Every bug fix or feature change must land with a test that covers it (user rule,

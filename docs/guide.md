@@ -202,23 +202,34 @@ it returns with the trust level you last gave it.
 Each attached host carries a trust level that governs its mail; see
 [Security and trust](#security-and-trust).
 
-### Publishing a roaming machine to a hub
+### Attaching a laptop, or any machine you cannot reach
 
-A machine that moves between networks can publish itself to an always-on hub
-over its own outbound ssh, so the hub never holds credentials into it. Tick
-**keep connected** on the hub's row in the network popover (or run
-`romp checkin <hub>`): the attach tunnel gains reverse forwards for this
-machine's kernel and postal bus, and a handshake hands the hub its ports and
-dashboard token. The hub's dashboard then sees and drives this machine's
-sessions whenever it is online, from any network.
+Attaching assumes you can reach the other machine. That holds for a server,
+which sits at a fixed address, and fails for a laptop, which changes networks,
+has no stable address, and usually sits behind a router that accepts no incoming
+connections at all.
 
-The two postal buses peer over the same tunnel, so messages flow both ways. Mail
-for an unreachable machine parks in an outbox and delivers on reconnect, or
-bounces back if the recipient is gone. Untick the box (or `romp checkout <hub>`)
-and the hub forgets the machine and its token.
+Which machine opens the connection, though, is a separate question from which
+way traffic then flows. One ssh connection carries both directions at once: a
+forward, so your dashboard reaches the other kernel, and a reverse forward, so
+the other machine's postal bus reaches yours. Whichever machine can do the
+reaching opens the connection, and both ends still get everything they need.
 
-Every machine runs its own postal bus, so a laptop off the network keeps full
-local messaging; connecting only adds reach.
+So for a laptop, the laptop opens the connection, to an always-on machine acting
+as a hub. Tick **keep connected** on the hub's row in the network popover (or run
+`romp checkin <hub>`): the laptop's connection gains reverse forwards for its own
+kernel and postal bus, then tells the hub which ports those landed on and hands
+over its dashboard token. The hub's dashboard can then see and drive the
+laptop's sessions whenever the laptop is online, from whatever network it is on.
+
+Because the laptop is the end doing the connecting, the hub never holds a way in
+to it. Untick the box (or run `romp checkout <hub>`) and the hub forgets the
+laptop and its token.
+
+Mail for a machine that is offline waits in an outbox and delivers when it
+reconnects, or bounces back if the recipient is gone for good. Every machine runs
+its own postal bus, so a laptop with no connection at all still has full local
+messaging; connecting only adds reach.
 
 ## Reaching the dashboard
 
@@ -276,9 +287,9 @@ your machine reads that host's token over ssh and stores it locally (in
 `~/.local/state/romp/remotes.json`, also `0600`: it is a credential store).
 Dashboard traffic to a remote never crosses the network in the open; it rides
 the ssh tunnel, which supplies encryption and machine identity, while the token
-authorizes at the far end. Check-in reverses the direction, so credentials
-always flow outward from the machine that initiates, and a hub never holds a way
-in.
+authorizes at the far end. Checking a laptop in to a hub reverses which end opens
+the connection, so credentials still flow outward from the machine that
+initiates, and a hub never holds a way in.
 
 **Trust levels for attached hosts.** Attaching two kernels lets their sessions
 message each other, which means a session on the remote machine can put text
