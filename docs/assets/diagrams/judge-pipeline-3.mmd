@@ -1,0 +1,14 @@
+%%{init: {'theme':'dark'}}%%
+flowchart TD
+    M["a segment's work"]:::det --> Q{"which card needs it?"}:::llm
+    Q -->|none| MINT["mint a new card"]:::det
+    Q -->|"card #n"| K{"open sub-goals<br/>inside #n?"}:::det
+    K -->|no| CARD["file at the card"]:::det
+    K -->|yes| P["placer (LLM):<br/>highest level that fits"]:::llm
+    P --> CARD2["file inside the card"]:::det
+    CARD --> G{"exact same title as<br/>parent or open sibling?"}:::det
+    CARD2 --> G
+    G -->|yes| REUSE["land on that node,<br/>mint nothing"]:::det
+    G -->|no| NEW["new node"]:::det
+    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
+    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827

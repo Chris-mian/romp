@@ -1,0 +1,8 @@
+%%{init: {'theme':'dark'}}%%
+flowchart TD
+    S["send_message(to, body, kind)<br/>kind: delegate, coordinate, or question"]:::det --> C{"courier: did work<br/>actually change hands?"}:::llm
+    C -->|yes| P["goal planted in the recipient's tree<br/>+ tracking node in the sender's"]:::det
+    C -->|no| N["no card: the exchange<br/>stays in chat"]:::det
+    P --> D["recipient completes the goal;<br/>the sender's tracker checks off<br/>by itself (deterministic)"]:::det
+    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
+    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827

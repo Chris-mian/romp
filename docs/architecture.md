@@ -29,31 +29,7 @@ replayable. In the diagram, blue is an LLM board judge (writes goal state),
 green an LLM caption judge (writes only text), gray deterministic code, yellow
 data at rest, and pink you.
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-flowchart LR
-    TR[("transcripts")]:::data --> PARSE["parse:<br/>turns, segments"]:::det
-    MAIL[("peer mail")]:::data --> PARSE
-    PARSE --> PLAN["planners + placer (LLM):<br/>place every segment"]:::llm
-    PARSE --> CLOSE["closer (LLM):<br/>audit each ended turn"]:::llm
-    PARSE --> UNB["unblocker (LLM):<br/>lift blocks answered in passing"]:::llm
-    PARSE --> COUR["courier (LLM):<br/>review peer mail"]:::llm
-    TODO[("agent's to-do list")]:::data --> SYNC["plan-sync:<br/>mirror to-dos"]:::det
-    PLAN --> LOG[("goal stores:<br/>an event log per node")]:::data
-    CLOSE --> LOG
-    UNB --> LOG
-    COUR --> LOG
-    SYNC --> LOG
-    YOU["you: clear, reply,<br/>resolve, move"]:::user --> LOG
-    LOG --> GROUP["grouper + consolidator (LLM):<br/>nest related cards"]:::llm --> LOG
-    LOG --> DIST["distiller + briefer (LLM):<br/>summaries, briefs"]:::llm --> LOG
-    LOG --> ROLL["rollup:<br/>fold events to status"]:::det
-    ROLL --> BOARD[("the board:<br/>3 columns")]:::data
-    classDef llm fill:#dbeafe,stroke:#2563eb,color:#111827
-    classDef det fill:#e5e7eb,stroke:#6b7280,color:#111827
-    classDef data fill:#fefce8,stroke:#ca8a04,color:#111827
-    classDef user fill:#fce7f3,stroke:#db2777,color:#111827
-```
+![The judges end to end: transcripts and peer mail become segments, judges write events to per-node goal logs, a rollup folds them into the board](assets/diagrams/architecture.svg){ width="100%" }
 
 ## What the installer sets up
 
