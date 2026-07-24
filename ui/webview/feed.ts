@@ -1702,18 +1702,24 @@ function navSidOf(it: AskItem, node: AskTreeNode): string {
 // Canned one-click status asks (the user 2026-07-20). The reply shapes are exactly the verdicts the
 // judge's planner files off a nudge reply — done / in progress / blocked-on-you / obsolete — so the
 // session's answer heals the card without any new ingestion machinery.
+//
+// VOICE (the user 2026-07-24): the session has no idea romp is tracking it, so these read as the person
+// it works for asking, in their words. The old opener announced a status check on "this card", naming a
+// romp OBJECT the recipient has never heard of, and the four labeled reply slots read as a form. The
+// same four answers still come back — a person asking "what shipped, what's next, or what do you need
+// from me" gets them without naming the taxonomy. Same rule as the clear-wrap message.
 function statusAskOne(title: string): string {
-  return "Where does \"" + title + "\" stand? One line: done (say what shipped), in progress (say what's next), "
-       + "blocked on me (restate exactly what you need from me), or obsolete (say to drop it).";
+  return "Where does \"" + title + "\" stand? One line: what shipped, what's next, or exactly what you "
+       + "need from me if you're stuck. If it isn't worth doing anymore, say so.";
 }
 function statusSweepText(it: AskItem): { n: number; text: string } {
   const open = (it.tree || []).filter((n) => n.status !== "done" && !n.cleared && n.kind !== "handoff" && n.id !== it.itemId);
   const lines = open.slice(0, 15).map((n) => "- " + (n.text || "(sub-goal)"));
-  const more = open.length > 15 ? "\n(+" + (open.length - 15) + " more on this card)" : "";
+  const more = open.length > 15 ? "\n(+" + (open.length - 15) + " more)" : "";
   return { n: open.length,
-           text: "Status check on this card. For each item below, one line each: done (say what shipped), "
-               + "in progress (say what's next), blocked on me (restate exactly what you need from me), "
-               + "or obsolete (say to drop it):\n" + lines.join("\n") + more };
+           text: "Where does each of these stand? One line each: what shipped, what's next, or exactly "
+               + "what you need from me if you're stuck. If one isn't worth doing anymore, say so:\n"
+               + lines.join("\n") + more };
 }
 // True if any DESCENDANT of `node` is itself a question. Node status is ROLLED UP
 // (a ? anywhere below makes every ancestor ?), so this distinguishes the ACTUAL

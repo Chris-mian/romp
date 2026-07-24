@@ -129,7 +129,7 @@ class NudgeBundleBody(unittest.TestCase):
         self.assertIn("> 1. Ship the auth refactor — End-to-end auth revamp.", out)
         self.assertIn("> 2. Write the migration guide", out)
         self.assertIn("> 3. Fix the flaky login test", out)
-        self.assertIn("Status check on the 3 separate goals above", out)
+        self.assertIn("Where do these 3 stand?", out)
         for g in (G1, G2, G3):
             self.assertIn("<!-- romp-goal-id: %s -->" % g, out, "every bundled goal id must ride the tail")
         self.assertIn("<!-- romp-injected -->", out)
@@ -141,7 +141,7 @@ class NudgeBundleBody(unittest.TestCase):
 
     def test_stalled_goals_get_the_fork_line_by_number(self):
         out = km._nudge_bundle_body([G1, G3], self._nodes(), {G3})
-        self.assertIn("Under #2 there are items still open on your own to-do list", out)
+        self.assertIn("On #2 you've still got open items on your to-do list", out)
         out2 = km._nudge_bundle_body([G1, G2], self._nodes(), set())
         self.assertNotIn("to-do list", out2, "no fork line when nothing is agent-open")
 

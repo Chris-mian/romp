@@ -2501,9 +2501,9 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(len(sent), 1, "the stalled goal is nudged")
             # the fork ask (both the flat and the hierarchical-enumeration form carry these sentences):
             # per-item progress + the continue-or-name-the-blocker fork (the user 2026-07-02)
-            self.assertIn("please continue with it now", sent[0][1],
+            self.assertIn("Keep going on anything you can", sent[0][1],
                           "the FORK text, not the plain status check")
-            self.assertIn("where does it stand", sent[0][1], "asks for per-item progress")
+            self.assertIn("Where does each one stand?", sent[0][1], "asks for per-item progress")
             self.assertIn("tell me which one and exactly what you need from me", sent[0][1])
             self.assertIn("hook up the adapter", sent[0][1], "the open item is named in the quote")
             self.assertNotIn(km.AUTO_NUDGE_TEXT, sent[0][1])
@@ -2535,7 +2535,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("migrate stores and land the branch", body, "open to-do #2 is named")
         self.assertNotIn("a genuinely done step", body, "a done step is not")
         self.assertIn("still open on your own to-do list", body, "the fork body rides the enumeration")
-        self.assertIn("where does it stand", body, "and asks for per-item progress")
+        self.assertIn("Where does each one stand?", body, "and asks for per-item progress")
 
     def test_auto_nudge_stamps_failed_when_its_response_leaves_the_goal_stalled(self):
         # plans/stalled-open-todos-nudge.md: after the ONE nudge, the agent's response turn ends (judged —
@@ -3281,6 +3281,44 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("Need you to choose", out, "no planner why line")
         self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"), "the reopen marker still rides")
 
+    def test_typed_followup_on_a_summary_carries_the_still_open_pieces(self):
+        # The distilled summary is a LOSSY headline of the card (the user 2026-07-24): reply to it and the
+        # session used to see that ONE line, so a takeaway that got the emphasis wrong propagated
+        # unchallenged and nothing pointed the session at the rest — a BLOCKED sub-goal in particular went
+        # unmentioned, which is the piece the reply is most likely to be about. The open pieces now ride
+        # under the summary, the same bullets the nudge enumerates.
+        top, done, open_, blk = SID + ":g1", SID + ":g3", SID + ":g4", SID + ":g5"
+        store = {"rompUuid": SID, "seq": 5, "nodes": {
+            top: {"id": top, "text": "Ship the notes API", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "summary": "Endpoints are live and the client is wired up.", "t": T0},
+            done: {"id": done, "text": "Write the handlers", "parentId": top, "nodeComplete": True,
+                   "blocked": False, "t": T0},
+            open_: {"id": open_, "text": "Backfill the fixtures", "parentId": top, "nodeComplete": False,
+                    "blocked": False, "why": "Needed before the load test.", "t": T0},
+            blk: {"id": blk, "text": "Pick the rate-limit ceiling", "parentId": top, "nodeComplete": False,
+                  "blocked": True, "blockWhy": "Need you to choose a number.", "t": T0}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        out = km._followup_body(top, None, "ship it")
+        self.assertIn("> Endpoints are live and the client is wired up.", out, "the summary still leads")
+        self.assertIn("Also still open on this:", out)
+        self.assertIn("• Backfill the fixtures — Needed before the load test.", out)
+        self.assertIn("• Pick the rate-limit ceiling (blocked) — Need you to choose a number.", out,
+                      "the blocked piece is exactly what a reply to a wrong summary must not miss")
+        self.assertNotIn("Write the handlers", out, "finished pieces are not still-open work")
+
+    def test_a_flat_card_keeps_the_bare_summary_quote(self):
+        # nothing open under it → nothing to add; the quote stays the one line it always was
+        top = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "nodes": {
+            top: {"id": top, "text": "Ship the notes API", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "summary": "Shipped and verified.", "t": T0}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        out = km._followup_body(top, None, "nice")
+        self.assertIn("> Shipped and verified.", out)
+        self.assertNotIn("Also still open", out)
+
     def test_hierarchical_nudge_enumeration_wins_over_the_quote(self):
         # a NUDGE on a hierarchical top still enumerates the unfinished pieces (the user 2026-06-24) even
         # when the top carries a verbatim quote — the checklist is the more useful nudge form (g13 scope:
@@ -3290,7 +3328,7 @@ class ViewBuilder(unittest.TestCase):
         st["nodes"][top]["quote"] = "please ship the auth refactor end to end"
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(st))
         out = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True)
-        self.assertIn("Unfinished pieces under this goal", out)
+        self.assertIn("Still open on this:", out)
         self.assertNotIn("please ship the auth refactor", out)
 
     def test_followup_body_enriches_with_path_status_and_why(self):
@@ -3337,13 +3375,14 @@ class ViewBuilder(unittest.TestCase):
         top = self._hier_goal_store()
         out = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True)   # the Nudge button
         self.assertIn("> Ship the auth refactor", out, "the high-level goal is the heading/context")
-        self.assertIn("Unfinished pieces under this goal", out)
+        self.assertIn("Still open on this:", out)
         self.assertIn("• Migrate the session store to Redis", out, "an open own-work leaf is listed")
         self.assertIn("• Add CSRF tokens (blocked) — Need you to pick the token TTL.", out,
                       "a blocked leaf carries its tag + the planner's why")
         self.assertNotIn("Update the login tests", out, "a DONE leaf is not an unfinished piece")
         self.assertNotIn("Peer is porting the client", out, "a DELEGATED leaf is peer work, not this session's")
-        self.assertIn("report per piece", out, "the body asks for a status on each piece, not the whole goal")
+        self.assertIn("Where does each of those stand?", out,
+                      "the body asks for a status on each piece, not the whole goal")
         self.assertNotIn(km.AUTO_NUDGE_TEXT, out, "the single-line 'status on the goal above' body is replaced")
         # still a proper nudge: gray-bubble marker + the reopen goal-id, targeting the TOP goal
         self.assertTrue(out.endswith("<!-- romp-injected --><!-- romp-goal-id: " + top + " -->"))
@@ -3352,7 +3391,7 @@ class ViewBuilder(unittest.TestCase):
         # the auto-nudge (injected + auto) refines IDENTICALLY to the manual button (the user 2026-06-24).
         top = self._hier_goal_store()
         auto = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True, auto=True)
-        self.assertIn("Unfinished pieces under this goal", auto)
+        self.assertIn("Still open on this:", auto)
         self.assertIn("• Migrate the session store to Redis", auto)
         self.assertTrue(auto.endswith("<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: " + top + " -->"))
 
@@ -3366,7 +3405,7 @@ class ViewBuilder(unittest.TestCase):
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         out = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True)
         self.assertIn("> Wire up the thing", out)
-        self.assertNotIn("Unfinished pieces under this goal", out, "nothing to enumerate on a flat goal")
+        self.assertNotIn("Still open on this:", out, "nothing to enumerate on a flat goal")
         self.assertIn(km.AUTO_NUDGE_TEXT, out, "the single-line nudge body is preserved verbatim")
 
     def test_typed_followup_on_a_hierarchical_top_is_not_enumerated(self):
@@ -3374,7 +3413,7 @@ class ViewBuilder(unittest.TestCase):
         # keeps the existing single-node quote, so we don't expand their reply into a per-sub status request.
         top = self._hier_goal_store()
         out = km._followup_body(top, None, "use Redis, TTL 1h")   # injected defaults False (the user typed it)
-        self.assertNotIn("Unfinished pieces under this goal", out)
+        self.assertNotIn("Still open on this:", out)
         self.assertIn("> Ship the auth refactor", out)
         self.assertIn("use Redis, TTL 1h", out)
 

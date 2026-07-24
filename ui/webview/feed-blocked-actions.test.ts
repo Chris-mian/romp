@@ -67,8 +67,13 @@ test("(A) the per-sub-goal 'Check status' is a ONE-CLICK targeted ask — askFol
   assert.match(FEED, /stat\.textContent = "Check status"/);
   assert.doesNotMatch(FEED, /stat\.textContent = "Status\?"/);
   assert.match(FEED, /function statusAskOne\(title: string\): string/);
-  // the canned ask names the four reply shapes the judge's planner files: done / in progress / blocked-on-me / obsolete
-  assert.match(FEED, /done \(say what shipped\), in progress \(say what's next\), /);
+  // The canned ask still elicits the four reply shapes the judge's planner files (done / in progress /
+  // blocked-on-me / obsolete) but no longer NAMES that taxonomy at the session (the user 2026-07-24): the
+  // recipient has never heard of romp, so four labeled reply slots read as a form to fill in rather than a
+  // question. A person asking "what shipped, what's next, or what do you need from me" gets the same four
+  // answers back. Same rule as the clear-wrap message.
+  assert.match(FEED, /what shipped, what's next, or exactly what you/);
+  assert.doesNotMatch(FEED, /Status check on this card/, "'card' is romp's word, not one the session knows");
   assert.match(FEED, /text: statusAskOne\(node\.text \|\| "this sub-goal"\), sid: it\.sid/);
   // instant ack: disable + relabel before the round-trip (the ↻ chip takes over on the next push)
   assert.match(FEED, /stat\.disabled = true; stat\.textContent = "Asked";/);

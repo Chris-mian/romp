@@ -567,6 +567,23 @@ def _session_backend(sid, tm):
     return "sdk" if (be and be.owns(sid)) else "tmux"
 
 
+def _open_leaf_bullets(nodes, subs, cap=12, indent="  "):
+    """The '• sub-goal (blocked) — why' lines for a run of still-open sub-goals, capped with an
+    '…and N more' tail. Shared by the NUDGE enumeration, the multi-goal bundle and the TYPED follow-up's
+    context quote, so the three renderings can't drift apart. A blocked leaf shows its blockWhy (the
+    thing it is stuck ON), an open one the planner's why."""
+    out = []
+    for lid in subs[:cap]:
+        ld = nodes.get(lid, {})
+        lt = str(ld.get("text", "")).strip() or "(unnamed)"
+        why = (ld.get("blockWhy") if ld.get("blocked") else ld.get("why")) or ""
+        why = (" — " + why.strip()) if why.strip() else ""
+        out.append(indent + "• " + lt + (" (blocked)" if ld.get("blocked") else "") + why)
+    if len(subs) > cap:
+        out.append(indent + "• …and %d more" % (len(subs) - cap))
+    return out
+
+
 def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
@@ -611,27 +628,17 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
                 if (injected and head and not nd.get("parentId")) else [])
         if subs:
             quote.append(head)
-            quote.append("Unfinished pieces under this goal — give me a status on each:")
-            CAP = 12
-            for lid in subs[:CAP]:
-                ld = nodes.get(lid, {})
-                lt = str(ld.get("text", "")).strip() or "(unnamed)"
-                why = (ld.get("blockWhy") if ld.get("blocked") else ld.get("why")) or ""
-                why = (" — " + why.strip()) if why.strip() else ""
-                quote.append("  • " + lt + (" (blocked)" if ld.get("blocked") else "") + why)
-            if len(subs) > CAP:
-                quote.append("  • …and %d more" % (len(subs) - CAP))
+            quote.append("Still open on this:")
+            quote.extend(_open_leaf_bullets(nodes, subs))
             # `stalled` = the FORK nudge (plans/stalled-open-todos-nudge.md): the goal has items the
             # agent's OWN to-do list still marks open, so instead of a per-piece status report the body asks
             # the agent to pick a branch — continue, or name the blockers (which the planner then applies as
             # blocks). The enumerated quote above already names the open pieces.
-            body = (("These are still open on your own to-do list. For each one: where does it stand, and "
-                     "if you don't need anything from me, please continue with it now. If any is blocked, "
-                     "tell me which one and exactly what you need from me to finish it. If one is no "
-                     "longer needed, say so and why.") if stalled else
-                    ("For each unfinished piece above: what's done, what's left, and is anything blocked "
-                     "waiting on a decision from me? If a piece is obsolete and no longer needed, say so "
-                     "and why. Keep the overall goal in mind, but report per piece."))
+            body = (("Those are still open on your own to-do list. Where does each one stand? Keep going "
+                     "on anything you can. If something's blocked, tell me which one and exactly what you "
+                     "need from me. If one is no longer needed, just say so.") if stalled else
+                    ("Where does each of those stand? What's done, what's left, and is anything blocked "
+                     "waiting on a decision from me? If one is no longer needed, just say so."))
         elif not injected and str(nd.get("summary") or nd.get("blockSummary") or "").strip():
             # A TYPED follow-up quotes the card's DISTILLED SUMMARY — the takeaway (completed) or decision brief
             # (blocked) that is the card's visible HEADLINE, the thing you're reading + clicked to follow up on
@@ -640,6 +647,16 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             # session pulls the full thread from its own history. Falls back to the minting quote below when
             # there's no summary yet (a still-working card). Nudges (injected) keep their own context.
             quote.append(str(nd.get("summary") or nd.get("blockSummary")).strip())
+            # …plus the card's still-OPEN sub-goals (the user 2026-07-24). The summary alone is a LOSSY
+            # headline: reply to it and the session sees that ONE line, so a takeaway that got the emphasis
+            # wrong propagates unchallenged, and nothing points the session at the rest of the card — a
+            # BLOCKED sub-goal in particular just goes unmentioned, which is the piece most likely to be
+            # what the reply should be about. Same bullets the nudge enumerates, so the two agree on what
+            # "still open" means; a flat card (no open sub-goals) adds nothing and keeps the bare summary.
+            sub_open = _open_leaves_for_nudge(nodes, str(iid)) if not nd.get("parentId") else []
+            if sub_open:
+                quote.append("Also still open on this:")
+                quote.extend(_open_leaf_bullets(nodes, sub_open))
         elif not injected and str(nd.get("quote") or "").strip():
             # No distilled summary yet → the node's cached minting-message VERBATIM head (judge _mint_quote; the
             # user 2026-07-01, g13): quote the user's OWN WORDS back — how a person re-raises a thread — instead
@@ -705,25 +722,16 @@ def _nudge_bundle_body(gids, nodes, stalled_gids):
         head = str(nd.get("text", "")).strip() or "(unnamed goal)"
         why = str(nd.get("why") or "").strip()
         quote.append("%d. %s" % (i, head) + ((" — " + why) if why else ""))
-        subs = _open_leaves_for_nudge(nodes, str(gid))
-        CAP = 6                                        # tighter than the single-goal 12: N goals share one message
-        for lid in subs[:CAP]:
-            ld = nodes.get(lid, {})
-            lt = str(ld.get("text", "")).strip() or "(unnamed)"
-            lw = (ld.get("blockWhy") if ld.get("blocked") else ld.get("why")) or ""
-            lw = (" — " + lw.strip()) if lw.strip() else ""
-            quote.append("   • " + lt + (" (blocked)" if ld.get("blocked") else "") + lw)
-        if len(subs) > CAP:
-            quote.append("   • …and %d more" % (len(subs) - CAP))
+        # CAP 6, tighter than the single-goal 12: N goals share one message
+        quote.extend(_open_leaf_bullets(nodes, _open_leaves_for_nudge(nodes, str(gid)), cap=6, indent="   "))
         if gid in stalled_gids:
             stall_nums.append(i)
-    body = ("Status check on the %d separate goals above, each still open. For each numbered goal: "
-            "what's done, what's left, and is anything blocked waiting on a decision from me? If one is "
-            "already finished or no longer needed, say so and why." % len(gids))
+    body = ("Where do these %d stand? For each one: what's done, what's left, and is anything blocked "
+            "waiting on a decision from me? If one is already finished or no longer needed, just say so."
+            % len(gids))
     if stall_nums:
-        body += ("\n\nUnder %s there are items still open on your own to-do list: if you don't need "
-                 "anything from me, please continue that work now; if any item is blocked, tell me which "
-                 "one and exactly what you need from me to finish it."
+        body += ("\n\nOn %s you've still got open items on your to-do list. Keep going on those unless "
+                 "you need something from me. If you do, tell me which item and exactly what you need."
                  % ", ".join("#%d" % n for n in stall_nums))
     msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
     tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
@@ -1111,10 +1119,9 @@ AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anyth
 # Code's to-do system has no "blocked" state, so a session routinely stops with open items and can't say why —
 # this asks the agent to pick a branch: continue the work, or name what it needs from the user (which the
 # planner's nudge-mode note then turns into a block + blockWhy → the block-distiller's decision brief).
-AUTO_NUDGE_STALLED_TEXT = ("You stopped with items on your own to-do list still open. For each open item: "
-                           "where does it stand, and if you don't need anything from me, please continue "
-                           "with it now. If any is blocked, tell me which one and exactly what you need "
-                           "from me to finish it. If one is no longer needed, say so and why.")
+AUTO_NUDGE_STALLED_TEXT = ("You've still got open items on your to-do list. Where does each one stand? "
+                           "Keep going on anything you can. If something's blocked, tell me which one and "
+                           "exactly what you need from me. If one is no longer needed, just say so.")
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
