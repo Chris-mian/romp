@@ -70,7 +70,7 @@ class TokenRequiredEverywhere(unittest.TestCase):
 
     def test_forged_local_host_headers_do_not_authorize(self):
         # The old M3 bypass, now moot by construction: Host carries no auth weight at all.
-        for host in ("localhost", "127.0.0.1", "localhost:7433", "::1"):
+        for host in ("localhost", "127.0.0.1", "localhost:29855", "::1"):
             ok, _, _ = _auth(peer="203.0.113.9", headers={"Host": host})
             self.assertFalse(ok, "Host: %s must not authorize" % host)
         ok, _, _ = _auth(peer="127.0.0.1", headers={"Host": "localhost"})

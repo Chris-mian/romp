@@ -36,7 +36,7 @@ from pathlib import Path
 
 REFRESH_SECS = 3
 ACTIVE_WINDOW_SECS = 2 * 3600     # headless fallback: a session is "active" if its cache changed this recently
-KERNEL_URLS = ["http://127.0.0.1:7433", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
+KERNEL_URLS = ["http://127.0.0.1:29855", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
 
 
 # ───────────────────────── raw readers (independent of the kernel) ─────────────────────────

@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-KPORTS = ["http://127.0.0.1:7433", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
+KPORTS = ["http://127.0.0.1:29855", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
 
 
 def _token():

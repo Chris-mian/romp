@@ -62,8 +62,8 @@ teardown() { rm -rf "$TEST_DIR"; }
 }
 
 @test "romp-serve: ROMP_SERVE_PORT fallback + forwards ROMP_MANAGER_PID" {
-    ROMP_MANAGER_PID=4242 ROMP_SERVE_PORT=7433 run "$ROMP_SERVE"
-    [[ "$output" == *"PORT=7433"* ]]
+    ROMP_MANAGER_PID=4242 ROMP_SERVE_PORT=29855 run "$ROMP_SERVE"
+    [[ "$output" == *"PORT=29855"* ]]
     [[ "$output" == *"MGRPID=4242"* ]]
 }
 

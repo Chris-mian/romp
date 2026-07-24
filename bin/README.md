@@ -29,7 +29,7 @@ no separate implementation to point at.
 
 | Command | Source | What it is |
 |---|---|---|
-| `romp-kernel` | `kernel/kernel.py` | **The** kernel: parses transcripts into the event tree, runs the judges, serves chat/feed/fleet/timeline over HTTP+WebSocket on `127.0.0.1:7433`. Spawned by `romp-serve`. |
+| `romp-kernel` | `kernel/kernel.py` | **The** kernel: parses transcripts into the event tree, runs the judges, serves chat/feed/fleet/timeline over HTTP+WebSocket on `127.0.0.1:29855`. Spawned by `romp-serve`. |
 | `romp-event-model` | `kernel/event_model.py` | Layer 1: transcript → event tree (atoms/segments/turns). Loaded by the kernel and the judges. |
 | `romp-judge` | `kernel/judge.py` | Layer 2: the judge engine + all judge prompts (captioner, archiver, planner, …). `docs/judges.md`. |
 | `romp-askparse` | `kernel/askparse.py` | Parses the AskUserQuestion picker out of a captured tmux pane (tmux backend only; SDK sessions get the picker natively). |

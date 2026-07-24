@@ -29,7 +29,7 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 
 def _row(host, trust="directed"):
-    return {"host": host, "kernel_port": 7433, "local_port": 5000, "bus_port": 5001, "token": "t",
+    return {"host": host, "kernel_port": 29855, "local_port": 5000, "bus_port": 5001, "token": "t",
             "proc": None, "status": "up", "detail": "", "sids": [], "trust": trust}
 
 

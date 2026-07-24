@@ -1,6 +1,6 @@
 // Demo/recording VIEW filter (the user 2026-07-14): load the dashboard at `#only=<tag>` (or `?only=<tag>`)
 // and every pane (chat tabs, feed, fleet, timeline) shows ONLY sessions whose name starts with <tag>,
-// case-insensitive. The real sessions keep running and still show on the normal `:7433/` — they are just
+// case-insensitive. The real sessions keep running and still show on the normal `:29855/` — they are just
 // hidden from THIS view, so you get a clean frame for demo screencasts without standing up a separate
 // instance. Empty / no tag → no filter (everything shows, unchanged).
 //

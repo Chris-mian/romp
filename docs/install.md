@@ -49,7 +49,7 @@ romp launch
 
 It opens the dashboard in your browser and prints the link as well: the link
 carries the one-time access token. After that first open a cookie remembers you
-and plain `http://127.0.0.1:7433/` works. Type a name into the picker and start
+and plain `http://127.0.0.1:29855/` works. Type a name into the picker and start
 a session.
 
 On a remote or headless box `romp launch` won't try to open a browser — it

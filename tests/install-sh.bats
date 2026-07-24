@@ -75,7 +75,7 @@ PY
 
 # The login-service step (the user's rescue_me, 2026-07-21): a webview deploy must never bootout a
 # HEALTHY romp-manager, and must FAIL LOUDLY (not `|| echo`-swallow) if an install it DID attempt fails —
-# the swallowed failure is what left the dashboard dead on :7433. ROMP_SERVICE_BIN stubs romp-service.
+# the swallowed failure is what left the dashboard dead on :29855. ROMP_SERVICE_BIN stubs romp-service.
 _svc_stub() {   # write a fake romp-service to $1; behavior toggled by ROMP_SVC_RUNNING / ROMP_SVC_FAIL
     cat > "$1" <<'SH'
 #!/usr/bin/env bash

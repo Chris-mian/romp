@@ -53,7 +53,7 @@ class VersionDrift(unittest.TestCase):
         self.assertFalse(km._remote_out_of_date({"kernel_sha": ""}), "blank remote sha → not flagged")
 
     def test_remote_public_exposes_version_fields(self):
-        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801, "token": "t",
+        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 29855, "local_port": 8801, "token": "t",
                                  "status": "up", "sids": [], "kernel_sha": "def5678"})
         self.assertEqual(pub["kernelSha"], "def5678")
         self.assertEqual(pub["localSha"], "abc1234", "localSha is the live HEAD short (what a push would send)")
@@ -174,13 +174,13 @@ class UpdateRemote(unittest.TestCase):
         # orphan) — kill the kernel, `romp-manager ensure` (respawns via a live manager, or STARTS one that spawns
         # a supervised kernel — upgrading an attach-bootstrapped bare host), then port-poll; bare romp-serve is a
         # LAST-RESORT fallback only when the port never returns. It must NOT rely on `romp --refresh` (the stuck bug).
-        km._remotes = {"TESTHOST": {"host": "TESTHOST", "kernel_port": 7433}}
+        km._remotes = {"TESTHOST": {"host": "TESTHOST", "kernel_port": 29855}}
         calls = self._wire()
         km._update_remote("TESTHOST")
         apply = next(a[-1] for a in calls if isinstance(a[-1], str) and "merge-base" in a[-1])
         self.assertIn("pkill -f", apply, "kills the running kernel")
         self.assertIn('"$R/bin/romp-manager" ensure', apply, "prefers the manager (ensure = idempotent supervised start)")
-        self.assertIn("/dev/tcp/127.0.0.1/7433", apply, "polls the remote's kernel port to confirm it came back")
+        self.assertIn("/dev/tcp/127.0.0.1/29855", apply, "polls the remote's kernel port to confirm it came back")
         self.assertIn('if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve"', apply, "bare romp-serve only as a last resort")
         self.assertNotIn("--refresh", apply, "does NOT rely on `romp --refresh` (needs a manager) — the stuck bug")
 
@@ -190,7 +190,7 @@ class UpdateRemote(unittest.TestCase):
         # banner Retry re-killed whatever a previous attempt had booted. The apply now runs in its
         # own session (setsid, plain-bash fallback where setsid is missing), so once started the
         # kill+boot pair always completes on the remote even if the connection dies.
-        km._remotes = {"TESTHOST": {"host": "TESTHOST", "kernel_port": 7433}}
+        km._remotes = {"TESTHOST": {"host": "TESTHOST", "kernel_port": 29855}}
         calls = self._wire()
         km._update_remote("TESTHOST")
         wrapper = next(a[-1] for a in calls if isinstance(a[-1], str) and "merge-base" in a[-1])
@@ -268,7 +268,7 @@ ru = SourceFileLoader("romp_update", os.path.join(BIN, "romp-update")).load_modu
 class RompUpdateCLI(unittest.TestCase):
     def setUp(self):
         self._k, self._g, self._p = ru._kernel, ru._get, ru._post
-        ru._kernel = lambda: "http://127.0.0.1:7433"
+        ru._kernel = lambda: "http://127.0.0.1:29855"
         self.posted = []
         ru._post = lambda u, path, body: (self.posted.append((path, body)) or {"ok": True, "detail": "updated"})
 
@@ -372,7 +372,7 @@ class BehindInfo(unittest.TestCase):
 
     def test_remote_public_carries_the_drift_fields(self):
         self._mock_git(behind="12", ahead="0", date="2026-07-08")
-        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801,
+        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 29855, "local_port": 8801,
                                  "status": "up", "kernel_sha": "def5678"})
         self.assertTrue(pub["outOfDate"])
         self.assertEqual((pub["behindBy"], pub["aheadBy"], pub["kernelDate"]), (12, 0, "2026-07-08"))
@@ -381,7 +381,7 @@ class BehindInfo(unittest.TestCase):
         def boom(argv, **kw):
             raise AssertionError("an in-sync row must not pay for drift measurement: %s" % argv)
         km.subprocess.run = boom
-        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801,
+        pub = km._remote_public({"host": "TESTHOST", "kernel_port": 29855, "local_port": 8801,
                                  "status": "up", "kernel_sha": "abc1234"})
         self.assertFalse(pub["outOfDate"])
         self.assertEqual((pub["behindBy"], pub["aheadBy"], pub["kernelDate"]), (0, 0, ""))

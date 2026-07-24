@@ -23,13 +23,13 @@ completed); the feed just paints columns. (Reflected in `docs/judges.md`.)
   `romp-serve` → `romp-kernel`) and stays up across kernel restarts. Front ends
   (browser, phone, VS Code) ATTACH to the kernel; they never spawn it.
   `romp-serve` points at the Python kernel, so `romp --on` supervises it on the
-  manager's port (7433), and the front ends and tailscale serve attach unchanged.
+  manager's port (29855), and the front ends and tailscale serve attach unchanged.
 - **The UI is served by the kernel.** The front-end (the three panes) is `ui/`. A
   browser hits the kernel's port and gets it.
 - **`romp --on` starts the supervisor.** It runs `romp-manager` in the foreground
   (like `jupyter lab`); `romp --refresh` restarts the kernel(s), `romp --status`
   reports them. The kernel binds loopback only; tailnet/phone reach is
-  `tailscale serve` proxying to `127.0.0.1:7433` (there is no `0.0.0.0` opt-in
+  `tailscale serve` proxying to `127.0.0.1:29855` (there is no `0.0.0.0` opt-in
   door; the tailscale proxy carries the phone path). The UI itself is just a URL
   the kernel serves.
 - **Session discovery keys on the rompUuid birth stamp, not a time window.** The

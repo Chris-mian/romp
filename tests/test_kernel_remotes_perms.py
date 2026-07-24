@@ -33,7 +33,7 @@ def _mode(p):
 class RemotesFilePermissions(unittest.TestCase):
     def setUp(self):
         km._remotes.clear()
-        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 8801,
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 8801,
                                    "bus_port": 8802, "token": "REMOTE-SECRET-TOKEN", "proc": None,
                                    "status": "up", "detail": "", "sids": [], "trust": "directed"}
 

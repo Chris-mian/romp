@@ -2,7 +2,7 @@
 
 The Python backend: one process (`kernel.py`) that reads every session's Claude
 Code transcript, builds the event tree, runs the judges, drives the session
-backends, and serves the four panes over HTTP + WebSocket on `127.0.0.1:7433`.
+backends, and serves the four panes over HTTP + WebSocket on `127.0.0.1:29855`.
 Spawned by `bin/romp-serve` (the `bin/romp-kernel` symlink points here); see
 `docs/architecture.md` for the data-flow picture.
 
