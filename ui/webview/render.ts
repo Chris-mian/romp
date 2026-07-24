@@ -2012,14 +2012,35 @@ function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLEleme
   const txt = el("span", "retrying-text");
   const info = ev.info || {};
   const n = info.attempt || ev.retries || 0;
-  // "attempt 3 of 10 · next try in ~4s" — the payload's own numbers when present (the user 2026-07-10);
-  // the countdown re-derives from the epoch each re-render (pushes are frequent), so it stays honest
-  // without a client timer.
   let head = n > 1 ? `API retrying — attempt ${n}` : "API retrying";
   if (n > 1 && info.max) head += ` of ${info.max}`;
-  const waitS = info.retryAt ? Math.ceil(info.retryAt - Date.now() / 1000) : 0;
-  txt.textContent = head + (waitS > 0 ? ` — next try in ~${waitS}s…` : "…");
+  txt.textContent = head;
   line.appendChild(txt);
+  // LIVE countdown to the next attempt (the user 2026-07-24). It used to re-derive only on re-render, so it
+  // sat frozen at "next try in ~3s" for the whole backoff — a number that never moves reads as broken, and
+  // says nothing about whether anything is still happening. Now the epoch rides a data attr and
+  // retryingTick() rewrites this span every second, exactly like the API-error card's countdown. `~` is
+  // dropped: a ticking number is precise enough to speak plainly.
+  if (info.retryAt) {
+    const cd = el("span", "retrying-countdown");
+    cd.dataset.retryAt = String(info.retryAt);
+    cd.textContent = retryingCountdownText(info.retryAt);
+    line.appendChild(cd);
+  }
+  // Stop control (the user 2026-07-24, who wanted the API-error card's stop/resume reach here too). The
+  // storm lives INSIDE the CLI's own backoff — the SDK exposes no API to abort or accelerate it (verified
+  // against the installed claude_agent_sdk: no max_retries, no retry control, only interrupt()) — so the one
+  // honest lever is to INTERRUPT the stalled turn. That is a real mechanism, not a placebo: it cuts the turn
+  // AND marks the thread retry-suppressed, so romp's own auto-retry loop won't relapse into the storm
+  // afterwards. Once stopped the session lands blocked/interrupted, where the existing card's "Retry now" +
+  // resume controls take over — so stop → manual retry → resume is a closed loop across the two states.
+  // Delegated via data-act (never a per-render listener): the transcript tail rebuilds on every kernel push,
+  // and a rebuilt node eats a mid-press click — the "had to click it several times" bug (CLAUDE.md).
+  const stop = el("button", "retrying-stop") as HTMLButtonElement;
+  stop.dataset.act = "stopRetrying";
+  stop.textContent = "Stop retrying";
+  stop.title = "interrupt this stalled turn and stop the backoff — romp's auto-retry stays off for this session until you send a message";
+  line.appendChild(stop);
   line.title = "the API returned a retryable error (rate-limit / overload); the CLI is backing off and retrying — any message you send lands once it recovers";
   turn.appendChild(line);
   // The error behind the backoff, when the payload names it — status code and/or message on its own muted
@@ -2033,6 +2054,26 @@ function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLEleme
     turn.appendChild(err);
   }
   return turn;
+}
+
+// The next-attempt countdown's text. Past due (the attempt is firing, or the CLI slipped its own estimate)
+// reads "retrying now…" rather than a stuck "0s" or a negative — the wait is over either way, and the loader
+// dots beside it already say something is in flight.
+function retryingCountdownText(retryAt: number): string {
+  const s = Math.ceil(retryAt - Date.now() / 1000);
+  return s > 0 ? `— next try in ${s}s…` : "— retrying now…";
+}
+
+// Tick every .retrying-countdown once a second (driven by the same 1s interval as the API-error countdown —
+// one timer for both, no second scheduler). Each span carries its own retryAt epoch, so this is a pure
+// re-read of the authoritative number the CLI reported: no client-side drift, and a card whose event has
+// gone stale still counts down to the moment it was told.
+function retryingTick(): void {
+  for (const n of Array.from(document.querySelectorAll(".retrying-countdown"))) {
+    const cd = n as HTMLElement;
+    const at = Number(cd.dataset.retryAt);
+    if (at) cd.textContent = retryingCountdownText(at);
+  }
 }
 
 // The persistent counterpart of renderRetrying (the user 2026-07-08): once a stalled api_retry turn resumes
@@ -2363,7 +2404,7 @@ function apiRetryTick(): void {
     }
   }
 }
-setInterval(apiRetryTick, 1000);
+setInterval(() => { apiRetryTick(); retryingTick(); }, 1000);   // ONE 1s timer drives both countdowns
 
 function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   if (ev.name === "AskUserQuestion") { const a = renderAsk(ev); if (a) return a; }
@@ -6970,6 +7011,19 @@ setupSettings();
       const cwd = el.dataset.cwd; if (!cwd || !vscodeApi) return;
       const id = el.dataset.id;
       vscodeApi.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd });
+    },
+    // "Stop retrying" on the live api_retry element (the user 2026-07-24). The CLI owns the backoff and the
+    // SDK exposes no handle on it, so the honest stop is the SAME interrupt the stop button and Ctrl+C send:
+    // it cuts the stalled turn and marks the thread retry-suppressed, so romp's auto-retry won't relapse.
+    // Delegated (not a per-render listener) because the transcript tail rebuilds on every push. Acknowledge
+    // at once — disable + relabel — so it never reads as unresponsive while the interrupt is in flight; the
+    // element vanishes on the next push when the storm ends, so no self-restore is needed.
+    stopRetrying: (el) => {
+      if (!activeId || !vscodeApi) return;
+      vscodeApi.postMessage({ type: "interrupt", id: activeId });
+      const b = el as HTMLButtonElement;
+      b.disabled = true;
+      b.textContent = "Stopping…";
     },
     // ✕ on a queued bubble (the user 2026-07-08): cancel the queued message/command. Delegated here —
     // NOT a per-render listener on the bubble — because the transcript tail rebuilds on every push and

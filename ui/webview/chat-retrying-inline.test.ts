@@ -28,16 +28,56 @@ test("renderRetrying is an animated element (loader dots) with the live attempt 
 });
 
 test("renderRetrying surfaces the api_retry payload's own detail (the user 2026-07-10)", () => {
-  const body = RENDER.slice(RENDER.indexOf("function renderRetrying("), RENDER.indexOf("function renderRetried("));
+  const body = RENDER.slice(RENDER.indexOf("function renderRetrying("), RENDER.indexOf("// The next-attempt countdown's text"));
+  assert.ok(body, "the renderRetrying slice is anchored");
   assert.match(body, /info\.attempt \|\| ev\.retries/, "payload attempt number outranks the local count");
   assert.match(body, /` of \$\{info\.max\}`/, "the retry budget shows when the payload names it");
-  // next-try countdown re-derives from the epoch each re-render — no client timer to drift
-  assert.match(body, /Math\.ceil\(info\.retryAt - Date\.now\(\) \/ 1000\)/);
-  assert.match(body, /next try in ~\$\{waitS\}s/);
   // the error behind the backoff on its own muted line, full message in the tooltip
   assert.match(body, /el\("div", "retrying-err"\)/);
   assert.match(body, /`HTTP \$\{info\.status\}`/);
   assert.match(body, /err\.title = msg/);
+});
+
+test("the next-try countdown TICKS every second — it is not frozen at render time (the user 2026-07-24)", () => {
+  // the bug: the countdown re-derived only on re-render, so it sat at "next try in ~3s" for the whole
+  // backoff. A number that never moves reads as broken. The epoch now rides a data attr and a 1s tick
+  // rewrites the span, exactly like the API-error card's countdown.
+  const body = RENDER.slice(RENDER.indexOf("function renderRetrying("), RENDER.indexOf("// The next-attempt countdown's text"));
+  assert.match(body, /el\("span", "retrying-countdown"\)/);
+  assert.match(body, /cd\.dataset\.retryAt = String\(info\.retryAt\)/, "the authoritative epoch rides the element");
+  assert.match(RENDER, /function retryingTick\(\): void \{/);
+  assert.match(RENDER, /querySelectorAll\("\.retrying-countdown"\)/);
+  assert.match(RENDER, /cd\.textContent = retryingCountdownText\(at\)/);
+  // ONE 1s timer drives both countdowns — no second scheduler
+  assert.match(RENDER, /setInterval\(\(\) => \{ apiRetryTick\(\); retryingTick\(\); \}, 1000\)/);
+  assert.doesNotMatch(RENDER, /next try in ~\$\{waitS\}s/, "the frozen render-time countdown is gone");
+});
+
+test("a past-due countdown reads 'retrying now', never a stuck 0s or a negative", () => {
+  const fn = RENDER.slice(RENDER.indexOf("function retryingCountdownText("), RENDER.indexOf("function retryingTick("));
+  assert.match(fn, /s > 0 \? `— next try in \$\{s\}s…` : "— retrying now…"/);
+});
+
+test("the card carries a Stop control that interrupts the stalled turn (the user 2026-07-24)", () => {
+  // the CLI owns the backoff and the SDK exposes no handle on it, so the honest stop is the same interrupt
+  // Ctrl+C sends — it cuts the turn AND leaves the thread retry-suppressed so romp's loop won't relapse.
+  const body = RENDER.slice(RENDER.indexOf("function renderRetrying("), RENDER.indexOf("// The next-attempt countdown's text"));
+  assert.match(body, /el\("button", "retrying-stop"\)/);
+  assert.match(body, /stop\.dataset\.act = "stopRetrying"/, "delegated by data-act, not a per-render listener");
+  assert.match(body, /stop\.textContent = "Stop retrying"/);
+  // the handler lives on the STABLE body root (the transcript tail rebuilds every push → a rebuilt node
+  // would eat a mid-press click), and acknowledges the click before any round-trip
+  assert.match(RENDER, /stopRetrying: \(el\) => \{/);
+  assert.match(RENDER, /b\.textContent = "Stopping…"/);
+});
+
+test("the stop control reuses the API-error card's control chrome, and the countdown uses tabular digits", () => {
+  // a control matches a control (one treatment per information type) — the two cards read as one family
+  assert.match(CSS, /\.retrying-stop \{[^}]*color: var\(--dim\)/);
+  assert.match(CSS, /\.retrying-stop \{[^}]*border: 1px solid var\(--rail\)/);
+  assert.match(CSS, /\.retrying-stop:disabled \{[^}]*cursor: default/);
+  // tabular so the ticking number never jitters the row
+  assert.match(CSS, /\.retrying-countdown \{[^}]*font-variant-numeric: tabular-nums/);
 });
 
 test("the error line wears the SAME 0.9em as the retrying line (one size per information type), muted", () => {
