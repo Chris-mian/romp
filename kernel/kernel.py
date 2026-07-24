@@ -9,7 +9,7 @@ Transport is the SAME WebSocket postMessage protocol the bundles already speak (
 `shimJs` bridge is reused verbatim), so the VS Code extension repoints to this kernel with
 zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no dependency).
 
-Run:  bin/romp-kernel   → opens http://127.0.0.1:7433
+Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
 import json, os, re, signal, sys, time, threading, traceback, base64, bisect, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
@@ -32,7 +32,7 @@ DIST = CHAT_VIEW / "dist"                    # bundles built from ui/webview sou
 MEDIA = CHAT_VIEW / "media"
 UI = ROOT / "ui"                             # the browser UI: timeline view + webview sources (served/built from here)
 NAMES = jd.STATE / "names"
-PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7433"))   # 7433 = the manager/extension default (the user 2026-06-16); env still overrides
+PORT = int(os.environ.get("ROMP_KERNEL_PORT", "29855"))   # the manager/extension default; env still overrides. Renumbered from 7433 (the user 2026-07-24), which an LLM had picked — so a twin-prompted project plausibly binds it — and whose nearest IANA neighbour is 7443. 29855 was drawn at random from the ports absent from /etc/services, minus common dev defaults, below the 49152 ephemeral floor.
 BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # loopback only; tailnet/phone reach = `tailscale serve` proxying to loopback (docs/guide/remote-access.md). Env override is a test seam, not a user knob.
 
 
@@ -4064,7 +4064,7 @@ KNOWN_FILE = jd.STATE / "remotes-known.json"
 # so a machine that was simply off sat there re-dialing all day with nothing in the UI saying so. The
 # budget resets on each boot (_remotes_load) and on a manual attach, so "try again" is always one click.
 TUNNEL_MAX_TRIES = 5
-BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))      # this laptop's postal bus (reverse-forwarded)
+BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # this laptop's postal bus (reverse-forwarded)
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
 _REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port

@@ -14,7 +14,7 @@ def test_report_flags_stale_served_bundle(monkeypatch=None):
     ver._disk_bundles = lambda: {"feed.js": 200, "render.js": 100}
     # kernel reports it is SERVING an older feed.js (100) than what's on disk (200) → must flag it
     ver._probe_kernel = lambda: ("version", {"kernel_sha": "abc1234", "pid": 9, "uptime_s": 65,
-                                             "dist_ver": 100, "url": "http://127.0.0.1:7433",
+                                             "dist_ver": 100, "url": "http://127.0.0.1:29855",
                                              "bundles": {"feed.js": 100, "render.js": 100}})
     out = ver.report()
     assert "abc1234-dirty" in out
@@ -33,7 +33,7 @@ def test_report_handles_down_kernel():
 def test_report_handles_predating_kernel():
     ver._git_sha = lambda: "abc1234"
     ver._disk_bundles = lambda: {}
-    ver._probe_kernel = lambda: ("stale", "http://127.0.0.1:7433")
+    ver._probe_kernel = lambda: ("stale", "http://127.0.0.1:29855")
     out = ver.report()
     assert "predates /version" in out
 

@@ -29,7 +29,7 @@ km = SourceFileLoader("romp_kernel_rpanel", os.path.join(BIN, "romp-kernel")).lo
 
 TUNNELS = {
     "tunnels": [{
-        "host": "TESTHOST", "kernelPort": 7433, "localPort": 51000, "busPort": 51001,
+        "host": "TESTHOST", "kernelPort": 29855, "localPort": 51000, "busPort": 51001,
         "checkin": False, "checkinPeer": False, "token": "tok", "status": "up", "detail": "",
         "sids": ["11111111-2222-3333-4444-555555555555"], "trust": "directed",
         "kernelSha": "abc1234", "localSha": "abc1234", "outOfDate": False,

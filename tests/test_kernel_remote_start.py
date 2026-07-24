@@ -21,7 +21,7 @@ class StartRemote(unittest.TestCase):
     def setUp(self):
         self._saved = (km._update_remote, km._remote_kernel_up, km._start_remote_kernel,
                        km._fetch_remote_token, km._BOOT_WAIT_S, km._remotes)
-        km._remotes = {HOST: {"host": HOST, "kernel_port": 7433, "local_port": 8801,
+        km._remotes = {HOST: {"host": HOST, "kernel_port": 29855, "local_port": 8801,
                               "token": "", "proc": None, "status": "no-kernel", "detail": "", "sids": []}}
         km._BOOT_WAIT_S = 2
         self.kernel_up = {"v": False}
@@ -130,7 +130,7 @@ class RemotesLoadHygiene(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 km.REMOTES_FILE = Path(td) / "remotes.json"
                 km.REMOTES_FILE.write_text(json.dumps([{
-                    "host": HOST, "kernel_port": 7433, "local_port": 8801, "token": "t",
+                    "host": HOST, "kernel_port": 29855, "local_port": 8801, "token": "t",
                     "status": "starting", "detail": "updating + starting the kernel",
                     "booting": True, "sids": []}]))
                 km._remotes = {}

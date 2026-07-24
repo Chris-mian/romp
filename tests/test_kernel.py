@@ -6524,7 +6524,7 @@ class PostalPeerTunnels(unittest.TestCase):
     ExitOnForwardFailure would kill the whole tunnel) for a second ephemeral -L that dials the
     remote's bus — stage 2's peering protocol is duplex over that one connection."""
 
-    R = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002}
+    R = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 50001, "bus_port": 50002}
 
     def test_flag_off_keeps_the_reverse_forward(self):
         os.environ["ROMP_POSTAL_PEERS"] = "0"          # peer mode is the DEFAULT now; 0 = legacy scheme
@@ -6540,7 +6540,7 @@ class PostalPeerTunnels(unittest.TestCase):
             os.environ.pop("ROMP_POSTAL_PEERS", None)
         self.assertNotIn("-R", argv, "no fixed-port reverse forward in peer mode")
         self.assertIn("50002:127.0.0.1:%d" % km.BUS_PORT, argv, "the ephemeral -L dials the remote's bus")
-        self.assertIn("50001:127.0.0.1:7433", argv, "the kernel forward is unchanged")
+        self.assertIn("50001:127.0.0.1:29855", argv, "the kernel forward is unchanged")
 
     def test_notify_bus_peer_is_guarded(self):
         saved = km.BUS_PORT
@@ -6566,7 +6566,7 @@ class CheckinMechanics(unittest.TestCase):
 
     def test_checkin_argv_adds_the_reverse_forwards(self):
         os.environ["ROMP_POSTAL_PEERS"] = "1"
-        r = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002,
+        r = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 50001, "bus_port": 50002,
              "checkin": True, "rk_port": 50003, "rb_port": 50004}
         argv = km._tunnel_argv(r)
         self.assertIn("50003:127.0.0.1:%d" % km.PORT, argv, "-R publishes our kernel on the hub")
@@ -6575,7 +6575,7 @@ class CheckinMechanics(unittest.TestCase):
 
     def test_plain_peer_attach_argv_has_no_reverse_forwards(self):
         os.environ["ROMP_POSTAL_PEERS"] = "1"
-        r = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001, "bus_port": 50002}
+        r = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 50001, "bus_port": 50002}
         self.assertNotIn("-R", km._tunnel_argv(r))
 
     def test_checkin_payload_pushes_ports_and_token(self):
@@ -6599,12 +6599,12 @@ class CheckinMechanics(unittest.TestCase):
                     {"host": "x", "kernelPort": True, "busPort": 5}):
             payload, status = km.checkin_apply(bad)
             self.assertEqual(status, 400, repr(bad))
-        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 1, "proc": None}
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 1, "proc": None}
         payload, status = km.checkin_apply({"host": "TESTHOST", "kernelPort": 50003, "busPort": 50004})
         self.assertEqual(status, 409, "an ssh-attached row is never silently converted")
 
     def test_checkin_set_flags_ports_and_checkout_clears(self):
-        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 50001,
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 50001,
                                    "bus_port": 50002, "proc": None, "status": "up", "detail": "", "sids": []}
         saved = km._checkin_stop_hub
         km._checkin_stop_hub = lambda r: None
@@ -6620,7 +6620,7 @@ class CheckinMechanics(unittest.TestCase):
 
     def test_checkin_stop_only_forgets_checked_in_rows(self):
         os.environ["ROMP_POSTAL_PEERS"] = "0"          # keep detach's bus notify away from the real bus
-        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 7433, "local_port": 1, "proc": None}
+        km._remotes["TESTHOST"] = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 1, "proc": None}
         self.assertFalse(km.checkin_stop("TESTHOST"), "an ssh-attached row is not checkout-able")
         km._remotes["hubhost"] = {"host": "hubhost", "checkin_peer": True, "kernel_port": 5,
                                   "local_port": 5, "bus_port": 6, "proc": None}

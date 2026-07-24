@@ -159,7 +159,7 @@ Which backend a session runs on (Agent SDK or tmux) is a per-session choice;
 ## Self-hosted and remote access
 
 You run Romp on your own machine; there is no hosted service in between. The
-kernel runs there and serves the dashboard on `127.0.0.1:7433`, to a browser
+kernel runs there and serves the dashboard on `127.0.0.1:29855`, to a browser
 tab or the VS Code / Cursor extension. Everything Romp stores stays local; the
 only traffic that leaves your machine is `claude` itself, both the agents' own
 model calls and the LLM calls in Romp's judge pipeline.
@@ -253,7 +253,7 @@ HTTPS at your machine's tailnet name to the loopback port, on the machine
 itself.
 
 ```bash
-tailscale serve --bg 7433     # https://<machine>.<tailnet>.ts.net -> 127.0.0.1:7433
+tailscale serve --bg 29855     # https://<machine>.<tailnet>.ts.net -> 127.0.0.1:29855
 tailscale serve status        # show the active proxy
 tailscale serve reset         # back to local-only
 ```
@@ -286,7 +286,7 @@ that file and send it automatically; you never type it. Only liveness probes
 
 **Getting in.** Run `romp launch`: it prints the tokened link *and* opens your
 browser. The first visit exchanges the token for a year-long `HttpOnly` cookie,
-so afterwards plain `http://127.0.0.1:7433/` just works. Opening that bare URL
+so afterwards plain `http://127.0.0.1:29855/` just works. Opening that bare URL
 without a cookie shows a paste-the-token page rather than a dead error.
 
 **Remote machines.** Every machine mints its **own** token. When you attach a
