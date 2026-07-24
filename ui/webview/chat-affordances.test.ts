@@ -32,11 +32,29 @@ test("dot colors are decoupled from the session (no ring, absolute hues)", () =>
   assert.match(CSS, /\.dot\.user \{ background: #2b6cef/, "your prompt = the bubble blue (#2b6cef)");
 });
 
-test("a hard-blocked (API-error) tab carries a 0.25-alpha red fill atop its dashed ring (the user 2026-06-18)", () => {
+test("a hard-blocked (API-error) tab carries a translucent red fill atop its dashed ring (the user 2026-06-18)", () => {
   // the dashed outline alone read too faint; a translucent red fill makes a stopped session legible at a glance
-  assert.match(CSS, /\.tab\.tab-blocked \{[^}]*background: rgba\(229, 72, 77, 0\.25\)/);
+  assert.match(CSS, /\.tab\.tab-blocked \{[^}]*background: rgba\(229, 72, 77, 0\.30\)/);
   assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{[^}]*outline: 2px dashed/);   // the dashed ring stays (now incl. amber retrying)
   // the red must beat .tab.active (white, equal specificity but later in source) + :hover, else a FOCUSED
   // blocked tab showed white instead of red (the user 2026-06-18)
-  assert.match(CSS, /\.tab\.tab-blocked\.active, \.tab\.tab-blocked:hover \{[^}]*background: rgba\(229, 72, 77, 0\.25\)/);
+  assert.match(CSS, /\.tab\.tab-blocked:hover \{[^}]*background: rgba\(229, 72, 77, 0\.38\)/);
+});
+
+test("a SELECTED blocked tab blends the selection white OVER the red, so it reads as both (the user 2026-07-24)", () => {
+  // it can't fall back to the plain white selection background without losing the red, so the fill layers
+  // them: selection white atop a stronger red → lighter/brighter than its unselected neighbours, still red
+  const rule = (CSS.match(/\.tab\.tab-blocked\.active \{[^}]*\}/) || [""])[0];
+  assert.match(rule, /linear-gradient\(rgba\(255, 255, 255, 0\.14\), rgba\(255, 255, 255, 0\.14\)\)/,
+    "the normal selection white rides on top");
+  assert.match(rule, /rgba\(229, 72, 77, 0\.42\)/, "over a stronger red than the unselected fill");
+});
+
+test("the identity ring stands down on a selected blocked tab, so it can't mask the dashed red", () => {
+  // the ring is an inset 1.5px shadow and the state outline is 2px at offset -2px — the SAME band. On a
+  // session whose identity colour is near red, the solid ring painted over the dashes and the tab just
+  // looked outlined, not blocked. Blocked outranks identity while it lasts.
+  assert.match(CSS, /\.tab\.tab-blocked\.active\.colored \{ box-shadow: none; \}/);
+  // ...and the ring is otherwise untouched for every non-blocked active tab
+  assert.match(CSS, /\.tab\.active\.colored \{ box-shadow: inset 0 0 0 1\.5px var\(--chip-bg\); \}/);
 });
