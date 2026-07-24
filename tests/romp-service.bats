@@ -194,3 +194,15 @@ EOF2
     [ "$status" -eq 1 ]
     [[ "$output" == *"NOT running"* ]]
 }
+
+@test "both units bake ROMP_SUPERVISED=1 — the manager's stale-self refresh needs a respawning supervisor" {
+    # The manager may EXIT on a refresh when its own binary changed (the fresh supervisor respawn IS
+    # the refresh) — but only when something WILL respawn it. KeepAlive/Restart=always is that
+    # something; this env var is how the manager knows it's running under one (2026-07-24).
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    grep -q "<key>ROMP_SUPERVISED</key><string>1</string>" "$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
+    ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    grep -q "^Environment=ROMP_SUPERVISED=1$" "$ROMP_SYSTEMD_DIR/romp-manager.service"
+}

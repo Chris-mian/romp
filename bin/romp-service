@@ -60,6 +60,7 @@ write_plist() {
   <dict>
     <key>PATH</key><string>$PATH</string>
     <key>ROMP_DIR</key><string>$ROMP_DIR</string>
+    <key>ROMP_SUPERVISED</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -83,6 +84,7 @@ Restart=always
 RestartSec=2
 Environment=PATH=$PATH
 Environment=ROMP_DIR=$ROMP_DIR
+Environment=ROMP_SUPERVISED=1
 
 [Install]
 WantedBy=default.target
