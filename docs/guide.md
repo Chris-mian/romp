@@ -1,31 +1,23 @@
 # Guide
 
-This guide covers what Romp puts on screen and what it does with your sessions:
-the views, the task cards, the nudges that keep agents moving, and the messaging
-between them.
+This guide covers how to use Romp, and how its back end works.
 
 ## The Romp UI
 
-Romp gathers all your Claude Code sessions into a single dashboard you can watch
-and steer. You see it through four views, each answering a different question:
+Romp gathers all your Claude Code sessions into a single dashboard, with four
+complementary views of what the agents are doing:
 
-- **[The chat](#the-chat)** is the normal way of talking to a coding agent, but
-  easier to scan: tool calls fold away and expand only when you want them.
-- **[The feed](#the-feed)** shows Romp's task-management layer: Romp analyzes
-  each session's transcript, breaks the work into tasks, and shows each task as
-  a card. One session can produce several, and agents can hand tasks off to one
-  another.
-- **[The timeline](#the-timeline)** shows what each session has been doing over
-  time and how they have been coordinating; click any part to jump to that
-  moment in the chat.
+- **[The chat](#the-chat)** is the regular interface for talking to a coding
+  agent, with features that make a long session easier to scan.
+- **[The feed](#the-feed)** is Romp's task-management layer: what is in
+  progress, what needs your input, and what is done.
+- **[The timeline](#the-timeline)** is the history of what each session worked
+  on and how they coordinated; click any part to jump to that moment in the
+  chat.
 - **[The outline](#the-outline)** lists every session with its tasks, for
   reviewing what a session has done and searching across all of them.
 
 ### The chat
-
-The same conversation you would have in the terminal, only easier to scan: tool
-calls fold into runs so a long session stays legible, and you expand a run for
-its calls, or a call for its full input and output, when you want it.
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
@@ -43,28 +35,28 @@ Cards sit in three columns:
 
 ![The feed's three columns, with the cues on a card](assets/guide/feed-annotated.png){ width="100%" }
 
-The title is the gist. **Background** is why the agent is taking this action.
-**Summary** is what it did. Sub-tasks nest beneath when the work splits.
+**Background** is why the agent is taking the action, and **Summary** is what it
+did. When a task divides naturally into parts, the card's **Sub-goals** button
+opens them.
 
-Cards follow the work rather than the session: a session that interleaves
-several efforts gets a card per effort, and one effort handed across sessions
-stays a single card. Summaries favor the latest stretch of work, so a card you
-return to after hours away tells you what changed since you last looked.
-**Clear** a card when you are done with it; cleared cards are archived.
+Cards follow the work rather than the session: one session can hold several
+tasks, and a task can be handed from one session to another.
+
+**Clear** a card when you are done with it. A cleared card is archived, and no
+more work is added to it.
 
 ### The timeline
 
-Each lane is one session. A line is the session working, and a circle on it is a
-message you sent. A striped stretch means the session is blocked, waiting on
-your input.
+Each row is one session. A bar is a stretch where the session was working, and a
+circle is a message you sent. A striped stretch means the session is blocked,
+waiting on your input.
 
 ![A timeline lane per session, with status and context at the left](assets/guide/timeline-annotated.png){ width="100%" }
 
 Click a bar or a message marker to jump straight to where it happened in the
 chat.
 
-A session wears the same color for its state everywhere it appears: its tab, its
-timeline lane, its cards.
+Session statuses:
 
 ![Each session state and what its color means](assets/guide/status-legend.png){ width="70%" }
 
@@ -78,10 +70,10 @@ find past work: the search box reaches every session, live or closed.
 
 ## Automatic nudges
 
-To keep agents moving forward whenever your input isn't needed, Romp nudges a
-stalled session back to its open work: when it hit an API error, when it was
-interrupted, or when it simply stopped with a task still open and never said
-whether the task was done.
+Agents stall: they hit an API error, they get interrupted, or they end a turn
+leaving it ambiguous whether a task is done. Romp nudges a stalled session with
+an injected message, so every task ends up either explicitly done or explicitly
+needing your input.
 
 Romp asks the agent, item by item, where each open piece stands: continue what
 it can, and say what blocks the rest.
@@ -90,17 +82,14 @@ it can, and say what blocks the rest.
 - If something needs you, the card flips to **Blocked** and names exactly what
   it needs.
 
-Nudging holds off while you are actively driving a session, and it re-arms only
-after a real turn ends, so it never talks over you and never loops on its own
-messages.
+Nudging engages only when you are not actively messaging the session, so it
+never talks over you and never loops on its own messages.
 
-A session can also be waiting on something that is not you. When it dispatches
-work and pauses for the result, it shows an <span class="romp-chip-await">Awaiting</span>
-chip on the fleet rail, on the chat statusline above the message box, and on its
-timeline lane, where the pending stretch is drawn faded. Awaiting never means it
-needs you: it means the work is in flight until what the session sent for comes
-back. The chip clears on the session's next turn, when the task finishes or
-blocks, when you clear the card, or as soon as you reply.
+A session can also be waiting on something unrelated to you: it dispatches work
+into the background, then pauses for the result. In that case it shows an
+<span class="romp-chip-await">Awaiting</span> chip. The chip clears on the
+session's next turn, when the task finishes or blocks, when you clear the card,
+or as soon as you reply.
 
 ## Messaging between agents (the Romp Postal Service)
 
@@ -112,7 +101,7 @@ to talk to instead of messaging each other to find out.
 
 The timeline draws an arc for each message. Hover one for its gist:
 
-<video src="../assets/guide/coordination.mp4" controls autoplay loop muted playsinline width="100%"></video>
+<video src="../assets/guide/coordination.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
 
 The recipient sees it in its chat, with the sender and the kind on the card:
 

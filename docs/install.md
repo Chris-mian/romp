@@ -17,19 +17,22 @@
 curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash
 ```
 
-This clones Romp to `~/romp`, checks out the newest release, runs the
-installer, and adds `bin/` to your shell rc. Open a new terminal afterwards so
-the `romp` command is on your `PATH`. To update later, run it again; it moves
-you to the newest release.
+Open a new terminal afterwards, so `~/romp/bin` is on your `PATH` and the `romp`
+command works. To update later, run the same command again.
 
-### Installing by hand
+This clones Romp to `~/romp` and installs the newest release.
+[What it installs, in detail](architecture.md#what-the-installer-sets-up).
 
-If you would rather read the script first, or already have a clone:
+### Manual and custom installs
+
+Install this way to keep Romp somewhere other than `~/romp`, or to run the
+latest commit rather than the newest release:
 
 ```bash
 git clone https://github.com/romp-on/romp.git ~/romp
 cd ~/romp
 git checkout "$(git tag -l 'v*' --sort=-v:refname | head -n1)"   # newest release
+# or:   git checkout main                                        # the latest commit
 ./install.sh
 ```
 
@@ -40,12 +43,10 @@ line for your clone.
 export PATH="$PATH:$HOME/romp/bin"
 ```
 
-[What it installs, in detail](architecture.md#what-the-installer-sets-up).
-
 ## First run
 
-The installer starts Romp and keeps it running, so the dashboard is already
-live. Open it in a browser or in your editor.
+The installer starts Romp's back end automatically and keeps it running. To
+connect to it, open the front end in your browser or in your editor.
 
 ### In a browser
 
@@ -53,19 +54,17 @@ live. Open it in a browser or in your editor.
 romp launch
 ```
 
-This opens the dashboard and prints the same link. The link carries an access
-token, which the kernel requires on every request. The first open trades the
-token for a cookie, so plain `http://127.0.0.1:7433/` works from then on.
+This opens the dashboard using an access token. The first open trades the token
+for a cookie, so `http://127.0.0.1:7433/` works from then on.
 
 On a remote machine, `romp launch` prints the link rather than opening a
-browser, along with the two ways to reach it from your laptop: attach the host
-from your dashboard, or forward the port over ssh.
+browser, along with how to reach it from your laptop.
 
 ### In VS Code or Cursor
 
-The installer adds the extension. Reload your editor window and open Romp from
-the sidebar.
+The installer adds the extension automatically. Reload your editor window and
+open Romp from the sidebar.
 
 ### Start a session
 
-<video src="../assets/guide/first-session.mp4" controls autoplay loop muted playsinline width="100%"></video>
+<video src="../assets/guide/first-session.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
