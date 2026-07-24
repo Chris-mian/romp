@@ -1155,6 +1155,23 @@ def _set_auto_nudge(enabled):
     _write_auto_nudge(d)
 
 
+def _auto_update_remotes_on():
+    """Whether romp pushes this machine's build to a drifted remote WITHOUT asking (the user 2026-07-24, who
+    was tired of a modal landing mid-screen on every advance). Off by default — pushing code to another
+    machine and restarting its kernel is not something to start doing unasked. Server-side (not per-browser)
+    on purpose: the push must run ONCE per advance in the kernel, not once per open tab. A per-view timer is
+    exactly how the "retry retry retry" storm happened (see the apiRetry episode gate) — every connected
+    client fired its own."""
+    try:
+        return bool(json.loads((jd.STATE / "auto-update-remotes.json").read_text()).get("enabled"))
+    except Exception:
+        return False
+
+
+def _set_auto_update_remotes(enabled):
+    _atomic_write(jd.STATE / "auto-update-remotes.json", json.dumps({"enabled": bool(enabled)}))
+
+
 def _retry_paused_on():
     p = jd.STATE / "retry-paused.json"
     try:
@@ -4500,6 +4517,11 @@ def _remote_public(r):
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
             "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
             "kernelDate": drift["date"],
+            # fastForward: a push here would only ADD commits (the remote's is an ancestor of ours) — the
+            # exact condition the automatic update fires on, so the row can say why it will or won't.
+            # autoPush: that host's live phase (pushing / waiting / failed) → the popover's progress line and
+            # the rail icon's motion, so background work is never invisible (the user 2026-07-24).
+            "fastForward": _is_fast_forward(r), "autoPush": _auto_push_state(r["host"]),
             # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
             # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
             "gaveUp": bool(r.get("gave_up")), "fails": int(r.get("fails") or 0),
@@ -4867,6 +4889,97 @@ def _behind_info(remote_sha):
     return info
 
 
+def _is_fast_forward(r):
+    """Whether pushing local HEAD to this remote would be a STRAIGHT FAST-FORWARD — the remote's commit is an
+    ancestor of ours, so the push only ADDS commits and can destroy nothing (the user 2026-07-24, who wanted
+    the automatic push to fire exactly when that is observed).
+
+    Requires `behind > 0` AND `ahead == 0`, both actually known. `_behind_info` returns None for both when the
+    remote's sha isn't in this repo at all (it was updated from some other machine), and None is NOT treated
+    as zero: an unknown relationship is precisely the case we must not auto-push into, since we cannot show it
+    would clobber nothing. Same for diverged (ahead > 0) — `_update_remote` refuses those anyway, so
+    auto-firing them would just manufacture failures. Those cases keep the manual Push button, which explains
+    the situation and lets the user decide."""
+    if not _remote_out_of_date(r):
+        return False
+    d = _behind_info(r.get("kernel_sha") or "")
+    b, a = d.get("behind"), d.get("ahead")
+    return isinstance(b, int) and isinstance(a, int) and b > 0 and a == 0
+
+
+# In-flight/last-outcome state for the automatic push, per host — the popover's live progress and the rail
+# icon's motion both read it, so the background work is never invisible (the user 2026-07-24: show what is
+# happening and how far along on hover). {host: {"phase": pushing|waiting|failed, "detail": str, "at": epoch}}
+_auto_push = {}
+_auto_push_lock = threading.Lock()
+# The (remote sha, local HEAD) an auto-push was last ATTEMPTED for, per host. Event-based dedup, mirroring the
+# apiRetry episode gate: a FAILED push must not re-fire every supervisor pass forever (that is a push storm
+# against another machine's sshd). It retries only once either commit actually moves — i.e. when there is
+# genuinely something new to try.
+_auto_push_tried = {}
+
+
+def _auto_push_state(host):
+    with _auto_push_lock:
+        st = _auto_push.get(host)
+        return dict(st) if st else None
+
+
+def _set_auto_push(host, phase, detail=""):
+    with _auto_push_lock:
+        if phase:
+            _auto_push[host] = {"phase": phase, "detail": detail, "at": int(time.time())}
+        else:
+            _auto_push.pop(host, None)
+
+
+def _auto_push_remote(host):
+    """Run ONE automatic update of `host` in the background, publishing phase as it goes. Never called for a
+    non-fast-forward (see _is_fast_forward). Failures are kept VISIBLE on the row rather than swallowed
+    (CLAUDE.md: fail loudly) — a silently failing auto-push would look exactly like an up-to-date remote."""
+    _set_auto_push(host, "pushing", "pushing this machine's build over SSH")
+    try:
+        ok, detail = _update_remote(host)
+    except Exception as e:
+        ok, detail = False, str(e)
+    if ok:
+        # The remote is restarting into the new build; the supervisor's own /version poll clears outOfDate
+        # when it comes back, which is what ends this phase. No timer decides it — the next poll does.
+        _set_auto_push(host, "waiting", "pushed; waiting for it to restart")
+    else:
+        _set_auto_push(host, "failed", detail or "push failed")
+    return ok
+
+
+def _maybe_auto_push(r):
+    """The supervisor's per-pass hook: start an automatic push of this remote when the setting is on and a
+    straight fast-forward is observed. Spawns a THREAD — `_update_remote` is several seconds of ssh, and the
+    supervisor also keeps every tunnel alive, so blocking it here would stall the whole fleet."""
+    host = r.get("host") or ""
+    if not host:
+        return
+    if not _remote_out_of_date(r):
+        # It matches us now. That is the EVENT that ends a push (never a timer): a 'waiting for it to
+        # restart' clears the moment the restarted remote reports our sha, and a stale 'failed' clears too
+        # once the host is up to date by any route (a later manual Push, an update from another machine).
+        with _auto_push_lock:
+            if _auto_push.get(host, {}).get("phase") in ("waiting", "failed"):
+                _auto_push.pop(host, None)
+        return
+    if not _auto_update_remotes_on() or not _is_fast_forward(r):
+        return
+    key = (_sha_base(r.get("kernel_sha") or ""), _local_head() or "")
+    with _auto_push_lock:
+        if _auto_push.get(host, {}).get("phase") == "pushing":
+            return                                  # one push per host at a time
+        if _auto_push_tried.get(host) == key:
+            return                                  # already attempted for this exact advance
+        if len(_auto_push_tried) > 64:
+            _auto_push_tried.clear()
+        _auto_push_tried[host] = key
+    threading.Thread(target=_auto_push_remote, args=(host,), daemon=True).start()
+
+
 _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its HEAD to on the remote
 
 
@@ -5125,6 +5238,7 @@ def _tunnel_supervisor():
                         r["sids"] = sids
                     if rsha is not None:
                         r["kernel_sha"] = rsha
+                    auto_check = (st == "up")
                     peer_up = (st == "up")
                     peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
                     peer_trust = r.get("trust") or "directed"
@@ -5133,6 +5247,11 @@ def _tunnel_supervisor():
                     # -L /sessions poll is separate and keeps running. The bus gate is belt-and-suspenders.
                     notify_up = peer_up and peer_trust != "isolated"
                     want, notified = (notify_up, peer_trust), r.get("_peer_notified")
+                if auto_check:
+                    # Automatic remote update (the user 2026-07-24), OUTSIDE the lock: it only inspects the
+                    # row and may spawn a worker. Runs here, in the one supervisor, so an advance is pushed
+                    # exactly once no matter how many dashboards are open.
+                    _maybe_auto_push(r)
                 if _postal_peers_on() and want != notified:
                     # Peer-bus mode: a change to (effective-up, trust) is the event the local bus keys its
                     # peer table on (reachable at 127.0.0.1:bus_port through the second -L). Keyed on trust
@@ -13439,7 +13558,16 @@ if(!icon||!back)return;
 var hostIn=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
 list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x'),dl=document.getElementById('rnet-hosts'),
 plus=document.getElementById('rnet-plus'),addBox=document.getElementById('rnet-add'),hint=document.getElementById('rnet-hint'),
-more=document.getElementById('rnet-more'),sub=document.getElementById('rnet-sub');
+more=document.getElementById('rnet-more'),sub=document.getElementById('rnet-sub'),
+autoCb=document.getElementById('rnet-auto');
+// "Automatically update" writes to the KERNEL (fleet-wide, one owner) and re-reads the kernel's answer, so
+// the box can never drift from what is actually in force. Fails loudly + reverts on a refused write.
+if(autoCb)autoCb.onchange=function(){var on=autoCb.checked;autoCb.disabled=true;
+fetch('/tunnels/autoupdate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:on})})
+.then(function(r){return r.json();}).then(function(d){autoCb.disabled=false;
+if(d&&d.ok){_auto=!!d.on;autoCb.checked=_auto;refresh();}
+else{autoCb.checked=!on;alert('Could not change automatic updates: '+((d&&d.error)||'unknown'));}})
+.catch(function(){autoCb.disabled=false;autoCb.checked=!on;alert('Could not change automatic updates: the kernel did not answer.');});};
 // The add form is a DISCLOSURE, not permanent furniture: the panel's subject is the hosts you have, and
 // adding one is an occasional act (the user 2026-07-22). showAdd(false) on every open so it never reopens
 // holding a stale typed value; render() opens it by itself when the list is empty, so the empty panel
@@ -13447,6 +13575,7 @@ more=document.getElementById('rnet-more'),sub=document.getElementById('rnet-sub'
 function showAdd(on){if(!addBox)return;addBox.hidden=!on;hint.hidden=!on;plus.hidden=!!on;
 if(on&&hostIn){hostIn.value=hostIn.value||mruHost();try{hostIn.focus();hostIn.select();}catch(e){}}}
 var _autoAdd=false;
+var _auto=false;   // "Automatically update" — mirrored from the KERNEL each refresh, never a local guess
 function open(){back.hidden=false;_autoAdd=false;showAdd(false);loadHosts();refresh();}
 function close(){back.hidden=true;}
 if(plus)plus.onclick=function(){showAdd(true);};
@@ -13487,15 +13616,21 @@ function paintIcon(up,busy){icon.classList.toggle('on',up);icon.classList.toggle
 var m=mnet();if(m){m.classList.toggle('on',up);m.classList.toggle('busy',busy);}}
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
-// glow accent-blue while a remote is connected; MARCH the connector dashes while one is mid-attach
-// (the user 2026-07-12: the icon should visibly move while it's connecting)
-paintIcon(ts.some(function(t){return t.status==='up';}),busy);
-// hover tooltip on the rail icon: which hosts are attached + their phase and session count
-icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token');}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
+_auto=!!(d&&d.autoUpdate);
+if(autoCb&&!autoCb.disabled)autoCb.checked=_auto;   // mirror the kernel; never clobber a write in flight
+// An automatic push in flight counts as BUSY: the icon marches while romp works in the background, which is
+// the whole point of replacing the modal (the user 2026-07-24 — animate the icon so you can see it happening).
+var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting');});
+paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
+// hover tooltip on the rail icon: which hosts are attached + their phase and session count, plus any
+// automatic update's live phase — so the progress is readable WITHOUT opening the panel.
+icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
+var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
+return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
 if(!back.hidden)render(ts,(d&&d.known)||[],pmode);   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
-schedule(busy?600:3000);
+schedule((busy||pushing.length)?600:3000);   // poll fast while an auto-push runs, so its progress reads live
 // FAIL LOUDLY (the user 2026-07-22). This used to swallow EVERY error and just reschedule, so when the
 // refresh threw, render() never ran, the list sat empty, and a broken panel was indistinguishable from
 // one with no hosts attached — through any number of reloads and kernel restarts. Name it instead, in
@@ -13533,7 +13668,10 @@ w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'b
 var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
 ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
-var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+// A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
+// flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
+var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting');
+var upd=(t.status==='up'&&t.outOfDate&&!apx)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
@@ -13560,6 +13698,14 @@ row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||
 '<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
 retry+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
+// Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
+// go away: the work still announces itself, it just does it here instead of over your screen. A FAILURE
+// stays put and red (fail loudly, CLAUDE.md) rather than vanishing into a silently-stale remote.
+if(t.autoPush){var ap=document.createElement('div');
+ap.className='rnet-ap'+(t.autoPush.phase==='failed'?' bad':'');
+ap.textContent=(t.autoPush.phase==='failed'?'auto-update failed \\u2014 ':'auto-update: ')+(t.autoPush.detail||t.autoPush.phase);
+ap.title=t.autoPush.phase==='failed'?'romp tried to update this host automatically and could not. The manual Push button is back; it will not retry by itself until either machine\\u2019s commit moves.':'romp is updating this host in the background.';
+item.appendChild(ap);}
 var r2=document.createElement('div');r2.className='rnet-row2';r2.innerHTML=trust+keep;
 item.appendChild(r2);
 list.appendChild(item);});
@@ -13806,6 +13952,12 @@ _RDRIFT_JS = (
     "function prompt(hs){return hs.length===1?(hs[0]+' is on an older romp build. Push your version to it?')"
     ":(hs.length+' remotes are on an older romp build. Push your version? ('+hs.join(', ')+')');}"
     "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    # AUTOMATIC UPDATE ON → this banner does not exist (the user 2026-07-24). It was the modal landing
+    # mid-screen on every advance, and the whole point of the setting is that romp just does the push and
+    # reports it on the network icon instead. Only a fast-forward auto-pushes, so anything the automation
+    # deliberately leaves alone (diverged, unknown build) still has to be raised somewhere — the popover row
+    # keeps its Push button and its explanation, which is where a decision belongs.
+    "if(d&&d.autoUpdate){box.classList.remove('show');phase='idle';return;}"
     "var ts=(d&&d.tunnels)||[];stale=ts.filter(function(t){return t.status==='up'&&t.outOfDate;}).map(function(t){return t.host;});"
     "if(phase==='pushing'||phase==='failed'||phase==='done')return;"   # an active/terminal state owns the banner
     "if(phase==='verifying'){var still=pushed.filter(function(h){return stale.indexOf(h)>=0;});"
@@ -14013,6 +14165,14 @@ def _landing():
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
             ".rnet-empty{color:#777;font-size:11px}"
+            # "Automatically update" — a panel-wide setting, so it wears the same muted label treatment as the
+            # per-host settings row (.rnet-keep) rather than inventing a third size
+            ".rnet-auto{display:flex;align-items:center;gap:5px;color:#6e7681;font-size:11px;cursor:pointer;"
+            "margin-top:10px;padding-top:9px;border-top:1px solid #2a2a2a}"
+            ".rnet-auto:hover{color:#9aa0a6}"
+            # the live auto-push phase on a row: accent while it works, red when it failed and needs a look
+            ".rnet-ap{display:block;color:var(--accent);font-size:11px;margin:2px 0 0 16px}"
+            ".rnet-ap.bad{color:#E5534B}"
             # usage rate-limit bars in the bottom bar (the user 2026-06-26; HORIZONTAL redesign 2026-07-05): per
             # window, an expanded label ("5 hours" / "7 days" / "Fable 5"), then TWO stacked horizontal tracks — the
             # used-% bar (.ru-fill in the colormap colour) OVER the elapsed-% bar (slate) so you can compare pace at
@@ -14296,6 +14456,17 @@ def _landing():
             # The LIST is the panel's subject, so it comes first and the add control sits under it as a
             # secondary action (the user 2026-07-22, who wanted rows and a +, not a permanent dropdown).
             "<div id=rnet-list></div>"
+            # Automatic remote update (the user 2026-07-24): the fleet-wide alternative to a modal landing
+            # mid-screen on every advance. Sits under the list because it applies to ALL hosts, not one row.
+            "<label class=rnet-auto id=rnet-auto-l title=\"Keep attached machines on this machine&#10;&#10;"
+            "When a machine is connected and its romp is simply BEHIND this one &#8212; your commits only add "
+            "to what it already has &#8212; romp pushes your build to it and restarts its kernel, in the "
+            "background, without asking. The network icon animates while that runs; hover it for the live "
+            "phase.&#10;&#10;It never fires when a push could destroy anything: a machine holding its own "
+            "commits, or one whose build this repo doesn&#8217;t recognise, is left alone and keeps its "
+            "manual Push button. Uncommitted local edits are never sent &#8212; only what you have "
+            "committed.\">"
+            "<input type=checkbox id=rnet-auto><span>Automatically update</span></label>"
             "<button id=rnet-plus class=rnet-plus>+ Add a host</button>"
             "<div class=rnet-add id=rnet-add hidden>"
             "<input id=rnet-host list=rnet-hosts placeholder='hostname or user@host' "
@@ -14564,6 +14735,7 @@ class Handler(BaseHTTPRequestHandler):
                 # re-attach rows instead of making you retype them.
                 return self._send(200, json.dumps({"tunnels": list_remotes(),
                                                    "known": list_known(),
+                                                   "autoUpdate": _auto_update_remotes_on(),   # the popover checkbox reflects the KERNEL, not this tab
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
@@ -14826,6 +14998,18 @@ class Handler(BaseHTTPRequestHandler):
                 if pub is None:
                     return self._send(404, json.dumps({"ok": False, "error": "no attached host '%s' — attach it first" % host}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/autoupdate":
+                # The popover's "Automatically update" checkbox. Body: {"on": bool}. Fleet-wide, not per-host
+                # and not per-tab: the push must fire once per advance from the kernel's own supervisor.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                if not isinstance(body, dict) or "on" not in body:
+                    return self._send(400, json.dumps({"ok": False, "error": "on required"}), "application/json")
+                _set_auto_update_remotes(bool(body.get("on")))
+                _tunnel_wake.set()   # apply on the NEXT pass, not up to 3s later — turning it on acts at once
+                return self._send(200, json.dumps({"ok": True, "on": _auto_update_remotes_on()}), "application/json")
             if u.path == "/tunnels/forget":
                 # Drop a remembered (previously-attached) host from the popover's list. Body: {"host"}.
                 # Only touches the memory — a currently-attached host is detached, not forgotten.

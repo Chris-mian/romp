@@ -251,7 +251,37 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   row.append(sel, attach);
   const list = document.createElement("div");
   list.id = "sn-list";
-  pop.append(row, list);
+  // "Automatically update" (the user 2026-07-24) — the fleet-wide alternative to a modal landing mid-screen
+  // on every advance. Panel-wide, under the list, since it applies to all hosts rather than one row. Mirrors
+  // the web popover's copy: the two must say the same thing.
+  const autoL = document.createElement("label");
+  autoL.className = "sn-auto";
+  const autoCb = document.createElement("input");
+  autoCb.type = "checkbox";
+  const autoT = document.createElement("span");
+  autoT.textContent = "Automatically update";
+  autoL.append(autoCb, autoT);
+  autoL.title = "Keep attached machines on this machine\n\n"
+    + "When a machine is connected and its romp is simply BEHIND this one — your commits only add to what it "
+    + "already has — romp pushes your build to it and restarts its kernel, in the background, without asking. "
+    + "The network icon animates while that runs; hover it for the live phase.\n\n"
+    + "It never fires when a push could destroy anything: a machine holding its own commits, or one whose "
+    + "build this repo doesn't recognise, is left alone and keeps its manual Push button. Uncommitted local "
+    + "edits are never sent — only what you have committed.";
+  autoCb.addEventListener("change", () => {
+    const on = autoCb.checked;
+    autoCb.disabled = true;
+    fetch(kernelUrl("/tunnels/autoupdate"), { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on }) })
+      .then((rp) => rp.json())
+      .then((d) => {
+        autoCb.disabled = false;
+        if (d && d.ok) { autoCb.checked = !!d.on; schedule(600); }
+        else { autoCb.checked = !on; }   // the kernel refused — show what is actually in force
+      })
+      .catch(() => { autoCb.disabled = false; autoCb.checked = !on; });
+  });
+  pop.append(row, list, autoL);
   document.body.appendChild(pop);
 
   const LBL: Record<string, string> = {
@@ -346,7 +376,10 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
           .catch(() => { trust.disabled = false; });
       });
       r.appendChild(trust);
-      if (t.status === "up" && t.outOfDate) {
+      // A push romp is ALREADY doing needs no button — it would only invite a duplicate of the work in
+      // flight. The row shows the live phase instead (below); the manual Push returns if it fails.
+      const apx = !!(t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting"));
+      if (t.status === "up" && t.outOfDate && !apx) {
         const u = document.createElement("button");
         u.textContent = "Push";
         u.title = `Push this machine's committed romp to ${t.host} and restart its kernel, so it runs exactly this code. `
@@ -368,6 +401,19 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       d.addEventListener("click", () => act("/tunnels/detach", t.host, d, "…"));
       r.appendChild(d);
       list.appendChild(r);
+      // Live automatic-update phase under the row — the work still announces itself, it just does it here
+      // instead of over your screen. A FAILURE stays put and red (fail loudly) rather than vanishing into a
+      // silently-stale remote.
+      if (t.autoPush) {
+        const ap = document.createElement("div");
+        ap.className = "sn-ap" + (t.autoPush.phase === "failed" ? " bad" : "");
+        ap.textContent = (t.autoPush.phase === "failed" ? "auto-update failed — " : "auto-update: ")
+          + (t.autoPush.detail || t.autoPush.phase);
+        ap.title = t.autoPush.phase === "failed"
+          ? "romp tried to update this host automatically and could not. The manual Push button is back; it will not retry by itself until either machine's commit moves."
+          : "romp is updating this host in the background.";
+        list.appendChild(ap);
+      }
     }
     // PREVIOUSLY ATTACHED (the user 2026-07-22): hosts attached before, kept after detach so they are one
     // click away instead of buried in the ssh-config dropdown. Dimmed, each remembering the trust level
@@ -411,8 +457,13 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
+      if (!autoCb.disabled) autoCb.checked = !!(d && d.autoUpdate);   // mirror the kernel; never clobber a write in flight
       renderList(ts, (d && d.known) || []);
-      schedule(ts.some((t: any) => busy(t.status)) ? 600 : 3000);   // fast while mid-attach, slow keep-alive after
+      // An automatic push in flight counts as busy: the button marches while romp works in the background,
+      // and the poll runs fast so the phase reads live.
+      const pushing = ts.some((t: any) => t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting"));
+      button.classList.toggle("busy", ts.some((t: any) => busy(t.status)) || pushing);
+      schedule(ts.some((t: any) => busy(t.status)) || pushing ? 600 : 3000);   // fast while mid-attach/pushing, slow keep-alive after
     }).catch((err) => {
       // Fail loudly: an unreachable kernel renders as an error line, never a
       // silently empty box that reads as a dead button.

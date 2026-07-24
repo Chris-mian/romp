@@ -94,3 +94,11 @@
 .sn-known { opacity: 0.62; }
 .sn-known:hover { opacity: 1; }
 .sn-empty { color: #9aa0a6; text-align: center; padding: 10px 0; }
+/* "Automatically update" — a panel-wide setting, so it wears the muted label treatment the per-host
+   controls use rather than inventing another size (mirrors the web popover's .rnet-auto) */
+.sn-auto { display: flex; align-items: center; gap: 5px; color: #6e7681; font-size: 11px; cursor: pointer;
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--vscode-widget-border, #2a2a2a); }
+.sn-auto:hover { color: #9aa0a6; }
+/* the live auto-push phase on a row: accent while it works, red when it failed and needs a look */
+.sn-ap { color: var(--accent, #9cd2ff); font-size: 11px; margin: 2px 0 0 16px; }
+.sn-ap.bad { color: #E5534B; }

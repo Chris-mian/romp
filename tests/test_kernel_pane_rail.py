@@ -138,7 +138,9 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("@keyframes rnet-march", self.html)
         self.assertIn(".rail-act.busy svg path,#mtabs .mact.busy svg path{stroke-dasharray:3 3;", self.html)
         self.assertIn("icon.classList.toggle('busy',busy)", self.html)
-        self.assertIn("paintIcon(ts.some(function(t){return t.status==='up';}),busy)", self.html)
+        # an automatic remote update in flight ALSO marches the icon (the user 2026-07-24): that background
+        # push replaced a mid-screen prompt, so the motion is how it announces itself
+        self.assertIn("paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length)", self.html)
         self.assertIn("icon.classList.add('busy')", self.html, "Attach click arms the motion before the poll")
         self.assertIn("#mtabs .mact[data-act=net]", self.html, "the mobile Net button mirrors on/busy")
 
