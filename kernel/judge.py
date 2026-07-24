@@ -4135,6 +4135,14 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
     #                                                     from its partial log would wipe real legacy state)
 
 
+def _block_since(nd):
+    """The node's newest BLOCK event time (ev_t, arrival fallback) — when its ask was actually
+    asked. Feeds the brief's per-paragraph "Nm ago" stamps (the user 2026-07-24); mt/t fallback
+    for legacy nodes with no diary rows."""
+    ts = [(e.get("ev_t") or e.get("at") or 0) for e in (nd.get("log") or []) if e.get("kind") == "block"]
+    return max(ts) if ts else (nd.get("mt") or nd.get("t") or 0)
+
+
 def _brief_superseded(nodes, sub, prev_bm):
     """True when a KEPT decision brief predates a later unblock/reopen anywhere in the card's subtree —
     the asks it presents were ANSWERED after it was written, so keeping it re-surfaces decisions the
@@ -7118,6 +7126,7 @@ def _distill_session(fsid, path, now):
                 _note = (nodes[top].get("stallSummary") or "").strip()
                 if _note:
                     nodes[top]["blockSummary"] = _note   # same reader, same episode: the note IS the brief
+                    nodes[top]["briefParts"] = None      # a stall note has no per-item paragraphs
                     nodes[top]["briefedMt"] = due
                     nodes[top]["briefFails"] = 0
                     _node_warn_clear(nodes[top], "brief-failed")
@@ -7135,6 +7144,7 @@ def _distill_session(fsid, path, now):
                                      note="recorded trail/placements resolved to no live segment; brief blanked")
                 if nodes[top].get("blockSummary") is None:
                     nodes[top]["blockSummary"] = ""
+                nodes[top]["briefParts"] = None
                 nodes[top]["briefedMt"] = due; changed = True
                 continue
             # proc_only (no earlier brief, no stall note): the staller's where-this-stands prompt, with the
@@ -7153,6 +7163,7 @@ def _distill_session(fsid, path, now):
                 if fails >= DISTILL_FAIL_CAP:          # gave up after K tries → SELF-HEAL: settle to the ""
                     if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
+                    nodes[top]["briefParts"] = None
                     nodes[top]["briefedMt"] = due; nodes[top]["briefFails"] = 0
                     _log_judge_error("staller" if proc_only else "briefer", fsid, "give-up", goal=top,   # distinct from the retryable "call"
                                      note="%d failed calls on this card; brief blanked, card warns; a fresh block re-arms" % fails)
@@ -7166,6 +7177,14 @@ def _distill_session(fsid, path, now):
             bg, out = _split_sections(out)
             nodes[top]["blockSummary"] = out            # full text — NEVER truncate a brief mid-word (the user 2026-07-06)
             nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
+            # PER-PARAGRAPH stamps (the user 2026-07-24): a MULTI-item brief writes one paragraph per
+            # owed item IN ORDER (BLOCK_BRIEF_SYS, 2026-07-21), so each paragraph maps to a known
+            # sub-goal whose block time is an exact diary event — store [{id, since}] in that same
+            # order and the feed shows a live "Nm ago" per paragraph (only when the paragraph count
+            # matches: the model may merge items, and no stamp beats a wrong stamp). A single-item
+            # brief stores nothing — the card's own header age is that stamp (the user's rule).
+            nodes[top]["briefParts"] = ([{"id": d["id"], "since": _block_since(d)} for d in blkd]
+                                        if (not proc_only and len(blkd) > 1) else None)
             # the brief's cited source, else the WRITE-TIME deterministic stamp: the newest labeled atom
             # the gather fed this very call (the user 2026-07-21) — every brief ships a stored anchor
             nodes[top]["summaryAnchor"] = marks.map.get(src) or marks.newest()

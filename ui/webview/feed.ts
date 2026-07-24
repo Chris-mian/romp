@@ -79,6 +79,7 @@ interface AskItem {
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
   artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
+  briefParts?: { id?: string; since: number }[] | null;   // MULTI-item brief: one {id, since} per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null/absent = single ask, the card header's age is the stamp (the user 2026-07-24)
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the completion turn's wrap-up block (kernel build_feed completed pin; cited/latest-prose fallbacks — the user 2026-07-14)
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
@@ -1244,6 +1245,32 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
   const distillShown = applyDistillLine(a._distill as HTMLElement, dCompleted, dBlocked,
                    it.summary, it.blockSummary);
+  // PER-PARAGRAPH ages (the user 2026-07-24): a MULTI-item decision brief writes one paragraph per
+  // owed item IN ORDER (judge BLOCK_BRIEF_SYS 2026-07-21 + briefParts), so each paragraph can wear
+  // the age of ITS OWN ask — the exact block-event time — and a stale re-surfaced ask shows its real
+  // age at a glance (the incident: a card re-displayed a brief whose go-ahead was given two hours
+  // earlier). Three deliberate gates: BLOCKED brief only (a completed takeaway never wears these),
+  // multi-item only (a single ask keeps just the card header's age — the user's rule), and the
+  // paragraph count must MATCH briefParts (the model may merge items; a missing stamp beats a wrong
+  // one — then the plain applyDistillLine text above stands untouched). Rebuilt every push, so the
+  // ages tick live like every other relAge on the card.
+  const bp = it.briefParts;
+  if (distillShown && dBlocked && !dCompleted && bp && bp.length > 1) {
+    const paras = distillShown.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+    if (paras.length === bp.length) {
+      const dle = a._distill as HTMLElement;
+      dle.textContent = "";
+      const nowS = Date.now() / 1000;
+      paras.forEach((p, i) => {
+        const para = el("div", "fask-para");
+        para.textContent = p;
+        const age = el("span", "fask-para-age");
+        age.textContent = relAge(nowS - (bp[i].since || nowS));
+        para.append(" ", age);
+        dle.append(para);
+      });
+    }
+  }
   // The distiller line is a LINK: clicking it jumps to where the takeaway/brief was actually written — the
   // biggest contiguous assistant-text block in the goal's work span (it.summaryAnchorUuid; kernel
   // _seg_best_text). This was lost when the line was restored via applyDistillLine (which only sets text), so

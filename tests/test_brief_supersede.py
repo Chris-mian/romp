@@ -67,5 +67,22 @@ class BriefSuperseded(unittest.TestCase):
         self.assertIn('and not _brief_superseded(nodes, sub, nodes[top].get("briefedMt"))', src)
 
 
+class BlockSince(unittest.TestCase):
+    """_block_since — the per-paragraph brief stamp (the user 2026-07-24): when each owed ask was
+    actually ASKED, from the sub-goal's own diary."""
+
+    def test_newest_block_event_wins(self):
+        nd = {"log": [{"kind": "block", "ev_t": T0 + 10, "at": T0 + 11},
+                      {"kind": "unblock", "ev_t": T0 + 50, "at": T0 + 50},
+                      {"kind": "block", "ev_t": T0 + 90, "at": T0 + 95}], "mt": T0}
+        self.assertEqual(jd._block_since(nd), T0 + 90)
+
+    def test_legacy_rows_and_bare_nodes_fall_back(self):
+        self.assertEqual(jd._block_since({"log": [{"kind": "block", "at": T0 + 7}]}), T0 + 7,
+                         "no ev_t → arrival time")
+        self.assertEqual(jd._block_since({"log": [], "mt": T0 + 3, "t": T0}), T0 + 3,
+                         "no block rows → the node's own mt")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -261,6 +261,12 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    it (the user 2026-07-15). */
 .fask-distill-link { cursor: pointer; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; }
 .fask-distill-link:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
+/* Per-paragraph brief ages (the user 2026-07-24): a multi-item decision brief stamps each paragraph
+   with ITS OWN ask's age (kernel briefParts). Inherits .fask-distill's size — the dim color is the
+   whole differentiation (no new font-size on this surface; the consistent-fonts rule). */
+.fask-para { margin: 0 0 6px; }
+.fask-para:last-child { margin-bottom: 0; }
+.fask-para-age { color: var(--dim); white-space: nowrap; }
 /* the card's distiller sections (the user 2026-07-07, compactness): the Background/Summary TOGGLES now ride
    the time row (row3) and are MUTUALLY EXCLUSIVE — one body shows at a time, or neither — so .fask-secs is
    just the body container (a plain block; whichever body is open runs the full card width). The toggles are
