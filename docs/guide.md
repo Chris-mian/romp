@@ -192,8 +192,9 @@ The timeline draws an arc for each message. Hover one for its gist:
 
 Underneath, a local message bus writes the message into a mailbox on disk that
 belongs to the recipient, then delivers it: straight away if that session is
-idle, otherwise when its current turn ends. The recipient reads it in its chat,
-on a card naming the sender and the kind:
+idle, otherwise when its current turn ends. The recipient reads it as a message
+in its chat, and it appears in the user interface as a card naming the sender
+and the kind:
 
 ![A message from another session, as the recipient's chat shows it](assets/guide/postal-chat.png){ width="100%" }
 
