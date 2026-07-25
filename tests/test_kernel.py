@@ -3748,33 +3748,63 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(it["summary"], "Fixing the feed")
         self.assertEqual(it["color"], {"bg": "#abcdef", "fg": "#ffffff"})
 
+    def _stale_session(self, sid, name, days):
+        """Register a session whose transcript was last touched `days` ago (past jd.WINDOW, inside the
+        picker's 30). Returns its launch dir."""
+        d = Path(self.td.name) / ("dir-" + sid[:8]); d.mkdir()
+        pdir = Path(self.td.name) / "projects" / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(d)))
+        pdir.mkdir(parents=True)
+        tp = pdir / (sid + ".jsonl")
+        tp.write_text(json.dumps(uline(NOW - int((days + 1) * 86400), "draft the reply", "u1", ps="typed")) + "\n")
+        t = NOW - int(days * 86400)
+        os.utime(tp, (t, t))
+        (jd.NAMES / sid).write_text("%s\t%s\t#9cd2ff\n" % (name, str(d)))
+        return d
+
     def test_picker_reaches_past_the_caption_window(self):
         # The user 2026-07-24: typed a 3-day-old session's name into the + picker, got nothing back, and had
         # to start a fresh session instead. The picker's payload was built from discover()'s 48h CAPTION
         # horizon, which it had inherited by accident — so every session idle longer than two days was
-        # invisible to it, and reviving one you couldn't reach by tab was impossible. The picker now has its
-        # own PICKER_WINDOW (30 days), asked for on the LAZY second fetch; the default first paint stays the
-        # cheap 48h list, so neither boot nor a picker open pays for the wider walk.
+        # invisible to it, and reviving one you couldn't reach by tab was impossible. The picker now gets
+        # PICKER_WINDOW (30 days) in ONE reply when it opens; no lazy second fetch, because with forks off
+        # the wider walk measured ~78ms cold, well under noticing.
         old_sid = "99999999-8888-7777-6666-555555555555"
-        odir = Path(self.td.name) / "olddir"; odir.mkdir()
-        opdir = Path(self.td.name) / "projects" / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(odir)))
-        opdir.mkdir(parents=True)
-        otp = opdir / (old_sid + ".jsonl")
-        otp.write_text(json.dumps(uline(NOW - 4 * 86400, "draft the reply", "u1", ps="typed")) + "\n")
-        stale = NOW - int(3.5 * 86400)          # idle 3.5 days: past the 48h window, well inside the 30 days
-        os.utime(otp, (stale, stale))
-        (jd.NAMES / old_sid).write_text("roof\t%s\t#9cd2ff\n" % str(odir))
+        self._stale_session(old_sid, "roof", 3.5)
 
-        shallow = km._session_list(NOW, {})
-        self.assertNotIn(old_sid, [i["id"] for i in shallow],
-                         "the default first paint stays the 48h list it always was")
-        deep = km._session_list(NOW, {}, km.PICKER_WINDOW)
-        it = next((i for i in deep if i["id"] == old_sid), None)
-        self.assertIsNotNone(it, "the deep list reaches a session idle 3.5 days — the bug this fixes")
+        items = km._session_list(NOW, {})
+        it = next((i for i in items if i["id"] == old_sid), None)
+        self.assertIsNotNone(it, "the picker reaches a session idle 3.5 days — the bug this fixes")
         self.assertEqual(it["name"], "roof")
         self.assertFalse(it["running"], "it is dead — the row is a revive target, not a reopen")
         self.assertEqual(it["time"], "3d ago")
-        self.assertIn(SID, [i["id"] for i in deep], "the recent session is still in the deep list too")
+        self.assertIn(SID, [i["id"] for i in items], "the recent session is still listed too")
+        # the judge/feed horizon is UNCHANGED — only the picker reaches wider
+        self.assertNotIn(old_sid, [s["sid"] for s in km._sessions(NOW)],
+                         "discover()'s default 48h window still governs every other surface")
+
+    def test_picker_lists_one_row_per_session_never_a_fork_lane(self):
+        # A fork lane (an SDK /clear mints a new fsid under the same customTitle) is the SAME romp session
+        # listed a second time, under an fsid that is NOT a romp sid — so its row pointed openSession at
+        # something that isn't a session. Skipping fork detection is also what makes the 30-day window
+        # affordable: reading each candidate's head cost 553ms of a 640ms walk (measured 2026-07-24).
+        old_sid = "99999999-8888-7777-6666-555555555555"
+        d = self._stale_session(old_sid, "roof", 3.5)
+        pdir = Path(self.td.name) / "projects" / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(d)))
+        fork_sid = "77777777-6666-5555-4444-333333333333"
+        fork = pdir / (fork_sid + ".jsonl")                           # same customTitle → a fork lane
+        fork.write_text("\n".join(json.dumps(r) for r in [
+            {"type": "custom-title", "customTitle": "roof"},
+            uline(NOW - 3 * 86400, "carry on", "u1", ps="typed")]) + "\n")
+        t = NOW - int(3.4 * 86400)
+        os.utime(fork, (t, t))
+
+        # with forks ON (what the judge/feed use) it IS a lane of its own — so the fixture really does
+        # exercise the fork path, and the picker's omission is the forks=False switch doing its job
+        self.assertIn(fork_sid, [s["sid"] for s in km._sessions(NOW, km.PICKER_WINDOW)],
+                      "fixture sanity: this is a real fork lane at the wider window")
+        ids = [i["id"] for i in km._session_list(NOW, {})]
+        self.assertEqual(ids.count(old_sid), 1, "the session appears exactly once")
+        self.assertNotIn(fork_sid, ids, "its fork lane is not a row of its own in the picker")
 
     def test_alive_filter_empty_tmux_with_tmux_present_shows_nothing(self):
         # The user 2026-06-16: after killing every session and reloading, the surfaces wrongly
