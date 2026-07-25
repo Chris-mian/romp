@@ -53,7 +53,7 @@ test("chat tab bar: select + ✕ (Close / End session) are DELEGATED to the stab
   assert.doesNotMatch(RENDER, /type: el\.dataset\.dead === "1" \? "closeTab" : "closeSession"/, "the round-trip close is gone");
   // and the tab is dropped + a new one reselected OPTIMISTICALLY (don't wait for the kernel's closed event →
   // no stale content from the just-closed session — the user 2026-06-24)
-  assert.match(RENDER, /closeTab", id \}\);\s*\n\s*dismissSession\(id\);/);
+  assert.match(RENDER, /closeTab", id \}\);\s*\n\s*closeTabLocally\(id\);/);   // …and it STAYS gone: tab-close-optimistic.test.ts
   assert.match(RENDER, /function dismissSession\(id: string\): void/);
   assert.match(RENDER, /m\.type === "closed"\) dismissSession\(m\.id\)/);   // the kernel's own death event reuses it
 });

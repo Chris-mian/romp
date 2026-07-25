@@ -327,6 +327,18 @@ function reconcileRewind(s: Session): void {
 // Tab name+color from the kernel's tabOrder push (the user 2026-06-26): lets renderTabs paint the WHOLE
 // strip as placeholders BEFORE each session's build_session arrives, so tabs don't pop in one-by-one.
 const tabMeta = new Map<string, { name: string; color: Color | null }>();
+// Tabs the user has just ✕'d, suppressed until the kernel's own tab set agrees. Declared up here beside
+// tabMeta because renderTabs reads it, and renderTabs can run before the module finishes evaluating.
+// The close was ALREADY optimistic (dismissSession runs on click) but nothing recorded that locally — so the
+// next push, built before the kernel had processed the close, re-listed the id, and with its session already
+// dropped here the strip repainted it as a LOADING PLACEHOLDER: the closed tab faded back in wearing the romp
+// swirl, looking like a shutdown you had to wait out (the user 2026-07-24, who wanted the tab to just go and
+// the shutdown to run behind it). Cleared on the kernel's ack — its push dropping the id — not on a timer.
+const closingTabs = new Map<string, number>();
+// …with a backstop for the ack that never comes. `closeTab` only flips a hidden flag kernel-side, so there is
+// no failure EVENT to key on: the sole evidence a close didn't take is the kernel still listing the tab long
+// after. Past this we say so and let the tab back, rather than hiding a session that's really still open.
+const CLOSE_ACK_MS = 15_000;
 // The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
 // The palette is SELECTABLE now (the user 2026-07-12): a {type:"palette"} push lands the new set on switch.
@@ -2818,6 +2830,21 @@ function fadedColor(hex: string): string {
 function commitTabOrder() {
   if (vscodeApi) vscodeApi.postMessage({ type: "reorderTabs", order: order.slice() });
 }
+// Settle the just-closed tabs against the kernel's authoritative list. Gone from it → the close landed, stop
+// suppressing. STILL in it past the backstop → it didn't land; say so plainly (a session left open while its
+// tab is hidden is exactly the silent-wrong-state we'd rather surface) and let the tab come back.
+function ackClosingTabs(kernelOrder: readonly string[]): void {
+  if (!closingTabs.size) return;
+  const live = new Set(kernelOrder);
+  const now = Date.now();
+  for (const [id, ts] of Array.from(closingTabs)) {
+    if (!live.has(id)) { closingTabs.delete(id); continue; }       // the kernel dropped it → confirmed
+    if (now - ts < CLOSE_ACK_MS) continue;                         // still in flight; the shutdown runs behind us
+    closingTabs.delete(id);
+    warnToast(`Couldn't close “${tabMeta.get(id)?.name || id}” — romp still has it open.`);
+  }
+}
+
 // Apply the kernel's authoritative tab order (its tabOrder push, also re-sent after a timeline drag).
 function applyTabOrder(o: any, tabs?: any) {
   // name+color per tab → renderTabs paints placeholders for tabs whose session hasn't arrived yet (tabs-first).
@@ -2834,6 +2861,7 @@ function applyTabOrder(o: any, tabs?: any) {
   }
   // Adopt the kernel order verbatim, keeping any just-arrived tab the push doesn't carry yet (see tab-order.ts).
   const kernelOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  ackClosingTabs(kernelOrder);
   const next = reconcileTabOrder(kernelOrder, order, (id) => sessions.has(id) || tabMeta.has(id));
   order.length = 0;
   for (const id of next) order.push(id);
@@ -3017,10 +3045,13 @@ function renderTabs() {
   // verbatim (applyTabOrder), plus any just-arrived tab not yet pushed. An id whose session hasn't landed yet
   // draws as a placeholder (name+color, non-interactive) that fills in when build_session arrives — so tabs
   // don't pop in one-by-one. NO re-sort here: the order is whatever `order` holds (the user 2026-06-27).
+  // A tab the user just closed is skipped on BOTH passes (closingTabs): the kernel goes on listing it for a
+  // push or two after the ✕, and drawing it from tabMeta with no session behind it is what put the swirling
+  // placeholder back on screen. Cleared the moment the kernel's list agrees — see ackClosingTabs.
   const ids: string[] = [];
   const seen = new Set<string>();
-  for (const id of order) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
-  for (const id of tabMeta.keys()) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }   // any pushed tab not yet in `order` (placeholder)
+  for (const id of order) { if (!seen.has(id) && !closingTabs.has(id)) { seen.add(id); ids.push(id); } }
+  for (const id of tabMeta.keys()) { if (!seen.has(id) && !closingTabs.has(id)) { seen.add(id); ids.push(id); } }   // any pushed tab not yet in `order` (placeholder)
   auditTabOrder(ids);
   // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name tabs; the
   // real sessions keep running, just hidden from this view. No tag → visibleIds === ids (unchanged).
@@ -6437,10 +6468,18 @@ function statusOnly(msg: any) {
   if (msg.id === activeId) updateStatusline();
 }
 
+// The ✕'s own path: remember the close (see closingTabs), then drop the tab now. (dismissSession is ALSO how
+// a session dying on its own arrives — that one must not be recorded as a close of ours.)
+function closeTabLocally(id: string): void {
+  closingTabs.set(id, Date.now());
+  dismissSession(id);
+}
+
 // Drop a session from the panel + reselect another tab, NOW (the user 2026-06-24): used both by the kernel's
 // `closed` event AND optimistically the instant you Close tab / End session — otherwise the reselect waited on
 // that round-trip while the tab bar already updated, leaving you on the CLOSED session's stale content.
 function dismissSession(id: string): void {
+  closingTabs.delete(id);   // the kernel agreed (or the session died on its own) — nothing left to suppress
   sessions.delete(id);
   liveAsks.delete(id);
   ledgers.delete(id);
@@ -6567,11 +6606,13 @@ window.addEventListener("message", (e: MessageEvent) => {
       "“Close tab” just removes it from this panel and leaves the session running. “End session” shuts it down (the transcript stays on disk).",
       [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
       (v) => {
-        if (v === "close") vscodeApi?.postMessage({ type: "closeTab", id: m.id });
+        if (v !== "close" && v !== "end") return;   // Cancel → nothing
         // End session = shut it down AND remove the tab (the user 2026-06-16: an explicitly-ended session
         // shouldn't linger as a struck-through read-only tab — that's only for sessions that die on their
         // own). closeTab must durably dismiss it so the death event doesn't re-add the struck tab.
-        else if (v === "end") { vscodeApi?.postMessage({ type: "endSession", id: m.id }); vscodeApi?.postMessage({ type: "closeTab", id: m.id }); }
+        if (v === "end") vscodeApi?.postMessage({ type: "endSession", id: m.id });
+        vscodeApi?.postMessage({ type: "closeTab", id: m.id });
+        closeTabLocally(m.id);   // same optimistic drop as the in-page ✕ — this path used to sit and wait
       });
   }
   else if (m.type === "confirmRevive" && m.id) {
@@ -7139,7 +7180,8 @@ setupSettings();
     close: (el) => {
       const id = el.dataset.id;
       if (!id || !vscodeApi) return;
-      if (el.dataset.dead === "1") { vscodeApi.postMessage({ type: "closeTab", id }); return; }   // dead → just drop the read-only tab
+      // dead → just drop the read-only tab (optimistically too: it's the same kernel round-trip to wait on)
+      if (el.dataset.dead === "1") { vscodeApi.postMessage({ type: "closeTab", id }); closeTabLocally(id); return; }
       // LIVE session: show the End/Close confirm IMMEDIATELY, client-side — NOT via a closeSession→confirmClose
       // kernel round-trip, which made the ✕ feel unresponsive (and sometimes never opened the modal when the
       // kernel was busy). The dialog is static; the kernel doesn't need to decide it (the user 2026-06-24).
@@ -7151,7 +7193,7 @@ setupSettings();
           if (v !== "close" && v !== "end") return;   // Cancel → nothing
           if (v === "end") vscodeApi?.postMessage({ type: "endSession", id });
           vscodeApi?.postMessage({ type: "closeTab", id });
-          dismissSession(id);   // drop the tab + reselect NOW (don't wait for the kernel's closed/push → no stale content)
+          closeTabLocally(id);   // drop the tab + reselect NOW, and keep it gone while the kernel catches up
         });
     },
   });
