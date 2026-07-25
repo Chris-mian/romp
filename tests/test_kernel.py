@@ -6107,7 +6107,7 @@ class ServeSecurity(unittest.TestCase):
         with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
             body = r.read().decode("utf-8", "replace")
-        self.assertIn("romp launch", body)                 # names the CLI that opens/prints the tokened link
+        self.assertIn("romp -l", body)                     # names the CLI that opens/prints the tokened link
         self.assertNotIn("testtok", body)                  # never echoes the token itself
         self.assertNotIn("src=/chat", body)                # none of the real shell is served
 

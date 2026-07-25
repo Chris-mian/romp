@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 
-# `romp launch` — the first-run entry point (2026-07-22): print the tokened dashboard URL AND try to
-# open a browser on it (Jupyter's flow). The PRINT is the contract — it must always happen, even when
-# no browser can be opened — because it is the user's guaranteed way in. On a remote/headless box it
-# must NOT pretend to open anything, and must say how to reach the dashboard from a laptop instead.
-# `romp --url` stays the print-only variant for scripting.
+# `romp -l` / `--launch` — the first-run entry point (2026-07-22; dash-only since 2026-07-25, when
+# bare `launch` became a session name like every dashless word): print the tokened dashboard URL AND
+# try to open a browser on it (Jupyter's flow). The PRINT is the contract — it must always happen,
+# even when no browser can be opened — because it is the user's guaranteed way in. On a
+# remote/headless box it must NOT pretend to open anything, and must say how to reach the dashboard
+# from a laptop instead. `romp --url` stays the print-only variant for scripting.
 
 ROMP_SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp"
 
@@ -30,21 +31,27 @@ MOCK
 
 teardown() { rm -rf "$TEST_DIR"; }
 
-@test "romp launch prints the tokened URL" {
-    run "$ROMP_SCRIPT" launch
+@test "romp -l prints the tokened URL" {
+    run "$ROMP_SCRIPT" -l
     [ "$status" -eq 0 ]
     [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]
 }
 
-@test "romp launch opens a browser on a local machine" {
-    run "$ROMP_SCRIPT" launch
+@test "romp --launch is the long spelling of -l" {
+    run "$ROMP_SCRIPT" --launch
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]
+}
+
+@test "romp -l opens a browser on a local machine" {
+    run "$ROMP_SCRIPT" -l
     [ "$status" -eq 0 ]
     [ -s "$OPEN_LOG" ]
     grep -q "token=TESTTOKEN123" "$OPEN_LOG"
 }
 
-@test "romp launch on a remote/ssh box prints the URL but opens nothing" {
-    SSH_CONNECTION="10.0.0.1 1 10.0.0.2 22" run "$ROMP_SCRIPT" launch
+@test "romp -l on a remote/ssh box prints the URL but opens nothing" {
+    SSH_CONNECTION="10.0.0.1 1 10.0.0.2 22" run "$ROMP_SCRIPT" -l
     [ "$status" -eq 0 ]
     [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]   # the link is ALWAYS printed
     [[ "$output" == *"remote/headless"* ]]
@@ -52,40 +59,40 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ ! -s "$OPEN_LOG" ] || false                                       # never opened a browser
 }
 
-@test "romp launch still prints the URL when no opener exists" {
+@test "romp -l still prints the URL when no opener exists" {
     # ROMP_OPENER= (set, empty) means "no opener", which PATH alone CANNOT express:
     # macOS ships /usr/bin/open, so the previous `rm $MOCK/open` + PATH=...:/usr/bin
     # form fell through to the REAL opener and launched an actual browser on every
     # macOS run. Linux has no `open`, which is why only macOS was affected.
     rm "$MOCK/open"
-    ROMP_OPENER= run "$ROMP_SCRIPT" launch
+    ROMP_OPENER= run "$ROMP_SCRIPT" -l
     [ "$status" -eq 0 ]
     [[ "$output" == *"http://127.0.0.1:29855/?token=TESTTOKEN123"* ]]
     [[ "$output" == *"couldn't open a browser automatically"* ]]
 }
 
-@test "romp launch opens nothing when no opener exists, even where a real one is on PATH" {
+@test "romp -l opens nothing when no opener exists, even where a real one is on PATH" {
     # The regression guard for the above: assert the real opener was never reached.
     # $MOCK/open stays in place and must NOT be called.
-    ROMP_OPENER= run "$ROMP_SCRIPT" launch
+    ROMP_OPENER= run "$ROMP_SCRIPT" -l
     [ "$status" -eq 0 ]
     [ ! -s "$OPEN_LOG" ] || false
 }
 
-@test "romp launch honours a custom ROMP_OPENER" {
+@test "romp -l honours a custom ROMP_OPENER" {
     cat > "$MOCK/mybrowser" <<'MOCK'
 #!/bin/sh
 echo "$@" >> "$OPEN_LOG"
 MOCK
     chmod +x "$MOCK/mybrowser"
-    ROMP_OPENER=mybrowser run "$ROMP_SCRIPT" launch
+    ROMP_OPENER=mybrowser run "$ROMP_SCRIPT" -l
     [ "$status" -eq 0 ]
     [[ "$(cat "$OPEN_LOG")" == *"token=TESTTOKEN123"* ]]
 }
 
-@test "romp launch fails loudly when no token has been minted yet" {
+@test "romp -l fails loudly when no token has been minted yet" {
     rm "$XDG_STATE_HOME/romp/serve-token"
-    run "$ROMP_SCRIPT" launch
+    run "$ROMP_SCRIPT" -l
     [ "$status" -ne 0 ]
     [[ "$output" == *"no serve token"* ]]
 }

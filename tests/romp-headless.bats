@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 
-# `romp send|interrupt|end <session> [text]` — headless session control through the kernel HTTP
-# API (2026-07-05: interrupt/end existed only as browser WS ops, so a runaway session had no
-# headless stop). A tiny one-shot python server stands in for the kernel; failures must be LOUD
-# (non-zero exit + a message), never a silent curl swallow.
+# `romp --send|--interrupt|--end <session> [text]` — headless session control through the kernel
+# HTTP API (2026-07-05: interrupt/end existed only as browser WS ops, so a runaway session had no
+# headless stop; dash-only since 2026-07-25 — the bare words name sessions). A tiny one-shot python
+# server stands in for the kernel; failures must be LOUD (non-zero exit + a message), never a
+# silent curl swallow.
 
 ROMP_SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp"
 
@@ -42,25 +43,37 @@ PY
     export ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")"
 }
 
-@test "romp interrupt <name> POSTs /interrupt and exits 0 on ok" {
+@test "romp --interrupt <name> POSTs /interrupt and exits 0 on ok" {
     start_fake_kernel '{"ok": true}'
-    run "$ROMP_SCRIPT" interrupt runaway
+    run "$ROMP_SCRIPT" --interrupt runaway
     [ "$status" -eq 0 ]
     [[ "$output" == *"ok (runaway)"* ]]
     grep -q "^/interrupt$" <(head -1 "$TEST_DIR/req")
     grep -q '"name": "runaway"' "$TEST_DIR/req"
 }
 
-@test "romp end works with the --end form too" {
+@test "romp --end stops a session through /end" {
     start_fake_kernel '{"ok": true}'
     run "$ROMP_SCRIPT" --end done-with-it
     [ "$status" -eq 0 ]
     grep -q "^/end$" <(head -1 "$TEST_DIR/req")
 }
 
-@test "romp send ships JSON-safe text" {
+@test "the bare spellings are retired: an old command invocation fails naming the new one" {
+    # `romp send <name> <text>` is the pre-2026-07-25 spelling; the bare word names a
+    # session now, so the old form must exit 2 with the fix, never reach the kernel.
+    run "$ROMP_SCRIPT" send helper "hello"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"romp --send <session> <text>"* ]]
+    run "$ROMP_SCRIPT" interrupt runaway
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"romp --interrupt <session>"* ]]
+    [ ! -e "$TEST_DIR/req" ]
+}
+
+@test "romp --send ships JSON-safe text" {
     start_fake_kernel '{"ok": true}'
-    run "$ROMP_SCRIPT" send helper 'fix the "thing" \ and this'
+    run "$ROMP_SCRIPT" --send helper 'fix the "thing" \ and this'
     [ "$status" -eq 0 ]
     grep -q "^/send$" <(head -1 "$TEST_DIR/req")
     python3 - "$TEST_DIR/req" <<'PY'
@@ -72,21 +85,21 @@ PY
 
 @test "a kernel refusal is loud: non-zero exit + the kernel's answer" {
     start_fake_kernel '{"ok": false, "error": "id or name required"}'
-    run "$ROMP_SCRIPT" interrupt ghost
+    run "$ROMP_SCRIPT" --interrupt ghost
     [ "$status" -eq 1 ]
     [[ "$output" == *"kernel refused"* ]]
 }
 
 @test "an unreachable kernel is loud, not a silent curl swallow" {
-    ROMP_KERNEL_PORT=1 run "$ROMP_SCRIPT" interrupt anyone
+    ROMP_KERNEL_PORT=1 run "$ROMP_SCRIPT" --interrupt anyone
     [ "$status" -eq 1 ]
     [[ "$output" == *"kernel not reachable"* ]]
 }
 
 @test "usage errors exit 2: missing session name, send without text" {
-    run "$ROMP_SCRIPT" interrupt
+    run "$ROMP_SCRIPT" --interrupt
     [ "$status" -eq 2 ]
-    run "$ROMP_SCRIPT" send lonely
+    run "$ROMP_SCRIPT" --send lonely
     [ "$status" -eq 2 ]
-    [[ "$output" == *"usage: romp send"* ]]
+    [[ "$output" == *"usage: romp --send"* ]]
 }

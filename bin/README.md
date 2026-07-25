@@ -50,7 +50,7 @@ no separate implementation to point at.
 |---|---|---|
 | `romp-feed` | `cli/feed.py` | Terminal mirror of the feed (`romp -f`). Backend-agnostic. |
 | `romp-judge-monitor` | `cli/judge_monitor.py` | Terminal health view of the judges (`romp -j`). |
-| `romp-update` | `cli/update.py` | Pushes this machine's committed romp to attached remote kernels and restarts them (`romp update [host]`). |
+| `romp-update` | `cli/update.py` | Pushes this machine's committed romp to attached remote kernels and restarts them (`romp --update [host]`). |
 | `romp-version` | `cli/version.py` | Version report across the moving parts (`romp --version`). |
 | `romp-idle-dots` | `cli/idle_dots.py` | tmux backend only: heals stranded `working` state / fades idle tab dots by inspecting tmux panes. Fired from `hooks/tmux-status.sh`. |
 
