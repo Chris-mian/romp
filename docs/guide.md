@@ -200,9 +200,9 @@ and the kind:
 
 Every message declares its kind, which the card wears as a chip:
 
-- <span class="romp-chip-kind romp-chip-delegate">delegation</span> (`delegate`) — the recipient owns the work now.
-- <span class="romp-chip-kind romp-chip-coordinate">coordination</span> (`coordinate`) — a heads-up; a reply is optional.
-- <span class="romp-chip-kind romp-chip-question">question</span> (`question`) — an answer is required.
+- <span class="romp-chip-kind romp-chip-delegate">delegation</span> — the recipient owns the work now.
+- <span class="romp-chip-kind romp-chip-coordinate">coordination</span> — a heads-up; a reply is optional.
+- <span class="romp-chip-kind romp-chip-question">question</span> — an answer is required.
 
 The same mailbox is on the command line, for you and for scripts:
 
