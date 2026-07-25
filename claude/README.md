@@ -4,8 +4,9 @@ The Claude-side configuration romp installs for its sessions (symlinked into
 place by `install.sh`):
 
 - **`romp-session-prompt.md`** — the extra system-prompt content every
-  romp-managed session gets: how to behave inside a fleet (worktrees, postal
-  coordination, self-identification).
+  romp-managed session gets: plain done/not-done reporting the judges can read,
+  plus the housekeeping note that pre-explains romp's artifacts (`[romp]`
+  notices, `<!-- romp-* -->` comments) as bookkeeping to ignore.
 - **`romp-postal.mcp.json`** — registers the postal MCP server
   (`postal/postal_service.py`, via the `romp-postal-service` command on PATH).
 - **`skills/romp/`** — the `/romp` skill: convert the current plain terminal

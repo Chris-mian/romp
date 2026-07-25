@@ -121,7 +121,7 @@ something**, in their words:
   clear wrap-up carries the same content in about half the words it started with.
 - Draft this copy with the `jld` skill, the way any user-facing writing is drafted.
 
-TWO deliberate exceptions, both fine, neither a licence to widen:
+THREE deliberate exceptions, all fine, none a licence to widen:
 - **The SessionStart instruction** that asks a session to report what it finished
   and what it is blocked on. That asks for ordinary self-reporting; it names no
   romp machinery and needs none.
@@ -129,9 +129,17 @@ TWO deliberate exceptions, both fine, neither a licence to widen:
   relevant to your work — ignore them -->`). It describes the markers WITHOUT
   naming romp, on purpose: naming it would explain nothing to a model that has
   never heard of it.
+- **The session prompt's housekeeping note** (`claude/romp-session-prompt.md`) —
+  the ONE place romp is named to a session, on purpose (the user 2026-07-25, after
+  a restart notice reached a session that had no idea what "the romp kernel" was).
+  It pre-explains the artifacts every session eventually sees: `[romp]` notices and
+  `<!-- romp-* -->` comments are an external session manager's bookkeeping, to be
+  ignored beyond any practical information they carry. It explains the ARTIFACTS
+  only; cards, boards, goals and the rest of the machinery stay unnamed, and every
+  injected message still speaks as the person the agent works for.
 - Also fine: the `[romp] The kernel restarted…` notices in `sdk_backend.py`. Those
   are genuinely ABOUT romp — they tell a session why its turn was cut — so they
-  name it.
+  name it (and the housekeeping note above gives the name meaning).
 
 `tests/test_injected_voice.py` renders every injected body and fails on romp
 vocabulary in the prose, so this holds without anyone remembering it.

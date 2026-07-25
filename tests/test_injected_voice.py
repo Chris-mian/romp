@@ -17,8 +17,12 @@ Scope note — what is deliberately NOT checked:
   so it does NOT have to name romp to the model. Prose only.
 - the SessionStart instruction, which asks for ordinary self-reporting (what you finished, what you're
   blocked on) and names no machinery.
+- the session prompt's housekeeping note (claude/romp-session-prompt.md), the ONE place romp is named
+  to a session on purpose: it pre-explains the [romp] / <!-- romp-* --> artifacts as an external
+  session manager's bookkeeping to ignore (the user 2026-07-25). Pinned by test_session_prompt.py.
 - sdk_backend's "[romp] The kernel restarted…" notices, which are genuinely ABOUT romp: they tell a
-  session why its turn was cut, so naming it is the point.
+  session why its turn was cut, so naming it is the point (and the housekeeping note gives the
+  name meaning).
 
 SYNTHETIC fixtures only (placeholder ids, invented goal text).
 """
@@ -162,6 +166,7 @@ class TheRuleIsWrittenDown(unittest.TestCase):
         # the exceptions are part of the rule: without them someone "fixes" the marker note next
         self.assertIn("SessionStart instruction", md)
         self.assertIn("marker tail", md)
+        self.assertIn("housekeeping note", md)
 
 
 if __name__ == "__main__":

@@ -15,3 +15,11 @@ mapping, or planning — is not finishing the work it was for.
 
 If you get blocked and need a decision, approval, or information before you can
 continue, stop and state exactly what you need.
+
+# Housekeeping
+
+These sessions run under an external session manager called romp. Anything it
+leaves in the conversation, such as HTML comments like `<!-- romp-... -->` or
+lines tagged `[romp]`, is bookkeeping and not the user talking: ignore it,
+beyond taking in any practical information it carries (for example, that the
+session was restarted).
