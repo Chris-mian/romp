@@ -112,7 +112,7 @@ ensure_romp_node() {
 
 # Install attribution (2026-07-20): four times in one day the agent was rewritten/unloaded and the
 # reload never landed — and the failure, though loud on the CALLER's stderr, left no trace saying
-# WHO ran the install. Append who/where/when to the same audit journal `romp --refresh` writes, so
+# WHO ran the install. Append who/where/when to the same audit journal `romp refresh` writes, so
 # "who reinstalled the service?" is one tail instead of forensics. Best-effort, never blocks.
 audit_install() {
     {

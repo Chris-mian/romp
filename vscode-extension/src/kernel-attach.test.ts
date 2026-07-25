@@ -62,7 +62,7 @@ test("manager acked but the kernel never serves → reason kernel-didnt-start (b
 });
 
 test("default poll budget covers a kernel RESTART, not just a clean spawn (>= 10s)", async () => {
-  // A `romp --refresh` respawn + cold boot can exceed the old ~5s budget; attaching mid-restart
+  // A `romp refresh` respawn + cold boot can exceed the old ~5s budget; attaching mid-restart
   // then toasted "couldn't bring up a kernel" while it came up seconds later (2026-07-13).
   let waited = 0;
   const res = await ensureThenAttach({

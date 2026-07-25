@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# romp — Launch Claude Code in a persistent tmux session
+# romp — direct a fleet of Claude Code sessions; the dashboard is the front door
 #
-# Usage (see `romp -h`):
-#   romp                 # session named after the launch folder
-#   romp my-task         # named session "my-task"
-#   romp -l              # open the dashboard in your browser (--launch)
-#   romp -r              # resume a past conversation (full-screen picker, by name)
-#   romp -d              # live session monitor (terminal dashboard)
-#   romp -h              # help
-# Scripting / agent entrypoints (double-dash):
-#   romp --resume <id>   # resume a specific conversation by its UUID
-#   romp ... --detach    # create the session but don't attach (prints attach cmd)
-#   romp --mail ...      # Romp Postal Service (send/inbox/agents/remote)
-# Every word WITHOUT a leading dash names a session — no bare-word commands.
+# Usage (see `romp help`):
+#   romp                     # open the dashboard in your browser
+#   romp new api             # start a session named "api" (SDK; lives in the kernel)
+#   romp new -t api          # ...as a terminal (tmux) session, attached
+#   romp resume              # resume a past conversation (full-screen picker)
+#   romp monitor             # live session monitor (terminal dashboard)
+#   romp send api "text"     # scripts/agents: message a session (also: interrupt, end)
+#   romp help                # the full command list
+# Commands are bare words, git-style; options are dashed and belong to their
+# command. A bare word that isn't a command fails loudly naming the fix
+# (`romp foo` → `romp new foo`) — nothing silently becomes a session.
 #
 # romp sessions are tagged with a tmux user option (@romp 1), so the dashboard
 # and the tmux-status hook find them by that flag — not by a naming convention.
@@ -556,9 +555,8 @@ if [[ "${1:-}" == "_color" ]]; then
     exit 0
 fi
 
-# Help. Only the flags `-h` / `--help` (not a bare `help` word), so `romp help`
-# stays free to name a session — same rule as `-d` for the dashboard.
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+# Help. The bare word plus the conventional flags.
+if [[ "${1:-}" == "help" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     # The command list is GENERATED with a presence check per command, so it can't drift from what's
     # actually installed: a command whose backing romp-* binary is missing is hidden, and adding a new
     # romp-* front end (+ a line here) makes it appear (the user 2026-06-16). "-" = built into this
@@ -569,44 +567,48 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
         printf '  %-28s %s\n' "$inv" "$*"
     }
     cat <<'EOF'
-romp — launch & manage persistent Claude Code tmux sessions
+romp — direct a fleet of Claude Code sessions; the dashboard is the front door
 
 Usage:
 EOF
-    _romp_cmd "romp -l"                    -            "Open the dashboard in your browser (prints the link too)"
-    _romp_cmd "romp"                       -            "Start a session named after the current folder"
-    _romp_cmd "romp <name>"                -            "Start a session with the given name"
-    _romp_cmd "romp -r"                    -            "Resume a past conversation (full-screen picker, by name)"
-    _romp_cmd "romp -d"                    romp-dashboard "Live session monitor (dashboard)"
-    _romp_cmd "romp -f"                    romp-feed    "Feed — terminal Working/Blocked/Completed board (mirrors the web feed)"
-    _romp_cmd "romp -j"                    romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
-    _romp_cmd "romp --on"                  romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
-    _romp_cmd "romp --refresh"             romp-manager "Restart the postal bus + all romp kernels (picks up new code — run after an update)"
-    _romp_cmd "romp --status"              romp-manager "Show manager + kernel status"
-    _romp_cmd "romp --version"             romp-version "Versions across the parts (tree, kernel, served vs built bundles)"
-    _romp_cmd "romp -h"                    -            "Show this help"
+    _romp_cmd "romp"                       -            "Open the dashboard in your browser (prints the link too)"
+    _romp_cmd "romp new <name>"            -            "Start a session (SDK; lives in the kernel, watch it on the dashboard)"
+    _romp_cmd "romp new -t <name>"         -            "Start it as a terminal (tmux) session and attach (--detach: don't attach)"
+    _romp_cmd "romp new -d <dir> <name>"   -            "Working directory for the new session (default: the current folder)"
+    _romp_cmd "romp resume [<id>]"         -            "Resume a past conversation (full-screen picker; or an exact UUID)"
+    _romp_cmd "romp monitor"               romp-dashboard "Live session monitor (terminal dashboard)"
+    _romp_cmd "romp feed"                  romp-feed    "Terminal Working/Blocked/Completed board (mirrors the web feed)"
+    _romp_cmd "romp judges"                romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
+    _romp_cmd "romp status"                romp-manager "Show manager + kernel status"
+    _romp_cmd "romp refresh"               romp-manager "Restart the postal bus + all romp kernels (picks up new code — run after an update)"
+    _romp_cmd "romp update [host]"         romp-update  "Push this machine's committed romp to attached remotes and restart them"
+    _romp_cmd "romp up"                    romp-manager "Run the kernel manager in the foreground (rare — the login service runs it)"
+    _romp_cmd "romp version"               romp-version "Versions across the parts (tree, kernel, served vs built bundles)"
+    _romp_cmd "romp help"                  -            "Show this help"
     cat <<'EOF'
 
-Any dashless word names a session — "dashboard", "help", "launch", "send" are
-all fine; sessions are tagged with the tmux @romp flag, not a naming convention.
-Rename from inside tmux (prefix-$ or :rename-session); it auto-syncs. Attach
-with `tmux a`. Quitting Claude ends the session (it's exec'd; no shell lingers).
+Session names never collide with commands: the name is always an argument, so
+`romp new update` starts a session named "update". tmux sessions are tagged
+with the @romp flag, not a naming convention — rename from inside tmux
+(prefix-$ or :rename-session; it auto-syncs) and attach with `tmux a`.
+Quitting Claude ends a terminal session (it's exec'd; no shell lingers).
 
-For scripts / agents (double-dash = not for everyday use):
+For scripts / agents:
 EOF
-    _romp_cmd "romp --resume <id>"         -            "Resume a specific conversation by its UUID"
-    _romp_cmd "romp --detach"              -            "Create the session without attaching (prints attach cmd)"
-    _romp_cmd "romp --mail ..."            romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
-    _romp_cmd "romp --url"                 -            "Print ONLY the tokened dashboard URL (for scripts; humans want \`romp -l\`)"
-    _romp_cmd "romp --update [host]"       romp-update  "Push this machine's committed romp to attached remotes and restart them"
-    _romp_cmd "romp --checkin <host>"      -            "Publish this machine to an attached hub (peer-bus check-in; --checkout withdraws)"
+    _romp_cmd "romp url"                   -            "Print ONLY the tokened dashboard URL (for scripts; humans just run \`romp\`)"
+    _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
+    _romp_cmd "romp send <session> <text>" -            "Hand a session a message (kernel API, either backend)"
+    _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
+    _romp_cmd "romp end <session>"         -            "End a session"
+    _romp_cmd "romp checkin <host>"        -            "Publish this machine to an attached hub (romp checkout withdraws)"
+    _romp_cmd "romp default-dir [PATH]"    -            "Default working dir for new sessions (no arg prints; \"\" clears)"
+    _romp_cmd "romp debug [on|off|status]" -            "Judge debug mode (rejection rows carry full input+reply)"
     exit 0
 fi
 
-# Live session monitor. Spelled `-d` (not a `dashboard` subcommand) so the word
-# "dashboard" stays free as a session name — `romp dashboard` makes a session
-# called dashboard. Matched only as the FIRST arg, like the other dispatches.
-if [[ "${1:-}" == "-d" ]]; then
+# Live session monitor, `romp monitor` — the terminal one; the browser dashboard
+# is bare `romp`. Matched only as the FIRST arg, like the other dispatches.
+if [[ "${1:-}" == "monitor" ]]; then
     # ROMP_DASHBOARD_BIN: test seam (same pattern as the kernel's
     # ROMP_FEED_DETAIL_BIN) — the sibling-dir PATH prepend above otherwise
     # shadows any mock, and the real dashboard is an infinite watch loop
@@ -619,47 +621,47 @@ fi
 
 # Feed — terminal Working/Blocked/Completed board: a lightweight, kernel-independent
 # mirror of the web feed. It re-reads the goal stores and re-implements the rollup
-# itself, so it doubles as a cross-check on the kernel/judge render path. Spelled
-# `-f` for the same reason as `-d`. Flags pass through (e.g. `romp -f --all`,
-# `romp -f --session NAME`, `romp -f --no-color`). ^C to stop.
-if [[ "${1:-}" == "-f" ]]; then
+# itself, so it doubles as a cross-check on the kernel/judge render path. Flags pass
+# through (e.g. `romp feed --all`, `romp feed --session NAME`, `romp feed --no-color`).
+# ^C to stop.
+if [[ "${1:-}" == "feed" ]]; then
     shift
     exec romp-feed "$@"
 fi
 
 # Judges health monitor — live "are the judges keeping up + are they throwing
 # exceptions" view. Independent of the kernel (re-reads the judge state files +
-# manager.log + a /version probe), same cross-check spirit as `-f`. Spelled `-j`
-# for the same reason as `-d`/`-f`. Flags pass through (`romp -j --once|--json`).
+# manager.log + a /version probe), same cross-check spirit as the feed. Flags pass
+# through (`romp judges --once|--json`).
 # ROMP_JUDGE_MONITOR_BIN is the test seam (the live TUI is an infinite loop — same
 # pattern as ROMP_DASHBOARD_BIN, so romp.bats can mock it without hanging).
-if [[ "${1:-}" == "-j" ]]; then
+if [[ "${1:-}" == "judges" ]]; then
     shift
     exec "${ROMP_JUDGE_MONITOR_BIN:-romp-judge-monitor}" "$@"
 fi
 
-# Romp Postal Service — peer messaging between romp sessions. Double-dash because
-# it's a scripting/agent entrypoint, not an everyday command (and agents usually
-# use the MCP tools). Delegates to romp-postal-service, same pattern as `-d` -> dashboard.
-if [[ "${1:-}" == "--mail" ]]; then
+# Romp Postal Service — peer messaging between romp sessions. A scripting/agent
+# entrypoint (agents usually use the MCP tools). Delegates to romp-postal-service.
+# `--mail` stays as a SILENT alias: reply footers in already-delivered mail name
+# it, and delivered text can't be re-issued.
+if [[ "${1:-}" == "mail" || "${1:-}" == "--mail" ]]; then
     shift
-    # ROMP_POSTAL_BIN: test seam — see the -d dispatch above.
+    # ROMP_POSTAL_BIN: test seam — see the monitor dispatch above.
     exec "${ROMP_POSTAL_BIN:-romp-postal-service}" "$@"
 fi
 
-# `romp --version` — what's running across the moving parts (working tree, kernel /version, bundles
+# `romp version` — what's running across the moving parts (working tree, kernel /version, bundles
 # served vs on disk). Delegates to romp-version (python); quick, non-watch, so no test seam needed.
-if [[ "${1:-}" == "--version" ]]; then
+# `--version` stays as an alias: it's the one flag every CLI answers.
+if [[ "${1:-}" == "version" || "${1:-}" == "--version" ]]; then
     exec romp-version
 fi
 
-# `romp --update [host...]` — PUSH this machine's committed romp to attached REMOTE kernels + restart them,
+# `romp update [host...]` — PUSH this machine's committed romp to attached REMOTE kernels + restart them,
 # so they run exactly the local code (the user 2026-07-04: peer-to-peer, no GitHub). No host → every
 # out-of-date attached remote. Delegates to romp-update (python), which asks the LOCAL kernel to git-push
-# local HEAD over ssh + restart. Dash-only since 2026-07-25: the bare word names a session like any other
-# (the retired-word notice below the dispatches covers the old spelling). To update THIS machine:
-# `git pull`/checkout then `romp --refresh`.
-if [[ "${1:-}" == "--update" ]]; then
+# local HEAD over ssh + restart. To update THIS machine: `git pull`/checkout then `romp refresh`.
+if [[ "${1:-}" == "update" ]]; then
     shift
     exec romp-update "$@"
 fi
@@ -672,28 +674,28 @@ _romp_token() {
     cat "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/serve-token" 2>/dev/null || true
 }
 
-# `romp --url` — print the tokened dashboard URL, nothing else (scripting/piping; `romp -l` is the
+# `romp url` — print the tokened dashboard URL, nothing else (scripting/piping; bare `romp` is the
 # human entry point). The first open seeds a year-long cookie; after that the bare URL works.
-if [[ "${1:-}" == "--url" ]]; then
+# `--url` stays as a silent alias (agent-facing text names it).
+if [[ "${1:-}" == "url" || "${1:-}" == "--url" ]]; then
     _tok="$(_romp_token)"
     if [[ -z "$_tok" ]]; then
-        echo "romp --url: no serve token yet (start romp first — the kernel mints it)" >&2; exit 1
+        echo "romp url: no serve token yet (start romp first — the kernel mints it)" >&2; exit 1
     fi
     echo "http://127.0.0.1:${ROMP_KERNEL_PORT:-29855}/?token=$_tok"
     exit 0
 fi
 
-# `romp -l` / `--launch` — THE first-run entry point (the user 2026-07-22, who wanted one command
-# instead of copying a token by hand). Jupyter's flow: print the tokened URL, then TRY to open a
-# browser on it. Both, always — the print is the contract (it always works, and you can copy it), the
-# open is the convenience (it may not be possible). On a remote/headless box (ssh, no DISPLAY, no
-# opener) it doesn't pretend: it prints the URL plus the two ways to actually reach it from your
-# laptop. Dash-only since 2026-07-25 (`romp launch` names a session; the bare `open` alias is gone).
-if [[ "${1:-}" == "-l" || "${1:-}" == "--launch" ]]; then
+# Bare `romp` — THE front door (the user 2026-07-25: the shortest command does the most common
+# thing). Jupyter's flow: print the tokened URL, then TRY to open a browser on it. Both, always —
+# the print is the contract (it always works, and you can copy it), the open is the convenience
+# (it may not be possible). On a remote/headless box (ssh, no DISPLAY, no opener) it doesn't
+# pretend: it prints the URL plus the two ways to actually reach it from your laptop.
+if [[ $# -eq 0 ]]; then
     _tok="$(_romp_token)"
     _kport="${ROMP_KERNEL_PORT:-29855}"
     if [[ -z "$_tok" ]]; then
-        echo "romp -l: no serve token yet; start romp first (\`romp --on\`), then re-run." >&2
+        echo "romp: no serve token yet; the kernel mints it. Is romp running? (the login service starts it; \`romp up\` runs it by hand)" >&2
         exit 1
     fi
     _url="http://127.0.0.1:$_kport/?token=$_tok"
@@ -738,42 +740,42 @@ if [[ "${1:-}" == "-l" || "${1:-}" == "--launch" ]]; then
     exit 0
 fi
 
-# `romp --checkin <host>` / `romp --checkout <host>` — publish THIS machine to an attached hub over
+# `romp checkin <host>` / `romp checkout <host>` — publish THIS machine to an attached hub over
 # our own outbound ssh (peer-bus check-in, plans/postal-peer-buses.md stage 3), or withdraw it. The
 # plumbing behind the network popover's keep-connected checkbox; the host must be attached first.
-# Dash-only since 2026-07-25: the bare words name sessions like any other.
-if [[ "${1:-}" =~ ^--(checkin|checkout)$ ]]; then
-    _verb="${1#--}"; shift
+if [[ "${1:-}" =~ ^(checkin|checkout)$ ]]; then
+    _verb="$1"; shift
     _host="${1:-}"
-    if [[ -z "$_host" ]]; then echo "usage: romp --$_verb <host>" >&2; exit 2; fi
+    if [[ -z "$_host" ]]; then echo "usage: romp $_verb <host>" >&2; exit 2; fi
     _kport="${ROMP_KERNEL_PORT:-29855}"
     _on="false"; [[ "$_verb" == "checkin" ]] && _on="true"
     _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/tunnels/checkin" \
                   -H "X-Romp-Token: $(_romp_token)" \
                   -H 'Content-Type: application/json' -d "{\"host\": \"$_host\", \"on\": $_on}")" \
-        || { echo "romp --$_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+        || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
-        echo "romp --$_verb: ok ($_host)"
+        echo "romp $_verb: ok ($_host)"
         exit 0
     fi
-    echo "romp --$_verb: kernel refused: $_resp" >&2
+    echo "romp $_verb: kernel refused: $_resp" >&2
     exit 1
 fi
 
-# `romp --send|--interrupt|--end <session> [text]` — headless session control through the kernel HTTP
+# `romp send|interrupt|end <session> [text]` — headless session control through the kernel HTTP
 # API (the kernel owns the transport and routes to whichever backend drives the session, tmux or SDK).
 # Before this, interrupt/end existed only as browser WS ops: a session could be FED headlessly but
-# never STOPPED (2026-07-05). Dash-only since 2026-07-25: the bare words name sessions like any other.
-# Exit 0 only when the kernel acked ok — a dead kernel or unknown session fails LOUDLY, never silently.
-if [[ "${1:-}" =~ ^--(send|interrupt|end)$ ]]; then
+# never STOPPED (2026-07-05). The dashed spellings stay as SILENT aliases (agent-facing text
+# delivered before 2026-07-25 names them). Exit 0 only when the kernel acked ok — a dead kernel or
+# unknown session fails LOUDLY, never silently.
+if [[ "${1:-}" =~ ^(--)?(send|interrupt|end)$ ]]; then
     _verb="${1#--}"; shift
     _who="${1:-}"
-    if [[ -z "$_who" ]]; then echo "usage: romp --$_verb <session> $([[ "$_verb" == send ]] && echo '<text>')" >&2; exit 2; fi
+    if [[ -z "$_who" ]]; then echo "usage: romp $_verb <session> $([[ "$_verb" == send ]] && echo '<text>')" >&2; exit 2; fi
     shift
     _kport="${ROMP_KERNEL_PORT:-29855}"
     if [[ "$_verb" == "send" ]]; then
         _text="$*"
-        if [[ -z "$_text" ]]; then echo "usage: romp --send <session> <text>" >&2; exit 2; fi
+        if [[ -z "$_text" ]]; then echo "usage: romp send <session> <text>" >&2; exit 2; fi
         _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' "$_who" "$_text")"
     else
         _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_who")"
@@ -781,20 +783,20 @@ if [[ "${1:-}" =~ ^--(send|interrupt|end)$ ]]; then
     _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/$_verb" \
                   -H "X-Romp-Token: $(_romp_token)" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
-        || { echo "romp --$_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+        || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
-        echo "romp --$_verb: ok ($_who)"
+        echo "romp $_verb: ok ($_who)"
         exit 0
     fi
-    echo "romp --$_verb: kernel refused: $_resp" >&2
+    echo "romp $_verb: kernel refused: $_resp" >&2
     exit 1
 fi
 
-# `romp --default-dir [PATH]` — the default working directory for NEW sessions (what the picker prefills).
+# `romp default-dir [PATH]` — the default working directory for NEW sessions (what the picker prefills).
 # Persisted to ~/.config/romp/default-dir, read FIRST by the kernel's _default_create_dir() (before the
 # install/serve default), so the gear dialog and this CLI share one source of truth. No arg prints the
 # current value; an empty arg ("") clears it (revert to the install/serve default). Read live — no restart.
-if [[ "${1:-}" == "--default-dir" ]]; then
+if [[ "${1:-}" == "default-dir" ]]; then
     _dd_file="$HOME/.config/romp/default-dir"
     if [[ $# -lt 2 ]]; then
         if [[ -s "$_dd_file" ]]; then cat "$_dd_file"; else echo "(unset — using the install/serve default)"; fi
@@ -805,7 +807,7 @@ if [[ "${1:-}" == "--default-dir" ]]; then
         exit 0
     fi
     _dd="${2/#\~/$HOME}"
-    _dd="$(cd "$_dd" 2>/dev/null && pwd -P)" || { echo "romp --default-dir: not a directory: $2" >&2; exit 1; }
+    _dd="$(cd "$_dd" 2>/dev/null && pwd -P)" || { echo "romp default-dir: not a directory: $2" >&2; exit 1; }
     mkdir -p "$(dirname "$_dd_file")"
     printf '%s\n' "$_dd" > "$_dd_file"
     echo "default new-session dir set to: $_dd"
@@ -818,12 +820,12 @@ fi
 # access rides tailnet device auth + TLS rather than a token in a URL.
 # See docs/guide/remote-access.md.
 
-# ── romp --debug [on|off|status]: judge debug mode ──────────────────────────────
+# ── romp debug [on|off|status]: judge debug mode ────────────────────────────────
 # When on, every judge-failure row in judge-errors.jsonl carries the failing call's
 # full input + reply, and the feed joins those rows onto each card: the card modal
 # grows a "Warnings (debug)" section showing every rejection as it happens (the user
 # 2026-07-09). Read live by the kernel + judge (mtime-cached) — no restart needed.
-if [[ "${1:-}" == "--debug" ]]; then
+if [[ "${1:-}" == "debug" ]]; then
     shift
     _dbg_conf="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/debug-mode.json"
     case "${1:-status}" in
@@ -841,25 +843,24 @@ if [[ "${1:-}" == "--debug" ]]; then
                 echo "debug mode: off"
             fi ;;
         *)
-            echo "usage: romp --debug [on|off|status]" >&2; exit 2 ;;
+            echo "usage: romp debug [on|off|status]" >&2; exit 2 ;;
     esac
     exit 0
 fi
 
-# Kernel-MANAGER control flags. The manager (bin/romp-manager) is the thin, durable supervisor you
-# launch yourself, à la `jupyter lab`: it owns + supervises the romp kernel(s); front ends (VS Code,
-# the web dashboard, Obsidian) ATTACH rather than spawn. `romp --on` is PURELY "start the manager" — the
-# actions are their OWN flags, none hidden under `romp --on` (the user 2026-06-13):
-#   romp --on        run the manager in the foreground (Ctrl+C stops it AND its kernels)
-#   romp --refresh   restart EVERYTHING — the postal bus AND every kernel (picks up new code after an update)
-#   romp --status    manager + kernel status
-# No `romp --down`: `romp --on` is foreground, so Ctrl+C stops it (the user 2026-06-13). The manager still
-# honors SIGINT/SIGTERM + a direct /stop for that path — there's just no romp flag for it.
-# GNU-style long flags, NOT bare words, so every bare argument stays free to name a session (the user
-# 2026-06-16). ROMP_MANAGER_BIN is the test seam (same pattern as ROMP_DASHBOARD_BIN / ROMP_POSTAL_BIN).
+# Kernel-MANAGER commands. The manager (bin/romp-manager) is the thin, durable supervisor — normally
+# the login service runs it (romp-service; installed by install.sh), and front ends (VS Code, the web
+# dashboard, Obsidian) ATTACH rather than spawn. `romp up` is PURELY "run the manager, foreground" —
+# the actions are their OWN commands, none hidden under it (the user 2026-06-13):
+#   romp up          run the manager in the foreground (Ctrl+C stops it AND its kernels; rare — the login service owns this)
+#   romp refresh     restart EVERYTHING — the postal bus AND every kernel (picks up new code after an update)
+#   romp status      manager + kernel status
+# No `romp down`: `romp up` is foreground, so Ctrl+C stops it (the user 2026-06-13). The manager still
+# honors SIGINT/SIGTERM + a direct /stop for that path — there's just no romp command for it.
+# ROMP_MANAGER_BIN is the test seam (same pattern as ROMP_DASHBOARD_BIN / ROMP_POSTAL_BIN).
 case "${1:-}" in
-    --on)      exec "${ROMP_MANAGER_BIN:-romp-manager}" up ;;
-    --refresh) # restart EVERYTHING (the user 2026-06-29): the postal bus too, not just the kernels — the bus
+    up)        exec "${ROMP_MANAGER_BIN:-romp-manager}" up ;;
+    refresh)   # restart EVERYTHING (the user 2026-06-29): the postal bus too, not just the kernels — the bus
                # is a separate long-lived singleton the manager doesn't own, so a kernel-only refresh left it
                # serving stale code. Bounce the bus first (best-effort), then exec the kernel restart.
                #
@@ -890,10 +891,10 @@ PYEOF
                } 2>/dev/null || true
                "${ROMP_POSTAL_BIN:-romp-postal-service}" restart >/dev/null 2>&1 || true
                # Deploys defer to the next quiet window (no SDK turn in flight) so a peer's
-               # refresh never cuts another session's turn; `romp --refresh --now` forces the
+               # refresh never cuts another session's turn; `romp refresh --now` forces the
                # old immediate bounce (the manager coalesces everything queued meanwhile).
                exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all "${2:-}" ;;
-    --status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
+    status)    exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
 esac
 
 # NB: there's no `romp rename` / `romp a` command. Rename from inside tmux
@@ -901,79 +902,171 @@ esac
 # `romp _renamed` (above), which resyncs the picker map + Claude's pill. Attach
 # with plain `tmux a`.
 
-# --- Retired bare commands (2026-07-25) ---
-# These eight words used to dispatch commands, which silently broke the CLI's one
-# rule: `romp <word>` with no leading dash names a session (the user 2026-07-24).
-# They are session names now. Because fingers and old scripts still type the old
-# spellings, say where each command went: with no other args, one stderr line and
-# then proceed per the rule; with args (an old command invocation, never a valid
-# session launch), fail loudly naming the new spelling. Permanent and exact-match,
-# not a deprecation window. `_renamed`/`_color` stay reserved: internal tmux-hook
-# entrypoints (a live tmux server holds the old hook string until it restarts).
-_romp_retired_hint() {
+# --- Retired spellings (2026-07-25): commands are bare words now ---
+# Two grammar flips inside one day: PR #20 made every dashless word a session
+# name (commands moved behind dashes); the user then flipped the priority — the
+# most-typed things deserve the bare words, git-style, and session names moved
+# behind `romp new` where they can never collide with a command. The dashed
+# command spellings from that brief era (and the old short view flags) fail
+# loudly naming today's word. Exception, handled in the dispatches above:
+# agent-facing spellings (--mail/--url/--send/--interrupt/--end/--resume and
+# --version) keep working silently — reply footers in already-delivered postal
+# mail name them, and delivered text can't be re-issued. `_renamed`/`_color`
+# stay reserved: internal tmux-hook entrypoints (a live tmux server holds the
+# old hook string until it restarts).
+_romp_retired_flag_hint() {
     case "$1" in
-        launch|open) echo "the dashboard is now: romp -l" ;;
-        update)      echo "the remote update is now: romp --update [host]" ;;
-        checkin)     echo "the check-in is now: romp --checkin <host>" ;;
-        checkout)    echo "the checkout is now: romp --checkout <host>" ;;
-        send)        echo "the command is now: romp --send <session> <text>" ;;
-        interrupt)   echo "the command is now: romp --interrupt <session>" ;;
-        end)         echo "the command is now: romp --end <session>" ;;
-        *)           return 1 ;;
+        -l|--launch)   echo "the dashboard is now just: romp" ;;
+        -d)            echo "the terminal monitor is now: romp monitor (-d is romp new's directory option)" ;;
+        -f)            echo "the feed is now: romp feed" ;;
+        -j)            echo "the judge monitor is now: romp judges" ;;
+        -r)            echo "the resume picker is now: romp resume" ;;
+        --on)          echo "the foreground manager is now: romp up" ;;
+        --refresh)     echo "the fleet restart is now: romp refresh" ;;
+        --status)      echo "the status report is now: romp status" ;;
+        --update)      echo "the remote update is now: romp update [host]" ;;
+        --checkin)     echo "the check-in is now: romp checkin <host>" ;;
+        --checkout)    echo "the checkout is now: romp checkout <host>" ;;
+        --default-dir) echo "the setting is now: romp default-dir [PATH]" ;;
+        --debug)       echo "debug mode is now: romp debug [on|off|status]" ;;
+        *)             return 1 ;;
     esac
 }
-if _retired_hint="$(_romp_retired_hint "${1:-}")"; then
-    if [[ $# -gt 1 ]]; then
-        echo "romp: \"$1\" is a session name now; $_retired_hint" >&2
-        exit 2
-    fi
-    echo "romp: starting a session named \"$1\"; $_retired_hint" >&2
+if _retired="$(_romp_retired_flag_hint "${1:-}")"; then
+    echo "romp: \"$1\" was retired; $_retired" >&2
+    exit 2
 fi
 
-# --- Argument parsing ---
-# Optional positional session name; an optional resume directive (-r for humans,
-# --resume for scripts/agents) optionally followed by a session id (UUID) to
-# resume that specific conversation; and --detach to create the session without
-# attaching (prints how to attach instead). NB: --detach has no `-d` short form
-# — `-d` is the dashboard (see dispatch above).
+# --- new / resume: the two commands that reach the launcher below ---
+# Everything else either dispatched above or is an error here: an unknown bare
+# word is NEVER silently a session (nor a typo'd command doing nothing) — it
+# fails naming both readings.
 session_arg=""
 resume=false
 resume_id=""
 detach=false
+dir_arg=""
+use_tmux=false
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -r|--resume)
+case "${1:-}" in
+    new)
+        shift
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -t|--tmux) use_tmux=true; shift ;;
+                --detach)  detach=true; shift ;;
+                -d)        shift
+                           if [[ $# -eq 0 || "$1" == -* ]]; then
+                               echo "usage: romp new [-t] [-d <dir>] <name>" >&2; exit 2
+                           fi
+                           dir_arg="$1"; shift ;;
+                -*)        echo "romp new: unknown option: $1" >&2; exit 2 ;;
+                *)         if [[ -n "$session_arg" ]]; then
+                               echo "usage: romp new [-t] [-d <dir>] <name>" >&2; exit 2
+                           fi
+                           session_arg="$1"; shift ;;
+            esac
+        done
+        if [[ -z "$session_arg" ]]; then
+            echo "usage: romp new [-t] [-d <dir>] <name>" >&2; exit 2
+        fi
+        ;;
+    resume|--resume)
+        # `romp resume` — our full-screen picker; `romp resume <id>` — an exact
+        # conversation UUID (scripts/agents; also the postal revive path).
+        # --name pins the session name (the kernel's reviver passes the recorded
+        # one; without it an explicit-id resume is named after the folder).
+        shift
+        resume=true
+        if [[ $# -gt 0 && "$1" != -* ]]; then
+            resume_id="$1"; shift
+        fi
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --detach) detach=true; shift ;;
+                --name)   shift
+                          if [[ $# -eq 0 || "$1" == -* ]]; then
+                              echo "usage: romp resume [<conversation-id>] [--name <name>] [--detach]" >&2; exit 2
+                          fi
+                          session_arg="$1"; shift ;;
+                *)        echo "usage: romp resume [<conversation-id>] [--name <name>] [--detach]" >&2; exit 2 ;;
+            esac
+        done
+        ;;
+    --detach)
+        # Old-kernel compat shim (SILENT): a kernel on pre-round-3 code spawns
+        # dashboard tmux sessions as `romp --detach <name>` (and its spawn path
+        # swallows stderr, so a loud error here would fail INVISIBLY). Keep the
+        # shape working until every kernel restarts onto new code.
+        if [[ -n "${2:-}" && "${2:-}" != -* && $# -eq 2 ]]; then
+            use_tmux=true; detach=true; session_arg="$2"; shift 2
+        else
+            echo "romp: \"--detach\" is an option of new/resume now: romp new -t --detach <name>" >&2
+            exit 2
+        fi
+        ;;
+    -*)
+        echo "romp: unknown option: $1" >&2
+        exit 2
+        ;;
+    *)
+        # Old-kernel compat shim (SILENT), before the unknown-command error: the
+        # pre-round-3 reviver runs `romp <name> --resume <sid> --detach` — a bare
+        # positional name. Only that exact shape passes; anything else without
+        # `--resume` in its arguments is an unknown command.
+        if [[ " ${*:2} " == *" --resume "* ]]; then
+            session_arg="$1"; shift
             resume=true
-            shift
-            # An explicit session id may follow the resume directive.
-            if [[ $# -gt 0 && "$1" != -* ]]; then
-                resume_id="$1"
-                shift
-            fi
-            ;;
-        --detach)
-            detach=true
-            shift
-            ;;
-        -*)
-            echo "Unknown option: $1" >&2
-            exit 1
-            ;;
-        *)
-            if [[ -z "$session_arg" ]]; then
-                session_arg="$1"
-                shift
-            else
-                echo "Unexpected argument: $1" >&2
-                exit 1
-            fi
-            ;;
-    esac
-done
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --resume) shift
+                              if [[ $# -gt 0 && "$1" != -* ]]; then resume_id="$1"; shift; fi ;;
+                    --detach) detach=true; shift ;;
+                    *)        echo "usage: romp resume [<conversation-id>] [--name <name>] [--detach]" >&2; exit 2 ;;
+                esac
+            done
+        else
+            echo "romp: unknown command \"$1\". To start a session named \"$1\": romp new $1   (commands: romp help)" >&2
+            exit 2
+        fi
+        ;;
+esac
+
+# --- `romp new` default: an SDK session, created in the kernel ---
+# The recommended backend (docs/sdk-backend.md): the session runs inside the
+# kernel and is driven from the dashboard / VS Code, so there is no terminal to
+# attach — create it over the kernel API and say where to look. `-t` is the
+# terminal variant: the tmux launcher below, attached, exactly the old flow.
+# No silent fallback in either direction: a dead kernel or an unavailable SDK
+# backend fails loudly naming both fixes (start romp, or -t).
+if [[ -n "$session_arg" ]] && ! $use_tmux && ! $resume; then
+    _tok="$(_romp_token)"
+    _kport="${ROMP_KERNEL_PORT:-29855}"
+    _dir="${dir_arg:-$PWD}"
+    if [[ -z "$_tok" ]]; then
+        echo "romp new: the kernel isn't running (no serve token). Start romp (the login service, or \`romp up\`), or use \`romp new -t $session_arg\` for a terminal session." >&2
+        exit 1
+    fi
+    _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "dir": sys.argv[2], "backend": "sdk"}))' "$session_arg" "$_dir")"
+    _resp="$(curl -sf -m 15 -X POST "http://127.0.0.1:$_kport/new" \
+                  -H "X-Romp-Token: $_tok" \
+                  -H 'Content-Type: application/json' -d "$_payload")" \
+        || { echo "romp new: kernel not reachable on :$_kport (is romp running?). \`romp new -t $session_arg\` starts a terminal session without it." >&2; exit 1; }
+    if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
+        if [[ "$_resp" == *'"existing"'* ]]; then
+            echo "romp new: \"$session_arg\" is already running; see the dashboard (romp)"
+        else
+            echo "romp new: started \"$session_arg\" (SDK session, working in $_dir)"
+            echo "romp new: watch it on the dashboard: romp"
+        fi
+        exit 0
+    fi
+    echo "romp new: kernel refused: $_resp" >&2
+    exit 1
+fi
 
 # --- Custom name-based resume picker ----------------------------------------
-# `romp -r` (without an explicit session id) shows OUR full-screen picker of
+# `romp resume` (without an explicit session id) shows OUR full-screen picker of
 # resumable named sessions instead of Claude's auto-summary picker. Picking one
 # sets the conversation id to resume, the session name to reuse, and the
 # directory to resume it in. Cancelling (Esc / q / Ctrl-C) or having nothing to
@@ -991,14 +1084,15 @@ fi
 # symlinked launch dir (e.g. ~/Vault → ~/GitRepos/Vault) would make every
 # path-munging consumer (summary backfill, digest) look in a dir that doesn't
 # exist — no summaries for that session. `pwd -P` gives the real path.
-work_dir="${picked_dir:-$PWD}"
+# Precedence: an explicit `-d` wins, then the picker's recorded dir, then here.
+work_dir="${dir_arg:-${picked_dir:-$PWD}}"
 work_dir="$(cd "$work_dir" 2>/dev/null && pwd -P || printf '%s' "$work_dir")"
 
 # Never launch a session in $HOME. A romp session indexes its working-directory
 # tree, and $HOME is the one cwd whose direct children include the macOS
 # TCC-protected Downloads/Desktop/Documents — so indexing them makes Claude
 # (node) trip a stream of spurious "wants to access your Downloads" OS prompts.
-# Redirect a $HOME launch (a bare `romp` from home, OR resuming a session that
+# Redirect a $HOME launch (`romp new` run from home, OR resuming a session that
 # was recorded there) to ROMPHOME, which defaults to the romp install dir.
 # Compare physical-to-physical: on macOS $HOME can sit under a symlinked mount
 # (e.g. a test $HOME under /var → /private/var), so `pwd -P` both sides.
@@ -1247,8 +1341,8 @@ fi
 # so quitting it ends the session. Signal the caller to close the terminal tab:
 # the romp zsh wrapper turns exit code 77 into a shell `exit`, so ghostty closes
 # the tab. Detaching (prefix-d) leaves the session alive, so this is skipped and
-# the tab stays open. Opt-in via ROMP_CLOSE_ON_END so a bare `romp` (or the test
-# harness) without the wrapper is unaffected.
+# the tab stays open. Opt-in via ROMP_CLOSE_ON_END so a plain `romp new -t` (or
+# the test harness) without the wrapper is unaffected.
 if [[ -n "${ROMP_CLOSE_ON_END:-}" ]] && ! $detach && [[ -z "${TMUX:-}" ]] \
    && ! tmux has-session -t "=$name" 2>/dev/null; then
     exit 77

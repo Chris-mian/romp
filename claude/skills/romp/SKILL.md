@@ -37,9 +37,9 @@ continuation, then the user exits the original window.
 
    ```bash
    if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
-       romp --resume "$CLAUDE_CODE_SESSION_ID" --detach
+       romp resume "$CLAUDE_CODE_SESSION_ID" --detach
    else
-       romp --resume --detach   # fall back to the picker if the id isn't set
+       romp resume --detach   # fall back to the picker if the id isn't set
    fi
    ```
 

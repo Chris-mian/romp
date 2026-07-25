@@ -26,7 +26,7 @@
 # clients remain.
 #
 # Delivery has two paths. The backstop is the Stop hook: a recipient drains its
-# mailbox at the next turn boundary (also check_inbox / `romp --mail inbox`). On
+# mailbox at the next turn boundary (also check_inbox / `romp mail inbox`). On
 # top of that, push-on-deliver (see _push) auto-wakes an IDLE local session by
 # typing the mail straight into its prompt and submitting it — so a session
 # sitting idle reacts immediately instead of only at its next turn. The push is
@@ -124,7 +124,7 @@ ORPHAN_GRACE = int(os.environ.get("ROMP_POSTAL_ORPHAN_GRACE", "900"))  # bounce 
 STUCK_GRACE = int(os.environ.get("ROMP_POSTAL_STUCK_GRACE", "600"))  # warn the SENDER when a LIVE-but-idle recipient still hasn't read after N s
 
 REPLY_HINT = ('To reply (only if you have something substantive to add, not just to '
-              'acknowledge): romp --mail send --kind delegate|coordinate|question <name> "<text>" — '
+              'acknowledge): romp mail send --kind delegate|coordinate|question <name> "<text>" — '
               'put the whole point in your first sentence.')
 
 # The bus no longer shells tmux: session enumeration, the working-note, mail delivery/wake, the resume-picker
@@ -218,7 +218,7 @@ def _tl_append(fname, obj):
 
 def deliver(to_id, from_name, from_id, body, park=False, kind=""):
     # park=True marks a HANDOFF parked for a session that's currently dead. The
-    # maildir is keyed by the session UUID (which `romp --resume` reuses), so the
+    # maildir is keyed by the session UUID (which `romp resume` reuses), so the
     # message simply waits on disk until that session is revived — delivered then,
     # ignored forever if it never returns. Parked mail is also exempt from the
     # orphan sweep (see _sweep_orphans), so it persists indefinitely.
@@ -802,7 +802,7 @@ def format_push(msgs):
         if m.get("kind"):
             out.append("<!-- romp-msg-kind: %s -->" % m["kind"])   # sender-declared kind, read by the courier
         out.append(bar)
-    out.append('(to reply, only if substantive: romp --mail send --kind delegate|coordinate|question %s "...")'
+    out.append('(to reply, only if substantive: romp mail send --kind delegate|coordinate|question %s "...")'
                % msgs[0].get("from", ""))
     return "\n".join(out)
 
@@ -1057,7 +1057,7 @@ def _log(msg):
 
 # ── code-staleness self-restart ─────────────────────────────────────────────────────────────────────────
 # The bus is a long-lived SINGLETON keyed on its port: `ensure` is a no-op while the old process answers, and
-# `romp --refresh` restarts the KERNEL, not the bus. So a bus started before a code change keeps serving STALE
+# `romp refresh` restarts the KERNEL, not the bus. So a bus started before a code change keeps serving STALE
 # in-memory code indefinitely — which silently stranded mail to SDK sessions: a bus from before the "deliver
 # via the kernel, not by pasting into a tmux pane" refactor literally couldn't reach a pane-less SDK recipient,
 # and the message sat unread forever with no bounce (the user 2026-06-29). Guard: the bus fingerprints its own
@@ -1736,24 +1736,24 @@ def _seed_peers_from_kernel():
 
 def looks_remote():
     # Heuristic: this shell reached the machine over SSH. Used only for advisory
-    # nudges and `romp --mail remote` role detection — never to change delivery.
+    # nudges and `romp mail remote` role detection — never to change delivery.
     return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
 
 def _unreachable_hint():
     if is_client_only() or looks_remote():
-        return "can't reach your laptop's Romp Postal Service bus — is the SSH tunnel up? run: romp --mail remote"
+        return "can't reach your laptop's Romp Postal Service bus — is the SSH tunnel up? run: romp mail remote"
     return "can't reach the Romp Postal Service bus (see ~/.local/state/romp/postal/server.log)"
 
 def _remote_nudge():
     # On a remote machine not yet pointed at the laptop's bus, the local bus is
-    # isolated; nudge toward `romp --mail remote` (advisory, on stderr only).
+    # isolated; nudge toward `romp mail remote` (advisory, on stderr only).
     # Peer mode (the default): every machine runs its own bus and peering carries
     # cross-host mail, so there is no laptop bus to point at — the nudge is moot.
     if peers_on():
         return
     if looks_remote() and not is_client_only():
         sys.stderr.write("[romp mail] you look like a remote machine on a local-only "
-                         "Romp Postal Service — run `romp --mail remote` to reach your laptop's sessions.\n")
+                         "Romp Postal Service — run `romp mail remote` to reach your laptop's sessions.\n")
 
 def ensure():
     """Make sure the bus is reachable. On a designated client-only host (remote),
@@ -1773,7 +1773,7 @@ def ensure():
     return ping()
 
 def restart():
-    """Force a FRESH bus process so 'restart everything' (`romp --refresh`) actually includes the bus, not
+    """Force a FRESH bus process so 'restart everything' (`romp refresh`) actually includes the bus, not
     just the kernels (the user 2026-06-29). The bus is a port-keyed singleton, so `ensure` alone is a no-op
     while the old one answers; SIGTERM the running pid, wait for the port to free, then re-ensure. Pending
     mail lives in the maildir, so the fresh bus just re-delivers it. On a client-only host the real bus is
@@ -1985,7 +1985,7 @@ def cli_send(argv):
         if kind not in ("delegate", "coordinate", "question"):
             sys.stderr.write("[romp mail] --kind must be delegate, coordinate, or question\n"); return 2
     if len(argv) < 2:
-        sys.stderr.write('usage: romp --mail send [--kind delegate|coordinate|question] <session> <text>\n'); return 2
+        sys.stderr.write('usage: romp mail send [--kind delegate|coordinate|question] <session> <text>\n'); return 2
     to, body = argv[0], " ".join(argv[1:])
     if not body.strip():
         sys.stderr.write("[romp mail] refusing to send an empty message\n"); return 2
@@ -2050,7 +2050,7 @@ def cli_sent():
 
 def cli_recall(argv):
     if not argv:
-        sys.stderr.write("usage: romp --mail recall <to> [id]\n"); return 2
+        sys.stderr.write("usage: romp mail recall <to> [id]\n"); return 2
     to, rid = argv[0], (argv[1] if len(argv) > 1 else "")
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
@@ -2126,7 +2126,7 @@ def setup_remote(force=False):
         print("This looks like your Romp Postal Service host (no SSH session detected);")
         print("the bus runs here automatically, so there's nothing to set up.")
         print("")
-        print("On a REMOTE machine, run `romp --mail remote` there instead.")
+        print("On a REMOTE machine, run `romp mail remote` there instead.")
         print("To make every SSH hop auto-tunnel, add to your ~/.ssh/config:")
         print("    Host <remote-host>      # or: Host *")
         print("        RemoteForward %d 127.0.0.1:%d" % (PORT, PORT))
@@ -2164,18 +2164,18 @@ def setup_remote(force=False):
             print("\nConnected! You can message now:")
             return cli_agents()
         time.sleep(0.5)
-    print("\nStill not connected. Open the tunnel above, then run `romp --mail remote` again.")
+    print("\nStill not connected. Open the tunnel above, then run `romp mail remote` again.")
     return 1
 
 USAGE = """romp-postal-service — the Romp Postal Service
-  romp --mail send <session> <text>   message a live romp session
-  romp --mail inbox                   read + clear messages sent to this session
-  romp --mail peek                    show messages without clearing them
-  romp --mail agents                  list romp sessions (with branch + what they're working on)
-  romp --mail working <text>          publish what you're working on (empty to clear)
-  romp --mail sent                    show your sent messages + whether each was read
-  romp --mail recall <to> [id]        unsend an unread message you sent to <to>
-  romp --mail remote                  connect this (remote) machine to your laptop's bus
+  romp mail send <session> <text>   message a live romp session
+  romp mail inbox                   read + clear messages sent to this session
+  romp mail peek                    show messages without clearing them
+  romp mail agents                  list romp sessions (with branch + what they're working on)
+  romp mail working <text>          publish what you're working on (empty to clear)
+  romp mail sent                    show your sent messages + whether each was read
+  romp mail recall <to> [id]        unsend an unread message you sent to <to>
+  romp mail remote                  connect this (remote) machine to your laptop's bus
 (internal: serve | ensure | restart | mcp | drain --id <id> | wake --id <id> | picker-check --name <n> --id <id>)"""
 
 def main(argv):
@@ -2184,7 +2184,7 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd == "serve":   return serve()
     if cmd == "ensure":  return 0 if ensure() else 1
-    if cmd == "restart": return 0 if restart() else 1   # `romp --refresh` bounces the bus too, not just the kernels
+    if cmd == "restart": return 0 if restart() else 1   # `romp refresh` bounces the bus too, not just the kernels
     if cmd == "mcp":     return mcp()
     if cmd == "remote":  return setup_remote(force=("--force" in rest or "-f" in rest))
     if cmd == "drain":   return cli_drain(rest)

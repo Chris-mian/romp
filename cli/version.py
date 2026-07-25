@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""romp-version — what version of romp is running, across all the moving parts. `romp --version`.
+"""romp-version — what version of romp is running, across all the moving parts. `romp version`.
 
 Three things drift independently and a stale one is the usual cause of "the UI doesn't match the code":
   - the WORKING TREE (the .py/.js sources the kernel loads straight from bin/ and vscode-extension/),
   - the RUNNING KERNEL (what it last (re)started from — reported by its /version endpoint),
   - the BUILT BUNDLES on disk vs the bundle the kernel is actually serving.
-This prints all three so you can see at a glance whether a `romp --refresh` (or a browser hard-reload) is
+This prints all three so you can see at a glance whether a `romp refresh` (or a browser hard-reload) is
 owed — instead of reading restart logs. No filesystem paths are printed (privacy).
 """
 import json
@@ -77,9 +77,9 @@ def report():
                      % (k.get("kernel_sha") or "?", k.get("pid"), up // 60, up % 60,
                         k.get("dist_ver"), k.get("url")))
     elif kind == "stale":
-        lines.append("kernel   running at %s but predates /version — `romp --refresh` to populate" % k)
+        lines.append("kernel   running at %s but predates /version — `romp refresh` to populate" % k)
     else:
-        lines.append("kernel   not reachable — is the manager up? (`romp --on` / `romp --status`)")
+        lines.append("kernel   not reachable — is the manager up? (`romp up` / `romp status`)")
     served = (k.get("bundles") if kind == "version" else {}) or {}
     disk = _disk_bundles()
     lines.append("bundles  (on disk%s):" % (" / served" if served else ""))
@@ -87,7 +87,7 @@ def report():
         s = served.get(name)
         flag = ""
         if s is not None and s != mt:
-            flag = "  ⚠ disk newer than served — `romp --refresh`"
+            flag = "  ⚠ disk newer than served — `romp refresh`"
         lines.append("  %-14s %s%s" % (name, mt, flag))
     return "\n".join(lines)
 

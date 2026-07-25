@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""romp-judge-monitor — a live terminal health view of the romp judges (`romp -j`).
+"""romp-judge-monitor — a live terminal health view of the romp judges (`romp judges`).
 
 Answers two questions at a glance, no log-spelunking:
   KEEPING UP  — is the judge producer processing units promptly, or is a backlog
@@ -21,10 +21,10 @@ recorded NOWHERE, so this view can't show them yet — only producer-level crash
 Closing that needs a small instrumentation change in romp-judge.
 
 Usage:
-  romp -j            live TUI, refreshes every few seconds (^C to quit)
-  romp -j --once     render one frame and exit (no alt-screen)
-  romp -j --json     print the computed health model as JSON and exit
-  romp -j --no-color disable ANSI colour
+  romp judges            live TUI, refreshes every few seconds (^C to quit)
+  romp judges --once     render one frame and exit (no alt-screen)
+  romp judges --json     print the computed health model as JSON and exit
+  romp judges --no-color disable ANSI colour
 """
 import json
 import os
@@ -359,7 +359,7 @@ def render(m):
             c("●", "green"), c(fmt_age(k.get("uptime_s")), "green"),
             c("sha=" + (k.get("sha") or "?"), "dim"), k.get("pid")))
     else:
-        out.append("  kernel     %s %s — is the manager up? (`romp --version` / `romp --status`)"
+        out.append("  kernel     %s %s — is the manager up? (`romp version` / `romp status`)"
                    % (c("●", "red"), c("unreachable", "red", "bold")))
 
     e = m["exceptions"]

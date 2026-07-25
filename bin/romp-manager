@@ -149,7 +149,7 @@ function idForPort(port) {
 }
 
 // ── manager self-staleness (the --refresh stale-manager incident, the user 2026-07-24) ────────────
-// `romp --refresh` restarts kernels but never this process, and a long-lived manager hands every
+// `romp refresh` restarts kernels but never this process, and a long-lived manager hands every
 // respawn its START-TIME defaults — after the port renumber the file on disk was right and every
 // kernel still came back on the old port, with everything REPORTING success. Detect it: stamp this
 // file at start; on a refresh, a changed stamp means the respawned kernels would inherit stale
@@ -170,7 +170,7 @@ const QUICK_CRASH_MS = 2000;
 const MAX_BACKOFF_MS = 10000;
 
 // Restart-storm guard (the user 2026-06-24): the kernel was SIGTERM'd + respawned 300+ times in a tight
-// loop because every /restart restarted 1:1 — concurrent `romp --refresh`es (heavy fleet kernel work) or a
+// loop because every /restart restarted 1:1 — concurrent `romp refresh`es (heavy fleet kernel work) or a
 // stray refresh loop translate straight into respawns, churning every webview (a full reload) + orphaning
 // SDK in-flight state. Cap it: coalesce near-simultaneous requests into ONE trailing restart, and once the
 // rate looks like a storm, hold to 1 restart per cooldown + log loudly so the trigger is visible.
@@ -179,7 +179,7 @@ const STORM_WINDOW_MS = 60000;        // sliding window for storm detection
 const STORM_MAX = 8;                  // ≥ this many restarts in the window = a storm
 const STORM_COOLDOWN_MS = 30000;      // during a storm, hold to 1 restart per this
 
-// Quiet-window deploy refreshes (the user 2026-07-20): peers deploying with `romp --refresh` bounced
+// Quiet-window deploy refreshes (the user 2026-07-20): peers deploying with `romp refresh` bounced
 // the kernel 11x in one day, and every bounce cuts whatever SDK turns are in flight (the drain
 // interrupts them; the next boot resumes them with a nudge — recoverable, but each cut costs the
 // model a full re-read and the user a working-session hiccup). A refresh is a DEPLOY, not an
@@ -268,7 +268,7 @@ function restartKernel(id) {
   rec._rs.history = g.history;
   if (g.action === 'coalesce') {     // too soon — a single trailing restart will pick up the latest code
     if (g.inStorm && !rec._stormLogged) {
-      log(`kernel '${id}': RESTART STORM — ${rec._rs.history.length}+ restarts in ${STORM_WINDOW_MS / 1000}s; holding to 1 per ${STORM_COOLDOWN_MS / 1000}s + this log. Something is spamming /restart (a refresh loop / concurrent \`romp --refresh\`?).`);
+      log(`kernel '${id}': RESTART STORM — ${rec._rs.history.length}+ restarts in ${STORM_WINDOW_MS / 1000}s; holding to 1 per ${STORM_COOLDOWN_MS / 1000}s + this log. Something is spamming /restart (a refresh loop / concurrent \`romp refresh\`?).`);
       rec._stormLogged = true;
     }
     if (!rec._pending) rec._pending = setTimeout(() => { rec._pending = null; restartKernel(id); }, Math.max(50, g.scheduleIn));
@@ -505,7 +505,7 @@ function ensureUp() {
 module.exports = { restartGate, quietGate, loadSpecs, specEnv, fileStamp };
 if (require.main === module) {
   const cmd = process.argv[2];
-  // `restart-all` (the `romp --refresh` deploy path) defers to the next quiet window by default —
+  // `restart-all` (the `romp refresh` deploy path) defers to the next quiet window by default —
   // `--now` keeps the old immediate bounce for emergencies/humans in a hurry.
   if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
   else if (cmd === 'restart-all') control('POST', '/restart-all', null,

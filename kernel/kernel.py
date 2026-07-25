@@ -287,7 +287,7 @@ def _kernel_sha():
 
 def _version_info():
     """What this kernel is running — code sha + per-bundle build mtimes + pid/uptime. Lets the feed's
-    settings gear / `romp --version` / a curl tell at a glance whether the browser is on a stale bundle
+    settings gear / `romp version` / a curl tell at a glance whether the browser is on a stale bundle
     (compare the served ?v= against bundles[].mtime here). Any path here is $HOME-collapsed for privacy
     (like defaultDir/rompDir) — never a raw /Users/<name> path."""
     bundles = {}
@@ -381,7 +381,7 @@ border-radius:6px;background:#0c1117;color:#dfe7ee">
   <button style="margin-top:.9em;padding:.5em 1.4em;border:0;border-radius:6px;\
 background:#9cd2ff;color:#0c1a2e;font-weight:600;cursor:pointer">Open</button>
   <div style="opacity:.6;margin-top:1.2em;font-size:.9em">Get a ready-made link with
-  <code>romp -l</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
+  <code>romp</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
 </form>
 """
 
@@ -2686,7 +2686,7 @@ _DEFAULT_DIR_FILE = Path(os.path.expanduser("~/.config/romp/default-dir"))
 
 
 def _read_default_dir_file():
-    """The user-set default new-session dir (gear dialog or `romp --default-dir`), or "" — persisted in a
+    """The user-set default new-session dir (gear dialog or `romp default-dir`), or "" — persisted in a
     FILE because a web dialog can't set an env var. ~ / $VARs expanded; only returned if it still exists."""
     try:
         v = _DEFAULT_DIR_FILE.read_text().strip()
@@ -2699,7 +2699,7 @@ def _read_default_dir_file():
 def _default_create_dir():
     """The default working directory for a NEW session, in priority order (the user 2026-06-23):
       1. the user's persisted choice — ~/.config/romp/default-dir, set from the gear dialog or
-         `romp --default-dir`. A web/launchd kernel can't read a shell env var, so the override is a FILE.
+         `romp default-dir`. A web/launchd kernel can't read a shell env var, so the override is a FILE.
       2. else the romp install dir (ROMP_DIR — the repo root): romp-serve exports it and romp-service bakes
          it into the launchd plist, so it is reliably present however the kernel was started. A new session
          starts where romp lives, matching the CLI's own default (`romp`'s ROMPHOME also defaults there).
@@ -2830,14 +2830,14 @@ def _reap_if_cancelled(name):
 
 def _spawn_session(name, cwd=None):
     """Create a detached romp session named `name` — the same launch the old TS backend ran
-    (`romp --detach <name>`, tmux-backend.ts). Threaded so the ~seconds-long launch never blocks the WS
+    (`romp new -t --detach <name>`, tmux-backend.ts). Threaded so the ~seconds-long launch never blocks the WS
     recv loop; the 4s pusher then delivers the new tab and closes the webview's 'Opening…' modal. Scrub
     TMUX* so the child launcher never thinks it is already inside a tmux client. `cwd` is the session's
     working directory (validated by _resolve_create_dir); None falls back to the kernel default."""
     cwd = cwd or _default_create_dir()
     env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
     try:
-        subprocess.run([str(BIN / "romp"), "--detach", name], cwd=cwd, env=env, timeout=25,
+        subprocess.run([str(BIN / "romp"), "new", "-t", "--detach", name], cwd=cwd, env=env, timeout=25,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         sys.stderr.write("spawn '%s': %s\n" % (name, traceback.format_exc()))
@@ -3525,7 +3525,7 @@ def _revive_session(sid):
         else:
             cwd = _cwd_of(sid)
             workdir = cwd if cwd and os.path.isdir(cwd) else os.path.expanduser("~")
-            r = subprocess.run([str(BIN / "romp"), name, "--resume", sid, "--detach"],
+            r = subprocess.run([str(BIN / "romp"), "resume", sid, "--name", name, "--detach"],
                                cwd=workdir, capture_output=True, text=True, timeout=40)
             ok = r.returncode == 0
             if not ok:
@@ -4836,7 +4836,7 @@ _HEAD_CACHE = {"ts": 0.0, "full": None, "short": None}   # ~2s TTL: HEAD is read
 
 def _local_head(short=False):
     """This kernel's committed HEAD sha (FULL, or --short when short=True), or None outside a checkout — the
-    commit `romp --update` PUSHES to a remote AND the reference the drift is measured against, so the push and
+    commit `romp update` PUSHES to a remote AND the reference the drift is measured against, so the push and
     the drift check AGREE. (The old drift compared the remote to _kernel_sha()'s cached STARTUP sha while the
     push sent live HEAD; once HEAD moved ahead of the running kernel they never reconciled and the "behind"
     banner never cleared — the user 2026-07-04.) Cached ~2s since it's read on every /tunnels poll but HEAD
@@ -5020,7 +5020,7 @@ def _update_remote(host):
       2. `git push --force` local HEAD to a scratch ref on the remote (a NON-checked-out ref, so no bare-repo /
          denyCurrentBranch dance).
       3. ssh: REFUSE if the remote has DIVERGED (its own commits not in local — don't clobber), else reset the
-         remote to that ref, delete the scratch ref, and `romp --refresh` to restart.
+         remote to that ref, delete the scratch ref, and `romp refresh` to restart.
     Returns (ok, detail), fail-loud. Requires a CLEAN local tree — we push COMMITS, so uncommitted local work
     isn't sent; the caller is told to commit first."""
     host = str(host or "").strip()
@@ -6828,12 +6828,14 @@ def _injected_img_paths(text):
 
 # ───────────────────────── postal hydration ─────────────────────────
 # Postal traffic lands INSIDE the transcript: a received message as user text carrying the
-# `romp-msg-id` marker; a sent message as a send_message tool call (or a `romp --mail send` Bash). We
+# `romp-msg-id` marker; a sent message as a send_message tool call (or a `romp mail send` Bash). We
 # swap both for clean identity-coloured cards — and read the message BODY from the timeline log (not
 # the delivered text with its #### banner/footer), so a card shows the message, not the boilerplate.
 _SEND_TOOL_RE = re.compile(r"(?:^|__)send_message$")
 _CLI_SEND_RE = re.compile(   # capture the optional --kind that rides between send and the recipient (2026-07-08)
-    r"\bromp\s+--mail\s+send\s+(?:--kind\s+(delegate|coordinate|question)\s+)?([A-Za-z0-9._-]+)\s+([\s\S]+)$")
+    # (?:--)?mail: `romp mail` is the spelling since 2026-07-25, `romp --mail` its permanent silent
+    # alias — and old transcripts (whose Bash rows this matcher re-reads forever) only have the latter.
+    r"\bromp\s+(?:--)?mail\s+send\s+(?:--kind\s+(delegate|coordinate|question)\s+)?([A-Za-z0-9._-]+)\s+([\s\S]+)$")
 
 _POSTAL_KINDS = ("delegate", "coordinate", "question")
 
@@ -6917,7 +6919,7 @@ def _postal_out_card(ev):
 
 
 def _cli_send_card(ev):
-    """A Bash `romp --mail send <to> <body>` tool event → an outgoing card, only once the CLI confirmed
+    """A Bash `romp mail send <to> <body>` tool event → an outgoing card, only once the CLI confirmed
     delivery (else it stays a Bash row so a failure is visible)."""
     m = _CLI_SEND_RE.search(ev.get("input") or "")
     if not m:
@@ -6935,7 +6937,7 @@ def _cli_send_card(ev):
 
 
 def _hydrate_postal(events, index):
-    """Replace postal traffic with clean cards: a send_message tool (or `romp --mail send` Bash) → an
+    """Replace postal traffic with clean cards: a send_message tool (or `romp mail send` Bash) → an
     OUTGOING card; a user/tool event carrying romp-msg-id marker(s) → INCOMING card(s) with the clean
     body from the log. Anything not fully resolved passes through unchanged. Mirrors hydratePostal."""
     out = []
@@ -7577,7 +7579,7 @@ def _warm_fleet_bg(now):
 
 
 def _boot_warm():
-    """Warm the live fleet's parse cache at kernel STARTUP (the user 2026-07-03: after `romp --refresh`, local
+    """Warm the live fleet's parse cache at kernel STARTUP (the user 2026-07-03: after `romp refresh`, local
     sessions take a long time to load while remote ones — served by their own still-warm kernel over federation
     — appear at once). A fresh kernel has EMPTY caches, so the first connect pays the full cold serial parse
     (~2-4s: build_timeline bars + every chat tab). But between the restart and that connect there's a 1-2s gap
@@ -7719,7 +7721,7 @@ def _model_pending_now(sid, tm):
     return True
 # Dead-lane dismissals (the user 2026-07-02): a DEAD session lingers in the timeline as a faded/struck lane
 # while it's still in the activity window; its Clear button adds the sid here to drop it. DELIBERATELY in
-# memory only (never persisted) — a kernel restart forgets it, so `romp --refresh` brings a mistakenly-cleared
+# memory only (never persisted) — a kernel restart forgets it, so `romp refresh` brings a mistakenly-cleared
 # lane back. Only filters a lane while it's dead; a revived sid reappears (see build_timeline).
 _dismissed_lanes = set()      # sids the user cleared from the timeline (dead lanes only, forgotten on restart)
 
@@ -9802,7 +9804,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     held = segs[-1]                                  # the latest segment — the ask the planner withholds / just got
     # A real user prompt warrants a placeholder; a settle-SEAM tail does too (it exists only because real
     # post-close work exists, plans/segment-regrowth.md); and so does a kernel RESUME (_seg_system: the
-    # romp-system restart/resume notice, the user 2026-07-09). A restart is the USER'S action (romp --refresh
+    # romp-system restart/resume notice, the user 2026-07-09). A restart is the USER'S action (romp refresh
     # / a crash heal), and the resumed turn is continued user work — leaving that actively-working session
     # cardless breaks the "a WORKING session always shows a card" invariant. Safe because plan_units PLACES a
     # system segment when it ends (the housekeeping-note 'work' unit, placed even on a skip → the placeholder
@@ -15130,6 +15132,39 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_all()
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path == "/new":
+                # Headless session creation (`romp new`, 2026-07-25): the WS createSession op as a
+                # one-shot POST, so a terminal can start a session — SDK by default, the recommended
+                # backend — without a browser. Body: {"name": ..., "dir": ..., "backend": "sdk"|"tmux"}.
+                # Same validation and the same no-silent-fallback rule as the WS op: when the SDK
+                # backend is unavailable, say so (ok:false + reason), never hand back a mystery tmux
+                # session. An already-live name is a success (idempotent open), not an error.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                except Exception:
+                    b = {}
+                nm = str((b or {}).get("name") or "").strip()
+                if not nm or not NAME_RE.match(nm):
+                    return self._send(400, json.dumps({"ok": False, "error":
+                        "session names use letters, digits, . _ - only"}), "application/json")
+                cwd, derr = _resolve_create_dir(b.get("dir"))
+                if derr:
+                    return self._send(200, json.dumps({"ok": False, "error": derr}), "application/json")
+                live = _live_names(_tmux_sessions())
+                if nm in live:
+                    return self._send(200, json.dumps({"ok": True, "id": live[nm], "existing": True}),
+                                      "application/json")
+                if (b.get("backend") or "sdk") == "sdk":
+                    if not _sdk():
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "SDK backend unavailable on this kernel (claude-agent-sdk not importable; "
+                            "run bin/romp-sdk-setup with Python 3.10+)"}), "application/json")
+                    sid = _create_sdk_session(nm, cwd)
+                    return self._send(200, json.dumps({"ok": True, "id": sid, "dir": cwd}),
+                                      "application/json")
+                threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
+                return self._send(200, json.dumps({"ok": True, "pending": True, "dir": cwd}),
+                                  "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a
@@ -15464,7 +15499,7 @@ class Handler(BaseHTTPRequestHandler):
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). IN-MEMORY only — a kernel
-            # restart forgets it, so a mistakenly-cleared lane comes back on `romp --refresh`. Only dead lanes
+            # restart forgets it, so a mistakenly-cleared lane comes back on `romp refresh`. Only dead lanes
             # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
             _dismissed_lanes.add(str(msg["id"]))
             _mark_views_dirty()
@@ -15815,7 +15850,7 @@ def _graceful_term(signum, frame):
     of orphaning to launchd as zombie transcript-writers, and any in-flight turn is interrupted so
     its state settles honestly. Parked ops + SDK queues are already mirrored to disk on every
     mutation, and a cut turn keeps its 'working' state tail — the NEXT kernel's boot reconcile
-    resumes exactly those. Bounded (~2s) so `romp --refresh` stays snappy. Never construct the
+    resumes exactly those. Bounded (~2s) so `romp refresh` stays snappy. Never construct the
     backend here — no SDK sessions were running if it doesn't exist."""
     try:
         sys.stderr.write("romp-kernel: SIGTERM — draining SDK sessions\n")
@@ -15865,7 +15900,7 @@ def main():
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
     sys.stderr.write("romp-kernel: every request needs the serve token (loopback included) — "
-                     "browser entry: `romp -l`\n")
+                     "browser entry: `romp`\n")
     if BIND != "127.0.0.1":
         # reachable off-box (tailnet/phone): the Origin gate blocks cross-site browsers token-free,
         # and the token is required everywhere. Open from the phone:

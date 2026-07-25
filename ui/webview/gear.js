@@ -43,7 +43,7 @@ var GEAR_HTML =
   '<div class=rs-h>Settings</div>' +
   "<div class='rs-sec rs-sec-first'>Sessions</div>" +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>" +
-  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
+  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
   "<div style='display:flex;gap:6px;margin-top:5px'>" +
   "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:#1e1e1e;color:#ccc;" +
   "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>" +

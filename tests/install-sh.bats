@@ -13,6 +13,9 @@ setup() {
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME"
     export ROMP_NO_SERVICE=1 ROMP_NO_EXT=1 ROMP_NO_SDK=1
+    # One try only: the closing dashboard-link block polls for the kernel's token
+    # file, which never appears in this hermetic HOME — don't wait 10s for it.
+    export ROMP_INSTALL_TOKEN_TRIES=1
     # Redirect the git pre-push hook symlink into a temp dir so install.sh never
     # writes into the REAL repo's .git/hooks while these tests run.
     export ROMP_GITHOOK_DIR="$TEST_DIR/githooks"
@@ -119,6 +122,39 @@ SH
     [[ "$output" == *"romp-service install FAILED"* ]]
     [[ "$output" == *"dashboard will be dead"* ]]
     grep -qx install "$TEST_DIR/svc.log"
+}
+
+# ── The closing dashboard link (the user 2026-07-25, who wanted installing alone to be
+# enough to reach the dashboard) ── install.sh ends with the TOKENED link when the kernel
+# has minted the token, and an honest pointer when it hasn't; it must never print a bare
+# URL that bounces the first-time user to the paste-a-token login page.
+
+@test "install.sh: ends with the tokened dashboard link when the token exists" {
+    mkdir -p "$HOME/.local/state/romp"
+    printf 'tok123\n' > "$HOME/.local/state/romp/serve-token"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"http://127.0.0.1:29855/?token=tok123"* ]]
+    [[ "$output" == *"romp url"* ]]
+}
+
+@test "install.sh: ROMP_NO_SERVICE with no token points at romp up, never a dead link" {
+    run "$ROMP_DIR/install.sh"     # setup sets ROMP_NO_SERVICE=1; no serve-token exists
+    [ "$status" -eq 0 ]
+    grep -q "romp up" <<<"$output"
+    grep -q "romp url" <<<"$output"
+    ! grep -q "?token=" <<<"$output"
+}
+
+@test "install.sh: service up but token not minted yet, says how to get the link" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_RUNNING=1
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    grep -q "still starting" <<<"$output"
+    grep -q "romp url" <<<"$output"
+    ! grep -q "?token=" <<<"$output"
 }
 
 @test "install.sh: merges into an existing settings.json without clobbering the user's own config" {

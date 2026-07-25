@@ -326,7 +326,7 @@ HELP = """romp-feed — live terminal mirror of the dashboard feed (independent 
 Working / blocked / completed for non-cleared goals, every node showing its raw complete/blocked
 flags + id. Prints a SINGLE scrollable snapshot by default (so you can scroll back through it); pass
 --watch for a live board that refreshes every second in the alternate screen (^C to stop). For
-build/kernel versions use `romp --version`.
+build/kernel versions use `romp version`.
 
   romp-feed                      alive sessions (one scrollable snapshot)
   romp-feed --watch              live board, refreshes every second (^C to stop)
@@ -347,14 +347,14 @@ def main(argv):
 
     def once():
         rows = build_board(state, include_dead=a["all"], session_filter=a["session"])
-        return render(rows, style, header="romp-feed · %s  (romp --version for builds)" % time.strftime("%H:%M:%S"))
+        return render(rows, style, header="romp-feed · %s  (romp version for builds)" % time.strftime("%H:%M:%S"))
 
     if not (tty and a["watch"]):                 # default (and piped): ONE scrollable snapshot.
         sys.stdout.write(once())                 # The old per-second `\033[2J\033[H` redraw fought the
         return 0                                 # terminal's own scrollback — every tick snapped the view
                                                  # back to the top. A plain print scrolls like any output.
     # --watch: live board in the ALTERNATE screen, so it owns the screen while running and restores your
-    # scrollback intact on exit (like top/htop and `romp -d`/`romp -j`) instead of clobbering the buffer.
+    # scrollback intact on exit (like top/htop and `romp monitor`/`romp judges`) instead of clobbering the buffer.
     sys.stdout.write("\033[?1049h\033[?25l")
     try:
         while True:

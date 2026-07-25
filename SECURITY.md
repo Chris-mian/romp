@@ -20,7 +20,7 @@ The token (`~/.local/state/romp/serve-token`) is 144-bit random, stored at mode
 `0600`, and compared with a constant-time check — **file permissions are the
 same-user gate**. Same-user clients (the CLI, hooks, the bus, the VS Code
 extension) read the file and send it as an `X-Romp-Token` header; the browser
-presents it once as `?token=` (print the ready-made link with `romp --url`, or
+presents it once as `?token=` (print the ready-made link with `romp url`, or
 paste the token into the login page a bare open of the dashboard serves) and
 rides an `HttpOnly` cookie afterwards. An Origin check additionally protects
 the browser surfaces against cross-site requests, including the WebSocket

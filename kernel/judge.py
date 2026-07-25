@@ -44,7 +44,7 @@ GOALARCHDIR = STATE / "goals-archive"    # CLEARED (dismissed) goal subtrees mov
 STATESDIR = STATE / "states"             # per-session real idle/compacting transitions → idle atoms (settled gate)
 PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's ready units
 MESSAGES = STATE / "timeline" / "messages.jsonl"
-ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp -j`
+ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp judges`
 USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
 SDKDIR   = STATE / "sdk"                 # the SDK backend's per-session registry — lastSid tracks the CURRENT transcript fsid
 # Judge scratch cwd (the user 2026-07-20): every one-shot `claude -p` judge call writes a transcript
@@ -345,7 +345,7 @@ _DEBUG_CACHE = [None, None]                # (mtime_ns_or_None, bool) — one st
 
 
 def _debug_mode():
-    """Is debug mode on (STATE/debug-mode.json {"on": true})? Toggled by `romp --debug on|off`. When on,
+    """Is debug mode on (STATE/debug-mode.json {"on": true})? Toggled by `romp debug on|off`. When on,
     every failure row carries the failing call's full input + reply (see _log_judge_error) and the feed
     joins the rows onto each card's modal, so the user can watch rejections as they happen (the user
     2026-07-09: "error on the side of surfacing everything"). mtime-cached: one stat per check."""
@@ -373,7 +373,7 @@ def _mid_elide(s, cap=6200):
 
 
 def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
-    """Append one failure row to ERRORS (judge-errors.jsonl) so `romp -j` can surface it. The row contract
+    """Append one failure row to ERRORS (judge-errors.jsonl) so `romp judges` can surface it. The row contract
     (the user 2026-07-09) — every row answers who/where/what/why on its own:
       judge  who failed — the judge's own one-per-prompt name, never a tier
       fsid   where — the session it was judging ("" only for fleet-level rows like the rate gate)
@@ -6520,7 +6520,7 @@ def _unblock_session(fsid, path, now):
         if nd is None or not nd.get("blocked") or nd.get("cleared"):
             # the node moved on during the model call — resolved, cleared, or re-planned away. Never
             # apply a verdict formed against the pre-call state; surface the race so it's observable
-            # (`romp -j` / the debug feed) instead of silently dropping the lift.
+            # (`romp judges` / the debug feed) instead of silently dropping the lift.
             if why is not None:
                 _log_judge_error("unblocker", fsid, "drift-skip", goal=nid,
                                  note="node changed during the model call (resolved/cleared/re-planned) — lift skipped")

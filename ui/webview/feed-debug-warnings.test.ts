@@ -1,4 +1,4 @@
-// Debug-mode judge warnings (the user 2026-07-09): with `romp --debug on`, the kernel joins every
+// Debug-mode judge warnings (the user 2026-07-09): with `romp debug on`, the kernel joins every
 // judge-failure row onto the card whose goal (or placed segment) it touched, and the card modal grows a
 // "Warnings (debug)" section — one line per failure, expandable to the failing call's full input + reply.
 // Off is the default and costs nothing: the kernel emits no rows, the modal builds no section. Source pins

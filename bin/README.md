@@ -21,7 +21,7 @@ no separate implementation to point at.
 | `romp` | Bash | The launcher/dispatcher: start/resume/attach sessions, `-d`/`-f`/`-j` terminal views, `--on/--refresh/--status`, `--mail`, `update`, `--version`. Also provisions the tmux server glue when using the tmux backend. |
 | `romp-service` | Bash | Installs/removes the launchd (macOS) / systemd-user (Linux) login agent. Run by `install.sh`. |
 | `romp-node-launch` | POSIX sh | Runs the manager under a romp-owned copy of node (`romp-node`) so macOS TCC permissions can be granted to romp alone. |
-| `romp-manager` | Node | The kernel **supervisor**: spawns kernels via `romp-serve`, respawns on crash, `up/ensure/restart-all/status/down`. Reached via `romp --on/--refresh/--status`. |
+| `romp-manager` | Node | The kernel **supervisor**: spawns kernels via `romp-serve`, respawns on crash, `up/ensure/restart-all/status/down`. Reached via `romp up` / `romp refresh` / `romp status`. |
 | `romp-serve` | Bash | The manager→kernel seam: maps the manager's spawn contract onto the kernel's env, picks the python, then `exec`s the kernel (PID preserved for the supervisor; the kernel self-builds stale UI bundles). |
 | `romp-sdk-setup` | Bash | Provisions the Agent SDK venv for the SDK backend. Run by `install.sh`. |
 
@@ -42,16 +42,16 @@ no separate implementation to point at.
 
 | Command | Source | What it is |
 |---|---|---|
-| `romp-postal-service` | `postal/postal_service.py` | Inter-session mail: MCP server + CLI (`romp --mail`). `romp-postal` is a symlink alias. |
+| `romp-postal-service` | `postal/postal_service.py` | Inter-session mail: MCP server + CLI (`romp mail`). `romp-postal` is a symlink alias. |
 
 ## Symlinks → `cli/` (terminal tools)
 
 | Command | Source | What it is |
 |---|---|---|
-| `romp-feed` | `cli/feed.py` | Terminal mirror of the feed (`romp -f`). Backend-agnostic. |
-| `romp-judge-monitor` | `cli/judge_monitor.py` | Terminal health view of the judges (`romp -j`). |
-| `romp-update` | `cli/update.py` | Pushes this machine's committed romp to attached remote kernels and restarts them (`romp --update [host]`). |
-| `romp-version` | `cli/version.py` | Version report across the moving parts (`romp --version`). |
+| `romp-feed` | `cli/feed.py` | Terminal mirror of the feed (`romp feed`). Backend-agnostic. |
+| `romp-judge-monitor` | `cli/judge_monitor.py` | Terminal health view of the judges (`romp judges`). |
+| `romp-update` | `cli/update.py` | Pushes this machine's committed romp to attached remote kernels and restarts them (`romp update [host]`). |
+| `romp-version` | `cli/version.py` | Version report across the moving parts (`romp version`). |
 | `romp-idle-dots` | `cli/idle_dots.py` | tmux backend only: heals stranded `working` state / fades idle tab dots by inspecting tmux panes. Fired from `hooks/tmux-status.sh`. |
 
 ## tmux backend only (real files)
@@ -62,6 +62,6 @@ dropped, these (plus `romp-askparse`, `romp-idle-dots`, and the tmux glue in
 
 | File | Lang | What it is |
 |---|---|---|
-| `romp-dashboard` | Bash | Terminal dashboard over `tmux list-sessions` (`romp -d`). The web kernel is the modern equivalent. |
+| `romp-dashboard` | Bash | Terminal dashboard over `tmux list-sessions` (`romp monitor`). The web kernel is the modern equivalent. |
 | `romp-interrupt-reset` | Bash | tmux Ctrl-C/Esc bind: resets a stuck `working` state (Claude fires no interrupt hook). |
 | `romp-mail-clear` | Bash | Clears the postal badge in the tmux status bar on session switch. |
