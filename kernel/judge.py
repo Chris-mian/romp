@@ -3195,7 +3195,7 @@ def _discover_fingerprint():
     return tuple(fp)
 
 
-def discover(now, window=None):
+def discover(now, window=None, forks=True):
     """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within `window`
     seconds (default WINDOW, 48h) —
     CACHED behind a directory-mtime fingerprint (the result only changes on a session add/rename/fork, not on
@@ -3205,24 +3205,33 @@ def discover(now, window=None):
     `window` is a parameter so the + picker can reach back FURTHER than the caption horizon (the user
     2026-07-24, who typed a 3-day-old session's name into the picker, got nothing, and had to start a new
     session). 48h is the horizon for CAPTIONING a transcript; the picker inherited it by accident, which
-    silently hid all but the last two days of the fleet. Each window keeps its OWN entry under the same
-    fingerprint, so a picker open never invalidates or slows the hot 48h path, and the wide walk happens
-    only when the picker actually asks for it — never at boot."""
+    silently hid all but the last two days of the fleet.
+
+    `forks=False` drops the same-customTitle fork lanes, leaving ONE entry per registered session. The
+    picker wants exactly that — a fork lane is the same romp session listed twice, and its fsid is not a
+    romp sid, so its row pointed `openSession` at something that isn't a session. Skipping it is also what
+    makes the wide window affordable: fork detection reads the head of every candidate transcript in the
+    window, which at 30 days measured 553ms of a 640ms walk. Without it the same 30-day walk is ~78ms, so
+    the picker just loads its full list up front instead of paging it in (measured 2026-07-24).
+
+    Each (window, forks) pair keeps its OWN entry under the same fingerprint, so the picker never
+    invalidates or slows the hot 48h path the judge tiers share."""
     win = WINDOW if window is None else int(window)
+    key = (win, bool(forks))
     fp = _discover_fingerprint()
     if fp is not None:
         with _discover_lock:
-            hit = _discover_cache.get(win)
+            hit = _discover_cache.get(key)
             if hit is not None and hit["fp"] == fp and hit["result"] is not None:
                 return hit["result"]
-    res = _discover_impl(now, win)
+    res = _discover_impl(now, win, forks)
     if fp is not None:
         with _discover_lock:
-            _discover_cache[win] = {"fp": fp, "result": res}
+            _discover_cache[key] = {"fp": fp, "result": res}
     return res
 
 
-def _discover_impl(now, window=None):
+def _discover_impl(now, window=None, forks=True):
     """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within
     `window` (default WINDOW): the session's anchor transcript plus any same-customTitle fork in its
     project dir. File-based (names/), no tmux — works for headless sessions too.
@@ -3289,7 +3298,7 @@ def _discover_impl(now, window=None):
                     if mt >= cutoff and path_str not in seen:
                         seen.add(path_str); out.append((sid, Path(path_str), sid, name))
                     break
-        if not name:
+        if not name or not forks:      # forks=False (the picker): one entry per session, and no title reads
             continue
         for stem, path_str, mt in listing:               # same-customTitle forks (each its own lane)
             if stem == sid or path_str in seen or mt < cutoff:

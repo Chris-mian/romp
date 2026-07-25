@@ -750,9 +750,9 @@ def _rgb(color):
         return [112, 136, 170]
 
 
-def _sessions(now, window=None):
+def _sessions(now, window=None, forks=True):
     out = []
-    for fsid, path, anchor, name in jd.discover(now, window):
+    for fsid, path, anchor, name in jd.discover(now, window, forks):
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
@@ -2657,22 +2657,21 @@ def _live_names(tmux):
     return {n: sid for sid in (tmux or {}) for n in [_name_of(sid)] if n}
 
 
-PICKER_WINDOW = 30 * 86400      # how far back the + picker can reach, vs jd.WINDOW's 48h caption horizon.
-PICKER_DEEP_CAP = 600           # row cap for that deep list (150 stays the cap for the fast first paint)
-#   30 days, and the deep list is fetched LAZILY — only once the picker is opened AND the user either scrolls
-#   to the bottom or starts typing (the user 2026-07-24, who wanted to scroll back through everything up to a
-#   month without it choking startup). So the first paint stays the cheap 48h list it always was, and the
-#   wider walk is paid for only by someone actually looking for an older session.
+PICKER_WINDOW = 30 * 86400      # how far back the + picker reaches, vs jd.WINDOW's 48h CAPTION horizon (the
+PICKER_CAP = 600                # user 2026-07-24: scroll back through the last month, not just two days).
+#   The picker sends this whole list at once rather than paging it in. It can afford to because it asks
+#   discover() for forks=False: fork detection was 553ms of a 640ms 30-day walk, and without it the same
+#   walk is ~78ms cold and ~4ms cached — below noticing, so laziness would buy nothing and cost a spinner.
 
 
 def _session_list(now, tmux, window=None):
-    """Picker payload: recent sessions, RUNNING ones first then by recency, each
-    {id,name,color,running,time,summary} — the shape render.ts's renderPicker expects.
-    `window` None = the default 48h horizon (the fast first paint); PICKER_WINDOW = the deep list."""
+    """Picker payload: sessions from the last PICKER_WINDOW, RUNNING ones first then by recency, each
+    {id,name,color,running,time,summary} — the shape render.ts's renderPicker expects. ONE row per
+    registered session: forks are off, since a fork lane is the same session listed twice under an fsid
+    that is not a romp sid, so its row pointed openSession at something that isn't a session."""
     live = set(tmux or {})
     items = []
-    cap = 150 if window is None else PICKER_DEEP_CAP
-    for s in _sessions(now, window)[:cap]:
+    for s in _sessions(now, PICKER_WINDOW if window is None else window, forks=False)[:PICKER_CAP]:
         sid = s["sid"]
         arch = jd.load_archive(sid) or {}
         items.append({"id": sid, "name": s["name"], "color": _name_color(sid),
@@ -15551,13 +15550,10 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     _cancel_pending.add(bare)
         elif msg and msg.get("type") == "requestSessions":
-            # deep=true is the picker's LAZY second fetch — the 30-day list, asked for only once the user
-            # scrolls to the bottom or types in the search box. The echoed flag tells the webview which
-            # list it got, so a late fast reply can't clobber a deep one already on screen.
-            deep = bool(msg.get("deep"))
-            client["send"](json.dumps({"type": "sessionList", "deep": deep,
-                                       "items": _session_list(int(time.time()), _tmux_sessions(),
-                                                              PICKER_WINDOW if deep else None),
+            # ONE request, the whole 30 days. It was briefly a lazy two-step, but measuring said the wide
+            # walk is ~78ms cold once forks are off, so paging it in bought nothing (the user 2026-07-24).
+            client["send"](json.dumps({"type": "sessionList",
+                                       "items": _session_list(int(time.time()), _tmux_sessions()),
                                        "defaultDir": _tilde(_default_create_dir())}))   # prefill the new-session dir field
         elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))

@@ -1,9 +1,9 @@
-// The + picker's LAZY 30-day list. The user 2026-07-24: typing a session's name into the picker found
-// nothing unless it had been touched in the last 48h (discover()'s CAPTION horizon, which the picker had
-// inherited by accident), so an older session could not be reopened at all and the only way forward was to
-// start a new one. The picker now asks for its own 30-day window, but only once the user reaches for
-// something off screen — scrolling to the bottom, or typing — so the first paint and kernel boot stay as
-// cheap as they were. Source-level pins (no jsdom for the renderer).
+// The + picker's 30-day list. The user 2026-07-24: typing a session's name into the picker found nothing
+// unless it had been touched in the last 48h (discover()'s CAPTION horizon, which the picker had inherited
+// by accident), so an older session could not be reopened at all and the only way forward was to start a
+// new one. The picker now gets the last 30 days, in ONE reply when it opens — it was briefly a lazy
+// two-step fetch, but measuring said the wide walk is ~78ms cold once fork detection is off, so paging it
+// in bought nothing and cost a spinner. Source-level pins (no jsdom for the renderer).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -12,52 +12,38 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "judge.py"), "utf8");
 
-test("the deep list is a SECOND request, fired at most once per picker open", () => {
-  assert.match(RENDER, /function requestDeepSessions\(\) \{\s*if \(pickerDeep !== "none" \|\| !vscodeApi\) return;/);
-  assert.match(RENDER, /pickerDeep = "pending";/);
-  assert.match(RENDER, /postMessage\(\{ type: "requestSessions", deep: true \}\)/);
-  // the first paint is still the plain, cheap request — no deep flag
+test("opening the picker asks for the whole list once — no lazy second fetch to wait on", () => {
   assert.match(RENDER, /postMessage\(\{ type: "requestSessions" \}\)/);
+  // the lazy machinery is gone: no deep flag, no pending state, no scroll trigger, no loader to strand
+  assert.doesNotMatch(RENDER, /requestSessions", deep: true/);
+  assert.doesNotMatch(RENDER, /pickerDeep/);
+  assert.doesNotMatch(RENDER, /loading older sessions/);
 });
 
-test("scrolling to the bottom and typing both reach for the older sessions", () => {
-  assert.match(RENDER, /list\.addEventListener\("scroll", \(\) => \{ if \(nearBottom\(list\)\) requestDeepSessions\(\); \}\)/);
-  assert.match(RENDER, /search\.addEventListener\("input", \(\) => \{ requestDeepSessions\(\);/);
+test("the kernel serves the picker 30 days, with forks off so it stays cheap", () => {
+  assert.match(KERNEL, /PICKER_WINDOW = 30 \* 86400/);
+  assert.match(KERNEL, /_sessions\(now, PICKER_WINDOW if window is None else window, forks=False\)\[:PICKER_CAP\]/);
+  assert.match(KERNEL, /"items": _session_list\(int\(time\.time\(\)\), _tmux_sessions\(\)\)/);
 });
 
-test("each picker open starts back on the cheap list", () => {
-  assert.match(RENDER, /pickerDeep = "none"; clearPickerDeepBackstop\(\);/);
+test("discover takes a window and a forks switch, cached per pair", () => {
+  assert.match(JUDGE, /def discover\(now, window=None, forks=True\):/);
+  assert.match(JUDGE, /key = \(win, bool\(forks\)\)/);
+  assert.match(JUDGE, /_discover_cache\.get\(key\)/);
+  // forks=False short-circuits before the same-customTitle scan, which is where the title reads were spent
+  assert.match(JUDGE, /if not name or not forks:/);
 });
 
-test("a slow fast-reply cannot clobber a deep list already on screen", () => {
-  assert.match(RENDER, /if \(m\.deep\) \{ pickerDeep = "loaded"; clearPickerDeepBackstop\(\); \}/);
-  assert.match(RENDER, /else if \(pickerDeep === "loaded"\) return;/);
-});
-
-test("the loader can never trap the user: a pending deep fetch has a backstop", () => {
-  // a kernel too old to know `deep` answers without the flag, so nothing would resolve the pending state
-  assert.match(RENDER, /pickerDeepBackstop = window\.setTimeout\(\(\) => \{\s*if \(pickerDeep === "pending"\) \{ pickerDeep = "none"; renderPickerMoreRow\(\); \}\s*\}, \d+\);/);
-  assert.match(RENDER, /function clearPickerDeepBackstop\(\) \{[\s\S]*?clearTimeout\(pickerDeepBackstop\)/);
-});
-
-test("the wait wears the romp loader dots, and the footer is not a selectable row", () => {
-  assert.match(RENDER, /const dots = el\("div", "rl-dots"\);/);
-  assert.match(RENDER, /cap\.textContent = "loading older sessions…";/);
+test("the list foot states the reach, so a missing older session has a stated reason", () => {
   assert.match(RENDER, /more\.textContent = "showing the last 30 days";/);
   assert.match(CSS, /\.picker-more \{/);
-  // .picker-more is deliberately NOT a .picker-row, so filterPicker and the keyboard walk skip it
+  // deliberately NOT a .picker-row, so filterPicker and the keyboard walk skip it
   assert.doesNotMatch(RENDER, /el\("div", "picker-row picker-more"\)/);
 });
 
-test("a deep render keeps the scroll position that triggered it", () => {
+test("a re-render keeps the scroll position of a user who scrolled back", () => {
   assert.match(RENDER, /const keepScroll = list\.scrollTop;/);
   assert.match(RENDER, /list\.scrollTop = keepScroll;/);
-});
-
-test("the kernel honors deep and echoes the flag back", () => {
-  assert.match(KERNEL, /PICKER_WINDOW = 30 \* 86400/);
-  assert.match(KERNEL, /deep = bool\(msg\.get\("deep"\)\)/);
-  assert.match(KERNEL, /"type": "sessionList", "deep": deep/);
-  assert.match(KERNEL, /PICKER_WINDOW if deep else None/);
 });
