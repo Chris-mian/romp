@@ -86,21 +86,45 @@ on `127.0.0.1`, which your phone is not on.
 [Tailscale](https://tailscale.com) closes that gap, and is free for personal
 use. It puts your own devices on a private encrypted network, so your phone can
 reach your laptop directly whatever network either one is on. Install it on both
-devices and sign in to the same account on each. In the Tailscale admin console,
-enable **HTTPS Certificates**, and leave **MagicDNS** on (it is on by default):
-the `ts.net` certificate names come from MagicDNS, so turning it off makes
-certificate provisioning fail in confusing ways.
+devices and sign in to the same account on each.
 
-Then, on the machine running the kernel:
+In the Tailscale admin console, enable **HTTPS Certificates**, and leave
+**MagicDNS** on (it is on by default): the `ts.net` certificate names come from
+MagicDNS, so turning it off makes certificate provisioning fail in confusing
+ways.
+
+Three settings in the Tailscale app on the kernel's machine decide whether your
+phone can reach it at all:
+
+- **Allow incoming connections** must be on. Without it the machine joins the
+  network but serves nothing to it, which reads as Romp being broken rather than
+  as a Tailscale setting.
+- **Use Tailscale DNS settings** must be on. This is MagicDNS on the client, and
+  it is what makes the `ts.net` name resolve.
+- **Launch Tailscale at login** is worth turning on. The proxy below survives a
+  reboot, but it can only serve while Tailscale is running, so without this the
+  machine drops off the network until you next open the app.
+
+Then, on that same machine:
 
 ```bash
 tailscale serve --bg 29855    # let your other devices reach Romp
-tailscale serve status        # show the active proxy
+tailscale serve status        # show where the proxy currently points
 tailscale serve reset         # back to local-only
 ```
 
 The bare-port form needs Tailscale 1.56 or newer; on older clients write
-`tailscale serve https / http://127.0.0.1:29855`.
+`tailscale serve https / http://127.0.0.1:29855`. On macOS the `tailscale`
+command is not on your `PATH` until you enable **CLI integration** in the app's
+settings.
+
+!!! warning "If you change the kernel's port"
+
+    `tailscale serve` remembers the port you gave it, not whatever Romp is
+    running on now. Change `ROMP_KERNEL_PORT` and the proxy goes on pointing at
+    the old one, so the phone gets a dead page while everything looks healthy on
+    the machine itself. Re-run `tailscale serve --bg <new port>` — it replaces
+    the existing mapping rather than adding to it.
 
 On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
 page asking for your access token; paste in the one `romp launch` prints. A
