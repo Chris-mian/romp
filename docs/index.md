@@ -16,8 +16,8 @@ together. *You* stay focused on what you're trying to accomplish.
 Romp is built on top of Claude Code: the agents Romp manages are ordinary
 sessions, gathered into one live interface.
 
-You control where each half of Romp lives. Its user interface opens in a
-browser, in the VS Code / Cursor extension, or on
+You have full control over where Romp runs and how you access it. Its user
+interface opens in a browser, in the VS Code / Cursor extension, or on
 [a phone](guide.md#from-your-phone). The back end that drives the agents runs on your
 laptop, on a server, or on [several machines at once](guide.md#linking-kernels-on-other-machines):
 agents on different machines message each other, and you steer them all from one
