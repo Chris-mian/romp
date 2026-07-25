@@ -263,6 +263,26 @@
 .romp-chip-ready     { background: #2b7fb8; color: #ffffff; }
 .romp-chip-await     { background: #54b204; color: #0c1a00; }
 
+/* The kind chip a postal card carries, drawn the way the card draws it: an
+   outlined pill in the kind's own colour, uppercase, with the border taking the
+   text colour. Mirrors styles.css .postal-service-intent and its three colours.
+   The app sets 0.7em against a card's own type; in body prose that lands smaller
+   than every other inline chip here, so this reuses the 0.85em the chips and
+   buttons above already share. */
+.romp-chip-kind {
+  border: 1px solid currentColor;
+  border-radius: 9px;
+  padding: 0.05em 0.5em;
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.romp-chip-delegate   { color: #b08cff; }   /* delegation — a peer handed off work */
+.romp-chip-coordinate { color: #14b8a6; }   /* coordination — a heads-up */
+.romp-chip-question   { color: #e0b020; }   /* question — an answer is needed */
+
 /* ── Mermaid legibility ───────────────────────────────────────────────
    Every node in our diagrams carries an explicit LIGHT fill (the classDef
    `fill:` values in architecture.md and judge-pipeline.md), so its label has to

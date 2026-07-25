@@ -198,11 +198,11 @@ and the kind:
 
 ![A message from another session, as the recipient's chat shows it](assets/guide/postal-chat.png){ width="100%" }
 
-Every message declares its kind:
+Every message declares its kind, which the card wears as a chip:
 
-- **delegate** — the recipient owns the work now.
-- **coordinate** — a heads-up; a reply is optional.
-- **question** — an answer is required.
+- <span class="romp-chip-kind romp-chip-delegate">delegation</span> (`delegate`) — the recipient owns the work now.
+- <span class="romp-chip-kind romp-chip-coordinate">coordination</span> (`coordinate`) — a heads-up; a reply is optional.
+- <span class="romp-chip-kind romp-chip-question">question</span> (`question`) — an answer is required.
 
 The same mailbox is on the command line, for you and for scripts:
 
