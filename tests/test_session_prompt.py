@@ -39,6 +39,17 @@ class SessionPrompt(unittest.TestCase):
         self.assertIn("preliminary step", self.flat,
                       "the prompt must say a preliminary step (reading/mapping/planning) is not finishing the work")
 
+    def test_housekeeping_note_preexplains_romp_artifacts(self):
+        # The ONE place romp is named to a session (the user 2026-07-25): pre-explain the artifacts
+        # every session eventually sees — [romp] notices and <!-- romp-* --> comments — so a kernel
+        # restart notice reads as explained information, not an unexplained system voice.
+        self.assertIn("romp", self.flat,
+                      "the housekeeping note must name romp so its artifacts have an anchor")
+        self.assertIn("[romp]", self.text, "the note must show the bracketed-notice form")
+        self.assertIn("<!-- romp-", self.text, "the note must show the HTML-comment form")
+        self.assertIn("ignore", self.flat,
+                      "the note must tell the session to ignore the bookkeeping")
+
 
 if __name__ == "__main__":
     unittest.main()
