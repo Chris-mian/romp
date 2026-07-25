@@ -603,6 +603,8 @@ class FileAdapter:
                     a["isApiError"] = True   # a FAILURE record — Claude Code writes the error as an
                                              # assistant text block, so it carries text but is NOT a
                                              # reply; deep-link anchors must skip it (kernel _seg_anchors)
+                    if isinstance(r.get("apiErrorStatus"), int):
+                        a["apiErrorStatus"] = r["apiErrorStatus"]   # → the durable chat card's badge ("API error · 529")
                 out.append(a)
             elif t == "user":
                 blocks = _content(r.get("message"))

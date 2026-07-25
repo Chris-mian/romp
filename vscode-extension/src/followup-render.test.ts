@@ -16,7 +16,9 @@ test("queued payload is per-message {md, followUp?, goal?, fuCtx?}, not raw stri
 });
 
 test("renderQueued renders markdown (not raw text) + the follow-up header", () => {
-  const fn = SRC.slice(SRC.indexOf("function renderQueued"), SRC.indexOf("function renderApiError"));
+  // end anchor: the first renderApiError* AFTER renderQueued (renderApiErrorNote lives earlier in the file)
+  const qStart = SRC.indexOf("function renderQueued");
+  const fn = SRC.slice(qStart, SRC.indexOf("function renderApiError", qStart));
   assert.ok(fn.length > 0, "found renderQueued");
   assert.match(fn, /if \(t\.followUp\) turn\.appendChild\(followUpHeader\(t\.goal, t\.fuCtx, t\.idx !== undefined \? "q:" \+ t\.idx : undefined\)\);/);
   assert.match(fn, /bubble\.innerHTML = md\(t\.md\);/);

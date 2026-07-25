@@ -696,14 +696,16 @@ class PlanParseStorm(unittest.TestCase):
     def test_interrupt_record_never_coerces_a_goal(self):
         # the g159 junk card (the user 2026-07-09): the CLI's '[Request interrupted by user...]' stop
         # record is a user atom, so it read as a human message — and the never-skip hard floor then
-        # minted a goal literally titled with it. An interrupt is the stop EVENT, not an ask: the
-        # segment seals as processed (placed None), no node, no coerce.
+        # minted a goal literally titled with it. An interrupt is the stop EVENT, not an ask.
+        # Since 2026-07-25 (the workless-ended-segment guard): the segment never becomes a unit at all
+        # — an ended stretch with no assistant work and no real human ask is skipped STRUCTURALLY, so
+        # it costs no planner call and there is no placement key to seal; nothing to retry either.
         records = [uline(T0, "[Request interrupted by user for tool use]", "u1", ps="typed")]
         placed, store = self._run(records, lambda *a, **k: '{"ops":[{"why":"not an ask","do":"skip"}]}')
         self.assertEqual(store["nodes"], {}, "no goal is minted from an interrupt record")
         self.assertEqual(placed, [0] * jd.PLAN_PARSE_RETRIES, "nothing placed on any pass")
-        self.assertTrue(store["placements"] and all(v is None for v in store["placements"].values()),
-                        "the interrupt segment is sealed as processed, not retried")
+        self.assertEqual(store["placements"], {},
+                         "the interrupt segment never even reaches the planner — no key, no LLM call")
     """The two-run planner (the user 2026-06-21, via link_audit): a segment's opening prompt is placed
     IMMEDIATELY by a PROMPT-run while the turn is still OPEN (mint-or-amend), then refined by the WORK-run
     once it ends — the two phases dedup independently via (segment-id, phase). Earliness only exists while

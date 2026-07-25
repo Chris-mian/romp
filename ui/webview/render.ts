@@ -146,6 +146,15 @@ type ChatEvent = (
   // A stalled api_retry turn RECOVERED — a persistent, rail-anchored "Recovered after N retries" note left
   // where output resumed, the historical counterpart of the transient element above (the user 2026-07-08).
   | { kind: "retried"; retries: number; ts?: string; uuid?: string }
+  // A stalled api_retry turn that did NOT recover — the CLI exhausted its attempts and settled the turn
+  // with its error text (the user 2026-07-25: this used to record as "Recovered", the opposite). The red
+  // durable twin of `retried`, left where the storm died; the error text itself follows as apiErrorNote.
+  | { kind: "retryGaveUp"; retries: number; errorKind?: string; ts?: string; uuid?: string }
+  // The DURABLE record of a turn that died on an API error: the transcript's isApiErrorMessage record,
+  // rendered with the red api-error chrome instead of as an agent bubble, so a failed turn stays loudly
+  // visible in history (the user 2026-07-25). No buttons — while the session is still blocked on this
+  // very record, the kernel swaps it for the LIVE card below (kind "apiError"), which carries Retry.
+  | { kind: "apiErrorNote"; md: string; status?: number; ts?: string; uuid?: string }
   // Durable "effort set to X" note (the user 2026-07-16): the /effort reconnect leaves no transcript atom,
   // and the synthesized /effort chip prunes on the next message — so this rail-anchored note marks WHEN the
   // new effort took effect, and stays. Kernel-interleaved by time, like `retried`. SDK-only.
@@ -1697,6 +1706,8 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "reconnecting") return renderReconnecting(ev);
   if (ev.kind === "retrying") return renderRetrying(ev);
   if (ev.kind === "retried") return renderRetried(ev);
+  if (ev.kind === "retryGaveUp") return renderRetryGaveUp(ev);
+  if (ev.kind === "apiErrorNote") return renderApiErrorNote(ev);
   if (ev.kind === "effortApplied") return renderEffortApplied(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
@@ -2104,6 +2115,45 @@ function renderRetried(ev: Extract<ChatEvent, { kind: "retried" }>): HTMLElement
   line.appendChild(txt);
   line.title = "the API returned a retryable error (rate-limit / overload); the CLI backed off and retried, then output resumed";
   turn.appendChild(line);
+  return turn;
+}
+
+// The FAILED counterpart of renderRetried (the user 2026-07-25): the CLI exhausted its retry attempts and
+// the turn died. Same slim rail-anchored shape, but in the blocked/red voice — this storm produced nothing,
+// and the note must never read like a recovery. The error text itself follows as the apiErrorNote card.
+function renderRetryGaveUp(ev: Extract<ChatEvent, { kind: "retryGaveUp" }>): HTMLElement {
+  const turn = el("div", "turn turn-retried turn-gaveup");
+  turn.appendChild(dot("red"));
+  const line = el("div", "retried-line");
+  const n = ev.retries || 0;
+  const txt = el("span", "retried-text gaveup-text");
+  txt.textContent = `API errors — gave up after ${n} ${n === 1 ? "retry" : "retries"}`;
+  line.appendChild(txt);
+  line.title = "the API kept returning retryable errors" + (ev.errorKind ? ` (${ev.errorKind})` : "")
+    + "; the CLI backed off and retried until its attempts ran out, then ended the turn with no output";
+  turn.appendChild(line);
+  return turn;
+}
+
+// The durable red card for a turn that DIED on an API error — the transcript's own error record, worn as
+// error chrome instead of an agent bubble (the user 2026-07-25: "I'd like to see a very visible error").
+// Reuses the live card's .apierror-* dress so the two read as the same event; carries no buttons — the
+// LIVE card (renderApiError, swapped in by the kernel while this record still blocks the session) owns
+// Retry/auto-retry, and once the session has moved on there is nothing left to retry here.
+function renderApiErrorNote(ev: Extract<ChatEvent, { kind: "apiErrorNote" }>): HTMLElement {
+  const turn = el("div", "turn turn-apierror");
+  turn.appendChild(dot("red"));
+  const card = el("div", "apierror-card apierror-note");
+  const head = el("div", "apierror-head");
+  const badge = el("span", "apierror-badge");
+  badge.textContent = ev.status ? `API error · ${ev.status}` : "API error";
+  head.appendChild(badge);
+  card.appendChild(head);
+  const body = el("div", "apierror-body");
+  body.textContent = ev.md || "The turn stopped on an API error.";
+  card.appendChild(body);
+  turn.title = "this turn died on an API error — whatever it was going to say was never produced";
+  turn.appendChild(card);
   return turn;
 }
 
@@ -2607,13 +2657,15 @@ function refreshPostalDots() {
 }
 
 // A Romp Postal Service message, as a compact identity-coloured card.
-// One-line summary for a postal card: the incoming Haiku caption, else the first non-empty line of the
-// body (sent mail carries no caption), truncated. The full message lives behind a click-to-expand.
+// One-line summary for a postal card: the judge's gist when one exists (the recipient session's caption
+// of this message, joined by msg id — the kernel now fills it for OUTGOING mail too), else the first
+// non-empty line of the body. The fallback is NOT hard-truncated here: a 100-char slice parked its "…"
+// mid-line and wasted the rest (the user 2026-07-25) — CSS clamps the summary to two full lines instead,
+// and the gist replaces it on a later render once the recipient's judge has captioned the message.
 function postalServiceSummary(ev: Extract<ChatEvent, { kind: "postal-service" }>): string {
   const cap = ev.summary && ev.summary.trim();
   if (cap) return cap;
-  const first = (ev.body || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
-  return first.length > 100 ? first.slice(0, 99).trimEnd() + "…" : first;
+  return (ev.body || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
 }
 const collapseWs = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -2706,11 +2758,19 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
     const caret = el("span", "postal-service-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
     const sumText = el("span", "postal-service-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
     const full = el("div", "postal-service-full md"); full.innerHTML = md(ev.body); highlight(full);
-    sum.title = "click to expand the full message";
-    sum.addEventListener("click", () => {
-      const open = body.classList.toggle("expanded");
+    // KEYED expand (the user 2026-07-25: "it expands for like a second and then collapses again") —
+    // the old hand-rolled classList.toggle lived only on this DOM node, and the next kernel push
+    // rebuilds the card, silently closing it. Same openFolds mechanism as every other keyed fold;
+    // keyed by message id when the log resolved one, else the carrying atom.
+    const pkey = "postal:" + (ev.mid || ev.uuid || "");
+    const dress = () => {
+      const open = body.classList.contains("expanded");
       caret.textContent = open ? "▾" : "▸";
-    });
+      sum.title = open ? "click to collapse" : "click to expand the full message";
+    };
+    applyFold(body, "expanded", pkey);
+    dress();
+    sum.addEventListener("click", () => { rememberFold(body, "expanded", pkey); dress(); });
     body.classList.add("postal-service-expandable");
     body.appendChild(sum);
     body.appendChild(full);

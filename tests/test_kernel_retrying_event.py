@@ -47,7 +47,9 @@ class RetryingEmit(unittest.TestCase):
     def test_backend_counts_each_api_retry_and_writes_a_recovery_marker(self):
         # one backoff attempt → +1; first real output after a storm → the durable marker, then reset
         self.assertIn('self.retry_count += 1', BACKEND_SRC)
-        self.assertIn('if self.retrying and self.retry_count:     # first real output after a storm', BACKEND_SRC)
+        # (2026-07-25: an ERROR-stamped settle takes the gave-up branch first — recovery is the elif)
+        self.assertIn('elif self.retrying and self.retry_count:   # first real output after a storm', BACKEND_SRC)
+        self.assertIn('append_retry_gave_up(self.backend.state_dir, self.sid, self.retry_count,', BACKEND_SRC)
         self.assertIn('append_retry_recovered(self.backend.state_dir, self.sid, self.retry_count)', BACKEND_SRC)
         # reset on recovery AND on turn-end (a turn that errored out without recovering leaves NO note)
         self.assertIn('self.retry_count = 0', BACKEND_SRC)

@@ -397,19 +397,27 @@ class OpenerExtend(unittest.TestCase):
         jd.plan_llm = (lambda text, menu, **kw:
                        '{"ops":[{"why":"x","do":"mint","text":"Fix mobile chat width"}]}')
 
+        # Since 2026-07-25 (the workless-ended-segment guard) the reply-less FIRST fragment places
+        # via its own mint-only PROMPT-run instead of a full work-run (a work-run on a segment with no
+        # assistant output is the judge-fabrication hole) — so the opener now fields BOTH fragments:
+        # the first with no sibling (mints), the second offered the first's node (extends).
         def fake_opener(text, menu, sibling_num=None, **kw):
             offered.append(sibling_num)
-            return '{"ops":[{"why":"same ask","do":"extend","goal":%d}]}' % sibling_num
+            if sibling_num:
+                return '{"ops":[{"why":"same ask","do":"extend","goal":%d}]}' % sibling_num
+            return '{"ops":[{"why":"new ask","do":"mint","text":"Fix mobile chat width"}]}'
         jd.opener_llm = fake_opener
         jd.group_llm = lambda menu, **k: '{"ops":[]}'
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
-        self.assertEqual(offered, [1], "the opener was offered the sibling's menu number")
-        self.assertEqual(len(st["nodes"]), 1, "the fragment minted nothing")
+        self.assertEqual(offered, [None, 1],
+                         "first fragment mints (no sibling); the second is offered the sibling's number")
+        self.assertEqual(len(st["nodes"]), 1, "the fragment minted nothing beyond the one node")
         top = next(iter(st["nodes"]))
         pkeys = [k for k in st["placements"] if k.endswith("#p")]
-        self.assertEqual(len(pkeys), 1)
-        self.assertEqual(st["placements"][pkeys[0]], top, "the fragment landed on the sibling's node")
+        self.assertEqual(len(pkeys), 2, "each fragment's prompt-run placed once")
+        for k in pkeys:
+            self.assertEqual(st["placements"][k], top, "both fragments landed on the one node")
         self.assertEqual(len(st["nodes"][top].get("trail") or []), 2,
                          "both segments are evidence on the one node")
 

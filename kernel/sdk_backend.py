@@ -258,9 +258,15 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
         content = [d for b in (getattr(msg, "content", []) or []) if (d := _block_to_dict(b))]
         if not content:
             return None
-        return {"type": "assistant", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
-                "message": {"role": "assistant", "model": getattr(msg, "model", "") or "",
-                            "content": content, "stop_reason": getattr(msg, "stop_reason", None)}}
+        a = {"type": "assistant", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+             "message": {"role": "assistant", "model": getattr(msg, "model", "") or "",
+                         "content": content, "stop_reason": getattr(msg, "stop_reason", None)}}
+        if getattr(msg, "error", None):
+            # the CLI's failure settle (error-stamped, see _handle_message) — the SAME tag the file
+            # adapter derives from isApiErrorMessage, so the live atom renders as the error card, is
+            # never orphaned as a lost reply, and never re-asserts 'working' (_forward skips it).
+            a["isApiError"] = True
+        return a
     if n == "UserMessage":
         c = getattr(msg, "content", None)
         content = [d for b in c if (d := _block_to_dict(b))] if isinstance(c, list) else (
@@ -489,6 +495,22 @@ def append_retry_recovered(state_dir: Path, sid: str, retries: int, t: int | Non
     p = Path(state_dir) / "states" / (sid + ".jsonl")
     p.parent.mkdir(parents=True, exist_ok=True)
     rec = {"t": int(time.time()) if t is None else int(t), "retriesRecovered": int(retries)}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def append_retry_gave_up(state_dir: Path, sid: str, retries: int, kind: str = "",
+                         t: int | None = None) -> None:
+    """Record that an api_retry storm EXHAUSTED — the CLI gave up and settled the turn with its error
+    message instead of output (the user 2026-07-25: a 10-attempt storm ended and the chat's durable note
+    read "Recovered after 10 retries", the opposite of what happened). Twin of append_retry_recovered,
+    its own key ("retriesGaveUp") so every keyed reader skips it; the kernel turns it into a persistent
+    "gave up after N retries" chat note right where the storm died. `kind` is the CLI's own error stamp
+    (AssistantMessage.error: "server_error", "rate_limit", …), kept for the note's tooltip."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()) if t is None else int(t), "retriesGaveUp": int(retries),
+           "errorKind": str(kind or "")}
     with open(p, "a") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -1556,9 +1578,20 @@ class SdkSession:
             # Terminal statuses clear from EITHER message kind — a TaskStop can suppress the notification.
             self._on_task_event(msg.subtype, msg.data if isinstance(msg.data, dict) else {})
         elif isinstance(msg, AssistantMessage):
-            if self.retrying and self.retry_count:     # first real output after a storm → durable recovery marker
+            # The CLI's FAILURE settle wears an AssistantMessage too: when a storm exhausts its retries it
+            # writes the error itself as the reply text ("API Error: 529 Overloaded…") and stamps the
+            # message with `error` (the SDK's designed flag — "server_error", "rate_limit", …; the same
+            # stamp the transcript record carries as isApiErrorMessage). Treating THAT message as "real
+            # output" recorded the storm as recovered — the chat's durable note read "Recovered after 10
+            # retries" over a turn that produced nothing (the user 2026-07-25). A stamped-error message
+            # ends the storm as a GIVE-UP: its own durable marker, never a recovery.
+            if getattr(msg, "error", None):
+                if self.retrying and self.retry_count:
+                    append_retry_gave_up(self.backend.state_dir, self.sid, self.retry_count,
+                                         kind=str(msg.error))
+            elif self.retrying and self.retry_count:   # first real output after a storm → durable recovery marker
                 append_retry_recovered(self.backend.state_dir, self.sid, self.retry_count)
-            self.retrying = False                      # real output is flowing → the API recovered
+            self.retrying = False                      # either way the storm is over (recovered, or settled in error)
             self.retry_count = 0
             self.retry_info = None
             m = getattr(msg, "model", None)
@@ -2890,8 +2923,9 @@ class SdkBackend:
         # NOW, so re-assert 'working' if a prior state write settled ahead of it (e.g. a separate turn
         # queued in the CLI that started streaming after the previous turn's Result). Only on the
         # transition, so it never spams the log. This is what makes the signal self-heal without a count.
-        if not atom.get("_echo_text") and not atom.get("command") and not sess._cli_working:
-            sess._mark("working")
+        if not atom.get("_echo_text") and not atom.get("command") and not atom.get("isApiError") \
+                and not sess._cli_working:
+            sess._mark("working")   # (an isApiError settle is the turn DYING, not producing — never 'working')
         self._wake_push()
 
     def _wake_push(self):

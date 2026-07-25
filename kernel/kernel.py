@@ -6266,6 +6266,32 @@ def _retry_recoveries(sid):
     return out
 
 
+def _retry_gaveups(sid):
+    """Durable GAVE-UP markers from states/<sid>.jsonl — {"t":…,"retriesGaveUp":N,"errorKind":…} lines the
+    SDK backend writes when an api_retry storm exhausts and the CLI settles the turn with its error text
+    instead of output (append_retry_gave_up; the user 2026-07-25: the note used to read "Recovered after
+    10 retries" over a turn that produced nothing). Twin of _retry_recoveries, so build_session can
+    interleave a persistent "gave up after N retries" note right where the storm died."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    out = []
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"retriesGaveUp"' not in line:          # cheap prefilter — most lines are plain state records
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                n = o.get("retriesGaveUp")
+                if isinstance(n, int) and n > 0 and o.get("t"):
+                    out.append({"t": int(o["t"]), "retries": n, "errorKind": str(o.get("errorKind") or "")})
+    except OSError:
+        return []
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
 def _atom_md(a):
     """Joined text-block content of an assistant atom (thinking/tool_use skipped) — for the orphan-reply
     dedup, which compares a lost reply's text against what the transcript actually kept."""
@@ -6950,15 +6976,31 @@ def _hydrate_postal(events, index):
         if _msgsum[0] is None:
             _msgsum[0] = _msg_summaries()
         return _msgsum[0].get(mid)
+    def enrich_out(card, ev):
+        # OUTGOING gist (the user 2026-07-25): the sender's card used to show a raw body prefix while the
+        # timeline showed a real gist — the caption exists (the RECIPIENT's judge captions the message it
+        # received, keyed by msg id), the out-card just never joined it. The send tool's output carries no
+        # id, so join through the postal log: the sent row wearing this exact body, closest in time to the
+        # send when the same text went out more than once. No row / no caption yet → no summary field, and
+        # the client falls back to its two-line clamp until the recipient's judge has run.
+        recs = [r for r in index.values() if r["body"] == card["body"]]
+        if recs:
+            et = em.parse_z(ev.get("ts") or "") or 0
+            rec = min(recs, key=lambda r: abs((r["t"] or 0) - et)) if et else recs[-1]
+            card["mid"] = rec["id"]
+            cap = caption_for(rec["id"])
+            if cap:
+                card["summary"] = cap
+        return card
     for ev in events:
         if ev.get("kind") == "tool" and _SEND_TOOL_RE.search(ev.get("name") or ""):
             card = _postal_out_card(ev)
             if card:
-                out.append(card); continue
+                out.append(enrich_out(card, ev)); continue
         if ev.get("kind") == "tool" and ev.get("name") == "Bash":
             card = _cli_send_card(ev)
             if card:
-                out.append(card); continue
+                out.append(enrich_out(card, ev)); continue
         text = ev.get("md") if ev.get("kind") == "user" else (ev.get("output") if ev.get("kind") == "tool" else "")
         ids = em.POSTAL_RE.findall(text or "")
         if ids:
@@ -8772,6 +8814,7 @@ def build_session(sid, now, tmux=None):
     # the recovery markers — the /effort reconnect leaves no transcript atom, so this pins when the new effort
     # took effect and survives scroll-back (and the next message, which pruned the ephemeral /effort chip).
     recoveries = _retry_recoveries(sid); _ri = 0
+    gaveups = _retry_gaveups(sid); _gi = 0            # the storm that DIDN'T recover → "gave up after N retries"
     efforts = _effort_changes(sid); _ei = 0
     # Orphan replies (the user 2026-07-21): assistant text that streamed live but the transcript never kept
     # (an API-errored try). Interleave it back at its timestamp, DEDUP'd against what the disk DID keep — a
@@ -8786,7 +8829,7 @@ def build_session(sid, now, tmux=None):
                 if _tx:
                     _disk_texts.add(_tx)
     def _flush_recoveries(upto):
-        nonlocal _ri, _ei, _oi
+        nonlocal _ri, _ei, _oi, _gi
         while _oi < len(orphans) and (upto is None or orphans[_oi]["t"] <= upto):
             _o = orphans[_oi]; _oi += 1
             _ot = _o["text"].strip()
@@ -8798,6 +8841,11 @@ def build_session(sid, now, tmux=None):
             _r = recoveries[_ri]; _ri += 1
             events.append({"kind": "retried", "retries": _r["retries"], "ts": iso(_r["t"]),
                            "uuid": "retried:%d" % _r["t"]})
+        while _gi < len(gaveups) and (upto is None or gaveups[_gi]["t"] <= upto):
+            _g = gaveups[_gi]; _gi += 1                    # the storm that exhausted → a RED durable note, right
+            events.append({"kind": "retryGaveUp", "retries": _g["retries"],   # above the error text it settled with
+                           "errorKind": _g["errorKind"], "ts": iso(_g["t"]),
+                           "uuid": "gaveup:%d" % _g["t"]})
         while _ei < len(efforts) and (upto is None or efforts[_ei]["t"] <= upto):
             _e = efforts[_ei]; _ei += 1
             events.append({"kind": "effortApplied", "effort": _e["effort"], "ts": iso(_e["t"]),
@@ -8920,6 +8968,18 @@ def build_session(sid, now, tmux=None):
                                 continue                     # plumbing; if nothing meaningful remains (e.g. /compact's
                                                              # output was ONLY notices + the "Compacted" confirmation),
                                                              # drop the atom — the compaction divider below covers it.
+                        if a.get("isApiError"):
+                            # The CLI's failure settle — the error TEXT written as an assistant record. As a
+                            # plain bubble it read like the agent speaking, and once the live blocked-card
+                            # cleared, the only durable trace of a died turn was body text that scrolls like
+                            # prose (the user 2026-07-25: after a 10-retry storm "I'd like to see a very
+                            # visible error"). A dedicated kind renders the RED api-error chrome durably in
+                            # history; the LIVE bottom card (kind "apiError") keeps the buttons, and its
+                            # emitter drops this note while both would show the same record.
+                            events.append({"kind": "apiErrorNote", "md": txt,
+                                           "status": a.get("apiErrorStatus"),
+                                           "uuid": a.get("uuid"), "ts": ts})
+                            continue
                         ev = {"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts}
                         if _interrupt_settle(events, txt, a):   # the null settle-reply closing an interrupted
                             ev["interruptSettle"] = True        # turn → rendered as seam marker, not a bubble
@@ -9096,6 +9156,11 @@ def build_session(sid, now, tmux=None):
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
     if aerr:
+        # While the session is still blocked on THIS error, the live card below carries the same record
+        # with the buttons and countdown — drop the durable note so the error doesn't show twice. The
+        # note re-appears (from the same atom) the moment the session moves on and the live card clears.
+        events = [ev for ev in events
+                  if not (ev.get("kind") == "apiErrorNote" and ev.get("uuid") == aerr.get("uuid"))]
         events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"]})
     # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
     # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)

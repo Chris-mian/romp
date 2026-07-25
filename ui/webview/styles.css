@@ -826,6 +826,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .turn-retried, .turn-effort { padding-top: 4px; padding-bottom: 4px; }
 .turn-retried .dot, .turn-retried .time-marker, .turn-effort .dot, .turn-effort .time-marker { top: 10px; }
 .retried-line, .effort-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; letter-spacing: 0.02em; }
+/* the FAILED twin — "API errors — gave up after N retries": same slim line, in the blocked/red voice,
+   so a storm that produced nothing never reads like a recovery (the user 2026-07-25) */
+.gaveup-text { color: var(--st-blocked-bg); font-weight: 600; }
+/* the durable record of a died turn — the live card's chrome without its buttons; slightly dimmer body
+   so history reads calmer than the ACTIVE blocked card while staying unmistakably an error */
+.apierror-note .apierror-body { color: var(--dim); }
 /* compact-mode collapsed tool run → one line ("▸ 3 Edits, 2 Reads"); click to expand/collapse */
 .turn-toolgroup .dot, .turn-toolgroup .time-marker { top: 10px; }
 .toolgroup-line { color: var(--dim); font-size: 0.9em; line-height: 1.4; cursor: pointer; width: fit-content; padding-right: 6px; }
@@ -1312,9 +1318,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .postal-service-expandable .postal-service-summary { cursor: pointer; }
 .postal-service-expandable .postal-service-summary:hover .postal-service-summary-text { text-decoration: underline; text-underline-offset: 2px; }
 .postal-service-expand-caret { flex: 0 0 auto; font-size: 0.78em; opacity: 0.7; }
-.postal-service-summary-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* the collapsed gist: at most two FULL lines, ellipsized by the box (the user 2026-07-25 — the old
+   100-char pre-truncation parked its "…" mid-line and wasted the second line) */
+.postal-service-summary-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .postal-service-full { display: none; margin-top: 7px; }
 .postal-service-expandable.expanded .postal-service-full { display: block; }
+/* expanded = the full message ALONE (the user 2026-07-25: the preview repeated the same words above the
+   body) — the summary row shrinks to its caret, which stays as the collapse control */
+.postal-service-expandable.expanded .postal-service-summary-text { display: none; }
 
 /* NATIVE Claude Code teammate/agent message (renderTeammate) — its OWN neutral look, deliberately UNLIKE
    the romp postal card above: a DASHED monochrome frame (no per-peer colour bar, no colour-mix wash, no

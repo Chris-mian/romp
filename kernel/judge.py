@@ -3530,6 +3530,25 @@ def plan_units(session, store=None):
             is_open_final = turn_open and si == len(segs) - 1
             trig = _seg_anchor(seg)      # trigger, else the segment head — a minted node always gets an anchor
             vq = _mint_quote(seg)
+            if not is_open_final and not _has_asst_work(seg["atoms"]):
+                # The segment ENDED with no assistant work at all — the turn died before producing anything
+                # (an API-error storm that exhausted; isApiError records don't count, same rule as the
+                # captioner). A work/nudge/delegation unit here hands the planner "USER ASKED: …" with no
+                # reply and frames it as a COMPLETED stretch — and a capable planner then answers the
+                # question FROM ITS OWN KNOWLEDGE and files done: solar_battery's wiring ask got a done
+                # verdict + a fully confabulated summary off a turn whose only record was "API Error: 529"
+                # (the user 2026-07-25). The ASK is still real: place it (mint-only prompt-run — its op
+                # filter cannot file done), so the card sits OPEN, which is the truth. Everything else
+                # (a nudge/peer/system segment with no reply) files nothing — an unanswered status check
+                # stays re-nudgeable, a workless delegation stays unfiled.
+                if (_seg_human(seg) and not _seg_followup(seg) and not _seg_nudge(seg)
+                        and not _seg_peer(seg)):
+                    ptext = _prompt_text(seg["atoms"])
+                    if _is_cmd:
+                        ptext = _strip_cmd_prefix(ptext, seg)
+                    if ptext:
+                        out.append((seg["id"], "prompt", seg["t"], ptext, True, None, trig, vq))
+                continue
             if _seg_peer(seg):                            # POSTAL segment → DELEGATION work-run (files under the courier's goal)
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
                     out.append((seg["id"], "delegation", seg["t"], work_text, False, None, trig, vq))
