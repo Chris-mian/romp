@@ -87,7 +87,7 @@ interface AskItem {
   summaryAnchorUuid?: string | null;               // click the summary line → the completion turn's wrap-up block (kernel build_feed completed pin; cited/latest-prose fallbacks — the user 2026-07-14)
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
-  warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp --debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
+  warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
   awaiting?: { why?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Waiting on task" pill (expands the list, like Sub-goals) replaces the boxed why.
@@ -1834,7 +1834,7 @@ function applyModalArtifacts(host: HTMLElement, it: AskItem): void {
 }
 
 // Debug-mode judge warnings (the user 2026-07-09): every judge failure touching this card, appended
-// below the tree/artifacts. The kernel only emits warnRows while `romp --debug on`, so the section
+// below the tree/artifacts. The kernel only emits warnRows while `romp debug on`, so the section
 // simply never exists in normal mode. One line per failure (time · judge · kind — evidence); a row
 // captured in debug mode expands (native <details>) to the failing call's full input + reply, so a
 // rejection is inspectable the moment it happens, without reproducing it.

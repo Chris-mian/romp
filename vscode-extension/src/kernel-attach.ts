@@ -2,7 +2,7 @@
 // tested headlessly (extension.ts can't be imported in a node test — it pulls in `vscode`).
 //
 // The rule (the user's 2026-06-13 ruling): a front end NEVER spawns the kernel itself. It attaches to
-// a manager-owned kernel on its configured port; if none is there, it asks the `romp --on` manager to
+// a manager-owned kernel on its configured port; if none is there, it asks the `romp up` manager to
 // ENSURE one (the manager spawns + owns it), then waits for it to come up and attaches. This keeps a
 // single owner (no invisible orphans, no two front ends fighting over the port) while still giving the
 // "point a front end at a port and a kernel appears" UX.
@@ -15,7 +15,7 @@ export interface AttachDeps {
   // await-able sleep (injected so tests run instantly)
   delay: (ms: number) => Promise<void>;
   // How long to wait for a freshly-ensured kernel to start serving. A RESTART
-  // (romp --refresh) also lands here — healthz is down while the manager
+  // (romp refresh) also lands here — healthz is down while the manager
   // respawns, and a cold kernel boot (reconcile + bundle check) can take well
   // over 5s — so the budget must cover a restart, not just a clean spawn
   // (the user 2026-07-13: a reload during a refresh raised the failure toast

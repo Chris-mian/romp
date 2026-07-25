@@ -14,11 +14,11 @@ Message sibling sessions with the postal MCP tools (each tool's own description 
 
 Addressing is live-only: you can message only currently-live sessions (see `list_agents`). Dead names error, with no parked mail or reviving.
 
-From the shell (also how the human drives it): `romp --mail send <name> "<text>"`, `romp --mail inbox|agents|sent`, `romp --mail working "<note>"`, `romp --mail recall <name> [id]`.
+From the shell (also how the human drives it): `romp mail send <name> "<text>"`, `romp mail inbox|agents|sent`, `romp mail working "<note>"`, `romp mail recall <name> [id]`.
 
 ## On a remote machine
 
-If you SSH'd into another machine and are running romp there, run `romp --mail remote` to connect it to the laptop's bus. It configures the remote side and prints the one tunnel command to run from the laptop (an `ssh -R` reverse forward, or a `~C` escape on the open connection), then auto-detects when it connects. Messaging before this setup nudges you to run it.
+If you SSH'd into another machine and are running romp there, run `romp mail remote` to connect it to the laptop's bus. It configures the remote side and prints the one tunnel command to run from the laptop (an `ssh -R` reverse forward, or a `~C` escape on the open connection), then auto-detects when it connects. Messaging before this setup nudges you to run it.
 
 ## Norms
 

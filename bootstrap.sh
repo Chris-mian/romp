@@ -86,4 +86,4 @@ fi
 
 echo
 echo "romp is installed at $DIR"
-echo "Open a new terminal (or 'source' your shell rc), then run:  romp -l"
+echo "Open a new terminal (or 'source' your shell rc), then run:  romp"

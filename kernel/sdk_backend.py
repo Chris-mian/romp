@@ -2112,7 +2112,7 @@ class SdkBackend:
         Queued turns are already mirrored to the registry (_persist_queue). A cut turn's state log
         keeps its trailing 'working' (shutdown() writes no idle/waiting; _on_session_gone skips the
         settle when ended is set) — exactly the marker the NEXT kernel's boot reconcile resumes by.
-        Bounded so a routine `romp --refresh` stays snappy."""
+        Bounded so a routine `romp refresh` stays snappy."""
         with self._lock:
             sessions = list(self.sessions.values())
         inflight = sum(1 for s in sessions if s.inflight)

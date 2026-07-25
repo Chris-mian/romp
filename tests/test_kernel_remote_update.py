@@ -277,10 +277,11 @@ class RompUpdateCLI(unittest.TestCase):
 
     def test_dispatch_routes_update_in_the_bash_cli(self):
         # Dash-only since 2026-07-25: bare `update` names a session (the retired-word
-        # notice covers the old spelling); only `--update` routes to romp-update.
         src = open(os.path.join(BIN, "romp")).read()
-        self.assertIn('"${1:-}" == "--update"', src, "--update routes to romp-update")
-        self.assertNotIn('"${1:-}" == "update"', src, "bare `update` must stay free to name a session")
+        # Round 3 (2026-07-25): commands are bare words again — `update` is the
+        # spelling, and the retired `--update` flag fails naming it.
+        self.assertIn('"${1:-}" == "update"', src, "bare `update` routes to romp-update")
+        self.assertIn('--update)', src, "the retired --update spelling gets a loud hint")
         self.assertIn("exec romp-update", src)
 
     def test_no_kernel_errors_cleanly(self):

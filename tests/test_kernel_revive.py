@@ -86,8 +86,9 @@ class ReviveSession(unittest.TestCase):
         self._stub_run(returncode=0)
         km._revive_session(SID)
         cmd, kw = self.runs[0]
-        self.assertEqual(cmd, [os.path.join(BIN, "romp"), "testsess", "--resume", SID, "--detach"],
-                         "the launcher resume path the old postal revive used, now owned by the kernel")
+        self.assertEqual(cmd, [os.path.join(BIN, "romp"), "resume", SID, "--name", "testsess", "--detach"],
+                         "the launcher resume path the old postal revive used, now owned by the kernel "
+                         "(round-3 spelling, 2026-07-25: resume <id> --name <name>)")
         self.assertEqual(kw.get("cwd"), os.path.expanduser("~"),
                          "a missing recorded dir falls back to $HOME (old postal behavior)")
         self.assertEqual([m["type"] for m in self.focused], ["focus"])

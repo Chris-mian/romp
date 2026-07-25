@@ -2140,7 +2140,7 @@ class TimelinePanel {
   }
 
   // Clear a DEAD lane's leftover row from the timeline (the Clear pill on a struck-through lane). The kernel
-  // holds the dismissal IN MEMORY only, so it does NOT survive a `romp --refresh` (the user 2026-07-02) —
+  // holds the dismissal IN MEMORY only, so it does NOT survive a `romp refresh` (the user 2026-07-02) —
   // a mistakenly-cleared lane comes back on restart. Web-shell only (no Obsidian/Node path: nothing to persist).
   _dismissLane(id) {
     try {
@@ -2672,7 +2672,7 @@ class TimelinePanel {
       // as a faded/struck lane while it's still in the activity window, with NONE of the live controls (no
       // feed/postal toggle, no model picker, no chip, no ctx battery — all empty), so the row right of the name
       // is free. The pill mirrors the feed cards' Clear button chrome (outlined, dim → red fill on hover) and
-      // dismisses the leftover lane. The kernel forgets the dismissal on restart, so `romp --refresh` brings a
+      // dismisses the leftover lane. The kernel forgets the dismissal on restart, so `romp refresh` brings a
       // mistakenly-cleared lane back. pointerdown (not click): a poll redraw between mousedown/up would eat a
       // 'click', same as the feed/postal toggles above.
       if (!s.live) {
@@ -2686,7 +2686,7 @@ class TimelinePanel {
         chit.style.cursor = 'pointer'; chit.setAttribute('aria-label', 'clear this ended session from the timeline');
         chit.addEventListener('mouseenter', (e) => {
           box.setAttribute('fill', CL_RED); box.setAttribute('stroke', CL_RED); box.setAttribute('stroke-opacity', '1'); ctx.setAttribute('fill', '#ffffff');
-          this.showTip("Clear this ended session from the timeline<div style='opacity:.65;margin-top:2px'>a kernel restart (romp --refresh) brings it back</div>", e);
+          this.showTip("Clear this ended session from the timeline<div style='opacity:.65;margin-top:2px'>a kernel restart (romp refresh) brings it back</div>", e);
         });
         chit.addEventListener('mousemove', (e) => this.moveTip(e));
         chit.addEventListener('mouseleave', () => {

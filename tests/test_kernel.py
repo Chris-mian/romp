@@ -4810,7 +4810,8 @@ class ViewBuilder(unittest.TestCase):
         argv = calls[0]
         self.assertTrue(str(argv[0]).endswith("/romp"),
                         "the kernel owns the resume (bin/romp), never the removed postal subcommand")
-        self.assertEqual(argv[-3:], ["--resume", "deadsid000", "--detach"])
+        # --name pins the recorded name; this fixture has none, so _name_of falls back to the sid
+        self.assertEqual(argv[1:], ["resume", "deadsid000", "--name", "deadsid000", "--detach"])
         self.assertNotIn("deadsid000", km._hidden_tabs(), "the revived tab is un-hidden")
 
     def test_split_reminders(self):
@@ -5150,11 +5151,21 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(out[0]["color"], {"bg": "#0000ff", "fg": "#ffffff"}, "recipient color resolved by name")
 
     def test_hydrate_postal_out_from_cli_bash_send(self):
-        """A `romp --mail send` Bash call → an outgoing card too, once delivery is confirmed."""
+        """A `romp --mail send` Bash call → an outgoing card too, once delivery is confirmed. The
+        dashed spelling is the pre-round-3 one — old transcripts carry it forever, so it must keep
+        matching."""
         ev = {"kind": "tool", "name": "Bash", "input": 'romp --mail send beta "hi there"',
               "output": "[romp mail] delivered to beta", "isError": False, "uuid": "t2", "ts": "x"}
         out = km._hydrate_postal([ev], {})
         self.assertEqual((out[0]["direction"], out[0]["peer"], out[0]["body"]), ("out", "beta", "hi there"))
+
+    def test_hydrate_postal_out_from_cli_bash_send_bare_spelling(self):
+        """`romp mail send` (the round-3 spelling, 2026-07-25) matches the same outgoing-card path."""
+        ev = {"kind": "tool", "name": "Bash", "input": 'romp mail send --kind question beta "when?"',
+              "output": "[romp mail] delivered to beta", "isError": False, "uuid": "t3", "ts": "x"}
+        out = km._hydrate_postal([ev], {})
+        self.assertEqual((out[0]["direction"], out[0]["peer"], out[0]["body"], out[0]["intent"]),
+                         ("out", "beta", "when?", "question"))
 
     def test_hydrate_postal_passes_through_unresolved(self):
         """A marker with no matching log entry stays a plain event (never half-rendered) — but KEEPS its
@@ -6107,9 +6118,93 @@ class ServeSecurity(unittest.TestCase):
         with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
             body = r.read().decode("utf-8", "replace")
-        self.assertIn("romp -l", body)                     # names the CLI that opens/prints the tokened link
+        self.assertIn("<code>romp</code>", body)           # names the CLI that opens/prints the tokened link
         self.assertNotIn("testtok", body)                  # never echoes the token itself
         self.assertNotIn("src=/chat", body)                # none of the real shell is served
+
+
+class NewSessionRoute(unittest.TestCase):
+    """POST /new — `romp new` (2026-07-25): the WS createSession op as a one-shot token-gated POST.
+    SDK is the default backend and there is NO silent fallback: an unavailable SDK answers ok:false
+    with the remedy; backend "tmux" threads the same _spawn_session the WS op uses. Runs the REAL
+    handler over loopback with the spawn/SDK seams patched (never a real session from a test)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def _post(self, payload):
+        import urllib.request
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d/new" % self.port, method="POST",
+            data=json.dumps(payload).encode(),
+            headers={"X-Romp-Token": "testtok", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode() or "{}")
+
+    def test_name_required_and_validated(self):
+        code, body = self._post({"dir": "/tmp"})
+        self.assertEqual(code, 400)
+        self.assertFalse(body["ok"])
+        code, body = self._post({"name": "bad name!"})
+        self.assertEqual(code, 400)
+        self.assertIn("letters, digits", body["error"])
+
+    def test_bad_dir_is_a_loud_refusal(self):
+        code, body = self._post({"name": "api", "dir": "/nonexistent-romp-test-dir"})
+        self.assertEqual(code, 200)
+        self.assertFalse(body["ok"])
+        self.assertIn("directory not found", body["error"])
+
+    def test_sdk_unavailable_never_falls_back_to_tmux(self):
+        saved_sdk, saved_live = km._sdk, km._live_names
+        km._sdk, km._live_names = (lambda: None), (lambda t: {})
+        try:
+            code, body = self._post({"name": "api", "dir": tempfile.gettempdir()})
+        finally:
+            km._sdk, km._live_names = saved_sdk, saved_live
+        self.assertEqual(code, 200)
+        self.assertFalse(body["ok"], "no silent tmux session when the SDK is missing")
+        self.assertIn("SDK backend unavailable", body["error"])
+
+    def test_existing_live_name_is_an_idempotent_ok(self):
+        saved_live = km._live_names
+        km._live_names = lambda t: {"api": "sid-existing"}
+        try:
+            code, body = self._post({"name": "api", "dir": tempfile.gettempdir()})
+        finally:
+            km._live_names = saved_live
+        self.assertEqual(code, 200)
+        self.assertEqual((body["ok"], body["existing"], body["id"]), (True, True, "sid-existing"))
+
+    def test_tmux_backend_threads_the_spawn(self):
+        calls = []
+        saved_spawn, saved_live = km._spawn_session, km._live_names
+        km._spawn_session, km._live_names = (lambda nm, cwd=None: calls.append((nm, cwd))), (lambda t: {})
+        try:
+            code, body = self._post({"name": "term1", "dir": tempfile.gettempdir(),
+                                     "backend": "tmux"})
+            for _ in range(100):                     # the spawn is threaded — wait for it
+                if calls:
+                    break
+                time.sleep(0.05)
+        finally:
+            km._spawn_session, km._live_names = saved_spawn, saved_live
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"] and body.get("pending"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "term1")
 
 
 class HostSuspend(unittest.TestCase):

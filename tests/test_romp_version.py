@@ -19,7 +19,7 @@ def test_report_flags_stale_served_bundle(monkeypatch=None):
     out = ver.report()
     assert "abc1234-dirty" in out
     assert "pid=9" in out
-    assert "feed.js" in out and "romp --refresh" in out    # stale flag present on the newer-on-disk bundle
+    assert "feed.js" in out and "romp refresh" in out    # stale flag present on the newer-on-disk bundle
 
 
 def test_report_handles_down_kernel():
