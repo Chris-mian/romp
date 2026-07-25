@@ -750,9 +750,9 @@ def _rgb(color):
         return [112, 136, 170]
 
 
-def _sessions(now):
+def _sessions(now, window=None):
     out = []
-    for fsid, path, anchor, name in jd.discover(now):
+    for fsid, path, anchor, name in jd.discover(now, window):
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
@@ -2657,12 +2657,22 @@ def _live_names(tmux):
     return {n: sid for sid in (tmux or {}) for n in [_name_of(sid)] if n}
 
 
-def _session_list(now, tmux):
+PICKER_WINDOW = 30 * 86400      # how far back the + picker can reach, vs jd.WINDOW's 48h caption horizon.
+PICKER_DEEP_CAP = 600           # row cap for that deep list (150 stays the cap for the fast first paint)
+#   30 days, and the deep list is fetched LAZILY — only once the picker is opened AND the user either scrolls
+#   to the bottom or starts typing (the user 2026-07-24, who wanted to scroll back through everything up to a
+#   month without it choking startup). So the first paint stays the cheap 48h list it always was, and the
+#   wider walk is paid for only by someone actually looking for an older session.
+
+
+def _session_list(now, tmux, window=None):
     """Picker payload: recent sessions, RUNNING ones first then by recency, each
-    {id,name,color,running,time,summary} — the shape render.ts's renderPicker expects."""
+    {id,name,color,running,time,summary} — the shape render.ts's renderPicker expects.
+    `window` None = the default 48h horizon (the fast first paint); PICKER_WINDOW = the deep list."""
     live = set(tmux or {})
     items = []
-    for s in _sessions(now)[:150]:
+    cap = 150 if window is None else PICKER_DEEP_CAP
+    for s in _sessions(now, window)[:cap]:
         sid = s["sid"]
         arch = jd.load_archive(sid) or {}
         items.append({"id": sid, "name": s["name"], "color": _name_color(sid),
@@ -15541,8 +15551,13 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     _cancel_pending.add(bare)
         elif msg and msg.get("type") == "requestSessions":
-            client["send"](json.dumps({"type": "sessionList",
-                                       "items": _session_list(int(time.time()), _tmux_sessions()),
+            # deep=true is the picker's LAZY second fetch — the 30-day list, asked for only once the user
+            # scrolls to the bottom or types in the search box. The echoed flag tells the webview which
+            # list it got, so a late fast reply can't clobber a deep one already on screen.
+            deep = bool(msg.get("deep"))
+            client["send"](json.dumps({"type": "sessionList", "deep": deep,
+                                       "items": _session_list(int(time.time()), _tmux_sessions(),
+                                                              PICKER_WINDOW if deep else None),
                                        "defaultDir": _tilde(_default_create_dir())}))   # prefill the new-session dir field
         elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))

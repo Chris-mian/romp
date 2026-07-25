@@ -3131,7 +3131,9 @@ def _sdk_last_sid(sid):
 
 
 _discover_lock = threading.Lock()
-_discover_cache = {"fp": None, "result": None}        # fingerprint → cached discover() result (see _discover_fingerprint)
+_discover_cache = {}     # window seconds → {"fp", "result"}: the cached discover() list for THAT horizon (see
+#                          _discover_fingerprint). Keyed by window because the picker asks for a wider one
+#                          than the 48h caption horizon; bounded by the number of distinct windows (2).
 _namefp_memo = {}    # names/ entry -> (its mtime, resolved project dir or None) — the fingerprint runs on
 #                      EVERY discover() call, so re-reading each entry every time was the kernel's hottest
 #                      call; keyed on the entry's own mtime, evicted when the entry goes away. Bounded by
@@ -3193,28 +3195,37 @@ def _discover_fingerprint():
     return tuple(fp)
 
 
-def discover(now):
-    """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within WINDOW —
+def discover(now, window=None):
+    """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within `window`
+    seconds (default WINDOW, 48h) —
     CACHED behind a directory-mtime fingerprint (the result only changes on a session add/rename/fork, not on
     a transcript append), so the feed + timeline + chat builds and both judge tiers share ONE filesystem walk
-    per change instead of re-walking every push. The cached list is read-only for all callers."""
+    per change instead of re-walking every push. The cached list is read-only for all callers.
+
+    `window` is a parameter so the + picker can reach back FURTHER than the caption horizon (the user
+    2026-07-24, who typed a 3-day-old session's name into the picker, got nothing, and had to start a new
+    session). 48h is the horizon for CAPTIONING a transcript; the picker inherited it by accident, which
+    silently hid all but the last two days of the fleet. Each window keeps its OWN entry under the same
+    fingerprint, so a picker open never invalidates or slows the hot 48h path, and the wide walk happens
+    only when the picker actually asks for it — never at boot."""
+    win = WINDOW if window is None else int(window)
     fp = _discover_fingerprint()
     if fp is not None:
         with _discover_lock:
-            if _discover_cache["fp"] == fp and _discover_cache["result"] is not None:
-                return _discover_cache["result"]
-    res = _discover_impl(now)
+            hit = _discover_cache.get(win)
+            if hit is not None and hit["fp"] == fp and hit["result"] is not None:
+                return hit["result"]
+    res = _discover_impl(now, win)
     if fp is not None:
         with _discover_lock:
-            _discover_cache["fp"] = fp
-            _discover_cache["result"] = res
+            _discover_cache[win] = {"fp": fp, "result": res}
     return res
 
 
-def _discover_impl(now):
+def _discover_impl(now, window=None):
     """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within
-    WINDOW: the session's anchor transcript plus any same-customTitle fork in its project dir.
-    File-based (names/), no tmux — works for headless sessions too.
+    `window` (default WINDOW): the session's anchor transcript plus any same-customTitle fork in its
+    project dir. File-based (names/), no tmux — works for headless sessions too.
 
     Perf (the user 2026-07-03: cold-kernel startup is slow): this WAS a pathlib walk — `proj.iterdir()`
     re-listed each project dir ONCE PER SESSION that lives in it, and `.suffix`/`.stem`/`.stat()` re-parsed +
@@ -3224,7 +3235,7 @@ def _discover_impl(now):
     out, seen = [], set()
     if not NAMES.is_dir():
         return out
-    cutoff = now - WINDOW
+    cutoff = now - (WINDOW if window is None else int(window))
     dir_jsonl = {}      # proj-dir str -> [(stem, path_str, mtime)] for its .jsonl files — scandir'd ONCE
     title_memo = {}     # path_str -> _custom_title(path_str), memoized (a fork is title-checked once, not per session)
 
