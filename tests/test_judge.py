@@ -4229,6 +4229,118 @@ class DeltaScopedDistill(unittest.TestCase):
                          "a block the fold has closed is history — it must not outrank the one still owed")
 
 
+class DistillAtDone(unittest.TestCase):
+    """A DONE goal is frozen for the user's review, so its takeaway is owed at the done VERDICT, not at
+    settle (the user 2026-07-24): keyed on settle, a just-finished focus card sat 76 minutes in Working
+    with no distill under way, because the session kept landing sub-steps under it and focus never moved.
+    rollup_status exports store['confirming'] (done verdict in, settle pending, status still 'working');
+    the distiller enters those tops alongside 'completed'; the due stamp is the done EVENT, so settle
+    alone never re-fires — only a reopen→re-done (a fresh done event) does. SYNTHETIC fixtures only."""
+
+    G = SID + ":g1"
+
+    def setUp(self):
+        self._saved = (jd.STATE, jd.STATESDIR, jd.distill_llm)
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)
+        jd.STATESDIR = Path(self._td) / "states"
+
+    def tearDown(self):
+        jd.STATE, jd.STATESDIR, jd.distill_llm = self._saved
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _write(self, status="working", confirming=True, log=None, **nd_extra):
+        records = [uline(T0, "build the widget", "u1", ps="typed"),
+                   aline(T0 + 10, "built it; tests green", "a1", "u1", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        node = {"id": self.G, "text": "build the widget", "parentId": None, "nodeComplete": True,
+                "blocked": False, "cleared": False, "trail": [sg["id"] for sg in segs],
+                "t": T0, "mt": T0 + 30, "summary": None,
+                "log": log if log is not None else [
+                    {"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21}]}
+        node.update(nd_extra)
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": self.G,
+                            "placements": {}, "status": {self.G: status},
+                            "confirming": [self.G] if confirming else [],
+                            "nodes": {self.G: node}})
+        return str(path)
+
+    def test_rollup_exports_the_confirming_window(self):
+        store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "lastNode": self.G,
+                 "nodes": {self.G: {"id": self.G, "text": "build the widget", "parentId": None,
+                                    "nodeComplete": True, "blocked": False, "cleared": False,
+                                    "trail": [], "t": T0, "mt": T0 + 30,
+                                    "log": [{"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21}]}}}
+        jd.rollup_status(store, False)
+        self.assertEqual(store["status"][self.G], "working", "the COLUMN holds until settle — no flicker")
+        self.assertEqual(store["confirming"], [self.G], "the done-but-unsettled fact is exported alongside")
+        g2 = SID + ":g2"
+        store["nodes"][g2] = {"id": g2, "text": "the next thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0 + 40, "mt": T0 + 50,
+                              "log": []}
+        store["lastNode"] = g2                         # focus moved on → the settle event
+        jd.rollup_status(store, False)
+        self.assertEqual(store["status"][self.G], "completed")
+        self.assertEqual(store["confirming"], [], "settled → out of the confirming window")
+
+    def test_due_is_the_newest_subtree_done_event(self):
+        c = SID + ":g2"
+        store = {"nodes": {self.G: {"id": self.G, "parentId": None, "mt": T0,
+                                    "log": [{"kind": "done", "ev_t": T0 + 20}]},
+                           c: {"id": c, "parentId": self.G, "mt": T0,
+                               "log": [{"kind": "done", "ev_t": T0 + 90}]}}}
+        self.assertEqual(jd._distill_due_t(store, self.G, False), T0 + 90,
+                         "a bottom-up umbrella's done lives on its children — the subtree's newest counts")
+        store["nodes"][c]["log"] = []
+        store["nodes"][self.G]["log"] = []
+        store["nodes"][self.G]["settledAt"] = T0 + 300
+        self.assertEqual(jd._distill_due_t(store, self.G, False), T0 + 300,
+                         "no done events (pre-diary store) → the settle stamp, then mt")
+
+    def test_a_confirming_top_distills_before_settle(self):
+        path = self._write()
+        jd.distill_llm = lambda *a, **k: "BACKGROUND: b.\nTAKEAWAY: shipped the widget.\nSOURCE: m1"
+        n = jd._distill_session(SID, path, NOW)
+        nd = jd.load_goals(SID)["nodes"][self.G]
+        self.assertEqual(n, 1, "the takeaway is written at the done verdict, before settle")
+        self.assertEqual(nd["summary"], "shipped the widget.")
+        self.assertEqual(nd["distilledMt"], T0 + 20, "stamped with the done EVENT, not a settle time")
+
+    def test_settle_alone_does_not_redistill(self):
+        log = [{"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21},
+               {"src": "romp", "kind": "settle", "ev_t": T0 + 300, "at": T0 + 300}]
+        path = self._write(status="completed", confirming=False, log=log,
+                           summary="shipped the widget.", distilledMt=T0 + 20)
+        jd.distill_llm = lambda *a, **k: self.fail("settle is not a distill event — the takeaway was written at done")
+        self.assertEqual(jd._distill_session(SID, path, NOW), 0)
+
+    def test_legacy_settle_stamp_stays_quiet(self):
+        # Pre-07-24 stores distilled AT settle: distilledMt == settledAt, with an older done event in the
+        # log. Re-keying the due on the done event must not re-enter every distilled card in the fleet at
+        # once (a deploy-wide re-distill storm).
+        log = [{"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21},
+               {"src": "romp", "kind": "settle", "ev_t": T0 + 300, "at": T0 + 300}]
+        path = self._write(status="completed", confirming=False, log=log,
+                           summary="shipped the widget.", distilledMt=T0 + 300)
+        jd.distill_llm = lambda *a, **k: self.fail("a settle-era stamp is current — grandfathered, no storm")
+        self.assertEqual(jd._distill_session(SID, path, NOW), 0)
+
+    def test_a_reopen_and_fresh_done_refires(self):
+        log = [{"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21},
+               {"src": "romp", "kind": "settle", "ev_t": T0 + 60, "at": T0 + 60},
+               {"src": "user", "kind": "reopen", "ev_t": T0 + 100, "at": T0 + 100},
+               {"src": "planner", "kind": "done", "ev_t": T0 + 250, "at": T0 + 251}]
+        path = self._write(status="completed", confirming=False, log=log,
+                           summary="the first takeaway", distilledMt=T0 + 20)
+        jd.distill_llm = lambda *a, **k: "TAKEAWAY: re-shipped after the follow-up.\nSOURCE: m1"
+        self.assertEqual(jd._distill_session(SID, path, NOW), 1,
+                         "a fresh done event after a reopen is the one re-distill worst case — it fires")
+        self.assertEqual(jd.load_goals(SID)["nodes"][self.G]["distilledMt"], T0 + 250,
+                         "the fresh done event is the new due")
+
+
 class ProceduralBlockStillSpeaks(unittest.TestCase):
     """A goal blocked ONLY by romp's own bookkeeping (a failed nudge, a mid-turn stop) still presents a
     where-this-stands line on its card (the user 2026-07-23: every card in Blocked shows a distilled
@@ -5625,7 +5737,12 @@ class LivePickerBrief(unittest.TestCase):
     goal's stored status is still 'working' (the planner hasn't classified the transient live state). The
     block-distiller briefs that focus top too, so the card carries a decision brief while you decide (the user
     2026-06-29: "when something is blocked from the picker, I still want a distiller summary on the card").
-    Gated on the live STATE log; the STORED status is left to the planner."""
+    Gated on the live STATE log; the STORED status is left to the planner.
+
+    ONCE PER PROMPT EPISODE (the user 2026-07-24): the gate keys on promptBriefedT vs the state log's
+    transition into the current picker/permission run (_live_prompt_since), NOT on briefedMt vs mt — mt
+    never moves mid-turn, so the old key slept through a SECOND prompt in the same open turn and the card
+    kept briefing a question the user had already answered."""
 
     def setUp(self):
         self._saved = (jd.GOALDIR, jd.STATESDIR, jd.STATE, jd.brief_llm, jd.distill_llm)
@@ -5681,7 +5798,7 @@ class LivePickerBrief(unittest.TestCase):
         jd.brief_llm = lambda goal, work, owed: (calls.append(1), "brief")[1]
         jd._distill_session(SID, path, NOW)
         jd._distill_session(SID, path, NOW)            # a 2nd pass while STILL parked
-        self.assertEqual(len(calls), 1, "briefed ONCE per episode (briefedMt == mt), not every producer pass")
+        self.assertEqual(len(calls), 1, "briefed ONCE per episode (promptBriefedT gate), not every producer pass")
 
     def test_not_at_a_live_prompt_is_not_briefed(self):
         path, g = self._setup("working")
@@ -5689,6 +5806,71 @@ class LivePickerBrief(unittest.TestCase):
         n = jd._distill_session(SID, path, NOW)
         self.assertEqual(n, 0, "no live picker/permission state → no live brief")
         self.assertIsNone(jd.load_goals(SID)["nodes"][g].get("blockSummary"), "blockSummary stays null")
+
+    def _append_states(self, *recs):
+        with open(jd.STATESDIR / (SID + ".jsonl"), "a") as f:
+            for t, state in recs:
+                f.write(json.dumps({"t": t, "state": state}) + "\n")
+
+    def test_a_new_prompt_episode_rebriefs_with_the_new_question(self):
+        # The stale-brief card (the user 2026-07-24, SYNTHETIC repro): the session parked on a question,
+        # was briefed, the user ANSWERED it (state → working), and the session parked on a NEW question in
+        # the SAME open turn — so the store's mt never moved. The old mt-keyed gate stayed closed and the
+        # card kept presenting the answered question; the episode gate re-briefs on the new park.
+        path, g = self._setup("picker")
+        briefs = iter(["Pick the retry budget: 3 or 5?", "Name the config key: timeout or deadline?"])
+        calls = []
+        jd.brief_llm = lambda goal, work, owed: (calls.append(1), next(briefs))[1]
+        jd._distill_session(SID, path, NOW)
+        self._append_states((NOW - 15, "working"), (NOW - 10, "picker"))   # answered → NEW question
+        jd._distill_session(SID, path, NOW)
+        nd = jd.load_goals(SID)["nodes"][g]
+        self.assertEqual(len(calls), 2, "a NEW prompt episode re-enters the gate")
+        self.assertEqual(nd["blockSummary"], "Name the config key: timeout or deadline?",
+                         "the card briefs the CURRENT question, not the answered one")
+        self.assertEqual(nd["promptBriefedT"], NOW - 10, "stamped with the new episode's own event")
+
+    def test_one_park_spanning_picker_and_permission_is_one_episode(self):
+        path, g = self._setup("picker")
+        calls = []
+        jd.brief_llm = lambda goal, work, owed: (calls.append(1), "brief")[1]
+        jd._distill_session(SID, path, NOW)
+        self._append_states((NOW - 15, "permission"))   # the same park, another prompt flavor — no exit between
+        jd._distill_session(SID, path, NOW)
+        self.assertEqual(len(calls), 1, "consecutive prompt states are ONE run — the episode starts where the run does")
+
+    def test_stored_block_plus_live_prompt_close_together(self):
+        # The two gates share the WORK but not the STAMP: one pass must close both (briefedMt for the
+        # stored block, promptBriefedT for the live episode) or they'd alternate — each pass reopening
+        # the other's gate — and burn an LLM call every producer tick.
+        path, g = self._setup("picker")
+        store = jd.load_goals(SID)
+        nd = store["nodes"][g]
+        with jd._authority():                          # test fixture writing the diary-owned cache directly
+            nd["blocked"], nd["blockWhy"] = True, "which port should the server bind?"
+            nd["log"] = [{"kind": "block", "ev_t": T0 + 60, "at": T0 + 60}]
+        store["status"][g] = "blocked"
+        jd.save_goals(SID, store)
+        calls = []
+        jd.brief_llm = lambda goal, work, owed: (calls.append(1), "Pick the port.")[1]
+        jd._distill_session(SID, path, NOW)
+        jd._distill_session(SID, path, NOW)
+        nd = jd.load_goals(SID)["nodes"][g]
+        self.assertEqual(len(calls), 1, "one pass closes BOTH gates; the second pass re-enters neither")
+        self.assertEqual(nd["briefedMt"], T0 + 60, "stored-block gate closed on the block's own event")
+        self.assertEqual(nd["promptBriefedT"], NOW - 20, "episode gate closed on the park's own event")
+
+    def test_live_prompt_since_reads_the_run_start(self):
+        (jd.STATESDIR / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in [
+            {"t": NOW - 90, "state": "working"},
+            {"t": NOW - 60, "awaiting": False},          # overlay rows never count as states
+            {"t": NOW - 50, "state": "picker"},
+            {"t": NOW - 40, "state": "permission"},      # still the same run
+        ]) + "\n")
+        self.assertEqual(jd._live_prompt_since(SID), NOW - 50, "the episode is the RUN's start, not its newest record")
+        (jd.STATESDIR / (SID + ".jsonl")).write_text(json.dumps({"t": NOW - 5, "state": "waiting"}) + "\n")
+        self.assertIsNone(jd._live_prompt_since(SID), "not parked → no episode")
+        self.assertIsNone(jd._live_prompt_since("no-such-fsid"), "no state file → no episode, never a crash")
 
 
 class QuoteTitleHeal(unittest.TestCase):

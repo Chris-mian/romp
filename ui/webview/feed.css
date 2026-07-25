@@ -346,6 +346,12 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fask-followedup { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); }
+/* "done, confirming" — the done verdict is in, only the settle event is pending (the user 2026-07-24):
+   a steady cue on the Working card, never an early column move (that flicker is what the settle gate
+   prevents). Outline pill in the done-check blue (--check-bg), the same family as the ✓ it will wear. */
+.fask-doneconfirming { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  color: var(--check-bg); border: 1px solid rgba(30, 161, 235, 0.55); }
 /* "nudge failed" — the one auto-nudge didn't resolve the stall and is never re-asked (design/
    stalled-open-todos-nudge.md); red pill: this thread is waiting on the human now */
 .fask-nudgefailed { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;

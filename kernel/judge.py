@@ -2662,6 +2662,7 @@ def rollup_status(store, session_closed, now=None):
     # (setdefault) so it freezes the entry order; cleared by _reopen so a re-completion re-stamps.
     latest_t = max((max(nd.get("mt", 0) or 0, nd.get("t", 0) or 0) for nd in nodes.values()), default=0)
     status = {}
+    confirming = []                                   # done verdict landed, settle pending — see the export below
     for nid in children.get(None, []):                # precedence: cleared > blocked > followup-pending > complete+settled > working
         settled = (nid != focus) or session_closed
         if nodes[nid].get("cleared"):
@@ -2685,6 +2686,16 @@ def rollup_status(store, session_closed, now=None):
             status[nid] = "completed"
         else:
             status[nid] = "working"
+            # DONE-BUT-UNSETTLED (the user 2026-07-24): the done verdict is in; only the settle event
+            # (focus moving on) is pending. The COLUMN stays Working — the settle gate above is what
+            # stops premature completion — but a done goal is frozen for the user's review, so two
+            # consumers need the fact NOW rather than at settle: the feed's "done, confirming" cue on
+            # the card, and the distiller, which starts the takeaway at the done verdict instead of
+            # leaving the card summary-less until focus moves (the 76-minute card). Exported on the
+            # store (authoritative rollup product) so neither consumer re-derives it from the raw
+            # nodeComplete flag, which lies for agent-open umbrellas is_complete refuses.
+            if is_complete(nid):
+                confirming.append(nid)
 
     # Heal ORPHANED open descendants: when a TOP rolls up to completed/cleared, its sub-steps are discharged
     # (done) or dismissed (cleared) WITH it — the planner's top-done verdict discharges the whole ask even with
@@ -2774,6 +2785,7 @@ def rollup_status(store, session_closed, now=None):
             else:
                 nd.pop("warns", None)
     store["status"] = status
+    store["confirming"] = confirming
 
 
 def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
@@ -6911,13 +6923,20 @@ def stalled_facts(fsid):
     return out
 
 
-def _last_state_value(fsid):
-    """The most-recent STATE transition in states/<fsid>.jsonl ('working'/'waiting'/'picker'/…), ignoring the
-    interleaved awaiting overlays; '' when there's no state file. Mirrors the kernel's _last_state_value — the
-    distiller uses it to spot a session parked RIGHT NOW on a live picker/permission prompt (a transient live
-    state the planner hasn't classified into the goal store), so it can brief that focus goal too."""
+def _live_prompt_since(fsid):
+    """The `t` of the transition INTO the current trailing picker/permission run of states/<fsid>.jsonl —
+    None when the latest state is anything else, or there's no state file. Only "state"-bearing records
+    count (the log interleaves awaiting overlays and other markers). The distiller uses it to spot a
+    session parked RIGHT NOW on a live prompt (a transient live state the planner hasn't classified into
+    the goal store) AND to name that park's own event: the value is stable for as long as one park lasts,
+    and a NEW prompt after any other state is a NEW episode with a fresh t. That per-episode identity is
+    what the live-brief gate keys on (see _distill_session) — node `mt`, the old key, is stable across
+    EPISODES too (nothing lands in the store mid-turn), so a second prompt in the same open turn kept the
+    first prompt's stale brief (the user 2026-07-24: a reply answered the parked question, the session
+    asked a NEW one, and the card still briefed the answered one). Consecutive prompt states
+    (picker→permission) are ONE run — the episode starts where the run does."""
     p = STATESDIR / (fsid + ".jsonl")
-    val = ""
+    since, prev = None, ""
     try:
         with open(p, errors="replace") as f:
             for line in f:
@@ -6927,20 +6946,27 @@ def _last_state_value(fsid):
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(rec, dict) and isinstance(rec.get("state"), str):
-                    val = rec["state"]
+                if not (isinstance(rec, dict) and isinstance(rec.get("state"), str)):
+                    continue
+                s = rec["state"]
+                if s in ("picker", "permission"):
+                    if prev not in ("picker", "permission"):
+                        since = rec.get("t") or 0      # entered a prompt run → the episode's own event
+                else:
+                    since = None                       # left the prompt → that episode is over
+                prev = s
     except OSError:
-        return ""
-    return val
+        return None
+    return since
 
 
 def _distill_due_t(store, nid, blocked):
     """The authoritative "this goal (re)resolved" time the distiller/brief gate compares against —
     never `mt` (the user 2026-07-08, the Proton-card regression): since the diary flip an event-only
     reopen→settle cycle bumps no cache stamp, so an mt-keyed gate slept through re-completions and the
-    card kept its stale pre-follow-up summary. Completed side = the settle event (settledAt); blocked
-    side = the newest block event among the nodes STILL blocked (the block that owes the brief can sit
-    on a descendant). Falls back to mt only when the store predates those events entirely.
+    card kept its stale pre-follow-up summary. Completed side = the newest DONE event in the subtree;
+    blocked side = the newest block event among the nodes STILL blocked (the block that owes the brief
+    can sit on a descendant). Falls back to mt only when the store predates those events entirely.
 
     STILL blocked, not ever blocked (the user 2026-07-23, the launch-prep card again): a block the fold
     has since closed is dead history, and counting it pinned `due` to the newest DEAD block. A mid-turn
@@ -6949,11 +6975,18 @@ def _distill_due_t(store, nid, blocked):
     forever, so the card never re-entered the distiller and sat in Blocked saying nothing. Reading only
     open blocks keys `due` to the same set the brief's owed question comes from (`blkd`), which is the
     invariant that broke. `blocked` is the materialized fold, so an unblock closes the episode by
-    history, not by flag-poking."""
+    history, not by flag-poking.
+
+    Completed side: the newest DONE event in the SUBTREE, not settledAt (the user 2026-07-24, the
+    76-minute card): a done verdict means the goal is frozen for the user's review, so its takeaway
+    should be ready THEN — keyed on settle, the card sat nodeComplete-but-focus in Working with no
+    distill under way while the settle event was still pending. Settle alone moves nothing now (the
+    summary written at done is already right); only a reopen→re-done lands a NEWER done event and
+    re-fires — the worst case the user accepted is one re-distill when work actually resumes. Subtree,
+    not the top's own log: a bottom-up-completed umbrella carries no done verdict of its own — its
+    children's do. settledAt stays as the fallback for stores whose diary predates done events."""
     nodes = store["nodes"]
     nd = nodes.get(nid) or {}
-    if not blocked:
-        return nd.get("settledAt") or nd.get("mt")
     kids = {}
     for x, d in nodes.items():
         kids.setdefault(d.get("parentId"), []).append(x)
@@ -6961,13 +6994,15 @@ def _distill_due_t(store, nid, blocked):
     stack = [nid]
     while stack:
         x = stack.pop()
-        if nodes.get(x, {}).get("blocked"):
+        if not blocked or nodes.get(x, {}).get("blocked"):
             for e in (nodes.get(x, {}).get("log") or []):
-                if e.get("kind") == "block":
+                if e.get("kind") == ("block" if blocked else "done"):
                     t = e.get("ev_t") or e.get("at") or 0
                     if best is None or t > best:
                         best = t
         stack.extend(kids.get(x, []))
+    if not blocked:
+        return best or nd.get("settledAt") or nd.get("mt")
     return best or nd.get("mt")
 
 
@@ -6985,31 +7020,61 @@ def _distill_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     store = load_goals(fsid)
     status, nodes = store.get("status", {}), store.get("nodes", {})
-    # Event-gated: (re)distill when the goal (re)completed (distilledMt != mt). ALSO re-enter a completed goal
-    # whose summary is still null even at the current mt — that is the no-work give-up below having stamped
-    # distilledMt without a summary, leaving the card stuck on "(generating…)" forever; reprocessing settles it
-    # to the "" sentinel (or a real summary if work has since appeared). The "" sentinel is NON-null, so a
-    # settled goal never re-enters — this self-heals existing stuck cards without a migration. Same for
-    # blocked/blockSummary.
+    # Event-gated: (re)distill when the goal (re)completed (distilledMt != the done event). ALSO re-enter a
+    # completed goal whose summary is still null even at the current due — that is the no-work give-up below
+    # having stamped distilledMt without a summary, leaving the card stuck on "(generating…)" forever;
+    # reprocessing settles it to the "" sentinel (or a real summary if work has since appeared). The ""
+    # sentinel is NON-null, so a settled goal never re-enters — this self-heals existing stuck cards without
+    # a migration. Same for blocked/blockSummary.
+    #
+    # AT THE DONE VERDICT, not at settle (the user 2026-07-24, the 76-minute card): a done goal is frozen
+    # for the user's review, so its takeaway is owed THEN — the rollup's `confirming` export (done verdict
+    # in, settle pending, status still 'working') enters here alongside 'completed'. Settle alone then
+    # changes nothing; only a reopen→re-done moves the due and re-fires (the one-re-distill worst case the
+    # user accepted).
+    confirming = set(store.get("confirming") or ())
+
+    def _done_owed(nid):
+        if nodes[nid].get("summary") is None:
+            return True
+        _dmt = nodes[nid].get("distilledMt")
+        # A stamp equal to the goal's settle time is ALSO current: pre-07-24 stamps were the settle event,
+        # and re-keying the due on the done event must not re-enter every already-distilled card in the
+        # fleet at once (a deploy-wide re-distill storm). Match the settledAt cache OR any settle event in
+        # the diary (the stamp materializes from the event, so either form may be the one on disk). Self-
+        # retiring: new-era stamps are done-event times, and a reopen undoes the settle, so any later
+        # re-completion is judged by the done event alone.
+        if _dmt is not None and (_dmt == nodes[nid].get("settledAt")
+                                 or any(_dmt == (e.get("ev_t") or e.get("at") or 0)
+                                        for e in (nodes[nid].get("log") or [])
+                                        if e.get("kind") == "settle")):
+            return False
+        return _dmt != _distill_due_t(store, nid, False)
+
     todo = [nid for nid, st in status.items() if nodes.get(nid) and (
-            (st == "completed" and (nodes[nid].get("distilledMt") != _distill_due_t(store, nid, False)
-                                    or nodes[nid].get("summary") is None)) or
+            ((st == "completed" or nid in confirming) and _done_owed(nid)) or
             (st == "blocked" and (nodes[nid].get("briefedMt") != _distill_due_t(store, nid, True)
                                   or nodes[nid].get("blockSummary") is None)))]
     # LIVE picker/permission floor (the user 2026-06-29): a session parked RIGHT NOW on a live prompt is
     # blocked-on-you, but the planner hasn't classified its focus goal — its stored status is still 'working',
     # so the loop above never briefs it and the card shows no distiller line. Detect it from the state log and
-    # brief that focus top too (treated as blocked below). Event-gated on briefedMt vs mt exactly like a stored
-    # block, so it briefs ONCE per episode (mt is stable while parked), not every pass.
-    live_brief = set()
-    if _last_state_value(fsid) in ("picker", "permission"):
+    # brief that focus top too (treated as blocked below). Event-gated ONCE PER PROMPT EPISODE on its OWN
+    # stamp, promptBriefedT vs _live_prompt_since (the user 2026-07-24): the old key (briefedMt vs the stored
+    # due, which falls back to mt) was stable across episodes within one open turn — a reply answered the
+    # parked question, the session asked a NEW one, and the gate stayed closed on the answered question's
+    # brief. The stamp is SEPARATE from briefedMt so this gate and the stored-block gate can each close
+    # without reopening the other (sharing one stamp with two key values would alternate forever).
+    live_brief, live_since = set(), None
+    _lp = _live_prompt_since(fsid)
+    if _lp is not None:
         f = store.get("lastNode")
         while f and nodes.get(f, {}).get("parentId") is not None:
             f = nodes[f].get("parentId")
         if (f in nodes and status.get(f) not in ("completed", "cleared")
-                and (nodes[f].get("briefedMt") != _distill_due_t(store, f, True)
+                and (nodes[f].get("promptBriefedT") != _lp
                      or nodes[f].get("blockSummary") is None)):
             live_brief.add(f)
+            live_since = _lp
             if f not in todo:
                 todo.append(f)
     # STALLED tops (the user 2026-07-23): still 'working', not blocked on the user, but romp's nudge gate is
@@ -7022,8 +7087,8 @@ def _distill_session(fsid, path, now):
         _nd = nodes.get(_gid)
         if not _nd or _nd.get("parentId") is not None or _nd.get("cleared"):
             continue                                   # top-level, live goals only (the card's own root)
-        if status.get(_gid, "working") != "working" or _gid in live_brief:
-            continue                                   # resolved, or already owed a decision brief
+        if status.get(_gid, "working") != "working" or _gid in live_brief or _gid in confirming:
+            continue                                   # resolved (or done-confirming), or already owed a decision brief
         if (_nd.get("stalledMt") != _f["since"] or _nd.get("stallSummary") is None) and _gid not in todo:
             todo.append(_gid)
     if not todo:
@@ -7037,8 +7102,9 @@ def _distill_session(fsid, path, now):
     for top in todo:
         blocked = status.get(top) == "blocked" or top in live_brief   # live-picker focus → brief it like a block
         # A STALL is the third state, and it never competes with the other two: a card owed a decision brief
-        # is blocked ON THE USER, which outranks "romp is stuck on it".
-        stalled = (not blocked) and status.get(top) == "working" and top in stalls
+        # is blocked ON THE USER, which outranks "romp is stuck on it". A done-confirming top isn't stalled
+        # either — its verdict is in; it entered todo for the takeaway.
+        stalled = (not blocked) and status.get(top) == "working" and top in stalls and top not in confirming
         due = (stalls[top]["since"] if stalled            # the stall's own start event, not a settle/block
                else _distill_due_t(store, top, blocked))  # the event time this (re)resolution stamps back
         stack, sub = [top], []                         # the top + all descendants (its whole subtree) — still
@@ -7107,6 +7173,15 @@ def _distill_session(fsid, path, now):
             n += 1; changed = True
             continue
         if blocked:
+            if top in live_brief and nodes[top].get("promptBriefedT") != live_since:
+                # Close the PROMPT-EPISODE gate now, eagerly, not on the write paths below: every branch
+                # down there ends in `continue`, and threading the stamp through all of them is exactly
+                # how one gets missed and the gate re-enters (an LLM call per pass) forever. Eager is
+                # safe: a pause-skip or failed call leaves blockSummary null, and the gate's None clause
+                # re-enters on that alone — only a NEW episode (fresh _live_prompt_since) reopens it
+                # otherwise, which is the intended once-per-prompt cadence (the user 2026-07-24).
+                nodes[top]["promptBriefedT"] = live_since
+                changed = True
             # A NEW block event since a "" settle re-opens the question (the user 2026-07-23, the launch-prep
             # card): the "" sentinel means "distilled THAT episode, nothing to say" — it must not keep muting
             # the card after a FRESH block lands (due moved), or a real owed decision shows neither line nor
