@@ -105,18 +105,22 @@ phone can reach it at all:
   reboot, but it can only serve while Tailscale is running, so without this the
   machine drops off the network until you next open the app.
 
-Then, on that same machine:
+Then, on that same machine, one command opens Romp to your other devices:
 
 ```bash
-tailscale serve --bg 29855    # let your other devices reach Romp
-tailscale serve status        # show where the proxy currently points
-tailscale serve reset         # back to local-only
+tailscale serve --bg 29855
 ```
 
 The bare-port form needs Tailscale 1.56 or newer; on older clients write
 `tailscale serve https / http://127.0.0.1:29855`. On macOS the `tailscale`
 command is not on your `PATH` until you enable **CLI integration** in the app's
 settings.
+
+Two commands go with it, for later rather than now. `tailscale serve status`
+prints where the proxy currently points, which is the first thing to check when
+a device cannot reach Romp. `tailscale serve reset` undoes the setup and returns
+the machine to local-only, so run it when you want remote access off, not as
+part of turning it on.
 
 !!! warning "If you change the kernel's port"
 
