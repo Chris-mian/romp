@@ -7,37 +7,66 @@ runs on the machine that hosts the kernel.
 
 ## The `romp` command
 
+Run `romp` on its own and it opens the dashboard, which is all most days need.
+Every other command is a bare word after it, and a session's name is always an
+argument rather than the command itself, so the two can never collide: `romp new
+update` starts a session called "update".
+
 | Command | What it does |
 |---|---|
-| `romp <name>` | Start or re-attach the terminal (tmux-backend) session `<name>` |
-| `romp -l` | Open the dashboard in your browser and print the tokened link (`--launch`) |
-| `romp -d` / `-f` / `-j` | Terminal views: dashboard, feed mirror, judge monitor |
-| `romp --on` / `--status` | Start the kernel manager / report its status |
-| `romp --refresh` | Restart the kernels (every machine; running sessions reconnect) |
-| `romp --mail …` | The postal service from the shell (below) |
-| `romp --update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
-| `romp --checkin <host>` / `--checkout` | Publish this machine to an attached hub, or withdraw it |
-| `romp --send <session> <text>` | Feed a session headlessly (`--interrupt` and `--end` stop one) |
-| `romp --version` | Version report across the moving parts |
+| `romp` | Open the dashboard in your browser, printing the tokened link too |
+| `romp new <name>` | Start a session, run by the kernel and watched from the dashboard |
+| `romp new -d <dir> <name>` | Start it in `<dir>` instead of the current folder |
+| `romp new -t <name>` | Start it as a terminal (tmux) session and attach; add `--detach` to leave it running |
+| `romp resume` | Resume a past conversation, chosen from a full-screen picker |
+| `romp monitor` | Live session monitor, in the terminal |
+| `romp feed` | Working / Blocked / Completed board in the terminal, mirroring the feed |
+| `romp judges` | Judge health: whether they are keeping up, and any exceptions |
+| `romp status` | Manager and kernel status |
+| `romp refresh` | Restart the postal bus and every kernel, picking up new code |
+| `romp update [host…]` | Push this machine's committed Romp to attached remotes and restart them |
+| `romp up` | Run the kernel manager in the foreground; rare, since the login service runs it |
+| `romp version` | Version report across the moving parts |
+| `romp help` | The same list, from the terminal |
 
-Every word without a leading dash names a session: `romp launch`, `romp send`
-and the rest start sessions with those names, and commands live behind dashes.
+These are for scripting and for agents rather than daily use:
+
+| Command | What it does |
+|---|---|
+| `romp url` | Print only the tokened dashboard URL, for piping |
+| `romp mail …` | The postal service from the shell (below) |
+| `romp send <session> <text>` | Hand a session a message, on either backend |
+| `romp interrupt <session>` | Interrupt whatever turn a session is taking |
+| `romp end <session>` | End a session |
+| `romp checkin <host>` / `romp checkout <host>` | Publish this machine to an attached hub, or withdraw it |
+| `romp default-dir [PATH]` | The default working directory for new sessions; no argument prints it, `""` clears it |
+| `romp debug [on\|off\|status]` | Judge debug mode, where rejection rows carry the full input and reply |
+| `romp resume <id> [--name <n>] [--detach]` | Resume one exact conversation by UUID |
+| `romp refresh --now` | Refresh without waiting for sessions to finish their turns |
+
+Spellings these replaced (`romp -l`, `romp --on`, a bare `romp <name>`, and the
+rest) exit with the word that does the job now, so nothing fails silently and
+you need not remember what changed.
 
 ## The Romp Postal Service
 
 How sessions message each other, from either side. Inside a session it is an MCP
 server, so an agent calls the tools below directly; from a terminal the same
-mailbox is behind `romp --mail`. See
+mailbox is behind `romp mail`. See
 [Inter-agent communication](guide.md#inter-agent-communication-the-romp-postal-service)
 for what it is for.
 
 ### Mail from the terminal
 
 ```bash
-romp --mail send [--kind delegate|coordinate|question] <name> "<text>"
-romp --mail inbox                 # read your messages
-romp --mail agents                # who is live, their branch and working-note
-romp --mail working "<note>"      # publish what this session is working on
+romp mail send [--kind delegate|coordinate|question] <name> "<text>"
+romp mail inbox                  # read your messages, and clear them
+romp mail peek                   # read them without clearing
+romp mail agents                 # who is live, their branch and working-note
+romp mail working "<note>"       # publish what this session is working on
+romp mail sent                   # your sent messages, and whether each was read
+romp mail recall <to> [id]       # unsend a message the recipient has not read
+romp mail remote                 # connect this remote machine to your laptop's bus
 ```
 
 ### Mail inside a session (MCP tools)

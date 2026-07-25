@@ -24,15 +24,15 @@ completed); the feed just paints columns. (Reflected in `docs/judges.md`.)
 - **The kernel is the core, supervised by `romp-manager`.** One process: Layer 1
   (parse) + Layer 2 (the judges) **and** an HTTP server, single writer. Its
   *lifecycle* is owned by **`romp-manager`** — a durable, jupyter-lab-style
-  supervisor you start with `romp on` that spawns and respawns the kernel (via
+  supervisor you start with `romp up` that spawns and respawns the kernel (via
   `romp-serve` → `romp-kernel`) and stays up across kernel restarts. Front ends
   (browser, phone, VS Code) ATTACH to the kernel; they never spawn it.
-  `romp-serve` points at the Python kernel, so `romp --on` supervises it on the
+  `romp-serve` points at the Python kernel, so `romp up` supervises it on the
   manager's port (29855), and the front ends and tailscale serve attach unchanged.
 - **The UI is served by the kernel.** The front-end (the three panes) is `ui/`. A
   browser hits the kernel's port and gets it.
-- **`romp --on` starts the supervisor.** It runs `romp-manager` in the foreground
-  (like `jupyter lab`); `romp --refresh` restarts the kernel(s), `romp --status`
+- **`romp up` starts the supervisor.** It runs `romp-manager` in the foreground
+  (like `jupyter lab`); `romp refresh` restarts the kernel(s), `romp status`
   reports them. The kernel binds loopback only; tailnet/phone reach is
   `tailscale serve` proxying to `127.0.0.1:29855` (there is no `0.0.0.0` opt-in
   door; the tailscale proxy carries the phone path). The UI itself is just a URL
@@ -276,7 +276,7 @@ The Python kernel (`kernel/kernel.py`) closes it.
   the cookie, and `X-Romp-Token` (CLI/hooks/daemons, read from the file). The
   token is baked into how the kernel launches (env/autostart), never a manual
   per-launch flag; a bare browser open of `/` gets a paste-the-token login page
-  (`romp -l` prints the link + opens a browser). Only the no-side-effect liveness
+  (bare `romp` prints the link + opens a browser). Only the no-side-effect liveness
   probes are exempt (`/healthz`, `/version`, `/busy`; bus `/ping`) so liveness
   never breaks token-less monitors. `tailscale serve` traffic needs the token
   once per device like any browser — and funnel (public internet through the

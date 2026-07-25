@@ -131,7 +131,7 @@ part of turning it on.
     the existing mapping rather than adding to it.
 
 On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
-page asking for your access token; paste in the one `romp -l` prints. A
+page asking for your access token; paste in the one `romp` prints. A
 year-long cookie remembers the phone afterwards. Prefer this to putting
 `?token=<token>` in the address, which works but leaves the token in your
 browser history and in anything you share the link through. The cookie is itself
@@ -207,8 +207,8 @@ Every message declares its kind, which the card wears as a chip:
 The same mailbox is on the command line, for you and for scripts:
 
 ```bash
-romp --mail send --kind question api "Which auth approach did we settle on?"   # send, to the session named "api"
-romp --mail inbox                                                              # read this session's messages, and clear them
+romp mail send --kind question api "Which auth approach did we settle on?"   # send, to the session named "api"
+romp mail inbox                                                              # read this session's messages, and clear them
 ```
 
 The full mail surface, shell and in-session, is in the
@@ -236,7 +236,7 @@ Sessions run on one of two backends, chosen per session:
 - **SDK (the default, strongly recommended).** The kernel manages the Claude
   Code session through the Claude Agent SDK.
 - **tmux.** A Claude Code session running in a terminal inside tmux. Run
-  `romp <name>` and that terminal session joins the interface like any other, so
+  `romp new -t <name>` and that terminal session joins the interface like any other, so
   you can work in the terminal directly and still see it in Romp. The cost is
   that Romp has no direct connection to it: it reads what appears in the
   terminal and on disk, and sends messages and nudges by injecting keystrokes.
@@ -294,10 +294,10 @@ Romp fetches that kernel's token over ssh, opens the connection, and starts the
 remote kernel if it isn't already running.
 
 **To check in a machine you cannot reach:** tick **keep connected** on the hub's
-row in that machine's network popover, or run `romp --checkin <hub>`. The hub can
+row in that machine's network popover, or run `romp checkin <hub>`. The hub can
 then see and drive its sessions whenever it is online, from whatever network it
 is on. Because the laptop is the end that connects, the hub never holds a way in
-to it; untick the box (or `romp --checkout <hub>`) and the hub forgets it.
+to it; untick the box (or `romp checkout <hub>`) and the hub forgets it.
 
 Each linked host carries a trust level that governs its mail; see
 [Security and trust](#security-and-trust). Detaching keeps the host on a list,
