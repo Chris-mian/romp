@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """romp-update — push THIS machine's committed romp to attached REMOTE kernels + restart them
-(`romp update [host...]`).
+(`romp --update [host...]`).
 
 Peer-to-peer, no GitHub (the user 2026-07-04): the local kernel pushes its committed HEAD straight to each
 host over ssh and restarts it, so the remote runs exactly the local code — no `git pull` from origin, no round
@@ -69,21 +69,21 @@ def _post(u, path, body):
 def main(argv):
     u = _kernel()
     if not u:
-        sys.stderr.write("romp update: no running kernel found (is romp on? try `romp --status`)\n")
+        sys.stderr.write("romp --update: no running kernel found (is romp on? try `romp --status`)\n")
         return 2
     hosts = [a for a in argv if not a.startswith("-")]
     if not hosts:                                                   # no host → the out-of-date attached remotes
         try:
             tuns = _get(u, "/tunnels").get("tunnels", [])
         except Exception as e:
-            sys.stderr.write("romp update: couldn't list remotes: %s\n" % e)
+            sys.stderr.write("romp --update: couldn't list remotes: %s\n" % e)
             return 2
         if not tuns:
-            sys.stdout.write("romp update: no remotes attached (attach one from the rail's network popover).\n")
+            sys.stdout.write("romp --update: no remotes attached (attach one from the rail's network popover).\n")
             return 0
         hosts = [t["host"] for t in tuns if t.get("outOfDate")]
         if not hosts:
-            sys.stdout.write("romp update: all attached remotes are up to date.\n")
+            sys.stdout.write("romp --update: all attached remotes are up to date.\n")
             return 0
     rc = 0
     for h in hosts:

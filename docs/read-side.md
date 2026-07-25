@@ -276,7 +276,7 @@ The Python kernel (`kernel/kernel.py`) closes it.
   the cookie, and `X-Romp-Token` (CLI/hooks/daemons, read from the file). The
   token is baked into how the kernel launches (env/autostart), never a manual
   per-launch flag; a bare browser open of `/` gets a paste-the-token login page
-  (`romp launch` prints the link + opens a browser). Only the no-side-effect liveness
+  (`romp -l` prints the link + opens a browser). Only the no-side-effect liveness
   probes are exempt (`/healthz`, `/version`, `/busy`; bus `/ping`) so liveness
   never breaks token-less monitors. `tailscale serve` traffic needs the token
   once per device like any browser — and funnel (public internet through the

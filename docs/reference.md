@@ -10,12 +10,18 @@ runs on the machine that hosts the kernel.
 | Command | What it does |
 |---|---|
 | `romp <name>` | Start or re-attach the terminal (tmux-backend) session `<name>` |
+| `romp -l` | Open the dashboard in your browser and print the tokened link (`--launch`) |
 | `romp -d` / `-f` / `-j` | Terminal views: dashboard, feed mirror, judge monitor |
 | `romp --on` / `--status` | Start the kernel manager / report its status |
 | `romp --refresh` | Restart the kernels (every machine; running sessions reconnect) |
 | `romp --mail …` | The postal service from the shell (below) |
-| `romp update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
+| `romp --update [host]` | Push this machine's committed romp to an attached remote kernel and restart it |
+| `romp --checkin <host>` / `--checkout` | Publish this machine to an attached hub, or withdraw it |
+| `romp --send <session> <text>` | Feed a session headlessly (`--interrupt` and `--end` stop one) |
 | `romp --version` | Version report across the moving parts |
+
+Every word without a leading dash names a session: `romp launch`, `romp send`
+and the rest start sessions with those names, and commands live behind dashes.
 
 ## The Romp Postal Service
 

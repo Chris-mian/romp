@@ -276,8 +276,11 @@ class RompUpdateCLI(unittest.TestCase):
         ru._kernel, ru._get, ru._post = self._k, self._g, self._p
 
     def test_dispatch_routes_update_in_the_bash_cli(self):
+        # Dash-only since 2026-07-25: bare `update` names a session (the retired-word
+        # notice covers the old spelling); only `--update` routes to romp-update.
         src = open(os.path.join(BIN, "romp")).read()
-        self.assertIn('"${1:-}" == "update" || "${1:-}" == "--update"', src, "both `update` and `--update` route")
+        self.assertIn('"${1:-}" == "--update"', src, "--update routes to romp-update")
+        self.assertNotIn('"${1:-}" == "update"', src, "bare `update` must stay free to name a session")
         self.assertIn("exec romp-update", src)
 
     def test_no_kernel_errors_cleanly(self):

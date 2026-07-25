@@ -51,13 +51,13 @@ connect to it, open the user interface in your browser or in your editor.
 ### In a browser
 
 ```bash
-romp launch
+romp -l
 ```
 
 This opens Romp using an access token. The first open trades the token
 for a cookie, so `http://127.0.0.1:29855/` works from then on.
 
-On a remote machine, `romp launch` prints the link rather than opening a
+On a remote machine, `romp -l` prints the link rather than opening a
 browser, along with how to reach it from your laptop.
 
 ### In VS Code or Cursor

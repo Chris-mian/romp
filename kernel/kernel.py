@@ -381,7 +381,7 @@ border-radius:6px;background:#0c1117;color:#dfe7ee">
   <button style="margin-top:.9em;padding:.5em 1.4em;border:0;border-radius:6px;\
 background:#9cd2ff;color:#0c1a2e;font-weight:600;cursor:pointer">Open</button>
   <div style="opacity:.6;margin-top:1.2em;font-size:.9em">Get a ready-made link with
-  <code>romp launch</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
+  <code>romp -l</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
 </form>
 """
 
@@ -4836,7 +4836,7 @@ _HEAD_CACHE = {"ts": 0.0, "full": None, "short": None}   # ~2s TTL: HEAD is read
 
 def _local_head(short=False):
     """This kernel's committed HEAD sha (FULL, or --short when short=True), or None outside a checkout — the
-    commit `romp update` PUSHES to a remote AND the reference the drift is measured against, so the push and
+    commit `romp --update` PUSHES to a remote AND the reference the drift is measured against, so the push and
     the drift check AGREE. (The old drift compared the remote to _kernel_sha()'s cached STARTUP sha while the
     push sent live HEAD; once HEAD moved ahead of the running kernel they never reconciled and the "behind"
     banner never cleared — the user 2026-07-04.) Cached ~2s since it's read on every /tunnels poll but HEAD
@@ -15865,7 +15865,7 @@ def main():
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
     sys.stderr.write("romp-kernel: every request needs the serve token (loopback included) — "
-                     "browser entry: `romp launch`\n")
+                     "browser entry: `romp -l`\n")
     if BIND != "127.0.0.1":
         # reachable off-box (tailnet/phone): the Origin gate blocks cross-site browsers token-free,
         # and the token is required everywhere. Open from the phone:

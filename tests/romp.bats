@@ -553,6 +553,38 @@ MOCK
     grep -q 'tmux new-session -d -s down' "$MOCK_LOG"
 }
 
+@test "retired bare words are session names now, with a one-line notice naming the new spelling" {
+    # 2026-07-25 dash-ification of the last eight bare commands: `romp <word>` with no
+    # leading dash ALWAYS names a session. Argless, each word starts its session and a
+    # single stderr line says where the command went, so old muscle memory self-corrects.
+    for word in launch open update checkin checkout send interrupt end; do
+        : > "$MOCK_LOG"
+        run run_romp "$word"
+        [ "$status" -eq 0 ]
+        grep -q "tmux new-session -d -s ${word}" "$MOCK_LOG"
+        [[ "$output" == *"starting a session named \"${word}\""* ]]
+    done
+    # the notice names the new spelling (spot-check the dashboard one)
+    run run_romp launch
+    [[ "$output" == *"romp -l"* ]]
+}
+
+@test "a retired bare word WITH args is an old command invocation: loud exit 2, session untouched" {
+    # `romp send api "hi"` can only be the old command (a session launch takes one
+    # positional), so it must fail naming the new spelling, never guess.
+    run run_romp send api "hello there"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *'"send" is a session name now'* ]]
+    [[ "$output" == *"romp --send <session> <text>"* ]]
+    ! grep -q 'tmux new-session' "$MOCK_LOG"
+    run run_romp update somehost
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"romp --update"* ]]
+    run run_romp launch --detach
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"romp -l"* ]]
+}
+
 @test "romp-manager: control verbs error cleanly when no manager is running" {
     command -v node >/dev/null 2>&1 || skip "node not available"
     local mgr; mgr="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-manager"
@@ -841,14 +873,14 @@ MOCK
     grep -q 'tmux new-session -d -s j' "$MOCK_LOG"
 }
 
-@test "romp checkin/checkout: usage without a host, loud failure with no kernel" {
-    run "$ROMP_SCRIPT" checkin
+@test "romp --checkin/--checkout: usage without a host, loud failure with no kernel" {
+    run "$ROMP_SCRIPT" --checkin
     [ "$status" -eq 2 ]
-    [[ "$output" == *"usage: romp checkin <host>"* ]]
-    run "$ROMP_SCRIPT" checkout
+    [[ "$output" == *"usage: romp --checkin <host>"* ]]
+    run "$ROMP_SCRIPT" --checkout
     [ "$status" -eq 2 ]
     # port 1 refuses instantly → the CLI must fail LOUDLY, never pretend the checkout happened
-    ROMP_KERNEL_PORT=1 run "$ROMP_SCRIPT" checkout somehost
+    ROMP_KERNEL_PORT=1 run "$ROMP_SCRIPT" --checkout somehost
     [ "$status" -eq 1 ]
     [[ "$output" == *"kernel not reachable"* ]]
 }
