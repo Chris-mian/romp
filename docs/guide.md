@@ -1,6 +1,6 @@
 # Guide
 
-This guide covers how to use Romp, and how its back end works.
+This guide covers how to use Romp and how its back end works.
 
 ## The Romp user interface
 
