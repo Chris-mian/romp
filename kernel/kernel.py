@@ -10168,6 +10168,7 @@ def build_feed(now, tmux=None):
         sess_judging = bool(live and ps and not who_working
                             and _closer_pending(fsid, s["path"], now, store))
         nodes, status = store.get("nodes", {}), store.get("status", {})
+        confirming = set(store.get("confirming") or ())   # rollup export: done verdict in, settle pending (judge rollup_status, the user 2026-07-24)
         # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
         # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
         # old time-nearest heuristic. _parse is cache-backed (cheap); reply uuid preferred (the readable
@@ -10647,6 +10648,12 @@ def build_feed(now, tmux=None):
                 "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
                 "turnId": nid, "origin": origin,
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
+                # DONE-CONFIRMING (the user 2026-07-24): the done verdict is in; only the settle event is
+                # pending. The card STAYS in Working (the settle gate exists precisely so the column never
+                # flickers working↔done) and wears a steady "done, confirming" cue instead. From the
+                # rollup's authoritative export, never the raw nodeComplete flag (which lies for agent-open
+                # umbrellas is_complete refuses).
+                "doneConfirming": (True if (column == "working" and nid in confirming) else None),
                 "waitingOn": (wmap.get(fsid) if (column == "working" and _peer_wait) else None),   # 'waiting on <peer>' chip: unanswered outbound to a live peer, only on a goal that predates the question (the user 2026-06-22/28)
                 # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated
                 # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):

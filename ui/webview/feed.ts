@@ -60,6 +60,7 @@ interface AskItem {
   trgb: [number, number, number];
   column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
+  doneConfirming?: boolean;                        // the done verdict is in, only the settle event is pending → steady "done, confirming" chip on the Working card; placement deliberately does NOT move early (no working↔done flicker) (kernel build_feed ← judge rollup confirming export; the user 2026-07-24)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
   nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → red "follow-up failed" chip (renamed off "stalled" 2026-07-23 — that word is the yellow romp-holding section's now); the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
@@ -605,6 +606,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
   // sets the text/title when it shows for recheck.
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↩ re-judging"; fupBadge.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass"; fupBadge.style.display = "none";
+  // "done, confirming" (the user 2026-07-24): the done verdict is in; the card holds its Working spot
+  // until the settle event (the session's attention moving on) files it under Completed — moving the
+  // COLUMN at the verdict would flicker it back on any trailing touch, which is the exact flicker the
+  // settle gate exists to prevent. The takeaway is already being distilled during this window.
+  const dcBadge = el("span", "fask-doneconfirming"); dcBadge.textContent = "done, confirming";
+  dcBadge.title = "ruled done — it files under Completed once the session has moved on; a follow-up before then reopens it in place";
+  dcBadge.style.display = "none";
   // "follow-up failed" (plans/stalled-open-todos-nudge.md): romp asked this stalled goal ONCE and the
   // response didn't resolve it; per the anti-loop rule it is never re-asked, so the card says so instead.
   // RENAMED off "stalled" (the user 2026-07-23, superseding their 2026-07-02 label): that word now belongs
@@ -685,7 +693,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
-  row2.append(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
+  row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -852,6 +860,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
   a._row1 = row1; a._row2 = row2;   // grouped mode re-homes Clear between these (the user 2026-07-13)
+  a._doneConfirming = dcBadge;
   a._nudgeFailed = nfBadge;
   a._interrupting = intingBadge;
   a._interrupted = intBadge;
@@ -1199,6 +1208,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     a._followedup.style.display = "none";
   }
+  // "done, confirming" — the done verdict is in, settle pending; the card stays put in Working with this
+  // steady cue instead of moving columns early (the user 2026-07-24: an indicator, never a column flicker).
+  (a._doneConfirming as HTMLElement).style.display = it.doneConfirming ? "" : "none";
   // "follow-up failed" chip (plans/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the
   // stall and it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07),
   // so the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
