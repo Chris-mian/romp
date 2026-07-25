@@ -3666,7 +3666,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   }
   filterPicker(seed); // reset row visibility; arm the New-session button for the (possibly seeded) value
   pickerError(null);
-  pickerDeep = "none";   // each open starts on the cheap list; the deep one is re-fetched on demand
+  pickerDeep = "none"; clearPickerDeepBackstop();   // each open starts on the cheap list; the deep one is re-fetched on demand
   if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
   if (seed) requestDeepSessions();   // opened already filtered (#only=<tag>) → that IS a search, so go deep now
 }
@@ -3835,12 +3835,25 @@ function isOpenTab(id: string): boolean {
 // to type is usually an OLD session, and the picker used to answer with nothing, so you had to start a new
 // session instead. Fetching it lazily keeps a picker open (and kernel boot) as cheap as before.
 let pickerDeep: "none" | "pending" | "loaded" = "none";
+let pickerDeepBackstop: number | undefined;
+
+function clearPickerDeepBackstop() {
+  if (pickerDeepBackstop !== undefined) { clearTimeout(pickerDeepBackstop); pickerDeepBackstop = undefined; }
+}
 
 function requestDeepSessions() {
   if (pickerDeep !== "none" || !vscodeApi) return;
   pickerDeep = "pending";
   renderPickerMoreRow();     // the wait is visible BEFORE the round-trip, never a frozen-looking list
   vscodeApi.postMessage({ type: "requestSessions", deep: true });
+  // Backstop, per the repo's loading rule: a loader must never be able to trap the user. A kernel older
+  // than this change ignores `deep` and answers without the flag, so nothing would ever resolve the
+  // pending state and the dots would spin forever — exactly the window between a webview deploy and the
+  // kernel restart that follows it. Fall back to no footer and let a later scroll or keystroke retry.
+  clearPickerDeepBackstop();
+  pickerDeepBackstop = window.setTimeout(() => {
+    if (pickerDeep === "pending") { pickerDeep = "none"; renderPickerMoreRow(); }
+  }, 8000);
 }
 
 // Footer row for the deep fetch: the romp loader's three pulsing accent dots (.rl-dots, already on the
@@ -6575,7 +6588,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "palette" && Array.isArray(m.colors)) paletteColors = m.colors;
   else if (m.type === "sessionList") {
     if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir;
-    if (m.deep) pickerDeep = "loaded";
+    if (m.deep) { pickerDeep = "loaded"; clearPickerDeepBackstop(); }
     // A slow FAST reply must not clobber a deep list already on screen (open, type immediately, deep wins
     // the race) — it's a strict subset, so re-rendering it would drop the older rows the user asked for.
     else if (pickerDeep === "loaded") return;
