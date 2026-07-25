@@ -2189,6 +2189,25 @@ function renderSlashCmd(bubble: HTMLElement, text: string): boolean {
 // compact Follow-up header) so a pending message looks like what it'll become (the user 2026-06-27). A queued
 // slash command renders as a command chip, and the header noun matches (a /compact is a queued "command", not
 // a "message" — the user 2026-07-01).
+// The "N queued …" count. Shared with the ✕'s immediate recount so the number on screen can never drift
+// from the bubbles under it while the cancel is in flight.
+function queuedCountText(n: number, nCmd: number): string {
+  const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
+  return `${n} queued ${noun}${n === 1 ? "" : "s"}`;
+}
+
+// Keep a queued group honest the instant a ✕ takes one of its bubbles out: the LAST bubble going takes the
+// whole group with it, otherwise the header recounts. Without this the header outlived its bubbles and sat
+// there alone still claiming a message the user had just cancelled (the user 2026-07-24).
+function reflowQueuedGroup(turn: HTMLElement): void {
+  const bubbles = Array.from(turn.querySelectorAll(".queued-bubble"));
+  if (!bubbles.length) { turn.remove(); return; }
+  const label = turn.querySelector(".queued-count") as HTMLElement | null;
+  if (!label) return;                                     // a bare (optimistic) group has no header to fix
+  const nCmd = bubbles.filter((b) => b.querySelector(".slash-cmd-chip")).length;
+  label.textContent = queuedCountText(bubbles.length, nCmd) + (label.dataset.why || "");
+}
+
 function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const turn = el("div", "turn turn-queued");
   // A BARE group is romp's own optimistic echo with nothing else known-queued: it gets the dashed bubble but
@@ -2198,7 +2217,6 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   if (!ev.bare) {
     const n = ev.texts.length;
     const nCmd = ev.texts.filter((t) => SLASH_CMD_RE.test(t.md)).length;
-    const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
     const head = el("div", "queued-head");
     head.appendChild(hourglassIcon());
     // While a question is pending, say WHAT it's waiting on: a message you'd already written when the picker
@@ -2214,8 +2232,9 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     const why = held
       ? ` · ${held.what}` + (held.resetsAt ? ` · in ${fmtReset(held.resetsAt, Math.floor(Date.now() / 1000))}` : "")
       : askNote;
-    const label = el("span");
-    label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}` + why;
+    const label = el("span", "queued-count");
+    label.dataset.why = why;      // the ✕'s recount rewrites the count and keeps this suffix as-is
+    label.textContent = queuedCountText(n, nCmd) + why;
     head.appendChild(label);
     turn.appendChild(head);
   }
@@ -6310,17 +6329,27 @@ function chatTail(msg: any) {
   // msg.from is a GLOBAL transcript index; the resident events are the tail [headFrom, …) → map to local.
   const from = (msg.from | 0) - (s.headFrom || 0);
   if (from < 0 || from > s.events.length) return;  // below the loaded head, or a gap → wait for the next full
+  const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
   reconcileRewind(s);                              // pending-rewind overlay + the editable-bubble set
   reconcileOptimistic(s);                          // re-assert (or retire) any in-flight optimistic sends
+  // A delta that SHRINKS the tail (an event retired with nothing replacing it — cancelling the last queued
+  // message is the everyday case) lands on `from === new length`, so lowering v.rendered to `from` leaves it
+  // EQUAL to the length and syncView's no-op fast path skips the repaint — the retired turn stayed on screen
+  // for good (the user 2026-07-24: a ✕'d queued message left its "1 queued message" element behind). Mark the
+  // view stale so the window is rebuilt from the events that actually remain.
+  const shrank = s.events.length < wasLen;
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (msg.status) s.status = msg.status;
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   renderTabs();
   if (msg.id === activeId) {
     const v = views.get(msg.id);
-    if (v) v.rendered = Math.min(v.rendered, from);   // repaint from the exact changed point (catches a tool fill)
+    if (v) {
+      v.rendered = Math.min(v.rendered, from);        // repaint from the exact changed point (catches a tool fill)
+      if (shrank) v.stale = true;                     // …but a pure truncation needs the window rebuilt, see above
+    }
     appendActive();
     renderLedger();
   } else {
@@ -6488,6 +6517,12 @@ window.addEventListener("message", (e: MessageEvent) => {
           ta.dispatchEvent(new Event("input", { bubbles: true }));
         }
       }
+      // …and put the BUBBLE back (the user 2026-07-24). The ✕ deletes it optimistically, but a miss means the
+      // message is still going through — and the kernel's build never changed, so its next delta carries no
+      // repaint and the optimistic delete would stand. That reads as "cancelled" while the session answers it
+      // anyway, contradicting the toast we just raised. Repaint from the kernel's events, which still hold it.
+      const rv = m.id === activeId && activeId ? views.get(activeId) : null;
+      if (rv) { rv.stale = true; appendActive(); }
     }
   }
   // The identity palette changed (gear → Session colors): refresh the right-click menu's swatch set so a
@@ -7057,7 +7092,12 @@ setupSettings();
         restoreToComposer(qmd);
         pendingCancelRestores.set(activeId + " " + qmd, { before, after: ta ? ta.value : "" });
       }
-      el.closest(".queued-bubble")?.remove();   // optimistic; the next push rebuilds the queue without it
+      // Optimistic; the next push rebuilds the queue without it. The GROUP is reflowed in the same breath —
+      // the bubble alone leaves its "1 queued message" header behind, still counting what just went.
+      const bub = el.closest(".queued-bubble") as HTMLElement | null;
+      const grp = bub?.closest(".turn-queued") as HTMLElement | null;
+      bub?.remove();
+      if (grp) reflowQueuedGroup(grp);
     },
     // gist↔full toggle on a compact nudge bubble (the user 2026-07-17: progressive disclosure) —
     // delegated for the same reason as qx: the tail rebuilds every push, and a per-render bubble

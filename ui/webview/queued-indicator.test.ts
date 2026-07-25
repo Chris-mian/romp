@@ -26,7 +26,8 @@ test("renderQueued draws a wireframe-hourglass header (singular/plural) + one ma
   assert.match(RENDER, /stroke="currentColor"[\s\S]*?<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"\/>/, "wireframe hourglass path");
   // noun matches the content: all-commands → "command", all-prose → "message", mixed → "item" (the user 2026-07-01)
   assert.match(RENDER, /const noun = nCmd === n \? "command" : nCmd === 0 \? "message" : "item";/);
-  assert.match(RENDER, /label\.textContent = `\$\{n\} queued \$\{noun\}\$\{n === 1 \? "" : "s"\}`/);
+  assert.match(RENDER, /return `\$\{n\} queued \$\{noun\}\$\{n === 1 \? "" : "s"\}`/);
+  assert.match(RENDER, /label\.textContent = queuedCountText\(n, nCmd\) \+ why;/);
   assert.match(RENDER, /el\("div", "queued-head"\)/);
   // one faint "you" bubble per pending message, rendered as markdown (like a landed message)
   assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md" \+ \(t\.cancelable \? " cancelable" : ""\)\)/);
@@ -65,7 +66,8 @@ test("the delegated qx handler cancels click-safely: kernel op + composer restor
   // a MESSAGE returns to the composer to re-edit; a slash COMMAND (qcmd) just cancels
   assert.match(RENDER, /if \(qmd && el\.dataset\.qcmd !== "1"\) \{/);
   assert.match(RENDER, /restoreToComposer\(qmd\);/);
-  assert.match(RENDER, /el\.closest\("\.queued-bubble"\)\?\.remove\(\)/, "optimistic removal before the next push");
+  assert.match(RENDER, /const bub = el\.closest\("\.queued-bubble"\) as HTMLElement \| null;[\s\S]*?bub\?\.remove\(\);/,
+    "optimistic removal before the next push");
   // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
   assert.match(RENDER, /function restoreToComposer\(text: string\)/);
   assert.match(RENDER, /getElementById\("composer-input"\)/);
@@ -121,6 +123,48 @@ test("the revert guard: untouched drafts revert, edited drafts stay", () => {
   assert.equal(revert("forget the obsidian thing", stash), "", "untouched → back to the pre-click draft");
   assert.equal(revert("forget the obsidian thing, actually keep it", stash),
     "forget the obsidian thing, actually keep it", "edited → the user owns it now");
+});
+
+// ---- the ✕'d message that stayed on screen (the user 2026-07-24) -------------------------------------
+// Cancelling the only queued message left its group behind: the header sat there alone still reading
+// "1 queued message" with no bubble under it, and it never went away. Three separate holes, one per test.
+
+test("the ✕ reflows the GROUP, not just the bubble — the last one out takes the header with it", () => {
+  assert.match(RENDER, /function reflowQueuedGroup\(turn: HTMLElement\): void/);
+  assert.match(RENDER, /if \(grp\) reflowQueuedGroup\(grp\);/, "called from the qx handler in the same breath");
+  assert.match(RENDER, /if \(!bubbles\.length\) \{ turn\.remove\(\); return; \}/, "empty group → the whole turn goes");
+  // still-populated group → the count is rewritten from what's actually left, keeping the held/ask suffix
+  assert.match(RENDER, /label\.textContent = queuedCountText\(bubbles\.length, nCmd\) \+ \(label\.dataset\.why \|\| ""\);/);
+  assert.match(RENDER, /label\.dataset\.why = why;/, "renderQueued parks the suffix for the recount to reuse");
+});
+
+// Executed replica of the recount rule the ✕ and renderQueued share — the branchy bit, run not just pinned.
+test("queuedCountText: the noun follows what's left after a cancel", () => {
+  const countText = (n: number, nCmd: number): string => {
+    const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
+    return `${n} queued ${noun}${n === 1 ? "" : "s"}`;
+  };
+  assert.equal(countText(2, 0), "2 queued messages");
+  assert.equal(countText(1, 0), "1 queued message", "singular after cancelling one of two");
+  assert.equal(countText(1, 1), "1 queued command", "the prose one went → the noun follows");
+  assert.equal(countText(2, 1), "2 queued items", "mixed stays 'items'");
+});
+
+test("a chatTail that SHRINKS the transcript repaints (the no-op fast path can't be trusted there)", () => {
+  // The kernel's diff lands on `from === new length` when the tail simply lost an event, so lowering
+  // v.rendered to `from` leaves rendered === len and syncView's fast path skips the repaint — the retired
+  // turn stays in the DOM for good. The shrink is measured BEFORE the reconciles so it reflects the splice.
+  assert.match(RENDER, /const wasLen = s\.events\.length;[\s\S]*?s\.events\.length = from;/);
+  assert.match(RENDER, /const shrank = s\.events\.length < wasLen;/);
+  assert.match(RENDER, /v\.rendered = Math\.min\(v\.rendered, from\);[\s\S]*?if \(shrank\) v\.stale = true;/);
+  // the fast path this defends against — pinned so a rewrite of it can't silently reopen the hole
+  assert.match(RENDER, /if \(v\.rendered === len && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
+});
+
+test("a FAILED cancel puts the bubble back, so the screen agrees with the 'too late' toast", () => {
+  // ok:false means the message is still going through, but the kernel's build never changed — so its next
+  // delta carries no repaint and the optimistic delete would stand: shown as cancelled, answered anyway.
+  assert.match(RENDER, /const rv = m\.id === activeId && activeId \? views\.get\(activeId\) : null;\s*\n\s*if \(rv\) \{ rv\.stale = true; appendActive\(\); \}/);
 });
 
 test("the queued-header hourglass uses the accent blue, like the feed/mail toggle icons", () => {
