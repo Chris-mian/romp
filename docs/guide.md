@@ -183,7 +183,7 @@ romp --mail inbox                                                              #
 ```
 
 The full mail surface, shell and in-session, is in the
-[Reference](reference.md#mail-from-the-shell). Names resolve against the
+[Reference](reference.md#mail-from-the-terminal). Names resolve against the
 currently live sessions; sending to a dead session's name errors instead of
 silently parking mail.
 
