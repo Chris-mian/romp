@@ -3748,6 +3748,34 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(it["summary"], "Fixing the feed")
         self.assertEqual(it["color"], {"bg": "#abcdef", "fg": "#ffffff"})
 
+    def test_picker_reaches_past_the_caption_window(self):
+        # The user 2026-07-24: typed a 3-day-old session's name into the + picker, got nothing back, and had
+        # to start a fresh session instead. The picker's payload was built from discover()'s 48h CAPTION
+        # horizon, which it had inherited by accident — so every session idle longer than two days was
+        # invisible to it, and reviving one you couldn't reach by tab was impossible. The picker now has its
+        # own PICKER_WINDOW (30 days), asked for on the LAZY second fetch; the default first paint stays the
+        # cheap 48h list, so neither boot nor a picker open pays for the wider walk.
+        old_sid = "99999999-8888-7777-6666-555555555555"
+        odir = Path(self.td.name) / "olddir"; odir.mkdir()
+        opdir = Path(self.td.name) / "projects" / jd.re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(odir)))
+        opdir.mkdir(parents=True)
+        otp = opdir / (old_sid + ".jsonl")
+        otp.write_text(json.dumps(uline(NOW - 4 * 86400, "draft the reply", "u1", ps="typed")) + "\n")
+        stale = NOW - int(3.5 * 86400)          # idle 3.5 days: past the 48h window, well inside the 30 days
+        os.utime(otp, (stale, stale))
+        (jd.NAMES / old_sid).write_text("roof\t%s\t#9cd2ff\n" % str(odir))
+
+        shallow = km._session_list(NOW, {})
+        self.assertNotIn(old_sid, [i["id"] for i in shallow],
+                         "the default first paint stays the 48h list it always was")
+        deep = km._session_list(NOW, {}, km.PICKER_WINDOW)
+        it = next((i for i in deep if i["id"] == old_sid), None)
+        self.assertIsNotNone(it, "the deep list reaches a session idle 3.5 days — the bug this fixes")
+        self.assertEqual(it["name"], "roof")
+        self.assertFalse(it["running"], "it is dead — the row is a revive target, not a reopen")
+        self.assertEqual(it["time"], "3d ago")
+        self.assertIn(SID, [i["id"] for i in deep], "the recent session is still in the deep list too")
+
     def test_alive_filter_empty_tmux_with_tmux_present_shows_nothing(self):
         # The user 2026-06-16: after killing every session and reloading, the surfaces wrongly
         # reopened tabs for the dead ones. Cause: an EMPTY tmux result fell back to file-derived
@@ -6161,8 +6189,14 @@ class SessionListNameCollision(unittest.TestCase):
 
     def test_picker_session_list_keeps_its_now_tmux_signature(self):
         import inspect
-        self.assertEqual(list(inspect.signature(km._session_list).parameters), ["now", "tmux"],
-                         "the picker payload builder must stay _session_list(now, tmux) — requestSessions calls it that way")
+        params = inspect.signature(km._session_list).parameters
+        self.assertEqual(list(params)[:2], ["now", "tmux"],
+                         "the picker payload builder must stay callable as _session_list(now, tmux) — requestSessions calls it that way")
+        # Anything AFTER those two must be optional (`window`, the 30-day deep list, 2026-07-24), so the
+        # bare two-arg call the handler makes can never become a TypeError again — which is what this
+        # regression is really about. A 0-arg def shadowing it still fails the first assert.
+        self.assertTrue(all(p.default is not inspect.Parameter.empty for p in list(params.values())[2:]),
+                        "extra picker params must carry defaults, so _session_list(now, tmux) keeps working")
 
     def test_session_rows_is_a_distinct_zero_arg_function(self):
         import inspect

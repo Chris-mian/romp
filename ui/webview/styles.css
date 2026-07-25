@@ -1698,6 +1698,13 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   color: var(--dim); font-size: 0.85em; margin-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Foot of the + picker's list: the lazy 30-day fetch's wait (the romp loader's .rl-dots) and, once it
+   lands, how far back the list now reaches. Same 0.85em as .picker-summary / .picker-time so it reads as
+   list chrome rather than another row. */
+.picker-more {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 14px; color: var(--dim); font-size: 0.85em;
+}
 .picker-actions { border-top: 1px solid var(--box-border); padding: 8px 10px; }
 .picker-action {
   width: 100%; padding: 7px 10px; cursor: pointer;
