@@ -134,8 +134,8 @@ class RemotesPanelRender(unittest.TestCase):
 
     def test_render_is_given_pmode_rather_than_reading_it_free(self):
         js = km._LANDING_REMOTES_JS
-        self.assertIn("function render(ts,known,pmode,via)", js)
-        self.assertIn("render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[])", js)
+        self.assertIn("function render(ts,known,pmode,via,rholds)", js)
+        self.assertIn("render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[])", js)
 
     def test_the_per_host_settings_sit_on_their_own_line(self):
         # Trust and check-in are set once and left; Detach is an act. Splitting them off line 1 is what

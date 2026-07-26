@@ -16,8 +16,10 @@ const STRIP = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf
 test("web popover renders remembered hosts with re-attach + forget", () => {
   // pmode rides along as a PARAM: it is computed in refresh()'s callback, and reading it as a free
   // variable in render() threw ReferenceError on every draw (see tests/test_remotes_panel_render.py)
-  assert.match(KERNEL, /function render\(ts,known,pmode,via\)/, "render takes the known list + pmode + via-reach");
-  assert.match(KERNEL, /if\(!back\.hidden\)render\(ts,\(d&&d\.known\)\|\|\[\],pmode,\(d&&d\.viaReach\)\|\|\[\]\);/, "refresh passes them through");
+  assert.match(KERNEL, /function render\(ts,known,pmode,via,rholds\)/, "render takes the known list + pmode + via-reach + remote holds");
+  assert.match(KERNEL, /if\(!back\.hidden\)render\(ts,\(d&&d\.known\)\|\|\[\],pmode,\(d&&d\.viaReach\)\|\|\[\],\(d&&d\.remoteHolds\)\|\|\[\]\);/, "refresh passes them through");
+  assert.match(KERNEL, /Held for approval elsewhere/, "remote holds get their own section");
+  assert.match(KERNEL, /rnet-from/, "the add box offers which machine owns the tunnel (attach-on-behalf)");
   assert.match(KERNEL, /Reachable via relay/, "via-reach hosts get their own section (trust-by-origin rows)");
   assert.match(KERNEL, /Previously attached/);
   assert.match(KERNEL, /data-ra=/, "a Re-attach control keyed by host");

@@ -4313,31 +4313,39 @@ def _push_origin_trust_rows():
             _origin_trust_pushed[h] = tr
 
 
-_via_cache = {"t": 0.0, "rows": []}
+_via_cache = {"t": 0.0, "snap": {}}
 
 
-def _bus_via_reach():
-    """The bus's via-reach summary for the popover: hosts with no tunnel here whose sessions a hub
-    gossips one hop (postal via_reach). Cached ~3s — it rides every /tunnels poll. Empty when the
-    bus is down or peering is off: the popover simply shows no relay section (display-only; the
-    trust GATE itself lives in the bus and fails safe to directed)."""
+def _bus_peers_snap():
+    """The bus's /peers snapshot (via-reach rows + remote hold summaries), cached ~3s — it rides
+    every /tunnels poll. Empty when the bus is down or peering is off: the popover simply shows no
+    relay/holds sections (display-only; the trust GATE itself lives in the bus and fails safe to
+    directed)."""
     if not _postal_peers_on():
-        return []
+        return {}
     now = time.time()
     if now - _via_cache["t"] < 3.0:
-        return _via_cache["rows"]
-    rows = []
+        return _via_cache["snap"]
+    snap = {}
     try:
         conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
         conn.request("GET", "/peers", None, {"X-Romp-Token": TOKEN})
         r = conn.getresponse()
         if r.status == 200:
-            rows = (json.loads(r.read().decode() or "{}") or {}).get("viaReach") or []
+            snap = json.loads(r.read().decode() or "{}") or {}
         conn.close()
     except Exception:
-        rows = []
-    _via_cache["t"], _via_cache["rows"] = now, rows
-    return rows
+        snap = {}
+    _via_cache["t"], _via_cache["snap"] = now, snap
+    return snap
+
+
+def _bus_via_reach():
+    return _bus_peers_snap().get("viaReach") or []
+
+
+def _bus_remote_holds():
+    return _bus_peers_snap().get("remoteHolds") or []
 
 
 def _bus_quarantine_act(body):
@@ -13951,6 +13959,7 @@ if(!icon||!back)return;
 var hostIn=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
 list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x'),dl=document.getElementById('rnet-hosts'),
 plus=document.getElementById('rnet-plus'),addBox=document.getElementById('rnet-add'),hint=document.getElementById('rnet-hint'),
+fromSel=document.getElementById('rnet-from'),
 more=document.getElementById('rnet-more'),sub=document.getElementById('rnet-sub'),
 autoCb=document.getElementById('rnet-auto');
 // "Automatically update" writes to the KERNEL (fleet-wide, one owner) and re-reads the kernel's answer, so
@@ -14020,7 +14029,7 @@ paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
 return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[]);   // pmode is refresh-local — render must be GIVEN it
+if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[]);   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule((busy||pushing.length)?600:3000);   // poll fast while an auto-push runs, so its progress reads live
@@ -14036,9 +14045,15 @@ schedule(3000);});}
 // as a free variable threw ReferenceError on EVERY render, after list.innerHTML='' had already cleared the
 // list and before any row was appended. The panel therefore showed an empty host list no matter how many
 // hosts were attached, and the bare catch swallowed the error (the user 2026-07-22). Take it as a param.
-function render(ts,known,pmode,via){list.innerHTML='';known=known||[];via=via||[];
+function render(ts,known,pmode,via,rholds){list.innerHTML='';known=known||[];via=via||[];rholds=rholds||[];
 // Attached rows win; a via/known row for an attached host would be a duplicate.
 var live={};ts.forEach(function(t){live[t.host]=1;});
+// "connect from" (attach-on-behalf, the user 2026-07-25): offer every CONNECTED host as a tunnel
+// owner; hidden while this machine is the only choice. Rebuilt per render, keeping the selection.
+if(fromSel){var ups=ts.filter(function(t){return t.status==='up';}).map(function(t){return t.host;});
+var fcur=fromSel.value;
+fromSel.innerHTML="<option value=''>from: this machine</option>"+ups.map(function(h){return '<option value="'+h+'"'+(fcur===h?' selected':'')+'>from: '+h+'</option>';}).join('');
+fromSel.hidden=!ups.length;}
 via=via.filter(function(v){return !live[v.host];});
 var viaHosts={};via.forEach(function(v){viaHosts[v.host]=1;});
 known=known.filter(function(k){return !viaHosts[k.host];});   // a relay row shows the SAME trust select, plus live reach
@@ -14138,6 +14153,20 @@ var vtrust='<select class=rnet-trust data-t=\"'+v.host+'\" title=\"What happens 
 vr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #7a6a3a\" title=\"No direct tunnel; reachable one hop through '+v.via+'.\"></span>'+
 '<span class=nm><b>'+v.host+'</b> <span class=st title=\"Its sessions are gossiped one hop by '+v.via+'; attach it directly for full control.\">via '+v.via+' \\u00b7 '+(v.agents||0)+' session'+((v.agents||0)===1?'':'s')+'</span></span>'+vtrust;
 list.appendChild(vr);});}
+// HELD ELSEWHERE (the user 2026-07-25): mail waiting for approval on OTHER machines — direct peers
+// and one relay hop — which used to be visible only on the holding machine's own dashboard. One
+// line per machine (count first, gists on hover); acting on them still happens on that machine.
+if(rholds.length){var byHost={};rholds.forEach(function(h){(byHost[h.atHost]=byHost[h.atHost]||[]).push(h);});
+var hh=document.createElement('div');hh.className='rnet-khead';
+hh.textContent='Held for approval elsewhere';
+hh.title='Postal mail quarantined on another machine (its trust for the sender is directed). Open that machine\u2019s dashboard to approve or deny; the hold itself lives there.';
+list.appendChild(hh);
+Object.keys(byHost).sort().forEach(function(hn){var rows=byHost[hn];
+var gl=rows.slice(0,6).map(function(r){return r.frm+' \\u2192 '+r.to+((r.origin&&r.origin!==hn)?' (from '+r.origin+')':'')+': '+(r.gist||'');}).join('\\n');
+var hr=document.createElement('div');hr.className='rnet-row rnet-known';
+hr.innerHTML='<span class=rnet-dot style=\"background:#b58900\" title=\"Mail is waiting for approval on '+hn+'.\"></span>'+
+'<span class=nm><b>'+hn+'</b> <span class=st title=\"'+gl.replace(/\"/g,'&quot;')+'\">'+rows.length+' message'+(rows.length===1?'':'s')+' held for your approval</span></span>';
+list.appendChild(hr);});}
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
 s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -14176,9 +14205,14 @@ icon.classList.add('busy');var mb=mnet();if(mb)mb.classList.add('busy');   // mo
 // A typed host can simply be wrong (a typo, or a string ssh cannot parse — the kernel rejects those in
 // _safe_ssh_host), which never used to be possible when the only way in was picking from a dropdown.
 // Say so instead of quietly restoring the button and leaving an unchanged list to explain itself.
-fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+var payload={host:h};
+var frm=fromSel&&!fromSel.hidden?fromSel.value:'';   // attach-on-behalf: that machine dials + owns the tunnel
+if(frm)payload.from=frm;
+fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){
 attach.disabled=false;attach.textContent='Attach';
-if(d&&d.ok){hostIn.value='';showAdd(false);}   // it has a row of its own now, so the form's work is done
+if(d&&d.ok&&d.via){hostIn.value='';showAdd(false);
+alert(d.via+' is opening the tunnel to '+h+' and will own it. Watch it on '+d.via+"'s dashboard; its sessions reach yours through the relay.");}
+else if(d&&d.ok){hostIn.value='';showAdd(false);}   // it has a row of its own now, so the form's work is done
 else{alert('Could not attach '+h+': '+((d&&d.error)||'unknown'));}
 refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';
 alert('Could not attach '+h+': the kernel did not answer.');});};
@@ -14537,6 +14571,7 @@ def _landing():
             ".rnet-add{display:flex;gap:6px;margin-top:11px;padding-top:11px;border-top:1px solid #2a2a2a}"
             ".rnet-add[hidden]{display:none}"
             "#rnet-host{flex:1 1 auto;min-width:0;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px;font:inherit}"
+            "#rnet-from{flex:0 0 auto;max-width:44%;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px;font:inherit}"
             "#rnet-attach{flex:0 0 auto;background:var(--accent);color:var(--accent-fg);border:none;border-radius:6px;padding:4px 12px;font-weight:600;cursor:pointer}"
             "#rnet-attach:disabled{opacity:0.5;cursor:default}"
             ".rnet-hint{color:#6e7681;font-size:11.5px;line-height:1.45;margin-top:6px}"
@@ -14888,7 +14923,13 @@ def _landing():
             "<div class=rnet-add id=rnet-add hidden>"
             "<input id=rnet-host list=rnet-hosts placeholder='hostname or user@host' "
             "autocapitalize=off autocorrect=off spellcheck=false>"
-            "<datalist id=rnet-hosts></datalist><button id=rnet-attach>Attach</button></div>"
+            "<datalist id=rnet-hosts></datalist>"
+            "<select id=rnet-from title='Which machine opens and owns the ssh tunnel. This machine: the "
+            "tunnel lives here and drops when this kernel stops. An attached host: the attach request is "
+            "forwarded to that kernel, which dials out itself; pick your always-on box so the connection "
+            "outlives this laptop. That machine needs its own ssh access to the target.' hidden>"
+            "<option value=''>from: this machine</option></select>"
+            "<button id=rnet-attach>Attach</button></div>"
             "<div class=rnet-hint id=rnet-hint hidden>Any ssh target you could type after <code>ssh</code>: a "
             "<code>~/.ssh/config</code> alias, or <code>user@host</code>. Hosts you attach are remembered here.</div>"
             "</div></div>"
@@ -15153,6 +15194,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"tunnels": list_remotes(),
                                                    "known": list_known(),
                                                    "viaReach": _bus_via_reach(),   # hosts one relay hop away (trust-by-origin rows hang here)
+                                                   "remoteHolds": _bus_remote_holds(),   # quarantine holds on OTHER machines (direct peers + one relay hop)
                                                    "autoUpdate": _auto_update_remotes_on(),   # the popover checkbox reflects the KERNEL, not this tab
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
@@ -15419,6 +15461,12 @@ class Handler(BaseHTTPRequestHandler):
                 # Attach a remote kernel: open its ssh tunnels + fetch its token so the browser can merge
                 # its fleet. Body: {"host": <any ssh target>, "kernelPort"?: <remote port>}. The blocking ssh
                 # round-trip (token fetch) is fine on the threaded server. Returns the public tunnel row.
+                #
+                # ATTACH ON BEHALF (the user 2026-07-25): {"from": <attached host>} forwards the attach to
+                # THAT machine's kernel over its -L tunnel, so the always-on box can OWN the tunnel while
+                # you sit at the laptop ("connect from: home server"). The far kernel runs the same
+                # attach_remote — ssh reachability and credentials are judged THERE, never here; we only
+                # relay the ask and bubble its answer. Loud when the from-host is not attached/up.
                 try:
                     body = json.loads(raw_body or b"{}")
                 except Exception:
@@ -15426,6 +15474,25 @@ class Handler(BaseHTTPRequestHandler):
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                frm = str((body or {}).get("from") or "").strip() if isinstance(body, dict) else ""
+                if frm:
+                    with _remotes_lock:
+                        r = _remotes.get(frm)
+                        r = dict(r) if r else None
+                    if not r or r.get("status") != "up":
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "'%s' is not an attached, connected host — attach it first, then it can "
+                            "own tunnels for you" % frm}), "application/json")
+                    fwd = {"host": host}
+                    if (body or {}).get("kernelPort"):
+                        fwd["kernelPort"] = body["kernelPort"]
+                    res = _remote_forward(r, "/tunnels", fwd)
+                    if res is None:
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            "the kernel on '%s' didn't answer the attach request" % frm}), "application/json")
+                    res = dict(res) if isinstance(res, dict) else {"ok": False, "error": "bad answer"}
+                    res["via"] = frm
+                    return self._send(200, json.dumps(res), "application/json")
                 try:
                     pub = attach_remote(host, (body or {}).get("kernelPort"))
                 except Exception as e:
