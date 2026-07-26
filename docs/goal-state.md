@@ -90,10 +90,9 @@ Sort events by evidence time (`ev_t`; arrival `at` breaks ties) and replay:
 ## What moves a card
 
 Judge rulings at segment/turn end · your reply (any column; reopens
-instantly, optimistically, and clears blocks across the card's whole
-subtree (you reply to the card, never to its blocked sub-goals) ·
-Move to Working (a reply without a message; same subtree
-floor) · Clear / Undo clear · Resolve · the agent checking off its to-dos ·
+instantly, optimistically, moves the card to Working, and clears blocks across
+the card's whole subtree (you reply to the card, never to its blocked
+sub-goals) · Clear / Undo clear · Resolve · the agent checking off its to-dos ·
 a peer completing delegated work (courier link-back) · a failed auto-nudge
 (records a block) · the settle moment · the live floors below.
 
