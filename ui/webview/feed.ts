@@ -1124,6 +1124,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";
       const txt = el("span", "fcheck-text"); txt.textContent = s.text;
       row.append(tri, mark, txt);
+      if (s.cleared) row.appendChild(droppedTag());   // the strike alone doesn't say WHY — see DROPPED_TIP
       // clicks match the modal tree node exactly (text → the message, checkbox → where it resolved) via the
       // SAME wireNodeZones; a dim repeat is display-only (wire=false).
       wireNodeZones(it, s, mark, txt, null, !repeat);
@@ -1690,6 +1691,17 @@ function nodeMark(n: AskTreeNode): string {   // AUTHORITATIVE nodes keep the sa
   if (n.status === "question") return "⏸";   // blocked → the red pause (was an amber ?), consistent w/ the ledger
   return "○";
 }
+// The cleared row's plain-language story (the user 2026-07-25: a struck-through sub-goal read as
+// unexplained machinery — the strike means DROPPED BY YOU, not completed by the agent, and nothing on
+// screen said so). One word on the row, the sentence on hover, in both the card checklist and the modal.
+const DROPPED_TIP = "you cleared this off the board — dropped as no longer needed, not completed";
+function droppedTag(): HTMLElement {
+  const tag = el("span", "fdropped-tag");
+  tag.textContent = "dropped";
+  tag.title = DROPPED_TIP;
+  return tag;
+}
+
 function nodeStatusClass(n: AskTreeNode): string {
   if (n.cleared) return "cleared";
   if (n.status === "done") return "done";
@@ -1945,6 +1957,11 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
     if (meta) { meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork; }
     linkHover(meta ? [mark, txt, meta] : [mark, txt]);   // one shared target → one shared highlight
   }
+  if (node.cleared) {
+    // a dropped node's hover must SAY dropped first — "jump to the message that asked for this" alone
+    // read as mystery machinery (the user 2026-07-25); the nav still works, the story leads.
+    txt.title = DROPPED_TIP + "; click to jump to the message that asked for it";
+  }
   return goWork;
 }
 
@@ -1973,6 +1990,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
   if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
+  if (node.cleared) line.appendChild(droppedTag());   // same one-word story as the card checklist
   // (The node's why/blocked/done rationale hover tooltip was removed 2026-06-27 — just the goal text now.)
   if (node.who && node.who !== parentWho) {
     const who = el("a", "ftree-who"); who.title = node.whoWorking ? "open this session (working now)" : "open this session";
@@ -2048,6 +2066,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
         vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "clear" });
         line.classList.remove("st-open", "st-question"); line.classList.add("st-cleared");
         mark.textContent = "●"; acts.remove();
+        line.appendChild(droppedTag());   // instant ack wears the same tag the re-render will draw
       };
       // "Check status": ONE-CLICK targeted ask — the session states where this item stands and the judge
       // files the reply on this node (the same askFollowUp + romp-goal-id path a typed per-sub follow-up
