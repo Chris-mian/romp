@@ -44,10 +44,6 @@ These are for scripting and for agents rather than daily use:
 | `romp resume <id> [--name <n>] [--detach]` | Resume one exact conversation by UUID |
 | `romp refresh --now` | Refresh without waiting for sessions to finish their turns |
 
-Spellings these replaced (`romp -l`, `romp --on`, a bare `romp <name>`, and the
-rest) exit with the word that does the job now, so nothing fails silently and
-you need not remember what changed.
-
 ## The Romp Postal Service
 
 How sessions message each other, from either side. Inside a session it is an MCP
@@ -142,4 +138,4 @@ Effective immediately, no restart.
 
 - `~/.claude/romp-summarize-on`: the live tmux activity phrase. Off by default,
   because it spends tokens on every turn and the SDK backend reports what a
-  session is doing without it. Deprecated, and due for removal.
+  session is doing without it.
