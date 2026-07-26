@@ -726,14 +726,32 @@ def task_death_notice(tasks: list) -> str:
 _SDK_CLI_MARK = "--input-format stream-json"
 
 
+def _cli_carries_sid(cmd: str, sids) -> bool:
+    """True when this CLI's argv names one of OUR conversation ids. The Agent SDK has spelled the
+    flag BOTH ways across versions — `--resume <sid>` (space) and `--resume=<sid>` (equals) — and a
+    fresh-spawned, never-resumed CLI carries its id only as `--session-id[= ]<sid>`. The space-only
+    `--resume` match went blind when the SDK moved to the equals form: every boot reconcile logged
+    'reaped 0 orphaned CLI(s)' while a real orphan kept working the repo for over an hour
+    (2026-07-25, the twin incident — the restart's drain timed out on a busy session, the kernel
+    exited, and the census that should have caught the leftover matched nothing), and the interrupt
+    escalation could not find its own child to signal. Match every spelling."""
+    for s in sids:
+        if not s:
+            continue
+        for flag in ("--resume", "--session-id"):
+            if (flag + " " + s) in cmd or (flag + "=" + s) in cmd:
+                return True
+    return False
+
+
 def find_orphan_clis(ps_lines: list[str], lastsids: list[str]) -> list[int]:
-    """PIDs of ORPHANED SDK-driven `claude` CLIs resuming one of OUR sessions (`--resume <lastSid>`
-    + the stream-json mark). Orphaned = re-parented to launchd (ppid 1): a live SDK CLI is always a
-    child of the kernel that spawned it, so only a dead kernel's leftover — a zombie writer that
-    would fight the resume for the transcript — reaches ppid 1. The parent check is load-bearing:
-    matching on the command line alone let a duplicate backend's reconcile reap freshly-resumed
-    LIVE sessions mid-turn (2026-07-06). Pure (takes `ps -axo pid=,ppid=,command=` lines) so tests
-    need no live processes."""
+    """PIDs of ORPHANED SDK-driven `claude` CLIs holding one of OUR sessions (--resume/--session-id
+    in either flag spelling, + the stream-json mark — see _cli_carries_sid). Orphaned = re-parented
+    to launchd (ppid 1): a live SDK CLI is always a child of the kernel that spawned it, so only a
+    dead kernel's leftover — a zombie writer that would fight the resume for the transcript —
+    reaches ppid 1. The parent check is load-bearing: matching on the command line alone let a
+    duplicate backend's reconcile reap freshly-resumed LIVE sessions mid-turn (2026-07-06). Pure
+    (takes `ps -axo pid=,ppid=,command=` lines) so tests need no live processes."""
     out = []
     for ln in ps_lines:
         parts = ln.strip().split(None, 2)
@@ -744,17 +762,18 @@ def find_orphan_clis(ps_lines: list[str], lastsids: list[str]) -> list[int]:
             continue
         if _SDK_CLI_MARK not in cmd:
             continue
-        if any(s and ("--resume " + s) in cmd for s in lastsids):
+        if _cli_carries_sid(cmd, lastsids):
             out.append(pid)
     return out
 
 
 def find_session_cli(ps_lines: list[str], sids: list[str], parent_pid: int) -> int | None:
-    """The LIVE CLI pid resuming one of `sids` as a child of `parent_pid` (this kernel), or None.
-    The interrupt escalation's target: same signature match as find_orphan_clis (--resume + the
-    stream-json mark) but the OPPOSITE parent check — it may only signal our own child, never a tmux
-    CLI (no mark), never another kernel's, never an orphan (ppid 1, the reaper's territory). Pure
-    (takes `ps -axo pid=,ppid=,command=` lines) so tests need no live processes."""
+    """The LIVE CLI pid holding one of `sids` as a child of `parent_pid` (this kernel), or None.
+    The interrupt escalation's (and the drain reap's) target: same signature match as
+    find_orphan_clis (_cli_carries_sid + the stream-json mark) but the OPPOSITE parent check — it
+    may only signal our own child, never a tmux CLI (no mark), never another kernel's, never an
+    orphan (ppid 1, the reaper's territory). Pure (takes `ps -axo pid=,ppid=,command=` lines) so
+    tests need no live processes."""
     for ln in ps_lines:
         parts = ln.strip().split(None, 2)
         if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
@@ -762,7 +781,7 @@ def find_session_cli(ps_lines: list[str], sids: list[str], parent_pid: int) -> i
         pid, ppid, cmd = int(parts[0]), int(parts[1]), parts[2]
         if ppid != parent_pid or _SDK_CLI_MARK not in cmd:
             continue
-        if any(s and ("--resume " + s) in cmd for s in sids):
+        if _cli_carries_sid(cmd, sids):
             return pid
     return None
 
@@ -2138,14 +2157,22 @@ class SdkBackend:
         except Exception:
             self._log("boot reconcile failed: %s" % traceback.format_exc())
 
-    def drain(self, timeout: float = 2.0) -> dict:
+    def drain(self, timeout: float = 2.0, kill=os.kill) -> dict:
         """Graceful-shutdown drain (the kernel's SIGTERM handler): stop every running session cleanly
         within `timeout` — interrupt any in-flight turn and close the SDK clients so the claude
         subprocesses exit with us instead of being orphaned to launchd as zombie transcript-writers.
         Queued turns are already mirrored to the registry (_persist_queue). A cut turn's state log
         keeps its trailing 'working' (shutdown() writes no idle/waiting; _on_session_gone skips the
         settle when ended is set) — exactly the marker the NEXT kernel's boot reconcile resumes by.
-        Bounded so a routine `romp refresh` stays snappy."""
+        Bounded so a routine `romp refresh` stays snappy.
+
+        A session STILL CLOSING when the bound expires gets its CLI process reaped before we exit —
+        the bound alone orphaned a busy session's CLI (2026-07-25: 'still closing: logic', the
+        kernel exited, and the leftover CLI kept executing its turn — tools run in the CLI, so it
+        needs nothing from us — for over an hour while the next boot resumed the same conversation
+        into a second process). The turn is already marked working, so the reap loses nothing the
+        resume does not restore. SIGTERM first, a short existence poll, then SIGKILL; `kill` is the
+        test seam."""
         with self._lock:
             sessions = list(self.sessions.values())
         inflight = sum(1 for s in sessions if s.inflight)
@@ -2157,12 +2184,35 @@ class SdkBackend:
         deadline = time.time() + timeout
         for s in sessions:
             s.thread.join(max(0.05, deadline - time.time()))
-        unjoined = [s.name for s in sessions if s.thread.is_alive()]
+        unjoined = [s for s in sessions if s.thread.is_alive()]
+        reaped = []
+        for s in unjoined:
+            try:
+                pid = self._session_cli_pid(s)
+                if pid is None:
+                    continue
+                kill(pid, signal.SIGTERM)
+                for _ in range(20):                      # ~1s for the TERM to land
+                    time.sleep(0.05)
+                    try:
+                        kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                else:
+                    kill(pid, signal.SIGKILL)            # a wedged CLI still never outlives us
+                reaped.append("%s(pid %d)" % (s.name, pid))
+            except ProcessLookupError:
+                pass                                     # exited between the join and the reap — fine
+            except Exception:
+                self._log("drain: reap failed for %s: %s" % (s.name, traceback.format_exc()))
         if sessions:
-            self._log("drain: stopped %d session(s), %d in-flight turn(s) interrupted%s"
+            names = [s.name for s in unjoined]
+            self._log("drain: stopped %d session(s), %d in-flight turn(s) interrupted%s%s"
                       % (len(sessions), inflight,
-                         "; still closing: " + ", ".join(unjoined) if unjoined else ""))
-        return {"stopped": len(sessions), "inflight": inflight, "unjoined": len(unjoined)}
+                         "; still closing: " + ", ".join(names) if names else "",
+                         "; reaped: " + ", ".join(reaped) if reaped else ""))
+        return {"stopped": len(sessions), "inflight": inflight, "unjoined": len(unjoined),
+                "reaped": len(reaped)}
 
     def busy_count(self) -> int:
         """How many SDK sessions have a turn IN FLIGHT right now — the manager's quiet-window gate

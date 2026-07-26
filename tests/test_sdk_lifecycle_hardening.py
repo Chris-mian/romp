@@ -20,6 +20,7 @@ All deterministic: no SDK import, no real claude processes (ps/os.kill are patch
 import json
 import os
 import tempfile
+import signal
 import threading
 import time
 import unittest
@@ -88,6 +89,20 @@ class FindOrphanClis(unittest.TestCase):
     def test_empty_sids_match_nothing(self):
         lines = [" 1 1 claude --resume  --input-format stream-json"]
         self.assertEqual(sb.find_orphan_clis(lines, [""]), [])
+
+    def test_equals_flag_spelling_matches(self):
+        # The Agent SDK moved to `--resume=<sid>` (equals form); the space-only match was blind to
+        # it, so every boot reconcile "reaped 0" while a real orphan kept working the repo for over
+        # an hour (2026-07-25, the twin incident). Both spellings, and --session-id for a CLI that
+        # was spawned fresh and never resumed, must match.
+        lines = [
+            " 5001 1 /x/claude --output-format stream-json --resume=%s --input-format stream-json" % self.SID,
+            " 5002 1 /x/claude --output-format stream-json --session-id=%s --input-format stream-json" % self.SID,
+            " 5003 1 /x/claude --output-format stream-json --session-id %s --input-format stream-json" % self.SID,
+            # equals form but a foreign sid → still not ours
+            " 5004 1 /x/claude --resume=ffffffff-0000-1111-2222-333333333333 --input-format stream-json",
+        ]
+        self.assertEqual(sb.find_orphan_clis(lines, [self.SID]), [5001, 5002, 5003])
 
 
 class QueuePersistence(unittest.TestCase):
@@ -389,7 +404,48 @@ class Drain(unittest.TestCase):
 
     def test_drain_with_nothing_running_is_a_quiet_noop(self):
         be = _backend()
-        self.assertEqual(be.drain(0.1), {"stopped": 0, "inflight": 0, "unjoined": 0})
+        self.assertEqual(be.drain(0.1), {"stopped": 0, "inflight": 0, "unjoined": 0, "reaped": 0})
+
+    def test_drain_reaps_the_cli_of_a_session_that_wont_close(self):
+        # The 2026-07-25 twin incident: the drain's bound expired on a busy session ("still
+        # closing: ..."), the kernel exited, and the orphaned CLI kept executing its turn for over
+        # an hour while the next boot resumed the same conversation into a second process. The
+        # drain must never exit leaving a live child: SIGTERM the unjoined session's CLI (then
+        # SIGKILL if it lingers).
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        sid = "11111111-aaaa-0000-0000-00000000000e"
+        s = sb.SdkSession(be, _reg(d, sid))
+        s.inflight = 1
+        s.thread = threading.Thread(target=lambda: time.sleep(5), daemon=True)
+        s.thread.start()                                  # outlives the drain bound → unjoined
+        be.sessions[sid] = s
+        be._session_cli_pid = lambda sess: 4242
+        calls = []
+        def fake_kill(pid, sig):
+            calls.append((pid, sig))
+            if sig == 0:
+                raise ProcessLookupError                  # the TERM landed; existence poll sees it gone
+        r = be.drain(0.1, kill=fake_kill)
+        self.assertEqual((r["unjoined"], r["reaped"]), (1, 1))
+        self.assertIn((4242, signal.SIGTERM), calls)
+        self.assertNotIn((4242, signal.SIGKILL), calls, "a TERM that lands never escalates")
+
+    def test_drain_sigkills_a_cli_that_ignores_term(self):
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        sid = "11111111-aaaa-0000-0000-00000000000f"
+        s = sb.SdkSession(be, _reg(d, sid))
+        s.thread = threading.Thread(target=lambda: time.sleep(5), daemon=True)
+        s.thread.start()
+        be.sessions[sid] = s
+        be._session_cli_pid = lambda sess: 4243
+        calls = []
+        def stubborn_kill(pid, sig):
+            calls.append((pid, sig))                      # sig 0 never raises → still alive
+        r = be.drain(0.1, kill=stubborn_kill)
+        self.assertEqual(r["reaped"], 1)
+        self.assertIn((4243, signal.SIGKILL), calls, "a wedged CLI still never outlives the kernel")
 
 
 if __name__ == "__main__":
