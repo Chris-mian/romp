@@ -624,6 +624,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(any(a["sid"] == SID for a in km.build_feed(NOW)["asks"]),
                          "un-muting does NOT resurface the view-cleared goal — it stays sealed")
 
+    def test_ledger_cleared_is_not_done_the_box_means_done(self):
+        """CLEARED is its own axis, not a flavor of done (the user 2026-07-26): a dismissed-unfinished
+        node ships done=False (the render keeps its open ring under the strike), a completed-then-cleared
+        node ships done=True (its check survives the dismissal), and cleared rolls DOWN so a dismissed
+        top's children fade with it instead of reading as live open work."""
+        top, kid, fin = SID + ":gc", SID + ":gc_kid", SID + ":gc_fin"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": None,
+            "nodes": {top: {"id": top, "text": "explore the caching spike", "parentId": None,
+                            "nodeComplete": False, "blocked": False, "cleared": True, "trail": [],
+                            "t": T0, "mt": T0},
+                      kid: {"id": kid, "text": "benchmark the hot path", "parentId": top,
+                            "nodeComplete": False, "blocked": False, "cleared": False, "trail": [],
+                            "t": T0, "mt": T0},
+                      fin: {"id": fin, "text": "write the docs page", "parentId": None,
+                            "nodeComplete": True, "blocked": False, "cleared": True, "trail": [],
+                            "t": T0, "mt": T0}},
+            "placements": {}, "status": {}}))
+        tree = {n["id"]: n for n in km.build_session(SID, NOW)["ledger"]["tree"]}
+        self.assertTrue(tree[top]["cleared"] and not tree[top]["done"],
+                        "dismissed-unfinished: struck, but the box stays unchecked")
+        self.assertTrue(tree[kid]["cleared"] and not tree[kid]["done"],
+                        "cleared rolls down: the child fades with its dismissed parent, its box honest too")
+        self.assertTrue(tree[fin]["cleared"] and tree[fin]["done"],
+                        "completed-then-cleared: the check survives — it really was done")
+
     def test_followupAt_floors_a_working_cards_sort_time_to_now(self):
         """A follow-up optimistically moved a card into Working; optimistic_followup stamped followupAt=now.
         build_feed must floor the card's disp_t (`t`) to that, so it sorts to the BOTTOM of the column right
@@ -3185,8 +3211,9 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("pruned child", byid, "the full tree is still emitted")
 
     def test_ledger_tree_shows_cleared_nodes_faded(self):
-        # A cleared (dismissed) node is no longer hidden — it's emitted, counted DONE, and flagged `cleared`
-        # so the render shows it as a FADED ✓ (the user 2026-06-16).
+        # A cleared (dismissed) node is emitted and flagged `cleared` so the render fades + strikes it
+        # (the user 2026-06-16: shown, not hidden). Since 2026-07-26 it is NOT counted done — the box
+        # means done, and only done; this one was dismissed unfinished.
         top, clr = (SID + ":top", SID + ":clr")
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 2, "lastNode": None,
@@ -3198,7 +3225,7 @@ class ViewBuilder(unittest.TestCase):
         byid = {n["text"]: n for n in km.build_session(SID, NOW)["ledger"]["tree"]}
         self.assertIn("dismissed step", byid, "a cleared node is shown now (not hidden)")
         self.assertTrue(byid["dismissed step"]["cleared"])
-        self.assertTrue(byid["dismissed step"]["done"], "cleared counts as done (faded ✓)")
+        self.assertFalse(byid["dismissed step"]["done"], "dismissed-unfinished: the box stays unchecked")
         self.assertFalse(byid["dismissed step"]["derived"], "cleared is its own flag, not derived")
 
     def test_ledger_tree_rolls_down_derived_done(self):
@@ -3221,8 +3248,9 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(byid["open grandchild"]["derived"], "roll-down reaches the whole subtree")
 
     def test_ledger_tree_rolls_down_through_a_cleared_top(self):
-        # A CLEARED (dismissed) top counts as done for roll-down too (the user 2026-06-16): its open
-        # children fade with it (derived ✓) instead of sitting as ○ under a faded-✓ parent.
+        # It is CLEARED that rolls down through a dismissed top now, not done (the user 2026-07-26: the
+        # box means done, and only done). The children still fade + strike with the dismissed parent —
+        # the 2026-06-16 intent — but their boxes stay honest: unfinished stays unchecked.
         top, child = (SID + ":top", SID + ":child")
         def gn(nid, text, parent, **kw):
             d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
@@ -3234,9 +3262,10 @@ class ViewBuilder(unittest.TestCase):
                       child: gn(child, "open child", top)},
             "placements": {}, "status": {}}))
         byid = {n["text"]: n for n in km.build_session(SID, NOW)["ledger"]["tree"]}
-        self.assertTrue(byid["dismissed top"]["cleared"] and byid["dismissed top"]["done"])
-        self.assertTrue(byid["open child"]["done"], "a child under a CLEARED top is done (roll-down through clear)")
-        self.assertTrue(byid["open child"]["derived"], "and shown as a derived (faded) ✓, not ○")
+        self.assertTrue(byid["dismissed top"]["cleared"] and not byid["dismissed top"]["done"],
+                        "a dismissed-unfinished top is struck, its box unchecked")
+        self.assertTrue(byid["open child"]["cleared"], "a child under a CLEARED top fades with it (roll-down through clear)")
+        self.assertFalse(byid["open child"]["done"], "...but its box stays honest — nothing finished it")
 
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;

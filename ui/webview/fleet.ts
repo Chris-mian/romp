@@ -314,7 +314,7 @@ function nameInto(elm: HTMLElement, name: string, sid: string, q: string): void 
 function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: HTMLElement, now: number, flat: boolean) {
   const { s, byId, curT } = ctx;
   const expandable = !!(n.children && n.children.length);
-  const defaultFold = !!n.done && (depth === 0 || !n.onpath);   // a finished top folds by default
+  const defaultFold = !!(n.done || n.cleared) && (depth === 0 || !n.onpath);   // a finished OR dismissed top folds by default
   // SEARCH force-expand (the user 2026-06-29): if a collapsed branch CONTAINS a match, open it so the hit is
   // revealed — overriding the fold/mode state while a query is active.
   const hitChild = expandable && curSearch && !!ctx.subtreeHit
@@ -327,7 +327,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
     + (n.current ? " current" : "") + (n.done ? " done" : "")
     + (n.blocked && !n.done ? " blocked" : "") + (n.derived ? " derived" : "")
-    + (n.cleared ? " cleared" : "") + (n.cleared && n.summary && n.summary.trim() ? " cleared-done" : ""));
+    + (n.cleared ? " cleared" : ""));   // cleared = strike + fade only; the mark stays honest (box = done)
   row.style.paddingLeft = (4 + depth * 15) + "px";
   const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));
   tri.textContent = expandable ? (isFolded ? "▶" : "▼") : "";
@@ -727,12 +727,13 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
 // render already has (no kernel round-trip). Was the mark's native tooltip (the user 2026-06-24); now
 // the hover card's state line — the same words, a richer home.
 function markReason(n: LedgerNode, byId: Map<string, LedgerNode>): string {
-  if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
-  if (n.cleared) {
-    if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
-    if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
-    return "dismissed — cleared, never judged done";
+  // `done` is HONEST since 2026-07-26 (the box means done): a cleared node's flag says whether it
+  // actually finished before the dismissal — no more guessing from summary-presence.
+  if (!n.done) {
+    if (n.cleared) return n.blocked ? "blocked, then cleared — dismissed unfinished" : "cleared — dismissed as no longer needed, never done";
+    return n.blocked ? "blocked — needs you" : "not yet done";
   }
+  if (n.cleared) return "completed, then cleared off the board";
   if (!n.derived) return "done — explicitly checked off";
   const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerNode[];
   return (kids.length > 0 && kids.every((k) => k.done))

@@ -180,7 +180,8 @@ test("the mark's WHY rule (markReason) survives — as the hover card's state li
   assert.match(SRC, /function markReason\(n: LedgerNode, byId: Map<string, LedgerNode>\): string \{/);
   assert.match(SRC, /"done — inferred: every sub-step is complete"/);
   assert.match(SRC, /"done — inferred: a parent goal was checked off"/);
-  assert.match(SRC, /"completed, then dismissed \(cleared\)"/);
+  // cleared wording moved to the honest-flag model 2026-07-26 (the box means done) — pinned in cleared-tag.test.ts
+  assert.match(SRC, /"completed, then cleared off the board"/);
   assert.doesNotMatch(SRC, /mark\.title = /);
   assert.doesNotMatch(SRC, /txt\.title = /);
 });

@@ -9302,12 +9302,14 @@ def build_session(sid, now, tmux=None):
 
     # VERDICTS ONLY (the user 2026-07-15; was roll-UP since 2026-06-16): a node shows done if it's
     # explicitly nodeComplete (a judge/agent/user verdict, or the roll-down cache under a verdicted
-    # ancestor) or CLEARED (dismissed → shown FADED, dimmed ✓). The old derived arm — all children done
-    # ⇒ dimmed ✓ on the parent — painted an authored-looking check on a goal nobody ruled done (children
-    # are filed prerequisites/retries, not a promised breakdown: the load-testing card's unrun
-    # experiment wore a ✓ because its "retry the connection" child closed). The judge-side twin
-    # (rollup_status is_complete's bottom-up arm) is gone the same way; the closer now RULES such nodes
-    # via _subtree_done_candidates, so an honest check appears when the verdict lands.
+    # ancestor). CLEARED is a SEPARATE axis, not a flavor of done (the user 2026-07-26: the box means
+    # done, and only done — a cleared-but-unfinished node keeps its open ring; the strike + chip say
+    # dismissed). The old derived arm — all children done ⇒ dimmed ✓ on the parent — painted an
+    # authored-looking check on a goal nobody ruled done (children are filed prerequisites/retries,
+    # not a promised breakdown: the load-testing card's unrun experiment wore a ✓ because its "retry
+    # the connection" child closed). The judge-side twin (rollup_status is_complete's bottom-up arm)
+    # is gone the same way; the closer now RULES such nodes via _subtree_done_candidates, so an
+    # honest check appears when the verdict lands.
     _dmemo = {}
     def _subtree_done(nid):
         if nid in _dmemo:
@@ -9316,9 +9318,11 @@ def build_session(sid, now, tmux=None):
         if not nd:
             _dmemo[nid] = False
             return False
-        res = bool(nd.get("nodeComplete") or _cleared(nid))
+        res = bool(nd.get("nodeComplete"))
         if not res and nd.get("umbrella"):             # a grouper container completes structurally — the
-            kids = list(gkids.get(nid, []))            # mint asserted "this node IS its children"
+            # mint asserted "this node IS its children"; cleared kids are out of the closure either
+            # way (neither done nor holding it open), mirroring build_feed's _closure_done
+            kids = [c for c in gkids.get(nid, []) if not _cleared(c)]
             res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
         _dmemo[nid] = res
         return res
@@ -9355,22 +9359,25 @@ def build_session(sid, now, tmux=None):
     # level (the user 2026-06-16): completed / cleared nodes fold by default, the recent path + open work
     # expand. Pruning moved to the render; the kernel just supplies the structure + done / derived /
     # cleared / recent / onpath flags. Cleared nodes are INCLUDED now (shown faded), not skipped.
-    def _twalk(nid, depth, ancestor_done=False):
+    def _twalk(nid, depth, ancestor_done=False, ancestor_cleared=False):
         nd = gnodes.get(nid)
         if not nd:
             return
-        clr = _cleared(nid)
+        # cleared rolls DOWN (replacing the old cleared→done roll-down): dismissing a parent dismisses
+        # its subtree, so the children fade + strike with it instead of sitting as live-looking open
+        # rings under a struck parent — while every box keeps meaning done (the user 2026-07-26).
+        clr = _cleared(nid) or ancestor_cleared
         # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella holding
         # one — is never 'done' here either, so the ledger matches the feed + the judge (see _agent_open_set).
-        # A CLEARED node is still dismissed (clr wins), so the override only applies while it's live.
+        # A CLEARED node is still dismissed (the strike + chip carry that), so the override only applies live.
         aopen = (nid in g_agent_open) and not clr
         explicit = bool(nd.get("nodeComplete")) and not aopen
         # done rolls BOTH ways, like the ask-tree flatten() (the user 2026-06-16): a node under a done
         # parent is derived-done too (roll-DOWN via ancestor_done), not just when its own subtree is done
         # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓, instead of a child
-        # showing ○ under a done top. A CLEARED (dismissed) top counts as done for this roll-down too: its
-        # open children fade with it rather than sitting as ○ under a faded-✓ parent (the user 2026-06-16).
-        derived = (not explicit) and (not clr) and (not aopen) and (_subtree_done(nid) or ancestor_done)
+        # showing ○ under a done top. CLEARED no longer counts as done for any of this (the user
+        # 2026-07-26: the box means done) — a dismissed-unfinished node keeps its ring under the strike.
+        derived = (not explicit) and (not aopen) and (_subtree_done(nid) or ancestor_done)
         kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
         # EXACT deep-link anchors (the user 2026-06-19): a ledger TOC click lands on the precise chat turn
         # BY UUID — the SAME anchors build_feed gives its cards — so the ledger and the feed for one node
@@ -9378,7 +9385,7 @@ def build_session(sid, now, tmux=None):
         # user message (text zone); anchorUuid → the newest trail segment (mark + time zones).
         _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_work)
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
-                     "done": explicit or derived or clr, "derived": derived, "cleared": clr,
+                     "done": explicit or derived, "derived": derived, "cleared": clr,
                      "blocked": bool(nd.get("blocked")), "t": nd["t"],
                      # mt = the segment where this node was last touched (resolved/blocked) — the click-
                      # to-jump nav lands done/blocked goals on their mt (the assistant turn that finished
@@ -9391,7 +9398,7 @@ def build_session(sid, now, tmux=None):
                      "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
-            _twalk(c, depth + 1, ancestor_done=explicit or derived or clr)
+            _twalk(c, depth + 1, ancestor_done=explicit or derived, ancestor_cleared=clr)
     for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
     # "Recent" for the tab-hover (the user 2026-06-30): the up-to-5 most-recently-touched TOP-level tasks across
@@ -10510,8 +10517,8 @@ def build_feed(now, tmux=None):
             _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid)
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
-                        # user-dropped sub (nodeOverride op:clear) → renders checked-off faded, not an
-                        # open ring pretending to be live work (the user 2026-07-20)
+                        # user-cleared sub (nodeOverride op:clear) → renders struck-through + faded with a
+                        # "cleared" chip; `status` above stays honest (box = done, the user 2026-07-26)
                         "cleared": bool(nd.get("cleared")),
                         # a rolled-UP question (the block lives in a descendant, not here) — the client's
                         # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below

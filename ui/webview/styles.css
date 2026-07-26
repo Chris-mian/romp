@@ -358,16 +358,17 @@ body { display: flex; flex-direction: column; }
    items (full opacity) stand out (the user 2026-06-19). Only .done is faded — uncompleted rows stay at 1. */
 .ledger-tnode.done { opacity: 0.75; }
 .ledger-tnode.done .ledger-tmark { background: var(--check-bg); border-color: transparent; color: #fff; }
-/* EXPLICIT done = the strong solid ✓ disc above. Every OTHER kind of "done" — DERIVED (inherited via
-   roll-up/roll-down) AND CLEARED (user-dismissed) — shares ONE secondary style: an OUTLINED ✓ (a blue ring
-   + a blue ✓ on transparent), clearly weaker than the solid check and never confusable with it. One
-   mechanism, not two — the opacity-fade for cleared was a second, redundant way of saying "secondary", so
-   it's gone; both inferred/dismissed dones read the same (the user 2026-06-17). */
-.ledger-tnode.done.derived .ledger-tmark,
-.ledger-tnode.done.cleared .ledger-tmark { background: transparent; border-color: var(--check-bg); color: var(--check-bg); opacity: 1; }
-/* …EXCEPT a goal that was COMPLETED and then dismissed (cleared-done): it really WAS judged done, so the
-   solid blue ✓ supersedes the outlined cleared style above (more specific → wins) (the user 2026-06-22). */
-.ledger-tnode.done.cleared.cleared-done .ledger-tmark { background: var(--check-bg); border-color: transparent; color: #fff; }
+/* EXPLICIT done = the strong solid ✓ disc above. DERIVED done (inherited via roll-up/roll-down) is the
+   secondary style: an OUTLINED ✓ (a blue ring + a blue ✓ on transparent), clearly weaker than the solid
+   check and never confusable with it (the user 2026-06-17). CLEARED left this rule 2026-07-26: the box
+   means done, and only done — a cleared node's mark now reflects its real doneness (`done` is honest
+   kernel-side), and the dismissal reads from the strike + fade below, so the old outlined-✓-for-cleared
+   and its cleared-done exception are gone. */
+.ledger-tnode.done.derived .ledger-tmark { background: transparent; border-color: var(--check-bg); color: var(--check-bg); opacity: 1; }
+/* CLEARED (user-dismissed) = struck + settled-faded, whatever its mark says — same story the feed modal
+   tells with its "cleared" chip (the user 2026-07-25/26). */
+.ledger-tnode.cleared { opacity: 0.75; }
+.ledger-tnode.cleared .ledger-ttext { text-decoration: line-through; text-decoration-color: var(--dim); }
 /* blocked = a red ⏸ ring (only when not done; render gates the .blocked class the same way). The current
    node is NO LONGER excluded — its checkbox matches every other blocked item (the user 2026-06-17). */
 .ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }

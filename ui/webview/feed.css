@@ -470,12 +470,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   .ftree-node { flex-wrap: wrap; }
   .ftree-node-acts { flex-basis: 100%; margin-left: 0; margin-top: 3px; justify-content: flex-end; }
 }
-/* a user-DROPPED sub (item-level clear, the user 2026-07-20): checked off + faded + struck —
-   "no longer needed", visually distinct from the green done check. Modal tree + inline checklist. */
+/* a user-CLEARED sub (item-level clear, the user 2026-07-20): faded + struck — "no longer needed".
+   The mark is NOT touched: the box means done, and only done (the user 2026-07-26). */
 .ftree-node.st-cleared { opacity: 0.55; }
-/* the one-word "dropped" chip on a cleared row (the user 2026-07-25: the strike alone read as
+/* the one-word "cleared" chip on a cleared row (the user 2026-07-25: the strike alone read as
    unexplained machinery) — dim, outside the strikethrough, same small-tag size as .ftree-who */
-.fdropped-tag { flex: 0 0 auto; font-size: 0.92em; color: var(--dim);
+.fcleared-tag { flex: 0 0 auto; font-size: 0.92em; color: var(--dim);
   border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px; padding: 0 5px; line-height: 1.5; }
 .ftree-node.st-cleared .ftree-text { text-decoration: line-through; text-decoration-color: var(--dim); }
 .ftree-node.st-cleared .ftree-mark { color: var(--dim); }

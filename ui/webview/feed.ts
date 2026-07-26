@@ -43,7 +43,7 @@ interface AskTreeNode {
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
   blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
-  cleared?: boolean;                                             // user-dropped sub (nodeOverride op:clear) → checked-off faded row, never an open ring (kernel flatten, the user 2026-07-20)
+  cleared?: boolean;                                             // user-cleared sub (nodeOverride op:clear) → struck-through faded row + "cleared" chip; the mark stays tied to status (box = done, the user 2026-07-26)
   log?: NodeLogRow[] | null;                                     // the node's newest verdict rows (kernel _node_log_rows, non-done only) → the modal's per-item story (the user 2026-07-20)
   children: string[];
 }
@@ -1076,7 +1076,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       if (s.status === "question") mark.title = s.qderived ? "a sub-goal inside is blocked — expand to find it" : "blocked — needs you";
       const txt = el("span", "fcheck-text"); txt.textContent = s.text;
       row.append(tri, mark, txt);
-      if (s.cleared) row.appendChild(droppedTag());   // the strike alone doesn't say WHY — see DROPPED_TIP
+      if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
       // clicks match the modal tree node exactly (text → the message, checkbox → where it resolved) via the
       // SAME wireNodeZones; a dim repeat is display-only (wire=false).
       wireNodeZones(it, s, mark, txt, null, !repeat);
@@ -1633,19 +1633,21 @@ function hoverEmit(ids: string | string[] | null) {
 // propagates up), so a completed ask reads as a column of filled dots. The
 // disclosure triangle is the only arrow — no glyph shares its shape.
 function nodeMark(n: AskTreeNode): string {   // AUTHORITATIVE nodes keep the same glyph; the .auth-* class adds a white ring
-  if (n.cleared) return "●";                 // user-dropped → checked off (the faded st-cleared class says "dropped, not done")
+  // CLEARED does not touch the mark (the user 2026-07-26: the box means DONE, and only done — a
+  // cleared node wears the strike + "cleared" chip, and its mark keeps saying whether it finished).
   if (n.status === "done") return "●";
   if (n.status === "question") return "⏸";   // blocked → the red pause (was an amber ?), consistent w/ the ledger
   return "○";
 }
 // The cleared row's plain-language story (the user 2026-07-25: a struck-through sub-goal read as
-// unexplained machinery — the strike means DROPPED BY YOU, not completed by the agent, and nothing on
-// screen said so). One word on the row, the sentence on hover, in both the card checklist and the modal.
-const DROPPED_TIP = "you cleared this off the board — dropped as no longer needed, not completed";
-function droppedTag(): HTMLElement {
-  const tag = el("span", "fdropped-tag");
-  tag.textContent = "dropped";
-  tag.title = DROPPED_TIP;
+// unexplained machinery, and nothing on screen said the strike means YOU cleared it). One word on the
+// row, the sentence on hover, in both the card checklist and the modal. Named "cleared", not
+// "dropped" — the same word the Clear button and the undo already use (the user 2026-07-26).
+const CLEARED_TIP = "you cleared this off the board — no longer needed; the box still shows whether it was done";
+function clearedTag(): HTMLElement {
+  const tag = el("span", "fcleared-tag");
+  tag.textContent = "cleared";
+  tag.title = CLEARED_TIP;
   return tag;
 }
 
@@ -1663,7 +1665,7 @@ function logPhrase(r: NodeLogRow): string {
   if (r.kind === "unblock") return r.src === "user" ? "you answered" : "unblocked";
   if (r.kind === "done") return r.src === "user" ? "you checked it off" : "marked done";
   if (r.kind === "reopen") return "reopened";
-  if (r.kind === "clear") return "dropped";
+  if (r.kind === "clear") return "you cleared it";
   if (r.kind === "dismiss") return "dismissed";
   if (r.kind === "settle") return "settled";
   return r.kind || "updated";
@@ -1905,9 +1907,9 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
     linkHover(meta ? [mark, txt, meta] : [mark, txt]);   // one shared target → one shared highlight
   }
   if (node.cleared) {
-    // a dropped node's hover must SAY dropped first — "jump to the message that asked for this" alone
+    // a cleared node's hover must SAY cleared first — "jump to the message that asked for this" alone
     // read as mystery machinery (the user 2026-07-25); the nav still works, the story leads.
-    txt.title = DROPPED_TIP + "; click to jump to the message that asked for it";
+    txt.title = CLEARED_TIP + "; click to jump to the message that asked for it";
   }
   return goWork;
 }
@@ -1937,7 +1939,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // blocked rolls UP (kernel flatten, the user 2026-07-11): a rolled-up ancestor's ⏸ says the block is below
   if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
-  if (node.cleared) line.appendChild(droppedTag());   // same one-word story as the card checklist
+  if (node.cleared) line.appendChild(clearedTag());   // same one-word story as the card checklist
   // (The node's why/blocked/done rationale hover tooltip was removed 2026-06-27 — just the goal text now.)
   if (node.who && node.who !== parentWho) {
     const who = el("a", "ftree-who"); who.title = node.whoWorking ? "open this session (working now)" : "open this session";
@@ -2003,17 +2005,18 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
         vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" });
         renderModal();   // repaint through the same path a real done takes, so it looks identical
       };
-      // "Drop": the item-level clear (the user 2026-07-20: 'drop = an item-level clear which just checks
-      // it off') — checks it off as no-longer-needed via the same user-authority seam as a card Clear.
-      // Acknowledges instantly (fades + checks the line); the kernel push confirms.
+      // "Drop": the item-level clear (the user 2026-07-20, who wanted it as an item-level clear) —
+      // clears it as no-longer-needed via the same user-authority seam as a card Clear. Acknowledges
+      // instantly (fades + strikes the line; the mark stays honest); the kernel push confirms.
       const drop = el("button", "ftree-act-btn ftree-act-drop"); drop.textContent = "Drop";
-      drop.title = "drop this sub-goal — no longer needed; checks it off without claiming it was done";
+      drop.title = "clear this sub-goal off the board — no longer needed, without claiming it was done";
       drop.onclick = (ev) => {
         ev.stopPropagation();
         vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "clear" });
-        line.classList.remove("st-open", "st-question"); line.classList.add("st-cleared");
-        mark.textContent = "●"; acts.remove();
-        line.appendChild(droppedTag());   // instant ack wears the same tag the re-render will draw
+        // the mark is left ALONE — the box means done, and dropping doesn't finish anything
+        line.classList.remove("st-open", "st-question"); acts.remove();
+        line.classList.add("st-cleared");
+        line.appendChild(clearedTag());   // instant ack wears the same tag the re-render will draw
       };
       // "Check status": ONE-CLICK targeted ask — the session states where this item stands and the judge
       // files the reply on this node (the same askFollowUp + romp-goal-id path a typed per-sub follow-up
