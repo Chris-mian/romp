@@ -327,6 +327,12 @@ user account). Local tools (the CLI, hooks, the bus, the editor extension) read
 that file and send it automatically, so you never type it. Only liveness probes
 (`/healthz`, `/version`, `/busy`, and the bus's `/ping`) are exempt.
 
+A browser cannot read that file, which is why the link `romp` prints carries the
+token in it. The first visit trades it for a year-long cookie, so the bare
+`http://127.0.0.1:29855/` works from then on; `romp url` prints the link again
+for a new browser or after clearing cookies. The cookie is a credential in its
+own right, so treat a machine holding one as signed in.
+
 **Remote machines.** Every machine mints its own token. When you attach a host,
 your machine reads that host's token over ssh and stores it locally (in
 `~/.local/state/romp/remotes.json`, also `0600`: it is a credential store).

@@ -45,25 +45,15 @@ export PATH="$PATH:$HOME/romp/bin"
 
 ## First run
 
-The installer ends by printing your dashboard link, with an access token in it.
-Open that link and Romp is running. There is nothing to start by hand.
-
-It is already up because the installer also adds a login service, which holds
-the kernel's supervisor open from the moment you sign in to the machine. The
-supervisor runs the kernel, and the kernel mints the token the link carries. So
-the back end starts before you open anything, and it comes back on its own after
-a reboot.
-
-The first visit trades that token for a year-long cookie, so
-`http://127.0.0.1:29855/` works on its own from then on. To print the link again
-for a new browser or after clearing cookies:
+The installer leaves Romp's back end running, so there is nothing to start.
+Open the dashboard:
 
 ```bash
-romp url
+romp
 ```
 
-Running `romp` on its own does the same and opens a browser with it, which is
-the everyday way in.
+That prints your link and opens a browser on it. On a server with no browser it
+prints the link along with how to reach it from your laptop.
 
 ### In VS Code or Cursor
 
@@ -73,20 +63,3 @@ open Romp from the sidebar.
 ### Start a session
 
 <video src="../assets/guide/first-session.mp4" controls loop muted playsinline preload="none" data-romp-autoplay width="100%"></video>
-
-### If the dashboard does not answer
-
-Four things account for nearly every case:
-
-- **You updated the code.** Restart the kernels so they pick it up: `romp
-  refresh`.
-- **The back end is not running.** `romp status` says whether it is, and
-  `bin/romp-service install` puts the login service back if it went missing.
-- **You installed with `ROMP_NO_SERVICE=1`.** Then there is no login service by
-  design; `romp up` holds the back end open in a terminal for as long as you
-  leave it running.
-- **The machine has no browser**, being a server you reach over ssh. Print the
-  link with `romp url` and forward the port (`ssh -L 29855:127.0.0.1:29855
-  <host>`), or attach the machine to a kernel you already use and drive it from
-  there; see [Linking kernels on other
-  machines](guide.md#linking-kernels-on-other-machines).
