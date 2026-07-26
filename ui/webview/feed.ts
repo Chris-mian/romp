@@ -190,7 +190,6 @@ const pendingMoveAck = new Map<string, number>();      // card itemId → the bu
 // its card to Working instantly, not just the feed composer's own follow-up):
 //  - "followup": a message rides along → the prediction wears the re-check styling ("Followed up" chip),
 //    and an unconfirmed prediction reverts WITH a toast (a silently-unheeded message must be apparent).
-//  - "plain": the "Move to Working" button / drag — no message in flight, so no chip; reverts with a toast.
 //  - "answer": a picker/permission answer resolved the session's live block — no chip, and the prediction
 //    YIELDS to the first authoritative payload (see reconcileFollowMove). The revert is SILENT: an unheeded
 //    answer re-shows the ⏸ blocked card, which IS the signal — unlike a message, nothing can be lost.
@@ -211,7 +210,7 @@ function reconcilePendingDone(asks: AskItem[]) {
     if (st === "done" || st === undefined) pendingDone.delete(id);
   }
 }
-type MoveKind = "followup" | "plain" | "answer";
+type MoveKind = "followup" | "answer";
 const pendingMoveKind = new Map<string, MoveKind>();
 function clearFollowMove(itemId: string) {
   const t = pendingFollowMove.get(itemId); if (t) clearTimeout(t);
@@ -242,10 +241,8 @@ function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
 function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
   if (!pendingFollowMove.has(itemId)) return;
   if (!ok) {
-    const plain = pendingMoveKind.get(itemId) === "plain";
     clearFollowMove(itemId);
-    feedToast(plain ? "That card isn’t on the board any more, so it couldn’t move to Working."
-                    : "Your reply was sent, but that card isn’t on the board any more to move to Working.");
+    feedToast("Your reply was sent, but that card isn’t on the board any more to move to Working.");
     render();
     return;
   }
@@ -292,43 +289,11 @@ function applyFollowMove(list: AskItem[]) {
     if (a.t < nowSec) a.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
   }
 }
-// ── drag-to-Working (the user 2026-07-06): a Blocked/Completed card DRAGS onto the Working column —
-// the same cardMove op as the modal's "Move to Working" button, as the desktop gesture (the button
-// remains the touch path; HTML5 drag doesn't exist on phones). Cards are REUSED DOM nodes (askEls),
-// but a reconcile mid-drag still moves/removes nodes and the browser CANCELS an in-flight drag whose
-// source node moved — so render() DEFERS while a drag is in flight and flushes on dragend/drop
-// (event-based; the timeline _pointerHeld pattern, per the click-safety rule).
-// TEMPORARILY DISABLED (the user 2026-07-06): card dragging is turned off for now — set this back to true
-// to restore it. No card is ever armed draggable (see updateAskCard), so the wired dragstart/dragover/drop
-// handlers stay dormant; the modal's "Move to Working" button remains the way to move a card.
-const DRAG_CARDS_ENABLED = false;
-let dragAskId: string | null = null;
-let dragDeferredRender = false;
-// The LANDING SLOT: a placeholder that opens at the BOTTOM of the Working list while a drag hovers the
-// column — the true landing spot (Working sorts oldest-top; the followupAt stamp lands the moved card
-// last), so the column visibly makes room exactly where the card will slot in. Honest by design: the
-// board auto-sorts, so the slot never follows the pointer pretending free placement exists.
-function openDropSlot() {
-  const body = document.getElementById("col-asks-list");
-  if (!body) return;
-  let slot = document.getElementById("fdrop-slot");
-  if (!slot) {
-    slot = el("div", "fdrop-slot"); slot.id = "fdrop-slot";
-    body.appendChild(slot);
-    requestAnimationFrame(() => { slot!.classList.add("open"); slot!.scrollIntoView({ block: "nearest" }); });
-  }
-}
-function closeDropSlot() {
-  document.getElementById("fdrop-slot")?.remove();
-}
-function finishAskDrag() {
-  dragAskId = null;
-  document.body.classList.remove("feed-dragging");
-  document.querySelector(".feed-col.col-asks")?.classList.remove("drop-hot");
-  document.querySelector(".fitem.ask.dragging")?.classList.remove("dragging");
-  closeDropSlot();
-  if (dragDeferredRender) { dragDeferredRender = false; render(); }
-}
+// (drag-to-Working and the modal's "Move to Working" button were REMOVED, the user 2026-07-25: a
+// messageless recategorize voids verdicts while adding no information — zero recorded uses, and a
+// reply to the card does everything it did plus gives the agent something to act on. The kernel/judge
+// reopen machinery stays: the reply path is its remaining caller, and historical "move" journal
+// events still replay.)
 // Group cards keyed by turnId, stored under "g:"+turnId. The focus state
 // (hoverAskId/pinnedAskId) holds EITHER a raw ask itemId OR a group key
 // "g:"+turnId; applyFocus + focusAnchorId understand both.
@@ -564,19 +529,6 @@ function ensureHeader() {
 function makeAskCard(it: AskItem): HTMLElement {
   const card = el("div", "fitem ask");
   card.dataset.key = "a:" + it.itemId;
-  // drag source (the user 2026-07-06): whether the card is draggable is set per-render by updateAskCard
-  // (only a needs-input/completed card is); the handlers are wired ONCE here — the element is reused for
-  // the card's whole life, so the listeners never re-attach across reconciles.
-  card.addEventListener("dragstart", (ev) => {
-    dragAskId = it.itemId;
-    document.body.classList.add("feed-dragging");
-    try { ev.dataTransfer!.setData("text/plain", it.itemId); ev.dataTransfer!.effectAllowed = "move"; } catch { /* dataTransfer optional */ }
-    // dim + dash the source AFTER the browser snapshots the drag image, so the picture under the
-    // pointer stays a full-opacity card while the one left behind clearly reads "being moved"
-    requestAnimationFrame(() => card.classList.add("dragging"));
-  });
-  card.addEventListener("dragend", finishAskDrag);
-
   const main = el("div", "fitem-main");
   // ROW 1 — ask title (left, wraps) with the TIME trailing it, right-justified on the title's LAST line
   // (the user 2026-07-07): small + faded so it reads as metadata, not part of the title. The title still
@@ -1138,11 +1090,6 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
   card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "") + (it.provisional ? " provisional" : "");
-  // drag-to-Working (the user 2026-07-06): only a card OUT of Working drags (same gate as the modal
-  // button); handlers were wired once in makeAskCard, this just arms/disarms the gesture per state
-  const movable = DRAG_CARDS_ENABLED && !it.provisional && (it.column === "needs_input" || it.column === "completed");
-  card.draggable = movable;
-  card.classList.toggle("draggable", movable);
   // PROVISIONAL placeholder: a dim, italic, non-interactive card from the live prompt while the planner
   // hasn't classified the in-progress turn yet. No Clear/Nudge (nothing to curate), no auto-line, no tree.
   card.style.opacity = it.provisional ? ".62" : "";
@@ -2241,16 +2188,14 @@ function renderModal() {
     const age = el("span", "ftime feed-modal-age"); age.id = "feed-modal-age";
     const fup = el("button", "fdismiss ffollow feed-modal-follow"); fup.id = "feed-modal-follow"; fup.textContent = "Follow up"; fup.title = "send a follow-up to this session — the card returns to ASKS"; fup.style.display = "none";
     // (Nudge moved OUT of the modal footer onto the working CARD itself — the user 2026-06-18.)
-    // "Move to Working" (the user 2026-07-06): a follow-up WITHOUT a message — "this card isn't
-    // blocked/done". Shown only on a needs-input or completed single-ask card (the it branch wires it).
-    const mv = el("button", "fdismiss feed-modal-move"); mv.id = "feed-modal-move"; mv.textContent = "Move to Working"; mv.title = "this card isn’t blocked/done — move it back to Working (sends no message)"; mv.style.display = "none";
+    // (The "Move to Working" button was removed — the user 2026-07-25; reply or Clear cover its cases.)
     // "Check status" (the user 2026-07-20): the card-level sweep, in the modal too — one message asking
     // the session where every open/blocked item stands. The single-ask branch wires + shows it.
     const cs = el("button", "fdismiss feed-modal-status"); cs.id = "feed-modal-status"; cs.textContent = "Check status";
     cs.title = "ask this session where every open item on this card stands — replies file back onto the card";
     cs.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, mv, cs, clr);
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, cs, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
@@ -2340,7 +2285,6 @@ function renderModal() {
   const agent = document.getElementById("feed-modal-agent") as HTMLElement;
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;
   const clrEl = document.getElementById("feed-modal-clear") as HTMLElement;
-  const mvEl = document.getElementById("feed-modal-move") as HTMLButtonElement | null;
   const csEl = document.getElementById("feed-modal-status") as HTMLButtonElement | null;
   const fupEl = document.getElementById("feed-modal-follow") as HTMLButtonElement;
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
@@ -2376,7 +2320,6 @@ function renderModal() {
                                // top-level goal IS the first line of the tree, not a separate header title
   clrEl.style.display = "";   // re-shown here because the blocked branch below hides it
   // default-hidden + reset every render; only the single-ask branch shows it (group/standalone never do)
-  if (mvEl) { mvEl.style.display = "none"; mvEl.disabled = false; mvEl.textContent = "Move to Working"; }
   if (csEl) { csEl.style.display = "none"; }   // disabled/label NOT reset here — "Asked" survives the per-push re-render
   let titleHoverId: string | null = null;   // the originating typed turn → chat/timeline hover highlight
   if (grp) {
@@ -2406,19 +2349,6 @@ function renderModal() {
     ageEl.textContent = relAge(hostNow - it.t);
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
-    // "Move to Working" (the user 2026-07-06): only when the card is OUT of Working — needs-input
-    // (blocked) or completed. Acknowledges on click (disable + relabel, before the kernel round-trip);
-    // the optimistic flip slides the card into Working behind the modal at once, and the re-render
-    // hides the button once the column reads working.
-    if (mvEl && (it.column === "needs_input" || it.column === "completed")) {
-      mvEl.style.display = "";
-      mvEl.onclick = () => {
-        mvEl.disabled = true; mvEl.textContent = "Moving…";
-        vscodeApi?.postMessage({ type: "cardMove", itemId: it.itemId, sid: it.sid, to: "working" });
-        optimisticFollowMove(it.itemId, "plain");
-        render();
-      };
-    }
     // "Check status" (the user 2026-07-20): shown when the card has open/blocked subs to sweep and the
     // session is live to answer. Same ack + re-arm contract as the card button (event-based: the judge's
     // re-file clears the asked state via the fresh modal render).
@@ -2653,35 +2583,6 @@ function ensureCols(list: HTMLElement) {
       head.append(name, count);
       const body = el("div", "feed-col-list"); body.id = "col-" + key + "-list";
       col.append(head, body);
-      if (key === "asks") {
-        // drop target for drag-to-Working (the user 2026-07-06). The col element is built ONCE and
-        // survives every reconcile (only the card nodes inside its body swap) — a stable ancestor, so
-        // the drop always lands (the click-safety rule). Highlight = accent chrome (var(--accent)).
-        col.addEventListener("dragover", (ev) => {
-          if (!dragAskId) return;
-          ev.preventDefault();
-          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-          col.classList.add("drop-hot");
-          openDropSlot();                                  // the column makes room at the landing spot
-        });
-        col.addEventListener("dragleave", (ev) => {
-          const rt = (ev as DragEvent).relatedTarget as Node | null;
-          if (rt && col.contains(rt)) return;              // still inside the column → keep the cue
-          col.classList.remove("drop-hot");
-          closeDropSlot();
-        });
-        col.addEventListener("drop", (ev) => {
-          ev.preventDefault();
-          const id = dragAskId;
-          finishAskDrag();                                 // clears the drag state; flushes any deferred render
-          if (!id) return;
-          const dropped = asks.find((x) => x.itemId === id);
-          if (!dropped || dropped.column === "working") return;
-          vscodeApi?.postMessage({ type: "cardMove", itemId: id, sid: dropped.sid, to: "working" });
-          optimisticFollowMove(id, "plain");               // same plain optimistic flip as the modal button
-          render();
-        });
-      }
       cols.appendChild(col);
     }
     list.appendChild(cols);
@@ -2842,9 +2743,6 @@ function feedToast(text: string) {
 }
 
 function render() {
-  if (dragAskId) { dragDeferredRender = true; return; }   // mid-drag reconcile moves/removes the dragged
-  //                                                         node and the browser cancels the drag — the
-  //                                                         deferred render flushes on dragend/drop
   const list = document.getElementById("feed-list")!;
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;
@@ -3202,7 +3100,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     // prediction machinery as the local buttons (idempotent when this view initiated it); the kernel's
     // next push stays authoritative. An id may name a SUB-goal (a per-sub follow-up target): resolve it
     // to the visible top card that carries it in its tree.
-    const kind: MoveKind = m.flavor === "answer" ? "answer" : m.flavor === "plain" ? "plain" : "followup";
+    const kind: MoveKind = m.flavor === "answer" ? "answer" : "followup";
     let moved = false;
     for (const raw of m.ids.map(String)) {
       const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));

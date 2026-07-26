@@ -247,20 +247,15 @@ class KernelWiring(unittest.TestCase):
         self.assertFalse(acks[0]["ok"], "a refused reopen is reported as refused, not left to time out")
         self.assertNotIn("sid-sdk", km._user_goal_write, "nothing was written → nothing to punch through")
 
-    def test_cardmove_answers_its_prediction_too(self):
-        saved = km.jd.user_move
-        km.jd.user_move = lambda sid, gid, **kw: True
+    def test_cardmove_op_is_retired(self):
+        # the messageless Move to Working was removed (the user 2026-07-25): the op routes nowhere,
+        # acks nothing, and marks no goal write
         km._user_goal_write.pop("sid-sdk", None)
         self.app_sends = []
-        try:
-            self.assertTrue(self._route({"type": "cardMove", "id": "sid-sdk",
-                                         "itemId": "sid-sdk:g1", "to": "working"}))
-            acks = self._app_msgs("cardMoveAck")
-            self.assertEqual(len(acks), 1)
-            self.assertTrue(acks[0]["ok"])
-            self.assertIn("sid-sdk", km._user_goal_write)
-        finally:
-            km.jd.user_move = saved
+        self.assertFalse(self._route({"type": "cardMove", "id": "sid-sdk",
+                                      "itemId": "sid-sdk:g1", "to": "working"}))
+        self.assertEqual(self._app_msgs("cardMoveAck"), [])
+        self.assertNotIn("sid-sdk", km._user_goal_write)
 
     def test_askfollowup_without_itemid_just_sends(self):
         # a raw follow-up with no goal id (e.g. a typed message routed as askFollowUp) sends only — no reopen.

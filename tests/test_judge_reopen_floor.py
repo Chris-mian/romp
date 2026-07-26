@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""The feed's "Move to Working" recategorize (the user 2026-07-06): user_move is a follow-up WITHOUT a
-message — reopen/unblock the goal; the reopen event derives the followupAt evidence floor and HOLDS the
-top open when the subtree is all-done (stub nodes retired 2026-07-07) — plus the _done_is_stale guard (a
-done verdict from evidence at/before the move must not snap the card back to Completed) and the grouper's
-once-done-guard REMOVAL (a reopened once-done top is groupable again). All fixtures SYNTHETIC."""
+"""The user-reopen floor, exercised through its SURVIVING producer (the user 2026-07-25: the messageless
+"Move to Working" — user_move — was removed; a reply to the card, optimistic_followup, is the one
+user-reopen gesture left): reopen/unblock the goal wherever the block sits; the reopen event derives the
+followupAt evidence floor and HOLDS the top open when the subtree is all-done (stub nodes retired
+2026-07-07) — plus the _done_is_stale guard (a done verdict from evidence at/before the reopen must not
+snap the card back to Completed) and the grouper's once-done-guard REMOVAL (a reopened once-done top is
+groupable again). All fixtures SYNTHETIC."""
 import json
 import shutil
 import tempfile
@@ -30,7 +32,7 @@ def node(nid, text, parent=None, done=False, blocked=False, **kw):
     return nd
 
 
-class UserMoveBlocked(unittest.TestCase):
+class FollowupReopenBlocked(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.mkdtemp()
         jd._rebind_state(Path(self.td))
@@ -50,13 +52,14 @@ class UserMoveBlocked(unittest.TestCase):
         self.assertEqual(store["status"][G1], "blocked")
         self._write(store)
 
-        self.assertTrue(jd.user_move(SID, G1, now=NOW))
+        self.assertTrue(jd.optimistic_followup(SID, G1, now=NOW))
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][G1], "working")
         self.assertFalse(st["nodes"][G1]["blocked"])
         self.assertFalse(st["nodes"][G2]["blocked"])
         self.assertEqual(st["nodes"][G1]["followupAt"], NOW)     # sort floor + staleness floor armed
-        self.assertFalse(st["nodes"][G1].get("followupPending"))  # NO chip: nothing is in flight
+        self.assertTrue(st["nodes"][G1].get("followupPending"),  # a reply IS in flight: the chip shows
+                        "msg-marked reopen carries the Followed-up chip")
         # an open sub exists, so no stub was needed
         self.assertFalse(any(n.get("provisional") for n in st["nodes"].values()))
 
@@ -72,35 +75,26 @@ class UserMoveBlocked(unittest.TestCase):
         self.assertEqual(store["status"][G1], "completed")
         self._write(store)
 
-        self.assertTrue(jd.user_move(SID, G1, now=NOW))
+        self.assertTrue(jd.optimistic_followup(SID, G1, now=NOW))
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][G1], "working")
         self.assertEqual(sorted(st["nodes"]), [G1, G2],
                          "no stub node is minted — the reopen event alone holds the top open")
-        self.assertFalse(st["nodes"][G1].get("followupPending"),
-                         "a move is a follow-up WITHOUT a message: held open, but no chip")
         # _reopen effects rode along: settledAt → deltaSince for the delta re-distill; once-done
         # history lives in the diary now (everDone retired 2026-07-08)
         self.assertTrue(any(e["kind"] == "done" for e in st["nodes"][G1]["log"]))
         self.assertNotIn("everDone", st["nodes"][G1])
         self.assertNotIn("settledAt", st["nodes"][G1])
         self.assertEqual(st["nodes"][G1]["deltaSince"], NOW - 100)
-        # a SECOND move is idempotent: still working, still exactly the same two nodes
-        self.assertTrue(jd.user_move(SID, G1, now=NOW + 5))
+        # a SECOND reopen is idempotent: still working, still exactly the same two nodes
+        self.assertTrue(jd.optimistic_followup(SID, G1, now=NOW + 5))
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][G1], "working")
         self.assertEqual(sorted(st["nodes"]), [G1, G2])
 
-    def test_view_cleared_refused(self):
-        store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {},
-                 "nodes": {G1: node(G1, "Old thing", done=True)}}
-        self._write(store)
-        (Path(self.td) / "cleared.jsonl").write_text(json.dumps({"id": G1, "op": "clear"}) + "\n")
-        self.assertFalse(jd.user_move(SID, G1, now=NOW))
-
     def test_missing_goal_refused(self):
         self._write({"rompUuid": SID, "seq": 0, "placements": {}, "status": {}, "nodes": {}})
-        self.assertFalse(jd.user_move(SID, G1, now=NOW))
+        self.assertFalse(jd.optimistic_followup(SID, G1, now=NOW))
 
 
 class StaleDoneGuard(unittest.TestCase):
@@ -119,7 +113,7 @@ class StaleDoneGuard(unittest.TestCase):
                            G2: node(G2, "Write the writer", parent=G1, done=True)}}
         jd.rollup_status(store, True)
         jd.save_goals(SID, store)
-        jd.user_move(SID, G1, now=NOW)
+        jd.optimistic_followup(SID, G1, now=NOW)
         return jd.load_goals(SID)
 
     def test_closer_stale_done_void_fresh_done_lands(self):

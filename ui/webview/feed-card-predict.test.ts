@@ -13,8 +13,8 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
-test("predictions carry a KIND — followup / plain / answer — replacing the old plain boolean", () => {
-  assert.match(FEED, /type MoveKind = "followup" \| "plain" \| "answer";/);
+test("predictions carry a KIND — followup / answer ('plain' died with Move to Working, 2026-07-25)", () => {
+  assert.match(FEED, /type MoveKind = "followup" \| "answer";/);
   assert.match(FEED, /const pendingMoveKind = new Map<string, MoveKind>\(\);/);
   assert.match(FEED, /function optimisticFollowMove\(itemId: string, kind: MoveKind = "followup"\)/);
   assert.doesNotMatch(FEED, /pendingMovePlain/, "the plain boolean set is gone — kind covers it");
@@ -68,7 +68,7 @@ test("kernel: every reply-shaped drive op fans the cardPredict frame; cancel doe
   assert.match(KERNEL, /_send_to_app\("feed", \{"type": "cardPredict", "ids": ids, "flavor": flavor\}\)/);
   // follow-up (any surface — the chat citation chip lands on the same op) + Move to Working name their card
   assert.match(KERNEL, /_predict_working\("followup", ids=\[iid\]\)/);
-  assert.match(KERNEL, /_predict_working\("plain", ids=\[iid\]\)/);
+  assert.doesNotMatch(KERNEL, /_predict_working\("plain"/, "the plain flavor died with the cardMove op");
   // the four answer-shaped picker ops resolve sid → live-blocked card(s); cancel answers nothing
   assert.equal((KERNEL.match(/_predict_working\("answer", sid=sid\)/g) || []).length, 4);
   assert.match(KERNEL, /be\.on_ask\(sid, "cancel"\); _mark_views_dirty\(\)\s+# a cancel answers nothing — no Working prediction/);

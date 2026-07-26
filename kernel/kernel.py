@@ -3112,12 +3112,6 @@ def _drive(msg, client):
         sid = _sid_of(str(msg["name"]))                   # the timeline keys these by session NAME
     elif t == "askFollowUp" and (msg.get("itemId") or msg.get("id")) and msg.get("text"):
         sid = str(msg["itemId"]).rsplit(":", 1)[0] if msg.get("itemId") else str(msg["id"])
-    elif t == "cardMove" and msg.get("itemId"):
-        # Move to Working (the user 2026-07-06). The routing arm was MISSING (the user 2026-07-09): the
-        # feed sends itemId/sid (no `id`), cardMove is not in ID_OPS, so every click fell to the
-        # "not a drive op" return below and the handler further down was dead code — the optimistic flip
-        # then reverted with the error toast. Same itemId-derived sid as askFollowUp.
-        sid = str(msg["itemId"]).rsplit(":", 1)[0]
     else:
         return False                                      # not a drive op (UI/nav) → _dispatch_ws handles it
     be = Sessions.backend_for(sid)
@@ -3198,24 +3192,9 @@ def _drive(msg, client):
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
             _ack_card_move([iid], ok)                     # …and TELL the client, instead of it timing us out
-    elif t == "cardMove":
-        # USER recategorize (the user 2026-07-06): the feed card's "Move to Working" button — a follow-up
-        # WITHOUT a message. Nothing is sent to the session; the judge-side user_move reopens/unblocks the
-        # goal, stamps the followupAt evidence floor (stale done/block verdicts are void, newer evidence
-        # wins), and rollup shows it in Working on the next push. Only "working" is a legal target: moving
-        # TO blocked/completed has no use case (the user 2026-07-06) — Clear covers retiring a card.
-        iid = str(msg.get("itemId") or "")
-        if iid and (msg.get("to") or "working") == "working":
-            _predict_working("plain", ids=[iid])          # other feed views flip in step with the clicked one
-            ok = False
-            try:
-                ok = bool(jd.user_move(sid, iid, now=int(time.time())))
-                if ok:
-                    _note_user_goal_write(sid)        # …and it shows even mid-judge-pass (_feed_goals)
-                    _mark_views_dirty()               # the store write is invisible to the fleet sig
-            except Exception:
-                sys.stderr.write("cardMove: %s\n" % traceback.format_exc())
-            _ack_card_move([iid], ok)                 # ok=False = sealed/gone: the ONE honest "didn't stick"
+    # (the cardMove op — the feed's "Move to Working" button/drag — was REMOVED, the user 2026-07-25:
+    # zero recorded uses, and a reply to the card reopens/unblocks it with actual context. jd's replay
+    # still accepts historical "move" journal events.)
     # RESOLVING a live picker (answer/submit/custom/cancel/text) retires it from the backend's in-memory ask
     # set — which is exactly what makes the card stop saying "needs you". That set lives in MEMORY, so NO
     # file-mtime sig sees it change: without the dirty mark _cached_feed happily serves the pre-answer build
@@ -7387,7 +7366,7 @@ _goals_snap_done = {}                            # sid → the user-write mark a
 _goals_snap_lock = threading.Lock()
 # A USER gesture (card reply, Move to Working, resolve) must NEVER wait out a pass (the user 2026-07-21).
 # The snapshot above exists to hide half-applied JUDGE writes; it was also hiding the user's own, because
-# optimistic_followup/user_move write the LIVE store while the feed reads the frozen copy. A reply landing
+# optimistic_followup writes the LIVE store while the feed reads the frozen copy. A reply landing
 # mid-pass therefore stayed invisible for the whole pass — routinely 30-80s here (one closer call alone ran
 # 24s) — so the client's own revert deadline expired first and toasted "that follow-up didn't move the card
 # to Working" while the session was already working the reply. sid → time of the newest user write.

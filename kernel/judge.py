@@ -1715,7 +1715,7 @@ def _replay_overrides(fsid, store):
             if later or _twin("reopen", msg=(op == "followup"), undo=False):
                 continue
             if op == "move" and not may_apply(store, nd, "user", "reopen"):
-                continue                               # view-cleared stays sealed, exactly like user_move
+                continue                               # view-cleared stays sealed (may_apply's reopen gate)
             _reopen(store, ev["node"], by=("optimistic" if op == "followup" else "user-move"),
                     now=t, msg=(op == "followup"))
             _unblock_subtree(store, ev["node"], t,
@@ -2268,7 +2268,7 @@ def _mark_node_done(store, nid, why, t, src="planner"):
     here — one definition of 'done'. No-op if the node is gone. The descendant unblocks are EVENT-BACKED
     (P3.4 follow-through, the user 2026-07-07): the node's own done event covers itself in the fold, but a
     blocked DESCENDANT cleared without an event re-blocks on the next materialize and wears a stale ⏸ until
-    settle rolls it up — the same eventless-write gap user_move/_reopen already closed."""
+    settle rolls it up — the same eventless-write gap optimistic_followup/_reopen already closed."""
     nodes = store["nodes"]
     if nid not in nodes:
         return
@@ -3973,29 +3973,9 @@ def _journal_reopen(fsid, gid, store, op):
             return
 
 
-def user_move(fsid, gid, now=None):
-    """USER recategorize from the feed (the user 2026-07-06): the card's "Move to Working" button asserts
-    this goal is NOT done / NOT waiting on the user — it belongs in Working. A move is a follow-up WITHOUT
-    a message, so it reuses the follow-up machinery end to end: _reopen (unseal, unblock the ancestor
-    chain; the reopen event derives followupAt — the Working-column sort floor and the evidence FLOOR:
-    verdicts from evidence at/before the move are void, genuinely newer work re-completes or re-blocks
-    the card normally) + a subtree unblock (a block can sit on a DESCENDANT, which _reopen doesn't
-    reach). The unanswered reopen event holds the top open through rollup (no stub node), and it is NOT
-    msg-marked: no message is in flight, so no "Followed up" chip and no re-judge treatment. Returns
-    True if the card moved."""
-    gid = str(gid)
-    store = load_goals(fsid)
-    nodes = store.get("nodes", {})
-    if gid not in nodes:
-        return False
-    if not may_apply(store, nodes[gid], "user", "reopen"):   # view-cleared → sealed; the feed hides it anyway
-        return False
-    _reopen(store, gid, by="user-move", now=now)
-    _unblock_subtree(store, gid, now, "moved to Working by the user")
-    rollup_status(store, False)                        # the user just acted → not idle/closed → working
-    _journal_reopen(fsid, gid, store, "move")          # journal before the save it protects (clobber race)
-    save_goals(fsid, store)
-    return True
+# (user_move — the feed's messageless "Move to Working" — was REMOVED, the user 2026-07-25. Its
+# journal op "move" still REPLAYS in _replay_overrides: historical journals carry it forever. The
+# reply path (followup_reopen) remains the caller of the shared _reopen/_unblock_subtree floor.)
 
 
 def _unblock_subtree(store, gid, now, why):
@@ -4071,7 +4051,7 @@ def _reassert_blocks(store, seg_id, seg_t, items):
 def _floor_of(store, nd):
     """The followupAt evidence floor governing verdicts on `nd`: its OWN stamp joined with every
     ANCESTOR's. A user reply/move lands on the CARD — the rollup — never on individual sub-goals, and
-    optimistic_followup/user_move already unblock the whole subtree on that gesture; the staleness
+    optimistic_followup already unblocks the whole subtree on that gesture; the staleness
     floor must reach exactly as far, or a judge pass re-imposes on a child the very ask the user just
     answered (2026-07-20: a closer re-blocked a just-answered sub-goal 35s after the reply, from a
     pre-reply segment — the child carried no floor of its own, so the per-node check waved it through
@@ -4104,7 +4084,7 @@ def _block_is_stale(store, nd, ev_t):
 def _done_is_stale(store, nd, ev_t):
     """Mirror of _block_is_stale for DONE verdicts (the user 2026-07-06, on Move to Working): the floor
     is the user's last assertion that this goal — or the card it files under (_floor_of) — is NOT
-    resolved: a card follow-up or a feed move back to Working (user_move). A done verdict computed from
+    resolved: a card follow-up (the messageless move was removed 2026-07-25). A done verdict computed from
     evidence AT/BEFORE that stamp would snap the card straight back to Completed on the next pass (a
     judge catch-up replays exactly such stale segments). A verdict from genuinely NEWER evidence —
     fresh work on the reopened goal — completes it normally: the user's action is a FLOOR on evidence
@@ -4481,7 +4461,7 @@ def _materialize_from_log(nodes):
 
     Since the P3.4 follow-through (the user 2026-07-07) the DERIVED STAMPS are cache too: followupAt,
     followupPending, settledAt/settledDone, deltaSince are rewritten from the fold here — their old
-    write/pop sites (optimistic_followup, user_move, _reopen's un-stick dance, rollup's deadlock heals)
+    write/pop sites (optimistic_followup, _reopen's un-stick dance, rollup's deadlock heals)
     are gone. Returns {nid: fold} so rollup_status reuses the folds (the held-open rule) without
     re-folding."""
     folds = {}

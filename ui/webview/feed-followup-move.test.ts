@@ -21,17 +21,14 @@ test("submitting a follow-up registers the optimistic move and re-renders the fe
 
 test("a predicted card is kept in Working at render, styled like the kernel's re-checked follow-up", () => {
   assert.match(FEED, /function applyFollowMove\(list: AskItem\[\]\)/);
-  // a follow-up prediction wears the re-check styling; a PLAIN move (the Move to Working button,
-  // the user 2026-07-06) flips the column only — no chip, nothing is in flight
+  // a follow-up prediction wears the re-check styling; an "answer" flips the column only
+  // (the messageless plain move was removed with its button/drag, the user 2026-07-25)
   assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ a\.recheck = true; a\.followupPending = true; \}/);
-  // applied at the top of render so EVERY render (push, modal close) reflects the prediction — right
-  // after the drag-in-flight deferral guard (feed-drag.test.ts), which must come first
+  // applied at the top of render so EVERY render (push, modal close) reflects the prediction
   assert.match(FEED, /const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
-  const renderTop = FEED.indexOf("function render() {");
-  const dragGuard = FEED.indexOf("if (dragAskId) { dragDeferredRender = true; return; }", renderTop);
-  const applyAt = FEED.indexOf("applyFollowMove(asks);", renderTop);
-  assert.ok(renderTop >= 0 && dragGuard > renderTop && applyAt > dragGuard,
-    "render(): drag deferral guard first, then the follow-move prediction");
+  // the removed drag machinery must not creep back in front of it
+  assert.doesNotMatch(FEED, /dragAskId|DRAG_CARDS_ENABLED|fdrop-slot/);
+  assert.doesNotMatch(FEED, /"cardMove"/, "the messageless move op is gone from the feed");
 });
 
 test("the optimistic move also bumps the card's sort key to now so it lands at the BOTTOM of Working, not the top", () => {

@@ -26,8 +26,8 @@ test("TOP bar = session name (left) + ✕ (right); age is no longer in the heade
   assert.match(CSS, /\.feed-modal-close \{[^}]*margin-left: auto/);   // ✕ pinned far-right
 });
 
-test("BOTTOM bar = age + Follow up + Move to Working + Check status + Clear in one row, the checklist sitting above it", () => {
-  assert.match(FEED, /footRow\.append\(age, fup, mv, cs, clr\)/);   // Nudge moved off the footer onto the card (the user 2026-06-18); mv the user 2026-07-06; cs the user 2026-07-20
+test("BOTTOM bar = age + Follow up + Check status + Clear in one row, the checklist sitting above it", () => {
+  assert.match(FEED, /footRow\.append\(age, fup, cs, clr\)/);   // Nudge moved off the footer onto the card (the user 2026-06-18); Move to Working removed (the user 2026-07-25); cs the user 2026-07-20
   // the per-sub follow-up target label sits between the button row and the composer box
   assert.match(FEED, /foot\.append\(nudges, footRow, futgt, fubox\)/);
   assert.match(FEED, /inner\.append\(head, body, foot\)/);            // head, then tree, then footer
