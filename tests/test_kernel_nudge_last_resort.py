@@ -173,9 +173,23 @@ class OtherReviverGates(Base):
         km._retry_paused_on = lambda: True
         self.assertIn("paused", km._revivers_pending(SID, _store(), _turns(), GID))
 
-    def test_a_pass_in_flight_defers(self):
+    def test_a_judge_call_for_this_session_defers(self):
+        jd.active_runs = lambda: [{"judge": "closer", "fsid": SID, "sent": 1.0}]
+        self.assertEqual(km._revivers_pending(SID, _store(), _turns(), GID), jd.WHY_JUDGING)
+
+    def test_another_sessions_judge_call_does_not_defer(self):
+        # SESSION-SCOPED (2026-07-25): another session's judging cannot revive THIS card, so it must not
+        # hold this card's nudge — the old any-run-anywhere form starved nudges fleet-wide.
+        jd.active_runs = lambda: [{"judge": "closer",
+                                   "fsid": "99999999-8888-7777-6666-555555555555", "sent": 1.0}]
+        self.assertEqual(km._revivers_pending(SID, _store(), _turns(), GID), "")
+
+    def test_the_global_pass_snapshot_does_not_defer(self):
+        # The producer opens a pass (and its feed snapshot) every ~3s for the WHOLE fleet — that is the
+        # cadence of the kernel, not a reviver for this card. Deferring on it let two adjacent gate ticks
+        # land inside two DIFFERENT routine passes and mint a false "stalled" card (2026-07-25).
         km._goals_snap[0] = {}
-        self.assertIn("mid-flight", km._revivers_pending(SID, _store(), _turns(), GID))
+        self.assertEqual(km._revivers_pending(SID, _store(), _turns(), GID), "")
 
     def test_a_reply_being_judged_defers(self):
         st = _store(followupPending=True)
@@ -206,11 +220,12 @@ class DeferBackstop(Base):
         super().tearDown()
 
     def test_first_deferral_holds_the_nudge(self):
-        self.assertFalse(km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW))
-        # the record carries WHY it deferred, not just when (2026-07-23) — the stall note is grounded in it
+        self.assertFalse(km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW, SID))
+        # the record carries WHY it deferred, not just when (2026-07-23) — the stall note is grounded in
+        # it — and WHOSE session it is (2026-07-25), so the stall readers can live-verify a frozen claim
         self.assertEqual(self._d["deferred"][GID],
-                         {"at": NOW, "why": "the agent's to-do sync is due", "seen": 1},
-                         "the first deferral is stamped with its reason")
+                         {"at": NOW, "why": "the agent's to-do sync is due", "seen": 1, "sid": SID},
+                         "the first deferral is stamped with its reason and session")
 
     def test_a_legacy_bare_int_deferral_still_backstops(self):
         # A live state file written before the record grew a reason still holds bare epoch ints; reading one
@@ -250,9 +265,8 @@ class StalledGoals(Base):
         super().tearDown()
 
     def test_one_deferral_is_not_yet_a_stall(self):
-        # Most reasons are momentary — "a judge pass is mid-flight" is true of every working goal for the
-        # length of any pass — and clear on the next run. Calling that a stall would light every card.
-        km._nudge_deferred_ok(GID, "a judge pass is mid-flight", NOW)
+        # Most reasons are momentary and clear on the next run. Calling one a stall would light every card.
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW, SID)
         self.assertEqual(km._stalled_goals(), {}, "a reason seen ONCE is churn, not a wedge")
 
     def test_the_same_reason_twice_is_a_stall(self):
@@ -263,10 +277,10 @@ class StalledGoals(Base):
                          "a reason that survived the next gate run is a wedge, dated from when it started")
 
     def test_a_reason_that_changes_restarts_the_count_but_not_the_clock(self):
-        km._nudge_deferred_ok(GID, "a judge pass is mid-flight", NOW)
-        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30)
+        km._nudge_deferred_ok(GID, "the card is already complete and merely unsettled", NOW, SID)
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30, SID)
         self.assertEqual(km._stalled_goals(), {}, "bouncing between reasons is not wedged on either one")
-        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 60)
+        km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 60, SID)
         self.assertEqual(km._stalled_goals()[GID]["since"], NOW,
                          "…but the card HAS been stuck since the first deferral, so the clock is kept")
 
@@ -286,6 +300,49 @@ class StalledGoals(Base):
             km._nudge_deferred_ok(GID, "the agent's to-do sync is due", NOW + 30 * (i + 1))
         self.assertEqual(len(writes), 1,
                          "the run count stops at the threshold — a wedge is not a file write per tick")
+
+    def test_a_judging_stall_shows_only_while_the_call_is_in_flight(self):
+        # LIVE-VERIFIED (2026-07-25): a deferral record only pops when the gate walk re-runs, and the walk
+        # stops the moment its session leaves idle-and-due — so a record freezes with its last reason.
+        # Records frozen for DAYS were found presenting "mid-flight" in the present tense. The judging
+        # claim is checkable against active_runs right now, so a frozen copy must check out to be shown.
+        km._nudge_deferred_ok(GID, jd.WHY_JUDGING, NOW, SID)
+        km._nudge_deferred_ok(GID, jd.WHY_JUDGING, NOW + 30, SID)
+        jd.active_runs = lambda: [{"judge": "closer", "fsid": SID, "sent": 1.0}]
+        self.assertEqual(km._stalled_goals()[GID]["why"], jd.WHY_JUDGING,
+                         "a genuinely wedged per-session judging shows as the stall it is")
+        jd.active_runs = lambda: ()
+        self.assertEqual(km._stalled_goals(), {},
+                         "the call retired but the record froze → the claim is live-false, never shown")
+
+    def test_a_legacy_global_pass_record_is_never_presented(self):
+        # pre-2026-07-25 records carried the global "a judge pass is mid-flight" and named no session —
+        # unverifiable, and minted by the pass cadence rather than a wedge, so they are dropped on read
+        # (they still pop normally on the next gate walk). This is what heals the stale-card epidemic.
+        self._d["deferred"] = {GID: {"at": NOW, "why": "a judge pass is mid-flight", "seen": 2}}
+        jd.active_runs = lambda: [{"judge": "closer", "fsid": SID, "sent": 1.0}]
+        self.assertEqual(km._stalled_goals(), {})
+
+    def test_a_paused_tiers_record_shows_only_while_paused(self):
+        km._retry_paused_on = lambda: True
+        km._nudge_deferred_ok(GID, "the judge tiers are paused (nothing could revive it)", NOW, SID)
+        km._nudge_deferred_ok(GID, "the judge tiers are paused (nothing could revive it)", NOW + 30, SID)
+        self.assertIn(GID, km._stalled_goals())
+        km._retry_paused_on = lambda: False
+        self.assertEqual(km._stalled_goals(), {},
+                         "tiers resumed while the record was frozen → the claim no longer stands")
+
+    def test_the_stands_predicate_is_shared_with_the_judge_reader(self):
+        # stalled_facts (judge side, feeds the staller and the distill due-anchor) filters through the SAME
+        # jd.stall_why_stands, so the two stall surfaces can never disagree about a live-false claim.
+        jd.active_runs = lambda: ()
+        self.assertFalse(jd.stall_why_stands(jd.WHY_JUDGING, SID))
+        jd.active_runs = lambda: [{"judge": "closer", "fsid": SID, "sent": 1.0}]
+        self.assertTrue(jd.stall_why_stands(jd.WHY_JUDGING, SID))
+        self.assertFalse(jd.stall_why_stands(jd.WHY_JUDGING, None),
+                         "a judging claim with no session is unverifiable and never stands")
+        self.assertTrue(jd.stall_why_stands("the agent's to-do sync is due", None),
+                        "store-backed reasons pass through — their own passes reconcile them")
 
 
 class StampEvidenceTime(unittest.TestCase):
