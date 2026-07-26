@@ -65,6 +65,12 @@ class FindSessionCli(unittest.TestCase):
     def test_junk_lines_are_skipped(self):
         self.assertIsNone(sb.find_session_cli(["", "not a ps line", "x y"], [SID], KERNEL))
 
+    def test_equals_flag_spelling_matches(self):
+        # The SDK's current argv spells it `--resume=<sid>`; the space-only match left the
+        # escalation unable to find its own child to signal (2026-07-25).
+        lines = ["  100 %d /x/claude --resume=%s --input-format stream-json" % (KERNEL, SID)]
+        self.assertEqual(sb.find_session_cli(lines, [SID], KERNEL), 100)
+
 
 class SourcePins(unittest.TestCase):
     """Wiring pins: the press routes through the ladder, failures are loud, episodes reset."""
