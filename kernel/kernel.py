@@ -4275,6 +4275,71 @@ def _notify_bus_peer(host, port, up, peer_token="", trust="directed"):
         return False
 
 
+def _notify_bus_origin_trust(host, trust):
+    """Origin-only trust row → the local bus: no port, no dialer — just the tier the inbound gate
+    reads when mail from `host` arrives RELAYED through a hub (trust is judged by true origin, never
+    by the tunnel it rode in on — the user 2026-07-25). Guarded like _notify_bus_peer: postal being
+    down never breaks the caller; the supervisor re-pushes, and a restarted bus re-seeds from
+    /tunnels' `known` rows."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn.request("POST", "/peer", json.dumps({"host": host, "trust": trust or "directed",
+                                                  "originOnly": True}),
+                     {"Content-Type": "application/json", "X-Romp-Token": TOKEN})
+        ok = conn.getresponse().status == 200
+        conn.close()
+        return ok
+    except Exception:
+        return False
+
+
+_origin_trust_pushed = {}   # host -> level the bus last acked (supervisor re-push memo)
+
+
+def _push_origin_trust_rows():
+    """Supervisor helper: push every remembered-but-unattached host's trust to the bus as an
+    origin-only row, once per (host, level). Attached hosts are the (up, trust)-keyed notify's job;
+    a host that attaches later drops out of this memo so the full notify owns it again."""
+    with _remotes_lock:
+        attached = set(_remotes)
+    for k in list_known():
+        h, tr = k.get("host"), k.get("trust") or "directed"
+        if not h:
+            continue
+        if h in attached:
+            _origin_trust_pushed.pop(h, None)
+            continue
+        if _origin_trust_pushed.get(h) != tr and _notify_bus_origin_trust(h, tr):
+            _origin_trust_pushed[h] = tr
+
+
+_via_cache = {"t": 0.0, "rows": []}
+
+
+def _bus_via_reach():
+    """The bus's via-reach summary for the popover: hosts with no tunnel here whose sessions a hub
+    gossips one hop (postal via_reach). Cached ~3s — it rides every /tunnels poll. Empty when the
+    bus is down or peering is off: the popover simply shows no relay section (display-only; the
+    trust GATE itself lives in the bus and fails safe to directed)."""
+    if not _postal_peers_on():
+        return []
+    now = time.time()
+    if now - _via_cache["t"] < 3.0:
+        return _via_cache["rows"]
+    rows = []
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
+        conn.request("GET", "/peers", None, {"X-Romp-Token": TOKEN})
+        r = conn.getresponse()
+        if r.status == 200:
+            rows = (json.loads(r.read().decode() or "{}") or {}).get("viaReach") or []
+        conn.close()
+    except Exception:
+        rows = []
+    _via_cache["t"], _via_cache["rows"] = now, rows
+    return rows
+
+
 def _bus_quarantine_act(body):
     """Proxy a quarantine verdict (approve/deny, optional edited text) to the bus, which OWNS postal
     delivery and the held-message store. On approve the bus re-runs the peer's deliver(), so an approved
@@ -4338,19 +4403,31 @@ TRUST_LEVELS = ("trusted", "directed", "isolated")
 
 
 def set_trust(host, level):
-    """Set an attached host's federation trust level (the popover's per-host selector drives this).
+    """Set a host's federation trust level (the popover's per-host selector drives this).
     trusted = full bidirectional postal (a box you control); directed = its mail is HELD for human
     approval, never auto-injected (the safe default for rented/shared compute); isolated = no postal at
-    all, dashboard aggregation only. Persists and wakes the supervisor, which re-notifies the bus with
-    the new level on its next pass (the notify is keyed on (up, trust), so even a trusted<->directed
-    switch propagates). Returns (public_row, None) or (None, error)."""
+    all, dashboard aggregation only.
+
+    Trust is judged BY ORIGIN at delivery time, so the host does NOT have to be attached (the user
+    2026-07-25): mail from a machine you have no tunnel to arrives relayed one hop through a hub, and
+    the receiving bus still gates it by its true origin. An attached host's level lives on its remotes
+    row (the supervisor re-notifies the bus, keyed on (up, trust)); an unattached one lands in the
+    remembered-hosts table and reaches the bus as an ORIGIN-ONLY row — pushed now, re-pushed by the
+    supervisor, and re-seeded by a restarted bus from /tunnels' `known`. Returns (public_row, None)
+    or (None, error)."""
     if level not in TRUST_LEVELS:
         return None, "trust must be one of %s" % ", ".join(TRUST_LEVELS)
+    host = (host or "").strip()
+    if not host:
+        return None, "host required"
     with _remotes_lock:
         r = _remotes.get(host)
-        if r is None:
-            return None, "no attached host '%s'" % host
-        r["trust"] = level
+        if r is not None:
+            r["trust"] = level
+    if r is None:
+        _known_note(host, level)           # the remembered entry IS the origin-trust store
+        _notify_bus_origin_trust(host, level)   # best-effort now; the supervisor pass retries
+        return {"host": host, "trust": level, "originOnly": True}, None
     _remotes_save()
     _known_note(host, level)               # the remembered entry tracks the level, so a re-attach keeps it
     _tunnel_wake.set()                     # a prompt supervisor pass pushes the new level to the bus
@@ -5298,6 +5375,11 @@ def _tunnel_supervisor():
                         with _remotes_lock:
                             if r["host"] in _remotes:
                                 r["_handshook"] = pid
+            if _postal_peers_on():
+                # Trust-by-origin (the user 2026-07-25): remembered-but-unattached hosts carry a
+                # tier too — their mail arrives relayed through a hub and is judged by true origin.
+                # Once per (host, level); a failed push retries next pass.
+                _push_origin_trust_rows()
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
         _tunnel_wake.wait(15)
@@ -13938,7 +14020,7 @@ paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
 return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts,(d&&d.known)||[],pmode);   // pmode is refresh-local — render must be GIVEN it
+if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[]);   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule((busy||pushing.length)?600:3000);   // poll fast while an auto-push runs, so its progress reads live
@@ -13954,7 +14036,13 @@ schedule(3000);});}
 // as a free variable threw ReferenceError on EVERY render, after list.innerHTML='' had already cleared the
 // list and before any row was appended. The panel therefore showed an empty host list no matter how many
 // hosts were attached, and the bare catch swallowed the error (the user 2026-07-22). Take it as a param.
-function render(ts,known,pmode){list.innerHTML='';known=known||[];
+function render(ts,known,pmode,via){list.innerHTML='';known=known||[];via=via||[];
+// Attached rows win; a via/known row for an attached host would be a duplicate.
+var live={};ts.forEach(function(t){live[t.host]=1;});
+via=via.filter(function(v){return !live[v.host];});
+var viaHosts={};via.forEach(function(v){viaHosts[v.host]=1;});
+known=known.filter(function(k){return !viaHosts[k.host];});   // a relay row shows the SAME trust select, plus live reach
+var TRUSTW={trusted:'trusted (auto-accept)',directed:'directed (held for you)',isolated:'isolated (no mail)'};
 // Every host romp knows about feeds the add box's completions, so a machine you typed in once is a
 // couple of keystrokes the next time even after you forget its exact spelling.
 _seen=ts.map(function(t){return t.host;}).concat(known.map(function(k){return k.host;}));fillHosts();
@@ -13998,7 +14086,6 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Publish this ma
 // your approval, never auto-injected; isolated = dashboard only, no postal. The gate lives in the bus.
 // Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
 // dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
-var TRUSTW={trusted:'trusted (auto-accept)',directed:'directed (held for you)',isolated:'isolated (no mail)'};
 var tcur=t.trust||'directed';
 var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=rnet-trust data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
 ['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select></span>';
@@ -14027,11 +14114,30 @@ if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
 hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
 list.appendChild(hd);
 known.forEach(function(k){var kr=document.createElement('div');kr.className='rnet-row rnet-known';
+var kcur=k.trust||'directed';
+// The SAME trust select as an attached row (data-t → /tunnels/trust): trust is judged by ORIGIN at
+// delivery, so the level applies to this host's mail even when it arrives relayed through a hub —
+// no tunnel required to set it (the user 2026-07-25).
+var ktrust='<select class=rnet-trust data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>';
 kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
-'<span class=nm><b>'+k.host+'</b> <span class=st title=\"Trust level remembered from the last time this host was attached; re-attaching restores it.\">not attached \\u00b7 '+(k.trust||'directed')+'</span></span>'+
+'<span class=nm><b>'+k.host+'</b> <span class=st title=\"Not attached; the trust level applies to its mail by origin, and re-attaching keeps it.\">not attached</span></span>'+ktrust+
 '<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
 '<button data-fg=\"'+k.host+'\" title=\"Remove '+k.host+' from this list. It does not touch the host itself; attaching again will re-add it.\">Forget</button>';
 list.appendChild(kr);});}
+// REACHABLE VIA RELAY (the user 2026-07-25): machines with no direct tunnel from here, one relay hop
+// away through an attached hub. Their mail is judged by ORIGIN, so the same trust select applies —
+// this is where the laptop tiers the remote server without ever holding ssh credentials for it.
+if(via.length){var vh=document.createElement('div');vh.className='rnet-khead';
+vh.textContent='Reachable via relay';vh.title='Machines you have no direct tunnel to; a hub you are attached to relays their mail one hop. Trust is judged by origin, so the level you set here applies to their mail even though it arrives through the hub.';
+list.appendChild(vh);
+via.forEach(function(v){var vr=document.createElement('div');vr.className='rnet-row rnet-known';
+var vcur=v.trust||'directed';
+var vtrust='<select class=rnet-trust data-t=\"'+v.host+'\" title=\"What happens to postal mail from '+v.host+' (it arrives relayed through '+v.via+'; trust is judged by its true origin): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
+['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>';
+vr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #7a6a3a\" title=\"No direct tunnel; reachable one hop through '+v.via+'.\"></span>'+
+'<span class=nm><b>'+v.host+'</b> <span class=st title=\"Its sessions are gossiped one hop by '+v.via+'; attach it directly for full control.\">via '+v.via+' \\u00b7 '+(v.agents||0)+' session'+((v.agents||0)===1?'':'s')+'</span></span>'+vtrust;
+list.appendChild(vr);});}
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
 s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -15046,6 +15152,7 @@ class Handler(BaseHTTPRequestHandler):
                 # re-attach rows instead of making you retype them.
                 return self._send(200, json.dumps({"tunnels": list_remotes(),
                                                    "known": list_known(),
+                                                   "viaReach": _bus_via_reach(),   # hosts one relay hop away (trust-by-origin rows hang here)
                                                    "autoUpdate": _auto_update_remotes_on(),   # the popover checkbox reflects the KERNEL, not this tab
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")

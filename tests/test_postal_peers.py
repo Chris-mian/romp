@@ -59,6 +59,50 @@ class PeerMode(unittest.TestCase):
             self.assertEqual(status, 400, "rejected: %r" % (bad,))
         self.assertEqual(pm.PEERS, {}, "nothing recorded from rejected notifies")
 
+    def test_origin_only_row_stores_trust_without_a_port(self):
+        # Trust-by-origin (the user 2026-07-25): a tier for a host with no tunnel here. Portless,
+        # no dialer, judged at delivery by true origin.
+        payload, status = pm.peer_update({"host": "FARBOX", "trust": "trusted", "originOnly": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["originOnly"])
+        row = pm.peers_snapshot()["peers"]["FARBOX"]
+        self.assertEqual((row["port"], row["up"], row["trust"], row.get("originOnly")),
+                         (None, False, "trusted", True))
+        # applied to a CONNECTED row it touches only the trust — port/up/token survive
+        pm.peer_update({"host": "HUB", "port": 50007, "up": True, "token": "tk", "trust": "trusted"})
+        pm.peer_update({"host": "HUB", "trust": "directed", "originOnly": True})
+        row = pm.peers_snapshot()["peers"]["HUB"]
+        self.assertEqual((row["port"], row["up"], row["token"], row["trust"], row.get("originOnly")),
+                         (50007, True, "tk", "directed", None))
+
+    def test_origin_only_validates(self):
+        for bad in ({"originOnly": True}, {"host": "h", "originOnly": True},
+                    {"host": "h", "trust": "bogus", "originOnly": True}):
+            payload, status = pm.peer_update(bad)
+            self.assertEqual(status, 400, "rejected: %r" % (bad,))
+
+    def test_via_reach_summarizes_far_spokes(self):
+        pm.PEER_STATE.clear()
+        try:
+            import time as _t
+            pm.PEER_STATE["hub"] = {"presence": [
+                {"name": "a", "id": "1"},                       # the hub's own session — not via
+                {"name": "b", "id": "2", "via": "FARBOX"},
+                {"name": "c", "id": "3", "via": "FARBOX"},
+                {"name": "d", "id": "4", "via": "PEERED"},      # directly peered here → excluded
+            ], "seenAt": int(_t.time())}
+            pm.peer_update({"host": "PEERED", "port": 50008, "up": True})
+            pm.peer_update({"host": "FARBOX", "trust": "isolated", "originOnly": True})
+            rows = pm.via_reach()
+            self.assertEqual(len(rows), 1)
+            r = rows[0]
+            self.assertEqual((r["host"], r["via"], r["agents"], r["trust"]),
+                             ("FARBOX", "hub", 2, "isolated"))
+            self.assertEqual(pm.peers_snapshot()["viaReach"], rows,
+                             "the snapshot carries the summary for the kernel's popover proxy")
+        finally:
+            pm.PEER_STATE.clear()
+
     def test_routes_are_wired(self):
         import inspect
         src = inspect.getsource(pm)
