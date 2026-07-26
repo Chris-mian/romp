@@ -3535,7 +3535,7 @@ def plan_units(session, store=None):
                 # (an API-error storm that exhausted; isApiError records don't count, same rule as the
                 # captioner). A work/nudge/delegation unit here hands the planner "USER ASKED: …" with no
                 # reply and frames it as a COMPLETED stretch — and a capable planner then answers the
-                # question FROM ITS OWN KNOWLEDGE and files done: solar_battery's wiring ask got a done
+                # question FROM ITS OWN KNOWLEDGE and files done: one session's wiring ask got a done
                 # verdict + a fully confabulated summary off a turn whose only record was "API Error: 529"
                 # (the user 2026-07-25). The ASK is still real: place it (mint-only prompt-run — its op
                 # filter cannot file done), so the card sits OPEN, which is the truth. Everything else

@@ -240,10 +240,12 @@ PY
 
 # ── git pre-push identifier hook ──────────────────────────────────────
 # install.sh symlinks .githooks/pre-push into the shared git hooks dir. The hook
-# runs tests/test_no_personal_identifiers.py when that file is present and blocks
-# a push that would leak one of YOUR OWN identifiers. The scan is a personal,
-# machine-specific check, so it is deliberately not tracked (see .gitignore) and
-# the hook is a no-op without it. (ROMP_GITHOOK_DIR redirects the target below.)
+# reads the banned strings from ~/.config/romp/private-strings.txt (so it arms
+# EVERY worktree, not just the one holding an untracked scanner) and greps each
+# PUSHED commit's tree — the working tree is not what gets published, and a leak
+# in an intermediate commit ships even when the tip is clean. No strings file →
+# a no-op, so a contributor's clone is unaffected. (ROMP_GITHOOK_DIR redirects
+# install.sh's symlink target below; the behaviour tests copy the hook directly.)
 
 @test "install.sh: symlinks the pre-push hook into the git hooks dir" {
     run "$ROMP_DIR/install.sh"
@@ -261,24 +263,19 @@ PY
 # Behaviour of the hook itself, exercised through a real `git push` to a bare
 # remote, with a SYNTHETIC denylist (never a real identifier) via XDG_CONFIG_HOME.
 setup_hook_repo() {
-    # Nothing to exercise on a clone that carries no scan of its own.
-    [ -f "$ROMP_DIR/tests/test_no_personal_identifiers.py" ] \
-        || skip "no identifier scan present (it is a local-only check)"
     export XDG_CONFIG_HOME="$TEST_DIR/cfg"
     mkdir -p "$XDG_CONFIG_HOME/romp"
-    printf 'ZZBANNEDZZ\n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
+    printf '# synthetic denylist\n\nZZBANNEDZZ\n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
     git init -q "$TEST_DIR/remote.git" --bare
     WORK="$TEST_DIR/work"
     git init -q "$WORK"
     git -C "$WORK" config user.email t@e.invalid
     git -C "$WORK" config user.name t
-    mkdir -p "$WORK/tests"
-    cp "$ROMP_DIR/tests/test_no_personal_identifiers.py" "$WORK/tests/"
     cp "$ROMP_DIR/.githooks/pre-push" "$WORK/.git/hooks/pre-push"
     git -C "$WORK" remote add origin "$TEST_DIR/remote.git"
 }
 
-@test "pre-push hook: allows a push when the tree is clean" {
+@test "pre-push hook: allows a push when every pushed tree is clean" {
     setup_hook_repo
     echo "clean" > "$WORK/ok.txt"
     git -C "$WORK" add -A && git -C "$WORK" commit -qm clean
@@ -295,10 +292,52 @@ setup_hook_repo() {
     [[ "$output" == *"BLOCKED"* ]]
 }
 
+@test "pre-push hook: blocks a leak in an intermediate commit whose tip is clean" {
+    # The regression that motivated the pushed-tree scan: a string introduced and
+    # then removed mid-branch still ships in history even though the tip greps clean.
+    setup_hook_repo
+    printf 'leak ZZBANNEDZZ here\n' > "$WORK/leak.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
+    git -C "$WORK" rm -q leak.txt && git -C "$WORK" commit -qm remove
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"BLOCKED"* ]]
+}
+
+@test "pre-push hook: only commits NEW to the remote are scanned" {
+    # A string that already escaped to the remote (before the denylist knew it)
+    # must not block every future push — only what this push publishes counts.
+    setup_hook_repo
+    printf 'old ZZBANNEDZZ\n' > "$WORK/old.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm old
+    git -C "$WORK" push --no-verify -q origin HEAD:main
+    git -C "$WORK" rm -q old.txt && git -C "$WORK" commit -qm clean-tip
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+}
+
 @test "pre-push hook: --no-verify bypasses the block" {
     setup_hook_repo
     printf 'leak ZZBANNEDZZ here\n' > "$WORK/leak.txt"
     git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
     run git -C "$WORK" push --no-verify origin HEAD:main
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push hook: no denylist file means the hook stays out of the way" {
+    setup_hook_repo
+    rm "$XDG_CONFIG_HOME/romp/private-strings.txt"
+    printf 'would leak ZZBANNEDZZ\n' > "$WORK/leak.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
+    run git -C "$WORK" push origin HEAD:main
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push hook: a denylist of only comments and blanks bans nothing" {
+    setup_hook_repo
+    printf '# just a comment\n\n   \n' > "$XDG_CONFIG_HOME/romp/private-strings.txt"
+    printf 'ZZBANNEDZZ\n' > "$WORK/leak.txt"
+    git -C "$WORK" add -A && git -C "$WORK" commit -qm leak
+    run git -C "$WORK" push origin HEAD:main
     [ "$status" -eq 0 ]
 }
