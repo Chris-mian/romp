@@ -2,6 +2,7 @@
 """Peer-bus mode stage 1 (plans/postal-peer-buses.md): every machine runs its OWN bus — the
 client-only special case is retired under the flag — and the kernel feeds the bus a peer table
 over POST /peer on tunnel transitions. Synthetic only."""
+import json
 import os
 import tempfile
 import unittest
@@ -165,6 +166,34 @@ class TwoBusExchange(unittest.TestCase):
         pm.peer_exchange_apply("srv", req, resp)
         return resp
 
+    def test_quarantine_holds_cross_the_exchange_both_ways(self):
+        # Slice 4 of the federation UI (the user 2026-07-25): each side's exchange payload carries a
+        # summary of ITS held mail, so a hold is visible from the peer instead of only on the
+        # holding machine's own dashboard.
+        import shutil
+        for m in (pm, pmb):
+            shutil.rmtree(m.QUARANTINE, ignore_errors=True)
+        try:
+            pmb.QUARANTINE.mkdir(parents=True, exist_ok=True)
+            (pmb.QUARANTINE / "h1.json").write_text(json.dumps(
+                {"mid": "h1", "to": "beta", "frm": "api", "origin": "TESTHOST",
+                 "body": "please review the parser fix before it merges", "at": 1000}))
+            pm.QUARANTINE.mkdir(parents=True, exist_ok=True)
+            (pm.QUARANTINE / "h2.json").write_text(json.dumps(
+                {"mid": "h2", "to": "alpha", "frm": "web", "origin": "", "body": "ping", "at": 1001}))
+            self._exchange()
+            got = pm.PEER_STATE["srv"]["holds"]
+            self.assertEqual([(h["mid"], h["frm"], h["to"], h["origin"]) for h in got],
+                             [("h1", "api", "beta", "TESTHOST")], "B's hold arrived at A")
+            self.assertIn("please review the parser fix", got[0]["gist"])
+            self.assertEqual(pm.remote_holds()[0]["atHost"], "srv",
+                             "stamped with the machine HOLDING it")
+            got_b = pmb.PEER_STATE["hosta"]["holds"]
+            self.assertEqual([h["mid"] for h in got_b], ["h2"], "A's hold rode the request to B")
+        finally:
+            for m in (pm, pmb):
+                shutil.rmtree(m.QUARANTINE, ignore_errors=True)
+
     def test_mail_crosses_and_acks_clear_the_outbox(self):
         pm.outbox_put("srv", {"mid": "m1", "to": "beta", "frm": "alpha", "frm_id": "sid-a",
                               "body": "hello over the wire", "kind": "question", "t": 1})
@@ -280,6 +309,32 @@ class ThreeBusRelay(unittest.TestCase):
         names = {(a.get("name"), a.get("via")) for a in pm.PEER_STATE["hub"]["presence"]}
         self.assertIn(("beta", None), names)
         self.assertIn(("carol", "hostc"), names, "the far spoke arrives labeled via, one hop only")
+
+    def test_far_holds_gossip_via_the_hub_one_hop_only(self):
+        # A hold TWO machines away (on C) reaches A labeled via the hub — and never re-gossips
+        # further (the same one-hop rule as presence).
+        import shutil
+        for m in (pm, pmb, pmc):
+            shutil.rmtree(m.QUARANTINE, ignore_errors=True)
+        try:
+            pmc.QUARANTINE.mkdir(parents=True, exist_ok=True)
+            (pmc.QUARANTINE / "h9.json").write_text(json.dumps(
+                {"mid": "h9", "to": "carol", "frm": "ops", "origin": "RENTBOX",
+                 "body": "held on the far spoke", "at": 1002}))
+            self._xchg(pmc, pmb, "hub")              # B learns C's hold (direct, no via)
+            self._xchg(pm, pmb, "hub")               # A learns it via the hub
+            got = [h for h in pm.PEER_STATE["hub"]["holds"] if h["mid"] == "h9"]
+            self.assertEqual(len(got), 1)
+            self.assertEqual(got[0].get("via"), "hostc", "labeled with the machine holding it")
+            self.assertEqual([r["atHost"] for r in pm.remote_holds() if r["mid"] == "h9"],
+                             ["hostc"])
+            self.assertNotIn("via", [k for h in pmb.PEER_STATE["hostc"]["holds"] for k in h
+                                     if k == "via"], "the direct hop carries no via label")
+            # A never re-gossips the via-labeled hold onward (one hop, like presence)
+            self.assertEqual([h for h in pm.holds_payload("elsewhere") if h["mid"] == "h9"], [])
+        finally:
+            for m in (pm, pmb, pmc):
+                shutil.rmtree(m.QUARANTINE, ignore_errors=True)
 
     def test_relay_hops_once_with_end_to_end_acks(self):
         self._xchg(pmc, pmb, "hub")

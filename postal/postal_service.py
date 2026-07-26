@@ -1310,8 +1310,51 @@ def via_reach():
             e["seenAgo"] = min(e["seenAgo"], age)
     return sorted(out.values(), key=lambda e: e["host"])
 
+def _hold_rows():
+    """This bus's OWN quarantine holds, summarized for gossip: enough for a peer's popover to say who
+    is waiting where (mid, from -> to, true origin, a one-line gist) without shipping bodies around.
+    Bounded — past 20 the COUNT is the story and the holder's own dashboard has the rest."""
+    out = []
+    try:
+        for f in sorted(QUARANTINE.glob("*.json")):
+            try:
+                m = json.loads(f.read_text())
+            except Exception:
+                continue
+            out.append({"mid": m.get("mid"), "frm": m.get("frm") or "?", "to": m.get("to") or "?",
+                        "origin": m.get("origin") or "", "at": m.get("at") or 0,
+                        "gist": " ".join(str(m.get("body") or "").split())[:90]})
+    except OSError:
+        pass
+    return out[:20]
+
+def holds_payload(exclude_host):
+    """Quarantine-hold summaries for an exchange payload: our own + ONE hop from our other peers,
+    labeled `via` and never re-gossiped — the same shape as fleet_presence, so a spoke can SEE the
+    mail held for approval on the far spoke (the user 2026-07-25: a hold two machines away used to
+    be invisible everywhere but on that machine's own dashboard)."""
+    out = list(_hold_rows())
+    for h, st in PEER_STATE.items():
+        if h == exclude_host:
+            continue
+        for hd in st.get("holds") or []:
+            if hd.get("via"):
+                continue
+            out.append(dict(hd, via=h))
+    return out
+
+def remote_holds():
+    """Every hold we know about on OTHER machines, stamped with the machine that HOLDS it (`atHost`
+    = the via label when relayed, else the direct peer). The kernel proxies this to the popover."""
+    out = []
+    for h, st in PEER_STATE.items():
+        for hd in st.get("holds") or []:
+            out.append(dict(hd, atHost=hd.get("via") or h))
+    return out
+
 def peers_snapshot():
-    return {"peers": {h: dict(p) for h, p in PEERS.items()}, "viaReach": via_reach()}
+    return {"peers": {h: dict(p) for h, p in PEERS.items()}, "viaReach": via_reach(),
+            "remoteHolds": remote_holds()}
 
 # ── peering protocol (peer-bus mode, stage 2) ───────────────────────────────────
 # One EXCHANGE carries both directions (plans/postal-peer-buses.md): the dialer POSTs
@@ -1613,7 +1656,7 @@ def peer_exchange_handle(data):
         return {"error": "peer protocol drift (theirs %r, ours %r) — update romp on one side"
                 % ((data or {}).get("proto"), PEER_PROTO), "proto": PEER_PROTO}, 409
     PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
-                        "seenAt": int(time.time())}
+                        "holds": data.get("holds") or [], "seenAt": int(time.time())}
     for mid in data.get("acks") or []:               # the dialer confirmed relays landed — end-to-end:
         _ack_arrived(host, mid)                      # a forwarded one relays its ack back to the origin
     for b in data.get("bounces") or []:              # ...or refused them → backward, or to our sender
@@ -1644,14 +1687,16 @@ def peer_exchange_handle(data):
         a2, b2 = _drain_backflow()
         acks, bounces = acks + a2, bounces + b2
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
-            "presence": fleet_presence(host), "relays": rel, "acks": acks, "bounces": bounces}, 200
+            "presence": fleet_presence(host), "holds": holds_payload(host),
+            "relays": rel, "acks": acks, "bounces": bounces}, 200
 
 def build_exchange_request(host, wait=True):
     p = _pending(host)
     with _peer_lock:
         acks, bounces = list(p["acks"]), list(p["bounces"])
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
-            "presence": fleet_presence(host), "relays": outbox_list(host),
+            "presence": fleet_presence(host), "holds": holds_payload(host),
+            "relays": outbox_list(host),
             "acks": acks, "bounces": bounces, "wait": bool(wait)}
 
 def peer_exchange_apply(host, req_sent, resp):
@@ -1662,7 +1707,7 @@ def peer_exchange_apply(host, req_sent, resp):
         p["acks"] = [a for a in p["acks"] if a not in (req_sent.get("acks") or [])]
         p["bounces"] = [b for b in p["bounces"] if b not in (req_sent.get("bounces") or [])]
     PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
-                        "seenAt": int(time.time())}
+                        "holds": resp.get("holds") or [], "seenAt": int(time.time())}
     for mid in resp.get("acks") or []:
         _ack_arrived(host, mid)
     for b in resp.get("bounces") or []:
