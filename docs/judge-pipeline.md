@@ -10,7 +10,7 @@ actions append, and nothing edits state in place, so any behavior can be
 walked back to the events that produced it. This page shows who appends what,
 in which order, and where each record lives. Companion detail:
 [judges.md](judges.md) (per-judge prompts and triggers) and
-[goal-state.md](goal-state.md) (the event model).
+[goal-state.md](goal-state.md) (the state model).
 
 Reading the diagrams: blue = an LLM board judge (writes goal state), green =
 an LLM caption judge (writes only text), gray = deterministic code, yellow =

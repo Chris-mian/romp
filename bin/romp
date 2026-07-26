@@ -818,7 +818,7 @@ fi
 # REMOVED 2026-07-19: phone/tailnet reach goes through `tailscale serve` proxying
 # to the loopback-bound kernel instead — the kernel never leaves 127.0.0.1, and
 # access rides tailnet device auth + TLS rather than a token in a URL.
-# See docs/guide/remote-access.md.
+# See docs/guide.md#from-your-phone.
 
 # ── romp debug [on|off|status]: judge debug mode ────────────────────────────────
 # When on, every judge-failure row in judge-errors.jsonl carries the failing call's
@@ -1033,7 +1033,7 @@ case "${1:-}" in
 esac
 
 # --- `romp new` default: an SDK session, created in the kernel ---
-# The recommended backend (docs/sdk-backend.md): the session runs inside the
+# The recommended backend (plans/sdk-backend.md): the session runs inside the
 # kernel and is driven from the dashboard / VS Code, so there is no terminal to
 # attach — create it over the kernel API and say where to look. `-t` is the
 # terminal variant: the tmux launcher below, attached, exactly the old flow.

@@ -7,7 +7,7 @@ labels: bug
 **What happened, and what you expected instead**
 
 
-**`romp --version` output**
+**`romp version` output**
 
 <!-- Reports the working tree, the running kernel, and the built bundles
      separately. A mismatch between them is a common cause of "the UI doesn't

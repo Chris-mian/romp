@@ -226,5 +226,5 @@ and loop-free:
 1. Per-machine bus + kernel→bus peer-endpoint notifications (flagged).
 2. Peering protocol + outbox + dedupe + bounces + parked-state surfaces.
 3. Check-in command, `/checkin` handshake, supervision, UI rows, docs
-   (`docs/guide/remote-access.md` gains the laptop-anywhere story).
+   (the guide's phone section gains the laptop-anywhere story).
 4. Polish: scoped tokens, check-out, phone-facing docs.

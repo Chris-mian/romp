@@ -24,16 +24,18 @@ completed); the feed just paints columns. (Reflected in `docs/judges.md`.)
 - **The kernel is the core, supervised by `romp-manager`.** One process: Layer 1
   (parse) + Layer 2 (the judges) **and** an HTTP server, single writer. Its
   *lifecycle* is owned by **`romp-manager`** — a durable, jupyter-lab-style
-  supervisor you start with `romp up` that spawns and respawns the kernel (via
-  `romp-serve` → `romp-kernel`) and stays up across kernel restarts. Front ends
+  supervisor, started by the login service that `install.sh` sets up, that spawns
+  and respawns the kernel (via `romp-serve` → `romp-kernel`) and stays up across
+  kernel restarts. Front ends
   (browser, phone, VS Code) ATTACH to the kernel; they never spawn it.
   `romp-serve` points at the Python kernel, so `romp up` supervises it on the
   manager's port (29855), and the front ends and tailscale serve attach unchanged.
 - **The UI is served by the kernel.** The front-end (the three panes) is `ui/`. A
   browser hits the kernel's port and gets it.
-- **`romp up` starts the supervisor.** It runs `romp-manager` in the foreground
-  (like `jupyter lab`); `romp refresh` restarts the kernel(s), `romp status`
-  reports them. The kernel binds loopback only; tailnet/phone reach is
+- **The login service starts the supervisor**; `romp up` instead runs
+  `romp-manager` in the foreground (like `jupyter lab`), for machines without the
+  service or for watching it work. `romp refresh` restarts the kernel(s),
+  `romp status` reports them. The kernel binds loopback only; tailnet/phone reach is
   `tailscale serve` proxying to `127.0.0.1:29855` (there is no `0.0.0.0` opt-in
   door; the tailscale proxy carries the phone path). The UI itself is just a URL
   the kernel serves.
@@ -83,11 +85,11 @@ completed); the feed just paints columns. (Reflected in `docs/judges.md`.)
   event tree's open turn. It is deterministic and mechanical, not meaning-logic, so
   it does not violate the principle; it is the one thing that cannot be precomputed
   into a record because it is about *right now*.
-- **Comms scope is directory-based, group-wide, alive-gated** (see below). A
-  separate axis from view tags.
+- **Comms scope is directory-based, group-wide, alive-gated** (a design sketch —
+  see below). A separate axis from view tags.
 - **Tags are directory-derived, overridable.** A `directory → tag` map auto-tags a
   session at launch; a per-session manual override handles "get this out of work."
-- **Hard data isolation is a separate `ROMP_STATE` root, manual, rare.** Default is
+- **Hard data isolation is a separate `ROMP_STATE_DIR` root, manual, rare.** Default is
   one shared root (so views can overlap). Point a kernel at another root only when
   you genuinely need segregated data (a dedicated machine). It is free, because the
   root is already a parameter.
@@ -199,6 +201,10 @@ Recency fade is the one display-only heuristic the read side keeps.
 
 ## Comms scope (directory groups, alive-gated)
 
+**Design sketch — not shipped.** What ships today is live-name addressing with
+per-host trust tiers (see `SECURITY.md`); the directory-group gate below has not
+been built.
+
 At the postal/infra level, below Layer 2, keyed on the working directory. Separate
 from view tags.
 
@@ -248,12 +254,12 @@ pending-judgment count; the UI renders it.
   remote session tunnels the bus port to the laptop with `ssh -R
   PORT:127.0.0.1:PORT` and heartbeats for presence (`postal/postal_service.py`), so
   messages cross machines.
-- **Viewing remote sessions**: the simplest path is to forward the remote kernel's
-  HTTP port and open a second browser view at it (one view per machine). A unified
-  view that proxies remote records into the local kernel (read-federation over the
-  tunnel) is the richer option and is **deferred**.
-- **Comms across machines**: directory groups are per-machine, so cross-machine is
-  inherently cross-group and runs through the same approval gate / config allowlist.
+- **Viewing remote sessions**: shipped as read-federation — link a remote kernel
+  and its sessions appear as `host:name` tabs and timeline lanes in the one local
+  dashboard, sharing the feed (the guide's "Linking kernels on other machines"
+  covers setup).
+- **Comms across machines**: gated per host by trust tier (trusted / directed /
+  isolated — see `SECURITY.md`), not by the directory-group sketch above.
 
 ## Serve-layer security (auth / CSRF hardening)
 

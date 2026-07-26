@@ -1,5 +1,7 @@
 # Multi-kernel: several kernels per machine, per-kernel accounts, inter-kernel mail
 
+Status: PROPOSED — not shipped. A design sketch; no part of this has landed.
+
 The user's ask (2026-07-24, via romp_docs + directly): run SEVERAL kernels on one machine, each on
 its own port with its own state, so different remote people can each be handed their own kernel —
 and additionally run kernels on DIFFERENT Claude accounts in parallel, surface which account each

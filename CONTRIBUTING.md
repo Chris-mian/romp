@@ -6,7 +6,7 @@ This is a personal side project. Bug reports and pull requests are
 welcome, and I'd rather hear about a problem than not. Responses may be slow, and
 I may not get to everything. 
 
-If you're interested in reporting bugs and making PRs, please try to reproduce them or ground your suggestions With the latest code at the tip of the main branch rather than a tagged release version.
+If you're interested in reporting bugs and making PRs, please try to reproduce them or ground your suggestions with the latest code at the tip of the main branch rather than a tagged release version.
 
 ## Running the tests
 
@@ -17,7 +17,8 @@ cd vscode-extension && npm ci && npm test
 ```
 
 The Python and shell suites are also the CI gate, across Python 3.10 to 3.13 on
-Linux and macOS.
+Linux; the macOS cells run on demand from the Actions tab (they are billed even
+on a public repo, so they are not part of the per-push matrix).
 
 Two things about the test environment are worth knowing, because both have
 produced confusing failures:

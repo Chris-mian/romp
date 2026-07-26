@@ -63,10 +63,10 @@ future stream substrate is a near passthrough.
   `parentUuid` in practice; that's the deferred session→files concern below.)
 - **Idle comes from the state log.** Period clipping keys on the real idle
   transition in `states/<sid>.jsonl`, not a silence-duration heuristic.
-- **There is no per-turn headless backend.**
-- **Deferred:** headless-with-terminal-parity is either the Agent SDK or a
-  stream-json client. Also deferred: whether summaries operate at turn grain or
-  segment grain (the timeline uses segments).
+- **Resolved: the Agent SDK backend is the per-turn headless backend**, and the
+  default for new sessions — see `plans/sdk-backend.md` for the design and the
+  guide for the tmux/SDK choice. Still deferred: whether summaries operate at
+  turn grain or segment grain (the timeline uses segments).
 
 ## Hierarchy
 
@@ -249,7 +249,7 @@ author: "human" | "sdk" | "system" | { peer: <rompUuid> }
 
 | author | derived from | opener? |
 |---|---|---|
-| `human` | `promptSource: "typed" | "queued"` | yes |
+| `human` | `promptSource: "typed" \| "queued"` | yes |
 | `sdk` | `promptSource: "sdk"` | yes |
 | `{peer}` | the `romp-msg-id` marker + `messages.jsonl` `from_id` join | yes |
 | `system` | `promptSource: "system"` | no (folds in) |
