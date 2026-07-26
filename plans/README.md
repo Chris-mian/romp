@@ -9,5 +9,5 @@ Each doc states its status and landing commits at the top. Don't treat file
 paths or line references inside them as current; they describe the repo as it
 was when the work landed.
 
-Living architecture references (the event model, the read side, the SDK
-backend) live in `docs/` instead — see `docs/architecture.md`.
+Living architecture references (the event model, the read side) live in `docs/`
+instead — see `docs/architecture.md`.

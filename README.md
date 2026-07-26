@@ -49,11 +49,13 @@ You run Romp yourself, on your laptop or a server, with no hosted service in bet
 
 ## Quick start
 
+Needs [Claude Code](https://claude.com/claude-code) (signed in), Python 3.10+, and Node.js.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash
 ```
 
-This clones Romp to `~/romp`, checks out the newest release, installs it, and adds `bin/` to your shell rc. Open a new terminal afterwards. [Installing by hand](docs/install.md#installing-by-hand) works too.
+This clones Romp to `~/romp`, checks out the newest release, installs it, and adds `bin/` to your shell rc. Open a new terminal afterwards. [Installing by hand](https://romp-on.github.io/romp/install/#manual-and-custom-installs) works too.
 
 Run `romp`. It opens the dashboard in your browser and prints the link
 too — the link carries a one-time access token, and after that first open plain
@@ -61,4 +63,8 @@ too — the link carries a one-time access token, and after that first open plai
 
 ## Docs
 
-Requirements, remote-host setup, a guide to each capability, and how Romp works under the hood are in the [documentation](docs/install.md).
+Requirements, remote-host setup, a guide to each capability, and how Romp works under the hood are in the [documentation](https://romp-on.github.io/romp/) (source in [`docs/`](docs/)).
+
+## License
+
+[Apache-2.0](LICENSE).

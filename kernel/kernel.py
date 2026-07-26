@@ -33,7 +33,7 @@ MEDIA = CHAT_VIEW / "media"
 UI = ROOT / "ui"                             # the browser UI: timeline view + webview sources (served/built from here)
 NAMES = jd.STATE / "names"
 PORT = int(os.environ.get("ROMP_KERNEL_PORT", "29855"))   # the manager/extension default; env still overrides. Renumbered from 7433 (the user 2026-07-24), which an LLM had picked — so a twin-prompted project plausibly binds it — and whose nearest IANA neighbour is 7443. 29855 was drawn at random from the ports absent from /etc/services, minus common dev defaults, below the 49152 ephemeral floor.
-BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # loopback only; tailnet/phone reach = `tailscale serve` proxying to loopback (docs/guide/remote-access.md). Env override is a test seam, not a user knob.
+BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # loopback only; tailnet/phone reach = `tailscale serve` proxying to loopback (docs/guide.md#from-your-phone). Env override is a test seam, not a user knob.
 
 
 _STARTED = time.time()                       # this kernel process's start (for /version uptime)

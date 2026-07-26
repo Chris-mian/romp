@@ -8,7 +8,7 @@
 #   romp-serve [--port N] [--host H]
 # Host precedence: --host > local-only. The kernel stays bound to 127.0.0.1;
 # tailnet/phone reach goes through `tailscale serve` proxying to loopback
-# (docs/guide/remote-access.md), so there is no persisted off-loopback opt-in
+# (docs/guide.md#from-your-phone), so there is no persisted off-loopback opt-in
 # (`romp --serve` removed 2026-07-19). --host remains as the manager's spawn seam.
 set -euo pipefail
 
