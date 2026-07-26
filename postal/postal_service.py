@@ -1261,8 +1261,24 @@ def peer_update(data):
     """Apply one kernel notify. Returns (payload, status). `token` is the PEER machine's serve token
     (the kernel learned it at attach/checkin) — the dialer needs it because the peer's bus is
     token-gated too. `trust` is the per-host federation level (trusted|directed|isolated) the inbound
-    gate reads. A token-less/trust-less notify (e.g. a down transition) keeps the last known values."""
+    gate reads. A token-less/trust-less notify (e.g. a down transition) keeps the last known values.
+
+    ORIGIN-ONLY rows (the user 2026-07-25): {"host", "trust", "originOnly": true} with NO port sets a
+    tier for a host this machine has no tunnel to — its mail arrives RELAYED through a hub, and the
+    inbound gate judges by TRUE ORIGIN, so the tier needs a row here with nothing to dial. Portless,
+    never given a dialer; applied to a CONNECTED row it touches only the trust."""
     host = str(data.get("host") or "").strip()
+    if data.get("originOnly"):
+        trust = str(data.get("trust") or "").strip()
+        if not host or trust not in ("trusted", "directed", "isolated"):
+            return {"error": "host and trust (trusted|directed|isolated) required"}, 400
+        prev = PEERS.get(host) or {}
+        row = {"port": prev.get("port"), "up": bool(prev.get("up")), "at": int(time.time()),
+               "token": prev.get("token") or "", "trust": trust}
+        if not prev.get("port"):
+            row["originOnly"] = True
+        PEERS[host] = row
+        return {"ok": True, "originOnly": True}, 200
     port = data.get("port")
     if not host or not isinstance(port, int) or isinstance(port, bool) or not (0 < port < 65536):
         return {"error": "host and port required"}, 400
@@ -1274,8 +1290,28 @@ def peer_update(data):
     _peer_threads_reconcile(host)                    # an up peer gets its dialer; a down one is woken to exit
     return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
 
+def via_reach():
+    """Hosts reachable only THROUGH a directly-peered hub: the far spokes whose sessions a hub
+    gossips with `via` labels (fleet_presence — one hop, never re-gossiped). One row per far host:
+    {"host", "via", "agents", "seenAgo", "trust"} — the popover's "reachable via relay" section, and
+    the hook a trust-by-origin tier hangs on even though no tunnel to that host exists here."""
+    now, out = int(time.time()), {}
+    for hub, st in PEER_STATE.items():
+        age = int(now - (st.get("seenAt") or 0))
+        for pa in st.get("presence") or []:
+            far = pa.get("via")
+            if not far:      # a hub's exchange never gossips OUR sessions back (fleet_presence
+                continue     # excludes the asking host), so no self-row can appear here
+            if (PEERS.get(far) or {}).get("port"):    # directly peered here → its own row, not via
+                continue
+            e = out.setdefault(far, {"host": far, "via": hub, "agents": 0, "seenAgo": age,
+                                     "trust": (PEERS.get(far) or {}).get("trust") or "directed"})
+            e["agents"] += 1
+            e["seenAgo"] = min(e["seenAgo"], age)
+    return sorted(out.values(), key=lambda e: e["host"])
+
 def peers_snapshot():
-    return {"peers": {h: dict(p) for h, p in PEERS.items()}}
+    return {"peers": {h: dict(p) for h, p in PEERS.items()}, "viaReach": via_reach()}
 
 # ── peering protocol (peer-bus mode, stage 2) ───────────────────────────────────
 # One EXCHANGE carries both directions (plans/postal-peer-buses.md): the dialer POSTs
@@ -1724,13 +1760,23 @@ def _seed_peers_from_kernel():
     try:
         req = urllib.request.Request(KERNEL_BASE + "/tunnels", headers={"X-Romp-Token": SERVE_TOKEN})
         with urllib.request.urlopen(req, timeout=3) as r:
-            rows = json.loads(r.read().decode() or "{}").get("tunnels") or []
+            payload = json.loads(r.read().decode() or "{}") or {}
+        rows = payload.get("tunnels") or []
         for row in rows:
             port = row.get("busPort")
             if row.get("host") and isinstance(port, int) and port:
                 peer_update({"host": row["host"], "port": port, "up": row.get("status") == "up",
                              "token": row.get("token") or "",   # the peer's serve token — its bus is gated too
                              "trust": row.get("trust") or "directed"})   # per-host trust for the inbound gate
+        # Origin-only trust heals on restart too: the kernel's remembered-hosts list (`known` in the
+        # same payload) carries the tier for every UNATTACHED host the user has set one on; without
+        # this a bus bounce would silently drop a relayed origin back to `directed` (the user
+        # 2026-07-25, trust-by-origin).
+        attached = {row.get("host") for row in rows}
+        for k in payload.get("known") or []:
+            if k.get("host") and k["host"] not in attached:
+                peer_update({"host": k["host"], "trust": k.get("trust") or "directed",
+                             "originOnly": True})
     except Exception:
         pass                                         # no kernel yet → the notify path fills the table
 

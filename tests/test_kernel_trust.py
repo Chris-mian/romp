@@ -58,10 +58,42 @@ class SetTrust(unittest.TestCase):
         self.assertIsNone(pub)
         self.assertIn("trust must be one of", err)
 
-    def test_set_trust_unknown_host(self):
-        pub, err = km.set_trust("NOPE", "trusted")
-        self.assertIsNone(pub)
-        self.assertTrue(err.startswith("no attached"))
+    def test_set_trust_unattached_host_is_origin_only(self):
+        # Trust is judged BY ORIGIN at delivery (the user 2026-07-25): a host with no tunnel here —
+        # its mail arrives relayed through a hub — can carry a tier. The level lands in the
+        # remembered-hosts table and reaches the bus as an origin-only row.
+        calls = []
+        saved = km._notify_bus_origin_trust
+        km._notify_bus_origin_trust = lambda h, t: calls.append((h, t)) or True
+        try:
+            pub, err = km.set_trust("FARBOX", "trusted")
+        finally:
+            km._notify_bus_origin_trust = saved
+        self.assertIsNone(err)
+        self.assertEqual(pub, {"host": "FARBOX", "trust": "trusted", "originOnly": True})
+        self.assertEqual(km.known_trust("FARBOX"), "trusted", "the remembered table IS the store")
+        self.assertEqual(calls, [("FARBOX", "trusted")], "the bus learns the origin row now")
+
+    def test_push_origin_trust_rows_covers_only_unattached(self):
+        # The supervisor pushes remembered-but-unattached tiers once per (host, level); attached
+        # hosts stay the (up, trust)-keyed full notify's job.
+        km._remotes.clear()
+        km._remotes["TESTHOST"] = _row("TESTHOST")
+        km._known.clear()                         # order-independent: other tests seed this table
+        km._known_note("TESTHOST", "trusted")     # attached → not this path's job
+        km._known_note("FARBOX", "isolated")      # unattached → pushed
+        km._origin_trust_pushed.clear()
+        calls = []
+        saved = km._notify_bus_origin_trust
+        km._notify_bus_origin_trust = lambda h, t: calls.append((h, t)) or True
+        try:
+            km._push_origin_trust_rows()
+            km._push_origin_trust_rows()          # memoized: no duplicate push
+            km._known_note("FARBOX", "directed")  # a level CHANGE re-pushes
+            km._push_origin_trust_rows()
+        finally:
+            km._notify_bus_origin_trust = saved
+        self.assertEqual(calls, [("FARBOX", "isolated"), ("FARBOX", "directed")])
 
     def test_load_defaults_missing_trust_to_directed(self):
         # a pre-trust remotes.json row (no "trust" key) reads back as directed
@@ -109,9 +141,17 @@ class TrustRoute(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertFalse(data["ok"])
 
-    def test_route_unknown_host_404(self):
-        code, data = self._post("/tunnels/trust", {"host": "GHOST", "trust": "trusted"})
-        self.assertEqual(code, 404)
+    def test_route_unattached_host_sets_origin_trust(self):
+        km._remotes.clear()
+        saved = km._notify_bus_origin_trust
+        km._notify_bus_origin_trust = lambda h, t: True
+        try:
+            code, data = self._post("/tunnels/trust", {"host": "GHOST", "trust": "trusted"})
+        finally:
+            km._notify_bus_origin_trust = saved
+        self.assertEqual(code, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["tunnel"], {"host": "GHOST", "trust": "trusted", "originOnly": True})
 
 
 class QuarantineCards(unittest.TestCase):

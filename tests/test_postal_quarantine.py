@@ -82,6 +82,17 @@ class InboundTrustGate(unittest.TestCase):
         self.assertEqual(len(ps.quarantine_list()), 1)
         self.assertEqual(ps.read_box("sess-web", consume=False), [])
 
+    def test_origin_only_trust_row_governs_relayed_mail(self):
+        # Trust-by-origin end to end (the user 2026-07-25): the user tiers a host they have NO
+        # tunnel to (an origin-only, portless row); its mail arriving relayed through a hub is
+        # judged by that tier — trusted injects instead of holding.
+        self._set_trust("EDGE", "trusted")                      # the hub we ARE connected to
+        ps.peer_update({"host": "ORIGIN", "trust": "trusted", "originOnly": True})
+        verdict, _ = ps._relay_in("EDGE", _relay("q-origin-1", origin="ORIGIN"))
+        self.assertEqual(verdict, "ack")
+        self.assertEqual(len(list(ps.QUARANTINE.glob("*.json"))), 0,
+                         "an origin-only trusted tier delivers, no hold")
+
     def test_forwarded_origin_is_the_trust_key(self):
         # A 2-hop message carries m["origin"] = the true origin; the gate keys on it, not the direct peer.
         self._set_trust("EDGE", "trusted")       # the direct peer we received from
