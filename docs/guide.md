@@ -72,89 +72,6 @@ find past work: the search box reaches every session, live or closed.
 
 ![The outline: each session's tasks as a tree](assets/guide/outline.png){ width="100%" }
 
-## Remote access
-
-You reach Romp in a browser tab, in the VS Code / Cursor extension, or from your
-phone.
-
-### From your phone
-
-The user interface is a web page, so your phone can run it against a kernel on
-another machine. The obstacle is reaching that machine: the kernel listens only
-on `127.0.0.1`, which your phone is not on.
-
-[Tailscale](https://tailscale.com) closes that gap, and is free for personal
-use. It puts your own devices on a private encrypted network, so your phone can
-reach your laptop directly whatever network either one is on. Install it on both
-devices and sign in to the same account on each.
-
-In the Tailscale admin console, enable **HTTPS Certificates**, and leave
-**MagicDNS** on (it is on by default): the `ts.net` certificate names come from
-MagicDNS, so turning it off makes certificate provisioning fail in confusing
-ways.
-
-Three settings in the Tailscale app on the kernel's machine decide whether your
-phone can reach it at all:
-
-- **Allow incoming connections** must be on. Without it the machine joins the
-  network but serves nothing to it, which reads as Romp being broken rather than
-  as a Tailscale setting.
-- **Use Tailscale DNS settings** must be on. This is MagicDNS on the client, and
-  it is what makes the `ts.net` name resolve.
-- **Launch Tailscale at login** is worth turning on. The proxy below survives a
-  reboot, but it can only serve while Tailscale is running, so without this the
-  machine drops off the network until you next open the app.
-
-Then, on that same machine, one command opens Romp to your other devices:
-
-```bash
-tailscale serve --bg 29855
-```
-
-The bare-port form needs Tailscale 1.56 or newer; on older clients write
-`tailscale serve https / http://127.0.0.1:29855`. On macOS the `tailscale`
-command is not on your `PATH` until you enable **CLI integration** in the app's
-settings.
-
-Two commands go with it, for later rather than now. `tailscale serve status`
-prints where the proxy currently points, which is the first thing to check when
-a device cannot reach Romp. `tailscale serve reset` undoes the setup and returns
-the machine to local-only, so run it when you want remote access off, not as
-part of turning it on.
-
-!!! warning "If you change the kernel's port"
-
-    `tailscale serve` remembers the port you gave it, not whatever Romp is
-    running on now. Change `ROMP_KERNEL_PORT` and the proxy goes on pointing at
-    the old one, so the phone gets a dead page while everything looks healthy on
-    the machine itself. Re-run `tailscale serve --bg <new port>` — it replaces
-    the existing mapping rather than adding to it.
-
-On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
-page asking for your access token; paste in the one `romp` prints. A
-year-long cookie remembers the phone afterwards. Prefer this to putting
-`?token=<token>` in the address, which works but leaves the token in your
-browser history and in anything you share the link through. The cookie is itself
-a credential, so only do this on a phone you control.
-
-Only devices signed in to your Tailscale account can reach Romp: Tailscale
-checks each device's identity and encrypts the traffic between them, and nothing
-is exposed to your local network or to the internet. The proxy survives restarts
-of both Tailscale and the kernel.
-
-Two settings are worth changing while you are in the admin console. Turn on
-**device approval**, so a new device has to be approved before it can join, and
-leave key expiry enabled on the phone. Do not use `tailscale funnel`, the
-public-internet variant: it would leave the token as the only thing between the
-internet and your agents, with no device check in front of it.
-
-!!! warning "If other people are on your tailnet"
-
-    `tailscale serve` exposes Romp to **every** device on the tailnet, not just
-    yours. On a family or team tailnet, the access token becomes the only thing
-    standing between other members and your agents. Either keep the tailnet to
-    your own devices, or write an ACL restricting the kernel machine to them.
-
 ## Automatic nudges
 
 Agents stall: they hit an API error, they get interrupted, or they end a turn
@@ -327,6 +244,89 @@ connection at all still has full local messaging; linking only adds reach.
 
 The mechanics, including how the tunnels and the check-in handshake work, are in
 [How Romp works](architecture.md).
+
+## Remote access
+
+You reach Romp in a browser tab, in the VS Code / Cursor extension, or from your
+phone.
+
+### From your phone
+
+The user interface is a web page, so your phone can run it against a kernel on
+another machine. The obstacle is reaching that machine: the kernel listens only
+on `127.0.0.1`, which your phone is not on.
+
+[Tailscale](https://tailscale.com) closes that gap, and is free for personal
+use. It puts your own devices on a private encrypted network, so your phone can
+reach your laptop directly whatever network either one is on. Install it on both
+devices and sign in to the same account on each.
+
+In the Tailscale admin console, enable **HTTPS Certificates**, and leave
+**MagicDNS** on (it is on by default): the `ts.net` certificate names come from
+MagicDNS, so turning it off makes certificate provisioning fail in confusing
+ways.
+
+Three settings in the Tailscale app on the kernel's machine decide whether your
+phone can reach it at all:
+
+- **Allow incoming connections** must be on. Without it the machine joins the
+  network but serves nothing to it, which reads as Romp being broken rather than
+  as a Tailscale setting.
+- **Use Tailscale DNS settings** must be on. This is MagicDNS on the client, and
+  it is what makes the `ts.net` name resolve.
+- **Launch Tailscale at login** is worth turning on. The proxy below survives a
+  reboot, but it can only serve while Tailscale is running, so without this the
+  machine drops off the network until you next open the app.
+
+Then, on that same machine, one command opens Romp to your other devices:
+
+```bash
+tailscale serve --bg 29855
+```
+
+The bare-port form needs Tailscale 1.56 or newer; on older clients write
+`tailscale serve https / http://127.0.0.1:29855`. On macOS the `tailscale`
+command is not on your `PATH` until you enable **CLI integration** in the app's
+settings.
+
+Two commands go with it, for later rather than now. `tailscale serve status`
+prints where the proxy currently points, which is the first thing to check when
+a device cannot reach Romp. `tailscale serve reset` undoes the setup and returns
+the machine to local-only, so run it when you want remote access off, not as
+part of turning it on.
+
+!!! warning "If you change the kernel's port"
+
+    `tailscale serve` remembers the port you gave it, not whatever Romp is
+    running on now. Change `ROMP_KERNEL_PORT` and the proxy goes on pointing at
+    the old one, so the phone gets a dead page while everything looks healthy on
+    the machine itself. Re-run `tailscale serve --bg <new port>` — it replaces
+    the existing mapping rather than adding to it.
+
+On the phone, open `https://<machine>.<tailnet>.ts.net/`. Romp answers with a
+page asking for your access token; paste in the one `romp` prints. A
+year-long cookie remembers the phone afterwards. Prefer this to putting
+`?token=<token>` in the address, which works but leaves the token in your
+browser history and in anything you share the link through. The cookie is itself
+a credential, so only do this on a phone you control.
+
+Only devices signed in to your Tailscale account can reach Romp: Tailscale
+checks each device's identity and encrypts the traffic between them, and nothing
+is exposed to your local network or to the internet. The proxy survives restarts
+of both Tailscale and the kernel.
+
+Two settings are worth changing while you are in the admin console. Turn on
+**device approval**, so a new device has to be approved before it can join, and
+leave key expiry enabled on the phone. Do not use `tailscale funnel`, the
+public-internet variant: it would leave the token as the only thing between the
+internet and your agents, with no device check in front of it.
+
+!!! warning "If other people are on your tailnet"
+
+    `tailscale serve` exposes Romp to **every** device on the tailnet, not just
+    yours. On a family or team tailnet, the access token becomes the only thing
+    standing between other members and your agents. Either keep the tailnet to
+    your own devices, or write an ACL restricting the kernel machine to them.
 
 ## Security and trust
 
