@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install MkDocs Material
-        run: pip install mkdocs-material
+        run: pip install "mkdocs-material~=9.0"
       - name: Build (strict — fails on broken links / orphan pages)
         run: mkdocs build --strict
       - uses: actions/upload-pages-artifact@v3
