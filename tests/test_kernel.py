@@ -6971,3 +6971,141 @@ class CheckinSurfaces(unittest.TestCase):
             self.assertFalse(km._postal_peers_on())
         finally:
             os.environ.pop("ROMP_POSTAL_PEERS", None)
+
+
+class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
+    """DELEGATE handoffs in the wait-for graph + the peer-answer supersede on durable ⏳ stamps (the user
+    2026-07-25: a handoff to a peer wore the generic "Awaiting background agents" box because only
+    QUESTION-kind rows made edges, and the closer's stamp kept the card awaiting 5h after the delegated
+    peer had actually replied — the reply is the exact event the wait was for, so it must end the wait)."""
+
+    A, B = "aaaa1111", "bbbb2222"
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved_state = jd.STATE
+        jd._rebind_state(Path(self.td.name))
+        (Path(self.td.name) / "timeline").mkdir(parents=True)
+        jd.GOALDIR.mkdir(parents=True)
+        km._POSTAL_WAIT_CACHE[:] = [None, None]
+        km._SESSION_STAMP_CACHE.clear()
+
+    def tearDown(self):
+        jd._rebind_state(self.saved_state)
+        km._POSTAL_WAIT_CACHE[:] = [None, None]
+        km._SESSION_STAMP_CACHE.clear()
+        self.td.cleanup()
+
+    def _log(self, *rows):
+        with open(jd.MESSAGES, "a") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+
+    def _msg(self, f, t, ts, kind, body="synthetic body"):
+        return {"ev": "sent", "id": "m%d" % ts, "from_id": f, "to_id": t, "t": ts,
+                "from": "x", "body": body, "kind": kind}
+
+    def test_delegate_creates_a_wait_edge_and_any_reply_clears_it(self):
+        self._log(self._msg(self.A, self.B, NOW - 300, "delegate"))
+        g = km._wait_for_graph(NOW, {self.A, self.B})
+        self.assertEqual((g[self.A]["peerSid"], g[self.A]["kind"], g[self.A]["since"]),
+                         (self.B, "delegate", NOW - 300),
+                         "a handoff is a reply-expecting ask: it creates the edge, labeled delegate")
+        # ANY later message back — even a coordinate — answers the handoff; the edge clears on that event
+        self._log(self._msg(self.B, self.A, NOW - 100, "coordinate", body="done, merged"))
+        self.assertEqual(km._wait_for_graph(NOW, {self.A, self.B}), {})
+
+    def test_coordinate_makes_no_edge_and_question_keeps_its_kind(self):
+        self._log(self._msg(self.A, self.B, NOW - 300, "coordinate"))
+        self.assertEqual(km._wait_for_graph(NOW, {self.A, self.B}), {})
+        self._log(self._msg(self.A, self.B, NOW - 200, "question"))
+        self.assertEqual(km._wait_for_graph(NOW, {self.A, self.B})[self.A]["kind"], "question")
+
+    def test_peer_answered_at_tracks_only_answered_pairs(self):
+        self.assertEqual(km._peer_answered_at(self.A), 0, "no traffic → nothing answered")
+        self._log(self._msg(self.A, self.B, NOW - 300, "delegate"))
+        self.assertEqual(km._peer_answered_at(self.A), 0, "outstanding ask → not answered")
+        self._log(self._msg(self.B, self.A, NOW - 200, "coordinate"))
+        self.assertEqual(km._peer_answered_at(self.A), NOW - 200, "the reply time, once it lands")
+        # a NEWER outstanding ask reopens the pair — the old answer no longer counts
+        self._log(self._msg(self.A, self.B, NOW - 100, "question"))
+        self.assertEqual(km._peer_answered_at(self.A), 0)
+
+    def test_goal_awaiting_stamp_superseded_by_a_later_answer(self):
+        g = "%s:g1" % self.A
+        nodes = {g: {"id": g, "text": "top", "parentId": None, "t": NOW - 900,
+                     "awaitingWhy": "handed to a peer", "awaitingAt": NOW - 500}}
+        self.assertEqual(km._goal_awaiting_stamp(nodes, g), "handed to a peer")
+        self.assertIsNone(km._goal_awaiting_stamp(nodes, g, answered_at=NOW - 100),
+                          "an answer AFTER the stamp supersedes it")
+        self.assertEqual(km._goal_awaiting_stamp(nodes, g, answered_at=NOW - 800), "handed to a peer",
+                         "an answer the closer already saw (before the stamp) does not")
+        nodes[g].pop("awaitingAt")
+        self.assertEqual(km._goal_awaiting_stamp(nodes, g, answered_at=NOW - 100), "handed to a peer",
+                         "a stamp with no awaitingAt can't be ordered against the reply — kept")
+
+    def test_session_stamp_read_lifts_when_the_delegated_peer_replies(self):
+        g = "%s:g1" % self.A
+        (jd.GOALDIR / (self.A + ".json")).write_text(json.dumps({
+            "rompUuid": self.A, "seq": 1, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "top", "parentId": None, "t": NOW - 900,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [],
+                          "awaitingWhy": "sent to a peer to build the flag parser",
+                          "awaitingAt": NOW - 500}},
+            "placements": {}, "status": {g: "working"}}))
+        self._log(self._msg(self.A, self.B, NOW - 600, "delegate"))
+        full, tops = km._session_stamp_read(self.A)
+        self.assertEqual(full[2], "sent to a peer to build the flag parser")
+        self.assertEqual(tops, frozenset({g}))
+        # the peer's reply lands (also busts the postal-key on the stamp cache) → the stamp view lifts
+        self._log(self._msg(self.B, self.A, NOW - 100, "coordinate", body="built and merged"))
+        full, tops = km._session_stamp_read(self.A)
+        self.assertEqual(full, (None, None, None), "the answered handoff supersedes the older stamp")
+        self.assertEqual(tops, frozenset())
+
+
+class ChatDivergenceTripwire(unittest.TestCase):
+    """_note_chat_divergence: the debug-mode tripwire for the chat-says-working-while-settled bug class
+    (the user 2026-07-25: the stale-"running" chat could not be diagnosed after a kernel restart cleared
+    the live atoms — next time, the log has the atoms). Event-on-change: one row entering divergence
+    (with the backend's live-atom summary), one row on clearing, nothing on repeats or when debug is off."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved_state = jd.STATE
+        jd._rebind_state(Path(self.td.name))
+        self.saved = (jd._debug_mode, km._sdk)
+        jd._debug_mode = lambda: True
+        km._sdk = lambda: types.SimpleNamespace(live_atom_kinds=lambda sid: [
+            {"uuid": "u1", "type": "assistant", "echo": False, "command": False,
+             "apiError": False, "hasText": True}])
+        km._CHAT_DIV_LAST.clear()
+
+    def tearDown(self):
+        jd._debug_mode, km._sdk = self.saved
+        jd._rebind_state(self.saved_state)
+        km._CHAT_DIV_LAST.clear()
+        self.td.cleanup()
+
+    def _rows(self):
+        p = jd.STATE / "chat-divergence.jsonl"
+        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def test_logs_on_entering_and_clearing_with_live_atoms(self):
+        km._note_chat_divergence(SID, "web", "working", "waiting", NOW)
+        km._note_chat_divergence(SID, "web", "working", "waiting", NOW + 3)   # same state → no new row
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["sid"], rows[0]["chat"], rows[0]["row"]), (SID, "working", "waiting"))
+        self.assertEqual(rows[0]["live"][0]["uuid"], "u1", "the atoms holding the turn open are captured")
+        km._note_chat_divergence(SID, "web", "ready", "waiting", NOW + 6)     # divergence over → cleared row
+        rows = self._rows()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[1].get("cleared"))
+
+    def test_agreement_and_debug_off_write_nothing(self):
+        km._note_chat_divergence(SID, "web", "ready", "waiting", NOW)         # settled agreement: no row
+        self.assertEqual(self._rows(), [])
+        jd._debug_mode = lambda: False
+        km._note_chat_divergence(SID, "web", "working", "waiting", NOW)       # debug off: silent
+        self.assertEqual(self._rows(), [])

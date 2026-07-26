@@ -89,7 +89,7 @@ interface AskItem {
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
-  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
+  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25)
   awaiting?: { why?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Waiting on task" pill (expands the list, like Sub-goals) replaces the boxed why.
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -1241,20 +1241,25 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     a._warnChip.style.display = "none";
   }
-  // "Awaiting <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
-  // held in Working, not stalled, so auto-nudge skips it. The peer NAME renders in its NATIVE identity colour
-  // (like the "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red
-  // styling + a "Deadlock" label instead of "Awaiting".
+  // "Awaiting <peer>" / "Handed off to <peer>" — this session has an unanswered message out to a live peer
+  // (kernel _wait_for_graph): held in Working, not stalled, so auto-nudge skips it. A DELEGATE handoff wears
+  // "Handed off to" (the peer owns the work now; the user 2026-07-25 — a handoff is not "awaiting background
+  // agents"); a question keeps "Awaiting". The peer NAME renders in its NATIVE identity colour (like the
+  // "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red styling +
+  // a "Deadlock" label over both.
   const wo = it.waitingOn;
   if (wo) {
     a._waitOn.replaceChildren();
-    const woPre = el("span", "fask-waiton-pre"); woPre.textContent = wo.inCycle ? "Deadlock " : "Awaiting ";
+    const woPre = el("span", "fask-waiton-pre");
+    woPre.textContent = wo.inCycle ? "Deadlock " : wo.kind === "delegate" ? "Handed off to " : "Awaiting ";
     const woName = el("span", "fask-waiton-name"); woName.textContent = wo.name;
     if (wo.color && wo.color.bg) woName.style.color = wo.color.bg;   // the peer's own identity colour
     a._waitOn.append(woPre, woName);
     a._waitOn.title = wo.inCycle
       ? "MUTUAL WAIT — this session and " + wo.name + " are each waiting on the other (a deadlock); auto-nudge surfaces it instead of nudging"
-      : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
+      : wo.kind === "delegate"
+        ? "this session handed work to " + wo.name + " and acts when the result comes back — not stalled, so auto-nudge skips it"
+        : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
     a._waitOn.className = "fask-waiton" + (wo.inCycle ? " fask-waiton-cycle" : "");
     a._waitOn.style.display = "";
   } else {

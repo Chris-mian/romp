@@ -2253,5 +2253,28 @@ class BgTaskLifecycle(unittest.TestCase):
         self.assertEqual(s.snapshot()["bgTasks"], [])
 
 
+class LiveAtomKinds(unittest.TestCase):
+    """live_atom_kinds — the read-only DEBUG summary the kernel's chat-divergence tripwire logs (the
+    2026-07-25 stale-"running" chat: the live atoms that held the turn open were cleared by a restart
+    before anyone could read them; this accessor is how the tripwire captures them in time)."""
+
+    def test_summarizes_live_atoms_without_mutating(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-555555555555"
+        self.assertEqual(be.live_atom_kinds(sid), [], "no live tail → empty")
+        be._live[sid] = {
+            "k1": {"uuid": "u1", "type": "assistant", "t": 10,
+                   "message": {"content": [{"type": "text", "text": "streamed reply"}]}},
+            "k2": {"uuid": "u2", "type": "user", "t": 11, "_echo_text": "hi",
+                   "message": {"content": "hi"}},
+            "k3": "not-a-dict"}
+        got = {a["uuid"]: a for a in be.live_atom_kinds(sid)}
+        self.assertEqual(set(got), {"u1", "u2"}, "non-dict entries are skipped, atoms summarized")
+        self.assertEqual((got["u1"]["type"], got["u1"]["hasText"], got["u1"]["echo"]),
+                         ("assistant", True, False))
+        self.assertTrue(got["u2"]["echo"])
+        self.assertEqual(len(be._live[sid]), 3, "read-only: the live tail is untouched")
+
+
 if __name__ == "__main__":
     unittest.main()

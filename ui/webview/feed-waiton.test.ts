@@ -16,9 +16,10 @@ test("a waiting-on chip is built and rides the wrapping chip row (its own line w
   assert.match(FEED, /a\._waitOn = waitOnBadge;/);
 });
 
-test("it.waitingOn drives the chip: 'Awaiting <peer>' (native-colour name, NO emoji) / 'Deadlock' for a cycle", () => {
-  // the label is "Awaiting " / "Deadlock " — no ⏳/⟲ emoji (the user 2026-06-22)
-  assert.match(FEED, /woPre\.textContent = wo\.inCycle \? "Deadlock " : "Awaiting "/);
+test("it.waitingOn drives the chip: 'Awaiting <peer>' / 'Handed off to <peer>' (native-colour name, NO emoji) / 'Deadlock' for a cycle", () => {
+  // the label is "Awaiting " / "Handed off to " (delegate kind) / "Deadlock " — no ⏳/⟲ emoji
+  // (the user 2026-06-22 / 2026-07-25: a delegation handoff is not "awaiting background agents")
+  assert.match(FEED, /woPre\.textContent = wo\.inCycle \? "Deadlock " : wo\.kind === "delegate" \? "Handed off to " : "Awaiting "/);
   assert.doesNotMatch(FEED, /⏳ waiting on|⟲ deadlock/, "no emoji prefix anymore");
   // the peer NAME is a separate span in its OWN identity colour (like the ↪ from provenance)
   assert.match(FEED, /woName\.textContent = wo\.name/);
