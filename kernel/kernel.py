@@ -2105,8 +2105,17 @@ def _revivers_pending(sid, store, turns, gid):
     try:
         if _retry_paused_on():
             return "the judge tiers are paused (nothing could revive it)"
-        if _goals_snap[0] is not None or jd.active_runs():
-            return "a judge pass is mid-flight"
+        if any(r.get("fsid") == sid for r in jd.active_runs()):
+            # THIS session's judge call only (2026-07-25). The old form deferred on ANY pass activity
+            # (_goals_snap non-None, or any active run anywhere) — but the producer opens a fleet-wide
+            # pass every ~3s, so "a pass is mid-flight" was the CADENCE, not a reviver: adjacent gate
+            # ticks routinely both landed inside (different) routine passes, the string-keyed seen
+            # counter read them as one non-retiring wedge, and false "stalled" cards minted fleet-wide
+            # (29 live records, median age 45h, when caught). A call in flight for THIS fsid is the
+            # event-true signal that a verdict for this store may be about to land; the small window
+            # between that call returning and its save is covered by the fire path's last-moment store
+            # re-read (_nudge_fire_list).
+            return jd.WHY_JUDGING
         if nd.get("followupPending"):
             return "your reply to the card is still being judged"
         if nd.get("nodeComplete"):
@@ -2157,18 +2166,19 @@ def _deferral_seen(rec):
     return 2
 
 
-def _nudge_deferred_ok(gid, reason, now):
+def _nudge_deferred_ok(gid, reason, now, sid=None):
     """True when a deferral has run past the backstop and the nudge must go anyway. A reviver that never
     clears is a MISSING event — exactly the case the awaiting backstop exists for — and "never miss a
     nudge" outranks "wait for everything" once the wait itself looks wedged.
 
     Records WHY it deferred and how many consecutive gate runs have said the same thing, not just when it
     started (the user 2026-07-23, who wanted a stalled card to say what the wait is on). The why is what
-    the stall brief is grounded in; `seen` is what separates a real stall from the churn. Most reasons are
-    momentary — "a judge pass is mid-flight" is true of every working goal for the length of any pass — and
-    those clear on the very next run, which pops the record. A reason still standing on the NEXT run is one
-    no mechanism is retiring, which is the wedge worth explaining. That second observation is the event;
-    nothing here consults a clock (the backstop above is the one deliberate exception)."""
+    the stall brief is grounded in; `seen` is what separates a real stall from the churn. A reason still
+    standing on the NEXT run is one no mechanism is retiring, which is the wedge worth explaining. That
+    second observation is the event; nothing here consults a clock (the backstop above is the one
+    deliberate exception). `sid` rides the record so the stall readers can live-verify a session-scoped
+    reason (jd.stall_why_stands) — the record freezes whenever the gate walk stops running for its
+    session, and a frozen claim must be verifiable or it is not presented."""
     d = _auto_nudge_data()
     dd = dict(d.get("deferred") or {})
     if not reason:
@@ -2180,19 +2190,19 @@ def _nudge_deferred_ok(gid, reason, now):
     rec = dd.get(gid)
     first = _deferral_at(rec)
     if first is None:
-        dd[gid] = {"at": int(now), "why": reason, "seen": 1}
+        dd[gid] = {"at": int(now), "why": reason, "seen": 1, "sid": sid}
         d["deferred"] = dd
         _write_auto_nudge(d)
         return False
     if _deferral_why(rec) != reason:                     # the wait moved to a DIFFERENT reviver: keep the
         # clock (the card has been stuck since `first` either way) but restart the run count, so a goal
         # bouncing between two momentary reasons never reads as wedged on either one.
-        dd[gid] = {"at": first, "why": reason, "seen": 1}
+        dd[gid] = {"at": first, "why": reason, "seen": 1, "sid": sid}
         d["deferred"] = dd
         _write_auto_nudge(d)
     elif _deferral_seen(rec) < _STALL_SEEN:              # same reason again → it is not self-clearing.
         # Stops counting at the threshold so a long wedge isn't a write per tick.
-        dd[gid] = {"at": first, "why": reason, "seen": _deferral_seen(rec) + 1}
+        dd[gid] = {"at": first, "why": reason, "seen": _deferral_seen(rec) + 1, "sid": sid}
         d["deferred"] = dd
         _write_auto_nudge(d)
     return (now - first) > NUDGE_DEFER_BACKSTOP_SECS
@@ -2203,12 +2213,23 @@ def _stalled_goals():
     romp has decided the card is stalled and is deliberately not acting on it. Read by build_feed (the card's
     Stalled section) and mirrored into the goal store for the judge's stall brief. A goal romp already nudged
     is NOT here: that one is visibly in flight, and it escalates to a real block through _mark_nudge_failed,
-    which carries its own decision brief."""
+    which carries its own decision brief.
+
+    LIVE-VERIFIED at read time (2026-07-25): a deferral record only pops when the gate walk re-runs, and the
+    walk stops the moment its session leaves idle-and-due — so a record freezes with whatever reason it last
+    held (records were found frozen for DAYS presenting "mid-flight" in the present tense). A reason whose
+    truth is checkable right now must check out, or the record is skipped (it still pops normally on the
+    next gate walk); reasons whose truth lives in the stores pass through — their own passes reconcile them."""
     out = {}
     for gid, rec in (_auto_nudge_data().get("deferred") or {}).items():
         why, at = _deferral_why(rec), _deferral_at(rec)
-        if why and at and _deferral_seen(rec) >= _STALL_SEEN:
-            out[gid] = {"why": why, "since": at}
+        if not (why and at and _deferral_seen(rec) >= _STALL_SEEN):
+            continue
+        if not jd.stall_why_stands(why, rec.get("sid") if isinstance(rec, dict) else None):
+            continue                                     # frozen judging claim, live-false (or legacy/unverifiable)
+        if why.startswith("the judge tiers are paused") and not _retry_paused_on():
+            continue                                     # tiers resumed while the record was frozen
+        out[gid] = {"why": why, "since": at}
     return out
 
 
@@ -2403,7 +2424,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
         # card's 'working' came from a STALE agent-to-do mirror, and the nudge fired before the sync that
         # would have completed it. Backstopped, so a wedged reviver defers the nudge but can never lose it.
         _defer = _revivers_pending(sid, store, turns, gid)
-        if _defer and not _nudge_deferred_ok(gid, _defer, now):
+        if _defer and not _nudge_deferred_ok(gid, _defer, now, sid):
             continue
         rec = nudged.get(gid) or {}
         # Fire at most ONCE per GENUINE stall — keyed on arm_id, the newest genuinely-triggered ended
@@ -2436,7 +2457,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
                 # thing to act: it may only fire once every other reviver is exhausted (_revivers_pending
                 # is re-checked here because the fire gate and this writer read different moments).
                 _sdefer = _revivers_pending(sid, store, turns, gid)
-                if _sdefer and not _nudge_deferred_ok(gid, _sdefer, now):
+                if _sdefer and not _nudge_deferred_ok(gid, _sdefer, now, sid):
                     continue                           # something else can still move it → not needs-you
                 _mark_nudge_failed(gid, ev_t=(resp or {}).get("t") or lt.get("end") or lt.get("t"))
                 nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
