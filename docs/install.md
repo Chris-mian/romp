@@ -17,8 +17,10 @@
 curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash
 ```
 
-Open a new terminal afterwards, so `~/romp/bin` is on your `PATH` and the `romp`
-command works. To update later, run the same command again.
+Open a new terminal afterwards, so `~/romp/bin` is on your `PATH`, and type
+`romp` to launch the user interface in a browser.
+
+The same command updates Romp later.
 
 This clones Romp to `~/romp` and installs the newest release.
 [What it installs, in detail](architecture.md#what-the-installer-sets-up).
@@ -45,15 +47,9 @@ export PATH="$PATH:$HOME/romp/bin"
 
 ## First run
 
-The installer leaves Romp's back end running, so there is nothing to start.
-Open the dashboard:
-
-```bash
-romp
-```
-
-That prints your link and opens a browser on it. On a server with no browser it
-prints the link along with how to reach it from your laptop.
+The installer leaves Romp's back end running, so there is nothing to start. Open
+the dashboard by typing `romp` in the terminal. That prints the URL at which
+Romp can be reached and opens it in your browser.
 
 ### In VS Code or Cursor
 
