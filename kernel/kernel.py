@@ -1448,7 +1448,7 @@ def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None, at=None):
     _write_auto_nudge(d)
 
 
-def _goal_awaiting_stamp(nodes, top, children=None):
+def _goal_awaiting_stamp(nodes, top, children=None, answered_at=0):
     """The freshest live ⏳ stamp in `top`'s subtree — the JUDGE's durable awaiting verdict (the closer's
     `awaiting` annotation, kernel/judge.py: the goal's latest audited turn ended waiting on async work it
     set in motion, with intent to act when it lands). Returns the stamp's why, or None.
@@ -1457,7 +1457,12 @@ def _goal_awaiting_stamp(nodes, top, children=None):
     in-memory subagent/bgTask sets die with the backend, which is how a genuinely-waiting session read as
     'stalled' after a restart), and it needs no time checks — the fold/lift machinery ends it on exact
     events (the goal's next audited turn, a landing done/block, a clear, a user reply). rolledUp nodes are
-    skipped: their flag cache is tree-derived display state, not verdicts."""
+    skipped: their flag cache is tree-derived display state, not verdicts.
+
+    `answered_at` (pass _peer_answered_at(sid)) adds one more exact ending event: a stamp whose awaitingAt
+    predates a peer's answer to this session's ask/handoff is SUPERSEDED — the wait it described was met,
+    and waiting for the closer's own lift left a card awaiting 5h after the reply (the user 2026-07-25).
+    A stamp with no awaitingAt can't be ordered against the reply and is kept as before."""
     if children is None:
         children = {}
         for nid, nd in nodes.items():
@@ -1469,8 +1474,10 @@ def _goal_awaiting_stamp(nodes, top, children=None):
         if not nd:
             continue
         if nd.get("awaitingWhy") and not nd.get("rolledUp"):
-            cand = (nd.get("awaitingAt") or 0, nd["awaitingWhy"])
-            best = cand if best is None else max(best, cand)
+            at = nd.get("awaitingAt") or 0
+            if not (at and answered_at and at < answered_at):
+                cand = (at, nd["awaitingWhy"])
+                best = cand if best is None else max(best, cand)
         stack.extend(children.get(x, []))
     return best[1] if best else None
 
@@ -1494,7 +1501,8 @@ def _mark_nudge_failed(gid, ev_t=None):
         _sid = gid.rsplit(":", 1)[0]
         if _session_awaiting(_sid, _path_of(_sid) or "", True):
             return
-        if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid):
+        if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid,
+                                answered_at=_peer_answered_at(_sid)):
             return                                     # the judge's durable ⏳ stamp says the goal waits on
             #                                            async work — same rule as above, restart-proof
     except Exception:
@@ -2413,12 +2421,13 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
             continue                                 # all open work handed to peers → nothing for THIS session
         if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
             continue                                 # awaiting a live peer's reply to a question this goal predates
-        if _goal_awaiting_stamp(nodes, gid, _kids):
+        if _goal_awaiting_stamp(nodes, gid, _kids, answered_at=_peer_answered_at(sid)):
             continue                                 # the judge's durable ⏳ stamp (closer awaiting verdict):
             #                                          the goal's latest audited turn ended waiting on async
             #                                          work it dispatched — not a stall. Restart-proof, unlike
             #                                          the session-level live gate above; lifted by exact
-            #                                          events (next audited turn / done / block / user reply)
+            #                                          events (next audited turn / done / block / user reply /
+            #                                          a peer's answer superseding the stamp)
         # LAST-RESORT GATE (the user 2026-07-22): every OTHER mechanism that could still move this card
         # off 'working' must be exhausted first. This is what the 2026-07-22 false interrupt needed: the
         # card's 'working' came from a STALE agent-to-do mirror, and the nudge fired before the sync that
@@ -5962,8 +5971,10 @@ def _session_stamp_read(sid):
     twin of _goal_awaiting_stamp, so the rail chip and timeline lane (which read _session_awaiting, not the
     per-goal stamp) light up the same restart-proof awaiting the feed card already shows off the stamp (the
     user 2026-07-22); the top set is the bg-task classifier's judge-affirmed-wait test (_bg_split). mtime-
-    cached on the goal-store + override-journal files so an ordinary idle session — which falls through
-    every live source to here every render — does not reparse the store each tick."""
+    cached on the goal-store + override-journal + postal-log files so an ordinary idle session — which falls
+    through every live source to here every render — does not reparse the store each tick. (The postal log
+    is in the key because a peer's answer SUPERSEDES older stamps — see _peer_answered_at — so mail landing
+    must re-read the view, the user 2026-07-25.)"""
     sid = str(sid)
     try:
         gs = (jd.GOALDIR / (sid + ".json")).stat()
@@ -5975,7 +5986,12 @@ def _session_stamp_read(sid):
         okey = (ostt.st_mtime, ostt.st_size)
     except Exception:
         okey = None                                    # no override journal is normal
-    key = (gkey, okey)
+    try:
+        mst = jd.MESSAGES.stat()
+        mkey = (mst.st_mtime_ns, mst.st_size)
+    except OSError:
+        mkey = None                                    # no postal log yet is normal
+    key = (gkey, okey, mkey)
     hit = _SESSION_STAMP_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
@@ -5983,9 +5999,13 @@ def _session_stamp_read(sid):
     try:                                               # load_goals (not a raw read) so overrides replay —
         nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
         best = None
+        answered = _peer_answered_at(sid)              # a peer's later answer supersedes older stamps
         for nid, nd in nodes.items():
             if nd.get("awaitingWhy") and not nd.get("rolledUp"):
-                cand = (nd.get("awaitingAt") or 0, nid, nd["awaitingWhy"])
+                at = nd.get("awaitingAt") or 0
+                if at and answered and at < answered:
+                    continue                           # the awaited answer landed after this stamp — superseded
+                cand = (at, nid, nd["awaitingWhy"])
                 best = cand if best is None else max(best, cand)
                 top, seen = nid, set()                 # stamped node → its TOP ancestor (cycle-guarded)
                 while top in nodes and nodes[top].get("parentId") is not None and top not in seen:
@@ -10177,17 +10197,26 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
 # word). Rows that CARRY a kind use it directly — the sender's declared intent is the designed source; the
 # body regex is only the fallback for old log rows (the user 2026-06-22 / the 2026-07-22 unification).
 _WAIT_Q_RE = re.compile(r"^\s*(?:QUESTION|ASK|Q)\b", re.I)
+_POSTAL_WAIT_CACHE = [None, None]   # (mtime_ns, size) , (last_any, last_ask) — one log scan per file change
 
 
-def _wait_for_graph(now, alive_sids):
-    """The fleet's WAIT-FOR graph from the postal log (the user 2026-06-22): a session X 'waits on' peer Y
-    when X's latest REPLY-REQUIRED message to Y (a postal QUESTION/ASK — NOT a COORDINATE/FYI heads-up, which
-    expects no reply) has no answer back since (any later Y→X record answers it) AND Y is ALIVE (a dead peer
-    won't reply). Each X points to its single most-recent such Y (a functional graph), so following the edges
-    detects CYCLES (X→Y→…→X = a mutual-wait deadlock). Only QUESTIONs count — an actively-coordinating session
-    isn't falsely shown 'waiting' for every FYI it sent. Returns {sid: {peerSid, name, color, inCycle}} for
-    every waiting session — the goal card's chip + the auto-nudge gate read it. Best-effort {}."""
-    last_any, last_q = {}, {}                            # (from,to) -> latest t of: ANY msg / a QUESTION-intent msg
+def _postal_wait_maps():
+    """(last_any, last_ask) from the postal log, cached on the file's (mtime, size): per ordered pair
+    (from_id, to_id), last_any holds the latest t of ANY message, last_ask the latest (t, kind) of a
+    reply-EXPECTING ask — a QUESTION (an answer is required) or a DELEGATE (the recipient owns work whose
+    result comes back to the sender; the user 2026-07-25, whose handoff to a peer wore the generic
+    "background agents" box because only questions counted). COORDINATE/FYI rows never make last_ask.
+    Rows carrying the schema `kind` use it; kindless legacy rows fall back to the QUESTION/ASK body
+    prefix. Shared by _wait_for_graph (twice per push) and _peer_answered_at (the stamp readers), which
+    each re-scanned the log per call before this cache."""
+    try:
+        st = jd.MESSAGES.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}, {}
+    if _POSTAL_WAIT_CACHE[0] == key:
+        return _POSTAL_WAIT_CACHE[1]
+    last_any, last_ask = {}, {}
     try:
         for line in jd.MESSAGES.read_text(errors="replace").splitlines():
             try:
@@ -10199,19 +10228,35 @@ def _wait_for_graph(now, alive_sids):
                 continue
             ts = int(ts)
             last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
-            k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins;
-            is_q = (k == "question") if k else bool(_WAIT_Q_RE.match(o.get("body") or ""))
-            if is_q:                                     # a reply-REQUIRED ask creates the wait edge
-                last_q[(f, t_)] = max(last_q.get((f, t_), 0), ts)
+            k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins
+            is_ask = (k in ("question", "delegate")) if k else bool(_WAIT_Q_RE.match(o.get("body") or ""))
+            if is_ask and ts >= last_ask.get((f, t_), (0, ""))[0]:
+                last_ask[(f, t_)] = (ts, k or "question")
     except OSError:
         pass
-    edge = {}                                            # X → Y: X's most-recent UNANSWERED question to a LIVE peer
-    for (f, t_), ts in last_q.items():
+    _POSTAL_WAIT_CACHE[:] = [key, (last_any, last_ask)]
+    return last_any, last_ask
+
+
+def _wait_for_graph(now, alive_sids):
+    """The fleet's WAIT-FOR graph from the postal log (the user 2026-06-22): a session X 'waits on' peer Y
+    when X's latest REPLY-EXPECTING message to Y (a postal QUESTION, or a DELEGATE handoff whose result X
+    acts on — NOT a COORDINATE/FYI heads-up) has no answer back since (any later Y→X record answers it)
+    AND Y is ALIVE (a dead peer won't reply). Each X points to its single most-recent such Y (a functional
+    graph), so following the edges detects CYCLES (X→Y→…→X = a mutual-wait deadlock). Returns
+    {sid: {peerSid, name, color, inCycle, since, kind}} for every waiting session — the goal card's chip
+    (kind picks its label: "Awaiting <peer>" vs "Handed off to <peer>") + the auto-nudge gate read it.
+    DELEGATE edges since 2026-07-25: a handoff previously made no edge, so the card fell through to the
+    judge's generic ⏳ stamp ("Awaiting background agents") and, with no edge to clear, the peer's actual
+    reply lifted nothing — a card read awaiting for 5h after the answer landed. Best-effort {}."""
+    last_any, last_ask = _postal_wait_maps()
+    edge = {}                                            # X → Y: X's most-recent UNANSWERED ask to a LIVE peer
+    for (f, t_), (ts, _k) in last_ask.items():
         if t_ not in alive_sids:                         # dead peer won't reply → not a wait
             continue
         if last_any.get((t_, f), 0) >= ts:               # Y replied with ANYTHING after → answered
             continue
-        if f not in edge or ts > last_q[(f, edge[f])]:
+        if f not in edge or ts > last_ask[(f, edge[f])][0]:
             edge[f] = t_
     in_cycle = set()                                     # follow the functional graph; a revisit = a cycle
     for start in edge:
@@ -10223,8 +10268,30 @@ def _wait_for_graph(now, alive_sids):
             in_cycle.update(seen[seen.index(node):])
     return {x: {"peerSid": y, "name": _name_of(y) or y[:8], "color": _name_color(y),
                 "inCycle": x in in_cycle,
-                "since": last_q[(x, y)]}   # when the unanswered question was sent → a goal minted AFTER it can't be awaiting it
+                "since": last_ask[(x, y)][0],   # when the unanswered ask was sent → a goal minted AFTER it can't be awaiting it
+                "kind": last_ask[(x, y)][1]}    # question | delegate → the chip's label
             for x, y in edge.items()}
+
+
+def _peer_answered_at(sid):
+    """The latest time a peer that `sid` had ASKED (question) or DELEGATED to REPLIED, over pairs with no
+    newer outstanding ask: max of last_any[(Y, sid)] where that reply is at/after sid's latest ask to Y.
+    0 when nothing qualifies. The durable ⏳ awaiting-stamp readers treat a stamp OLDER than this as
+    SUPERSEDED — the awaited answer arrived after the closer spoke, which is exactly the event the stamp
+    was waiting for (the user 2026-07-25: a stamp filed at 13:12 kept a card on "Awaiting background
+    agents" 5h after the delegated peer's 15:16 reply; the closer's own lift never came). A stamp filed
+    AFTER the reply survives — the closer's verdict is fresher than the answer it already saw. If the
+    stamp was really about non-peer work (subagents, a build), the LIVE sources that outrank it still
+    carry the wait, and the closer's next pass can re-stamp with a fresh awaitingAt."""
+    last_any, last_ask = _postal_wait_maps()
+    best = 0
+    for (f, t_), (ts, _k) in last_ask.items():
+        if f != sid:
+            continue
+        r = last_any.get((t_, f), 0)
+        if r >= ts:                                      # the pair's newest ask is answered
+            best = max(best, r)
+    return best
 
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
@@ -10600,7 +10667,8 @@ def build_feed(now, tmux=None):
             # across kernel restarts — exactly where the live snapshot signals above go dark and a
             # genuinely-waiting goal used to read as plain working, then "stalled". It floors WORKING
             # only: a real needs-you (block) always outranks the annotation.
-            _stamp_why = _goal_awaiting_stamp(nodes, nid, children) if col == "working" else None
+            _stamp_why = (_goal_awaiting_stamp(nodes, nid, children, answered_at=_peer_answered_at(fsid))
+                          if col == "working" else None)
             # DELEGATION-derived awaiting (the courier's durable handoff graph, not the question-regex):
             # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
             # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
@@ -12795,6 +12863,47 @@ def _pick_folder():
         return None
 
 
+_CHAT_DIV_LAST = {}   # sid -> (chat_state, row_state) at the last logged transition — event-on-change, in-memory
+
+
+def _note_chat_divergence(sid, name, chat_state, row_state, now):
+    """DEBUG tripwire for the chat-says-working-while-the-state-says-settled bug class (the user
+    2026-07-25: a session's chat read "running" for minutes after its turn ended via the API-error
+    salvage, while /sessions and the timeline were correct — the kernel restart then destroyed the
+    in-memory live atoms, leaving the mechanism unprovable). When debug mode is on, log the moment a
+    session's BUILT chat state ("working") disagrees with its backend state row ("waiting"/"idle"),
+    with the live-tail atoms that are holding the chat's turn open — and log when it clears, so the
+    log shows spans. Event-on-change (never per-push spam); appends to STATE/chat-divergence.jsonl;
+    zero I/O when debug mode is off or nothing changed."""
+    diverged = chat_state == "working" and row_state in ("waiting", "idle")
+    pair = (chat_state, row_state) if diverged else None
+    if _CHAT_DIV_LAST.get(sid) == pair:
+        return
+    was = _CHAT_DIV_LAST.get(sid)
+    _CHAT_DIV_LAST[sid] = pair
+    if not jd._debug_mode():
+        return
+    if pair is None and was is None:
+        return
+    rec = {"t": int(now), "sid": sid, "name": name}
+    if diverged:
+        rec.update({"chat": chat_state, "row": row_state})
+        _be = _sdk()
+        atoms = getattr(_be, "live_atom_kinds", None)
+        if atoms:
+            try:
+                rec["live"] = atoms(sid)
+            except Exception:
+                rec["live"] = "unreadable"
+    else:
+        rec["cleared"] = True
+    try:
+        with open(jd.STATE / "chat-divergence.jsonl", "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+
+
 def _push(targets, connect=False):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -12857,6 +12966,9 @@ def _push(targets, connect=False):
                         _built_chat[s["sid"]] = (sig, m, ms)
                 if not m:
                     continue
+                _note_chat_divergence(s["sid"], m.get("name") or "",
+                                      ((m.get("status") or {}).get("state") or ""),
+                                      ((tmux.get(s["sid"]) or {}).get("state") or ""), now)
                 chat_sessions.append(m)
                 # delta-send: diff this build's events against the previous one ONCE, then each client gets
                 # only the changed suffix (chatTail) if it's caught up, else the full session. Keeps the whole

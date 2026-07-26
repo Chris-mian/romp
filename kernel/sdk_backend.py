@@ -3059,6 +3059,23 @@ class SdkBackend:
         if not d:
             self._live.pop(sid, None)
 
+    def live_atom_kinds(self, sid: str) -> list:
+        """Read-only DEBUG summary of the sid's live-tail atoms: uuid/type + the flags that decide their
+        fate at settle (echo, command, apiError, hasText). The kernel's chat-divergence tripwire logs it
+        to pin WHICH atom held a chat turn open after the backend settled — the 2026-07-25 stale-"running"
+        chat could not be diagnosed because a restart cleared exactly this state before anyone read it."""
+        d = self._live.get(sid)
+        if not d:
+            return []
+        out = []
+        for a in list(d.values()):                 # copy: loop threads mutate the dict mid-iteration
+            if not isinstance(a, dict):
+                continue
+            out.append({"uuid": a.get("uuid") or "", "type": a.get("type") or "",
+                        "echo": bool(a.get("_echo_text")), "command": bool(a.get("command")),
+                        "apiError": bool(a.get("isApiError")), "hasText": bool(_atom_text(a).strip())})
+        return out
+
     def _update_reg(self, sid: str, **fields):
         with self._reg_lock:                       # kernel + loop threads both write (queue mirror);
             reg = read_reg(self.state_dir, sid) or {"sid": sid}   # unserialized RMWs would drop fields
