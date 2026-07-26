@@ -55,12 +55,11 @@ class PredictWorkingFanOut(unittest.TestCase):
         self.frames = []
         self.be = _FakeBackend()
         self._saved = (km._send_to_app, list(km._built_feed), km.Sessions.backend_for,
-                       km._send_or_park, km.jd.optimistic_followup, km.jd.user_move)
+                       km._send_or_park, km.jd.optimistic_followup)
         km._send_to_app = lambda app, m: self.frames.append((app, m))
         km.Sessions.backend_for = lambda sid: self.be
         km._send_or_park = lambda *a, **k: None
         km.jd.optimistic_followup = lambda *a, **k: False
-        km.jd.user_move = lambda *a, **k: False
         # the last-built feed payload: the pre-answer map of which card the live floor sits on
         km._built_feed[:] = [None, {"type": "feed", "asks": [
             _ask(SID + ":g1", SID, "needs_input", {"state": "picker", "what": "…"}),
@@ -72,7 +71,7 @@ class PredictWorkingFanOut(unittest.TestCase):
 
     def tearDown(self):
         (km._send_to_app, built, km.Sessions.backend_for,
-         km._send_or_park, km.jd.optimistic_followup, km.jd.user_move) = self._saved
+         km._send_or_park, km.jd.optimistic_followup) = self._saved
         km._built_feed[:] = built
 
     def _feed_frames(self):
@@ -150,17 +149,17 @@ class PredictWorkingFanOut(unittest.TestCase):
         self.be.ask = {"progress": {}}           # malformed progress → treated as single
         self.assertFalse(km._picker_mid_series(SID))
 
-    def test_followup_and_cardmove_fan_their_named_card(self):
+    def test_followup_fans_its_named_card_and_cardmove_is_gone(self):
         client = {"send": lambda s: None}
         self.assertTrue(km._drive({"type": "askFollowUp", "itemId": SID + ":g1", "text": "hi"}, client))
         fr = self._feed_frames()
         self.assertEqual(len(fr), 1)
         self.assertEqual((fr[0]["flavor"], fr[0]["ids"]), ("followup", [SID + ":g1"]))
         self.frames.clear()
-        self.assertTrue(km._drive({"type": "cardMove", "itemId": SID + ":g2", "to": "working"}, client))
-        fr = self._feed_frames()
-        self.assertEqual(len(fr), 1)
-        self.assertEqual((fr[0]["flavor"], fr[0]["ids"]), ("plain", [SID + ":g2"]))
+        # cardMove (the messageless Move to Working) was REMOVED (the user 2026-07-25): the op is no
+        # longer a drive op, routes nowhere, and fans no prediction.
+        self.assertFalse(km._drive({"type": "cardMove", "itemId": SID + ":g2", "to": "working"}, client))
+        self.assertEqual(self._feed_frames(), [])
 
 
 if __name__ == "__main__":

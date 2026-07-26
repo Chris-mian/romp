@@ -241,11 +241,12 @@ class FollowupMoveReplay(unittest.TestCase):
             store = jd.load_goals(SID)
             self.assertEqual(len(self._reopens(store)), 1)
 
-    def test_clobbered_move_reapplies(self):
+    def test_historical_move_journal_row_still_replays(self):
+        # The "move" producer (user_move, the messageless Move to Working) was removed 2026-07-25 —
+        # but journals are forever: a "move" row written before the removal must still replay its
+        # reopen onto a store whose save raced it. Synthetic row, exactly what the old producer wrote.
         jd.save_goals(SID, self._done_store())
-        judge_copy = jd.load_goals(SID)
-        self.assertTrue(jd.user_move(SID, NID, now=T0 + 100))
-        jd.save_goals(SID, judge_copy)                # stale save erases the move
+        jd.append_override(SID, NID, "move", T0 + 100)
         healed = jd.load_goals(SID)
         self.assertFalse(healed["nodes"][NID].get("nodeComplete"))
         self.assertEqual(len(self._reopens(healed)), 1)

@@ -24,7 +24,8 @@ test("kernel: every predicted move is answered, right after the prediction it an
   assert.match(KERNEL, /"type": "cardMoveAck", "ids": ids, "ok": bool\(ok\),/);
   assert.match(KERNEL, /"buildId": _feed_build_id\[0\]/);
   // the follow-up route: reopen, mark the write so it beats the pass snapshot, then answer
-  const fu = KERNEL.slice(KERNEL.indexOf('elif t == "askFollowUp":'), KERNEL.indexOf('elif t == "cardMove":'));
+  // (sliced to the retirement comment that replaced the removed cardMove handler, 2026-07-25)
+  const fu = KERNEL.slice(KERNEL.indexOf('elif t == "askFollowUp":'), KERNEL.indexOf('the cardMove op'));
   assert.match(fu, /ok = bool\(jd\.optimistic_followup\(/);
   assert.ok(fu.indexOf('_predict_working("followup"') < fu.indexOf("_ack_card_move([iid], ok)"),
     "the ack FOLLOWS its prediction, so a client can never see the answer before the question");
@@ -41,9 +42,9 @@ test("kernel: a user write is marked so it punches through a mid-flight judge pa
   assert.match(KERNEL, /at = time\.time\(\)\s+# stamped BEFORE the reads/);
   // …and re-punched whenever the MARK moves, so a second gesture in one long pass lands too (test_kernel.py)
   assert.match(KERNEL, /if mark >= _goals_snap_at\[0\] and _goals_snap_done\.get\(sid\) != mark:/);
-  // every user gesture that writes a goal store marks it: reply, Move to Working, crossing a node off,
-  // and (2026-07-23) restoring a dismissed card — the un-clear that used to wait out the whole pass
-  assert.equal((KERNEL.match(/^\s+_note_user_goal_write\(sid\)/gm) || []).length, 4);
+  // every user gesture that writes a goal store marks it: reply, crossing a node off, and
+  // (2026-07-23) restoring a dismissed card. (Move to Working was removed 2026-07-25 → 3 sites.)
+  assert.equal((KERNEL.match(/^\s+_note_user_goal_write\(sid\)/gm) || []).length, 3);
 });
 
 test("kernel: the feed payload carries the build id, claimed BEFORE the read it describes", () => {

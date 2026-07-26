@@ -1891,22 +1891,18 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._card_warn_rows(many, "S", sub, {}, cap=20)[-1]["note"], "29",
                          "the cap keeps the newest rows")
 
-    def test_cardmove_message_routes_to_user_move(self):
-        # the user 2026-07-09: Move to Working errored and snapped back — the drive router had no
-        # cardMove arm (the feed sends itemId/sid, never `id`; cardMove is not in ID_OPS), so the
-        # handler below the routing gate was DEAD CODE: every click fell to "not a drive op", nothing
-        # reached jd.user_move, and the optimistic flip reverted with the error toast. Pin the routing
-        # end to end: the feed's exact message shape must land in user_move with the right store + goal.
-        calls = []
-        saved_um, saved_bf = jd.user_move, km.Sessions.backend_for
-        jd.user_move = lambda fsid, gid, now=None: calls.append((fsid, gid)) or True
+    def test_cardmove_op_is_retired(self):
+        # The messageless "Move to Working" was REMOVED (the user 2026-07-25: zero recorded uses; a
+        # reply reopens with context). The op must no longer route as a drive op, and the judge no
+        # longer exports its producer — only the journal REPLAY of historical "move" events survives.
+        saved_bf = km.Sessions.backend_for
         km.Sessions.backend_for = lambda sid: None
         try:
             handled = km._drive({"type": "cardMove", "itemId": SID + ":g1", "sid": SID, "to": "working"}, None)
         finally:
-            jd.user_move, km.Sessions.backend_for = saved_um, saved_bf
-        self.assertTrue(handled, "cardMove is a drive op — it must not fall through to the UI dispatcher")
-        self.assertEqual(calls, [(SID, SID + ":g1")], "the click reaches user_move with the store + goal id")
+            km.Sessions.backend_for = saved_bf
+        self.assertFalse(handled, "cardMove is not a drive op any more")
+        self.assertFalse(hasattr(jd, "user_move"), "the producer is gone; _replay_overrides keeps the reader")
 
     def test_provisional_card_surfaces_for_a_seam_tail(self):
         # plans/segment-regrowth.md: a top settles while its placed segment keeps growing with real

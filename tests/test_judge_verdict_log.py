@@ -203,12 +203,13 @@ class DualWriteThroughTheSites(unittest.TestCase):
         self.assertEqual(len(samples), 1)
         self.assertTrue(samples[0]["focusHeld"], "G1 was the focus top at verdict time")
 
-    def test_user_move_records_a_user_reopen(self):
+    def test_followup_reopen_records_a_user_reopen(self):
+        # (user_move was removed 2026-07-25; the card reply is the surviving user-reopen producer)
         store = {"rompUuid": SID, "placements": {}, "status": {},
                  "nodes": {G1: node(nodeComplete=True)}}
         jd.rollup_status(store, True)
         jd.save_goals(SID, store)
-        jd.user_move(SID, G1, now=T + 500)
+        jd.optimistic_followup(SID, G1, now=T + 500)
         st = jd.load_goals(SID)
         kinds = [(e["src"], e["kind"], e["ev_t"]) for e in st["nodes"][G1]["log"]]
         self.assertIn(("user", "reopen", T + 500), kinds)
