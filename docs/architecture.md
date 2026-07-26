@@ -33,16 +33,46 @@ data at rest, and pink you.
 
 ## What the installer sets up
 
-`install.sh` registers the Claude Code hooks, the postal MCP config, and the
-`romp` skills; builds the editor extension; and installs a login service that
-keeps the kernel up. It is idempotent: re-running adds only what is missing, and
-it never touches hooks you registered yourself.
+The clone is the installation. Almost everything `install.sh` adds is a symlink
+pointing back into it, so updating the clone updates the installed pieces with
+it, and nothing is copied into a second place to drift. It needs no `sudo`, and
+re-running it adds only what is missing.
 
-It installs nothing into your Python. The kernel and CLI are standard library
-only; the one dependency of the [SDK backend](guide.md#session-backends)
-(`claude-agent-sdk`) lives in a dedicated venv under `~/.local/state/romp/`,
-built against the newest Python 3.10+ on the machine and rebuilt automatically
-when that Python changes.
+**In your Claude Code config (`~/.claude/`).** Romp works by hooking into Claude
+Code, so this is where most of it lands:
+
+- Its hooks are symlinked into `~/.claude/hooks/`, then registered in
+  `~/.claude/settings.json`. That registration is a merge: it adds Romp's
+  entries and leaves every other hook you have registered untouched.
+- `romp-postal.mcp.json`, the MCP config that gives sessions their mailbox.
+- `romp-session-prompt.md`, appended to a session's system prompt.
+- The `romp` and `romp-postal` skills, into `~/.claude/skills/`.
+
+**Running afterwards.** A login service, a launchd agent in
+`~/Library/LaunchAgents` on macOS or a systemd `--user` unit on Linux. It runs
+`romp-manager`, which supervises the kernel on port `29855`; the postal bus
+takes `25302`. Both bind loopback only, so nothing is exposed to your network
+until you choose to [reach it from elsewhere](guide.md#remote-access).
+
+**Elsewhere on the machine.** A Python virtual environment under
+`~/.local/state/romp/` for the [SDK backend's](guide.md#session-backends) one
+dependency, `claude-agent-sdk`. The VS Code / Cursor extension, built and
+installed. A `pre-push` hook in the clone's own git directory, which does
+nothing unless you give it a list of strings to watch for. The one-line
+installer also appends a `PATH` line to your shell rc; `install.sh` on its own
+only prints the line for you to add.
+
+**What it does not touch.** It installs nothing into your Python, system or
+user: the kernel and the CLI are standard library only, which is why the SDK's
+dependency gets that separate venv, built against the newest Python 3.10+ on the
+machine and rebuilt when that Python changes. It reads your Claude Code
+transcripts where they already are and never copies them. Every step has an
+opt-out; see [Install-time switches](reference.md#install-time-switches).
+
+**Undoing it.** `romp-service uninstall` removes the login service. After that,
+deleting the clone and the `~/.claude` symlinks that point into it leaves the
+machine as it was, apart from Romp's own state under `~/.local/state/romp/`,
+which you can delete too.
 
 ## The rest of this section
 
