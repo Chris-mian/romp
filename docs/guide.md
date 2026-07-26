@@ -299,10 +299,26 @@ then see and drive its sessions whenever it is online, from whatever network it
 is on. Because the laptop is the end that connects, the hub never holds a way in
 to it; untick the box (or `romp checkout <hub>`) and the hub forgets it.
 
+**To let another machine own the connection:** the add-host box has a **from**
+picker. Leave it on *this machine* and the tunnel lives here, dropping when this
+kernel stops. Choose an attached host instead and the attach is forwarded to
+that kernel, which dials out itself, so the connection outlives your laptop.
+That machine needs its own ssh access to the target.
+
+Machines a hub can reach appear to you too, under **Reachable via relay**: no
+tunnel of your own, their mail arriving one hop through the hub. They carry the
+same trust selector as any host, because a message is judged by where it came
+from rather than by the route it took.
+
 Each linked host carries a trust level that governs its mail; see
 [Security and trust](#security-and-trust). Detaching keeps the host on a list,
 so re-linking later is one click and it returns with the trust level you last
 gave it.
+
+When another machine is holding mail for approval, **Held for approval
+elsewhere** shows you that it is, and how much, with the gist on hover. Acting
+on a held message stays on the machine holding it, so this tells you where to
+go rather than deciding for you.
 
 Mail for a machine that is offline waits in an outbox and delivers when it comes
 back. If it returns and the session you addressed is gone, that refusal comes
@@ -345,8 +361,10 @@ initiates, and a hub never holds a way in.
 **Trust levels for attached hosts.** Attaching two kernels lets their sessions
 message each other, which means a session on the remote machine can put text
 into a local session's context, and text in an agent's context can steer it. So
-each attached host carries a trust level, set on its row in the network popover
-and remembered per host:
+each host carries a trust level, set on its row in the network popover and
+remembered per host. The level goes by where a message originated, not by the
+route it travelled, so a machine whose mail reaches you relayed through a hub is
+judged by the level you gave that machine:
 
 - **trusted** — sessions on both machines message each other freely, as if they
   were on the same machine. For a machine you fully control.
