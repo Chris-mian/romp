@@ -57,9 +57,9 @@ curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | ba
 
 This clones Romp to `~/romp`, checks out the newest release, installs it, and adds `bin/` to your shell rc. Open a new terminal afterwards. [Installing by hand](https://romp-on.github.io/romp/install/#manual-and-custom-installs) works too.
 
-Run `romp`. It opens the dashboard in your browser and prints the link
-too — the link carries a one-time access token, and after that first open plain
-`http://127.0.0.1:29855/` works (a cookie remembers you). Start a session.
+In that terminal, run `romp`. It opens the dashboard in your browser and prints
+the link as well, so a machine with no browser of its own still gives you a way
+in. Start a session from there.
 
 ## Docs
 
