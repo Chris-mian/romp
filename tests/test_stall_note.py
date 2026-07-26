@@ -55,6 +55,27 @@ class StalledFacts(unittest.TestCase):
         self._write({GID: NOW})
         self.assertEqual(jd.stalled_facts(FSID), {})
 
+    def test_a_judging_claim_is_live_verified(self):
+        # 2026-07-25: a deferral record freezes when the gate walk stops running for its session, so a
+        # judging claim is presented only while active_runs shows a call for this session RIGHT NOW —
+        # a frozen present-tense claim that is live-false must not reach the staller or the due-anchor.
+        self._write({GID: {"at": NOW, "why": jd.WHY_JUDGING, "seen": jd.STALL_SEEN, "sid": FSID}})
+        saved = jd.active_runs
+        try:
+            jd.active_runs = lambda: [{"judge": "closer", "fsid": FSID, "sent": 1.0}]
+            self.assertEqual(jd.stalled_facts(FSID)[GID]["why"], jd.WHY_JUDGING)
+            jd.active_runs = lambda: ()
+            self.assertEqual(jd.stalled_facts(FSID), {},
+                             "the call retired but the record froze → never presented")
+        finally:
+            jd.active_runs = saved
+
+    def test_a_legacy_global_pass_record_never_stands(self):
+        # pre-2026-07-25 records carried the GLOBAL "a judge pass is mid-flight" — minted by the fleet-wide
+        # pass cadence, naming no session, unverifiable → dropped on read however settled the count looks.
+        self._write({GID: {"at": NOW, "why": "a judge pass is mid-flight", "seen": jd.STALL_SEEN}})
+        self.assertEqual(jd.stalled_facts(FSID), {})
+
     def test_an_unreadable_store_is_not_fatal(self):
         (jd.STATE / "auto-nudge.json").write_text("{ this is not json")
         self.assertEqual(jd.stalled_facts(FSID), {}, "a stall note is an extra, never a reason to fail a pass")

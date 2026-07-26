@@ -234,6 +234,15 @@ STALLER_ON = os.environ.get("ROMP_STALLER", "1") != "0"   # the stall note (2026
 # definition or the two drift. 2 = "the reason survived the next gate run", which is the EVENT that separates
 # a genuine wedge from the momentary reasons (a judge pass in flight) every working goal reports in passing.
 STALL_SEEN = 2
+# The nudge gate's "the judge itself could still move this card" reason — same one-definition rule as
+# STALL_SEEN: the kernel mints it (_revivers_pending) and both stall readers (kernel _stalled_goals,
+# stalled_facts below) verify it through stall_why_stands. The LEGACY string is the pre-2026-07-25 GLOBAL
+# form, deferred on ANY judge activity anywhere — but the producer opens a fleet-wide pass every ~3s, so
+# that was cadence, not a reviver: adjacent gate ticks routinely both landed inside (different) routine
+# passes, the string-keyed seen counter read them as one non-retiring wedge, and false "stalled" cards
+# minted fleet-wide. A legacy record names no session, so its claim is unverifiable and never stands.
+WHY_JUDGING = "romp's own review of this session is mid-flight"
+_WHY_JUDGING_LEGACY = "a judge pass is mid-flight"
 # The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
 # only ever sees OPEN tops, so related goals that finish before they get
 # grouped land as separate cards. The consolidator groups related ALL-COMPLETED sibling tops under a
@@ -3535,9 +3544,9 @@ def plan_units(session, store=None):
                 # (an API-error storm that exhausted; isApiError records don't count, same rule as the
                 # captioner). A work/nudge/delegation unit here hands the planner "USER ASKED: …" with no
                 # reply and frames it as a COMPLETED stretch — and a capable planner then answers the
-                # question FROM ITS OWN KNOWLEDGE and files done: one session's wiring ask got a done
-                # verdict + a fully confabulated summary off a turn whose only record was "API Error: 529"
-                # (the user 2026-07-25). The ASK is still real: place it (mint-only prompt-run — its op
+                # question FROM ITS OWN KNOWLEDGE and files done: one session's technical question got a
+                # done verdict + a fully confabulated summary off a turn whose only record was "API Error:
+                # 529" (the user 2026-07-25). The ASK is still real: place it (mint-only prompt-run — its op
                 # filter cannot file done), so the card sits OPEN, which is the truth. Everything else
                 # (a nudge/peer/system segment with no reply) files nothing — an unanswered status check
                 # stays re-nudgeable, a workless delegation stays unfiled.
@@ -6940,6 +6949,22 @@ def stall_llm(goal_text, work_text, holding):
     return _judge_run(_triage_model(), STALL_BRIEF_SYS, user, judge="staller").strip()   # caller splits SOURCE, then caps
 
 
+def stall_why_stands(why, fsid):
+    """True when a recorded stall reason still holds RIGHT NOW. A deferral record is a cache of the gate's
+    last run, and the gate only re-runs (and pops it) while its session stays idle-and-due — a session that
+    resumes work, or goes awaiting, freezes the record with whatever reason it last held, and by 2026-07-25
+    the live file held records frozen for days presenting a present-tense claim. The judging reason is
+    live-verifiable (active_runs IS the authority for "is a judge call on this session in flight"), so both
+    stall readers verify it here instead of presenting the frozen claim; a legacy global record named no
+    session and can never be verified, so it never stands. Other reasons pass through: their truth lives in
+    stores this predicate can't reach, and their own passes reconcile the records that carry them."""
+    if why == WHY_JUDGING:
+        return bool(fsid) and any(r.get("fsid") == fsid for r in active_runs())
+    if why == _WHY_JUDGING_LEGACY:
+        return False
+    return True
+
+
 def stalled_facts(fsid):
     """{gid: {"why", "since"}} for THIS session's goals the kernel's nudge gate is holding on a reviver that
     isn't retiring — the mechanical stall reasons it records in auto-nudge.json (kernel _stalled_goals is the
@@ -6957,7 +6982,7 @@ def stalled_facts(fsid):
             why, at, seen = rec.get("why"), int(rec.get("at") or 0), int(rec.get("seen") or 1)
         except (TypeError, ValueError):
             continue
-        if why and at and seen >= STALL_SEEN:
+        if why and at and seen >= STALL_SEEN and stall_why_stands(str(why), fsid):
             out[str(gid)] = {"why": str(why), "since": at}
     return out
 

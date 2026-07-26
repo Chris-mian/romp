@@ -14,6 +14,11 @@
   --accent: #9cd2ff;  /* the romp accent (CLAUDE.md Design) — feed.css has its OWN :root, so selected-state
                        chrome here needs it defined locally or var(--accent) silently falls back */
   --accent-fg: #0c1a2e;  /* dark text ON the accent (CLAUDE.md) — for the reverse-highlight on a selected toggle */
+  --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
+                       as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
+                       in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
+                       white outline (background→transparent, border→currentColor, the user 2026-07-25).
+                       feed-css-vars.test.ts now holds the whole file to "define it here or carry a fallback". */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,

@@ -22,6 +22,8 @@ CLI:
 
 Auxiliary inputs the file adapter may read (same category as the transcript):
   states/<sid>.jsonl        -> idle atoms (real idle transitions, not a silence heuristic)
+                               + salvaged assistant atoms (orphanReply markers — replies the
+                               transcript lost to an API-errored try; judge parse only)
   timeline/messages.jsonl   -> peer rompUuid for a postal atom (join on the msg id)
 """
 import json, os, re, sys, time, hashlib
@@ -748,6 +750,51 @@ def synthesize_idle(states, atoms, now):
     return out
 
 
+def synthesize_orphans(states, atoms):
+    """Salvaged assistant replies from orphanReply markers in states/<sid>.jsonl — text that STREAMED
+    live but the transcript never kept (an API-errored try; the SDK backend persists it at settle,
+    see its append_orphan_reply). The kernel's chat build has interleaved these since 2026-07-21, but
+    this parse never did — so every judge (planner/closer/distiller/briefer) read those turns as
+    having NO reply at all (found by a peer session 2026-07-25, ~1,600 markers fleet-wide): the
+    planner confabulated outcomes for them, and once the workless-segment guard landed it flipped to
+    never filing genuinely finished work as done. Each marker becomes a real assistant atom at its
+    timestamp, DEDUP'd the same way the chat build dedups — by uuid, then exact-or-either-way-prefix
+    text against what the disk kept (a retry that re-replied never doubles) and against earlier
+    markers (settles can re-orphan the same reply). A marker carrying the CLI's own error text
+    ("API Error: …") is skipped: markers written before the backend tagged error settles isApiError
+    hold that noise, and it must not resurface as work."""
+    if not atoms:
+        return []
+    seen_uuids = {a.get("uuid") for a in atoms if a.get("uuid")}
+    disk_texts = [t for a in atoms if a.get("type") == "assistant"
+                  if (t := _text_of(_content(a.get("message"))).strip())]
+    sid = atoms[0]["session_id"]
+    out = []
+    for r in states or []:
+        if not isinstance(r, dict) or not r.get("t"):
+            continue
+        orq = r.get("orphanReply")
+        if not isinstance(orq, dict):
+            continue
+        txt = (orq.get("text") or "").strip()
+        if not txt or txt.startswith("API Error:"):
+            continue
+        u = orq.get("uuid") or ""
+        if u and u in seen_uuids:
+            continue
+        if any(dt.startswith(txt) or txt.startswith(dt) for dt in disk_texts):
+            continue
+        out.append({"type": "assistant", "uuid": u or ("orphan:%d" % int(r["t"])), "session_id": sid,
+                    "t": int(r["t"]), "fsid": None, "parentUuid": None, "orphaned": True,
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": txt}],
+                                "stop_reason": "end_turn"},   # the marker is written AT settle — the turn ended
+                    "_seq": 10 ** 12 + int(r["t"])})
+        if u:
+            seen_uuids.add(u)
+        disk_texts.append(txt)
+    return out
+
+
 # ═════════════════════════ SUBSTRATE-NEUTRAL: turns over atoms ═════════════════════════
 def is_interrupt_record(atom):
     """The CLI's own stop record — a user atom reading '[Request interrupted by user]' (Esc) or
@@ -1045,7 +1092,10 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     adapter = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override)
     adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
-    atoms += synthesize_idle(_load_states(states), atoms, now)
+    _srows = _load_states(states)
+    atoms += synthesize_orphans(_srows, atoms)   # salvaged replies FIRST: they are real atoms the turn
+    #                                              grouping must absorb (idle spans overlay afterwards)
+    atoms += synthesize_idle(_srows, atoms, now)
     turns = segment_turns(atoms, rompuuid)
     for turn in turns:
         for a in turn["atoms"]:
