@@ -2015,6 +2015,18 @@ def _mcp_call(name, args):
         try:
             _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
                                     "kind": kind})
+            # Echo what the DECLARATION did, not just that bytes moved (the user 2026-07-26): a question
+            # or delegate records the SENDER as waiting on the recipient — a real hold that a mis-declared
+            # kind creates by accident (a "question" whose prose said no reply was needed parked its
+            # sender for a day). Reading the cost back lets the sender self-correct on the spot, while
+            # recall_message still works.
+            if kind == "question":
+                return ("Delivered to '%s' as a question — you are now recorded as waiting on their "
+                        "reply until they answer. If you don't actually need a reply, recall this "
+                        "message and resend it as coordinate." % to, False)
+            if kind == "delegate":
+                return ("Delivered to '%s' as a handoff — you are now recorded as waiting on them to "
+                        "report back; their next message to you clears it." % to, False)
             return "Delivered to '%s'." % to, False
         except BusError as e:
             return str(e), True
