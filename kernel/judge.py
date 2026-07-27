@@ -41,6 +41,10 @@ GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), ke
                                          # (the user-override journal lives beside it — _overrides_dir())
 GOALARCHDIR = STATE / "goals-archive"    # CLEARED (dismissed) goal subtrees moved out of the live tree, keyed by rompUuid:
                                          #   keeps the live store flat so build_feed stops re-deriving dismissed cards every push
+EPIDIR   = STATE / "episodes"            # per-session append-only episode log, keyed by rompUuid: one row per observed
+                                         #   /clear-style fork head ({head, fsid, t}) — the durable record of where each
+                                         #   conversation episode began (the SDK registry's lastSid is OVERWRITTEN per fork,
+                                         #   so without this log a multi-/clear session's past transcripts are unattributable)
 STATESDIR = STATE / "states"             # per-session real idle/compacting transitions → idle atoms (settled gate)
 PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's ready units
 MESSAGES = STATE / "timeline" / "messages.jsonl"
@@ -61,14 +65,17 @@ def _rebind_state(path):
     save_goals wrote synthetic fixtures into the live goals/ and the triage pass then stormed
     judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
     instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
-    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE, SDKDIR
+    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE, SDKDIR, EPIDIR
     STATE = path
     NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
     GOALARCHDIR = STATE / "goals-archive"
     STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
     SDKDIR = STATE / "sdk"
+    EPIDIR = STATE / "episodes"
     _lastsid_memo.clear()   # sdk-registry reads are mtime-memoized per sid — a rebind must not serve the old root's values
+    _episode_memo.clear()   # ...and so are the episode-log reads
+    _head_memo.clear()      # transcript heads are immutable per path, but a rebind swaps the whole world of paths
     # (the override journal needs no rebinding: _overrides_dir() derives from GOALDIR at call time, so
     #  ANY isolation style — _rebind_state OR a bare GOALDIR reassignment — scopes it automatically)
 
@@ -3139,6 +3146,110 @@ def _sdk_last_sid(sid):
     return ls
 
 
+# ── Episodes: /clear is a boundary, not a deletion (the user 2026-07-26) ─────────────────────────
+# A `/clear` mints a new transcript whose head record has NO parent link, while a resume-style fork
+# chains parentUuid into the prior file — so "the session's current transcript starts at a null-rooted
+# head we have not seen before" is the exact, event-based signal that a conversation episode ended.
+# episodes/<sid>.jsonl records each observed episode head, append-only: the first row is whatever
+# episode was current when the session was first observed; every LATER row is a /clear boundary. The
+# kernel keys its boundary settle (open cards die with their episode) and the timeline's clear seams
+# on this log, and it is the only durable map from a session to its past episodes' transcript files.
+
+_head_memo = {}      # transcript path -> {"uuid","root","t"} — a file's head record is immutable
+_episode_memo = {}   # sid -> (log mtime, last row or None)
+
+
+def transcript_head(path):
+    """The first uuid-bearing record of `path`: {"uuid", "root": <no parent link>, "t": <epoch>} — or
+    None (empty/unreadable file, or no uuid-bearing row yet). `root` follows the same rule as the
+    FileAdapter walk: parentUuid OR logicalParentUuid (the compaction stitch) counts as a parent, so
+    only a genuine `/clear`-style head reads as an episode start. Cached per path once a head exists
+    (a transcript is append-only; its head never changes)."""
+    key = str(path)
+    hit = _head_memo.get(key)
+    if hit is not None:
+        return hit
+    head = None
+    try:
+        with open(path, "r", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict) or not r.get("uuid"):
+                    continue    # summary/meta rows before the first real record
+                t = em.parse_z(r.get("timestamp")) or 0
+                head = {"uuid": r["uuid"],
+                        "root": (r.get("parentUuid") or r.get("logicalParentUuid")) is None,
+                        "t": t}
+                break
+    except OSError:
+        return None
+    if head is not None:
+        if len(_head_memo) > 4096:   # backstop: bounded by transcripts-seen, but never unbounded
+            _head_memo.clear()
+        _head_memo[key] = head
+    return head
+
+
+def episode_rows(sid):
+    """Every recorded episode row of `sid` ([{"head","fsid","t"}, ...], oldest first; [] if none).
+    Row 0 is the episode current at first observation; every later row is a /clear boundary.
+    mtime-memoized like _sdk_last_sid — the log only grows at a /clear, so per-pass reads are a stat."""
+    p = EPIDIR / (sid + ".jsonl")
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        _episode_memo.pop(sid, None)
+        return []
+    hit = _episode_memo.get(sid)
+    if hit is not None and hit[0] == mt:
+        return hit[1]
+    rows = []
+    try:
+        for line in p.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("head"):
+                rows.append(r)
+    except OSError:
+        pass
+    _episode_memo[sid] = (mt, rows)
+    return rows
+
+
+def episode_last(sid):
+    """The last recorded episode row of `sid` ({"head","fsid","t"}) or None."""
+    rows = episode_rows(sid)
+    return rows[-1] if rows else None
+
+
+def append_episode(sid, head, fsid, t):
+    """Record an observed episode head for `sid` (append-only; the caller has already established
+    this head is NEW — see the kernel's boundary tick)."""
+    EPIDIR.mkdir(parents=True, exist_ok=True)
+    with (EPIDIR / (sid + ".jsonl")).open("a") as fh:
+        fh.write(json.dumps({"head": head, "fsid": fsid, "t": t}) + "\n")
+    _episode_memo.pop(sid, None)
+
+
+def episode_floor(sid):
+    """The current episode's start time for `sid`, or None if no episode was ever recorded. The
+    placement fuzzy-match scope (see _placed_key): evidence recorded before this instant belongs to
+    a conversation the agent can no longer see."""
+    row = episode_last(sid)
+    return row.get("t") if row else None
+
+
 _discover_lock = threading.Lock()
 _discover_cache = {}     # window seconds → {"fp", "result"}: the cached discover() list for THAT horizon (see
 #                          _discover_fingerprint). Keyed by window because the picker asks for a wider one
@@ -4599,19 +4710,46 @@ def _placed_key(placements, key, live=None):
     resumes), so the first placed twin swallowed every later twin's work-run forever — whole turns of
     real work never reached the goal tree (the user 2026-07-06, the stuck 'drag' card). Drift is exactly
     the orphan case (a drifted old id no longer parses out), so the double-mint protection is intact —
-    event-based, no time window."""
+    event-based, no time window.
+
+    Episode scope (the user 2026-07-26): a fuzzy hit must also come from the CURRENT episode. After a
+    `/clear`, every pre-clear placement is orphaned, so a byte-identical prompt retyped in the fresh
+    conversation fuzzy-matched its dead twin and was silently deduped — no card, ever. A recorded key
+    whose embedded t predates episode_floor() is evidence from a conversation the agent can no longer
+    see, so it dedups nothing (exact hits are untouched: pre-clear segment ids can only re-enter the
+    parse as-written, and then the exact match is precisely the anti-re-mint guard)."""
     if key in placements:
         return True
     want = _seg_key(key)
     kb = key.split("#")[0]
+    floor = None
     for k in placements:
         if _seg_key(k) != want:
             continue
         rb = k.split("#")[0]
-        if live is not None and rb != kb and rb in live:
-            continue                                   # the recorded key IS another live segment (a twin), not our drift
+        if rb != kb:
+            if live is not None and rb in live:
+                continue                               # the recorded key IS another live segment (a twin), not our drift
+            if floor is None:                          # sid = everything before the volatile t + texthash
+                parts = key.split(":")                 # (a federated sid itself carries a colon)
+                floor = (episode_floor(":".join(parts[:-2])) if len(parts) >= 3 else None) or 0
+            rt = _key_t(rb)
+            if rt is not None and rt < floor:
+                continue                               # recorded in a PRIOR episode (pre-/clear) — not our drift
         return True
     return False
+
+
+def _key_t(seg_id):
+    """The volatile middle `seg.t` of a seg id as written (`rompuuid:t:texthash`), or None for a
+    non-conforming/legacy id — those stay un-scoped rather than guessed at."""
+    parts = seg_id.split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        return float(parts[-2])
+    except ValueError:
+        return None
 
 
 def _placement_of(placements, seg_id, live=None):

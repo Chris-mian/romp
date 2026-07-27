@@ -178,3 +178,11 @@ within a beat it reverts with a toast, never silently.
     no diary is frozen, never derived-and-wiped, and surfaces loudly in
     judge-errors.jsonl. Retired flags (`everDone`, `logBorn`) are popped
     by the sweep.
+11. `/clear` is an episode boundary, not a deletion. A new null-rooted
+    transcript head (vs the episodes log) settles the session's still-open
+    tops — a romp-authored clear ("dropped when the conversation was
+    cleared"), sealed like the mute path: no agent notify, no delegation
+    cascade; completed cards stay. Placement fuzzy-matching is scoped to
+    the current episode (a retyped prompt plans again; exact hits still
+    dedup, so archived nodes never re-mint). The timeline draws a seam
+    per boundary; `plans/clear-episodes.md` has the full design.
