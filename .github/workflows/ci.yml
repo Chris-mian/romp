@@ -24,9 +24,12 @@ on:
   pull_request:
   workflow_dispatch:   # the manual on-switch for the macOS cells (see above)
 
-# A newer push to the same ref cancels the older in-flight run.
+# A newer push to the same ref cancels the older in-flight run OF THE SAME KIND.
+# The event is part of the key on purpose: a release dispatch (the macOS gate)
+# shares main's ref with every push, and a bare ref key let an auto-merged PR
+# cancel the in-flight release run mid-watch (2026-07-27).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -81,7 +84,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bats-core tmux
       - name: Run bats
-        run: bats tests/*.bats
+        run: bats --print-output-on-failure tests/*.bats
 
   vscode-extension:
     name: vscode-extension (typecheck + test + build)
