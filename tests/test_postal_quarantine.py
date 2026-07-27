@@ -248,6 +248,27 @@ class QuarantineDecide(unittest.TestCase):
         self.assertTrue(ok, err)
         self.assertEqual(ps.quarantine_list(), [])
         self.assertEqual(ps.read_box("sess-web", consume=False), [], "deny delivers nothing")
+        self.assertEqual(list((ps.OUTBOX / "TESTHOST").glob("*.json")) if (ps.OUTBOX / "TESTHOST").is_dir() else [],
+                         [], "a bare deny sends nothing back")
+
+    def test_deny_with_feedback_mails_the_sender(self):
+        """Deny + a note (the user 2026-07-26): the note parks in the ORIGIN host's outbox as ordinary
+        store-and-forward mail addressed to the sender session, so their agent learns why instead of
+        waiting forever. The body names the recipient and quotes a gist of what was declined."""
+        ps._relay_in("TESTHOST", _relay("q-deny-2", body="please rewrite the ingest job tonight"))
+        ok, err = ps.quarantine_decide("q-deny-2", "deny", feedback="not tonight, we freeze before the demo")
+        self.assertTrue(ok, err)
+        self.assertEqual(ps.quarantine_list(), [])
+        rows = [json.loads(f.read_text()) for f in (ps.OUTBOX / "TESTHOST").glob("*.json")]
+        self.assertEqual(len(rows), 1, "exactly one note back to the sender")
+        m = rows[0]
+        self.assertEqual(m["to"], "api", "addressed to the SENDER session by name")
+        self.assertEqual(m["frm"], "Romp Postal Service")
+        self.assertIn("declined", m["body"])
+        self.assertIn("not tonight, we freeze before the demo", m["body"])
+        self.assertIn("please rewrite the ingest job", m["body"], "the gist anchors which message this was")
+        for f in (ps.OUTBOX / "TESTHOST").glob("*.json"):
+            f.unlink()
 
     def test_decide_unknown_mid_errors(self):
         ok, err = ps.quarantine_decide("no-such-mid", "approve")

@@ -76,7 +76,7 @@ interface AskItem {
               tooLong?: boolean;   // apiError: a "prompt is too long" error (on you → compact) vs a transient API error
               spendLimit?: boolean;   // apiError: a monthly spend cap (on you → raise it, never auto-retried; the user 2026-07-14)
               toName?: string; toSid?: string;    // parkedHandoff adds to*
-              mid?: string; frm?: string; to?: string; origin?: string; body?: string };   // quarantine (held peer mail) adds these
+              mid?: string; frm?: string; to?: string; origin?: string; body?: string; gist?: string };   // quarantine (held peer mail) adds these; gist = the bus's 90-char collapse for the compact card line
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
   artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
@@ -614,8 +614,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // Edit opens the modal to change the text before delivering, Deny drops it. Human-in-the-loop is the
   // whole point of directed trust, so nothing reaches the session until one of these is clicked.
   const qApprove = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; qApprove.textContent = "Approve"; qApprove.title = "deliver this message to the recipient session"; qApprove.style.display = "none";
-  const qEdit = el("button", "fdismiss fq") as HTMLButtonElement; qEdit.textContent = "Edit"; qEdit.title = "edit the message text, then deliver"; qEdit.style.display = "none";
-  const qDeny = el("button", "fdismiss fq fq-no") as HTMLButtonElement; qDeny.textContent = "Deny"; qDeny.title = "drop this message — nothing is delivered"; qDeny.style.display = "none";
+  const qDeny = el("button", "fdismiss fq fq-no") as HTMLButtonElement; qDeny.textContent = "Deny"; qDeny.title = "drop this message — with the option of a note back to the sender"; qDeny.style.display = "none";
   // The header "awaiting" chip was REMOVED (the user 2026-07-04): it duplicated the "Awaiting background
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
@@ -640,7 +639,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
-  actions.append(apiRetry, revive, qApprove, qEdit, qDeny);
+  actions.append(apiRetry, revive, qApprove, qDeny);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -821,7 +820,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
-  a._qApprove = qApprove; a._qEdit = qEdit; a._qDeny = qDeny; a._qBody = qbody;
+  a._qApprove = qApprove; a._qDeny = qDeny; a._qBody = qbody;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
@@ -1370,11 +1369,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       a._revive.disabled = true; a._revive.textContent = "Reviving…";
     };
   }
-  // QUARANTINE (per-host trust) → Approve / Edit / Deny a held message from a DIRECTED peer. The body
-  // shows in full, read-only (peer content, never auto-run); Edit opens a modal editor (the user
-  // 2026-07-26 — inline unlock was cramped and a re-render could eat the edit); Approve delivers,
-  // Deny drops. The decision CARRIES THE CARD'S sid so the federation manager routes it to the kernel
-  // that actually holds the file — without it a remote hold's verdict landed on the local kernel and
+  // QUARANTINE (per-host trust) → a COMPACT "New message" card under the RECIPIENT session's name —
+  // that delivery is what you're approving (the user 2026-07-26; the full-body card made the feed
+  // scroll). One dim line names the sender (host:name) with the bus's 90-char gist; clicking it opens
+  // the decision modal with the whole body, read-only (peer content, never auto-run). Approve
+  // delivers; Deny opens the same modal's feedback step (optional note mailed back to the sender).
+  // The decision CARRIES THE CARD'S sid so the federation manager routes it to the kernel that
+  // actually holds the file — without it a remote hold's verdict landed on the local kernel and
   // Approve silently did nothing (same shape as the askClear routing fix, 2026-07-02). No optimistic
   // clear — the next kernel push removes the card on success, or re-renders it (buttons re-enabled)
   // if the bus refused (e.g. the recipient is no longer live; the warn toast says why).
@@ -1382,21 +1383,22 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const isQuar = it.blocked?.state === "quarantine";
   const qBody = a._qBody as HTMLElement;
   qBody.style.display = isQuar ? "" : "none";
-  for (const b of [a._qApprove, a._qEdit, a._qDeny] as HTMLButtonElement[]) b.style.display = isQuar ? "" : "none";
+  for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.style.display = isQuar ? "" : "none";
   if (isQuar && it.blocked) {
     const mid = it.blocked.mid || "";
-    qBody.textContent = it.blocked.body || "";
+    const sender = `${it.blocked.origin || "?"}:${it.blocked.frm || "?"}`;
+    qBody.textContent = `from ${sender} — ${it.blocked.gist || it.blocked.body || ""}`;
+    qBody.title = "click to read the whole message and decide";
     a._qApprove.disabled = false; a._qApprove.textContent = "Approve";
-    a._qEdit.disabled = false; a._qEdit.textContent = "Edit";
     a._qDeny.disabled = false; a._qDeny.textContent = "Deny";
-    const decide = (action: string, busy: string, text: string) => {
-      vscodeApi?.postMessage({ type: "quarantineDecision", mid, action, text, sid: it.sid });
-      for (const b of [a._qApprove, a._qEdit, a._qDeny] as HTMLButtonElement[]) b.disabled = true;
+    const decide = (action: string, busy: string, text: string, feedback?: string) => {
+      vscodeApi?.postMessage({ type: "quarantineDecision", mid, action, text, sid: it.sid, feedback });
+      for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.disabled = true;
       (action === "deny" ? a._qDeny : a._qApprove).textContent = busy;
     };
-    a._qEdit.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineEditDialog(it.blocked!.frm || "?", it.blocked!.to || "?", it.blocked!.body || "", decide); };
+    qBody.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(sender, it.blocked!.to || "?", it.blocked!.body || "", decide, false); };
     a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…", it.blocked!.body || ""); };
-    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); decide("deny", "Denying…", it.blocked!.body || ""); };
+    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(sender, it.blocked!.to || "?", it.blocked!.body || "", decide, true); };
   }
   (a._clr as HTMLElement).style.display = isQuar ? "none" : "";
 
@@ -3129,34 +3131,58 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
 });
 
-// ---- quarantine edit dialog: edit a held message's text, then Approve (deliver the edit) or Deny ----
-// Lives on document.body OUTSIDE the re-rendered feed root, so a kernel push mid-edit can't eat the
-// text (the inline-unlock textarea it replaces was clobbered exactly that way; the user 2026-07-26).
+// ---- quarantine decision dialog (the user 2026-07-26): the card is compact, so THIS is where the
+// whole held message is read and decided. Step 1: the full body, read-only (peer content, never
+// auto-run; editing was cut from the flow), with Approve / Deny / Cancel. Deny flips the SAME dialog
+// to step 2: an optional note back to the sender ("Deny & send note" / "Deny" / Cancel) — the bus
+// mails it to the origin host so the sender's agent learns why instead of waiting forever. Lives on
+// document.body OUTSIDE the re-rendered feed root, so a kernel push mid-decision can't eat the note.
 // `decide` is the owning card's decision closure — it carries the mid + sid and flips the card buttons.
-function showQuarantineEditDialog(frm: string, to: string, body: string,
-                                  decide: (action: string, busy: string, text: string) => void) {
-  document.getElementById("quar-edit-dialog")?.remove();
-  const overlay = el("div", "pickdlg-overlay"); overlay.id = "quar-edit-dialog";
+function showQuarantineDialog(sender: string, to: string, body: string,
+                              decide: (action: string, busy: string, text: string, feedback?: string) => void,
+                              denyFirst: boolean) {
+  document.getElementById("quar-dialog")?.remove();
+  const overlay = el("div", "pickdlg-overlay"); overlay.id = "quar-dialog";
   const box = el("div", "pickdlg-box qdlg-box");
   const title = el("div", "pickdlg-title");
-  title.textContent = `Held message from ${frm} to ${to} — edit, then approve to deliver your version`;
-  const ta = el("textarea", "qdlg-text") as HTMLTextAreaElement;
-  ta.value = body;
+  title.textContent = `New message from ${sender} to ${to}`;
+  const view = el("div", "qdlg-view");
+  view.textContent = body;
   const row = el("div", "qdlg-actions");
-  const ok = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; ok.textContent = "Approve";
-  ok.title = "deliver the text above to the recipient session";
-  ok.onclick = () => { decide("approve", "Delivering…", ta.value); overlay.remove(); };
-  const no = el("button", "fdismiss fq fq-no") as HTMLButtonElement; no.textContent = "Deny";
-  no.title = "drop this message — nothing is delivered";
-  no.onclick = () => { decide("deny", "Denying…", ta.value); overlay.remove(); };
-  const cancel = el("button", "fdismiss fq") as HTMLButtonElement; cancel.textContent = "Cancel";
-  cancel.title = "close without deciding — the message stays held";
-  cancel.onclick = () => overlay.remove();
-  row.append(ok, no, cancel);
-  box.append(title, ta, row);
+  box.append(title, view, row);
+
+  const cancel = () => { const c = el("button", "fdismiss fq") as HTMLButtonElement; c.textContent = "Cancel";
+    c.title = "close without deciding — the message stays held"; c.onclick = () => overlay.remove(); return c; };
+
+  const denyStep = () => {
+    title.textContent = `Deny the message from ${sender} — send a note back?`;
+    const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
+    ta.placeholder = "optional: tell the sender why (delivered to them as postal mail)";
+    row.replaceChildren();
+    const withNote = el("button", "fdismiss fq fq-no") as HTMLButtonElement; withNote.textContent = "Deny & send note";
+    withNote.title = "drop the message and mail your note back to the sender";
+    withNote.onclick = () => { decide("deny", "Denying…", body, ta.value.trim() || undefined); overlay.remove(); };
+    const bare = el("button", "fdismiss fq") as HTMLButtonElement; bare.textContent = "Deny without note";
+    bare.title = "drop the message — nothing is sent back";
+    bare.onclick = () => { decide("deny", "Denying…", body); overlay.remove(); };
+    row.append(withNote, bare, cancel());
+    box.insertBefore(ta, row);
+    ta.focus();
+  };
+
+  if (denyFirst) {
+    denyStep();
+  } else {
+    const ok = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; ok.textContent = "Approve";
+    ok.title = "deliver this message to the recipient session";
+    ok.onclick = () => { decide("approve", "Delivering…", body); overlay.remove(); };
+    const no = el("button", "fdismiss fq fq-no") as HTMLButtonElement; no.textContent = "Deny";
+    no.title = "drop this message — with the option of a note back to the sender";
+    no.onclick = () => denyStep();
+    row.append(ok, no, cancel());
+  }
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   document.body.appendChild(overlay);
-  ta.focus();
 }
 
 // ---- in-page resume-picker dialog (the answerPicker flow, no native QuickPick) ----

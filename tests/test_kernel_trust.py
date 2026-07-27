@@ -181,6 +181,16 @@ class QuarantineCards(unittest.TestCase):
         self.assertEqual(c["blocked"]["origin"], "TESTHOST")
         self.assertEqual(c["blocked"]["body"], "ship the parser fix")
 
+    def test_card_is_compact_title_plus_gist(self):
+        """The card reads "New message" under the RECIPIENT session's name, with the bus-style 90-char
+        gist for the one-line body (the user 2026-07-26 — the full body lives in the decision modal)."""
+        self._write_held("qc-4", body="  ship   the\nparser fix  " + "x" * 200)
+        c = km._quarantine_cards(2000, set())[0]
+        self.assertEqual(c["text"], "New message")
+        gist = c["blocked"]["gist"]
+        self.assertTrue(gist.startswith("ship the parser fix"), gist)
+        self.assertEqual(len(gist), 90, "whitespace-collapsed and clamped like the federation gossip gist")
+
     def test_cleared_card_is_hidden(self):
         self._write_held("qc-2")
         self.assertEqual(km._quarantine_cards(2000, {"quarantine:qc-2"}), [])

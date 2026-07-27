@@ -662,19 +662,29 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
 .fdismiss.fq-no { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
 .fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
+/* Compact quarantine line (the user 2026-07-26): one dim sender+gist line, click opens the decision
+   modal — the full body never renders on the card. */
 .fask-qbody {
-  display: block; width: 100%; box-sizing: border-box; margin: 6px 0 2px;
-  font: inherit; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+  display: block; width: 100%; box-sizing: border-box; margin: 4px 0 2px;
+  font: inherit; font-size: 12px; line-height: 1.45;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--dim); cursor: pointer;
+}
+.fask-qbody:hover { color: #dfe7ee; }
+/* The quarantine decision dialog rides the pickdlg overlay/box; the body is READ-ONLY (.qdlg-view);
+   the textarea appears only on the deny step, for the optional note back to the sender. */
+.qdlg-box { width: min(640px, 96%); }
+.qdlg-view {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
+  max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   color: #dfe7ee; background: #0c1117; border: 1px solid #35414d; border-radius: 6px; padding: 6px 8px;
 }
-/* The quarantine edit dialog rides the pickdlg overlay/box; the textarea is the editing surface. */
-.qdlg-box { width: min(640px, 96%); }
 .qdlg-text {
   width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
-  min-height: 14em; resize: vertical;
+  min-height: 5em; resize: vertical; margin-top: 8px;
   color: #dfe7ee; background: #0c1117; border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px;
 }
-.qdlg-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.qdlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 
 /* ↩ answer row — the user's recorded reply to an agent question (an explicit
    child event on the card, kind:"answer"): decision blue, never dimmed — it's

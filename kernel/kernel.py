@@ -11363,10 +11363,15 @@ def _quarantine_cards(now, cleared):
             continue
         frm, to, origin = rec.get("frm") or "?", rec.get("to") or "?", rec.get("origin") or "?"
         t = int(rec.get("at") or now)
+        # COMPACT card (the user 2026-07-26): what you're approving is a delivery to THIS session, so
+        # the card reads as one line under the recipient's name — "New message" + a dim sender/gist
+        # line — and the full body lives in the click-through decision modal. The gist is the same
+        # 90-char collapse the federation gossip uses (there is no courier summary at hold time: the
+        # courier only judges mail AFTER delivery, which is exactly what hasn't happened yet).
         out.append({
             "itemId": item_id, "sid": rec.get("toId") or "", "name": to,
             "color": _name_color(rec.get("toId") or ""),
-            "text": "Held message from %s to %s" % (frm, to),
+            "text": "New message",
             "t": t, "live": False,
             "trgb": list(cm.age_rgb(now - t, _colormap())),
             "turnId": item_id, "origin": None,
@@ -11375,9 +11380,10 @@ def _quarantine_cards(now, cleared):
             "nudged": None,
             "blocked": {"state": "quarantine", "mid": mid, "frm": frm, "to": to, "origin": origin,
                         "body": rec.get("body") or "",
+                        "gist": " ".join(str(rec.get("body") or "").split())[:90],
                         "what": "an incoming postal message from %s (held because peer %s is DIRECTED) is "
-                                "waiting on you — approve to deliver it to %s, edit the text first, or deny "
-                                "to drop it. Nothing reaches %s until you approve." % (frm, origin, to, to)},
+                                "waiting on you — approve to deliver it to %s, or deny to drop it. Nothing "
+                                "reaches %s until you approve." % (frm, origin, to, to)},
             "column": "needs_input",
             "tree": []})
     out.sort(key=lambda c: c["t"])
@@ -15891,6 +15897,8 @@ class Handler(BaseHTTPRequestHandler):
             _qbody = {"mid": _qmid, "action": str(msg.get("action") or "").strip().lower()}
             if msg.get("text") is not None:
                 _qbody["text"] = str(msg["text"])
+            if msg.get("feedback"):                # deny-with-note: the bus mails it back to the sender
+                _qbody["feedback"] = str(msg["feedback"])
             _qok, _qerr = _bus_quarantine_act(_qbody)
             if _qok:
                 _mark_views_dirty()
