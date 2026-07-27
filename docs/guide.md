@@ -178,30 +178,33 @@ the LLM calls in Romp's judge pipeline.
 
 ### Linking kernels on other machines
 
-Run a kernel on as many machines as you like and drive them all from one
-interface. A linked machine's sessions appear as `host:name` tabs and timeline
-lanes beside your local ones, its cards share the feed, and its sessions message
-yours, so an agent on your desktop can hand work to one on the server.
+Link the Romp kernels running on several machines, a laptop and a server say:
+you drive them all from one interface, and their agents talk to each other
+across the machines. A linked machine's sessions appear as
+<span class="romp-sid"><span class="host">server:</span>api</span> tabs and
+timeline lanes beside your local ones, its cards share the feed, and its
+sessions message yours, so an agent on your desktop can hand work to one on the
+server.
 
 You link machines from the network popover, which opens from the button at the
 bottom right beside the settings gear:
 
 ![The network button](assets/guide/network-icon.png){ width="72" }
 
-Every machine gets a row there, with two controls on it, one per direction.
-**Attach** brings that machine into your interface: its sessions, its cards, and
-mail flowing both ways over the one connection. **Share my sessions there** sends
-yours the other way, so that machine's interface shows your sessions too. Use the
-second when that machine has no way to `ssh` to yours, so it cannot attach you
-itself, which is the usual case if you work from a laptop.
+Every machine gets a row there. **Attach** is the one to reach for, and it is
+all most setups need: it brings that machine into your interface, with its
+sessions, its cards, and mail flowing both ways over the one connection. The
+row's second control, **Share my sessions there**, adds one thing only, your
+sessions appearing in *that* machine's interface, which matters if you want to
+sit down at it and drive the fleet from there too.
 
 #### Attach a Romp kernel on another machine
 
 Attach any machine you can `ssh` to, such as a server or a desktop that stays
 on. Your kernel opens the connection.
 
-1. **Install Romp on that machine**, the same way you installed it here (see
-   [Install](install.md)).
+1. **Install Romp on that machine**, the same way you installed it on this one
+   (see [Install](install.md)).
 2. **Check that `ssh <host>` connects without prompting you for anything.** Romp
    opens the connection in the background, so a password or passphrase prompt
    stops it; set up key-based login if you need to. Any target you could type
@@ -212,44 +215,21 @@ on. Your kernel opens the connection.
 The machine appears as a row with a live status, and Romp reads its kernel's
 access token over ssh so your browser can authorize against it. A row reading
 **kernel not answering** means no Romp kernel is running there: click **Start**,
-which sends this machine's committed Romp over and boots it. Romp never starts a
-remote kernel by itself, since a stopped one may be stopped on purpose.
+which brings that machine's Romp up to date with this one's and boots it. Romp
+never starts a remote kernel by itself, since a stopped one may be stopped on
+purpose.
 Detaching keeps the machine under **Previously attached**, so re-linking later
 is one click and it returns with the trust level you last gave it.
-
-#### Share your sessions with a machine that cannot ssh to yours
-
-A laptop moves between networks and usually sits behind a router that accepts no
-incoming connections, so nothing can `ssh` to it and nothing can attach it. Work
-from the laptop instead:
-
-1. **Attach the always-on machine** you want your sessions to appear on,
-   following the steps above.
-2. **Tick "Share my sessions there"** on that machine's row.
-
-Your sessions now show up in its interface from whatever network you are on, and
-its postal bus peers with yours. Because the laptop is the end that connects,
-the always-on machine never holds a way in to it; untick the box and it forgets
-you. Romp calls this checking in, and the always-on machine the hub, which is
-where `romp checkin` and `romp checkout` get their names.
-
-#### Hand the connection to a different machine
-
-The add-host box has a **from** picker. Leave it on *this machine* and the
-tunnel lives here, dropping when this kernel stops. Choose an attached host
-instead and the attach is forwarded to that kernel, which dials out itself, so
-the connection outlives your laptop. That machine needs its own ssh access to
-the target.
 
 #### Mail across linked machines
 
 Each linked machine carries a trust level that governs its mail; see
 [Security and trust](#security-and-trust).
 
-Machines a hub can reach appear to you too, under **Reachable via relay**: no
-tunnel of your own, their mail arriving one hop through the hub. They carry the
-same trust selector as any host, because a message is judged by where it came
-from rather than by the route it took.
+Machines that a linked machine can reach appear to you too, under **Reachable
+via relay**: no tunnel of your own, their mail arriving one hop through the
+machine in between. They carry the same trust selector as any host, because a
+message is judged by where it came from rather than by the route it took.
 
 When another machine is holding mail for approval, **Held for approval
 elsewhere** shows you that it is, and how much, with the gist on hover. Acting
@@ -260,6 +240,35 @@ Mail for a machine that is offline waits in an outbox and delivers when it comes
 back. If it returns and the session you addressed is gone, that refusal comes
 back to you. Every machine runs its own postal bus, so a laptop with no
 connection at all still has full local messaging; linking only adds reach.
+
+#### Also drive the fleet from the far machine
+
+Attaching leaves the far machine's interface unaware of your sessions. Set that
+up only if you switch between the two computers and want to work from either
+one; mail already crosses both ways without it.
+
+If that machine can `ssh` to yours, it can simply attach you, and there is
+nothing else to do. A laptop usually cannot be reached that way, since it moves
+between networks and sits behind a router that accepts no incoming connections.
+Work from the laptop instead:
+
+1. **Attach the always-on machine** you want your sessions to appear on,
+   following the steps above.
+2. **Tick "Share my sessions there"** on that machine's row.
+
+Your sessions now show up in its interface from whatever network you are on.
+Because the laptop is the end that connects, the always-on machine never holds a
+way in to it; untick the box and it forgets you. Romp calls this checking in,
+and the always-on machine the hub, which is where `romp checkin` and
+`romp checkout` get their names.
+
+#### Hand the connection to a different machine
+
+The add-host box has a **from** picker. Leave it on *this machine* and the
+tunnel lives here, dropping when this kernel stops. Choose an attached host
+instead and the attach is forwarded to that kernel, which dials out itself, so
+the connection outlives your laptop. That machine needs its own ssh access to
+the target.
 
 The mechanics, including how the tunnels and the check-in handshake work, are in
 [How Romp works](architecture.md).

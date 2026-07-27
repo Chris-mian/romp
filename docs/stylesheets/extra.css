@@ -332,3 +332,22 @@
   background: rgba(0, 0, 0, 0.07) !important;
   color: #111827 !important;
 }
+
+/* A federated session's name, rendered the way the interface renders it
+   (ui/webview/host-prefix.ts + the .host-prefix rule in ui/webview/styles.css):
+   the "host:" part is metadata, so it is quiet, unbolded, italic and a step
+   smaller, while the session name carries its identity colour at full weight.
+   The colour is one of the romp identity palette's (the kernel's /palette);
+   #4EA8A9 rather than the palette's #1EA1EB, which is the site header's blue. */
+.romp-sid {
+  font-family: var(--md-code-font-family);
+  font-weight: 700;
+  color: #4EA8A9;
+  white-space: nowrap;
+}
+.romp-sid .host {
+  color: var(--md-default-fg-color--light);
+  font-weight: 400;
+  font-style: italic;
+  font-size: 0.88em;
+}
