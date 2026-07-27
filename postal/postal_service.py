@@ -1573,12 +1573,22 @@ def quarantine_decide(mid, action, text=None):
     return False, "unknown action '%s' (approve|deny)" % action
 
 
-def _relay_in(host, m):
+def _relay_in(host, m, token_proven=False):
     """One incoming relay: deliver locally, FORWARD one hop to a peer that owns the recipient, or
     bounce. Returns (verdict, bounce): 'ack' (delivered/held/deduped), 'hold' (forwarded — the
     END-TO-END ack comes back through us later; the sender keeps it parked meanwhile), 'bounce'
     (definitive refusal), or 'drop' (unidentifiable: no mid to ack or bounce). Per-host trust gates the
-    local-delivery branch: trusted injects, directed holds for approval, isolated silently drops."""
+    local-delivery branch: trusted injects, directed holds for approval, isolated silently drops.
+
+    `token_proven` — True on the DIALED side (peer_exchange_handle): every request past the HTTP gate
+    presented THIS machine's serve token, and token possession already means full control here (the
+    kernel is gated by the same token — a holder can inject into any session directly). So holding the
+    dialer's OWN mail protects nothing and only strands the user's outgoing mail on a machine they
+    attached (the user 2026-07-26, whose delegation to a fresh box sat quarantined on it). The proof
+    covers only the direct dialer: mail it FORWARDED (origin-stamped) is still judged by the origin's
+    tier, and an EXPLICIT tier the user set for the dialer (directed/isolated) still wins — the
+    exemption replaces only the unknown-origin default. The dialer side (peer_exchange_apply) proves
+    nothing: whatever answers the tunnel port never showed our token, so tiers gate it as before."""
     mid = m.get("mid") or ""
     if not mid:
         return "drop", None
@@ -1590,7 +1600,10 @@ def _relay_in(host, m):
         # Trust key = the true ORIGIN (the forwarding host stamps m["origin"]; else the direct peer).
         # Unknown host (a race before the kernel's notify lands) defaults to directed — never auto-inject.
         origin = m.get("origin") or host
-        trust = (PEERS.get(origin) or {}).get("trust") or "directed"
+        prow = PEERS.get(origin)
+        trust = (prow or {}).get("trust") or "directed"
+        if prow is None and token_proven and not m.get("origin"):
+            trust = "trusted"                        # token-proven direct dialer, no explicit tier → deliver (see docstring)
         if trust == "trusted":
             deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
                     kind=m.get("kind") or "")
@@ -1663,7 +1676,7 @@ def peer_exchange_handle(data):
         _bounce_arrived(host, b)
     acks, bounces = [], []
     for m in data.get("relays") or []:
-        verdict, bounce = _relay_in(host, m)
+        verdict, bounce = _relay_in(host, m, token_proven=True)   # past the HTTP gate = showed OUR serve token
         if verdict == "ack":
             acks.append(m.get("mid"))
         elif verdict == "bounce" and bounce:
