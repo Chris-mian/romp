@@ -113,6 +113,10 @@ test("the popover is aligned, styled in the feed's own vocabulary, and can never
   assert.match(CSS, /#age-tip \{[^}]*pointer-events: none/s, "hover chrome, never a click target");
   assert.match(CSS, /\.age-tip-row\.stamp \{ margin-top: 4px; padding-top: 4px; border-top:/,
     "the closing stamp line is its own section under a hairline");
-  // a re-render can swap the hovered stamp out from under its mouseleave — render() hides the tip
-  assert.match(FEED, /hideAgeTip\(\);   \/\/ a re-render can swap the hovered stamp/);
+  // the tip survives ordinary re-renders (cards update in place; unconditional hiding made it vanish
+  // ~a second into every hover — the feed re-renders on every kernel push, the user 2026-07-27) and
+  // hides only when the render actually tore its hovered stamp out of the DOM
+  assert.match(FEED, /function pruneAgeTip\(\): void \{ if \(ageTipAnchor && !ageTipAnchor\.isConnected\) hideAgeTip\(\); \}/);
+  assert.match(FEED, /pruneAgeTip\(\);   \/\/ drop the tip only if the render tore its hovered stamp out/);
+  assert.doesNotMatch(FEED, /\n\s*hideAgeTip\(\);\s*\/\/ a re-render/, "the unconditional hide is gone");
 });

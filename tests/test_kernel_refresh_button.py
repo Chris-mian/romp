@@ -23,10 +23,13 @@ class RefreshButtonDecoupledTest(unittest.TestCase):
         self.assertIn("id=rail-refresh", html)
         self.assertIn("fetch('/restart',{method:'POST'})", html)
         self.assertNotIn("id=rrefresh", _gear_src())   # gone from the feed gear
-        # …and it draws at ICON size (the user 2026-07-20/27: the ↻ is a narrow text glyph that rendered
-        # visibly smaller than its 18px-svg neighbors — it now spans the full 18px icon-row height,
-        # line-height pinned so the taller glyph can't grow the bar)
-        self.assertIn("#rail-refresh{font-size:22px;line-height:18px;height:18px}", html)
+        # …and it draws a REAL browser-style reload icon (the user 2026-07-27: the ↻ TEXT glyph stopped
+        # its arc short at 11 o'clock and never read as refresh, and its size rode the fallback font).
+        # One shared svg — a near-full clockwise arc with the arrowhead at 1 o'clock — used by the rail
+        # AND the mobile bar, sized 18px like its icon neighbors.
+        self.assertIn("aria-label=Refresh>" + km._REFRESH_SVG, html)
+        self.assertIn("A 5.2 5.2 0 1 1", km._REFRESH_SVG)   # the 270-degree arc (large-arc, clockwise)
+        self.assertNotIn(">↻<", html)                        # the text glyph is gone from every surface
 
     def test_refresh_button_is_not_gated_on_debug(self):
         # the old applyDebug() helper (which hid #rrefresh unless s.debug) is gone entirely …

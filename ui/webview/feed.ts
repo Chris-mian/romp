@@ -1695,8 +1695,10 @@ const PROV_FMT: ProvFmt = { rel: relAge, clock: clockHM, phrase: logPhrase };
 // look (#age-tip in feed.css). pointer-events:none + rebuilt per hover, so it is click-safe; a lazy
 // rows thunk keeps the assembly off the render path entirely.
 let ageTipEl: HTMLElement | null = null;
+let ageTipAnchor: HTMLElement | null = null;   // the stamp the tip is up for — pruneAgeTip checks it survived the render
 function showAgeTip(anchor: HTMLElement, rows: ProvRow[]): void {
   if (!ageTipEl) { ageTipEl = el("div", ""); ageTipEl.id = "age-tip"; document.body.appendChild(ageTipEl); }
+  ageTipAnchor = anchor;
   const tip = ageTipEl;
   tip.replaceChildren();
   for (const r of rows) {
@@ -1716,7 +1718,12 @@ function showAgeTip(anchor: HTMLElement, rows: ProvRow[]): void {
   tip.style.left = left + "px";
   tip.style.top = (top < 8 ? rc.bottom + 6 : top) + "px";
 }
-function hideAgeTip(): void { if (ageTipEl) ageTipEl.style.display = "none"; }
+function hideAgeTip(): void { ageTipAnchor = null; if (ageTipEl) ageTipEl.style.display = "none"; }
+// Cards are keyed + updated IN PLACE across pushes, so the hovered stamp usually survives a re-render —
+// unconditionally hiding here made the tip vanish ~a second into every hover (the feed re-renders on
+// every kernel push; the user 2026-07-27). Hide only when the anchor was actually torn out of the DOM
+// (a card rebuilt/removed), where its mouseleave can never fire.
+function pruneAgeTip(): void { if (ageTipAnchor && !ageTipAnchor.isConnected) hideAgeTip(); }
 function wireAgeTip(elm: HTMLElement, rows: () => ProvRow[]): void {
   elm.onmouseenter = () => showAgeTip(elm, rows());
   elm.onmouseleave = hideAgeTip;
@@ -2799,7 +2806,7 @@ function feedToast(text: string) {
 
 function render() {
   const list = document.getElementById("feed-list")!;
-  hideAgeTip();   // a re-render can swap the hovered stamp out from under its mouseleave — never strand the tip
+  pruneAgeTip();   // drop the tip only if the render tore its hovered stamp out (see pruneAgeTip)
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;
   // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear

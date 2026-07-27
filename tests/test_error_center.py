@@ -58,11 +58,9 @@ function withCls(el) {
   return el;
 }
 const EL = {};
-['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x', 'rerr-reload'].forEach((id) => {
+['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x'].forEach((id) => {
   EL[id] = withCls(mkEl(id));
 });
-EL['rail-errs']._badge = withCls(mkEl(''));
-EL['merr']._badge = withCls(mkEl(''));
 const BODY = new Set(['po-chat', 'po-feed', 'po-timeline']);   // fleet pane hidden, like the real default
 const WL = {};
 global.window = {
@@ -79,28 +77,31 @@ function notes() { return JSON.parse(STORE['romp:notices'] || '[]'); }
 
 DRIVER = r"""
 const out = {};
-// 1) a VISIBLE pane's drop logs an entry + reddens the bell with a count
+// 1) a VISIBLE pane's drop logs an entry + reddens the bell (no count badge — it clipped, 2026-07-27)
 post({ romp: 'wsState', app: 'chat', state: 'down' });
 out.afterDrop = { n: notes().length, text: notes()[0].text,
-  red: EL['rail-errs']._cls.has('has'), mred: EL['merr']._cls.has('has'),
-  badge: EL['rail-errs']._badge.textContent, badgeShown: !EL['rail-errs']._badge.hidden };
+  red: EL['rail-errs']._cls.has('has'), mred: EL['merr']._cls.has('has') };
 // 2) up then down again — the SAME error coalesces into one entry with a count (no flood)
 post({ romp: 'wsState', app: 'chat', state: 'up' });
 post({ romp: 'wsState', app: 'chat', state: 'down' });
-out.afterRepeat = { n: notes().length, times: notes()[0].n, badge: EL['rail-errs']._badge.textContent };
+out.afterRepeat = { n: notes().length, times: notes()[0].n };
 // 3) a HIDDEN pane's drop logs nothing (fleet is toggled off)
 post({ romp: 'wsState', app: 'fleet', state: 'down' });
 out.afterHidden = { n: notes().length };
 // 4) panes can feed the center directly
 post({ romp: 'notify', kind: 'warn', text: 'TESTHOST delivery failed' });
-out.afterNotify = { n: notes().length, badge: EL['rail-errs']._badge.textContent };
-// 5) opening the popover marks everything seen (badge clears; red stays while chat is still down)
+out.afterNotify = { n: notes().length };
+// 5) opening the popover marks everything seen (red stays while chat is still down). Each row leads
+// with the feed's own chip vocabulary: [chip, message, time, clear] — newest entry first.
 EL['rail-errs'].fire('click');
 out.afterOpen = { open: !EL['rerr-back'].hidden, rows: EL['rerr-list'].children.length,
-  badgeShown: !EL['rail-errs']._badge.hidden, red: EL['rail-errs']._cls.has('has'),
-  newestFirst: EL['rerr-list'].children[0].children[1].textContent };
-// 6) per-row clear drops just that entry
-EL['rerr-list'].children[0].children[2].fire('click');
+  red: EL['rail-errs']._cls.has('has'),
+  newestChip: EL['rerr-list'].children[0].children[0].textContent,
+  newestChipCls: EL['rerr-list'].children[0].children[0].className,
+  newestFirst: EL['rerr-list'].children[0].children[1].textContent,
+  connChip: EL['rerr-list'].children[1].children[0].textContent };
+// 6) per-row clear drops just that entry ([chip, msg, time, del] — del is the 4th cell)
+EL['rerr-list'].children[0].children[3].fire('click');
 out.afterRowClear = { n: notes().length, rows: EL['rerr-list'].children.length };
 // 7) Clear all empties the store and shows the empty state
 EL['rerr-clear'].fire('click');
@@ -133,8 +134,6 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertIn("Chat", a["text"])
         self.assertTrue(a["red"], "the rail bell goes red")
         self.assertTrue(a["mred"], "the mobile bell goes red too")
-        self.assertEqual(a["badge"], "1")
-        self.assertTrue(a["badgeShown"])
 
     def test_a_repeat_of_the_same_error_coalesces(self):
         a = self.out["afterRepeat"]
@@ -145,17 +144,22 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertEqual(self.out["afterHidden"]["n"], 1)
 
     def test_panes_can_post_notify(self):
-        a = self.out["afterNotify"]
-        self.assertEqual(a["n"], 2)
-        self.assertEqual(a["badge"], "2")
+        self.assertEqual(self.out["afterNotify"]["n"], 2)
 
     def test_opening_marks_seen_but_a_live_problem_keeps_the_cue(self):
         a = self.out["afterOpen"]
         self.assertTrue(a["open"])
         self.assertEqual(a["rows"], 2)
-        self.assertFalse(a["badgeShown"], "opening marks everything seen")
         self.assertTrue(a["red"], "chat is still down → the live cue stays")
         self.assertIn("delivery failed", a["newestFirst"], "newest entry renders first")
+
+    def test_rows_lead_with_the_feeds_chip_vocabulary(self):
+        # the user 2026-07-27: a stalled entry should wear the SAME chip the card wears in the feed.
+        # The kind maps to the chip label + a k-<kind> colour class mirroring the .fask-* family.
+        a = self.out["afterOpen"]
+        self.assertEqual(a["newestChip"], "warning")
+        self.assertEqual(a["newestChipCls"], "rerr-chip k-warn")
+        self.assertEqual(a["connChip"], "offline")
 
     def test_per_row_clear_and_clear_all(self):
         self.assertEqual(self.out["afterRowClear"]["n"], 1)
@@ -171,9 +175,16 @@ class ErrorCenterExecutes(unittest.TestCase):
 class ErrorCenterWiring(unittest.TestCase):
     def test_the_shell_mounts_bell_popover_and_script(self):
         html = km._landing()
-        for pin in ("id=rail-errs", "id=rerr-back", "id=rerr-list", "id=rerr-clear",
-                    "id=merr", "class=rerr-badge"):
+        for pin in ("id=rail-errs", "id=rerr-back", "id=rerr-list", "id=rerr-clear", "id=merr"):
             self.assertIn(pin, html)
+        self.assertNotIn("rerr-badge", html)   # the count badge clipped and is gone (the user 2026-07-27)
+        self.assertIn("title='Errors — click to open'", html)   # the bell says what it is
+        # the panel speaks the shared modal vocabulary (network panel / settings card), never the
+        # undefined --vscode-font-family shorthand that rendered oversized in the browser shell
+        self.assertIn("font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}#rerr-panel .rerr-top", html)
+        # the chip family mirrors feed.css's .fask-* colours
+        self.assertIn(".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166", html)
+        self.assertIn(".rerr-chip.k-nudge{color:#ff6a6a", html)
         self.assertIn("window.__rompNotify=function", html)
         # the mobile bar routes its bell to the same popover
         self.assertIn("errs:function(){try{window.__rompOpenErrs&&window.__rompOpenErrs();}catch(e){}}", html)
