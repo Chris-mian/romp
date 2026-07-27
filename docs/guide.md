@@ -178,9 +178,10 @@ the LLM calls in Romp's judge pipeline.
 
 ### Linking kernels on other machines
 
-Link the Romp kernels running on several machines, a laptop and a server say:
-you drive them all from one interface, and their agents talk to each other
-across the machines. A linked machine's sessions appear as
+Romp kernels can connect and communicate across multiple machines, e.g. a laptop
+and a server. This lets you control them all from one user interface, and lets
+their agents communicate across the machines. A linked machine's sessions appear
+as
 <span class="romp-sid"><span class="host">server:</span>api</span> tabs and
 timeline lanes beside your local ones, its cards share the feed, and its
 sessions message yours, so an agent on your desktop can hand work to one on the
@@ -203,7 +204,7 @@ sit down at it and drive the fleet from there too.
 Attach any machine you can `ssh` to, such as a server or a desktop that stays
 on. Your kernel opens the connection.
 
-1. **Install Romp on that machine**, the same way you installed it on this one
+1. **Install Romp on that machine**, the same way you installed it on your own
    (see [Install](install.md)).
 2. **Check that `ssh <host>` connects without prompting you for anything.** Romp
    opens the connection in the background, so a password or passphrase prompt
