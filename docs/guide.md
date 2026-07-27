@@ -192,12 +192,10 @@ bottom right beside the settings gear:
 
 ![The network button](assets/guide/network-icon.png){ width="72" }
 
-Every machine gets a row there. **Attach** is the one to reach for, and it is
-all most setups need: it brings that machine into your interface, with its
-sessions, its cards, and mail flowing both ways over the one connection. The
-row's second control, **Share my sessions there**, adds one thing only, your
-sessions appearing in *that* machine's interface, which matters if you want to
-sit down at it and drive the fleet from there too.
+Every machine gets a row there with two controls. **Attach** brings that machine
+into your interface: its sessions, its cards, and mail both ways over the one
+connection. **Share my sessions there** puts your sessions in *its* interface,
+for when you also work from that machine.
 
 #### Attach a Romp kernel on another machine
 
@@ -244,14 +242,14 @@ connection at all still has full local messaging; linking only adds reach.
 
 #### Also drive the fleet from the far machine
 
-Attaching leaves the far machine's interface unaware of your sessions. Set that
-up only if you switch between the two computers and want to work from either
-one; mail already crosses both ways without it.
+Attaching leaves the far machine's interface unaware of your sessions. Do this
+only if you work from both computers, since mail already crosses both ways
+without it.
 
-If that machine can `ssh` to yours, it can simply attach you, and there is
-nothing else to do. A laptop usually cannot be reached that way, since it moves
-between networks and sits behind a router that accepts no incoming connections.
-Work from the laptop instead:
+If that machine can `ssh` to yours, it can just attach you and you are done. A
+laptop usually cannot be reached that way: it moves between networks and sits
+behind a router that accepts no incoming connections. Work from the laptop
+instead:
 
 1. **Attach the always-on machine** you want your sessions to appear on,
    following the steps above.
