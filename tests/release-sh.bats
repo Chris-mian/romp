@@ -25,7 +25,9 @@ setup() {
 }
 teardown() { rm -rf "$TEST_DIR"; }
 
-# $1 = conclusion the stubbed `gh run watch` should report (pass|fail)
+# STUB_CONCLUSION = what the stubbed `gh run view` reports (default success).
+# STUB_FLAKY_VIEWS = report nothing for the first N `run view` calls, as a
+# transient API error looks to the poll loop, then the real conclusion.
 _stub_gh() {
     cat > "$TEST_DIR/gh" <<STUB
 #!/usr/bin/env bash
@@ -35,7 +37,10 @@ case "\$1 \$2" in
   # a NEW run id appears only after a dispatch, as the real API behaves
   "run list")   if [ -f "$TEST_DIR/dispatched" ]; then echo 1000; else echo 999; fi ;;
   "workflow run") touch "$TEST_DIR/dispatched"; exit 0 ;;
-  "run watch")  [ "\${STUB_WATCH:-pass}" = pass ] && exit 0 || exit 1 ;;
+  "run view")
+      n=\$(( \$(cat "$TEST_DIR/views" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$TEST_DIR/views"
+      if [ "\$n" -le "\${STUB_FLAKY_VIEWS:-0}" ]; then exit 1; fi
+      echo "\${STUB_CONCLUSION:-success}" ;;
 esac
 exit 0
 STUB
@@ -54,11 +59,22 @@ STUB
 
 @test "release: refuses when the macOS run fails, and does NOT tag" {
     _stub_gh
-    STUB_WATCH=fail run "$REPO/scripts/release.sh" v0.1.0
+    STUB_CONCLUSION=failure run "$REPO/scripts/release.sh" v0.1.0
     [ "$status" -ne 0 ]
     [[ "$output" == *"macOS run did not pass"* ]]
     run git -C "$REPO" tag -l
     [ -z "$output" ]
+}
+
+@test "release: a transient API error while watching does not fail the gate" {
+    # `gh run watch` treated a dropped connection as a failed RUN and refused a
+    # green release twice (2026-07-27); the poll must ride out empty answers.
+    _stub_gh
+    ROMP_RELEASE_POLL=0.01 STUB_FLAKY_VIEWS=3 run "$REPO/scripts/release.sh" v0.1.0
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"macOS run green"* ]]
+    run git -C "$REPO" tag -l
+    [ "$output" = "v0.1.0" ]
 }
 
 @test "release: tags when the macOS run is green" {
