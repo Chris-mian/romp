@@ -740,6 +740,82 @@ def _nudge_bundle_body(gids, nodes, stalled_gids):
     return msg + "\n\n" + tail
 
 
+# ── the DEBT reminder (the user 2026-07-26): the peer-wait's other end ──────────────────────────────
+# An unanswered postal QUESTION/DELEGATE paints "Awaiting <peer>" on the SENDER's cards and parks them
+# (the auto-nudge deliberately skips peer-waiting cards) — but nothing ever told the RECIPIENT it owes a
+# reply, so a mis-declared kind (a "question" whose prose said no reply was needed) or a plain forgotten
+# reply parked the sender silently for a day (logic waited 26h on a reply the recipient never knew it
+# owed). The fix is the same loop the goal nudge closes: an IDLE session sitting on unanswered inbound
+# asks from LIVE peers gets ONE reminder, in the asker's terms, and either honest exit — an answer, or
+# "nothing needed" — is the reply event that releases the asker's wait. Dedup per ask event (debtNudged
+# in auto-nudge.json, one reminder per ask ever); a NEWER ask from the same peer is a new event.
+
+
+def _debt_asks(sid, alive_ids):
+    """[(asker_sid, asker_name, ts, kind, head), …] oldest first — the unanswered inbound reply-expecting
+    asks this session OWES: the exact inverse of _wait_for_graph's sender edge, from the same maps. An
+    ask counts only while the ASKER is alive (answering a dead session releases nobody), and any later
+    message back — whatever its kind — already answered it (same rule as the sender's chip)."""
+    last_any, last_ask = _postal_wait_maps()
+    out = []
+    for (f, t_), rec in last_ask.items():
+        if t_ != str(sid) or f not in (alive_ids or ()):
+            continue
+        ts = rec[0]
+        if last_any.get((t_, f), 0) >= ts:
+            continue                                   # answered with ANYTHING back → no debt
+        out.append((f, _name_of(f) or f[:8], ts, rec[1], rec[2] if len(rec) > 2 else ""))
+    out.sort(key=lambda a: a[2])
+    return out
+
+
+def _debt_reminder_body(asks):
+    """The injected reminder for a session sitting on unanswered inbound asks — spoken as the person the
+    agent works for (CLAUDE.md 'Messages we inject': no romp vocabulary; test_injected_voice renders
+    this). One block per waiting peer: who, what they asked in their own first words, then the two honest
+    exits — answer, or say nothing is needed — either of which is the reply that releases the asker.
+    `asks` = [(asker_name, ts, kind, head), …]."""
+    blocks = []
+    for name, _ts, kind, head in asks:
+        head = " ".join(str(head or "").split())
+        if len(head) > 280:
+            head = head[:277] + "..."
+        lead = ("%s handed you some work a while ago and is still waiting to hear back" % name
+                if kind == "delegate" else
+                "%s asked you something a while ago and is still waiting on your answer" % name)
+        blocks.append(lead + ((":\n> " + head) if head else "."))
+    if len(asks) > 1:
+        ask = ("Reply to each of them now — short answers are fine. Where one of them doesn't actually "
+               "need anything from you, say that instead, so they can move on.")
+    else:
+        ask = ("Reply to %s now — a short answer is fine. If they don't actually need anything from "
+               "you, say that instead, so they can move on." % asks[0][0])
+    tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
+            "relevant to your work — ignore them --><!-- romp-injected --><!-- romp-system -->")
+    return "\n\n".join(blocks) + "\n\n" + ask + "\n\n" + tail
+
+
+def _fire_debt_reminder(sid, now, alive_ids):
+    """Send the reminder for every not-yet-reminded ask this session owes; True when one went out. The
+    per-ask dedup key (asker>debtor:ts) makes this once-per-ask-EVER — escalation past an ignored
+    reminder belongs to the sender's card (the nudge-failed ladder), not to repeat reminders."""
+    asks = _debt_asks(sid, alive_ids)
+    if not asks:
+        return False
+    d = _auto_nudge_data()
+    dn = dict(d.get("debtNudged") or {})
+    due = [(asker, name, ts, kind, head) for asker, name, ts, kind, head in asks
+           if ("%s>%s:%d" % (asker, sid, ts)) not in dn]
+    if not due:
+        return False
+    Sessions.backend_for(sid).send(sid, _debt_reminder_body([(n, t, k, h) for _a, n, t, k, h in due]))
+    for asker, _n, ts, _k, _h in due:
+        dn["%s>%s:%d" % (asker, sid, ts)] = int(now)
+    d["debtNudged"] = dn
+    _write_auto_nudge(d)
+    return True
+
+
 def _rgb(color):
     """The card's recency-tint [r,g,b] — the session color (the old hawaii recency colormap is
     a later refinement), defaulting to a neutral slate."""
@@ -1111,7 +1187,9 @@ def _set_session_flag(sid, flag, value):
 # (the user 2026-06-26: that produced two nudges ~6s apart in one stop before the agent had consumed the
 # first — the 2nd landed as a type:attachment as the session resumed, so it rendered without the romp logo).
 # On by default; an explicit {"enabled": false} in auto-nudge.json still turns it off. State: auto-nudge.json
-# {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each
+# {"enabled": bool, "nudged": {goalId: {count, lastTurnId}},
+#  "debtNudged": {"<askerSid>><debtorSid>:<askT>": fireT}}   # the DEBT reminder's once-per-ask dedup
+# (see _fire_debt_reminder); each goal-nudge
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
 AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anything blocked waiting on a decision from me?"   # the auto-nudge ask (the manual feed Nudge button was removed 2026-06-30); phrased like a person checking in, not a status form (g13)
 # The FORK nudge (plans/stalled-open-todos-nudge.md, the user 2026-07-01): sent INSTEAD of AUTO_NUDGE_TEXT
@@ -1860,7 +1938,8 @@ def _auto_nudge_tick(now, tmux):
         return
     nudged = dict(_auto_nudge_data().get("nudged", {}))   # {gid: {count, lastTurnId}}
     alive = list(_alive_sessions(now, tmux))
-    waitfor = _wait_for_graph(now, {s["sid"] for s in alive})   # {sid:{peerSid,name,inCycle}} — the peer-wait gate
+    alive_ids = {s["sid"] for s in alive}
+    waitfor = _wait_for_graph(now, alive_ids)             # {sid:{peerSid,name,inCycle}} — the peer-wait gate
     fired = False
     for s in alive:
         # PER-SESSION ISOLATION (2026-07-16): one session's failure — a bad backend snapshot, a
@@ -1869,7 +1948,7 @@ def _auto_nudge_tick(now, tmux):
         # ticks over two days before anyone noticed; every session after the bad one in the
         # iteration lost its nudges. The failure still logs loudly, per session.
         try:
-            fired = _auto_nudge_session(s, now, tmux, nudged, waitfor) or fired
+            fired = _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids) or fired
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
@@ -2295,14 +2374,16 @@ def _nudge_response_ready(turns, store, rec, gid, now):
     return True, resp
 
 
-def _auto_nudge_session(s, now, tmux, nudged, waitfor):
+def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
     walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
     failures per session (see the tick's loop). Mutates `nudged` (the tick's in-memory mirror);
     returns True when it fired a nudge or stamped a failure — the tick pushes once at the end.
     Same-tick fires COALESCE: every goal due this tick goes out as ONE bundled message (see
     _nudge_bundle_body), after a last-moment store re-read drops any goal the judges resolved
-    while the tick was deciding (_nudge_fire_list — the user 2026-07-24)."""
+    while the tick was deciding (_nudge_fire_list — the user 2026-07-24). After the goal walk,
+    a session that fired nothing but OWES a reply (an unanswered inbound question/delegate from a
+    live peer) gets the DEBT reminder instead — same idle gates, one per ask (see _debt_asks)."""
     fired = False
     sid = s["sid"]
     if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
@@ -2507,6 +2588,13 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor):
         _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
         nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
         fired = True
+    if not fired:
+        # DEBT REMINDER (the user 2026-07-26): this idle session asked for nothing itself, but it may
+        # OWE a reply that is silently parking a peer ("Awaiting <us>" on their cards, which the goal
+        # nudge deliberately skips). Same gates as the goal nudge (we only reach here idle, judged,
+        # unqueued); fires at most one message, deduped per ask event. Goal nudges take precedence —
+        # two injections in one tick would fold in the SDK queue anyway.
+        fired = _fire_debt_reminder(sid, now, alive_ids)
     return fired
 
 
@@ -10283,7 +10371,9 @@ def _postal_wait_maps():
             k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins
             is_ask = (k in ("question", "delegate")) if k else bool(_WAIT_Q_RE.match(o.get("body") or ""))
             if is_ask and ts >= last_ask.get((f, t_), (0, ""))[0]:
-                last_ask[(f, t_)] = (ts, k or "question")
+                # the ask's HEAD rides along (the user 2026-07-26): the debt reminder quotes the asker's
+                # own first words back at the debtor, so the reminder needs no second log scan
+                last_ask[(f, t_)] = (ts, k or "question", str(o.get("body") or "")[:300])
     except OSError:
         pass
     _POSTAL_WAIT_CACHE[:] = [key, (last_any, last_ask)]
@@ -10303,7 +10393,7 @@ def _wait_for_graph(now, alive_sids):
     reply lifted nothing — a card read awaiting for 5h after the answer landed. Best-effort {}."""
     last_any, last_ask = _postal_wait_maps()
     edge = {}                                            # X → Y: X's most-recent UNANSWERED ask to a LIVE peer
-    for (f, t_), (ts, _k) in last_ask.items():
+    for (f, t_), (ts, _k, _h) in last_ask.items():
         if t_ not in alive_sids:                         # dead peer won't reply → not a wait
             continue
         if last_any.get((t_, f), 0) >= ts:               # Y replied with ANYTHING after → answered
@@ -10337,7 +10427,7 @@ def _peer_answered_at(sid):
     carry the wait, and the closer's next pass can re-stamp with a fresh awaitingAt."""
     last_any, last_ask = _postal_wait_maps()
     best = 0
-    for (f, t_), (ts, _k) in last_ask.items():
+    for (f, t_), (ts, _k, _h) in last_ask.items():
         if f != sid:
             continue
         r = last_any.get((t_, f), 0)

@@ -108,6 +108,13 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
             "multi-goal bundle (fork)": km._nudge_bundle_body([TOP, TOP2], nodes, {TOP}),
             "clear wrap-up": km._clear_wrap_body([TOP], nodes),
             "clear wrap-up (batch)": km._clear_wrap_body([TOP, TOP2], nodes),
+            "debt reminder (question)": km._debt_reminder_body(
+                [("web", T0, "question", "Which port should the staging server use?")]),
+            "debt reminder (handoff)": km._debt_reminder_body(
+                [("api", T0, "delegate", "Take over the fixtures backfill and report when it lands.")]),
+            "debt reminder (several)": km._debt_reminder_body(
+                [("web", T0, "question", "Which port should the staging server use?"),
+                 ("api", T0 + 5, "delegate", "Take over the fixtures backfill.")]),
         }
 
     def test_no_romp_vocabulary_reaches_the_session(self):
@@ -146,8 +153,11 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
         # question. Each nudge still asks for progress, for what is owed by the user, and permits "drop it".
         for name, body in self._bodies().items():
             # the wrap-up is a stop order, not a status ask; a TYPED follow-up carries the user's OWN
-            # words as its body, so there is no romp-authored ask in it to check
-            if name in ("clear wrap-up", "clear wrap-up (batch)", "typed follow-up on a summary"):
+            # words as its body, so there is no romp-authored ask in it to check; the DEBT reminder
+            # asks for a reply to a PEER, not a progress report to the user
+            if name in ("clear wrap-up", "clear wrap-up (batch)", "typed follow-up on a summary",
+                        "debt reminder (question)", "debt reminder (handoff)",
+                        "debt reminder (several)"):
                 continue
             text = prose(body).lower()
             with self.subTest(message=name):
