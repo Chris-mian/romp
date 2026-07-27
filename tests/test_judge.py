@@ -6421,6 +6421,30 @@ class FailureContract(unittest.TestCase):
         self.assertIn("API Error: 529 overloaded", row["note"], "the API's own message is the evidence")
         self.assertFalse(Path(jd.USAGE).exists(), "a zero-cost error envelope logs no usage row")
 
+    # ── a dead CLI (empty stdout) is a LOGGED call failure, never a silent "" ──
+    def test_a_dead_cli_is_a_logged_call_failure_with_its_stderr(self):
+        # 2026-07-26: a briefer died three times overnight (empty stdout, no envelope, no exception),
+        # returned "" through the raw-stdout fallback with NO error row and NO usage row, and the
+        # give-up warn could only guess its cause. The returncode + stderr tail are the only evidence
+        # a dead CLI leaves; the row must carry them.
+        import types
+        saved_sub, saved_fsid = jd.subprocess, getattr(jd._judge_ctx, "fsid", None)
+        jd.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(
+                stdout="", stderr="FATAL ERROR: JS heap out of memory\n", returncode=134))
+        jd._judge_ctx.fsid = "sid-dead"
+        try:
+            out = jd._judge_run("model-x", "sys", "user", judge="briefer")
+        finally:
+            jd.subprocess = saved_sub
+            jd._judge_ctx.fsid = saved_fsid
+        self.assertEqual(out, "", "a dead CLI reads as an empty reply to every caller")
+        row = self._errors()[-1]
+        self.assertEqual((row["judge"], row["err"], row["fsid"]), ("briefer", "call", "sid-dead"))
+        self.assertIn("exit 134", row["note"], "the returncode is the evidence")
+        self.assertIn("heap out of memory", row["note"], "…with the stderr tail")
+        self.assertFalse(Path(jd.USAGE).exists(), "a dead CLI logs no usage row")
+
     # ── empty replies never count as parse rejects ──
     def test_empty_planner_reply_never_burns_retries_or_logs_parse(self):
         records = [uline(T0, "please fix the flaky test", "u1", ps="typed"),
