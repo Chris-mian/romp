@@ -4807,7 +4807,21 @@ def checkin_apply(body):
         return not isinstance(p, int) or isinstance(p, bool) or not (0 < p < 65536)
     if not host or _bad(kp) or _bad(bp):
         return {"ok": False, "error": "host, kernelPort, busPort required"}, 400
+    tok = str((body or {}).get("token") or "")
     with _remotes_lock:
+        if tok:
+            for oh, o in list(_remotes.items()):
+                if o.get("token") != tok:
+                    continue
+                if not o.get("checkin_peer"):
+                    # Same kernel (same serve token), already ssh-attached here — usually under its
+                    # alias while the handshake declares its hostname. The ssh row is strictly more
+                    # capable (we own the tunnel, can push/start), so keep it and file NO second row.
+                    # 200, not an error: the mobile retries a failed handshake every tunnel
+                    # incarnation, and there is nothing here to fix (the user 2026-07-27).
+                    return {"ok": True, "host": oh, "alreadyAttached": True}, 200
+                if oh != host:
+                    _remotes.pop(oh, None)         # same mobile re-checking in under a new name
         r = _remotes.get(host)
         if r is not None and not r.get("checkin_peer"):
             return {"ok": False, "error": "host '%s' is already an ssh-attached remote here" % host}, 409
@@ -5009,6 +5023,7 @@ def attach_remote(host, kernel_port=None):
         raise ValueError("host required")
     if not _safe_ssh_host(host):
         raise ValueError("invalid host")
+    prior_trust = known_trust(host)   # BEFORE this attach's own _known_note files a default for the name
     with _remotes_lock:
         r = _remotes.get(host)
         if r is None:
@@ -5031,6 +5046,33 @@ def attach_remote(host, kernel_port=None):
         _attach_trust = r.get("trust")
     _known_note(host, _attach_trust)               # remember it for the popover's past-hosts list
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
+    # SAME MACHINE, SECOND NAME (the user 2026-07-27, whose box sat in the registry as both its
+    # hostname and its ssh alias — every session listed twice, bare postal names ambiguous). The serve
+    # token IS the remote kernel's identity — one per machine, fetched from its state dir — so a
+    # fetched token that matches an existing row under a DIFFERENT name means this attach reaches a
+    # machine already registered. Absorb the old row into this one: kill its tunnel, tell the bus that
+    # peer name is gone, and carry its trust level forward when this name has none remembered — the
+    # user chose that level for the MACHINE, and a rename must not quietly drop it to directed.
+    absorbed = None
+    if token:
+        with _remotes_lock:
+            dup = next((o for oh, o in _remotes.items() if oh != host and o.get("token") == token), None)
+            if dup is not None:
+                absorbed = _remotes.pop(dup["host"])
+                r = _remotes.get(host)
+                if r is not None and prior_trust is None and absorbed.get("trust"):
+                    r["trust"] = absorbed["trust"]
+                    _attach_trust = absorbed["trust"]
+    if absorbed:
+        if absorbed.get("proc"):
+            try:
+                absorbed["proc"].terminate()
+            except Exception:
+                pass
+        if _postal_peers_on():                     # the old peer NAME is gone on purpose — tell the bus
+            _notify_bus_peer(absorbed["host"], absorbed.get("bus_port"), False, absorbed.get("token") or "")
+        known_forget(absorbed["host"])             # never re-offer the duplicate name in the popover
+        _known_note(host, _attach_trust)           # the surviving name carries the machine's trust level
     # BOOTSTRAP: no token yet (the kernel there never ran) or nothing listening on its port → start
     # romp-serve over ssh and wait for the port, so "install romp on the box, click attach" is the
     # whole story. A healthy remote costs one extra ssh probe; a romp-less host gets a next-step
