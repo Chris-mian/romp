@@ -1,6 +1,22 @@
 /* Romp brand colors, dark-only site. Links and every selected/highlighted cue use
    romp's in-app highlight blue #9cd2ff (--accent in the dashboard), so the docs
    read in the same accent the product uses for "this is selected". */
+
+/* Type scale: Material's stock sizes run small for a code-heavy dark site —
+   body .8rem (16px), nav .7rem (14px), and code .85em (~13.6px, the smallest
+   thing on a page that is mostly code). One modest bump per information type,
+   nothing else: body to 17px, nav to 15px, and code to .9em of the new body
+   (~15.3px), which is where the readability is actually won. */
+.md-typeset {
+  font-size: 0.85rem;
+}
+.md-nav {
+  font-size: 0.75rem;
+}
+.md-typeset code {
+  font-size: 0.9em;
+}
+
 :root {
   --md-primary-fg-color: #1ea1eb;
   --md-primary-fg-color--light: #56b8f1;
