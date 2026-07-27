@@ -7137,13 +7137,28 @@ NUDGE_BLOCK_WHY = ("romp followed up once and the response didn't resolve this; 
                    "it won't be re-asked — it needs your direction")
 INTERRUPT_BLOCK_WHY = "you stopped this session mid-turn — it's waiting on your next instruction"
 _PROCEDURAL_BLOCK_WHYS = (NUDGE_BLOCK_WHY, INTERRUPT_BLOCK_WHY)
+# The DEBT escalation's why (the user 2026-07-26) carries the unresponsive PEER'S NAME, so it can't be an
+# exact constant: the fixed head is the recognizer (kernel debt_block_why builds it; procedural_block_why
+# prefix-matches it). Still kernel-authored bookkeeping — the variable tail is a session name, never
+# user-question text, so the exact-match rationale above holds in spirit: nothing fuzzy, one known shape.
+DEBT_BLOCK_WHY_PREFIX = "No answer from "
+
+
+def debt_block_why(peer):
+    """The block why for a wait whose debtor was reminded and still didn't reply — the whole decision
+    rides the why (ping / reclaim / drop), so the briefer's procedural path applies and no invented
+    decision brief is written."""
+    return ("%s%s despite a reminder — your message to them is still unanswered. "
+            "Ping them again, take the work back, or drop the wait." % (DEBT_BLOCK_WHY_PREFIX, peer))
 
 
 def procedural_block_why(why):
     """True if `why` is romp's own procedural block bookkeeping rather than a decision the user was asked
-    for. EXACT match on the kernel-authored constants: a real question that merely resembles one of these
-    is still a real question, so nothing fuzzy belongs here."""
-    return (why or "").strip() in _PROCEDURAL_BLOCK_WHYS
+    for. EXACT match on the kernel-authored constants — plus the ONE prefix-recognized shape above (its
+    tail is a peer name, not question text): a real question that merely resembles one of these is still
+    a real question, so nothing fuzzy belongs here."""
+    w = (why or "").strip()
+    return w in _PROCEDURAL_BLOCK_WHYS or w.startswith(DEBT_BLOCK_WHY_PREFIX)
 
 
 # The BLOCK-DISTILLER (the user 2026-06-18, via business): the done-distiller's twin for a BLOCKED top.

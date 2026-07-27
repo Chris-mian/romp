@@ -816,6 +816,104 @@ def _fire_debt_reminder(sid, now, alive_ids):
     return True
 
 
+def _debt_key_parse(key):
+    """(asker, debtor, ask_ts) from a debtNudged key ("asker>debtor:ts"), or None on a malformed one."""
+    try:
+        pair, ts = str(key).rsplit(":", 1)
+        asker, debtor = pair.split(">", 1)
+        return asker, debtor, int(ts)
+    except ValueError:
+        return None
+
+
+def _debt_escalate(asker, debtor, ask_ts, now):
+    """The reminder FAILED — the debtor had its say (or never came back) and the ask is still unanswered,
+    so the wait now genuinely needs the USER: flip the ASKER's newest still-waiting card to blocked
+    through the normal ladder (the _mark_nudge_failed precedent: verdict + journal + rollup; the why is
+    the whole decision — ping / reclaim / drop — and its fixed head reads as procedural to the briefer,
+    so no decision brief is invented). The card chosen is the newest open working TOP minted at/before
+    the ask — the same population the peer-wait chip paints. True when a block landed."""
+    try:
+        store = jd.load_goals(asker)
+        nodes, status = store.get("nodes", {}), store.get("status", {})
+        cands = [nd for gid, nd in nodes.items()
+                 if nd.get("parentId") is None and status.get(gid) == "working"
+                 and not nd.get("blocked") and not nd.get("cleared") and not nd.get("nodeComplete")
+                 and (nd.get("t") or 0) <= ask_ts]
+        if not cands:
+            return False
+        nd = max(cands, key=lambda n: n.get("t") or 0)
+        why = jd.debt_block_why(_name_of(debtor) or str(debtor)[:8])
+        if jd.record_verdict(store, nd, "nudge", "block", int(now), why=why):
+            nd["mt"] = int(now)                        # the event materialized blocked + blockWhy
+            jd.append_block(asker, nd["id"], "nudge", why, int(now))   # journal outlives judge-pass saves
+            jd.rollup_status(store, False)
+            jd.save_goals(asker, store)
+            _mark_views_dirty()
+            return True
+    except Exception:
+        sys.stderr.write("debt-escalate (%s waiting on %s): %s\n" % (asker, debtor, traceback.format_exc()))
+    return False
+
+
+def _debt_reminder_outcomes(sid, lt, now):
+    """Judge this DEBTOR's past reminders at their exact outcome events, both once-ever: an ANSWERED ask
+    retires its record silently (the reminder worked), and an ask still unanswered after a turn of the
+    debtor's ENDED past the reminder's fire escalates to the asker's card and retires — the debtor had
+    its chance and moved on without replying (the reminder's own response turn included: both honest
+    exits it offered were postal replies, so a reply-less end IS the failure). A debtor that never turns
+    again is the backstop's case (_debt_backstop_tick)."""
+    d = _auto_nudge_data()
+    dn = dict(d.get("debtNudged") or {})
+    if not dn:
+        return
+    last_any, _ask = _postal_wait_maps()
+    lt_end = (lt.get("end", lt.get("t", 0)) or 0) if lt else 0
+    changed = False
+    for key, fire_t in list(dn.items()):
+        parsed = _debt_key_parse(key)
+        if not parsed or parsed[1] != sid:
+            continue
+        asker, _debtor, ts = parsed
+        if last_any.get((sid, asker), 0) >= ts:        # answered → the reminder worked
+            dn.pop(key); changed = True
+            continue
+        if isinstance(fire_t, (int, float)) and lt_end > fire_t:
+            _debt_escalate(asker, sid, ts, now)        # moved on without replying → the user's turn
+            dn.pop(key); changed = True
+    if changed:
+        d["debtNudged"] = dn
+        _write_auto_nudge(d)
+
+
+def _debt_backstop_tick(now):
+    """The reminder-outcome sweep for debtors the per-session walk can't reach — dead sessions, or one
+    idling forever on its reminder: past the same backstop the awaiting/deferral machinery uses, an
+    unanswered reminder escalates (or, if answered meanwhile, retires) regardless. Mirrors
+    AWAITING_BACKSTOP_SECS' rationale: a missing event, surfaced rather than waited on forever."""
+    d = _auto_nudge_data()
+    dn = dict(d.get("debtNudged") or {})
+    if not dn:
+        return
+    last_any, _ask = _postal_wait_maps()
+    changed = False
+    for key, fire_t in list(dn.items()):
+        parsed = _debt_key_parse(key)
+        if not parsed:
+            dn.pop(key); changed = True                # malformed → drop rather than loop on it forever
+            continue
+        asker, debtor, ts = parsed
+        if last_any.get((debtor, asker), 0) >= ts:
+            dn.pop(key); changed = True
+            continue
+        if isinstance(fire_t, (int, float)) and now - fire_t > NUDGE_DEFER_BACKSTOP_SECS:
+            _debt_escalate(asker, debtor, ts, now)
+            dn.pop(key); changed = True
+    if changed:
+        d["debtNudged"] = dn
+        _write_auto_nudge(d)
+
+
 def _rgb(color):
     """The card's recency-tint [r,g,b] — the session color (the old hawaii recency colormap is
     a later refinement), defaulting to a neutral slate."""
@@ -1952,6 +2050,10 @@ def _auto_nudge_tick(now, tmux):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
+    try:
+        _debt_backstop_tick(now)                       # reminder outcomes for debtors the walk can't reach
+    except Exception:
+        sys.stderr.write("debt-backstop: %s\n" % traceback.format_exc())
     if fired:
         _push_all()
 
@@ -2593,7 +2695,10 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         # OWE a reply that is silently parking a peer ("Awaiting <us>" on their cards, which the goal
         # nudge deliberately skips). Same gates as the goal nudge (we only reach here idle, judged,
         # unqueued); fires at most one message, deduped per ask event. Goal nudges take precedence —
-        # two injections in one tick would fold in the SDK queue anyway.
+        # two injections in one tick would fold in the SDK queue anyway. PAST reminders are judged
+        # first at their exact outcome event (answered → retire; moved on without replying → escalate
+        # to the asker's card), so a failed reminder never just evaporates.
+        _debt_reminder_outcomes(sid, lt, now)
         fired = _fire_debt_reminder(sid, now, alive_ids)
     return fired
 
