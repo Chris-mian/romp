@@ -12,6 +12,10 @@ from importlib.machinery import SourceFileLoader
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+# These exercise tmux BEHAVIOUR (they stub subprocess.run and assert on the argv). Declare a tmux
+# host explicitly so they assert the same thing on a machine without tmux installed, where the
+# backend is otherwise inert by design (see TmuxBackend.available).
+os.environ["ROMP_TMUX_AVAILABLE"] = "1"
 km = SourceFileLoader("romp_kernel_inj", os.path.join(BIN, "romp-kernel")).load_module()
 
 

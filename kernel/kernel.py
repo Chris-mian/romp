@@ -3773,13 +3773,38 @@ class TmuxBackend(sb.SessionBackend):
         sock = os.environ.get("ROMP_TMUX_SOCKET")
         return (["tmux", "-L", sock] if sock else ["tmux"]) + list(args)
 
+    @staticmethod
+    def available():
+        """Is the tmux backend usable on this host — i.e. is there a tmux to shell? A machine with no
+        tmux installed (a fresh Linux box, the user 2026-07-27) is a supported configuration: the SDK
+        backend is what `romp new` uses, so romp runs fully without tmux and the terminal backend just
+        stays DISABLED until tmux appears. Every primitive below short-circuits on this, so a
+        tmux-less host spends no subprocess spawns per producer tick and logs no failures.
+
+        Deliberately NOT cached: shutil.which is a PATH stat, far cheaper than the spawn it replaces,
+        and re-probing per call means `apt install tmux` goes live on the next tick with no kernel
+        restart and no expiry timer (the repo's event-over-time-heuristic rule).
+
+        ROMP_TMUX_AVAILABLE overrides the probe ("0"/"" → off, anything else → on). It is mainly a
+        TEST SEAM: the tmux-behaviour tests stub subprocess.run to record argv, and without this they
+        would pass or fail on whether the machine running them happens to have tmux installed. It
+        doubles as the way to force the backend off on a host that has tmux but shouldn't use it."""
+        ov = os.environ.get("ROMP_TMUX_AVAILABLE")
+        if ov is not None:
+            return ov not in ("", "0")
+        return shutil.which("tmux") is not None
+
     def _run(self, args, t=3):
+        if not self.available():
+            return None
         try:
             return subprocess.run(self._tmux_argv(args), capture_output=True, text=True, timeout=t)
         except Exception:
             return None
 
     def _fire(self, args, t=3):                          # fire-and-forget (no captured output needed)
+        if not self.available():
+            return
         try:
             subprocess.run(self._tmux_argv(args), timeout=t)
         except Exception:
@@ -3830,6 +3855,8 @@ class TmuxBackend(sb.SessionBackend):
         self._fire(["kill-session", "-t", name], t)
 
     def rename_by_name(self, old, new, t=5):
+        if not self.available():          # no tmux → nothing to rename; stay inert like every primitive above
+            return
         try:
             subprocess.run(["tmux", "rename-session", "-t", old, new], timeout=t,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

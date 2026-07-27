@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# romp-uninstall — undo install.sh, so the next install is a genuine from-scratch install.
+#
+# WHY this exists: testing the installer needs a machine that looks untouched, and romp's
+# footprint is spread over five places (a login service, ~/.claude wiring, a state dir, a
+# venv, build artifacts) that no single `rm` covers. Reconstructing that list by hand before
+# each test is how you end up "reinstalling" onto leftovers and testing nothing.
+#
+# What it removes, mirroring install.sh + bootstrap.sh step for step:
+#   - the login service           (romp-service uninstall: systemd --user / launchd)
+#   - ~/.claude/hooks/*.sh        (the romp hook symlinks only)
+#   - ~/.claude/settings.json     (ONLY the romp hook entries; your other hooks are untouched)
+#   - ~/.claude/skills/romp*      (skill symlinks)
+#   - ~/.claude/romp-postal.mcp.json
+#   - the git pre-push hook symlink
+#   - vscode-extension/node_modules, dist, *.vsix   (build artifacts)
+#   - the SDK venv under the state dir
+#   - the PATH line in your shell rc
+# With --purge it also removes the STATE DIR — every recorded session, summary and message.
+# That is the only destructive step, so it is opt-in and confirmed separately.
+#
+# What it deliberately does NOT do:
+#   - delete this clone (the script lives in it); it prints the one command for that
+#   - uninstall the VS Code extension from your editors (that is `code --uninstall-extension`,
+#     which we print rather than run — editors may be open, and it is not romp state)
+#   - touch ~/.claude/projects (Claude Code's own transcripts — not ours to delete)
+set -euo pipefail
+
+ROMP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+STATE="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
+
+ASSUME_YES=""
+PURGE=""
+for a in "$@"; do
+    case "$a" in
+        -y|--yes)   ASSUME_YES=1 ;;
+        --purge)    PURGE=1 ;;
+        -h|--help)
+            echo "usage: romp-uninstall [--yes] [--purge]"
+            echo "  --yes     don't prompt for confirmation"
+            echo "  --purge   ALSO delete $STATE (all recorded sessions/summaries/messages)"
+            exit 0 ;;
+        *) echo "romp-uninstall: unknown option: $a" >&2; exit 2 ;;
+    esac
+done
+
+echo "romp-uninstall — removing romp's installed footprint."
+echo "  clone:  $ROMP_DIR   (kept; delete it yourself when you're done)"
+echo "  state:  $STATE"
+if [[ -n "$PURGE" ]]; then
+    echo "  --purge: the state dir WILL be deleted (recorded sessions, summaries, messages)."
+else
+    echo "  state dir is KEPT (pass --purge to delete it too)."
+fi
+if [[ -z "$ASSUME_YES" ]]; then
+    printf 'Proceed? [y/N] '
+    read -r reply </dev/tty || reply=""
+    case "$reply" in [yY]*) ;; *) echo "Aborted."; exit 0 ;; esac
+fi
+
+# ── 1. the login service ───────────────────────────────────────────────
+# First, so nothing respawns a kernel underneath the rest of the teardown.
+if [[ -x "$ROMP_DIR/bin/romp-service" ]]; then
+    echo "==> login service"
+    "$ROMP_DIR/bin/romp-service" uninstall || echo "    (romp-service uninstall reported a problem — continuing)"
+fi
+
+# Any kernel/manager still up (started by hand rather than the service) is now unowned.
+# Matched by THIS clone's absolute path, never the bare name: several romp clones/worktrees
+# coexist on a dev machine, and a bare `pkill -f bin/romp-manager` would take down a manager
+# this uninstall has no business touching (it killed the live one during a test run, 2026-07-27).
+pkill -f "$ROMP_DIR/bin/romp-manager" 2>/dev/null || true
+pkill -f "$ROMP_DIR/bin/romp-kernel"  2>/dev/null || true
+
+# ── 2. ~/.claude wiring ────────────────────────────────────────────────
+echo "==> ~/.claude hook + skill symlinks"
+for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
+         romp-postal-revive.sh romp-postal-context.sh romp-wake.sh tmux-status.sh; do
+    rm -f "$HOME/.claude/hooks/$h"
+done
+rm -f "$HOME/.claude/skills/romp" "$HOME/.claude/skills/romp-postal"
+rm -f "$HOME/.claude/romp-postal.mcp.json"
+
+# De-register from settings.json. Mirrors install.sh's merge in reverse: match on the SAME
+# "~/.claude/hooks/<name>" command strings it registers, drop only those, and leave every other
+# hook (and every non-hook setting) exactly as found. Empty groups/events are pruned so we don't
+# leave `"PostToolUse": [{"hooks": []}]` litter behind.
+echo "==> ~/.claude/settings.json"
+python3 - <<'PYEOF'
+import json, os
+
+SETTINGS = os.path.expanduser("~/.claude/settings.json")
+OURS = {"tmux-status.sh", "romp-summarize.sh", "romp-postal-drain.sh", "romp-postal-ensure.sh",
+        "romp-postal-revive.sh", "romp-postal-context.sh", "romp-wake.sh"}
+
+try:
+    with open(SETTINGS) as f:
+        settings = json.load(f)
+except (FileNotFoundError, ValueError):
+    print("    no settings.json to clean")
+    raise SystemExit(0)
+
+hooks = settings.get("hooks") or {}
+removed = []
+for event in list(hooks):
+    groups = hooks.get(event) or []
+    for g in groups:
+        keep = []
+        for h in g.get("hooks", []):
+            cmd = h.get("command", "")
+            if cmd.startswith("~/.claude/hooks/") and cmd.rsplit("/", 1)[-1] in OURS:
+                removed.append(event + ":" + cmd.rsplit("/", 1)[-1])
+            else:
+                keep.append(h)
+        g["hooks"] = keep
+    groups = [g for g in groups if g.get("hooks")]      # drop groups we emptied
+    if groups:
+        hooks[event] = groups
+    else:
+        hooks.pop(event, None)                          # drop events we emptied
+if not hooks:
+    settings.pop("hooks", None)
+elif "hooks" in settings:
+    settings["hooks"] = hooks
+
+if removed:
+    with open(SETTINGS, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    print("    de-registered %d romp hook entries" % len(removed))
+else:
+    print("    no romp hook entries registered")
+PYEOF
+
+# ── 3. the git pre-push hook ───────────────────────────────────────────
+echo "==> git pre-push hook"
+_gitdir="$(git -C "$ROMP_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+if [[ -n "$_gitdir" ]]; then
+    # Relative (".git") when the cwd is the repo root — resolve against ROMP_DIR, not $PWD.
+    [[ "$_gitdir" = /* ]] || _gitdir="$ROMP_DIR/$_gitdir"
+    # Only ours: install.sh symlinks it, so a real file here is the user's own hook.
+    if [[ -L "$_gitdir/hooks/pre-push" ]]; then
+        rm -f "$_gitdir/hooks/pre-push"
+    fi
+fi
+
+# ── 4. build artifacts + the SDK venv ──────────────────────────────────
+echo "==> build artifacts"
+rm -rf "$ROMP_DIR/vscode-extension/node_modules" "$ROMP_DIR/vscode-extension/dist"
+rm -f  "$ROMP_DIR/vscode-extension"/*.vsix "$ROMP_DIR/vscode-extension/package.json.orig"
+
+echo "==> SDK venv"
+rm -rf "$STATE/sdkvenv"
+
+# ── 5. the shell rc PATH line ──────────────────────────────────────────
+# bootstrap.sh appends "# romp" + one PATH line. Drop both, and only when the line
+# actually points at THIS clone's bin — never a blanket edit of the user's rc.
+echo "==> shell rc PATH entry"
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.config/fish/config.fish"; do
+    [[ -f "$rc" ]] || continue
+    grep -qF "$ROMP_DIR/bin" "$rc" || continue
+    python3 - "$rc" "$ROMP_DIR/bin" <<'PYEOF'
+import sys
+path, needle = sys.argv[1], sys.argv[2]
+lines = open(path).read().splitlines(True)
+out = []
+for i, ln in enumerate(lines):
+    if needle in ln and ("PATH" in ln or "fish_add_path" in ln):
+        # also drop the "# romp" marker bootstrap.sh wrote right above it
+        while out and out[-1].strip() in ("# romp", ""):
+            out.pop()
+        continue
+    out.append(ln)
+open(path, "w").writelines(out)
+PYEOF
+    echo "    cleaned $rc"
+done
+
+# ── 6. the state dir (opt-in) ──────────────────────────────────────────
+if [[ -n "$PURGE" ]]; then
+    if [[ -z "$ASSUME_YES" ]]; then
+        printf 'Delete ALL recorded romp state in %s? [y/N] ' "$STATE"
+        read -r reply </dev/tty || reply=""
+        case "$reply" in [yY]*) ;; *) echo "    kept $STATE"; PURGE="" ;; esac
+    fi
+fi
+if [[ -n "$PURGE" ]]; then
+    echo "==> state dir"
+    rm -rf "$STATE"
+    echo "    removed $STATE"
+else
+    echo "==> state dir kept: $STATE"
+fi
+
+echo
+echo "Done. romp's installed footprint is gone."
+echo
+echo "Remaining, if you want a totally clean slate:"
+echo "  - this clone:        rm -rf $ROMP_DIR"
+echo "  - the editor extension, where you have one:"
+echo "        code --uninstall-extension romp.romp-chat-view"
+[[ -n "$PURGE" ]] || echo "  - recorded state:    rm -rf $STATE   (or re-run with --purge)"
+echo
+echo "Reinstall from scratch with:"
+echo "  curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash"
+echo "Open a NEW terminal afterwards (this one still has the old PATH)."

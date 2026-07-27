@@ -42,6 +42,23 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
     [[ "$preflight_missing" -eq 0 ]] || exit 1
 fi
 
+# Optional capabilities. NOT preflight failures — romp is fully usable without either,
+# so we record what's missing and say so once, at the end, next to the dashboard link
+# (a mid-install warning scrolls away under the hook/symlink chatter).
+#   tmux  — only `romp new -t` / `romp resume` need it. Plain `romp new` runs an SDK
+#           session inside the kernel, and the kernel leaves its tmux backend disabled
+#           until a tmux appears on PATH (picked up live, no restart).
+# Set by the SDK/extension steps below when they fail: ROMP_SDK_MISSING.
+# ROMP_TMUX_AVAILABLE overrides the probe ("0"/"" → treat as absent, anything else → present),
+# the same seam TmuxBackend.available() and bin/romp honour, so all three agree. Mainly for tests:
+# a suite that asserts the no-tmux path must not depend on whether the machine running it has tmux
+# installed — PATH cannot hide a /usr/bin/tmux, so the override is the only honest way to say it.
+ROMP_TMUX_MISSING=""
+case "${ROMP_TMUX_AVAILABLE-unset}" in
+    unset) command -v tmux >/dev/null 2>&1 || ROMP_TMUX_MISSING=1 ;;
+    ""|0)  ROMP_TMUX_MISSING=1 ;;
+esac
+
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
 for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
@@ -142,15 +159,24 @@ ln -sfn "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
 ln -sfn "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
 echo "  Symlinked romp + romp-postal skills"
 
-# The Agent SDK venv — romp's non-tmux backend. Best-effort: a host without python >= 3.10 still
-# works fully for tmux sessions (romp-sdk-setup says what to install). Opt out with ROMP_NO_SDK=1.
+# The Agent SDK venv — the backend plain `romp new` uses. Best-effort: a host missing python >= 3.10
+# or Debian's python3-venv still runs tmux sessions (romp-sdk-setup says exactly what to install).
+# Opt out with ROMP_NO_SDK=1. The failure is REMEMBERED, not just echoed past: this is the backend
+# `romp new` defaults to, so losing it silently leaves the user with no way to start a session at all
+# (that is precisely what happened on a fresh Ubuntu box, the user 2026-07-27 — an apt python3 with no
+# ensurepip, one swallowed `|| echo`, and romp looked installed but could start nothing).
+ROMP_SDK_MISSING=""
 if [[ -z "${ROMP_NO_SDK:-}" && -x "$ROMP_DIR/bin/romp-sdk-setup" ]]; then
-    "$ROMP_DIR/bin/romp-sdk-setup" || echo "  (SDK backend not provisioned — tmux sessions unaffected)"
+    "$ROMP_DIR/bin/romp-sdk-setup" || ROMP_SDK_MISSING=1
 fi
 
+# The webview bundles live here too — this step builds vscode-extension/dist, which the KERNEL serves
+# to the browser dashboard, editor or no editor. A failure here means a blank dashboard, so it is
+# remembered and reported at the end rather than echoed past.
+ROMP_EXT_FAILED=""
 if [[ -z "${ROMP_NO_EXT:-}" && -x "$ROMP_DIR/vscode-extension/install.sh" ]]; then
-    echo "  Installing romp-chat-view extension..."
-    "$ROMP_DIR/vscode-extension/install.sh" || echo "  (romp-chat-view install skipped/failed)"
+    echo "  Building the dashboard UI (and installing romp-chat-view where an editor is present)..."
+    "$ROMP_DIR/vscode-extension/install.sh" || ROMP_EXT_FAILED=1
 fi
 
 # Auto-start: install the login service so the kernel supervisor (romp-manager) is
@@ -211,6 +237,30 @@ if [[ -z "$_tok" && -z "${ROMP_NO_SERVICE:-}" ]]; then
         [[ -n "$_tok" ]] && break
     done
 fi
+# What is NOT working, said once, right before the link — the only place the user reliably
+# looks. Each line names the capability in the user's terms, what it costs them, and the exact
+# command that fixes it; romp is usable in every one of these states, which is why none of them
+# aborted the install. (Before this, all three failures were `|| echo` one-liners buried in the
+# scroll or, worse, a kernel stderr line that only reached the system journal.)
+if [[ -n "$ROMP_TMUX_MISSING$ROMP_SDK_MISSING$ROMP_EXT_FAILED" ]]; then
+    echo
+    echo "  Some optional pieces aren't set up:"
+    if [[ -n "$ROMP_EXT_FAILED" ]]; then
+        echo "   ! The dashboard UI failed to build — the browser dashboard will come up blank."
+        echo "     Retry:  (cd $ROMP_DIR/vscode-extension && npm install && node esbuild.js)"
+    fi
+    if [[ -n "$ROMP_SDK_MISSING" ]]; then
+        echo "   ! The Agent SDK backend isn't provisioned, so \`romp new\` can't start a session."
+        echo "     See the romp-sdk-setup message above for the package to install, then:"
+        echo "         $ROMP_DIR/bin/romp-sdk-setup"
+    fi
+    if [[ -n "$ROMP_TMUX_MISSING" ]]; then
+        echo "   - tmux isn't installed, so terminal sessions (\`romp new -t\`, \`romp resume\`) are off."
+        echo "     Everything else works; \`romp new\` runs sessions you drive from the dashboard."
+        echo "     Enable:  sudo apt install tmux   (macOS: brew install tmux) — no reinstall needed."
+    fi
+fi
+
 echo
 if [[ -n "$_tok" ]]; then
     echo "  romp is running. Your dashboard:"
