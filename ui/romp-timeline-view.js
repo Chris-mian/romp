@@ -2551,6 +2551,24 @@ class TimelinePanel {
         ch.addEventListener('click', () => { this._select(s.id); this.openChat(this._laneTid(s), null, true); });
         svg.appendChild(ch);
       }
+      // A /CLEAR SEAM — an episode boundary: the conversation ended here and a blank one began. Drawn
+      // as a film-splice cut through the lane (two short slanted strokes), quiet by default with the
+      // mechanics on hover — the lane stays CONTINUOUS across it (same session, same slot); only the
+      // conversation restarted. Fed by the kernel's episodes log (row 0 = first observation, not a clear).
+      for (const cl of (s.clears || [])) {
+        if (cl.t < t0 || cl.t > t1) continue;
+        const sx = x(cl.t), sh = BAR_H + 6;
+        for (const dx of [-1.6, 1.6]) {
+          svg.appendChild(el('line', { x1: sx + dx - 2, y1: y + sh / 2, x2: sx + dx + 2, y2: y - sh / 2,
+                                       stroke: '#ffffff', 'stroke-width': 1.2, opacity: 0.55, 'pointer-events': 'none' }));
+        }
+        const hh = el('rect', { x: sx - 6, y: y - 10, width: 12, height: 20, fill: 'transparent' });
+        const html = () => '<div class="r"><span class="chip" style="background:#9cd2ff"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">cleared</span></div><div class="b">conversation cleared · a fresh one starts here · ' + clock(cl.t) + '</div>';
+        hh.addEventListener('mouseenter', (e) => this.showTip(html(), e));
+        hh.addEventListener('mousemove', (e) => this.moveTip(e));
+        hh.addEventListener('mouseleave', () => this.hideTip());
+        svg.appendChild(hh);
+      }
       // name left-aligned; status chip in the shared chip column to its right. ENDED or idle >1h
       // (s.faded) → name/chip/ctx blended toward the surface bg to a uniform low luminance (perceptual
       // fade via F(), consistent across hues + with the chat tabs), instead of a flat opacity.

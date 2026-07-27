@@ -9521,14 +9521,18 @@ def _cleared_ids():
     return cur
 
 
-def _mark_nodes_cleared(item_ids, value):
+def _mark_nodes_cleared(item_ids, value, src="user", why=None):
     """Set the DURABLE node-level `cleared` flag on each cleared/restored top goal node, so a Clear is
     immune to status recompute AND the grouper. The view-level cleared.jsonl only hid the CARD; the
     node stayed 'open', so two paths resurfaced it (the user 2026-06-18): (1) the grouper's _group_tops
     re-wraps an open top under a FRESH umbrella whose new id is NOT in cleared.jsonl → the umbrella card
     reappears; (2) rollup_status keeps flipping a nodeComplete focus top working↔completed, so the card
     bounces between columns. Both keys read nd['cleared'] — set it and rollup gives 'cleared' (which the
-    grouper skips and the feed filter hides), durably. Re-rolls each touched session's status."""
+    grouper skips and the feed filter hides), durably. Re-rolls each touched session's status.
+
+    `src`/`why` apply to the CLEAR direction only (an undo is always the user's gesture): the episode
+    boundary settle records its clears as romp-authored with an honest why, so the card's log says the
+    conversation was cleared rather than claiming the user crossed it off the feed."""
     by_sid = {}
     for iid in item_ids:
         sid = iid.rsplit(":", 1)[0]
@@ -9550,8 +9554,9 @@ def _mark_nodes_cleared(item_ids, value):
                 # gate passes because _undo_clear appends the cleared.jsonl undo rows BEFORE this runs)
                 was_done = nd.get("parentId") is None and (
                     store.get("status", {}).get(iid) == "completed" or nd.get("nodeComplete"))
-                applied = jd.record_verdict(store, nd, "user", "clear" if value else "reopen", now,
-                                            why="cleared from the feed" if value else "undo clear",
+                applied = jd.record_verdict(store, nd, src if value else "user",
+                                            "clear" if value else "reopen", now,
+                                            why=(why or "cleared from the feed") if value else "undo clear",
                                             undo=not value)   # an undo-restore asserts nothing about doneness
                 if not value and applied:
                     # Journal the UN-CLEAR (the user 2026-07-23, the restore-then-reply flicker): the
@@ -9585,6 +9590,62 @@ def _mark_nodes_cleared(item_ids, value):
             _note_user_goal_write(sid)
     if not value:
         _mark_views_dirty()
+
+
+# ── /clear is an episode boundary, not a deletion (the user 2026-07-26) ──────────────────────────
+# A `/clear` mints a new transcript whose head record has no parent link; romp's goal layer used to be
+# blind to it, so a session's open cards outlived the conversation that was their only evidence. Four
+# machines then carried them into the fresh, unrelated conversation: the closer's history-nominated
+# candidates, the unblocker's per-turn re-examines, the auto-nudge (quoting pre-clear goals at an agent
+# with no memory of them, then recording a "nudge failed" block when its reply couldn't resolve them),
+# and the awaiting backstop. The boundary tick makes the clear visible: it records each observed
+# episode head in jd's episodes/<sid>.jsonl (also the durable map to past episodes' transcripts —
+# lastSid is overwritten per fork, so this log is the only attribution of old files to their session),
+# and settles the open cards that died with their episode — sealed like the mute path (cleared.jsonl +
+# the durable node flag; no clear-wrap notify: the agent that knew this work is gone, and messaging the
+# fresh one is exactly the confusion this exists to stop; no delegation cascade: a handed-off piece
+# lives on in the peer). Completed cards stay — the Completed column is history and needs no evidence.
+# Cards remain undoable (Undo restores the batch) and archive/searchable via goal-store compaction.
+
+def _episode_boundary_tick(now):
+    """Detect `/clear` boundaries across the fleet and settle each cleared episode's open cards. Runs
+    in the producer thread BEFORE the judge tiers and the pre-pass goals snapshot, so the same pass's
+    planner/closer/nudge already see the settled store. Cheap when nothing changed: _sessions() is the
+    cached discover, the episode log read is an mtime memo, and a transcript's head record is cached
+    per path (immutable once written)."""
+    for s in _sessions(now):
+        try:
+            _episode_boundary_check(s["sid"], s["path"], now)
+        except Exception:
+            sys.stderr.write("episode boundary: %s\n" % traceback.format_exc())
+
+
+def _episode_boundary_check(sid, path, now):
+    head = jd.transcript_head(path)
+    if not head or not head["root"]:
+        return                       # no head yet, or a resume-style leaf (chains into a prior file):
+    last = jd.episode_last(sid)      # either way the recorded episode is still the current one
+    if last is not None and last.get("head") == head["uuid"]:
+        return
+    jd.append_episode(sid, head["uuid"], Path(path).stem, head["t"] or int(now))
+    if last is None:
+        return                       # first observation SEEDS the log; a boundary needs a prior recorded
+    #                                  episode (so deploying this never mass-settles existing sessions)
+    store = jd.load_goals(sid)
+    nodes, status = store.get("nodes", {}), store.get("status", {})
+    tops = [nid for nid, nd in nodes.items()
+            if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"
+            and not (nd.get("nodeComplete") or status.get(nid) == "completed")]
+    if not tops:
+        return
+    p = jd.STATE / "cleared.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    t = time.time()                  # one shared batch t → a single Undo restores the whole boundary batch
+    with p.open("a") as fh:
+        for nid in tops:
+            fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+    _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
+    sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
 
 def _clear_ask(item_id):
@@ -12289,6 +12350,9 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "awaiting": _state_intervals(sid, _NEEDS_INPUT_STATES, now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions,
+            # /clear seams: every episode boundary (row 0 of the log is the FIRST observed episode, not
+            # a clear) — the lane marks where a conversation ended and a blank one began
+            "clears": [{"t": r["t"]} for r in jd.episode_rows(sid)[1:] if r.get("t")],
             "faded": faded,
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")})  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
@@ -13217,6 +13281,10 @@ def _producer():
             if _tmux_sessions() and not _retry_paused_on():
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
+            try:                                       # /clear boundaries FIRST (before the snapshot + tiers), so
+                _episode_boundary_tick(time.time())    # this same pass's planner/closer/nudge see a settled store
+            except Exception:                          # instead of carrying dead cards into the fresh conversation
+                sys.stderr.write("episode: %s\n" % traceback.format_exc())
             _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
                                                        # whole pass, so no half-applied intermediate ever shows
             _own_frame = jd.begin_pass_frame()         # ONE evidence frame for BOTH tiers and their worker pools:
