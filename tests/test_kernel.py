@@ -6008,7 +6008,9 @@ class ServeSecurity(unittest.TestCase):
                                          method="POST", data=b"")
             with urllib.request.urlopen(req, timeout=5) as r:
                 self.assertEqual(r.status, 200)
-                self.assertEqual(_json.loads(r.read().decode()), {"ok": True, "restarting": True})
+                # the ack also names WHICH kernel acked (boot id, 2026-07-27) — see RestartReloadRaceTest
+                self.assertEqual(_json.loads(r.read().decode()),
+                                 {"ok": True, "restarting": True, "boot": km._BOOT_ID})
         finally:
             if saved is not None:
                 os.environ["ROMP_MANAGER_PORT"] = saved
@@ -6185,6 +6187,17 @@ class ServeSecurity(unittest.TestCase):
 
     def test_healthz_exempt(self):
         self.assertEqual(self._code("/healthz", {"Origin": "http://evil.example"}), 200)
+
+    def test_healthz_carries_the_boot_id(self):
+        # /healthz identifies WHICH kernel process answered (X-Romp-Boot): the restart button reloads
+        # only when the id flips, because a bare 200 can still be the OLD kernel answering between the
+        # /restart ack and its SIGTERM — reloading against it was the browser-error-page race (the user
+        # 2026-07-27). The body stays "ok" for external probes that compare it.
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/healthz" % self.port, timeout=5) as r:
+            self.assertEqual(r.read().decode(), "ok")
+            self.assertEqual(r.headers.get("X-Romp-Boot"), km._BOOT_ID)
+            self.assertEqual(r.headers.get("Access-Control-Expose-Headers"), "X-Romp-Boot")
 
     def test_host_header_has_no_auth_power(self):
         # The Host header must carry NO authorization weight in either direction: a forged

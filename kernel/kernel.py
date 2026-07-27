@@ -14391,10 +14391,23 @@ if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);});
 var gear=document.getElementById('rail-gear');
 if(gear)gear.onclick=function(){var f=document.getElementById('f-feed');
 try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'openSettings'},'*');}catch(e){}};
-// the rail's ↻ restarts the kernel (POST /restart), then polls /healthz and reloads once it's back up.
+// the rail's ↻ restarts the kernel (POST /restart), puts the romp boot splash back up, and reloads only
+// when /healthz answers from the NEW kernel — its X-Romp-Boot differs from the id this page was served
+// under (__ROMP_BOOT__, spliced in by _landing). Polling for a bare 200 raced: the OLD kernel keeps
+// answering for a beat after the /restart ack, so the reload landed on a dying server and the browser
+// showed its connection-error page until a manual refresh (the user 2026-07-27). The splash element was
+// removed from the DOM after boot, so this rebuilds it from the same server-rendered loader markup
+// (__ROMP_LOADER__). 120s backstop reload so the splash can never trap the user.
 // Factored to window.__rompRestart so the mobile bottom bar (no rail there) can trigger the same thing.
-window.__rompRestart=function(){try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
-var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};
+window.__rompRestart=function(){
+var boot=document.getElementById('romp-boot');
+if(!boot){boot=document.createElement('div');boot.id='romp-boot';boot.innerHTML=__ROMP_LOADER__;document.body.appendChild(boot);}
+boot.classList.remove('gone');
+try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
+var n=0;(function again(){setTimeout(function(){n++;
+fetch('/healthz',{cache:'no-store'}).then(function(r){var b=(r&&r.ok)?r.headers.get('X-Romp-Boot'):null;
+if(b&&b!==__ROMP_BOOT__)location.reload();else if(n<240)again();else location.reload();})
+.catch(function(){if(n<240)again();else location.reload();});},500);})();};
 var rf=document.getElementById('rail-refresh');
 if(rf)rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();};
 })();
@@ -15423,12 +15436,23 @@ def _landing():
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"
-            "<script>" + _LANDING_SETTINGS_JS + "</script>"
+            # the restart flow needs this kernel's boot id (to detect the NEW kernel answering /healthz)
+            # and the loader markup (to rebuild the boot splash the boot JS removed) — spliced, not
+            # %-formatted, so the JS never fights Python's % escaping.
+            "<script>" + _LANDING_SETTINGS_JS
+                         .replace("__ROMP_BOOT__", json.dumps(_BOOT_ID))
+                         .replace("__ROMP_LOADER__", json.dumps(_loader_inner())) + "</script>"
             "<script>" + _LANDING_REMOTES_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) + _rdrift_block() +
             "</body></html>")
+
+
+# This kernel PROCESS's identity, minted at import. /healthz carries it (X-Romp-Boot) and the landing
+# page embeds it, so the restart button can tell "the new kernel is up" (id flipped) from "the old
+# kernel is still answering" (id unchanged) — an exact event, not a down-then-up timing guess.
+_BOOT_ID = "%d.%d" % (os.getpid(), int(time.time()))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -15437,11 +15461,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype, cache=None):
+    def _send(self, code, body, ctype, cache=None, headers=None):
         body = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         if cache:                                     # e.g. "no-cache" — keeps a tab from running a stale bundle
             self.send_header("Cache-Control", cache)
         if getattr(self, "_set_cookie", None):       # auto-inject the token so a client never 401-loops
@@ -15594,7 +15620,13 @@ class Handler(BaseHTTPRequestHandler):
         self._cors_origin = self.headers.get("Origin") if self._origin_ok() else None
         try:
             if p == "/healthz":
-                return self._send(200, "ok", "text/plain")   # liveness probe — exempt from auth
+                # liveness probe — exempt from auth. X-Romp-Boot identifies THIS kernel process: the
+                # restart button reloads only when the id flips (a bare 200 can still be the old kernel
+                # answering between the /restart ack and its SIGTERM). Exposed for cross-origin readers
+                # (the body stays "ok" — external probes compare it).
+                return self._send(200, "ok", "text/plain",
+                                  headers={"X-Romp-Boot": _BOOT_ID,
+                                           "Access-Control-Expose-Headers": "X-Romp-Boot"})
             if p == "/version":                               # build/version report — exempt from auth (no paths, harmless)
                 return self._send(200, json.dumps(_version_info()), "application/json", cache="no-cache")
             if p == "/busy":
@@ -15744,7 +15776,7 @@ class Handler(BaseHTTPRequestHandler):
                 # romp-manager to restart-all — it SIGTERMs this kernel and its exit handler spawns a
                 # fresh one, so new Python code loads (the button then polls /healthz and reloads).
                 # Standalone (no manager) → nothing to restart; the ack still returns.
-                self._send(200, json.dumps({"ok": True, "restarting": True}), "application/json")
+                self._send(200, json.dumps({"ok": True, "restarting": True, "boot": _BOOT_ID}), "application/json")
                 mport = os.environ.get("ROMP_MANAGER_PORT")
                 if mport:
                     try:
