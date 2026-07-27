@@ -654,8 +654,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss.fretry:disabled { opacity: 0.55; cursor: default; }
 
 /* Quarantine (per-host trust): a held message from a directed peer — Approve (accent, the primary
-   action), Edit (neutral), Deny (red, like the Clear/Retry family). The body rides its own read-only
-   textarea above the actions. */
+   action), Edit (neutral, opens the edit dialog), Deny (red, like the Clear/Retry family). The body is
+   a read-only prose block above the actions, shown IN FULL — the human is deciding on this text, so
+   none of it hides behind a scroll (the user 2026-07-26). */
 .fdismiss.fq:disabled { opacity: 0.55; cursor: default; }
 .fdismiss.fq-ok { color: var(--accent); border-color: rgba(156, 210, 255, 0.6); }
 .fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
@@ -663,11 +664,17 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
 .fask-qbody {
   display: block; width: 100%; box-sizing: border-box; margin: 6px 0 2px;
-  font: inherit; font-size: 12px; line-height: 1.45; resize: vertical; min-height: 3.2em;
+  font: inherit; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
   color: #dfe7ee; background: #0c1117; border: 1px solid #35414d; border-radius: 6px; padding: 6px 8px;
 }
-.fask-qbody:read-only { opacity: 0.85; cursor: default; }
-.fask-qbody:not(:read-only) { border-color: var(--accent); opacity: 1; }
+/* The quarantine edit dialog rides the pickdlg overlay/box; the textarea is the editing surface. */
+.qdlg-box { width: min(640px, 96%); }
+.qdlg-text {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; line-height: 1.45;
+  min-height: 14em; resize: vertical;
+  color: #dfe7ee; background: #0c1117; border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px;
+}
+.qdlg-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* ↩ answer row — the user's recorded reply to an agent question (an explicit
    child event on the card, kind:"answer"): decision blue, never dimmed — it's
