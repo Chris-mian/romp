@@ -125,6 +125,17 @@ type ChatEvent = (
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
   | { kind: "compact"; trigger?: string; preTokens?: number; postTokens?: number; summary?: string; ts?: string; uuid?: string }
+  // The /clear boundary (the user 2026-07-27): this session's conversation was cleared and the fresh
+  // episode starts here — a collapsed "Conversation cleared" notice card at the very top of the chat, the
+  // chat twin of the timeline's film-splice seam. Its body lazy-loads the PRE-CLEAR conversation on first
+  // expand (loadEpisode → chatEpisode, cached per boundary), so the cleared history stays one click away
+  // instead of vanishing. `uuid` is "clear:<episode head>" — stable across pushes (the fold key).
+  | { kind: "clear"; clearedAt?: number; episodes?: number; ts?: string; uuid?: string }
+  // LIVE /clear in progress (kernel-driven, event-based off the SDK backend's clearing bracket): an
+  // animated "Clearing conversation…" element between the /clear delivery and the fresh transcript
+  // landing — a stretch that otherwise has NO observable state and used to render as a dead gap, then
+  // "No messages yet." (the user 2026-07-27). No ts → off the rail (transient).
+  | { kind: "clearing"; ts?: string; uuid?: string }
   // LIVE compaction in progress (kernel-driven, event-based): an animated inline element while the session
   // compacts — sits above any queued/provisional message, and is replaced by the "compact" divider above
   // once the boundary lands and compacting clears (the user 2026-07-06). No ts → off the rail (transient).
@@ -168,7 +179,7 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
+type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; retrySuppressed?: boolean; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
@@ -647,7 +658,7 @@ function foldable(label: string, content: HTMLElement, key?: string): HTMLElemen
 // detached from the timeline. Nested → return the bare card; it sits in the parent turn's rail column under
 // its single dot (connected, like any in-turn card). A standalone notice (romp system) IS its own top-level
 // turn, so it keeps the .turn wrapper + dot.
-function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chip: string; logo?: boolean;
+function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact" | "clear"; chip: string; logo?: boolean;
                         head: string; body: HTMLElement; collapsible?: boolean; key?: string;
                         nested?: boolean }): HTMLElement {
   const card = el("div", "notice-card notice-card-" + o.variant + (o.nested ? " notice-nested" : ""));
@@ -1703,6 +1714,8 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
   if (ev.kind === "compacting") return renderCompacting();
+  if (ev.kind === "clearing") return renderClearing();
+  if (ev.kind === "clear") return renderClear(ev);
   if (ev.kind === "reconnecting") return renderReconnecting(ev);
   if (ev.kind === "retrying") return renderRetrying(ev);
   if (ev.kind === "retried") return renderRetried(ev);
@@ -1975,6 +1988,99 @@ function renderCompact(ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement
   // collapsible only when there's a summary to reveal; the "compacted" chip carries identity (no ✦ glyph)
   return noticeCard({ variant: "compact", chip: "compacted", head, body,
                       collapsible: !!summary, key: uuid ? "compact:" + uuid : undefined });
+}
+
+// The /clear boundary card (the user 2026-07-27): the fresh episode opens with a collapsed "Conversation
+// cleared" notice — the chat twin of the timeline's film-splice seam, in the same system-event family as
+// the compact divider. Progressive disclosure: the head is the one-line version; the PRE-CLEAR conversation
+// itself lazy-loads into the body on FIRST expand (loadEpisode → chatEpisode), rendered read-only through
+// the same per-event renderers as the live transcript, and cached per boundary uuid so the chat's per-push
+// rebuilds never re-fetch or re-ask the kernel. Auto-collapsed by default, like the system card beneath it.
+const episodeCache = new Map<string, { events: ChatEvent[]; truncated?: number; error?: string }>();
+const episodePendingKey = new Map<string, string>();   // sid → the fold key whose fetch is in flight
+
+function fillClearBody(body: HTMLElement, got: { events: ChatEvent[]; truncated?: number; error?: string }): void {
+  while (body.firstChild) body.removeChild(body.firstChild);
+  if (got.error) {
+    const p = el("div", "notice-plain");
+    p.textContent = got.error;
+    body.appendChild(p);
+    return;
+  }
+  if (got.truncated) {
+    const n = el("div", "clear-truncated");
+    n.textContent = `… ${got.truncated} earlier event${got.truncated === 1 ? "" : "s"} of the cleared conversation not shown`;
+    body.appendChild(n);
+  }
+  const wrap = el("div", "clear-episode");
+  for (const e of got.events) {
+    try { wrap.appendChild(renderEvent(e)); }
+    catch { /* one malformed historical event must not blank the whole fold */ }
+  }
+  body.appendChild(wrap);
+}
+
+function renderClear(ev: Extract<ChatEvent, { kind: "clear" }>): HTMLElement {
+  const sid = renderingSid || "";
+  const key = "clear:" + (ev.uuid || sid);
+  const head = "Conversation cleared — a fresh one starts here";
+  const body = el("div", "clear-body");
+  body.dataset.clearKey = key;
+  const cached = episodeCache.get(key);
+  if (cached) fillClearBody(body, cached);
+  else {
+    // placeholder until the first expand fetches — the loader motif (pulsing accent dots), per the
+    // "show the romp loader first" rule; replaced in place when chatEpisode lands
+    const p = el("div", "notice-plain clear-loading");
+    p.appendChild(metaDots());
+    p.appendChild(document.createTextNode(" Loading the cleared conversation…"));
+    body.appendChild(p);
+  }
+  const turn = noticeCard({ variant: "clear", chip: "cleared", head, body, collapsible: true, key });
+  // Fetch on FIRST expand (ride the same head click that toggles the fold — noticeCard owns the toggle):
+  // one request per boundary, deduped by the pending map; re-renders hit the cache instead.
+  const headEl = turn.querySelector(".notice-head");
+  headEl?.addEventListener("click", () => {
+    const card = turn.querySelector(".notice-card") || turn;
+    if (!card.classList.contains("notice-open")) return;                  // just collapsed — nothing to load
+    if (episodeCache.has(key) || episodePendingKey.get(sid) === key) return;
+    episodePendingKey.set(sid, key);
+    vscodeApi?.postMessage({ type: "loadEpisode", id: sid });
+  });
+  return turn;
+}
+
+// chatEpisode: the kernel's one-shot reply to loadEpisode — cache it under the key the expand recorded,
+// then fill the (possibly still-open) card body in place, wherever it currently sits in the DOM.
+function chatEpisode(m: any): void {
+  const sid = String(m.id || "");
+  const key = episodePendingKey.get(sid);
+  if (!key) return;
+  episodePendingKey.delete(sid);
+  const got = { events: (m.events || []) as ChatEvent[], truncated: m.truncated || 0,
+                error: m.error ? String(m.error) : undefined };
+  episodeCache.set(key, got);
+  document.querySelectorAll<HTMLElement>(".clear-body").forEach((b) => {
+    if (b.dataset.clearKey === key) fillClearBody(b, got);
+  });
+}
+
+// LIVE /clear in progress (the user 2026-07-27): an animated inline element between the /clear delivery
+// and the fresh transcript landing — the loader dots motif, sibling of the reconnecting element. Without
+// it that stretch showed a dead gap and then a bare "No messages yet.". Event-based off the SDK backend's
+// clearing bracket; it vanishes the instant the fork lands, when the "Conversation cleared" boundary card
+// (renderClear) takes over as the durable record.
+function renderClearing(): HTMLElement {
+  const turn = el("div", "turn turn-clearing");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "clearing-line");
+  line.appendChild(metaDots());   // the pulsing accent-blue dots — "it's romp, working"
+  const txt = el("span", "clearing-text");
+  txt.textContent = "Clearing conversation…";
+  line.appendChild(txt);
+  line.title = "starting a fresh conversation — the cleared one stays one click away, behind the divider that lands here";
+  turn.appendChild(line);
+  return turn;
 }
 
 // LIVE compaction in progress (the user 2026-07-06): an animated inline element in the chat flow while the
@@ -3169,7 +3275,7 @@ function renderTabs() {
     else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit) ? "tab-blocked" : "tab-retrying");
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
-    else if (st === "compacting") tab.classList.add("tab-compacting");
+    else if (st === "compacting" || st === "clearing") tab.classList.add("tab-compacting");   // both: a context op in flight
     else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
     if (s.status.faded) tab.classList.add("at-rest");
     // WORKING shows a yellow dot; AWAITING-BG the same dot in straw — matching the chip's color, so the
@@ -5877,7 +5983,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 const CHIP_LABEL: Record<ChipState, string> = {
   working: "Working", ready: "Ready", awaiting: "Blocked",
   awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — straw, not working-yellow (the user 2026-07-13)
-  idle: "Idle", closed: "Closed", compacting: "Compacting", blocked: "API error",
+  idle: "Idle", closed: "Closed", compacting: "Compacting", clearing: "Clearing", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
   interrupting: "Interrupting…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
 };
@@ -5948,6 +6054,10 @@ function updateStatusline() {
   } else if (s.status.state === "compacting") {
     const c = el("span", "compacting-line");
     c.textContent = "⟳ Compacting context…";
+    sl.appendChild(c);
+  } else if (s.status.state === "clearing") {
+    const c = el("span", "compacting-line");   // same in-progress line treatment as compacting (one style per info type)
+    c.textContent = "⟳ Clearing conversation…";
     sl.appendChild(c);
   } else {
     const chip = el("span", `chip chip-${s.status.state}`);
@@ -6590,6 +6700,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
   else if (m.type === "chatTail") chatTail(m);
   else if (m.type === "chatHead") chatHead(m);
+  else if (m.type === "chatEpisode") chatEpisode(m);
   else if (m.type === "update") update(m);
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") {

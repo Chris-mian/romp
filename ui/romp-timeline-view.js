@@ -2267,7 +2267,9 @@ class TimelinePanel {
     const compactingNow = (s) => s.state === 'compacting' || (this._compactClicked[s.id] != null && (nowMs - this._compactClicked[s.id]) < 6000);
     // gutter = name column (left-aligned) + chip column (every chip shares an x,
     // like the dashboard's badge column). Names left-aligned, chips follow.
-    const visB = vis.map((s) => compactingNow(s)
+    const visB = vis.map((s) => s.state === 'clearing'
+      ? { label: 'Clearing', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }     // a /clear in flight — same context-op teal as compacting
+      : compactingNow(s)
       ? { label: 'Compacting', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }   // NO %: the scraped pct was laggy/inaccurate, and the SDK offers none (compact_progress events are lifecycle-only — investigated 2026-07-02); the scan-bar is the live cue
       : badgeFor(s));
     const visC = vis.map((s) => ctxInfo(s));
@@ -2417,7 +2419,7 @@ class TimelinePanel {
         const bh = lit ? eh : BAR_H;
         const bar = el('rect', { x: bx, y: y - bh / 2, width: bw, height: bh, rx: bh / 2, fill: s.color, opacity: lit ? 1 : 0.9 });
         svg.appendChild(bar);
-        const act = s.state === 'working' || s.state === 'permission' || s.state === 'awaiting' || s.state === 'awaitingBg' || s.state === 'compacting';
+        const act = s.state === 'working' || s.state === 'permission' || s.state === 'awaiting' || s.state === 'awaitingBg' || s.state === 'compacting' || s.state === 'clearing';
         const ongoing = s.live && act && t.end > t.start && (data.now - t.end) <= 5;
         const hit = el('rect', { x: bx, y: y - 7, width: bw, height: 14, fill: 'transparent' }); hit.style.cursor = 'pointer';
         const html = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(t.start) + '–' + clock(t.end) + '</span></div>' + this.barBody(t, ongoing);

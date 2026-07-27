@@ -802,6 +802,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .turn-reconnecting .dot, .turn-reconnecting .time-marker { top: 10px; }
 .turn-reconnecting .dot { background: var(--accent); border: none; }
 .reconnecting-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+/* LIVE /clear in progress — the loader dots + a muted "Clearing conversation…" line; a transient sibling
+   of the reconnecting element (same treatment: an in-flight romp-driven session operation). */
+.turn-clearing { padding-top: 4px; padding-bottom: 4px; }
+.turn-clearing .dot, .turn-clearing .time-marker { top: 10px; }
+.turn-clearing .dot { background: var(--accent); border: none; }
+.clearing-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
 /* LIVE api_retry (rate-limit/overload backoff) — the loader dots + an AMBER "API retrying…" line, tinted the
    SAME retrying status color as the tab border (#e67e22 — a STATUS color, not accent chrome) so the chat
    element reads as that state; a transient sibling of the compacting/reconnecting elements. */
@@ -1461,6 +1467,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .notice-card-compact { border-left-color: var(--st-compacting-bg, #14b8a6); }
 .notice-chip-compact { color: var(--st-compacting-bg, #14b8a6); border-color: var(--st-compacting-bg, #14b8a6); }
 .notice-dot-compact { border-color: var(--st-compacting-bg, #14b8a6); }
+/* the /clear boundary — QUIET, like the timeline's film-splice seam: a dim frame (this is a historical
+   marker, not a live status), with the pre-clear conversation nested in the body once lazy-loaded. */
+.notice-card-clear { border-left-color: var(--dim); }
+.notice-chip-clear { color: var(--dim); border-color: var(--dim); }
+.notice-dot-clear { border-color: var(--dim); }
+.clear-loading { display: inline-flex; align-items: center; gap: 8px; }
+.clear-truncated { color: var(--dim); padding: 4px 0 6px; }
+/* the nested pre-clear transcript: same renderers as the live chat, scoped so its rail hugs the card */
+.clear-episode { border-top: 1px solid var(--box-border); margin-top: 4px; padding-top: 4px; }
 
 /* the pinned "system context" card (the user 2026-06-19): a proper bordered BOX at the very top of the
    transcript that looks complete even when collapsed (a ⚙ header + one-line summary + caret), expanding
