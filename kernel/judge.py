@@ -4953,7 +4953,18 @@ def _plan_session(fsid, path, now):
         if _placed_key(store["placements"], key, live):   # drift-safe: a recorded key whose parse t has since
             continue                                  # shifted still dedups (this phase already placed)
         if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id, live):
-            continue                                  # work already placed (legacy/fast segment) → the run is moot
+            # Work already placed (legacy/fast segment) → this phase is moot, a FINAL ruling like the
+            # courier's "fyi" below. RETIRE it rather than skipping: a bare `continue` left the key
+            # ABSENT, and auto-nudge's placement gate (kernel `_auto_nudge_session`, `_unplanned`) asks
+            # `_placed_key` of EVERY unit plan_units yields — so an un-retired moot phase read as pending
+            # on every tick and silenced nudges for the WHOLE session, forever, with no visible symptom
+            # beyond a card stuck 'working' (the user 2026-07-27). The shape that hits this: a turn that
+            # ended with no assistant work earns a `#p` prompt-run (the 2026-07-25 API-error fix), while
+            # every store written BEFORE that fix already carries its bare work key. Retiring heals those
+            # stores in one pass and reopens the gate without the gate needing to know about mootness.
+            store["placements"][key] = None
+            retired = True
+            continue
         if phase == "delegation":
             tgt = _placement_of(store["placements"], seg_id, live)   # the COURIER's verdict for this peer segment
             if _placed_key(store["placements"], seg_id, live) and not (isinstance(tgt, str) and tgt in store["nodes"]):
