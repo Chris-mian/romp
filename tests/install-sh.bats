@@ -55,10 +55,37 @@ PY
     [ "$(count_cmd Stop tmux-status.sh)" = "1" ]
     [ "$(count_cmd UserPromptSubmit romp-summarize.sh)" = "1" ]
     # regression: a re-run used to FOLLOW the existing skill dir-symlink and drop a new link INSIDE
-    # the repo (claude/skills/romp/romp → an absolute personal path). ln -sfn replaces the link.
-    [ ! -e "$ROMP_DIR/claude/skills/romp/romp" ]
+    # the repo (claude/skills/romp-postal/romp-postal → an absolute personal path). ln -sfn replaces
+    # the link.
     [ ! -e "$ROMP_DIR/claude/skills/romp-postal/romp-postal" ]
+    [ -L "$HOME/.claude/skills/romp-postal" ]
+}
+
+@test "install.sh: upgrading unlinks the retired romp skill, leaving no dangling link" {
+    # An install from before 2026-07-27 has ~/.claude/skills/romp pointing at a directory this repo
+    # no longer ships. Upgrading must clear it: a dangling symlink puts a broken skill in front of
+    # every session.
+    mkdir -p "$HOME/.claude/skills"
+    ln -sfn "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
     [ -L "$HOME/.claude/skills/romp" ]
+
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+
+    [ ! -L "$HOME/.claude/skills/romp" ]
+    [ ! -e "$HOME/.claude/skills/romp" ]
+    [ -L "$HOME/.claude/skills/romp-postal" ]      # its neighbour is untouched
+}
+
+@test "install.sh: a real directory named romp survives — only a symlink is removed" {
+    # Someone else's skill of that name is theirs, not ours to delete.
+    mkdir -p "$HOME/.claude/skills/romp"
+    echo "mine" > "$HOME/.claude/skills/romp/SKILL.md"
+
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+
+    [ -f "$HOME/.claude/skills/romp/SKILL.md" ]
 }
 
 @test "install.sh: preflight fails clearly when node is missing" {

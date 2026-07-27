@@ -9,8 +9,6 @@ place by `install.sh`):
   notices, `<!-- romp-* -->` comments) as bookkeeping to ignore.
 - **`romp-postal.mcp.json`** — registers the postal MCP server
   (`postal/postal_service.py`, via the `romp-postal-service` command on PATH).
-- **`skills/romp/`** — the `/romp` skill: convert the current plain terminal
-  session into a romp-managed one.
 - **`skills/romp-postal/`** — the full postal-service guide, loaded on demand
   (sessions get only a compact pointer at start — see
   `hooks/romp-postal-context.sh`).

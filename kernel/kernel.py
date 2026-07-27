@@ -3581,7 +3581,7 @@ def _folder_opener():
     value is a shell-style command; a `{dir}` placeholder is substituted with the clicked path (else the path
     is appended as the last argument). Empty → the OS default opener (see _open_folder).
 
-    Examples (documented in docs/getting-started.md and the romp skill):
+    Examples (documented in docs/reference.md):
       open -a Ghostty {dir}          # macOS: a new Ghostty terminal in that folder
       ghostty --working-directory={dir}   # Linux
       code {dir}                     # open the folder in VS Code instead
