@@ -34,6 +34,22 @@ fi
 # without touching the editors on the machine running it.
 PACKAGE_ONLY="${ROMP_EXT_PACKAGE_ONLY:-}"
 
+# ── deps + bundles: ALWAYS, before any editor check ───────────────────
+# dist/ is NOT just the extension's — the kernel serves these same bundles to the
+# BROWSER dashboard (kernel.py's DIST/_ensure_bundles point at vscode-extension/dist).
+# So the build must never be gated on an editor being present. It used to be: the
+# editor-CLI check below sat here, above `npm install`, and exited 0 on a machine with
+# no VS Code family installed — leaving node_modules AND dist absent, so every dashboard
+# pane fetched /dist/*.js and got a 404 and the UI came up blank (a browser-only Linux
+# box, the user 2026-07-27). The old skip message even claimed "built dist/ is ready",
+# which was never true on that path. Editor presence gates only the PACKAGE + INSTALL
+# steps at the bottom, which is all it ever meant.
+echo "==> npm install"
+npm install --silent   # idempotent; ensures dev deps (esbuild, types) exist
+
+echo "==> build"
+node esbuild.js        # → dist/: the VSIX's code AND the browser dashboard's bundles
+
 # ── collect editor CLIs (dedup by resolved path) ──────────────────────
 declare -a CLIS=()
 add_cli() {
@@ -53,12 +69,10 @@ for c in code code-insiders cursor codium; do
 done
 
 if [ "${#CLIS[@]}" -eq 0 ] && [ -z "$PACKAGE_ONLY" ]; then
-  echo "!! No VS Code-family editor CLI found — skipping install (built dist/ is ready for F5)."
+  echo "==> dist/ built — the browser dashboard is ready."
+  echo "    No VS Code-family editor CLI found, so nothing to install into; skipping the .vsix."
   exit 0
 fi
-
-echo "==> npm install"
-npm install --silent   # idempotent; ensures dev deps (esbuild, types) exist
 
 # Set the packaged version WITHOUT committing it (see the header note for why).
 # Patch = epoch seconds: monotonic by construction, so every install is strictly
@@ -74,9 +88,6 @@ cp package.json package.json.orig
 
 echo "==> stamp build version"
 node -e 'const fs=require("fs"),f="package.json",p=JSON.parse(fs.readFileSync(f));const v=p.version.split(".");v[2]=String(Math.floor(Date.now()/1000));p.version=v.join(".");fs.writeFileSync(f,JSON.stringify(p,null,2)+"\n");console.log("    build version -> "+p.version+" (not committed)");'
-
-echo "==> build"
-node esbuild.js
 
 # Fixed output name (overwritten each run) so .vsix artifacts don't pile up.
 echo "==> package .vsix"

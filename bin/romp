@@ -584,6 +584,7 @@ EOF
     _romp_cmd "romp update [host]"         romp-update  "Push this machine's committed romp to attached remotes and restart them"
     _romp_cmd "romp up"                    romp-manager "Run the kernel manager in the foreground (rare — the login service runs it)"
     _romp_cmd "romp version"               romp-version "Versions across the parts (tree, kernel, served vs built bundles)"
+    _romp_cmd "romp uninstall"             romp-uninstall "Remove romp's installed footprint (--purge also deletes recorded state)"
     _romp_cmd "romp help"                  -            "Show this help"
     cat <<'EOF'
 
@@ -655,6 +656,15 @@ fi
 # `--version` stays as an alias: it's the one flag every CLI answers.
 if [[ "${1:-}" == "version" || "${1:-}" == "--version" ]]; then
     exec romp-version
+fi
+
+# `romp uninstall` — undo install.sh (service, ~/.claude wiring, venv, build artifacts, PATH line).
+# A verb rather than a README section because the footprint spans five places and reconstructing it
+# by hand is how a "from scratch" reinstall ends up landing on leftovers. Delegates to
+# romp-uninstall, which prompts before doing anything and needs --purge to touch recorded state.
+if [[ "${1:-}" == "uninstall" ]]; then
+    shift
+    exec "$(dirname "$(readlink -f "$0")")/romp-uninstall" "$@"
 fi
 
 # `romp update [host...]` — PUSH this machine's committed romp to attached REMOTE kernels + restart them,
@@ -1065,6 +1075,46 @@ if [[ -n "$session_arg" ]] && ! $use_tmux && ! $resume; then
     exit 1
 fi
 
+# A lowercase v4 uuid for --session-id, from whichever source this host actually has.
+# uuidgen is NOT universal: on Debian/Ubuntu it ships in uuid-runtime, which a minimal
+# install omits — and there it failed to an EMPTY sid, so claude launched with a bare
+# `--session-id` and the session broke with nothing pointing at the cause (the user
+# 2026-07-27, first Linux install). python3 is already a hard romp dependency (install.sh
+# preflights it), so the fallback can never be the missing one; the kernel's random uuid
+# source is the last resort for a stripped container.
+_romp_uuid() {
+    if command -v uuidgen >/dev/null 2>&1; then
+        uuidgen | tr 'A-Z' 'a-z'
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import uuid; print(uuid.uuid4())'
+    elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+        cat /proc/sys/kernel/random/uuid
+    else
+        echo "romp: no way to generate a session id (install uuid-runtime, or python3)" >&2
+        return 1
+    fi
+}
+
+# --- Everything below here IS the tmux launcher: require tmux, loudly ---------
+# Only `romp new -t` and `romp resume` reach this point (plain `romp new` returned
+# above, over the kernel API, needing no tmux). tmux is OPTIONAL for romp as a whole
+# — a host without it runs SDK sessions fine and the kernel keeps its tmux backend
+# disabled — but these two paths cannot work without it, so say the remedy instead
+# of letting a bare "tmux: command not found" fall out of the launcher (a fresh
+# Linux box with no tmux, the user 2026-07-27). Same no-silent-fallback rule as the
+# SDK branch above: name the fix, don't quietly do something else.
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "romp: tmux isn't installed — terminal sessions need it." >&2
+    echo "  Linux: your distro's tmux package (e.g. sudo apt install tmux)    macOS: brew install tmux" >&2
+    if $resume; then
+        echo "  Without it, resume the session from the dashboard instead: romp" >&2
+    else
+        echo "  Or start it without a terminal (runs in the kernel, drive it from the dashboard):" >&2
+        echo "      romp new ${session_arg:-<name>}" >&2
+    fi
+    exit 1
+fi
+
 # --- Custom name-based resume picker ----------------------------------------
 # `romp resume` (without an explicit session id) shows OUR full-screen picker of
 # resumable named sessions instead of Claude's auto-summary picker. Picking one
@@ -1165,7 +1215,7 @@ if $resume; then
     fi
     claude_cmd="claude --resume $resume_id --name \"$display\""
 else
-    sid="$(uuidgen | tr 'A-Z' 'a-z')"
+    sid="$(_romp_uuid)"
     claude_cmd="claude --name \"$display\" --session-id $sid"
 fi
 

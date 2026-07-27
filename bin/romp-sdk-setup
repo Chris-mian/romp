@@ -35,6 +35,20 @@ if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; t
   exit 1
 fi
 
+# Debian/Ubuntu ship a python3 whose venv module cannot bootstrap pip: ensurepip is split into a
+# separate python3-venv package. `python3 -m venv` there still creates bin/python symlinks and THEN
+# fails, leaving a pip-less husk — so the naive "does bin/python exist" check below would sail past a
+# broken venv and die at the pip line with a bare "No such file or directory". Check the capability up
+# front and name the package (a fresh Ubuntu box, the user 2026-07-27, where this failed silently and
+# left the SDK backend — what plain `romp new` uses — dead with no visible reason).
+if ! "$PY" -c 'import ensurepip' >/dev/null 2>&1; then
+  echo "romp-sdk-setup: $PY has no 'ensurepip' — it cannot create a venv with pip in it." >&2
+  echo "  Debian/Ubuntu: sudo apt install python$(pyver "$PY")-venv   (or: sudo apt install python3-venv)" >&2
+  echo "  Then re-run: $0" >&2
+  echo "  romp still runs without this; only the SDK backend (plain \`romp new\`) is disabled." >&2
+  exit 1
+fi
+
 mkdir -p "$STATE"
 # a venv built with a DIFFERENT python than the kernel will run is worse than none — the kernel
 # imports its site-packages in-process. Rebuild on mismatch.
@@ -42,8 +56,11 @@ if [ -x "$VENV/bin/python" ] && [ "$(pyver "$VENV/bin/python")" != "$(pyver "$PY
   echo "romp-sdk-setup: venv python $(pyver "$VENV/bin/python") != kernel python $(pyver "$PY") — rebuilding"
   rm -rf "$VENV"
 fi
-if [ ! -x "$VENV/bin/python" ]; then
+# Gate on pip, not just python: a previous run that died mid-bootstrap (see ensurepip above) leaves
+# bin/python present but bin/pip absent, and gating on python alone would skip the rebuild forever.
+if [ ! -x "$VENV/bin/python" ] || [ ! -x "$VENV/bin/pip" ]; then
   echo "romp-sdk-setup: creating venv at $VENV (python: $PY)"
+  rm -rf "$VENV"
   "$PY" -m venv "$VENV"
 fi
 "$VENV/bin/pip" install -q --upgrade pip >/dev/null

@@ -20,6 +20,10 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+# These exercise tmux BEHAVIOUR (they stub subprocess.run and assert on the argv). Declare a tmux
+# host explicitly so they assert the same thing on a machine without tmux installed, where the
+# backend is otherwise inert by design (see TmuxBackend.available).
+os.environ["ROMP_TMUX_AVAILABLE"] = "1"
 os.environ["ROMP_SERVE_TOKEN"] = "testtok"            # known token for the serve-security test
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
