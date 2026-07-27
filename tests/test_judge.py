@@ -5994,6 +5994,78 @@ class QuoteTitleHeal(unittest.TestCase):
         self.assertEqual(jd._heal_quote_titles(store), 0, "healed titles never re-enter (event-gated)")
 
 
+class FloorTitleHeal(unittest.TestCase):
+    """Raw-head floor titles (the user 2026-07-27): a judge timeout burst at mint time left a
+    _coerce_place card titled with the verbatim head of the user's message, and the prompt caption
+    that landed minutes later never reached it — nothing retitles an existing node. _heal_floor_titles
+    retitles from the landed caption deterministically (no LLM, no age limit; cleared cards excepted),
+    wired into every planner pass beside _heal_quote_titles."""
+
+    SEG = SID + ":1781099000:aabbccdd"
+    QUOTE = "the deploy script keeps wiping the staging config how do I stop that from happening"
+    GIST = "stopping the deploy script from wiping the staging config"
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self._td))
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _node(self, **kw):
+        nd = {"id": SID + ":g1", "text": jd._seg_label(self.QUOTE), "quote": self.QUOTE,
+              "why": jd._COERCE_WHY, "trail": [self.SEG]}
+        nd.update(kw)
+        return nd
+
+    def _land_caption(self):
+        jd.CAPDIR.mkdir(parents=True, exist_ok=True)
+        (jd.CAPDIR / (SID + ".jsonl")).write_text(
+            json.dumps({"id": self.SEG + "#p", "grain": "prompt", "caption": self.GIST}) + "\n")
+
+    def test_coerced_mint_carries_the_shared_why_and_floor_label(self):
+        op = jd._coerce_place([], "USER ASKED: " + self.QUOTE)[0]
+        self.assertEqual(op["why"], jd._COERCE_WHY, "mint and heal share ONE why definition")
+        self.assertEqual(op["text"], jd._seg_label(self.QUOTE), "no gist at mint time → the floor label")
+        self.assertEqual(jd._coerce_place([], "USER ASKED: " + self.QUOTE, title=self.GIST)[0]["text"],
+                         self.GIST, "a gist already landed at mint time is used directly — nothing to heal")
+
+    def test_heal_retitles_once_the_caption_lands(self):
+        store = {"nodes": {SID + ":g1": self._node()}}
+        self.assertEqual(jd._heal_floor_titles(SID, store), 0, "no caption yet → nothing to do, no crash")
+        self._land_caption()
+        self.assertEqual(jd._heal_floor_titles(SID, store), 1)
+        self.assertEqual(store["nodes"][SID + ":g1"]["text"], self.GIST,
+                         "the card wears the same gist the timeline dot and Analyzing card show")
+        self.assertEqual(jd._heal_floor_titles(SID, store), 0, "healed once — the gate is closed for good")
+
+    def test_heal_leaves_cleared_retitled_and_uncoerced_nodes_alone(self):
+        self._land_caption()
+        cleared = self._node(id=SID + ":g1", cleared=True)
+        retitled = self._node(id=SID + ":g2", text="A title the planner chose later")
+        uncoerced = self._node(id=SID + ":g3", why="filed under the release card")
+        store = {"nodes": {n["id"]: n for n in (cleared, retitled, uncoerced)}}
+        self.assertEqual(jd._heal_floor_titles(SID, store), 0)
+        self.assertEqual(store["nodes"][SID + ":g1"]["text"], jd._seg_label(self.QUOTE),
+                         "a cleared card is past caring — never rewritten")
+        self.assertEqual(store["nodes"][SID + ":g2"]["text"], "A title the planner chose later",
+                         "a planner retitle outranks the heal, permanently")
+
+
+class JudgeCallAlarm(unittest.TestCase):
+    """The judge-call wall clock (the user 2026-07-27): 45s proved trigger-happy — an API slow patch
+    killed a burst of healthy-but-slow calls and the coerce floor minted raw-titled cards from the
+    wreckage. One permissive constant, wired into the perl alarm the CLI runs under."""
+
+    def test_alarm_is_permissive_and_wired_into_the_cmd(self):
+        self.assertGreaterEqual(jd.CALL_ALARM_S, 120, "a slow call that lands beats a killed one")
+        cmd = jd._judge_cmd("some-model", "a system prompt")
+        self.assertEqual(cmd[:3], ["perl", "-e", "alarm %d; exec @ARGV" % jd.CALL_ALARM_S],
+                         "the alarm the CLI runs under IS the constant — the two can't drift")
+
+
 class SeamRegrowth(unittest.TestCase):
     """Settle-time seam (plans/segment-regrowth.md): a top goal that settles while its placed segment
     keeps GROWING splits that segment at the settle moment — the post-close tail becomes a fresh,
