@@ -135,9 +135,11 @@ silently parking mail.
 
 ## Sessions, revival, and search
 
-A Romp session is a name, not a conversation. The name survives `/clear`,
-relaunches, and kernel restarts, so `api` is the same `api` whenever you come
-back to it.
+A session keeps its name through anything that would otherwise end it. `/clear`
+starts the agent on a blank slate, a relaunch starts it over, the kernel
+restarts: each of those is a new conversation underneath, but Romp files them
+all under the one name. So `api` is the same `api` whenever you come back to it,
+in the same place on your board, with everything Romp knows about it intact.
 
 Closed sessions come back. Type a closed session's name into the picker and Romp
 offers to revive it, with its history intact.
