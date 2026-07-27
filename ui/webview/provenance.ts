@@ -1,12 +1,13 @@
 // Card-age provenance (the user 2026-07-27): the card header's "Nm ago" stamps the card's NEWEST
 // event — a completed card's age is when it was marked done — which hides where the thread CAME from.
-// Hovering the stamp now tells the story: when the goal was started, each sub-item with the time it
-// landed (or was asked), the root's own verdict events when shipped, and what the visible stamp itself
-// marks. Rendered as a native `title` tooltip: zero extra DOM, click-safe across re-renders.
+// Hovering the stamp tells the story: when the goal was started, the root's own verdict events, each
+// sub-item with the time it landed, and what the visible stamp itself marks.
 //
-// Pure assembly, executed directly by provenance.test.ts. The wording/format helpers stay in feed.ts
-// (relAge / clockHM / logPhrase are pinned there and used by a dozen other surfaces) and are injected,
-// so this module owns only the story's structure: what appears, in what order, with which timestamp.
+// Emits STRUCTURED rows ({when, what}) rather than a text blob (the user, same day: the native title
+// tooltip was dense and unaligned) — the feed renders them as a styled popover whose time column
+// aligns, reusing the modal history-row vocabulary. Pure assembly, executed by provenance.test.ts;
+// the wording/format helpers stay in feed.ts (relAge / clockHM / logPhrase are pinned there and used
+// by a dozen other surfaces) and are injected, so this module owns only the story's structure.
 
 export interface LogRow { kind: string; src: string; why?: string | null; at?: number | null; evT?: number | null; }
 export interface ProvNode {
@@ -19,8 +20,11 @@ export interface ProvFmt {
   clock: (t: number) => string;          // feed clockHM
   phrase: (r: LogRow) => string;         // feed logPhrase
 }
+// one popover line: `when` is the aligned time cell ("Nm ago · HH:MM"), `what` the story cell.
+// kind lets the renderer treat the closing stamp line as its own section (separator above).
+export interface ProvRow { when: string; what: string; kind: "start" | "event" | "sub" | "more" | "stamp"; }
 
-const SUB_CAP = 8;                       // a huge tree stays a glanceable tooltip, not a scroll
+const SUB_CAP = 8;                       // a huge tree stays a glanceable popover, not a scroll
 
 function stamp(t: number, now: number, f: ProvFmt): string {
   return f.rel(now - t) + " · " + f.clock(t);
@@ -34,13 +38,18 @@ export function rootStart(it: ProvItem): number {
   return it.tree.length ? Math.min(...it.tree.map((n) => n.t)) : it.t;
 }
 
-export function provenanceTitle(it: ProvItem, now: number, f: ProvFmt): string {
-  const lines = ["started " + stamp(rootStart(it), now, f)];
+// what the visible "Nm ago" itself marks, so the stamp is self-explaining
+function stampWhat(column: string): string {
+  return column === "completed" ? "marked done" : column === "needs_input" ? "blocked" : "last update";
+}
+
+export function provenanceRows(it: ProvItem, now: number, f: ProvFmt): ProvRow[] {
+  const rows: ProvRow[] = [{ when: stamp(rootStart(it), now, f), what: "started", kind: "start" }];
   // the root's own verdict rows (asked you / you answered / …) — only shipped for non-done nodes
   const root = it.tree.find((n) => n.id === it.itemId);
   for (const r of root?.log ?? []) {
     const rt = r.at || r.evT || 0;
-    if (rt) lines.push(f.phrase(r) + " " + stamp(rt, now, f));
+    if (rt) rows.push({ when: stamp(rt, now, f), what: f.phrase(r), kind: "event" });
   }
   // sub-items in mint order: a resolved sub is stamped when it RESOLVED (mt — where it landed), an
   // open one when it was minted (its resolution hasn't happened yet)
@@ -49,21 +58,18 @@ export function provenanceTitle(it: ProvItem, now: number, f: ProvFmt): string {
     const mark = n.status === "done" ? "✓" : n.status === "question" ? "⏸" : "·";
     const at = n.status === "open" ? n.t : (n.mt || n.last || n.t);
     const txt = n.text.length > 48 ? n.text.slice(0, 47) + "…" : n.text;
-    lines.push(mark + " " + txt + " — " + stamp(at, now, f));
+    rows.push({ when: stamp(at, now, f), what: mark + " " + txt, kind: "sub" });
   }
-  if (subs.length > SUB_CAP) lines.push("…and " + (subs.length - SUB_CAP) + " more");
-  // what the visible "Nm ago" itself marks, so the stamp is self-explaining
-  const what = it.column === "completed" ? "marked done"
-    : it.column === "needs_input" ? "blocked" : "last update";
-  lines.push(what + " " + stamp(it.t, now, f));
-  return lines.join("\n");
+  if (subs.length > SUB_CAP) rows.push({ when: "", what: "…and " + (subs.length - SUB_CAP) + " more", kind: "more" });
+  rows.push({ when: stamp(it.t, now, f), what: stampWhat(it.column), kind: "stamp" });
+  return rows;
 }
 
 // a GROUP card folds N sibling asks from one typed prompt — its stamp's story is the fold itself
-export function provenanceGroupTitle(memberStarts: number[], t: number, now: number, f: ProvFmt): string {
-  const lines: string[] = [];
-  if (memberStarts.length) lines.push("started " + stamp(Math.min(...memberStarts), now, f));
-  lines.push(memberStarts.length + " cards from one prompt");
-  lines.push("last update " + stamp(t, now, f));
-  return lines.join("\n");
+export function provenanceGroupRows(memberStarts: number[], t: number, now: number, f: ProvFmt): ProvRow[] {
+  const rows: ProvRow[] = [];
+  if (memberStarts.length) rows.push({ when: stamp(Math.min(...memberStarts), now, f), what: "started", kind: "start" });
+  rows.push({ when: "", what: memberStarts.length + " cards from one prompt", kind: "sub" });
+  rows.push({ when: stamp(t, now, f), what: "last update", kind: "stamp" });
+  return rows;
 }
