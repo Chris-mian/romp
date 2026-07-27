@@ -712,10 +712,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
   const awaitWhy = el("span", "fask-awaiting-why");
   awaitSpin.append(awaitGlyph, awaitWhy);
-  // QUARANTINE body: a held message from a DIRECTED peer, shown read-only (peer content, never auto-run).
-  // Edit unlocks it; Approve delivers the textarea's value (edited or not). Only on a quarantine card.
-  const qbody = el("textarea", "fask-qbody") as HTMLTextAreaElement;
-  qbody.readOnly = true; qbody.rows = 3; qbody.style.display = "none";
+  // QUARANTINE body: a held message from a DIRECTED peer, shown IN FULL, read-only (peer content, never
+  // auto-run; the human is deciding on it, so clipping it works against the decision — the user
+  // 2026-07-26). Editing happens in the Edit modal, never inline. Only on a quarantine card.
+  const qbody = el("div", "fask-qbody");
+  qbody.style.display = "none";
   main.append(row1, row2, row3, secs, qbody, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
@@ -1366,30 +1367,33 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       a._revive.disabled = true; a._revive.textContent = "Reviving…";
     };
   }
-  // QUARANTINE (per-host trust) → Approve / Edit / Deny a held message from a DIRECTED peer. The body is
-  // read-only (peer content, never auto-run); Edit unlocks it; Approve delivers the textarea's value
-  // (edited or not), Deny drops it. No optimistic clear — the next kernel push removes the card on success,
-  // or re-renders it (buttons re-enabled) if the bus refused (e.g. the recipient is no longer live; the
-  // warn toast says why). Human-in-the-loop is the whole point of directed trust.
+  // QUARANTINE (per-host trust) → Approve / Edit / Deny a held message from a DIRECTED peer. The body
+  // shows in full, read-only (peer content, never auto-run); Edit opens a modal editor (the user
+  // 2026-07-26 — inline unlock was cramped and a re-render could eat the edit); Approve delivers,
+  // Deny drops. The decision CARRIES THE CARD'S sid so the federation manager routes it to the kernel
+  // that actually holds the file — without it a remote hold's verdict landed on the local kernel and
+  // Approve silently did nothing (same shape as the askClear routing fix, 2026-07-02). No optimistic
+  // clear — the next kernel push removes the card on success, or re-renders it (buttons re-enabled)
+  // if the bus refused (e.g. the recipient is no longer live; the warn toast says why).
+  // Human-in-the-loop is the whole point of directed trust.
   const isQuar = it.blocked?.state === "quarantine";
-  const qBody = a._qBody as HTMLTextAreaElement;
+  const qBody = a._qBody as HTMLElement;
   qBody.style.display = isQuar ? "" : "none";
   for (const b of [a._qApprove, a._qEdit, a._qDeny] as HTMLButtonElement[]) b.style.display = isQuar ? "" : "none";
   if (isQuar && it.blocked) {
     const mid = it.blocked.mid || "";
-    if (document.activeElement !== qBody) qBody.value = it.blocked.body || "";   // don't clobber an in-progress edit across a re-render
-    qBody.readOnly = true;
+    qBody.textContent = it.blocked.body || "";
     a._qApprove.disabled = false; a._qApprove.textContent = "Approve";
     a._qEdit.disabled = false; a._qEdit.textContent = "Edit";
     a._qDeny.disabled = false; a._qDeny.textContent = "Deny";
-    const decide = (action: string, busy: string) => {
-      vscodeApi?.postMessage({ type: "quarantineDecision", mid, action, text: qBody.value });
+    const decide = (action: string, busy: string, text: string) => {
+      vscodeApi?.postMessage({ type: "quarantineDecision", mid, action, text, sid: it.sid });
       for (const b of [a._qApprove, a._qEdit, a._qDeny] as HTMLButtonElement[]) b.disabled = true;
       (action === "deny" ? a._qDeny : a._qApprove).textContent = busy;
     };
-    a._qEdit.onclick = (ev: Event) => { ev.stopPropagation(); qBody.readOnly = false; qBody.focus(); a._qEdit.textContent = "Editing"; };
-    a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…"); };
-    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); decide("deny", "Denying…"); };
+    a._qEdit.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineEditDialog(it.blocked!.frm || "?", it.blocked!.to || "?", it.blocked!.body || "", decide); };
+    a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…", it.blocked!.body || ""); };
+    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); decide("deny", "Denying…", it.blocked!.body || ""); };
   }
   (a._clr as HTMLElement).style.display = isQuar ? "none" : "";
 
@@ -3121,6 +3125,36 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
   }
 });
+
+// ---- quarantine edit dialog: edit a held message's text, then Approve (deliver the edit) or Deny ----
+// Lives on document.body OUTSIDE the re-rendered feed root, so a kernel push mid-edit can't eat the
+// text (the inline-unlock textarea it replaces was clobbered exactly that way; the user 2026-07-26).
+// `decide` is the owning card's decision closure — it carries the mid + sid and flips the card buttons.
+function showQuarantineEditDialog(frm: string, to: string, body: string,
+                                  decide: (action: string, busy: string, text: string) => void) {
+  document.getElementById("quar-edit-dialog")?.remove();
+  const overlay = el("div", "pickdlg-overlay"); overlay.id = "quar-edit-dialog";
+  const box = el("div", "pickdlg-box qdlg-box");
+  const title = el("div", "pickdlg-title");
+  title.textContent = `Held message from ${frm} to ${to} — edit, then approve to deliver your version`;
+  const ta = el("textarea", "qdlg-text") as HTMLTextAreaElement;
+  ta.value = body;
+  const row = el("div", "qdlg-actions");
+  const ok = el("button", "fdismiss fq fq-ok") as HTMLButtonElement; ok.textContent = "Approve";
+  ok.title = "deliver the text above to the recipient session";
+  ok.onclick = () => { decide("approve", "Delivering…", ta.value); overlay.remove(); };
+  const no = el("button", "fdismiss fq fq-no") as HTMLButtonElement; no.textContent = "Deny";
+  no.title = "drop this message — nothing is delivered";
+  no.onclick = () => { decide("deny", "Denying…", ta.value); overlay.remove(); };
+  const cancel = el("button", "fdismiss fq") as HTMLButtonElement; cancel.textContent = "Cancel";
+  cancel.title = "close without deciding — the message stays held";
+  cancel.onclick = () => overlay.remove();
+  row.append(ok, no, cancel);
+  box.append(title, ta, row);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+  ta.focus();
+}
 
 // ---- in-page resume-picker dialog (the answerPicker flow, no native QuickPick) ----
 function showPickerDialog(name: string, options: string[]) {

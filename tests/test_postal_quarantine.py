@@ -102,6 +102,91 @@ class InboundTrustGate(unittest.TestCase):
         self.assertEqual(len(ps.quarantine_list()), 1, "the ORIGIN's directed level must hold it")
 
 
+class TokenProvenDialerGate(InboundTrustGate):
+    """The DIALED side of an exchange (token_proven=True): the dialer showed OUR serve token, which
+    already grants full control of this machine, so holding its own mail protects nothing — the user's
+    outgoing delegation to a machine they attached used to sit quarantined THERE (2026-07-26). The
+    proof exempts only the unknown-origin default: an explicit tier still wins, and forwarded mail is
+    still judged by its origin's tier. Inherits InboundTrustGate so every explicit-tier test above
+    reruns with token_proven=True — trusted/directed/isolated rows must gate identically."""
+
+    def setUp(self):
+        super().setUp()
+        ps._seen_ids = None                          # the inherited tests reuse their mids — reset the
+        try:                                         # dedupe window so the rerun isn't swallowed as dupes
+            ps.PEER_SEEN.unlink()
+        except OSError:
+            pass
+        self._orig_relay_in = ps._relay_in
+        ps._relay_in = lambda host, m, token_proven=False: self._orig_relay_in(host, m, token_proven=True)
+
+    def tearDown(self):
+        ps._relay_in = self._orig_relay_in
+
+    def test_unknown_origin_defaults_to_directed(self):
+        # OVERRIDES the inherited default-hold test: with the dialer token-proven, unknown-origin
+        # DIRECT mail delivers instead of holding — that is the point of this gate.
+        verdict, _ = ps._relay_in("MYSTERY", _relay("q-tok-1", body="from the attacher"))
+        self.assertEqual(verdict, "ack")
+        self.assertEqual(ps.quarantine_list(), [], "a token-proven dialer's own mail is not held")
+        box = ps.read_box("sess-web", consume=False)
+        self.assertTrue(any("from the attacher" in (m.get("body") or "") for m in box),
+                        "it is delivered like trusted mail")
+
+    def test_forwarded_unknown_origin_still_held(self):
+        # The token proof covers the DIALER only: mail it forwarded from an unknown third machine
+        # keeps the safe default — the third machine never proved anything.
+        verdict, _ = ps._relay_in("MYSTERY", _relay("q-tok-2", origin="FARBOX"))
+        self.assertEqual(verdict, "ack")
+        self.assertEqual(len(ps.quarantine_list()), 1, "forwarded mail is judged by its origin's tier")
+        self.assertEqual(ps.read_box("sess-web", consume=False), [])
+
+    def test_explicit_directed_row_still_holds(self):
+        # A tier the user SET for the dialer outranks the token proof — an explicit hold is a choice.
+        self._set_trust("MYSTERY", "directed")
+        verdict, _ = ps._relay_in("MYSTERY", _relay("q-tok-3"))
+        self.assertEqual(verdict, "ack")
+        self.assertEqual(len(ps.quarantine_list()), 1)
+        self.assertEqual(ps.read_box("sess-web", consume=False), [])
+
+
+class ExchangeHandleIsTokenProven(unittest.TestCase):
+    """peer_exchange_handle passes token_proven=True — it only runs for requests past the HTTP serve-token
+    gate — so an attached machine's own relays deliver instead of quarantining on the dialed side."""
+
+    def setUp(self):
+        os.environ["ROMP_SESSIONS_FILE"] = _SESS
+        os.environ["ROMP_POSTAL_PEERS"] = "1"
+        ps.PEERS.clear()
+        ps.PEER_STATE.clear()
+        ps._seen_ids = None
+        for d in (ps.QUARANTINE, ps.MAILROOT / "sess-web" / "new"):
+            try:
+                for f in d.glob("*"):
+                    f.unlink()
+            except OSError:
+                pass
+        try:
+            ps.PEER_SEEN.unlink()
+        except OSError:
+            pass
+
+    def tearDown(self):
+        os.environ.pop("ROMP_POSTAL_PEERS", None)
+
+    def test_handle_delivers_unknown_dialers_direct_relay(self):
+        req = {"host": "MYSTERY", "epoch": 1, "proto": ps.PEER_PROTO, "presence": [], "holds": [],
+               "relays": [{"mid": "q-hx-1", "to": "web", "frm": "api", "frm_id": "id-api",
+                           "body": "checking the deploy", "kind": "coordinate"}],
+               "acks": [], "bounces": [], "wait": False}
+        resp, status = ps.peer_exchange_handle(req)
+        self.assertEqual(status, 200)
+        self.assertIn("q-hx-1", resp["acks"])
+        self.assertEqual(ps.quarantine_list(), [], "the dialed side does not hold the dialer's own mail")
+        box = ps.read_box("sess-web", consume=False)
+        self.assertTrue(any("checking the deploy" in (m.get("body") or "") for m in box))
+
+
 class QuarantineDecide(unittest.TestCase):
     def setUp(self):
         os.environ["ROMP_SESSIONS_FILE"] = _SESS   # pin OUR sessions seam (see InboundTrustGate.setUp)
