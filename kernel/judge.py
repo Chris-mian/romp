@@ -6287,6 +6287,44 @@ def _starved_candidates(store):
     return out
 
 
+def _status_report_candidates(store, turn):
+    """Open WORKING tops riding the closer menu on a STATUS-REPORTING turn (the user 2026-07-26) — one
+    triggered by a follow-up, a nudge, or the clear wrap-up, i.e. the reply is the session accounting
+    for where its work stands. Such a reply routinely settles more than the goal it was asked about,
+    but placements credit only the asked goal, so a sibling top whose outcome the same reply delivered
+    sat working until the user cleared it by hand (2026-07-25: a docs top, across a session-wide
+    all-shipped reply). A periodic re-examiner was built for this first (the sweeper, PR #32) and
+    reverted in favor of this channel: a live shadow run settled nothing while re-arming on every ended
+    turn forever, where this rides the closer call a status turn already gets — turn-scoped and
+    STATE-FREE (closedSig one-shots the closer per turn, so a status top is considered exactly once per
+    status turn; no signature, no watermark). Skips mirror the sibling channels: ruled nodes (blocked
+    stays the unblocker's), umbrellas, and agentTask-open subtrees (the authoritative tier: the agent's
+    own list says the work is still owed)."""
+    if not any(_seg_nudge(s) or _seg_followup(s) or _seg_clearwrap(s) for s in _segs(turn, store)):
+        return []
+    nodes = store["nodes"]
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+
+    def _task_open(nid):
+        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
+            return True
+        return any(_task_open(c) for c in children.get(nid, []))
+
+    out = []
+    for nid, nd in nodes.items():
+        if nd.get("parentId") is not None:
+            continue                                   # tops only: the cards the board actually shows
+        if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
+            continue
+        if nd.get("umbrella") or _task_open(nid):
+            continue
+        out.append(nd)
+    out.sort(key=lambda nd: nd.get("t", 0))
+    return out
+
+
 def _menu_history_text(store, seg_by_id, menu, char_cap):
     """Each menu goal's own raw work-so-far (see _goal_work_text), labeled by its menu number, for the
     closer's <goal-history> block. subtree=False here (unlike the planner's single-target case): the
@@ -6358,14 +6396,22 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     no verdict of their own ride ALONG with the touched menu — bottom-up completion is a nomination to
     this closer now, not a rollup rule (see _subtree_done_candidates). The closer rules each from its
     goal history (done / blocked / considered omission); a landed reply stamps the candidate's
-    completion-set signature so an unchanged set is never re-asked (event re-arm: the set changing)."""
+    completion-set signature so an unchanged set is never re-asked (event re-arm: the set changing).
+
+    STATUS-REPORT CANDIDATES (the user 2026-07-26): on a turn triggered by a follow-up / nudge /
+    clear-wrap — a reply that accounts for the session's work as a whole — every open working TOP rides
+    the menu too (_status_report_candidates), so one all-shipped reply can settle every card it covers,
+    not just the goal it was asked about. Turn-scoped and state-free: closedSig already one-shots the
+    closer per turn."""
     menu = _turn_menu(turn, store)
     n_touched = len(menu)                              # the TURN's own goals; candidates ride behind them
     seen_ids = {nd["id"] for nd in menu}
     cands = [nd for nd in _subtree_done_candidates(store) if nd["id"] not in seen_ids]
     seen_ids |= {nd["id"] for nd in cands}
     starved = [nd for nd in _starved_candidates(store) if nd["id"] not in seen_ids]
-    menu = menu + cands + starved
+    seen_ids |= {nd["id"] for nd in starved}
+    status = [nd for nd in _status_report_candidates(store, turn) if nd["id"] not in seen_ids]
+    menu = menu + cands + starved + status
     if not menu:
         return []
     hist = _menu_history_text(store, seg_by_id, menu, CLOSE_HISTORY_CHARS) if seg_by_id is not None else ""
@@ -6388,6 +6434,19 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                          ", ".join("#%d" % i for i in sflagged),
                          "ve" if len(sflagged) > 1 else "s",
                          "each" if len(sflagged) > 1 else "it"))
+    status_ids = {c["id"] for c in status}
+    tflagged = [i for i, nd in enumerate(menu, 1) if nd["id"] in status_ids]
+    if tflagged:
+        menu_text += ("\n\nThis turn answers a status check, so its reply may account for the whole "
+                      "session's work, not only the goals it was asked about. Goal%s %s %s open "
+                      "elsewhere on the same board: judge %s ONLY from what the reply explicitly says "
+                      "about it — done only where the reply plainly reports that goal's outcome "
+                      "delivered or nothing left to do on it. A goal the reply does not clearly cover "
+                      "is a considered omission, not a completion."
+                      % ("s" if len(tflagged) > 1 else "",
+                         ", ".join("#%d" % i for i in tflagged),
+                         "are" if len(tflagged) > 1 else "is",
+                         "each" if len(tflagged) > 1 else "it"))
     raw = closer_llm(_unit_text(turn["atoms"]), menu_text, hist)
     out = _parse_close(raw, len(menu))
     if out is None:
