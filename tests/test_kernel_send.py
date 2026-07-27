@@ -59,10 +59,14 @@ class SessionList(unittest.TestCase):
                    "sid-s": ("beta", "/work/b", "blue", "white")})
         rows = {r["id"]: r for r in km._session_rows()}
         self.assertEqual(set(rows), {"sid-t", "sid-s"})
+        # lastSid = the session's CURRENT transcript fsid (self-identity join, the user 2026-07-27);
+        # with no diverged SDK registry it is the sid itself.
         self.assertEqual(rows["sid-t"], {"id": "sid-t", "name": "alpha", "state": "working", "dir": "/work/a",
-                                         "bg": "#112233", "fg": "#ffffff", "working": "owns feed.ts", "backend": "tmux"})
+                                         "bg": "#112233", "fg": "#ffffff", "lastSid": "sid-t",
+                                         "working": "owns feed.ts", "backend": "tmux"})
         self.assertEqual(rows["sid-s"], {"id": "sid-s", "name": "beta", "state": "waiting", "dir": "/work/b",
-                                         "bg": "blue", "fg": "white", "working": "", "backend": "sdk"})
+                                         "bg": "blue", "fg": "white", "lastSid": "sid-s",
+                                         "working": "", "backend": "sdk"})
 
     def test_empty_when_no_live_sessions(self):
         self._stub(live={}, notes={}, names={})

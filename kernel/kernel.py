@@ -5660,6 +5660,11 @@ def _session_rows():
         bg, fg = _identity_of(sid)
         out.append({"id": sid, "name": _name_of(sid) or sid[:8], "state": meta.get("state", ""),
                     "dir": _cwd_of(sid), "bg": bg, "fg": fg,
+                    # lastSid: the session's CURRENT transcript fsid (SDK registry join, mtime-memoized).
+                    # CLAUDE_CODE_SESSION_ID inside a forked session carries THIS id, not the stable sid,
+                    # so the postal bus resolves self-identity through it (the user 2026-07-27: a
+                    # post-/clear session mailed as "unknown" and read an empty mailbox).
+                    "lastSid": jd._sdk_last_sid(sid) or sid,
                     "working": notes.get(sid, ""), "backend": meta.get("backend", "")})
     return out
 
@@ -7248,6 +7253,7 @@ def _postal_index():
             continue
         if o.get("ev") == "sent" and o.get("id"):
             idx[o["id"]] = {"id": o["id"], "from": o.get("from", "?"), "fromId": o.get("from_id", ""),
+                            "fromHost": o.get("from_host", ""),
                             "toId": o.get("to_id", ""), "body": o.get("body", ""), "kind": o.get("kind", ""),
                             "t": o["t"] if isinstance(o.get("t"), (int, float)) else 0, "park": bool(o.get("park"))}
     return idx
@@ -7361,7 +7367,15 @@ def _hydrate_postal(events, index):
             for mid in ids:
                 rec = index.get(mid)
                 if rec:
-                    cards.append({"kind": "postal-service", "direction": "in", "peer": rec["from"] or "?",
+                    frm = rec["from"]
+                    if not frm or frm in ("?", "unknown"):
+                        # The sender couldn't self-name at send time (pre-fix forked sessions, older
+                        # peers). Resolve locally when the sid is ours to know; else host:sid-stub —
+                        # never the literal word "unknown" wearing a name pill (the user 2026-07-27).
+                        frm = _name_of(rec["fromId"]) or (
+                            (rec.get("fromHost", "") + ":" if rec.get("fromHost") else "")
+                            + (rec["fromId"][:8] if rec["fromId"] else "?"))
+                    cards.append({"kind": "postal-service", "direction": "in", "peer": frm,
                                   "color": _name_color(rec["fromId"]) if rec["fromId"] else None,
                                   "body": rec["body"], "summary": caption_for(rec["id"]),   # incoming caption (full body on expand)
                                   "intent": _postal_intent(rec.get("kind"), rec.get("body")),
