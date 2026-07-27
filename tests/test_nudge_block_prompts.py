@@ -63,6 +63,16 @@ class PlannerBlockRule(unittest.TestCase):
         self.assertIn("does not keep it working", sys,
                       "planner must say reported progress does not keep an awaiting-user goal working")
 
+    def test_nudge_note_done_rule_carves_out_the_owed_decision(self):
+        # the user 2026-07-27: the nudge <note>'s own done rule ("a reported-finished goal is done")
+        # was the one wording of done with NO owed-decision escape — a nudge reply that reported the
+        # work delivered but ended asking the user to approve the next step completed the card. The
+        # note now routes that shape to block.
+        import inspect
+        src = inspect.getsource(jd.plan_llm)
+        self.assertIn("outweighs the finished report", src,
+                      "the nudge note's done rule defers an ending approval-ask to block")
+
 
 if __name__ == "__main__":
     unittest.main()
