@@ -34,6 +34,7 @@ These are for scripting and for agents rather than daily use:
 | Command | What it does |
 |---|---|
 | `romp url` | Print only the tokened dashboard URL, for piping |
+| `romp sessions [--json]` | The fleet with each session's state, identity colours, directory and backend |
 | `romp mail …` | The postal service from the shell (below) |
 | `romp send <session> <text>` | Hand a session a message, on either backend |
 | `romp interrupt <session>` | Interrupt whatever turn a session is taking |

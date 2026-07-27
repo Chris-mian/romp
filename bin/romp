@@ -597,6 +597,7 @@ Quitting Claude ends a terminal session (it's exec'd; no shell lingers).
 For scripts / agents:
 EOF
     _romp_cmd "romp url"                   -            "Print ONLY the tokened dashboard URL (for scripts; humans just run \`romp\`)"
+    _romp_cmd "romp sessions [--json]"     -            "List the fleet with each session's state, colours and backend"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> <text>" -            "Hand a session a message (kernel API, either backend)"
     _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
@@ -693,6 +694,45 @@ if [[ "${1:-}" == "url" || "${1:-}" == "--url" ]]; then
         echo "romp url: no serve token yet (start romp first — the kernel mints it)" >&2; exit 1
     fi
     echo "http://127.0.0.1:${ROMP_KERNEL_PORT:-29855}/?token=$_tok"
+    exit 0
+fi
+
+# `romp sessions [--json]` — the fleet's live state for SCRIPTS, read from the kernel, which owns it.
+# Before this the only machine-readable source of per-session state and identity colour was the tmux
+# table (@claude-state, @identity-bg/@identity-fg), which an external tool could read directly. That
+# stopped working the moment sessions moved to the SDK backend: they never enter tmux, so
+# `tmux list-sessions` returns nothing and every such consumer silently degraded to empty output
+# (found 2026-07-27 in a downstream editor extension whose status dots and colours just vanished).
+# Reading the authoritative store instead of a side effect of one backend is the repo's standing
+# rule, and it is the only source that covers both backends.
+#
+# --json emits the kernel's rows verbatim (id, name, state, dir, bg, fg, backend, working, lastSid);
+# bare prints one aligned line per session. A dead kernel fails LOUDLY rather than printing an empty
+# list, which would read as "no sessions" and hide the breakage this command exists to end.
+if [[ "${1:-}" == "sessions" ]]; then
+    shift
+    _json=false
+    case "${1:-}" in
+        --json) _json=true; shift ;;
+        "")     ;;
+        *)      echo "usage: romp sessions [--json]" >&2; exit 2 ;;
+    esac
+    _kport="${ROMP_KERNEL_PORT:-29855}"
+    _resp="$(curl -sf -m 10 "http://127.0.0.1:$_kport/sessions" -H "X-Romp-Token: $(_romp_token)")" \
+        || { echo "romp sessions: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+    if $_json; then
+        printf '%s\n' "$_resp"
+        exit 0
+    fi
+    printf '%s' "$_resp" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)
+rows = rows.get("sessions", rows) if isinstance(rows, dict) else rows
+w = max([len(r.get("name") or "") for r in rows] or [4])
+for r in rows:
+    print("%-*s  %-10s  %-5s  %s" % (w, r.get("name") or "", r.get("state") or "",
+                                     r.get("backend") or "", r.get("dir") or ""))
+'
     exit 0
 fi
 
