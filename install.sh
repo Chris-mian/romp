@@ -49,8 +49,15 @@ fi
 #           session inside the kernel, and the kernel leaves its tmux backend disabled
 #           until a tmux appears on PATH (picked up live, no restart).
 # Set by the SDK/extension steps below when they fail: ROMP_SDK_MISSING.
+# ROMP_TMUX_AVAILABLE overrides the probe ("0"/"" → treat as absent, anything else → present),
+# the same seam TmuxBackend.available() and bin/romp honour, so all three agree. Mainly for tests:
+# a suite that asserts the no-tmux path must not depend on whether the machine running it has tmux
+# installed — PATH cannot hide a /usr/bin/tmux, so the override is the only honest way to say it.
 ROMP_TMUX_MISSING=""
-command -v tmux >/dev/null 2>&1 || ROMP_TMUX_MISSING=1
+case "${ROMP_TMUX_AVAILABLE-unset}" in
+    unset) command -v tmux >/dev/null 2>&1 || ROMP_TMUX_MISSING=1 ;;
+    ""|0)  ROMP_TMUX_MISSING=1 ;;
+esac
 
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 

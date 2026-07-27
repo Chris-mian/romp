@@ -22,8 +22,12 @@ setup() {
 
 teardown() { rm -rf "$TEST_DIR"; }
 
-# A PATH with the stub dir first and every editor CLI + tmux scrubbed out, so these tests
-# behave the same on a dev laptop (which has all of them) as on a bare box.
+# A PATH with the stub dir first, so stubs shadow anything real. NOTE this cannot hide a
+# /usr/bin/tmux: PATH ordering only shadows names the stub dir also defines. Tests that need
+# tmux to look ABSENT say so with ROMP_TMUX_AVAILABLE=0 (the seam install.sh, bin/romp and
+# TmuxBackend all honour) rather than hoping the host has no tmux — these very tests passed
+# until tmux was installed on the dev box, then started failing for a reason unrelated to
+# the code under test.
 bare_path() { echo "$STUB:/usr/bin:/bin"; }
 
 # ── the bug that blanked the dashboard ────────────────────────────────────────
@@ -84,7 +88,7 @@ EOF
 # ── tmux is optional, and its absence is advisory (never fatal) ───────────────
 
 @test "install.sh: succeeds with no tmux, and names it as a disabled optional piece" {
-    PATH="$(bare_path)" run "$ROMP_DIR/install.sh"
+    PATH="$(bare_path)" ROMP_TMUX_AVAILABLE=0 run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]                       # NOT a preflight failure
     [[ "$output" == *"tmux isn't installed"* ]]
     [[ "$output" == *"romp new"* ]]           # points at the backend that still works
@@ -97,13 +101,13 @@ EOF
 exit 0
 EOF
     chmod +x "$STUB/tmux"
-    PATH="$(bare_path)" run "$ROMP_DIR/install.sh"
+    PATH="$(bare_path)" ROMP_TMUX_AVAILABLE=1 run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
     [[ "$output" != *"tmux isn't installed"* ]]
 }
 
 @test "romp new -t: without tmux, fails naming the remedy and the SDK alternative" {
-    PATH="$(bare_path)" run "$ROMP_DIR/bin/romp" new -t notes-api
+    PATH="$(bare_path)" ROMP_TMUX_AVAILABLE=0 run "$ROMP_DIR/bin/romp" new -t notes-api
     [ "$status" -eq 1 ]
     [[ "$output" == *"tmux isn't installed"* ]]
     [[ "$output" == *"install tmux"* ]]
@@ -135,7 +139,7 @@ EOF
     # No uuidgen on this PATH — python3 (a hard romp dependency) must cover for it.
     [ ! -x "$STUB/uuidgen" ]
 
-    PATH="$(bare_path)" run "$ROMP_DIR/bin/romp" new -t notes-api --detach
+    PATH="$(bare_path)" ROMP_TMUX_AVAILABLE=1 run "$ROMP_DIR/bin/romp" new -t notes-api --detach
 
     # A real lowercase v4 uuid reached the launch line, not an empty string.
     grep -qE 'session-id [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$CALL_LOG"
