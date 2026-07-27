@@ -132,13 +132,16 @@ class EpisodeBoundaryTest(unittest.TestCase):
         rows = jd.episode_rows(SID)
         self.assertEqual([r["head"] for r in rows], ["root1", "root2"])
         self.assertEqual(rows[1]["fsid"], "aaaaaaaa-0000-0000-0000-000000000001")
-        # the boundary row carries its OWN settle record (the user 2026-07-27): the dropped cards'
-        # ids + titles ride the episodes log, so the feed's bell notice and the chat boundary card
-        # can NAME what the clear took — the settle is never invisible
-        self.assertNotIn("settled", rows[0], "the seeding first observation settles nothing")
-        settled = rows[1].get("settled") or []
-        self.assertEqual({d["id"] for d in settled}, {self.g("g1"), self.g("g3")})
-        self.assertTrue(all(d.get("text") for d in settled), "titles ride along for the notices")
+        # the boundary's OWN settle record rides the log as an ANNOTATION row keyed to its head
+        # (the user 2026-07-27): the feed's bell notice and the chat boundary card read back what
+        # the clear took, so the settle is never invisible. A separate row, never a field on the
+        # head row — seed-vs-boundary is only decided after the head row lands (the writer race),
+        # so a seed row must never be able to claim a settle.
+        self.assertTrue(all("settled" not in r for r in rows), "head rows never carry the settle")
+        ann = jd.episode_settles(SID).get("root2")
+        self.assertIsNotNone(ann, "the settle annotation is keyed to the boundary head")
+        self.assertEqual({d["id"] for d in ann["settled"]}, {self.g("g1"), self.g("g3")})
+        self.assertTrue(all(d.get("text") for d in ann["settled"]), "titles ride along for the notices")
 
         store = jd.load_goals(SID)
         g = self.g
@@ -194,6 +197,46 @@ class EpisodeBoundaryTest(unittest.TestCase):
         km._episode_boundary_check(SID, str(p), NOW)
         km._episode_boundary_check(SID, str(p), NOW)
         self.assertEqual(len(jd.episode_rows(SID)), 1)
+
+    def test_interleaved_seed_race_still_settles(self):
+        """Two kernel instances overlapped for ~1s on 2026-07-27 (a restart-churn morning): a
+        stale-path writer SEEDED row 1 between the fresh writer's read and its append, so the fresh
+        writer — holding a pre-append "no rows yet" — took the seed path and a REAL /clear boundary
+        silently skipped its settle. Seed-vs-boundary is now decided by re-reading the log AFTER the
+        append: whichever writer finds rows besides its own settles."""
+        self._store()
+        fork = self.proj / "aaaaaaaa-0000-0000-0000-000000000004.jsonl"
+        _write_jsonl(fork, [_rec("root2", ts="2026-01-02T00:00:00Z")])
+        orig = jd.append_episode
+
+        def interleaved(sid, head, fsid, t):
+            orig(sid, "root1", SID, 1)      # the peer's seed lands FIRST, unseen by our pre-read
+            orig(sid, head, fsid, t)
+        jd.append_episode = interleaved
+        try:
+            km._episode_boundary_check(SID, str(fork), NOW)
+        finally:
+            jd.append_episode = orig
+        self.assertEqual([r["head"] for r in jd.episode_rows(SID)], ["root1", "root2"])
+        store = jd.load_goals(SID)
+        self.assertTrue(store["nodes"][self.g("g1")].get("cleared"),
+                        "the raced boundary still settles its open cards")
+        self.assertTrue(self._cleared_rows())
+
+    def test_resighted_historical_head_is_not_a_boundary(self):
+        """A stale-path writer re-sighting a HISTORICAL head (the pre-clear transcript, mid path
+        transition) must neither re-append it — the log would grow on every flip — nor settle."""
+        self._store()
+        anchor = self.proj / (SID + ".jsonl")
+        _write_jsonl(anchor, [_rec("root1")])
+        km._episode_boundary_check(SID, str(anchor), NOW)             # seed root1
+        fork = self.proj / "aaaaaaaa-0000-0000-0000-000000000005.jsonl"
+        _write_jsonl(fork, [_rec("root2", ts="2026-01-02T00:00:00Z")])
+        km._episode_boundary_check(SID, str(fork), NOW)               # real boundary: settles
+        n_rows = len(self._cleared_rows())
+        km._episode_boundary_check(SID, str(anchor), NOW)             # stale re-sighting of root1
+        self.assertEqual([r["head"] for r in jd.episode_rows(SID)], ["root1", "root2"])
+        self.assertEqual(len(self._cleared_rows()), n_rows, "a re-sighted head never settles again")
 
     def test_boundary_with_no_open_tops_records_only(self):
         g = self.g

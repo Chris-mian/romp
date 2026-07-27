@@ -90,3 +90,57 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *bootstrap.sh* ]]
     [ ! -e "$HOME/.claude/hooks" ]
 }
+
+# ── the publishing remote ────────────────────────────────────────────────────
+# CLAUDE.md's worktree rule says publish with `git push -u fork <branch>` and never to
+# origin (upstream rulesets reject a direct push) — but a plain clone has only `origin`,
+# so a fresh install could not follow the workflow the repo documents.
+
+@test "bootstrap.sh: wires a 'fork' remote and pushDefault so a fresh clone can publish" {
+    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/someone/romp.git" \
+        run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://example.invalid/someone/romp.git" ]
+    [ "$(git -C "$HOME/romp" config --get remote.pushDefault)" = "fork" ]
+    # A bare `git push` must target the fork, never upstream.
+    [[ "$output" == *"Publishing remote 'fork'"* ]]
+}
+
+@test "bootstrap.sh: never clobbers a fork remote the contributor already set" {
+    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/first/romp.git" \
+        run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    # Re-running (the documented way to update) must leave their remote alone.
+    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/second/romp.git" \
+        run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://example.invalid/first/romp.git" ]
+}
+
+@test "bootstrap.sh: no fork remote is not fatal — installing is not contributing" {
+    # Most people never push to romp, and gh may be absent or logged out. PATH without gh
+    # and no ROMP_FORK: the install must still succeed, just without the remote.
+    PATH="/usr/bin:/bin" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *STUB_INSTALL_RAN* ]]
+}
+
+@test "bootstrap.sh: ROMP_NO_FORK_REMOTE opts out" {
+    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/someone/romp.git" \
+        ROMP_NO_FORK_REMOTE=1 run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    ! git -C "$HOME/romp" remote get-url fork 2>/dev/null
+}
+
+# ── where the clone lands ────────────────────────────────────────────────────
+
+@test "bootstrap.sh: names the install directory and the knob, since it ignores cwd" {
+    # It clones into $HOME regardless of where the one-liner is run from. Reasonable for a
+    # `curl | bash`, surprising if unstated (the user asked whether it uses the cwd).
+    cd "$TEST_DIR"
+    ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Cloning romp into $HOME/romp"* ]]
+    [[ "$output" == *"ROMP_DIR"* ]]
+    [ ! -e "$TEST_DIR/romp" ]           # never the cwd
+}

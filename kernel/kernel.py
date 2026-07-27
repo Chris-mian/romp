@@ -39,6 +39,42 @@ BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # loopback only; tailnet
 _STARTED = time.time()                       # this kernel process's start (for /version uptime)
 
 
+# ── ROMP_PERF: where did the time go, and what got re-sent ────────────────────────────────────────
+# Off unless ROMP_PERF is set, so a normal kernel pays one env lookup at import and nothing after.
+# Lines go to stderr, which the login service already funnels into the journal:
+#     ROMP_PERF=1 romp refresh   →   journalctl --user -u romp-manager -f | grep romp-perf
+# Format is `romp-perf <event> k=v k=v`, greppable and awk-able on purpose.
+#
+# This exists because "the chat pane is slow" was, from the outside, indistinguishable between a slow
+# BUILD, a fat PAYLOAD, and a payload that was fine but re-sent every second because one field ticked
+# with the clock. It was the third, and pinning that down needed a hand-written WebSocket client. Two
+# numbers — build ms and per-slot deduped/sent — separate all three at a glance.
+_PERF = bool(os.environ.get("ROMP_PERF"))
+
+
+def _perf(evt, **kw):
+    """One `romp-perf` line. Never raises and never formats anything when disabled — this sits on the
+    per-push hot path, so an exception or a wasted json.dumps here would be a bug of its own."""
+    if not _PERF:
+        return
+    try:
+        sys.stderr.write("romp-perf %s %s\n" % (evt, " ".join("%s=%s" % (k, v) for k, v in sorted(kw.items()))))
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _perf_slot(key):
+    """A dedup key ("chat", "<uuid>") as a short, stable label. The sid is truncated: these lines are
+    read in a terminal, and a full uuid per line buries the numbers that matter."""
+    try:
+        if isinstance(key, tuple):
+            return "%s:%s" % (key[0], str(key[1])[:8]) if len(key) > 1 else str(key[0])
+        return str(key)
+    except Exception:
+        return "?"
+
+
 # ── host-suspend (laptop sleep) awareness ─────────────────────────────────────────────────────────
 # When the lid closes this kernel process is FROZEN: time.monotonic() stops, but time.time() keeps real
 # time — so on resume the producer loop sees wall-clock jump far past the monotonic delta. That divergence
@@ -374,14 +410,17 @@ background:#101418;color:#dfe7ee;font:15px/1.5 -apple-system,system-ui,sans-seri
 location.replace('/?token='+encodeURIComponent(document.getElementById('t').value.trim()));return false">
   <div style="font-size:1.6em;letter-spacing:.04em;margin-bottom:.4em">romp</div>
   <div style="opacity:.8;margin-bottom:1.2em">This dashboard needs its access token &mdash; every
-  request is token-gated, loopback included.</div>
+  request is token-gated, loopback included. If this tab worked before, romp was reinstalled and
+  minted a new token: you are signed out, not broken.</div>
   <input id="t" autofocus placeholder="paste token"
     style="width:100%;box-sizing:border-box;padding:.55em .7em;border:1px solid #35414d;\
 border-radius:6px;background:#0c1117;color:#dfe7ee">
   <button style="margin-top:.9em;padding:.5em 1.4em;border:0;border-radius:6px;\
 background:#9cd2ff;color:#0c1a2e;font-weight:600;cursor:pointer">Open</button>
   <div style="opacity:.6;margin-top:1.2em;font-size:.9em">Get a ready-made link with
-  <code>romp</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
+  <code>romp url</code> &mdash; in a NEW terminal if romp was just installed, since the old one
+  has a stale <code>PATH</code>. No <code>romp</code> yet?
+  <code>cat ~/.local/state/romp/serve-token</code></div>
 </form>
 """
 
@@ -9815,13 +9854,14 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         if docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode")):
             events.insert(0, sysinfo)
         if boundary:
+            # the open cards the boundary settle dropped (the settle annotation keyed to this head)
+            # — the card names them so the drop is visible in the chat too, not only in the feed's
+            # bell (the user 2026-07-27)
+            _settle = jd.episode_settles(sid).get(boundary.get("head") or "") or {}
             events.insert(0, {"kind": "clear", "uuid": "clear:%s" % (boundary.get("head") or boundary.get("t")),
                               "ts": iso(boundary["t"]) if boundary.get("t") else None,
                               "clearedAt": boundary.get("t"), "episodes": len(_epi_rows),
-                              # the open cards the boundary settle dropped (the episode row's own
-                              # settle record) — the card names them so the drop is visible in the
-                              # chat too, not only in the feed's bell (the user 2026-07-27)
-                              "dropped": [d.get("text") or "" for d in (boundary.get("settled") or [])] or None})
+                              "dropped": [d.get("text") or "" for d in (_settle.get("settled") or [])] or None})
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
@@ -9839,7 +9879,16 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),
-            "firstSeen": session["turns"][0]["t"] if session["turns"] else now}
+            # NEVER `now`. This rides the chat payload, and _send_client dedups by comparing the
+            # SERIALIZED payload against what that client last received — so a firstSeen that ticked
+            # with the wall clock made every build differ, defeated the dedup entirely, and re-sent the
+            # FULL chat to every connected client about once a second, forever, for any session with no
+            # turns yet. (Measured on an idle session: a complete `session` frame every ~1.1s, each one
+            # making the browser re-run its upsert/reconcile across the transcript — chat felt slow while
+            # every other pane, whose payloads dedup correctly, stayed instant.) The spawn time is
+            # persisted and fixed; None when genuinely unknown, which the client tolerates — render.ts
+            # keeps what it already had (`msg.firstSeen ?? prev.firstSeen`).
+            "firstSeen": session["turns"][0]["t"] if session["turns"] else _sdk_spawned_at(sid)}
 
 
 EPISODE_EVENT_CAP = 200   # events shipped per pre-clear episode expand — bounded, honest about the cut
@@ -9999,23 +10048,30 @@ def _episode_boundary_check(sid, path, now):
     head = jd.transcript_head(path)
     if not head or not head["root"]:
         return                       # no head yet, or a resume-style leaf (chains into a prior file):
-    last = jd.episode_last(sid)      # either way the recorded episode is still the current one
-    if last is not None and last.get("head") == head["uuid"]:
+    #                                  either way the recorded episode is still the current one
+    if any(r.get("head") == head["uuid"] for r in jd.episode_rows(sid)):
+        return                       # this head is already recorded — the current episode, or a
+    #                                  HISTORICAL one re-sighted through a stale path (a peer writer
+    #                                  mid-transition). A re-sighting is never a new boundary, and
+    #                                  skipping its append keeps the race below from growing the log.
+    jd.append_episode(sid, head["uuid"], Path(path).stem, head["t"] or int(now))
+    # Seed-vs-boundary is decided by RE-READING the log AFTER the append, never from the pre-append
+    # read. Two kernel instances overlapped for about a second on 2026-07-27 (a restart-churn
+    # morning): a stale-path writer seeded row 1 between this writer's read and append, so the
+    # fresh-path writer — holding a pre-read "no rows yet" — took the seed path and a REAL /clear
+    # boundary silently skipped its settle; the judge then re-ran over the dead conversation and the
+    # pre-clear cards resurfaced. Post-append, whichever writer finds rows besides its own settles; a
+    # true first observation finds only itself and seeds (so deploying this never mass-settles
+    # existing fleets). Both interleavings are covered — a double settle is idempotent (tops come
+    # back empty) — and the seed is logged so a swallowed boundary is never invisible again.
+    if all(r.get("head") == head["uuid"] for r in jd.episode_rows(sid)):
+        sys.stderr.write("episode boundary: %s seeded (head %.8s)\n" % (sid[:8], head["uuid"]))
         return
-    tops, nodes = [], {}
-    if last is not None:             # a real boundary (not the seeding first look): what dies with it?
-        store = jd.load_goals(sid)
-        nodes, status = store.get("nodes", {}), store.get("status", {})
-        tops = [nid for nid, nd in nodes.items()
-                if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"
-                and not (nd.get("nodeComplete") or status.get(nid) == "completed")]
-    # The settle summary rides the episode row itself, so the drop is never silent (the user
-    # 2026-07-27): the feed's bell notice and the chat boundary card both read it back from here.
-    settled = [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops]
-    jd.append_episode(sid, head["uuid"], Path(path).stem, head["t"] or int(now), settled=settled or None)
-    if last is None:
-        return                       # first observation SEEDS the log; a boundary needs a prior recorded
-    #                                  episode (so deploying this never mass-settles existing sessions)
+    store = jd.load_goals(sid)
+    nodes, status = store.get("nodes", {}), store.get("status", {})
+    tops = [nid for nid, nd in nodes.items()
+            if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"
+            and not (nd.get("nodeComplete") or status.get(nid) == "completed")]
     if not tops:
         return
     p = jd.STATE / "cleared.jsonl"
@@ -10024,6 +10080,12 @@ def _episode_boundary_check(sid, path, now):
     with p.open("a") as fh:
         for nid in tops:
             fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+    # The settle's OWN record — which cards this boundary dropped — rides the episodes log as an
+    # annotation row keyed to this head, appended only on THIS settle path so the race-decided seed
+    # above can never claim one (the user 2026-07-27, who found the drop invisible): the feed's bell
+    # notice and the chat boundary card read it back.
+    jd.append_episode_settle(sid, head["uuid"], int(t),
+                             [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops])
     _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
     sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
@@ -10783,23 +10845,23 @@ def _card_warn_rows(rows, fsid, subtree, placements, cap=20):
 
 
 def _boundary_clear_notices(alive):
-    """The newest /clear boundary that SETTLED cards, per living session — read straight from the
-    episodes log's own settle record (the authoritative row, written at the boundary). The feed
+    """The newest /clear boundary that SETTLED cards, per living session — read from the episodes
+    log's settle annotations (the authoritative record, written on the settle path). The feed
     mirrors each into the shell's notification bell exactly once (client seen-set), so a clear that
     dropped open cards is always visible after the fact instead of the cards silently leaving the
-    board (the user 2026-07-27). Newest-only bounds the payload; episode_rows is an mtime memo, so
+    board (the user 2026-07-27). Newest-only bounds the payload; the log read is an mtime memo, so
     this is cheap per push."""
     out = []
     for s in alive:
         try:
-            rows = jd.episode_rows(s["sid"])
+            settles = jd.episode_settles(s["sid"])
         except Exception:
             continue
-        for r in reversed(rows):
-            if r.get("settled"):
-                out.append({"sid": s["sid"], "name": s["name"], "t": r.get("t") or 0,
-                            "titles": [str(d.get("text") or "") for d in r["settled"]]})
-                break
+        if not settles:
+            continue
+        r = max(settles.values(), key=lambda x: x.get("t") or 0)
+        out.append({"sid": s["sid"], "name": s["name"], "t": r.get("t") or 0,
+                    "titles": [str(d.get("text") or "") for d in (r.get("settled") or [])]})
     return out
 
 
@@ -13075,11 +13137,18 @@ def _send_client(c, key, msg, pre=None):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
     `pre` is the already-serialized msg (json.dumps(msg)) when the caller has it cached — passing it lets
-    a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache)."""
+    a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache).
+
+    ROMP_PERF=1 logs every send AND every dedup hit. That asymmetry is the point: a payload carrying a
+    field that ticks with the clock looks perfectly normal from the outside — the UI just feels slow —
+    and the only visible symptom is this dedup never hitting. Finding the last one took a hand-written
+    WebSocket client; the log makes the next one obvious."""
     s = pre if pre is not None else json.dumps(msg)
     if c.setdefault("sent", {}).get(key) == s:
+        _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=1)
         return
     c["sent"][key] = s
+    _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=0)
     try:
         c["send"](s)
     except Exception:
@@ -13427,9 +13496,17 @@ def _push(targets, connect=False):
                 hit = _built_chat.get(s["sid"])
                 if not is_active and hit is not None and sig is not None and hit[0] == sig:
                     m, ms = hit[1], hit[2]               # unchanged background tab → reuse, no reshape/serialize
+                    _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
                 else:
+                    _t0 = time.monotonic()
                     m = build_session(s["sid"], now, tmux)
                     ms = json.dumps(m) if m is not None else None
+                    # Build + serialize together: the ACTIVE tab skips the cache above by design, so this
+                    # is what the watched session pays on every single push. If chat ever feels slow again,
+                    # this number and the deduped= on the matching send say which half is at fault.
+                    _perf("chatbuild", sid=str(s["sid"])[:8], cached=0, active=int(is_active),
+                          ms=round((time.monotonic() - _t0) * 1000, 1),
+                          events=(len(m.get("events") or []) if m else 0), bytes=(len(ms) if ms else 0))
                     if m is not None and sig is not None:
                         if len(_built_chat) > 256:       # bounded by fleet size; a wholesale clear is fine
                             _built_chat.clear()
@@ -16836,8 +16913,14 @@ def _ensure_bundles():
         for f in [*src.rglob("*.ts"), *src.rglob("*.css")])
     if stale:
         sys.stderr.write("romp-kernel: building UI bundles…\n")
+        # --production (minified, no sourcemaps), matching vscode-extension/install.sh. Both
+        # builders must agree: if the installer minified and this rebuild did not, any later .ts
+        # or .css edit would silently swap the served dashboard back to a 591 KB unminified
+        # render.js — the slow-chat-load bundle — on the next kernel restart, with nothing
+        # saying so. ROMP_EXT_DEV_BUILD=1 opts out for a UI dev loop (same knob as install.sh).
+        argv = ["node", "esbuild.js"] + ([] if os.environ.get("ROMP_EXT_DEV_BUILD") else ["--production"])
         try:
-            subprocess.run(["node", "esbuild.js"], cwd=str(cv), check=True,
+            subprocess.run(argv, cwd=str(cv), check=True,
                            capture_output=True, timeout=120)
         except Exception as e:
             sys.stderr.write("romp-kernel: bundle build failed (%s) — UI may be stale\n" % e)

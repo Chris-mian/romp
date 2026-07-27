@@ -117,11 +117,13 @@ class ClearChatViewTest(unittest.TestCase):
         self.assertIsNone(clear["dropped"], "a boundary that settled nothing names nothing")
 
     def test_boundary_card_names_the_dropped_cards(self):
-        # the settle record rides the episode row (the user 2026-07-27) -> the chat boundary card
-        # counts + names what the clear took, so the drop is visible in the chat, not only the bell
+        # the settle annotation rides the episodes log keyed to the boundary head (the user
+        # 2026-07-27) -> the chat boundary card counts + names what the clear took, so the drop is
+        # visible in the chat, not only the bell
         _write_jsonl(jd.STATE / "episodes" / (SID + ".jsonl"), [
             {"head": "u1", "fsid": SID, "t": NOW - 3600},
-            {"head": "n1", "fsid": NEWFSID, "t": CLEAR_T,
+            {"head": "n1", "fsid": NEWFSID, "t": CLEAR_T},
+            {"settleFor": "n1", "t": CLEAR_T,
              "settled": [{"id": SID + ":g1", "text": "Ship the deployment guide"},
                          {"id": SID + ":g2", "text": "Tune the api rate limits"}]},
         ])

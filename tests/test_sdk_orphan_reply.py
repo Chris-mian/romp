@@ -74,6 +74,16 @@ class OrphanReplyDurability(unittest.TestCase):
         orq = self._orphan_lines(be)
         self.assertEqual(len(orq[0]["orphanReply"]["text"]), sb.ORPHAN_REPLY_CAP)
 
+    def test_the_cli_no_content_placeholder_is_never_persisted(self):
+        # "(no content)" is the CLI's placeholder for contentless command feedback (an SDK /clear
+        # streams one; its transcript record is a system/local_command row). Persisted as an orphan
+        # it resurfaced as a WORKED reply on the bare command turn, and the planner minted a card
+        # for the /clear itself (the user 2026-07-27).
+        be = self._backend()
+        be._live[SID] = {"c": _atom("c", 100, [{"type": "text", "text": "(no content)"}])}
+        be.retire_live_work(SID)
+        self.assertEqual(self._orphan_lines(be), [])
+
 
 if __name__ == "__main__":
     unittest.main()

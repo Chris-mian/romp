@@ -915,12 +915,15 @@ MOCK
     touch "$MOCK_LOG"    # this path makes no tmux calls at all
     mkdir -p "$XDG_STATE_HOME/romp"
     printf 'tok-test' > "$XDG_STATE_HOME/romp/serve-token"
-    local port=7561
-    # One-shot fake kernel: accept a single POST, log it, answer ok:true.
-    python3 - "$port" "$TEST_DIR/req.log" <<'PY' &
+    # One-shot fake kernel: accept a single POST, log it, answer ok:true. Ephemeral
+    # port, announced via a file WRITTEN AFTER BIND — the same pattern as
+    # romp-headless.bats. The `until` below waits on the listening EVENT; the
+    # `sleep 0.3` this replaces was a guessed duration that macOS CI runners
+    # reliably lost (two release-gate failures), while every faster machine won it.
+    python3 - "$TEST_DIR/port" "$TEST_DIR/req.log" <<'PY' &
 import sys, json
 from http.server import BaseHTTPRequestHandler, HTTPServer
-port, log = int(sys.argv[1]), sys.argv[2]
+portfile, log = sys.argv[1], sys.argv[2]
 class H(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -932,12 +935,14 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
     def log_message(self, *a): pass
-srv = HTTPServer(("127.0.0.1", port), H)
+srv = HTTPServer(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_address[1]))
 srv.handle_request()
 PY
     local srv=$!
-    sleep 0.3
-    ROMP_KERNEL_PORT=$port run run_romp new api
+    until [ -s "$TEST_DIR/port" ]; do sleep 0.05; done
+    ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")" run run_romp new api
     kill "$srv" 2>/dev/null || true
     [ "$status" -eq 0 ]
     [[ "$output" == *"started \"api\""* ]]

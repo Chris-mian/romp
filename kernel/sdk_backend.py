@@ -3085,7 +3085,11 @@ class SdkBackend:
                 # "Recovered after N retries" note remains where it was (the user 2026-07-21).
                 if a.get("type") == "assistant" and not a.get("isApiError"):
                     txt = _atom_text(a)
-                    if txt.strip():
+                    # "(no content)" is the CLI's placeholder for contentless command feedback (an SDK
+                    # /clear streams one) — nothing the user watched, nothing to salvage. Persisted, it
+                    # resurfaced as a worked reply on the bare command turn (the user 2026-07-27); the
+                    # parse-side guard in synthesize_orphans covers markers already written.
+                    if txt.strip() and txt.strip() != "(no content)":
                         try:
                             append_orphan_reply(self.state_dir, sid, a.get("uuid") or "", txt, t=a.get("t"))
                         except Exception:

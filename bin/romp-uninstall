@@ -23,7 +23,9 @@
 #   - delete this clone (the script lives in it); it prints the one command for that
 #   - uninstall the VS Code extension from your editors (that is `code --uninstall-extension`,
 #     which we print rather than run — editors may be open, and it is not romp state)
-#   - touch ~/.claude/projects (Claude Code's own transcripts — not ours to delete)
+#   - touch YOUR sessions under ~/.claude/projects (Claude Code's own transcripts, and the
+#     reason a reinstalled romp still shows history from before — that is by design, not
+#     leftover romp state). The ONE exception is romp's own judge scratch, below.
 set -euo pipefail
 
 ROMP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -152,6 +154,53 @@ rm -f  "$ROMP_DIR/vscode-extension"/*.vsix "$ROMP_DIR/vscode-extension/package.j
 echo "==> SDK venv"
 rm -rf "$STATE/sdkvenv"
 
+# ── 4b. the judge scratch, which lives OUTSIDE the state dir ───────────
+# romp runs its judges as `claude` processes rooted at /tmp/romp-judge (kernel/judge.py's
+# JUDGE_SCRATCH), so Claude Code writes their transcripts into a project dir keyed on that
+# path — outside $STATE, and therefore untouched by --purge. A purged, reinstalled romp kept
+# showing judge records from the PREVIOUS install because of it (the user 2026-07-27, who
+# rightly read that as an incomplete teardown).
+#
+# These are romp's own droppings: every transcript here is a judge call romp made, never a
+# session anyone started, so removing them completes the teardown rather than deleting user
+# data. Scoped to exactly that one derived directory — YOUR project dirs are never touched.
+# Claude Code names a project dir after its cwd with '/' → '-', so /tmp/romp-judge maps to
+# '-tmp-romp-judge'; derived, not hardcoded, so it follows JUDGE_SCRATCH if that ever moves.
+JUDGE_SCRATCH="${ROMP_JUDGE_SCRATCH:-/tmp/romp-judge}"
+echo "==> judge scratch"
+
+# Validate BEFORE removing anything. Both paths below are derived from a variable, and an
+# `rm -rf` on a derived path is exactly where uninstallers destroy machines: an empty or
+# mangled value here would expand to `rm -rf /`. (An early draft did precisely that — the
+# guard test caught it, and only GNU rm's --preserve-root stopped it.) So require a path
+# that could only be romp's own scratch: absolute, at least two components deep, not $HOME
+# or any ancestor of it, and named for romp. Anything else is skipped loudly, never guessed at.
+_judge_ok=1
+_scratch_slug="${JUDGE_SCRATCH//\//-}"
+case "$JUDGE_SCRATCH" in
+    /*/?*) ;;                                    # absolute AND at least two components
+    *)     _judge_ok="" ;;
+esac
+[[ "$JUDGE_SCRATCH" == *romp* ]]            || _judge_ok=""   # it is romp's scratch or it is not ours
+[[ "$JUDGE_SCRATCH" != "$HOME" ]]           || _judge_ok=""
+[[ "$HOME" != "$JUDGE_SCRATCH"/* ]]         || _judge_ok=""   # never an ancestor of $HOME
+[[ "$JUDGE_SCRATCH" != *".."* ]]            || _judge_ok=""
+
+if [[ -z "$_judge_ok" ]]; then
+    echo "    skipped: '$JUDGE_SCRATCH' doesn't look like romp's judge scratch — remove it yourself" >&2
+else
+    rm -rf "$JUDGE_SCRATCH"
+    # The transcripts Claude Code wrote for those judge runs. It names a project dir after the
+    # cwd with '/' → '-', so /tmp/romp-judge maps to '-tmp-romp-judge'. Derived, not hardcoded,
+    # so it follows JUDGE_SCRATCH if that ever moves — and gated on the same slug carrying
+    # "romp", so this can never resolve to the projects dir itself or to one of YOUR sessions.
+    _judge_proj="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$_scratch_slug"
+    if [[ -d "$_judge_proj" && "$_scratch_slug" == *romp* ]]; then
+        rm -rf "$_judge_proj"
+        echo "    removed romp's judge transcripts ($_judge_proj)"
+    fi
+fi
+
 # ── 5. the shell rc PATH line ──────────────────────────────────────────
 # bootstrap.sh appends "# romp" + one PATH line. Drop both, and only when the line
 # actually points at THIS clone's bin — never a blanket edit of the user's rc.
@@ -200,6 +249,23 @@ echo "  - this clone:        rm -rf $ROMP_DIR"
 echo "  - the editor extension, where you have one:"
 echo "        code --uninstall-extension romp.romp-chat-view"
 [[ -n "$PURGE" ]] || echo "  - recorded state:    rm -rf $STATE   (or re-run with --purge)"
+# The one consequence you cannot see from the outside. The dashboard is token-gated and the
+# first visit stores a YEAR-LONG cookie, so an open tab or a bookmarked ?token= link keeps
+# working indefinitely — until the state dir goes and the next kernel mints a NEW token. Then
+# that tab silently drops to the token login page, which reads as "the dashboard never loaded"
+# rather than "you are signed out" (exactly how it landed, the user 2026-07-27). Nothing is
+# broken and nothing needs fixing; you just need the new link. Said here because this is the
+# step that causes it, and only when it actually applies.
+if [[ -n "$PURGE" ]]; then
+    echo
+    echo "One thing to expect after reinstalling:"
+    echo "  The dashboard's access token was in the state dir, so a new one is minted on the next"
+    echo "  start. Any romp tab or bookmark you already had is now signed out and will show the"
+    echo "  token page instead of the dashboard — that is expected, not a failed install."
+    echo "  Get the fresh link from the end of the installer's output, or any time with:"
+    echo "      romp url        # prints it        (romp opens it in your browser)"
+fi
+
 echo
 echo "Reinstall from scratch with:"
 echo "  curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash"

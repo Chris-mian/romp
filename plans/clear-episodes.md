@@ -89,9 +89,13 @@ feed, the Fleet ledger, and (via compaction) the live store with nothing shown
 anywhere (the user 2026-07-27: "cards must not disappear without you seeing
 anything"). Now:
 
-- **The settle record rides the episode row.** The boundary writes
-  `settled: [{id, text}, ...]` into its own `episodes/<sid>.jsonl` row — the
-  authoritative, durable record of what the clear took with it.
+- **The settle record rides the episodes log.** The settle path appends a
+  `{settleFor: <head>, t, settled: [{id, text}, ...]}` ANNOTATION row to
+  `episodes/<sid>.jsonl` — the authoritative, durable record of what the clear
+  took with it. A separate row, never a field on the head row, because
+  seed-vs-boundary is decided only after the head row lands (the two-writer
+  race fix): a seed row must never be able to claim a settle. `episode_rows`
+  skips annotation rows; `episode_settles` reads them back.
 - **The bell logs the drop.** `build_feed` ships the newest settled boundary
   per living session (`clearNotices`); the feed mirrors each into the shell's
   notification bell exactly once (the badge-mirror seen-set), naming the
