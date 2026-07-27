@@ -38,7 +38,7 @@ class DebtBase(unittest.TestCase):
         self._d = {"nudged": {}}
         km._auto_nudge_data = lambda: self._d
         km._write_auto_nudge = lambda d: self._d.update(d)
-        km._name_of = lambda sid: {ASKER: "web", ASKER2: "api"}.get(sid)
+        km._name_of = lambda sid: {ASKER: "web", ASKER2: "api", DEBTOR: "tests"}.get(sid)
         self.rec = _Recorder()
         km.Sessions.backend_for = lambda sid: self.rec
         self._maps = ({}, {})
@@ -132,6 +132,121 @@ class DebtReminder(DebtBase):
         self.assertIn("web asked you", body)
         self.assertIn("api handed you", body)
         self.assertIn("Reply to each of them now", body)
+
+
+class ReminderOutcomes(DebtBase):
+    """Piece 3, the outcome side: a past reminder either WORKED (any reply back retires it silently) or
+    FAILED (the debtor ended a turn past the fire without replying → the ASKER's card escalates), each
+    judged once-ever. The debtor-never-returns case rides the backstop tick."""
+
+    def setUp(self):
+        super().setUp()
+        self._esc = []
+        self._saved_esc = km._debt_escalate
+        km._debt_escalate = lambda asker, debtor, ts, now: (self._esc.append((asker, debtor, ts)) or True)
+        self._key = "%s>%s:%d" % (ASKER, DEBTOR, T_ASK)
+
+    def tearDown(self):
+        km._debt_escalate = self._saved_esc
+        super().tearDown()
+
+    def _armed(self, fire_t=NOW - 600):
+        self._d["debtNudged"] = {self._key: fire_t}
+
+    def test_an_answered_reminder_retires_silently(self):
+        self._ask(answered_at=T_ASK + 60)
+        self._armed()
+        km._debt_reminder_outcomes(DEBTOR, {"t": NOW - 100, "end": NOW - 90}, NOW)
+        self.assertEqual(self._d["debtNudged"], {}, "the reminder worked; nothing escalates")
+        self.assertEqual(self._esc, [])
+
+    def test_moving_on_without_replying_escalates_once(self):
+        self._ask()
+        self._armed(fire_t=NOW - 600)
+        lt = {"t": NOW - 300, "end": NOW - 200}        # a turn ENDED after the fire, still no reply
+        km._debt_reminder_outcomes(DEBTOR, lt, NOW)
+        self.assertEqual(self._esc, [(ASKER, DEBTOR, T_ASK)], "the wait is now the user's")
+        self.assertEqual(self._d["debtNudged"], {}, "…and the record retires (once-ever)")
+
+    def test_no_turn_since_the_fire_keeps_waiting(self):
+        self._ask()
+        self._armed(fire_t=NOW - 600)
+        lt = {"t": NOW - 3000, "end": NOW - 2900}      # latest ended turn PREDATES the fire
+        km._debt_reminder_outcomes(DEBTOR, lt, NOW)
+        self.assertEqual(self._esc, [])
+        self.assertIn(self._key, self._d["debtNudged"], "the debtor hasn't had its say yet")
+
+    def test_the_backstop_escalates_a_debtor_that_never_returns(self):
+        self._ask()
+        self._armed(fire_t=NOW - km.NUDGE_DEFER_BACKSTOP_SECS - 60)
+        km._debt_backstop_tick(NOW)
+        self.assertEqual(self._esc, [(ASKER, DEBTOR, T_ASK)])
+        self.assertEqual(self._d["debtNudged"], {})
+
+    def test_the_backstop_leaves_a_young_reminder_alone(self):
+        self._ask()
+        self._armed(fire_t=NOW - 600)
+        km._debt_backstop_tick(NOW)
+        self.assertEqual(self._esc, [])
+        self.assertIn(self._key, self._d["debtNudged"])
+
+    def test_the_backstop_drops_a_malformed_key(self):
+        self._d["debtNudged"] = {"not-a-key": NOW - 600}
+        km._debt_backstop_tick(NOW)
+        self.assertEqual(self._d["debtNudged"], {}, "malformed records drop rather than loop forever")
+
+
+class DebtEscalate(DebtBase):
+    """The block itself, on a real (sandboxed) store: newest eligible waiting top, procedural why naming
+    the debtor, through record_verdict + journal like the nudge-failed precedent."""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+        from pathlib import Path
+        self._td = tempfile.TemporaryDirectory()
+        jd = km.jd
+        # _rebind_state, NEVER bare GOALDIR/STATE reassignment: the override journal lives at the store
+        # tree's PARENT, so a GOALDIR pointed at a bare tmpdir root shares $TMPDIR/overrides with every
+        # other run on the machine — one test's block row then replays into all of them (found live,
+        # 2026-07-27, as a phantom pre-blocked node in this very class).
+        self._saved_state = jd.STATE
+        jd._rebind_state(Path(self._td.name))
+        jd.GOALDIR.mkdir(parents=True, exist_ok=True)
+        top_old = {"id": ASKER + ":g1", "text": "Ship the notes API", "parentId": None, "t": T_ASK - 900,
+                   "mt": T_ASK - 900, "nodeComplete": False, "blocked": False, "cleared": False, "log": []}
+        top_new = {"id": ASKER + ":g2", "text": "Started after the ask", "parentId": None, "t": T_ASK + 60,
+                   "mt": T_ASK + 60, "nodeComplete": False, "blocked": False, "cleared": False, "log": []}
+        store = {"rompUuid": ASKER, "seq": 2, "placements": {},
+                 "status": {top_old["id"]: "working", top_new["id"]: "working"},
+                 "nodes": {top_old["id"]: top_old, top_new["id"]: top_new}}
+        (jd.GOALDIR / (ASKER + ".json")).write_text(json.dumps(store))
+
+    def tearDown(self):
+        km.jd._rebind_state(self._saved_state)
+        self._td.cleanup()
+        super().tearDown()
+
+    def test_the_newest_waiting_top_blocks_with_a_procedural_why(self):
+        self.assertTrue(km._debt_escalate(ASKER, DEBTOR, T_ASK, NOW))
+        store = km.jd.load_goals(ASKER)
+        old, new = store["nodes"][ASKER + ":g1"], store["nodes"][ASKER + ":g2"]
+        self.assertTrue(old["blocked"], "the newest top minted at/before the ask carries the block")
+        self.assertFalse(new["blocked"], "a top minted AFTER the ask can't be waiting on it")
+        why = old.get("blockWhy") or ""
+        self.assertIn("tests", why, "the unresponsive debtor is named")
+        self.assertIn("despite a reminder", why)
+        self.assertTrue(km.jd.procedural_block_why(why),
+                        "the fixed head reads as procedural — no invented decision brief")
+
+    def test_nothing_eligible_is_a_quiet_no_op(self):
+        import json as _json
+        p = km.jd.GOALDIR / (ASKER + ".json")
+        s = _json.loads(p.read_text())
+        for nd in s["nodes"].values():
+            nd["nodeComplete"] = True
+        p.write_text(_json.dumps(s))
+        self.assertFalse(km._debt_escalate(ASKER, DEBTOR, T_ASK, NOW))
 
 
 if __name__ == "__main__":
