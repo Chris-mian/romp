@@ -4965,7 +4965,10 @@ def _remote_public(r):
             # exact condition the automatic update fires on, so the row can say why it will or won't.
             # autoPush: that host's live phase (pushing / waiting / failed) → the popover's progress line and
             # the rail icon's motion, so background work is never invisible (the user 2026-07-24).
-            "fastForward": _is_fast_forward(r), "autoPush": _auto_push_state(r["host"]),
+            # fastPull: the mirror — the remote is strictly ahead, so pulling only ADDS commits here.
+            # Drives the row's Pull button; the auto-pull additionally requires trusted + local main.
+            "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r),
+            "autoPush": _auto_push_state(r["host"]),
             # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
             # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
             "gaveUp": bool(r.get("gave_up")), "fails": int(r.get("fails") or 0),
@@ -5423,36 +5426,87 @@ def _auto_push_remote(host):
     return ok
 
 
+def _auto_pull_remote(host):
+    """Run ONE automatic pull FROM `host` in the background — the mirror of _auto_push_remote for a
+    trusted remote that is strictly ahead. On success the phase parks at 'pulled' with the restart
+    hint: the drift flag clears at once (HEAD moved), but the running kernel is still the old build,
+    so the trace must outlive the clearing event — a kernel restart (fresh process, empty map) is what
+    removes it. Failures stay visible and red, exactly like a failed push."""
+    _set_auto_push(host, "pulling", "pulling %s's newer commits over SSH" % host)
+    try:
+        ok, detail = _pull_remote(host)
+    except Exception as e:
+        ok, detail = False, str(e)
+    _set_auto_push(host, "pulled" if ok else "failed", detail or ("" if ok else "pull failed"))
+    return ok
+
+
 def _maybe_auto_push(r):
-    """The supervisor's per-pass hook: start an automatic push of this remote when the setting is on and a
-    straight fast-forward is observed. Spawns a THREAD — `_update_remote` is several seconds of ssh, and the
-    supervisor also keeps every tunnel alive, so blocking it here would stall the whole fleet."""
+    """The supervisor's per-pass hook: start an automatic sync of this remote when the setting is on —
+    a PUSH when a straight fast-forward of the remote is observed, a PULL when a TRUSTED remote is
+    strictly ahead and the local checkout sits clean on main (the user 2026-07-27: main syncs itself
+    across trusted machines, both directions ridden by the attaching side's own ssh). Spawns a THREAD —
+    either direction is several seconds of ssh, and the supervisor also keeps every tunnel alive, so
+    blocking it here would stall the whole fleet."""
     host = r.get("host") or ""
     if not host:
         return
+    if r.get("checkin_peer"):
+        return   # no ssh route from here in either direction — auto-sync would just manufacture failures
     if not _remote_out_of_date(r):
         # It matches us now. That is the EVENT that ends a push (never a timer): a 'waiting for it to
         # restart' clears the moment the restarted remote reports our sha, and a stale 'failed' clears too
         # once the host is up to date by any route (a later manual Push, an update from another machine).
+        # 'pulled' deliberately survives this — its restart hint stays until the restart itself.
         with _auto_push_lock:
             if _auto_push.get(host, {}).get("phase") in ("waiting", "failed"):
                 _auto_push.pop(host, None)
         return
-    if not _auto_update_remotes_on() or not _is_fast_forward(r):
+    if not _auto_update_remotes_on():
+        return
+    push = _is_fast_forward(r)
+    pull = (not push and _is_fast_pull(r) and (r.get("trust") or "directed") == "trusted"
+            and _local_branch() == "main")
+    if not push and not pull:
         return
     key = (_sha_base(r.get("kernel_sha") or ""), _local_head() or "")
     with _auto_push_lock:
-        if _auto_push.get(host, {}).get("phase") == "pushing":
-            return                                  # one push per host at a time
+        if _auto_push.get(host, {}).get("phase") in ("pushing", "pulling"):
+            return                                  # one sync per host at a time
         if _auto_push_tried.get(host) == key:
             return                                  # already attempted for this exact advance
         if len(_auto_push_tried) > 64:
             _auto_push_tried.clear()
         _auto_push_tried[host] = key
-    threading.Thread(target=_auto_push_remote, args=(host,), daemon=True).start()
+    threading.Thread(target=_auto_push_remote if push else _auto_pull_remote,
+                     args=(host,), daemon=True).start()
 
 
 _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its HEAD to on the remote
+
+
+def _discover_remote_clone(host):
+    """ssh-discover the remote romp clone (conventional dirs, mirrors _start_remote_kernel) and its
+    state. Returns (dir, head, dirty, error) — error set (and the rest blank) on any failure. Shared
+    by the push (_update_remote) and pull (_pull_remote) directions."""
+    disc = (
+        'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
+        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
+        'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
+        'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
+        'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
+    try:
+        d = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, disc], capture_output=True, text=True, timeout=25)
+    except Exception as e:
+        return "", "", "", str(e)[:200]
+    out = d.stdout or ""
+    if "NOROMP" in out:
+        return "", "", "", "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
+    info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
+    rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
+    if not rdir:
+        return "", "", "", (_ssh_err(d.stderr) or "couldn't locate the remote romp clone on %s" % host).strip()[:200]
+    return rdir, rhead, rdirty, ""
 
 
 def _update_remote(host):
@@ -5473,6 +5527,12 @@ def _update_remote(host):
         return False, "no host"
     with _remotes_lock:
         _rr = _remotes.get(host)
+    if _rr is not None and _rr.get("checkin_peer"):
+        # A checked-in host reached US over its own outbound tunnel; there is no ssh route from here,
+        # so a push can only die with a confusing "No route to host" (the user 2026-07-27). Say what
+        # is actually possible instead.
+        return False, ("no ssh path to %s from this machine (it checked in here over its own tunnel) — "
+                       "sync from that machine's own dashboard" % host)
     kport = int((_rr or {}).get("kernel_port") or _REMOTE_KERNEL_PORT)   # for the restart's port poll
     lfull = _local_head()
     if not lfull:
@@ -5480,23 +5540,9 @@ def _update_remote(host):
     # We push the committed HEAD; uncommitted local edits are not sent ("just take what is committed on local"
     # — the user 2026-07-04). A dirty local tree is NOT refused: it just means HEAD, not the working tree.
     # (1) discover the remote clone + pre-check it's clean
-    disc = (
-        'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
-        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
-        'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
-        'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
-        'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
-    try:
-        d = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, disc], capture_output=True, text=True, timeout=25)
-    except Exception as e:
-        return False, str(e)[:200]
-    out = d.stdout or ""
-    if "NOROMP" in out:
-        return False, "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
-    info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
-    rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
-    if not rdir:
-        return False, (_ssh_err(d.stderr) or "couldn't locate the remote romp clone on %s" % host).strip()[:200]
+    rdir, rhead, rdirty, derr = _discover_remote_clone(host)
+    if derr:
+        return False, derr
     if rdirty:
         return False, "remote %s has uncommitted changes — commit or discard them there first (won't clobber)" % host
     if rhead and rhead == lfull:
@@ -5582,6 +5628,93 @@ def _update_remote(host):
     if tag == "NOLAUNCH":
         return False, "pushed + reset, but found no romp/romp-serve launcher to restart the kernel"
     return False, (_ssh_err(a.stderr) or aout or "remote apply failed").strip()[:180]
+
+
+def _is_fast_pull(r):
+    """Whether pulling this remote's commits would be a STRAIGHT FAST-FORWARD of the local checkout —
+    the remote is strictly AHEAD (it has commits we lack, we have none it lacks), both counts actually
+    known. The mirror of _is_fast_forward, for the other direction (the user 2026-07-27: the attaching
+    side owns BOTH directions of sync — the remote has no ssh route back). None is NOT zero, same as
+    the push gate: an unprovable relationship is exactly what must not be pulled automatically."""
+    if not _remote_out_of_date(r):
+        return False
+    d = _behind_info(r.get("kernel_sha") or "")
+    b, a = d.get("behind"), d.get("ahead")
+    return isinstance(b, int) and isinstance(a, int) and a > 0 and b == 0
+
+
+def _local_branch():
+    """The local checkout's branch name, or '' when detached/unknown — the auto-pull fires on main
+    only (the user 2026-07-27: main syncs itself across trusted machines; feature branches are
+    mid-thought and move when their owner says so)."""
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=3)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _pull_remote(host):
+    """PEER-TO-PEER pull — the other direction of _update_remote (the user 2026-07-27, who wanted sync
+    to ride the attaching side's own ssh: the remote pushing back can only fail, connectivity is
+    one-way). Fetch the remote clone's committed HEAD over the same BatchMode ssh and FAST-FORWARD the
+    local checkout onto it. Guardrails: ff-only (never a merge/rebase on the user's behalf — diverged
+    is refused loudly), and a clean local tree for TRACKED files (the fast-forward rewrites the
+    working tree; peers' uncommitted edits are not ours to move). The local kernel is deliberately NOT
+    restarted — a kernel restart is fleet-visible, so the detail says what to run instead. Returns
+    (ok, detail), fail-loud."""
+    host = str(host or "").strip()
+    if not host:
+        return False, "no host"
+    with _remotes_lock:
+        _rr = _remotes.get(host)
+    if _rr is not None and _rr.get("checkin_peer"):
+        return False, ("no ssh path to %s from this machine (it checked in here over its own tunnel) — "
+                       "sync from that machine's own dashboard" % host)
+    lfull = _local_head()
+    if not lfull:
+        return False, "local kernel isn't a git checkout — nowhere to pull to"
+    try:
+        st = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
+                            capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        return False, str(e)[:200]
+    if (st.stdout or "").strip():
+        return False, "this machine's tree has uncommitted changes — commit or stash them first (won't clobber)"
+    rdir, rhead, _rdirty, derr = _discover_remote_clone(host)   # a DIRTY remote is fine: we take its COMMITS
+    if derr:
+        return False, derr
+    if rhead and rhead == lfull:
+        return True, "already up to date (%s)" % (_local_head(short=True) or lfull[:8])
+    env = dict(os.environ, GIT_SSH_COMMAND="%s %s" % (SSH_BIN, " ".join(_SSH_OPTS)))
+    try:
+        f = subprocess.run(["git", "-C", str(ROOT), "fetch", "%s:%s" % (host, rdir), "HEAD"],
+                           capture_output=True, text=True, timeout=120, env=env)
+    except Exception as e:
+        return False, "git fetch from %s failed: %s" % (host, str(e)[:160])
+    if f.returncode != 0:
+        return False, "git fetch from %s failed: %s" % (host, (_ssh_err(f.stderr) or f.stdout or "").strip()[:160])
+    try:
+        anc = subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        if anc.returncode != 0:
+            return False, ("local and %s have diverged — a pull would need a merge, which is yours to "
+                           "do by hand" % host)
+        n = subprocess.run(["git", "-C", str(ROOT), "rev-list", "--count", "HEAD..FETCH_HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        count = (n.stdout or "").strip() or "?"
+        m = subprocess.run(["git", "-C", str(ROOT), "merge", "--ff-only", "FETCH_HEAD"],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return False, str(e)[:200]
+    if m.returncode != 0:
+        return False, "fast-forward failed: %s" % ((m.stderr or m.stdout or "").strip()[:160] or "unknown")
+    _HEAD_CACHE.update(ts=0.0)             # HEAD moved; the next poll re-reads it and the drift clears
+    short = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5).stdout.strip()
+    return True, "pulled %s commit%s from %s — now at %s; restart romp to run it" % (
+        count, "" if count == "1" else "s", host, short or "HEAD")
 
 
 def _start_remote(host):
@@ -14817,7 +14950,7 @@ _auto=!!(d&&d.autoUpdate);
 if(autoCb&&!autoCb.disabled)autoCb.checked=_auto;   // mirror the kernel; never clobber a write in flight
 // An automatic push in flight counts as BUSY: the icon marches while romp works in the background, which is
 // the whole point of replacing the modal (the user 2026-07-24 — animate the icon so you can see it happening).
-var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting');});
+var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');});
 paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count, plus any
 // automatic update's live phase — so the progress is readable WITHOUT opening the panel.
@@ -14874,13 +15007,18 @@ var ver='';
 if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
 if(typeof bb==='number'&&typeof ab==='number'){
 w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
-var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
+var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'')
++(t.checkinPeer?' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.':'');
 ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
 // A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
 // flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
-var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting');
-var upd=(t.status==='up'&&t.outOfDate&&!apx)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');
+// A checked-in host has no ssh route FROM here, so Push/Pull can only fail — the tooltip above says
+// where to sync instead. A strictly-AHEAD remote gets Pull in Push's place: a push there would only
+// be refused (it has commits this machine lacks), so offering it is a dead end.
+var upd=(t.status==='up'&&t.outOfDate&&!apx&&!t.checkinPeer&&!t.fastPull)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+var pull=(t.status==='up'&&t.fastPull&&!apx&&!t.checkinPeer)?'<button class=rnet-upd data-p=\"'+t.host+'\" title=\"Pull '+t.host+'\\u2019s newer commits into this machine\\u2019s romp (fast-forward only; refuses if this tree has uncommitted changes). This kernel keeps running the old build until you restart romp.\">Pull</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
@@ -14916,7 +15054,7 @@ else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-retry+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
+retry+pull+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
 // go away: the work still announces itself, it just does it here instead of over your screen. A FAILURE
@@ -15010,6 +15148,12 @@ fetch('/tunnels/start',{method:'POST',headers:{'Content-Type':'application/json'
 if(d&&d.ok){b.textContent='Started';schedule(1000);}   // the supervisor's next poll flips the row to connected
 else{b.disabled=false;b.textContent='Retry';alert('Start on '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
 }).catch(function(){b.disabled=false;b.textContent='Retry';alert('Start on '+h+' failed to reach the kernel.');});};});
+list.querySelectorAll('button[data-p]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-p');
+b.disabled=true;b.textContent='Pulling\\u2026';
+fetch('/tunnels/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.ok){b.textContent='Pulled';alert((d.detail||'Pulled.')+'');schedule(1000);}   // the detail carries the restart hint
+else{b.disabled=false;b.textContent='Retry';alert('Pull from '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Pull from '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-u]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-u');
 b.disabled=true;b.textContent='Pushing\\u2026';
 fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
@@ -16503,6 +16647,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 ok, detail = _update_remote(host)
+                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
+            if u.path == "/tunnels/pull":
+                # PULL a remote's newer committed code into the local checkout (peer-to-peer, no
+                # GitHub) — the mirror of /tunnels/update, still over THIS machine's ssh (the remote
+                # has no route back). Fast-forward only, clean local tree required; the local kernel
+                # is not restarted (the detail says what to run). Body: {"host": <ssh alias>}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                ok, detail = _pull_remote(host)
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
             if u.path == "/tunnels/start":
                 # START a downed remote kernel — the popover's explicit ASK for an ssh-reachable host
