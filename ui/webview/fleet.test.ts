@@ -56,9 +56,13 @@ test("a session-level collapse caret folds the whole session's tree WITHOUT open
   assert.match(SRC, /if \(sessFolded\.has\(sid\)\) sessFolded\.delete\(sid\); else sessFolded\.add\(sid\);/);
 });
 
-test("recency colour is copied VERBATIM from render.ts (identical to the ledger box)", () => {
-  assert.match(SRC, /function ageColorReadable\(ageSecs: number\)/);
-  assert.match(SRC, /const LO = 120, HI = 345600/);               // the same recency curve
+test("recency colour comes from the SHARED age-color module (identical to the ledger box)", () => {
+  // was a verbatim copy of render.ts's ramp; extracted 2026-07-27 into ui/webview/age-color.ts when the
+  // feed's age-provenance popover would have made a third copy — fleet now imports the one source
+  assert.match(SRC, /import \{ ageColorReadable \} from "\.\/age-color";/);
+  const AGE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "age-color.ts"), "utf8");
+  assert.match(AGE, /export function ageColorReadable\(ageSecs: number\)/);
+  assert.match(AGE, /const LO = 120, HI = 345600/);               // the same recency curve
   assert.match(SRC, /function stampSubtreeRecency/);              // the same subtree recency rollup
   assert.match(SRC, /const dt = now - nodeRecency\(n\);/);        // done text/time take the rolled-up recency…
   assert.match(SRC, /time\.style\.color = ageColorReadable\(dt\)/); // …in the shared colour

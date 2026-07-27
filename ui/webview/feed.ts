@@ -12,6 +12,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes, hostPartsNodes } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
+import { ageColorReadable } from "./age-color";
 import { badgeNotices } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
@@ -1702,6 +1703,9 @@ function showAgeTip(anchor: HTMLElement, rows: ProvRow[]): void {
     const row = el("div", "age-tip-row" + (r.kind === "stamp" ? " stamp" : ""));
     const w = el("span", "age-tip-when"); w.textContent = r.when;
     const x = el("span", "age-tip-what"); x.textContent = r.what;
+    // each line wears its own recency colour — time AND text, the chat tab-tip treatment (the user
+    // 2026-07-27); the un-timed remainder row keeps the panel's dim default
+    if (r.t > 0) { const c = ageColorReadable(hostNow - r.t); row.style.color = c; w.style.color = c; }
     row.append(w, x); tip.appendChild(row);
   }
   tip.style.display = "block";

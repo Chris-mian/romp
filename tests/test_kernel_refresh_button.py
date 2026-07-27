@@ -23,9 +23,10 @@ class RefreshButtonDecoupledTest(unittest.TestCase):
         self.assertIn("id=rail-refresh", html)
         self.assertIn("fetch('/restart',{method:'POST'})", html)
         self.assertNotIn("id=rrefresh", _gear_src())   # gone from the feed gear
-        # …and it draws at ICON size (the user 2026-07-20: the ↻ is a narrow text glyph that rendered
-        # visibly smaller than its 18px-svg neighbors at the shared 15px — it wears its own 19px)
-        self.assertIn("#rail-refresh{font-size:19px}", html)
+        # …and it draws at ICON size (the user 2026-07-20/27: the ↻ is a narrow text glyph that rendered
+        # visibly smaller than its 18px-svg neighbors — it now spans the full 18px icon-row height,
+        # line-height pinned so the taller glyph can't grow the bar)
+        self.assertIn("#rail-refresh{font-size:22px;line-height:18px;height:18px}", html)
 
     def test_refresh_button_is_not_gated_on_debug(self):
         # the old applyDebug() helper (which hid #rrefresh unless s.debug) is gone entirely …
