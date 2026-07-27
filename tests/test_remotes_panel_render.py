@@ -134,8 +134,38 @@ class RemotesPanelRender(unittest.TestCase):
 
     def test_render_is_given_pmode_rather_than_reading_it_free(self):
         js = km._LANDING_REMOTES_JS
-        self.assertIn("function render(ts,known,pmode,via,rholds)", js)
-        self.assertIn("render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[])", js)
+        self.assertIn("function render(ts,known,pmode,via,rholds,tiers)", js)
+        self.assertIn("render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{})", js)
+
+    def test_reverse_trust_mismatch_renders_the_direction_and_a_match_button(self):
+        # Both directions of the pair on one row (the user 2026-07-26): ours is the select, theirs is
+        # the bus-gossiped declaration; a mismatch wears the warm tint and offers Match.
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["peerTiers"] = {"TESTHOST": "trusted"}          # ours: directed (fixture) — half-open pair
+        out = self._run(tunnels=tn)
+        html = out.get("html", "")
+        self.assertIn("TESTHOST holds yours: trusted", html)
+        self.assertIn("rnet-mismatch", html)
+        self.assertIn("Match (directed)", html)
+
+    def test_reverse_trust_matched_pair_is_quiet_metadata_no_button(self):
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["peerTiers"] = {"TESTHOST": "directed"}
+        out = self._run(tunnels=tn)
+        html = out.get("html", "")
+        self.assertIn("TESTHOST holds yours: directed", html)
+        self.assertNotIn("rnet-mismatch", html)
+        self.assertNotIn("Match (", html)
+
+    def test_no_tier_gossip_renders_no_reverse_line(self):
+        # An older peer (or bus down) declares nothing — the row must not invent a direction.
+        out = self._run()
+        self.assertNotIn("holds yours", out.get("html", ""))
+
+    def test_match_binding_posts_the_mirror_route(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("button[data-m]", js)
+        self.assertIn("/tunnels/trust-mirror", js)
 
     def test_the_per_host_settings_sit_on_their_own_line(self):
         # Trust and check-in are set once and left; Detach is an act. Splitting them off line 1 is what

@@ -200,5 +200,63 @@ class QuarantineCards(unittest.TestCase):
         self.assertEqual(km._quarantine_cards(2000, set()), [])
 
 
+class MirrorTrust(unittest.TestCase):
+    """mirror_trust (the user 2026-07-26): sets OUR level for a host as ITS level for US, through the
+    tunnel forward + that machine's serve token — the human with both tokens acting on both kernels.
+    Deliberately the ONLY reciprocity: a peer can never open our gate by declaring trust."""
+
+    def tearDown(self):
+        with km._remotes_lock:
+            km._remotes.pop("boxa", None)
+
+    def _stub_remote(self, seen):
+        from http.server import BaseHTTPRequestHandler
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen["path"] = self.path
+                seen["token"] = self.headers.get("X-Romp-Token")
+                seen["body"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                out = json.dumps({"ok": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return srv.server_address[1]
+
+    def test_mirror_posts_our_level_through_the_tunnel_with_the_remote_token(self):
+        seen = {}
+        port = self._stub_remote(seen)
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=port, token="remote-tok", trust="trusted")
+        res, err = km.mirror_trust("boxa")
+        self.assertIsNone(err)
+        self.assertEqual(res, {"host": "boxa", "trust": "trusted"})
+        self.assertEqual(seen["path"], "/tunnels/trust", "the remote's own persisting route does the write")
+        self.assertEqual(seen["token"], "remote-tok", "authorized with THAT machine's serve token")
+        self.assertEqual(seen["body"], {"host": km._self_host(), "trust": "trusted"},
+                         "the remote is told to hold THIS machine at our current level")
+
+    def test_mirror_without_a_tunnel_errors_plainly(self):
+        res, err = km.mirror_trust("nosuchhost")
+        self.assertIsNone(res)
+        self.assertTrue(err.startswith("no attached"), err)
+
+    def test_mirror_without_a_token_errors_plainly(self):
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=1, token="", trust="trusted")
+        res, err = km.mirror_trust("boxa")
+        self.assertIsNone(res)
+        self.assertIn("no admin path", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

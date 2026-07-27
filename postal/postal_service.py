@@ -1362,9 +1362,28 @@ def remote_holds():
             out.append(dict(hd, atHost=hd.get("via") or h))
     return out
 
+def my_tier_of(host):
+    """The trust tier THIS bus applies to `host`'s direct mail — what _relay_in resolves for a
+    token-proven direct relay (an exchange partner has, by definition, shown our serve token): an
+    explicit row wins; a row without a level reads directed; no row at all reads trusted (the
+    token-proven default). Declared to the peer in every exchange so each side can SHOW how the other
+    holds it (the user 2026-07-26: a half-open pair was invisible until mail quarantined) — display
+    and mirroring ride this; the GATE itself stays _relay_in's, receiver-evaluated, always."""
+    row = PEERS.get(host)
+    if row is None:
+        return "trusted"
+    return row.get("trust") or "directed"
+
+
 def peers_snapshot():
-    return {"peers": {h: dict(p) for h, p in PEERS.items()}, "viaReach": via_reach(),
-            "remoteHolds": remote_holds()}
+    peers = {}
+    for h, p in PEERS.items():
+        d = dict(p)
+        tt = (PEER_STATE.get(h) or {}).get("theirTier")
+        if tt:
+            d["theirTier"] = tt        # how that host holds US, from its last exchange declaration
+        peers[h] = d
+    return {"peers": peers, "viaReach": via_reach(), "remoteHolds": remote_holds()}
 
 # ── peering protocol (peer-bus mode, stage 2) ───────────────────────────────────
 # One EXCHANGE carries both directions (plans/postal-peer-buses.md): the dialer POSTs
@@ -1696,6 +1715,8 @@ def peer_exchange_handle(data):
                 % ((data or {}).get("proto"), PEER_PROTO), "proto": PEER_PROTO}, 409
     PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
                         "holds": data.get("holds") or [], "seenAt": int(time.time())}
+    if data.get("tier"):                             # the dialer's declared tier-of-us (additive; older peers omit it)
+        PEER_STATE[host]["theirTier"] = str(data["tier"])
     for mid in data.get("acks") or []:               # the dialer confirmed relays landed — end-to-end:
         _ack_arrived(host, mid)                      # a forwarded one relays its ack back to the origin
     for b in data.get("bounces") or []:              # ...or refused them → backward, or to our sender
@@ -1727,6 +1748,7 @@ def peer_exchange_handle(data):
         acks, bounces = acks + a2, bounces + b2
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
             "presence": fleet_presence(host), "holds": holds_payload(host),
+            "tier": my_tier_of(host),                # how WE hold the dialer's mail (display/mirror, never the gate)
             "relays": rel, "acks": acks, "bounces": bounces}, 200
 
 def build_exchange_request(host, wait=True):
@@ -1735,6 +1757,7 @@ def build_exchange_request(host, wait=True):
         acks, bounces = list(p["acks"]), list(p["bounces"])
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
             "presence": fleet_presence(host), "holds": holds_payload(host),
+            "tier": my_tier_of(host),                # how WE hold the dialed host's mail
             "relays": outbox_list(host),
             "acks": acks, "bounces": bounces, "wait": bool(wait)}
 
@@ -1747,6 +1770,8 @@ def peer_exchange_apply(host, req_sent, resp):
         p["bounces"] = [b for b in p["bounces"] if b not in (req_sent.get("bounces") or [])]
     PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
                         "holds": resp.get("holds") or [], "seenAt": int(time.time())}
+    if resp.get("tier"):                             # the dialed side's declared tier-of-us
+        PEER_STATE[host]["theirTier"] = str(resp["tier"])
     for mid in resp.get("acks") or []:
         _ack_arrived(host, mid)
     for b in resp.get("bounces") or []:
