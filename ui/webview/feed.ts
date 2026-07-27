@@ -11,7 +11,7 @@ import { spinFor } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes, hostPartsNodes } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
-import { provenanceTitle, provenanceGroupTitle, rootStart, type ProvFmt } from "./provenance";
+import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { badgeNotices } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
@@ -1147,9 +1147,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   a._time.textContent = relAge(hostNow - it.t);
   // hover the stamp for provenance (the user 2026-07-27): the age marks the NEWEST event (a done card's
-  // age is its completion), so the tooltip tells where the thread came from — started when, each sub +
-  // its time, what the stamp marks. Native title: no DOM, click-safe.
-  a._time.title = provenanceTitle(it, hostNow, PROV_FMT);
+  // age is its completion), so the popover tells where the thread came from — started when, each sub +
+  // its time, what the stamp marks.
+  wireAgeTip(a._time, () => provenanceRows(it, hostNow, PROV_FMT));
   // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
   // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
   // is `rejudging`, not `recheck`, and gets no chip: since 2026-07-02 it ALSO moves to Working while the reply
@@ -1611,7 +1611,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, dotFor(g.name));   // working/awaiting dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
-  a._time.title = provenanceGroupTitle(g.members.map(rootStart), g.t, hostNow, PROV_FMT);
+  wireAgeTip(a._time, () => provenanceGroupRows(g.members.map(rootStart), g.t, hostNow, PROV_FMT));
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
   if (a._memSig !== memSig) {
@@ -1687,8 +1687,36 @@ function logPhrase(r: NodeLogRow): string {
   return r.kind || "updated";
 }
 const logRowT = (r: NodeLogRow): number => r.at || r.evT || 0;
-// the provenance tooltip (hover the card's age stamp) borrows the same vocabulary the card renders with
+// the provenance popover (hover the card's age stamp) borrows the same vocabulary the card renders with
 const PROV_FMT: ProvFmt = { rel: relAge, clock: clockHM, phrase: logPhrase };
+// One shared popover element for every age stamp (the user 2026-07-27: the native title tooltip was
+// dense and unaligned). Times sit in their own right-aligned column, rows wear the modal history-row
+// look (#age-tip in feed.css). pointer-events:none + rebuilt per hover, so it is click-safe; a lazy
+// rows thunk keeps the assembly off the render path entirely.
+let ageTipEl: HTMLElement | null = null;
+function showAgeTip(anchor: HTMLElement, rows: ProvRow[]): void {
+  if (!ageTipEl) { ageTipEl = el("div", ""); ageTipEl.id = "age-tip"; document.body.appendChild(ageTipEl); }
+  const tip = ageTipEl;
+  tip.replaceChildren();
+  for (const r of rows) {
+    const row = el("div", "age-tip-row" + (r.kind === "stamp" ? " stamp" : ""));
+    const w = el("span", "age-tip-when"); w.textContent = r.when;
+    const x = el("span", "age-tip-what"); x.textContent = r.what;
+    row.append(w, x); tip.appendChild(row);
+  }
+  tip.style.display = "block";
+  // above the stamp, clamped to the viewport; below it when there is no headroom
+  const rc = anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rc.left, window.innerWidth - tip.offsetWidth - 8));
+  const top = rc.top - tip.offsetHeight - 6;
+  tip.style.left = left + "px";
+  tip.style.top = (top < 8 ? rc.bottom + 6 : top) + "px";
+}
+function hideAgeTip(): void { if (ageTipEl) ageTipEl.style.display = "none"; }
+function wireAgeTip(elm: HTMLElement, rows: () => ProvRow[]): void {
+  elm.onmouseenter = () => showAgeTip(elm, rows());
+  elm.onmouseleave = hideAgeTip;
+}
 // the node's owning session for navigation (a handoff node lives in the recipient's transcript) —
 // the same resolution wireNodeZones uses for its zones
 function navSidOf(it: AskItem, node: AskTreeNode): string {
@@ -2352,7 +2380,7 @@ function renderModal() {
     agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, dotFor(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
-    ageEl.title = provenanceGroupTitle(grp.members.map(rootStart), grp.t, hostNow, PROV_FMT);
+    wireAgeTip(ageEl, () => provenanceGroupRows(grp.members.map(rootStart), grp.t, hostNow, PROV_FMT));
     ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId, sid: mem.sid }); fullscreenAskId = null; renderModal(); };
     // follow-up on a group goes to the session that took the typed prompt — one
@@ -2369,7 +2397,7 @@ function renderModal() {
     agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
-    ageEl.title = provenanceTitle(it, hostNow, PROV_FMT);
+    wireAgeTip(ageEl, () => provenanceRows(it, hostNow, PROV_FMT));
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
     // "Check status" (the user 2026-07-20): shown when the card has open/blocked subs to sweep and the
@@ -2767,6 +2795,7 @@ function feedToast(text: string) {
 
 function render() {
   const list = document.getElementById("feed-list")!;
+  hideAgeTip();   // a re-render can swap the hovered stamp out from under its mouseleave — never strand the tip
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;
   // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear

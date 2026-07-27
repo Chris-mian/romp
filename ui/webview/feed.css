@@ -988,3 +988,21 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the VS Code pipe-down banner — see styles.css (one treatment, two sheets) */
 #rpipe { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; text-align: center;
   background: #2b2d30; color: #e6e6e6; border-bottom: 1px solid #4a4d51; padding: 7px 14px; }
+
+/* Age-stamp provenance popover (the user 2026-07-27): hover a card's "Nm ago" for the thread's story.
+   Replaces the native title tooltip (dense, unaligned). Panel wears the feed-toast card look; rows are
+   the modal history-row family (0.86em, dim time cell — .ftree-log-when's vocabulary) with the times in
+   ONE right-aligned tabular column so they read as a list. The closing line (what the visible stamp
+   marks) is its own section under a hairline. pointer-events:none — it can never eat a click. */
+#age-tip {
+  position: fixed; z-index: 210; display: none; max-width: min(440px, 92vw);
+  background: var(--vscode-menu-background, #26262a); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 7px; padding: 7px 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); font-size: 0.86em; line-height: 1.45;
+  pointer-events: none;
+}
+.age-tip-row { display: flex; column-gap: 10px; align-items: baseline; }
+.age-tip-when { flex: 0 0 auto; min-width: 118px; text-align: right; color: var(--dim);
+  white-space: nowrap; font-variant-numeric: tabular-nums; }
+.age-tip-what { overflow-wrap: anywhere; }
+.age-tip-row.stamp { margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255, 255, 255, 0.09); }

@@ -1,15 +1,17 @@
-// The card-age provenance tooltip (the user 2026-07-27): the header's "Nm ago" stamps the card's
+// The card-age provenance popover (the user 2026-07-27): the header's "Nm ago" stamps the card's
 // NEWEST event — a completed card's age is when it was marked done — so hovering it must tell where
 // the thread CAME from: started when, each sub-item with the time it landed, and what the visible
-// stamp itself marks. EXECUTES ./provenance directly; the feed wiring (titles set beside every
-// ageEl/_time write) is source-pinned below.
+// stamp itself marks. Emits structured {when, what} rows (the native-title first cut was dense and
+// unaligned — same day) that the feed renders as an aligned popover. EXECUTES ./provenance directly;
+// the feed wiring + CSS vocabulary are source-pinned below.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { provenanceTitle, provenanceGroupTitle, rootStart, type ProvItem, type ProvFmt } from "./provenance";
+import { provenanceRows, provenanceGroupRows, rootStart, type ProvItem, type ProvFmt } from "./provenance";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 // deterministic formatters: the real relAge/clockHM/logPhrase live in feed.ts (pinned there); this
 // module owns only the story's structure
@@ -34,39 +36,44 @@ function item(over: Partial<ProvItem> = {}): ProvItem {
 }
 
 test("the story: started at the root's mint, each sub at ITS time, the stamp explained last", () => {
-  const lines = provenanceTitle(item(), NOW, F).split("\n");
-  assert.equal(lines[0], "started 150m ago · @1000", "line 1 = the root's mint time");
-  assert.equal(lines[1], "✓ write the parser — 80m ago · @5200", "a resolved sub stamps where it RESOLVED (mt)");
-  assert.equal(lines[2], "⏸ ask about the schema — 50m ago · @7000");
-  assert.equal(lines[3], "· docs pass — 20m ago · @8800", "an open sub stamps its mint (nothing resolved yet)");
-  assert.equal(lines[4], "marked done 10m ago · @9400", "the visible age is named for what it marks");
+  const rows = provenanceRows(item(), NOW, F);
+  assert.deepEqual(rows[0], { when: "150m ago · @1000", what: "started", kind: "start" });
+  assert.deepEqual(rows[1], { when: "80m ago · @5200", what: "✓ write the parser", kind: "sub" },
+    "a resolved sub stamps where it RESOLVED (mt)");
+  assert.deepEqual(rows[2], { when: "50m ago · @7000", what: "⏸ ask about the schema", kind: "sub" });
+  assert.deepEqual(rows[3], { when: "20m ago · @8800", what: "· docs pass", kind: "sub" },
+    "an open sub stamps its mint (nothing resolved yet)");
+  assert.deepEqual(rows[4], { when: "10m ago · @9400", what: "marked done", kind: "stamp" },
+    "the visible age is named for what it marks");
 });
 
-test("the final line matches the column: blocked / last update", () => {
-  assert.match(provenanceTitle(item({ column: "needs_input" }), NOW, F), /\nblocked 10m ago · @9400$/);
-  assert.match(provenanceTitle(item({ column: "working" }), NOW, F), /\nlast update 10m ago · @9400$/);
+test("the final row matches the column: blocked / last update", () => {
+  assert.equal(provenanceRows(item({ column: "needs_input" }), NOW, F).at(-1)!.what, "blocked");
+  assert.equal(provenanceRows(item({ column: "working" }), NOW, F).at(-1)!.what, "last update");
 });
 
 test("the root's own verdict rows ride between start and subs, in the feed's outcome words", () => {
   const it = item();
   it.tree[0].log = [{ kind: "block", src: "romp", at: 3_000 }, { kind: "unblock", src: "romp", evT: 4_000 }];
-  const lines = provenanceTitle(it, NOW, F).split("\n");
-  assert.equal(lines[1], "[block] 117m ago · @3000");
-  assert.equal(lines[2], "[unblock] 100m ago · @4000", "evT is the time-nav fallback when `at` is absent");
-  assert.equal(lines[3], "✓ write the parser — 80m ago · @5200", "subs follow the root's events");
+  const rows = provenanceRows(it, NOW, F);
+  assert.deepEqual(rows[1], { when: "117m ago · @3000", what: "[block]", kind: "event" });
+  assert.deepEqual(rows[2], { when: "100m ago · @4000", what: "[unblock]", kind: "event" },
+    "evT is the time-nav fallback when `at` is absent");
+  assert.equal(rows[3].what, "✓ write the parser", "subs follow the root's events");
 });
 
 test("cleared subs stay out; a huge tree caps at 8 with an honest remainder", () => {
   const it = item();
   it.tree[1].cleared = true;
-  assert.ok(!provenanceTitle(it, NOW, F).includes("write the parser"), "a cleared sub is not provenance");
+  assert.ok(!provenanceRows(it, NOW, F).some((r) => r.what.includes("write the parser")),
+    "a cleared sub is not provenance");
   const big = item({
     tree: [{ id: "root", text: "r", status: "done", t: 1_000, last: 9_000 } as any].concat(
       Array.from({ length: 11 }, (_, i) => ({ id: "n" + i, text: "sub " + i, status: "open", t: 2_000 + i, last: 2_000 + i } as any))),
   });
-  const lines = provenanceTitle(big, NOW, F).split("\n");
-  assert.equal(lines.length, 1 + 8 + 1 + 1, "start + 8 subs + remainder + stamp line");
-  assert.equal(lines[9], "…and 3 more", "no silent truncation");
+  const rows = provenanceRows(big, NOW, F);
+  assert.equal(rows.length, 1 + 8 + 1 + 1, "start + 8 subs + remainder + stamp row");
+  assert.deepEqual(rows[9], { when: "", what: "…and 3 more", kind: "more" }, "no silent truncation");
 });
 
 test("rootStart falls back: earliest tree mint without a root row, the card's t on an empty tree", () => {
@@ -76,17 +83,28 @@ test("rootStart falls back: earliest tree mint without a root row, the card's t 
 });
 
 test("a group's story is the fold: earliest member start, the member count, the group stamp", () => {
-  const lines = provenanceGroupTitle([5_000, 3_000, 7_000], 9_000, NOW, F).split("\n");
-  assert.equal(lines[0], "started 117m ago · @3000");
-  assert.equal(lines[1], "3 cards from one prompt");
-  assert.equal(lines[2], "last update 17m ago · @9000");
+  const rows = provenanceGroupRows([5_000, 3_000, 7_000], 9_000, NOW, F);
+  assert.deepEqual(rows[0], { when: "117m ago · @3000", what: "started", kind: "start" });
+  assert.deepEqual(rows[1], { when: "", what: "3 cards from one prompt", kind: "sub" });
+  assert.deepEqual(rows[2], { when: "17m ago · @9000", what: "last update", kind: "stamp" });
 });
 
-test("the feed wires the tooltip beside every age write — card, group card, both modal headers", () => {
-  assert.match(FEED, /a\._time\.title = provenanceTitle\(it, hostNow, PROV_FMT\);/);
-  assert.match(FEED, /a\._time\.title = provenanceGroupTitle\(g\.members\.map\(rootStart\), g\.t, hostNow, PROV_FMT\);/);
-  assert.match(FEED, /ageEl\.title = provenanceTitle\(it, hostNow, PROV_FMT\);/);
-  assert.match(FEED, /ageEl\.title = provenanceGroupTitle\(grp\.members\.map\(rootStart\), grp\.t, hostNow, PROV_FMT\);/);
+test("the feed wires the popover beside every age write — card, group card, both modal headers", () => {
+  assert.match(FEED, /wireAgeTip\(a\._time, \(\) => provenanceRows\(it, hostNow, PROV_FMT\)\);/);
+  assert.match(FEED, /wireAgeTip\(a\._time, \(\) => provenanceGroupRows\(g\.members\.map\(rootStart\), g\.t, hostNow, PROV_FMT\)\);/);
+  assert.match(FEED, /wireAgeTip\(ageEl, \(\) => provenanceRows\(it, hostNow, PROV_FMT\)\);/);
+  assert.match(FEED, /wireAgeTip\(ageEl, \(\) => provenanceGroupRows\(grp\.members\.map\(rootStart\), grp\.t, hostNow, PROV_FMT\)\);/);
   // …with the same vocabulary the card itself renders in
   assert.match(FEED, /const PROV_FMT: ProvFmt = \{ rel: relAge, clock: clockHM, phrase: logPhrase \};/);
+});
+
+test("the popover is aligned, styled in the feed's own vocabulary, and can never eat a click", () => {
+  assert.match(CSS, /\.age-tip-when \{ flex: 0 0 auto; min-width: 118px; text-align: right; color: var\(--dim\);/,
+    "one right-aligned dim time column — the alignment the title tooltip couldn't give");
+  assert.match(CSS, /font-variant-numeric: tabular-nums/, "digits line up down the column");
+  assert.match(CSS, /#age-tip \{[^}]*pointer-events: none/s, "hover chrome, never a click target");
+  assert.match(CSS, /\.age-tip-row\.stamp \{ margin-top: 4px; padding-top: 4px; border-top:/,
+    "the closing stamp line is its own section under a hairline");
+  // a re-render can swap the hovered stamp out from under its mouseleave — render() hides the tip
+  assert.match(FEED, /hideAgeTip\(\);   \/\/ a re-render can swap the hovered stamp/);
 });
