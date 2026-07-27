@@ -60,9 +60,12 @@ add_cli() {
   CLIS+=("$real")
 }
 # macOS app bundles
-add_cli "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-add_cli "/Applications/Cursor.app/Contents/Resources/app/bin/code"
-add_cli "/Applications/VSCodium.app/Contents/Resources/app/bin/codium"
+# ROMP_EDITOR_APPS: test seam so a dev mac's real /Applications doesn't leak
+# editors into a test that is about having none.
+APPS_DIR="${ROMP_EDITOR_APPS:-/Applications}"
+add_cli "$APPS_DIR/Visual Studio Code.app/Contents/Resources/app/bin/code"
+add_cli "$APPS_DIR/Cursor.app/Contents/Resources/app/bin/code"
+add_cli "$APPS_DIR/VSCodium.app/Contents/Resources/app/bin/codium"
 # anything on PATH (covers Linux / remote / server installs)
 for c in code code-insiders cursor codium; do
   p="$(command -v "$c" 2>/dev/null || true)"; [ -n "$p" ] && add_cli "$p"

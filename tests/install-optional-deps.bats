@@ -18,13 +18,32 @@ setup() {
     export ROMP_NO_SERVICE=1 ROMP_NO_SDK=1 ROMP_NO_EXT=1
     export ROMP_INSTALL_TOKEN_TRIES=1
     export ROMP_GITHOOK_DIR="$TEST_DIR/githooks"
+    # Keep vscode-extension/install.sh's app-bundle probe inside the sandbox: on a
+    # dev mac, /Applications really contains editors, and finding one would send
+    # the "no editor" tests down the package-and-install path.
+    export ROMP_EDITOR_APPS="$TEST_DIR/no-apps"
+
+    # An ALLOWLIST bin instead of the machine's /usr/bin — "tmux absent" must mean
+    # the same thing on every machine, and with a real /usr/bin it doesn't: CI's
+    # apt puts tmux there, Debian puts node there, and a mac keeps both in
+    # /opt/homebrew. So a PATH of "$STUB:/usr/bin:/bin" is bare on one box and
+    # fully equipped on the next (exactly how these tests passed on the box that
+    # wrote them and failed on the runner). Symlink only the tools the scripts
+    # under test legitimately need; everything else is absent, everywhere.
+    BAREBIN="$TEST_DIR/barebin"; mkdir -p "$BAREBIN"
+    local t p
+    for t in bash sh env dirname basename realpath readlink mktemp mkdir ln cp mv rm \
+             cat echo printf grep sed awk tr sort head tail cut wc date chmod touch \
+             sleep find xargs uname hostname python3 git curl; do
+        p="$(command -v "$t" 2>/dev/null || true)"
+        [ -n "$p" ] && ln -s "$p" "$BAREBIN/$t"
+    done
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
 
-# A PATH with the stub dir first and every editor CLI + tmux scrubbed out, so these tests
-# behave the same on a dev laptop (which has all of them) as on a bare box.
-bare_path() { echo "$STUB:/usr/bin:/bin"; }
+# Stubs first, then the allowlist. Nothing from the host machine leaks in.
+bare_path() { echo "$STUB:$BAREBIN"; }
 
 # ── the bug that blanked the dashboard ────────────────────────────────────────
 # vscode-extension/install.sh used to check for an editor CLI FIRST and exit 0, so on an
@@ -70,7 +89,13 @@ EOF
 #!/usr/bin/env bash
 echo "code $*" >> "$CALL_LOG"
 EOF
-    chmod +x "$STUB/npm" "$STUB/node" "$STUB/code"
+    # The PACKAGE_ONLY path reaches `npx @vscode/vsce package`; a real npx would
+    # hit the network (or, on the allowlist PATH, not exist at all).
+    cat > "$STUB/npx" <<'EOF'
+#!/usr/bin/env bash
+echo "npx $*" >> "$CALL_LOG"
+EOF
+    chmod +x "$STUB/npm" "$STUB/node" "$STUB/code" "$STUB/npx"
 
     # PACKAGE_ONLY stops before the install-into-editor loop, so the run stays hermetic.
     PATH="$(bare_path)" ROMP_EXT_PACKAGE_ONLY=1 run "$ROMP_DIR/vscode-extension/install.sh"
@@ -84,6 +109,8 @@ EOF
 # ── tmux is optional, and its absence is advisory (never fatal) ───────────────
 
 @test "install.sh: succeeds with no tmux, and names it as a disabled optional piece" {
+    # node exists (preflight needs it) — ONLY tmux is missing, which is the point.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     PATH="$(bare_path)" run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]                       # NOT a preflight failure
     [[ "$output" == *"tmux isn't installed"* ]]
@@ -92,6 +119,7 @@ EOF
 }
 
 @test "install.sh: says nothing about tmux when tmux is present" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     cat > "$STUB/tmux" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -146,15 +174,18 @@ EOF
 
 @test "romp-sdk-setup: names the venv package when ensurepip is missing, instead of dying at pip" {
     # A python that satisfies the >= 3.10 gate but has no ensurepip — exactly Debian/Ubuntu's
-    # split-out python3-venv. Real python3 for everything except `import ensurepip`.
+    # split-out python3-venv. Fully self-contained: it answers romp-sdk-setup's probes itself
+    # rather than delegating to the host python3, whose version differs per machine (a mac's
+    # /usr/bin/python3 is the 3.9 xcode shim, which dies at the version gate and never reaches
+    # the ensurepip branch this test is about).
     cat > "$STUB/python3.12" <<'EOF'
 #!/usr/bin/env bash
-for a in "$@"; do
-  case "$a" in
-    "import ensurepip") exit 1 ;;
-  esac
-done
-exec /usr/bin/python3 "$@"
+case "$*" in
+  *"version_info >= (3, 10)"*) exit 0 ;;
+  *'print("%d.%d"'*)           echo "3.12"; exit 0 ;;
+  *"import ensurepip"*)        exit 1 ;;
+esac
+exit 0
 EOF
     chmod +x "$STUB/python3.12"
 
@@ -195,10 +226,12 @@ if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
   chmod +x "$3/bin/pip" "$3/bin/python"
   exit 0
 fi
-for a in "$@"; do
-  [ "$a" = "import ensurepip" ] && exit 0
-done
-exec /usr/bin/python3 "$@"
+case "$*" in
+  *"version_info >= (3, 10)"*) exit 0 ;;
+  *'print("%d.%d"'*)           echo "3.12"; exit 0 ;;
+  *"import ensurepip"*)        exit 0 ;;
+esac
+exit 0
 EOF
     chmod +x "$STUB/python3.12"
 
