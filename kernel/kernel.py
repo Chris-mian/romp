@@ -16819,8 +16819,14 @@ def _ensure_bundles():
         for f in [*src.rglob("*.ts"), *src.rglob("*.css")])
     if stale:
         sys.stderr.write("romp-kernel: building UI bundles…\n")
+        # --production (minified, no sourcemaps), matching vscode-extension/install.sh. Both
+        # builders must agree: if the installer minified and this rebuild did not, any later .ts
+        # or .css edit would silently swap the served dashboard back to a 591 KB unminified
+        # render.js — the slow-chat-load bundle — on the next kernel restart, with nothing
+        # saying so. ROMP_EXT_DEV_BUILD=1 opts out for a UI dev loop (same knob as install.sh).
+        argv = ["node", "esbuild.js"] + ([] if os.environ.get("ROMP_EXT_DEV_BUILD") else ["--production"])
         try:
-            subprocess.run(["node", "esbuild.js"], cwd=str(cv), check=True,
+            subprocess.run(argv, cwd=str(cv), check=True,
                            capture_output=True, timeout=120)
         except Exception as e:
             sys.stderr.write("romp-kernel: bundle build failed (%s) — UI may be stale\n" % e)

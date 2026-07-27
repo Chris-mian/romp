@@ -47,8 +47,16 @@ PACKAGE_ONLY="${ROMP_EXT_PACKAGE_ONLY:-}"
 echo "==> npm install"
 npm install --silent   # idempotent; ensures dev deps (esbuild, types) exist
 
-echo "==> build"
-node esbuild.js        # → dist/: the VSIX's code AND the browser dashboard's bundles
+# --production => minified, no sourcemaps. An INSTALL is not a dev loop: without it the dashboard
+# shipped a DEVELOPMENT bundle, and render.js — the chat pane's code — was 591 KB of unminified JS
+# the browser had to parse before anything appeared (a slow chat load on a fresh install, the user
+# 2026-07-27). Serving was never the issue: every asset returns in under 3 ms over loopback.
+# Iterating on the UI? Run `node esbuild.js` (or --watch) directly for readable output and
+# sourcemaps; only the installers force production. ROMP_EXT_DEV_BUILD=1 opts out here too.
+build_flags="--production"
+[ -n "${ROMP_EXT_DEV_BUILD:-}" ] && build_flags=""
+echo "==> build${build_flags:+ (minified)}"
+node esbuild.js $build_flags
 
 # ── collect editor CLIs (dedup by resolved path) ──────────────────────
 declare -a CLIS=()

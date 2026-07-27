@@ -244,3 +244,60 @@ EOF
     [ "$status" -eq 0 ]
     grep -q "venv-rebuild" "$CALL_LOG"
 }
+
+# ── installs ship a PRODUCTION bundle ────────────────────────────────────────
+# Without --production the dashboard shipped a development build: render.js, the chat pane's
+# code, was 578 KB of unminified JS the browser parsed before anything appeared (a slow chat
+# load on a fresh install). Minified it is 297 KB and no sourcemaps are emitted at all.
+
+@test "vscode-extension/install.sh: builds minified for an install, not a dev bundle" {
+    cat > "$STUB/npm" <<'EOF'
+#!/usr/bin/env bash
+echo "npm $*" >> "$CALL_LOG"
+EOF
+    cat > "$STUB/node" <<'EOF'
+#!/usr/bin/env bash
+echo "node $*" >> "$CALL_LOG"
+EOF
+    chmod +x "$STUB/npm" "$STUB/node"
+
+    PATH="$(bare_path)" run "$ROMP_DIR/vscode-extension/install.sh"
+    [ "$status" -eq 0 ]
+    grep -q 'node esbuild.js --production' "$CALL_LOG"
+}
+
+@test "vscode-extension/install.sh: ROMP_EXT_DEV_BUILD keeps the readable bundle for a UI dev loop" {
+    cat > "$STUB/npm" <<'EOF'
+#!/usr/bin/env bash
+echo "npm $*" >> "$CALL_LOG"
+EOF
+    cat > "$STUB/node" <<'EOF'
+#!/usr/bin/env bash
+echo "node $*" >> "$CALL_LOG"
+EOF
+    chmod +x "$STUB/npm" "$STUB/node"
+
+    PATH="$(bare_path)" ROMP_EXT_DEV_BUILD=1 run "$ROMP_DIR/vscode-extension/install.sh"
+    [ "$status" -eq 0 ]
+    grep -qE 'node esbuild.js *$' "$CALL_LOG"
+    ! grep -q -- '--production' "$CALL_LOG"
+}
+
+# ── the finish line points at the command, not just a URL ────────────────────
+
+@test "install.sh: ends by telling you to type romp, keeping the link as the fallback" {
+    # Force the "romp is running" branch: that block needs a minted token to print.
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    mkdir -p "$ROMP_STATE_DIR"
+    echo "TESTTOKEN123" > "$ROMP_STATE_DIR/serve-token"
+
+    # node is absent from the allowlist bin by design; preflight needs one.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+
+    PATH="$(bare_path)" ROMP_TMUX_AVAILABLE=1 run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Open a new terminal and type:  romp"* ]]
+    # The URL must survive as the fallback — this terminal's PATH is stale, and a headless
+    # box has no browser for `romp` to open.
+    [[ "$output" == *"token=TESTTOKEN123"* ]]
+}
