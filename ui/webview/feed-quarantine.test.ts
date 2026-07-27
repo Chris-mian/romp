@@ -44,7 +44,7 @@ test("the decision carries the card's sid so a remote hold's verdict reaches the
 
 test("the decision dialog: read-only body, Approve/Deny, deny step offers a note to the sender", () => {
   assert.match(FEED, /function showQuarantineDialog\(/);
-  const dlg = FEED.slice(FEED.indexOf("function showQuarantineDialog"));
+  const dlg = FEED.slice(FEED.indexOf("function showQuarantineDialog"), FEED.indexOf("function showPickerDialog"));
   assert.match(dlg, /document\.body\.appendChild\(overlay\)/);
   // the body is a read-only view, not a textarea (editing was cut)
   assert.match(dlg, /el\("div", "qdlg-view"\)/);
@@ -54,5 +54,8 @@ test("the decision dialog: read-only body, Approve/Deny, deny step offers a note
   assert.match(dlg, /el\("textarea", "qdlg-text qdlg-feedback"\)/);
   assert.match(dlg, /decide\("deny", "Denying…", body, ta\.value\.trim\(\) \|\| undefined\)/);
   assert.match(dlg, /decide\("deny", "Denying…", body\)/);
-  assert.match(dlg, /c\.onclick = \(\) => overlay\.remove\(\)/);
+  // no Cancel button (the user 2026-07-26: approve or deny, nothing else) — the backdrop click is the
+  // only no-decision exit, and the message stays held
+  assert.doesNotMatch(dlg, /"Cancel"/);
+  assert.match(dlg, /if \(e\.target === overlay\) overlay\.remove\(\)/);
 });
