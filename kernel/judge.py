@@ -76,6 +76,9 @@ def _rebind_state(path):
     _lastsid_memo.clear()   # sdk-registry reads are mtime-memoized per sid — a rebind must not serve the old root's values
     _episode_memo.clear()   # ...and so are the episode-log reads
     _head_memo.clear()      # transcript heads are immutable per path, but a rebind swaps the whole world of paths
+    _namefp_memo.clear()    # names-entry content is memoized per SID against same-second mtimes — across a
+    #                         rebind that collides and serves the OLD root's project dir (found 2026-07-27:
+    #                         the second test in a run discovered nothing, its fleet resolved into an rm'd tmpdir)
     # (the override journal needs no rebinding: _overrides_dir() derives from GOALDIR at call time, so
     #  ANY isolation style — _rebind_state OR a bare GOALDIR reassignment — scopes it automatically)
 

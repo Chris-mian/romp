@@ -16,8 +16,8 @@ test("an awaitingBg lane renders an Awaiting badge in the romp brand green (the 
   assert.match(TL, /else if \(s\.state === 'awaitingBg' \|\| s\.awaitingBg\) m = \{ label: 'Awaiting', kind: 'awaitbg' \};/);
   // brand green, matching --st-awaitbg-bg in styles.css (this file loads standalone, so the hex is mirrored)
   assert.match(TL, /awaitbg: \{ bg: '#54B204', fg: '#0c1a00' \}/);
-  // an awaitingBg lane still reads ACTIVE (full opacity / ongoing treatment), like working/compacting
-  assert.match(TL, /s\.state === 'awaitingBg' \|\| s\.state === 'compacting';/);
+  // an awaitingBg lane still reads ACTIVE (full opacity / ongoing treatment), like working/compacting/clearing
+  assert.match(TL, /s\.state === 'awaitingBg' \|\| s\.state === 'compacting' \|\| s\.state === 'clearing';/);
 });
 
 test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {

@@ -72,6 +72,16 @@ class SessionBackend(ABC):
         or the /compact turn's settle; tmux keeps the None default (its @claude-state path is unchanged)."""
         return None
 
+    def clearing(self, sid: str) -> "bool | None":
+        """AUTHORITATIVE 'is a /clear in progress right now', or None when the backend has no such signal.
+        The bracket exists so the chat can show a live "clearing" indicator instead of a dead gap: between
+        the /clear delivery and the CLI minting the fresh transcript there is otherwise NO observable state
+        anywhere (the episode boundary is only detected after the fact, by the episodes tick). SDK: set on
+        /clear delivery, cleared event-based by the init that flips lastSid (the fork landing) or the turn's
+        settle. tmux keeps the None default — a TUI /clear there surfaces as a fork lane, with no bracket
+        (the known tmux gap in plans/clear-episodes.md)."""
+        return None
+
     def forwards_sends(self) -> bool:
         """True if this backend accepts a plain composer send at ANY time — even mid-turn — and manages its
         own delivery: forwarding the message to the model at the next tool boundary, folding several queued

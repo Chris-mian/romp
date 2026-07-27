@@ -396,7 +396,8 @@ class SdkQueuedIndicator(unittest.TestCase):
         # in-memory queue, tmux from the transcript's queue-operation records (TmuxBackend.pending_queued →
         # _pending_queued). No backend fork in build_session anymore.
         self.assertIn("be = Sessions.backend_for(sid)", src)
-        self.assertIn("queued = be.pending_queued(sid)", src)
+        # (the path_override arm is the read-only episode render — a closed episode has no live queue)
+        self.assertIn("queued = [] if path_override else be.pending_queued(sid)", src)
         self.assertIn("return _pending_queued(p) if p else []", src)   # tmux pending_queued reads the transcript
 
 

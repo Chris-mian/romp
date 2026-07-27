@@ -8207,7 +8207,8 @@ def _session_chip(sid, path, session, tm, now):
     aerr = _api_error(path) if not (open_now or awaiting_why) else None
     st = (tm or {}).get("state", "") or ""
     compacting = _compacting(sid, st, session, now, (tm or {}).get("since"))
-    return ("compacting" if compacting else
+    return ("clearing" if _clearing_now(sid) else   # a /clear in flight — a context operation, like compacting
+            "compacting" if compacting else
             "interrupting" if _interrupting(sid, session, now, tm) else   # stop dispatched, not yet settled
             "blocked" if aerr else
             "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
@@ -8268,6 +8269,18 @@ def _compacting_now(sid):
     path = _path_of(sid)
     session = (_parse_cached(path) if path else None) or {"turns": []}
     return _compacting(sid, (tm or {}).get("state", ""), session, int(time.time()), (tm or {}).get("since"))
+
+
+def _clearing_now(sid):
+    """Is this session mid-/clear RIGHT NOW — the backend's authoritative bracket (SDK: set on /clear
+    delivery, cleared by the lastSid-flipping init / the turn's settle). No optimistic/tmux derivation
+    exists: a tmux TUI /clear surfaces as a fork lane with no observable bracket (the accepted gap in
+    plans/clear-episodes.md), so None reads False."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        return bool(be.clearing(str(sid))) if be is not None else False
+    except Exception:
+        return False
 
 
 def _working_now(sid):
@@ -9102,9 +9115,16 @@ def _stamp_interrupt_causes(events):
     return events
 
 
-def build_session(sid, now, tmux=None):
+def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
-    ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
+    ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip.
+
+    path_override (build_episode, the user 2026-07-27): parse THAT transcript instead of the session's
+    current one — the single sid→path resolution point the episode plan reserved (plans/clear-episodes.md).
+    Override mode is a READ-ONLY historical render: no live-atom merge, no queue/compacting/todo overlays,
+    and it returns early with just {type:"session", id, events}. tail_cap_t bounds the final durable-note
+    flush (orphan replies / retry notes are sid-keyed and span episodes — without the cap, notes from AFTER
+    the /clear would dump into the old episode's tail)."""
     if tmux is None:
         tmux = _tmux_sessions()
     sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
@@ -9125,13 +9145,16 @@ def build_session(sid, now, tmux=None):
                 "path": str(jd.STATE / "boot-stub" / (sid + ".jsonl")), "mtime": now}
     if not sess:
         return None
+    if path_override:
+        sess = dict(sess)
+        sess["path"] = str(path_override)
     # Messages QUEUED in the TUI (submitted while busy/compacting) — folded EVENT-BASED by the owning backend:
     # the transcript's queue-operation records (tmux) or the SDK's in-memory queue. Computed HERE, before the
     # live-atom merge, so the optimistic input echo can SUPPRESS any text already shown as queued — the
     # event-based queued indicator owns that case, so no double-show. The kind:"queued" event is appended at
     # the bottom later.
     be = Sessions.backend_for(sid)
-    queued = be.pending_queued(sid)
+    queued = [] if path_override else be.pending_queued(sid)   # override = a closed episode; nothing is live
     parsed = _parse(sess["path"], sid, now)
     # Optimistic queued echo (TMUX only): a composer send while the session is BUSY (a working turn OR a
     # compaction in progress) gets queued by Claude Code, but its queue-operation record only lands in the
@@ -9145,8 +9168,9 @@ def build_session(sid, now, tmux=None):
     # discriminator.) Keys on the EVENT MODEL (_session_working / _compacting), never the tmux pane state — and
     # an echo-only merge keeps the turn's real ended state.
     tm0 = tmux.get(sid)
-    compacting_now = _compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since"))
-    busy = _session_working(parsed["turns"]) or compacting_now
+    compacting_now = (False if path_override else
+                      _compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since")))
+    busy = not path_override and (_session_working(parsed["turns"]) or compacting_now)
     if not hasattr(be, "unqueue") and busy:
         already = {q.strip() for q in queued}
         tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] for t in _atom_user_texts(a)}
@@ -9154,7 +9178,7 @@ def build_session(sid, now, tmux=None):
             et = (a.get("_echo_text") or "").strip()
             if et and et not in already and et not in tx_user:
                 queued = queued + [et]; already.add(et)
-    session = _merge_live_atoms(parsed, sid, shown_texts=queued)
+    session = parsed if path_override else _merge_live_atoms(parsed, sid, shown_texts=queued)
     caps = _captions(sid)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
@@ -9388,7 +9412,8 @@ def build_session(sid, now, tmux=None):
                 events.append({"kind": "compact", "uuid": a.get("uuid"), "ts": ts,
                                "trigger": cmeta.get("trigger"), "preTokens": cmeta.get("pre_tokens"),
                                "postTokens": cmeta.get("post_tokens"), "summary": a.get("summary")})
-    _flush_recoveries(None)                             # a recovery on the still-open tail turn (t past the last atom) → bottom of the flow
+    _flush_recoveries(tail_cap_t)                       # a recovery on the still-open tail turn (t past the last atom) → bottom of the flow
+    #                                                     (tail_cap_t: an episode render stops at its /clear — later notes belong to the next episode)
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
     _stamp_interrupt_causes(events)                     # a restart/crash resume notice names the seam's cause
     for ev in events:
@@ -9400,6 +9425,11 @@ def build_session(sid, now, tmux=None):
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
         if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
+    if path_override:
+        # Historical episode render: the transcript events only — none of the LIVE overlays below (todo,
+        # queued, compacting, api-error, status chip) describe a closed episode, and the boundary/system
+        # inserts belong to the CURRENT conversation's frame.
+        return {"type": "session", "id": sid, "events": events}
     # Claude Code Task to-do list: ONE checklist event (renderTodo), appended last (bottom, by the
     # composer), from the AUTHORITATIVE live task store (updated by every writer incl. subagents — the
     # transcript fold misses subagent completions; see _read_task_store, the user via `track` 2026-07-03).
@@ -9429,6 +9459,14 @@ def build_session(sid, now, tmux=None):
     # visually becomes. Corroborated `_compacting` signal (same one the chip/timeline use), never raw tmux.
     if compacting_now:
         events.append({"kind": "compacting"})
+    # Live CLEARING indicator (the user 2026-07-27): while a /clear is in flight — from the delivery until
+    # the CLI mints the fresh transcript — the chat used to show a dead gap and then flash "No messages
+    # yet.". An animated inline element, sibling of the compacting one; event-based off the backend's
+    # authoritative bracket (SdkSession._clearing), it vanishes the instant the fork lands and the
+    # "Conversation cleared" boundary card (kind:"clear") takes over as the durable record.
+    clearing_now = _clearing_now(sid)
+    if clearing_now:
+        events.append({"kind": "clearing"})
     # Live RECONNECT indicator (the user 2026-07-06): an /effort switch has no SDK runtime control, so romp
     # applies it by RECONNECTING the session (resume = the CLI re-reads the transcript) — which otherwise
     # leaves NO record in the chat. While that reconnect is pending, show an animated "Reloading session…"
@@ -9495,6 +9533,12 @@ def build_session(sid, now, tmux=None):
         if compacting_now:
             for i, m in enumerate(qmsgs):
                 if (m.get("md") or "").strip() == "/compact":
+                    del qmsgs[i]
+                    break
+        # Same fold for a running /clear: the live "Clearing conversation…" element already represents it.
+        if clearing_now:
+            for i, m in enumerate(qmsgs):
+                if (m.get("md") or "").strip() == "/clear":
                     del qmsgs[i]
                     break
         if qmsgs:                                         # don't emit an empty "queued" (folding the running /compact could empty it)
@@ -9732,8 +9776,21 @@ def build_session(sid, now, tmux=None):
                # open (the user 2026-06-24) — works for a never-run session of EITHER backend.
                "gitBranch": meta.get("gitBranch") or _git_branch(scwd), "version": meta.get("version") or "",
                "mode": meta.get("permissionMode") or "", "claudemd": docs}
-    if events and (docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode"))):
-        events.insert(0, sysinfo)
+    # The /clear boundary card (the user 2026-07-27): a session whose episodes log records ≥2 episodes had
+    # its conversation cleared — the chat's fresh episode opens with a collapsed "Conversation cleared"
+    # notice (the durable twin of the timeline's film-splice seam) whose body lazy-loads the pre-clear
+    # conversation on expand (loadEpisode → build_episode). It also guarantees a just-cleared session is
+    # never events-empty, so the "No messages yet." placeholder can't lie about a conversation that DID
+    # exist. Ordered ABOVE the system card: the cleared history predates the current conversation's frame.
+    _epi_rows = jd.episode_rows(sid)
+    boundary = _epi_rows[-1] if len(_epi_rows) >= 2 else None
+    if events or boundary:
+        if docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode")):
+            events.insert(0, sysinfo)
+        if boundary:
+            events.insert(0, {"kind": "clear", "uuid": "clear:%s" % (boundary.get("head") or boundary.get("t")),
+                              "ts": iso(boundary["t"]) if boundary.get("t") else None,
+                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows)})
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
@@ -9752,6 +9809,36 @@ def build_session(sid, now, tmux=None):
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),
             "firstSeen": session["turns"][0]["t"] if session["turns"] else now}
+
+
+EPISODE_EVENT_CAP = 200   # events shipped per pre-clear episode expand — bounded, honest about the cut
+
+
+def build_episode(sid, now):
+    """The PREVIOUS episode's chat events, for the "Conversation cleared" card's lazy expand: parse the
+    pre-clear transcript (episodes/<sid>.jsonl row -2's starting file) through build_session's override
+    mode and ship the tail, capped at EPISODE_EVENT_CAP with an honest `truncated` count. FAIL LOUDLY
+    (the repo rule): a missing transcript returns an error string the card shows, never a silent empty.
+
+    Known gap, accepted (mirrors plans/clear-episodes.md): the episodes log records each episode's
+    STARTING fsid, so an episode that later forked mid-life (a resume fork) renders from its starting
+    file's chain only — the common single-file episode is exact."""
+    rows = jd.episode_rows(sid)
+    if len(rows) < 2:
+        return {"type": "chatEpisode", "id": sid, "events": [],
+                "error": "No earlier conversation is recorded for this session."}
+    prev, cur = rows[-2], rows[-1]
+    cur_path = _path_of(sid)
+    path = (Path(cur_path).parent / ((prev.get("fsid") or "") + ".jsonl")) if cur_path else None
+    if not path or not prev.get("fsid") or not path.exists():
+        return {"type": "chatEpisode", "id": sid, "events": [],
+                "error": "The pre-clear transcript file is missing (%s), so the cleared conversation "
+                         "can't be shown." % (path.name if path is not None else "unknown")}
+    full = build_session(sid, now, path_override=str(path), tail_cap_t=cur.get("t"))
+    evs = (full or {}).get("events") or []
+    truncated = max(0, len(evs) - EPISODE_EVENT_CAP)
+    return {"type": "chatEpisode", "id": sid, "events": evs[-EPISODE_EVENT_CAP:],
+            "truncated": truncated, "clearedAt": cur.get("t")}
 
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
@@ -16171,6 +16258,14 @@ class Handler(BaseHTTPRequestHandler):
                                                        "before": before, "events": evs[frm:before]}))
             except Exception:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+            return
+        if msg and msg.get("type") == "loadEpisode" and msg.get("id"):
+            # The "Conversation cleared" card was expanded → ship the pre-clear episode's events (a one-shot
+            # direct reply, like chatHead; cached client-side per boundary so re-renders don't re-ask).
+            try:
+                client["send"](json.dumps(build_episode(str(msg["id"]), int(time.time()))))
+            except Exception:
+                sys.stderr.write("loadEpisode: %s\n" % traceback.format_exc())
             return
         if msg and msg.get("type") == "setGlobalRetryPaused":
             _set_retry_paused(msg.get("value"))

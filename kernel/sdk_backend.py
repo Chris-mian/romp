@@ -113,6 +113,15 @@ def _is_compact_cmd(text: str) -> bool:
     return t == "/compact" or t.startswith("/compact ")
 
 
+def _is_clear_cmd(text: str) -> bool:
+    """True if `text` is a /clear invocation. Drives the authoritative SdkSession._clearing bracket, the
+    chat's live "clearing" indicator — without it the stretch between the /clear delivery and the CLI
+    minting the fresh transcript has no observable state at all (the episode boundary is detected only
+    after the fact)."""
+    t = (text or "").strip()
+    return t == "/clear" or t.startswith("/clear ")
+
+
 def _model_reflects_alias(live_pretty: str, alias: str) -> bool:
     """Does the LIVE model display name reflect the chosen ALIAS — i.e. the switch has taken effect? A
     bare alias ('opus') is a substring of its pretty name ('Opus 4.8'), case-insensitively; 'default'/''
@@ -890,6 +899,11 @@ class SdkSession:
         # kernel's optimistic _compact_clicked + 180s cap for SDK sessions — that cap held parked ops (a
         # model pick, a message) hostage for up to 3 minutes whenever /compact found nothing to compact.
         self._compacting = False
+        # AUTHORITATIVE clearing signal, the /clear twin of _compacting: set when a /clear is delivered,
+        # cleared by the init whose session_id flips lastSid (the fork landed — the fresh conversation
+        # exists) or by the turn's ResultMessage (backstop). Drives the chat's live "clearing" indicator
+        # and the "clearing" chip so a /clear never reads as a dead gap or "No messages yet.".
+        self._clearing = False
         # BUSY is an EVENT, not a count. The CLI is "working" from the moment we hand it input (or it
         # streams output) until it emits a ResultMessage; a ResultMessage means the CLI has drained
         # EVERYTHING we sent — however many messages were forwarded mid-turn — and is idle again. We
@@ -967,6 +981,8 @@ class SdkSession:
         # Same enqueue-time semantics as send(); cleared event-based by the boundary / the turn's result.
         if any(_is_compact_cmd(t) for t in self._pending):
             self._compacting = True
+        if any(_is_clear_cmd(t) for t in self._pending):   # same restored-queue rule for a queued /clear
+            self._clearing = True
         self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._lock = threading.Lock()
@@ -1378,6 +1394,7 @@ class SdkSession:
                 self._interrupted = False
                 self._intr_level = 0
                 self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
+                self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
                 self._mark("waiting")
                 self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
@@ -1535,6 +1552,9 @@ class SdkSession:
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
                 self.backend._update_reg(self.sid, lastSid=fsid)
+                # A lastSid flip IS a fork landing — for a /clear, the fresh conversation now exists, so the
+                # clearing bracket ends here (event-based; the ResultMessage below is only the backstop).
+                self._clearing = False
             cli_cwd = d.get("cwd")
             if isinstance(cli_cwd, str) and cli_cwd and cli_cwd != self.cwd:
                 # The CLI's own cwd is the AUTHORITATIVE string: its projects-dir/transcript encoding
@@ -1638,6 +1658,7 @@ class SdkSession:
             # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
             # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
             self._compacting = False
+            self._clearing = False   # /clear backstop: the turn settled, whatever the init did or didn't flip
             if self._rewind_to:
                 # the rewind turn settled — the flag is CONSUMED (the leaf moved past the recorded one, so
                 # rewind_disposition would drop it on the next connect anyway; this just tidies the reg now).
@@ -2582,6 +2603,11 @@ class SdkBackend:
             # this send and the CLI actually starting the turn — so a drive op the producer tick checks in
             # that window still parks. Cleared event-based by the boundary / the turn's ResultMessage.
             s._compacting = True
+        if _is_clear_cmd(text):
+            # Delivering /clear: light the clearing bracket NOW, so the chat shows "Clearing conversation…"
+            # from the instant of the send. Cleared event-based by the lastSid-flipping init (the fresh
+            # conversation exists) / the turn's ResultMessage.
+            s._clearing = True
         s.enqueue(text)
         # optimistic input echo: show the user's own message INSTANTLY (neither the transcript nor the
         # stream has it yet at send time — only we know the text). Synthetic uuid; pruned by text once the
@@ -2759,6 +2785,15 @@ class SdkBackend:
         if not s:
             return None
         return s._compacting
+
+    def clearing(self, sid: str) -> "bool | None":
+        """Authoritative 'is a /clear in progress' (see SessionBackend.clearing): set when /clear is
+        delivered, cleared event-based by the lastSid-flipping init (the fork landed) or the turn's
+        ResultMessage. None when we don't run this sid (tmux has no bracket — the known fork-lane gap)."""
+        s = self.sessions.get(sid)
+        if not s:
+            return None
+        return s._clearing
 
     def kill(self, sid: str) -> bool:
         reg = read_reg(self.state_dir, sid)
