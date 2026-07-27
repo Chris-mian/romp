@@ -12,6 +12,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes, hostPartsNodes } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceTitle, provenanceGroupTitle, rootStart, type ProvFmt } from "./provenance";
+import { badgeNotices } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
@@ -3037,6 +3038,23 @@ function pipeBanner(up: boolean, queued: number): void {
     : "romp is unreachable — reconnecting…";
 }
 
+// Card trouble badges mirror into the shell's notification bell (the user 2026-07-27): the chip on the
+// card stays exactly as it was; the bell gets ONE durable entry per episode. badge-mirror.ts owns the
+// episode identity (signature-keyed on the badge's own since/t); this wrapper owns the plumbing — the
+// persisted seen-set (shared across tabs via localStorage, so two open dashboards don't double-log) and
+// the {romp:'notify'} post the shell's bell listens for. Storing only the ACTIVE set is what re-arms a
+// cleared badge and keeps the store from growing: a card that left the payload takes its sigs with it.
+const BADGE_SEEN_KEY = "romp:cardNotified";
+function mirrorBadges(items: AskItem[]): void {
+  let seen: string[] = [];
+  try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
+  const { notices, active } = badgeNotices(items, new Set(seen));
+  for (const n of notices) {
+    try { window.parent?.postMessage({ romp: "notify", kind: n.kind, text: n.text }, "*"); } catch { /* no shell (VS Code view) */ }
+  }
+  try { localStorage.setItem(BADGE_SEEN_KEY, JSON.stringify(Array.from(active))); } catch { /* storage full */ }
+}
+
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
@@ -3075,6 +3093,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
+    mirrorBadges(incomingAsks);   // card trouble chips also log in the shell's bell (chips stay on the cards)
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
     if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
