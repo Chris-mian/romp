@@ -14305,8 +14305,9 @@ setTimeout(hide,5000);})();
 # The shell's NOTIFICATION CENTER (the user 2026-07-27): errors used to drop as fixed banners from the top
 # of the screen ("Disconnected — reconnecting…", usage-limit reached, judge degraded) and got in the way.
 # They now land as entries in a sequential feed behind a bell in the bottom bar's action cluster (next to
-# ↻ / network / gear): the bell goes red with an unread count when something arrives, the popover lists
-# entries newest-first with per-row clear + Clear all, and opening it marks everything seen. Entries persist
+# ↻ / network / gear): the bell goes red when something arrives (no count badge — it clipped and the
+# number added nothing, the user 2026-07-27), the popover lists entries newest-first with per-row clear +
+# Clear all, and opening it marks everything seen. Entries persist
 # in localStorage so a reload (kernel restart) keeps the story. Sources: pane WS drops (each pane iframe
 # posts {romp:'wsState',app,state}; the timeline/feed/etc. are pushed from the kernel, so a drop silently
 # freezes them), the usage-limit + judge-degraded signatures (see _LANDING_USAGE_JS), and any
@@ -14314,8 +14315,7 @@ setTimeout(hide,5000);})();
 _LANDING_ERRS_JS = """
 (function(){var icon=document.getElementById('rail-errs'),micon=document.getElementById('merr'),
 back=document.getElementById('rerr-back'),list=document.getElementById('rerr-list'),
-clearBtn=document.getElementById('rerr-clear'),x=document.getElementById('rerr-x'),
-rel=document.getElementById('rerr-reload');
+clearBtn=document.getElementById('rerr-clear'),x=document.getElementById('rerr-x');
 if(!icon||!back||!list)return;
 var KEY='romp:notices',MAX=100;
 function load(){try{var v=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(v)?v:[];}catch(e){return[];}}
@@ -14325,21 +14325,25 @@ function ago(t){var dt=Math.max(0,Math.floor(Date.now()/1000)-t);if(dt<90)return
 var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);
 return h<24?h+'h ago':Math.floor(h/24)+'d ago';}
 function unseen(){var n=0;for(var i=0;i<NOTES.length;i++)if(!NOTES[i].seen)n++;return n;}
-// The bell + badge: red while anything is unread OR a visible pane's socket is DOWN right now (the live
+// The bell: red while anything is unread OR a visible pane's socket is DOWN right now (the live
 // problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects).
+// No count badge — it clipped against the bar edge and the number added nothing (the user 2026-07-27).
 function paint(){var n=unseen();
-[icon,micon].forEach(function(el){if(!el)return;var b=el.querySelector('.rerr-badge');
-if(b){b.hidden=!n;b.textContent=n>99?'99+':String(n);}
-el.classList.toggle('has',n>0||liveDown());});
+[icon,micon].forEach(function(el){if(el)el.classList.toggle('has',n>0||liveDown());});
 if(!back.hidden)renderList();}
+// each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
+var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
+nudge:'follow-up failed',retry:'retrying',apierror:'api error'};
 function renderList(){list.innerHTML='';
 if(!NOTES.length){var e=document.createElement('div');e.className='rerr-empty';e.textContent='No errors';list.appendChild(e);return;}
 for(var i=NOTES.length-1;i>=0;i--)(function(n,i){var row=document.createElement('div');row.className='rerr-row';
-var tm=document.createElement('span');tm.className='rerr-t';tm.textContent=ago(n.t);
+if(KINDLBL[n.kind]){var ch=document.createElement('span');ch.className='rerr-chip k-'+n.kind;
+ch.textContent=KINDLBL[n.kind];row.appendChild(ch);}
 var tx=document.createElement('span');tx.className='rerr-msg';tx.textContent=n.text+(n.n>1?' (x'+n.n+')':'');
+var tm=document.createElement('span');tm.className='rerr-t';tm.textContent=ago(n.t);
 var del=document.createElement('span');del.className='rerr-del';del.textContent='\\u00d7';del.title='Clear';
 del.addEventListener('click',function(ev){ev.stopPropagation();NOTES.splice(i,1);save();renderList();paint();});
-row.appendChild(tm);row.appendChild(tx);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);}
+row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);}
 // One write path. A repeat of the NEWEST entry (same kind+text — e.g. a reconnect loop dropping over and
 // over) coalesces into it with a count instead of flooding the feed: event-exact, no time window.
 window.__rompNotify=function(kind,text){if(!text)return;
@@ -14372,9 +14376,6 @@ icon.addEventListener('click',function(){back.hidden?open():close();});
 back.addEventListener('click',function(e){if(e.target===back)close();});
 if(x)x.addEventListener('click',close);
 if(clearBtn)clearBtn.addEventListener('click',function(){NOTES=[];save();renderList();paint();});
-// never dead-end a dead connection: the WS retries normally win, but a browser holding reconnects back
-// (Firefox failure backoff) leaves nothing to click — the reload action lives in the popover header now.
-if(rel)rel.addEventListener('click',function(){location.reload();});
 window.__rompOpenErrs=open;   // the mobile bar's bell routes here (no rail on mobile)
 paint();})();
 """
@@ -15062,6 +15063,18 @@ def _rdrift_block():
             + "<script>" + _RDRIFT_JS + "</script>")
 
 
+# The kernel-restart glyph, shared by the desktop rail and the mobile bar. A browser-style reload:
+# a circular arc sweeping clockwise from 4 o'clock the long way round to 1 o'clock, arrowhead at the
+# end (the user 2026-07-27 — the ↻ TEXT glyph stopped short at 11 o'clock and read as "weird", and its
+# rendered size rode the browser's fallback font; an svg matches its 18px icon neighbors exactly).
+# SVG ATTRIBUTES MUST BE QUOTED (the rail-net invisible-squares saga).
+_REFRESH_SVG = (
+    "<svg viewBox='0 0 16 16' width='18' height='18'>"
+    "<path d='M12.5 10.6 A 5.2 5.2 0 1 1 10.6 3.5' fill='none' stroke='currentColor'"
+    " stroke-width='1.5' stroke-linecap='round'/>"
+    "<path d='M9.9 4.8 L11.4 2.2 L12.7 4.7 Z' fill='currentColor'/></svg>")
+
+
 def _landing():
     # one flex row of up to FOUR independently-toggled panes (chat | fleet | feed | timeline) behind a far-left
     # rail; draggable gutters between visible panes; the rail also pins the ⛭ settings + ↻ refresh actions at
@@ -15143,12 +15156,6 @@ def _landing():
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
             ".rail-act svg{display:block}"
-            # the ↻ is a narrow TEXT glyph whose rendered size rides the browser's fallback font — at the
-            # shared 15px it drew visibly smaller than its 18px-svg network neighbor (the user 2026-07-20:
-            # "the restart kernel button got much smaller"; 2026-07-27: still short next to the bell —
-            # span the full 18px icon-row height like the svg neighbors, line-height pinned so the taller
-            # glyph can't grow the bar).
-            "#rail-refresh{font-size:22px;line-height:18px;height:18px}"
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
             ".rail-act.on{color:var(--accent)}"   # the network icon glows accent-blue while a remote is connected
@@ -15380,8 +15387,6 @@ def _landing():
             # action buttons: dimmer + fixed-width so the four pane tabs keep the room; thin divider between
             "#mtabs .mtabs-div{flex:0 0 1px;background:#303031;margin:5px 0}"
             "#mtabs button.mact{flex:0 0 auto;padding:6px 10px;color:#7d848b;font-size:17px;line-height:1}"
-            # the mobile ↻ is the same narrow text glyph as the rail one — same optical-match treatment
-            "#mtabs .mact[data-act=restart]{font-size:21px;line-height:18px}"
             "#mtabs button.mact svg{display:block}"
             "}"
             # default Chat + Feed + Timeline shown, Fleet off (the user 2026-06-25); the rail toggles + ?panes=
@@ -15398,44 +15403,52 @@ def _landing():
             "#romp-boot .rl-dots{gap:9px}#romp-boot .rl-dots i{width:11px;height:11px}"
             # The notification center (the user 2026-07-27; replaces the fixed top banners — offline /
             # usage-limit / judge-degraded — which got in the way): the bell in the bottom bar's action
-            # cluster goes RED (with an unread count) when an error lands; the popover is a panel anchored
-            # above the bell (bottom-right), newest first, per-row clear + Clear all.
-            "#rail-errs{position:relative}"
-            "#rail-errs.has,#merr.has{color:#ff6b6b}"
-            ".rerr-badge{position:absolute;top:-4px;right:-6px;background:#ff6b6b;color:#1e1e1e;"
-            "border-radius:8px;min-width:14px;height:14px;padding:0 3px;font-size:9.5px;font-weight:700;"
-            "line-height:14px;text-align:center;pointer-events:none}"
-            "#merr{position:relative}"
+            # cluster goes RED when an error lands; the popover is a panel anchored above the bell
+            # (bottom-right), newest first, per-row clear + Clear all.
+            "#rail-errs.has,#merr.has{color:#ff6b6b}"   # red bell = something unread / a live problem; no count badge (it clipped, and the number added nothing — the user 2026-07-27)
             "#rerr-back{position:fixed;inset:0;z-index:210;background:rgba(0,0,0,.35)}"
+            # The panel wears the SAME modal vocabulary as the settings card / network panel (the user
+            # 2026-07-27: the first cut's font shorthand leaned on --vscode-font-family, which the browser
+            # shell never defines, so the whole shorthand was invalid and the text rendered oversized in
+            # the page default): #252526 card, 13px system-ui body, 14px/600 header, 11.5px rows + 11px
+            # dim times (the network panel's information-type sizes), rnet-style action button + close.
             "#rerr-panel{position:absolute;right:10px;bottom:44px;width:min(440px,94vw);max-height:min(60vh,480px);"
-            "display:flex;flex-direction:column;background:#26282b;border:1px solid #4a4d51;border-radius:10px;"
-            "box-shadow:0 10px 30px #0000008a;font:12.5px/1.45 var(--vscode-font-family)}"
+            "display:flex;flex-direction:column;background:#252526;border:1px solid #3a3a3a;border-radius:10px;"
+            "box-shadow:0 12px 36px #000000aa;color:#ccc;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}"
             "#rerr-panel .rerr-top{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#e8eaed;"
-            "padding:10px 12px;border-bottom:1px solid #3a3d41;flex:0 0 auto}"
+            "padding:10px 12px;border-bottom:1px solid #34343a;flex:0 0 auto}"
             "#rerr-panel .rerr-top .sp{flex:1}"
-            "#rerr-clear,#rerr-reload{font:inherit;font-size:12px;cursor:pointer;border-radius:6px;padding:3px 10px;"
-            "background:none;color:#9aa0a6;border:1px solid #4a4d51}"
-            "#rerr-clear:hover,#rerr-reload:hover{color:#e6e6e6;border-color:#6a6d71}"
-            "#rerr-x{cursor:pointer;opacity:.6;font-weight:700;font-size:15px;line-height:1}"
-            "#rerr-x:hover{opacity:1}"
+            "#rerr-clear{background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;"
+            "font-size:12px;cursor:pointer}"
+            "#rerr-clear:hover{background:#333;color:#ddd}"
+            "#rerr-x{background:none;border:none;color:#9aa0a6;font-size:16px;line-height:1;cursor:pointer;padding:0 2px}"
+            "#rerr-x:hover{color:#fff}"
             "#rerr-list{overflow-y:auto;padding:4px 0;flex:1 1 auto}"
-            ".rerr-row{display:flex;align-items:baseline;gap:8px;padding:6px 12px;color:#d6d8da}"
-            ".rerr-row+.rerr-row{border-top:1px solid #2f3236}"
-            ".rerr-t{flex:0 0 auto;color:#8a9099;font-size:11px;white-space:nowrap}"
+            ".rerr-row{display:flex;align-items:baseline;gap:7px;padding:6px 12px;color:#ccc;font-size:11.5px;line-height:1.45}"
+            ".rerr-row+.rerr-row{border-top:1px solid #2a2a2a}"
             ".rerr-msg{flex:1;min-width:0;overflow-wrap:anywhere}"
+            ".rerr-t{flex:0 0 auto;color:#6e7681;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}"
             ".rerr-del{flex:0 0 auto;cursor:pointer;opacity:.5;font-weight:700}"
             ".rerr-del:hover{opacity:1}"
-            ".rerr-empty{padding:16px 12px;color:#8a9099;text-align:center}"
+            ".rerr-empty{padding:16px 12px;color:#6e7681;text-align:center;font-size:11.5px}"
+            # Each entry leads with the SAME chip the card wears in the feed — same pill shape, colours and
+            # weight as the .fask-* chip family (feed.css), so "stalled" here looks like "stalled" there.
+            ".rerr-chip{flex:0 0 auto;font-size:9px;font-weight:700;letter-spacing:.04em;padding:1px 6px;"
+            "border-radius:999px;line-height:1.4;white-space:nowrap;border:1px solid transparent}"
+            ".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166;border-color:rgba(255,209,102,0.6)}"
+            ".rerr-chip.k-nudge{color:#ff6a6a;border-color:rgba(255,106,106,0.6)}"
+            ".rerr-chip.k-retry,.rerr-chip.k-apierror{color:#e5484d;border-color:rgba(229,72,77,0.6)}"
+            ".rerr-chip.k-conn{color:#ff6b6b;border-color:rgba(255,107,107,0.6)}"
+            ".rerr-chip.k-limit,.rerr-chip.k-judge{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
-            # the notification popover (hidden until the bell is clicked; backdrop click closes). The
-            # Reload button keeps the old offline banner's one-click out for a dead connection the
-            # browser's own backoff won't retry.
+            # the notification popover (hidden until the bell is clicked; backdrop click closes). No
+            # Reload button (the user 2026-07-27: redundant next to the rail's own restart/refresh —
+            # and a dead page is one browser-refresh away regardless).
             "<div id=rerr-back hidden><div id=rerr-panel>"
             "<div class=rerr-top>Errors<span class=sp></span>"
-            "<button id=rerr-reload title='Reload the dashboard (for a connection the retries gave up on)'>Reload</button>"
             "<button id=rerr-clear title='Clear all entries'>Clear all</button>"
-            "<span id=rerr-x title=Close>×</span></div>"
+            "<button id=rerr-x aria-label=Close>×</button></div>"
             "<div id=rerr-list></div>"
             "</div></div>"
             "<div class=col>"
@@ -15469,13 +15482,17 @@ def _landing():
             "<div class=rail-acts>"
             # the notification bell (the user 2026-07-27): monochrome outline like its neighbors, red +
             # unread badge when an error lands (see _LANDING_ERRS_JS). ATTRIBUTES QUOTED (the rail-net saga).
-            "<div class=rail-act id=rail-errs title=Errors aria-label=Errors>"
+            "<div class=rail-act id=rail-errs title='Errors — click to open' aria-label=Errors>"
             "<svg viewBox='0 0 16 16' width='17' height='17'>"
             "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
             " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
             "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/></svg>"
-            "<span class=rerr-badge hidden></span></div>"
-            "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
+            "</div>"
+            # the refresh glyph is a REAL browser-style reload icon now (the user 2026-07-27: the ↻ text
+            # glyph stopped at 11 o'clock and never read as refresh): a near-full circular arc sweeping
+            # clockwise to 1 o'clock with the arrowhead there, drawn like its svg neighbors. QUOTED attrs.
+            "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>"
+            + _REFRESH_SVG + "</div>"
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
             # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
             "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
@@ -15517,14 +15534,14 @@ def _landing():
             "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></button>"
             # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
             # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
-            "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>↻</button>"
+            "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
             # the notification bell on mobile too (same glyph + badge; opens the same popover)
-            "<button class=mact id=merr data-act=errs aria-label=Errors title=Errors>"
+            "<button class=mact id=merr data-act=errs aria-label=Errors title='Errors — click to open'>"
             "<svg viewBox='0 0 16 16' width='17' height='17'>"
             "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
             " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
             "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/></svg>"
-            "<span class=rerr-badge hidden></span></button>"
+            "</button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
             "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"
             "</nav>"

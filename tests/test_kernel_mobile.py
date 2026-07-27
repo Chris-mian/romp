@@ -65,7 +65,8 @@ class LandingShell(unittest.TestCase):
         # there). Add a bar button that fires the SAME restart the rail does — factored to window.__rompRestart
         # (POST /restart, poll /healthz, reload) so both surfaces share one path, not a copy.
         html = km._landing()
-        self.assertIn("data-act=restart aria-label='Restart kernel' title='Restart kernel'>↻</button>", html)
+        # …and it wears the SAME browser-style reload svg as the rail (the ↻ text glyph is gone, 2026-07-27)
+        self.assertIn("data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + km._REFRESH_SVG + "</button>", html)
         self.assertIn("window.__rompRestart=function", km._LANDING_SETTINGS_JS)   # the shared restart path
         self.assertIn("fetch('/restart',{method:'POST'})", km._LANDING_SETTINGS_JS)
         self.assertIn("rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();}", km._LANDING_SETTINGS_JS)

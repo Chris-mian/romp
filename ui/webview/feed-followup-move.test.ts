@@ -25,9 +25,9 @@ test("a predicted card is kept in Working at render, styled like the kernel's re
   // (the messageless plain move was removed with its button/drag, the user 2026-07-25)
   assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ a\.recheck = true; a\.followupPending = true; \}/);
   // applied at the top of render so EVERY render (push, modal close) reflects the prediction
-  // (2026-07-27: render() now hides the age-provenance popover first — a re-render can swap the hovered
-  // stamp out from under its mouseleave — so the pin allows that line between the two.)
-  assert.match(FEED, /const list = document\.getElementById\("feed-list"\)!;\s*\n(\s*hideAgeTip\(\);.*\n)?\s*applyFollowMove\(asks\);/);
+  // (2026-07-27: render() prunes the age-provenance popover first — hiding it only when the hovered
+  // stamp was torn out of the DOM — so the pin allows that line between the two.)
+  assert.match(FEED, /const list = document\.getElementById\("feed-list"\)!;\s*\n(\s*pruneAgeTip\(\);.*\n)?\s*applyFollowMove\(asks\);/);
   // the removed drag machinery must not creep back in front of it
   assert.doesNotMatch(FEED, /dragAskId|DRAG_CARDS_ENABLED|fdrop-slot/);
   assert.doesNotMatch(FEED, /"cardMove"/, "the messageless move op is gone from the feed");

@@ -64,15 +64,13 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("if(ws&&ws.readyState<=1)ws.close();", js)
         self.assertIn("if(!ws||ws.readyState===3)connect();", js)
 
-    def test_error_popover_has_a_reload_button(self):
-        # never dead-end (progressive disclosure rule): when the browser holds reconnects back, the
-        # user's actual recovery action — reload — must be reachable from the error surface. It moved
-        # from the old offline banner into the notification popover's header (2026-07-27).
+    def test_error_popover_has_no_reload_button(self):
+        # the popover briefly inherited the old offline banner's Reload button; the user called it
+        # redundant next to the rail's own restart control and a plain browser refresh (2026-07-27),
+        # so it is gone — and nothing in the popover reloads the page on its own.
         land = inspect.getsource(km._landing)
-        self.assertIn("id=rerr-reload", land, "the popover header carries the button")
-        self.assertIn("document.getElementById('rerr-reload')", km._LANDING_ERRS_JS)
-        self.assertIn("rel.addEventListener('click',function(){location.reload();})", km._LANDING_ERRS_JS,
-                      "a click reloads — user-initiated, never automatic")
+        self.assertNotIn("rerr-reload", land)
+        self.assertNotIn("location.reload", km._LANDING_ERRS_JS)
 
     def test_shell_rstale_banner_shows_on_ws_stale_message(self):
         # the #rstale reload banner (formerly build-drift only) now ALSO shows on a pane's wsStale post, with a
