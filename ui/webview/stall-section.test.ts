@@ -55,13 +55,17 @@ test("the body prefers the staller's note and falls back to the mechanical reaso
     "never '(generating…)' — there is always something true to say");
 });
 
-test("the toggle is a FILLED working-yellow status chip in BOTH states", () => {
-  // Filled at rest, not an outline: the outline version sat as quiet as its neighbours and the stall went
-  // unnoticed (the user 2026-07-23, round 2 — it should be "noticed when something is going on").
-  assert.match(CSS, /\.fask-stallbtn, \.fask-stallbtn\.on \{ color: var\(--st-working-fg\); background: var\(--st-working-bg\);/,
-    "selected or not, it wears the working status colours — a status, not a preference");
-  assert.match(CSS, /\.fask-stallbtn\.on \{ font-weight: 600; \}/,
-    "pressed adds only weight; the opened body below is the pressed cue");
+test("the toggle wears the problem-chip OUTLINE, deepening to a yellow wash when selected", () => {
+  // Outline at rest — yellow text + translucent yellow border on transparent, the same vocabulary as
+  // .fask-warnchip / .fask-interrupted (the user 2026-07-27, superseding the 2026-07-23 solid fill,
+  // which broke ranks with every other trouble chip). Selected = wash + full border + weight: clearly
+  // pressed, never the solid working-status fill.
+  assert.match(CSS, /\.fask-stallbtn \{ color: #ffd166; background: transparent; border-color: rgba\(255, 209, 102, 0\.6\); \}/,
+    "at rest it reads like the card's other trouble chips: yellow outline, never a fill");
+  assert.match(CSS, /\.fask-stallbtn\.on, \.fask-stallbtn\.on:hover \{ color: #ffd166; border-color: #ffd166;\n  background: rgba\(255, 209, 102, 0\.18\); font-weight: 600; \}/,
+    "selected deepens within the same vocabulary: wash + solid border + weight, the note below showing");
+  assert.doesNotMatch(CSS, /\.fask-stallbtn[^{]*\{[^}]*var\(--st-working-bg\)/,
+    "never the solid working-status fill again");
   assert.doesNotMatch(CSS, /\.fask-stallbtn[^{]*\{[^}]*var\(--accent\)/,
     "it must never take the accent the other selected toggles use — yellow is a STATUS colour here");
 });
