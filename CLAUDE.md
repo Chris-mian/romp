@@ -72,9 +72,16 @@ broad `git add` will sweep up your work). Conventions:
   docs commits stranded on local `main`, already duplicated on a PR branch, blocking two
   other sessions).
 - **Standing green light to publish.** When the work is done and tests pass, publish it
-  without asking: push your branch, then merge it on the remote or open a PR. If `main`
-  itself needs moving, do that in a throwaway worktree at `origin/main` and push right
-  away, so local `main` is never left ahead of `origin/main`.
+  without asking — through the fork (user rule, 2026-07-27): rulesets on the upstream
+  block EVERY direct branch push (`main` and feature branches alike, no bypass), so
+  publishing is always push-then-PR:
+  1. `git push -u fork <branch>` — the clone's `fork` remote is the maintainer's fork;
+     `remote.pushDefault` already points there, so a bare `git push` does the same.
+     Never push to `origin`: the server rejects it, and naming it in scripts bakes in
+     a failure.
+  2. `gh pr create --repo romp-on/romp` (gh detects the fork head), then
+     `gh pr merge --auto --merge` — it lands itself when the six required Linux
+     checks pass. There is no way to move `main` except a green PR.
 - **Clean up when finished.** After publishing, remove the worktree
   (`git worktree remove ../romp-<session>`) and delete its branch — don't leave stale
   worktrees lying around.
