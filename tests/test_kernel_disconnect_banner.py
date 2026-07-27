@@ -1,8 +1,12 @@
-"""Connection-status banner (the user 2026-06-27): a real network drop used to blind-reload each pane iframe
-into a dead page, so the dashboard silently froze (the timeline "stopped moving") with no explanation. Now each
-pane reports its WebSocket state to the shell, which shows ONE "Disconnected — reconnecting…" banner while any
-pane is down, and the panes RECONNECT (retry) instead of blind-reloading — reloading to resync only once the
-socket is actually back. Source pins on the kernel's injected JS/HTML."""
+"""Connection-status reporting (the user 2026-06-27): a real network drop used to blind-reload each pane
+iframe into a dead page, so the dashboard silently froze (the timeline "stopped moving") with no explanation.
+Now each pane reports its WebSocket state to the shell, and the panes RECONNECT (retry) instead of
+blind-reloading — reloading to resync only once the socket is actually back.
+
+The shell surface changed on 2026-07-27: the fixed top "Disconnected — reconnecting…" banner is gone —
+connection drops now log entries in the shell's NOTIFICATION CENTER (the bell in the bottom bar, red while
+anything is unread or a visible pane is down), whose behavioral tests live in test_error_center.py. The
+source pins here cover the pane shim (unchanged) and the shell's wiring of the center."""
 import inspect
 import os
 import unittest
@@ -60,14 +64,15 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("if(ws&&ws.readyState<=1)ws.close();", js)
         self.assertIn("if(!ws||ws.readyState===3)connect();", js)
 
-    def test_offline_banner_has_a_reload_button(self):
+    def test_error_popover_has_a_reload_button(self):
         # never dead-end (progressive disclosure rule): when the browser holds reconnects back, the
-        # user's actual recovery action — reload — must be ON the banner, not a manual url-bar refresh.
+        # user's actual recovery action — reload — must be reachable from the error surface. It moved
+        # from the old offline banner into the notification popover's header (2026-07-27).
         land = inspect.getsource(km._landing)
-        self.assertIn("id=ro-reload", land, "the banner carries the button")
-        self.assertIn("#ro-reload{", land, "and its style")
-        self.assertIn("document.getElementById('ro-reload')", km._LANDING_NET_JS)
-        self.assertIn("location.reload();});})();", km._LANDING_NET_JS, "a click reloads — user-initiated, never automatic")
+        self.assertIn("id=rerr-reload", land, "the popover header carries the button")
+        self.assertIn("document.getElementById('rerr-reload')", km._LANDING_ERRS_JS)
+        self.assertIn("rel.addEventListener('click',function(){location.reload();})", km._LANDING_ERRS_JS,
+                      "a click reloads — user-initiated, never automatic")
 
     def test_shell_rstale_banner_shows_on_ws_stale_message(self):
         # the #rstale reload banner (formerly build-drift only) now ALSO shows on a pane's wsStale post, with a
@@ -99,31 +104,32 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn('window.addEventListener("message"', km._TIMELINE_BOOT)
         self.assertIn("panel.update(m.data)", km._TIMELINE_BOOT)
 
-    def test_shell_has_the_banner_and_its_listener(self):
-        # the net-state script: shows the banner when ANY pane is down, clears when all are up
-        self.assertIn("st[m.app]=(m.state==='up')?'up':'down'", km._LANDING_NET_JS)
-        self.assertIn("bn.classList.toggle('show',down)", km._LANDING_NET_JS)
-        # the shell mounts the banner element, its CSS, and wires the script
+    def test_shell_mounts_the_notification_center(self):
+        # the shell listens for pane wsState posts and routes drops into the notification center — the
+        # old fixed top banner is GONE (it got in the way, the user 2026-07-27)
+        self.assertIn("var s=(m.state==='up')?'up':'down',prev=st[m.app];st[m.app]=s;", km._LANDING_ERRS_JS)
         land = inspect.getsource(km._landing)
-        self.assertIn("id=romp-offline", land, "the banner element is in the shell body")
-        self.assertIn("Disconnected — reconnecting…", land)
-        self.assertIn("#romp-offline.show{display:flex}", land, "hidden until a pane drops")
-        self.assertIn("_LANDING_NET_JS", land, "the listener script is injected into the shell")
+        self.assertIn("id=rail-errs", land, "the bell sits in the bottom bar's action cluster")
+        self.assertIn("id=rerr-back", land, "the popover backdrop is in the shell body")
+        self.assertIn("_LANDING_ERRS_JS", land, "the center's script is injected into the shell")
+        self.assertNotIn("id=romp-offline", land, "the top banner element is gone")
+        self.assertNotIn("Disconnected — reconnecting…", land)
 
-    def test_only_visible_panes_raise_the_banner(self):
+    def test_only_visible_panes_count(self):
         # a pane toggled OFF still holds a live socket (the Fleet pane is hidden by default, its iframe always
-        # loaded), so a blip on a pane you can't even see must NOT raise the global "Disconnected" alarm while
-        # the chat pane you interact through is up (the user 2026-07-06). Gate on the pane-enabled body class
+        # loaded), so a blip on a pane you can't even see must NOT log an error / redden the bell while the
+        # chat pane you interact through is up (the user 2026-07-06). Gate on the pane-enabled body class
         # the toggle sets (po-chat/po-feed/po-timeline/po-fleet), and re-check when panes toggle.
-        js = km._LANDING_NET_JS
+        js = km._LANDING_ERRS_JS
         self.assertIn("function shown(k){return document.body.classList.contains('po-'+k);}", js)
-        self.assertIn("if(st[k]==='down'&&shown(k))", js, "a down pane counts only while its pane is visible")
-        self.assertIn("window.addEventListener('romp-panes',refresh)", js, "re-check the banner on pane toggle")
+        self.assertIn("if(st[k]==='down'&&shown(k))return true;", js, "a down pane counts only while visible")
+        self.assertIn("shown(m.app)", js, "and only a visible pane's drop logs an entry")
+        self.assertIn("window.addEventListener('romp-panes',paint)", js, "re-check the cue on pane toggle")
         # the pane toggle actually fires the romp-panes event this listens for, and both scripts ride the shell
         self.assertIn("new Event('romp-panes')", km._LANDING_COLLAPSE_JS)
         land = inspect.getsource(km._landing)
         self.assertIn("_LANDING_COLLAPSE_JS", land)
-        self.assertIn("_LANDING_NET_JS", land)
+        self.assertIn("_LANDING_ERRS_JS", land)
 
 
 if __name__ == "__main__":

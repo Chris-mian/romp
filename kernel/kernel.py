@@ -4148,30 +4148,30 @@ _TMUX = TmuxBackend()
 
 
 def _unify_model_labels(rows):
-    """Make every session in the fleet's live map show the SAME display name for the SAME model — so a
-    session on the version-less best-effort label ("Opus", from a /model switch that hasn't run a turn
-    yet, incl. a stale-badge heal) borrows the fleet's real versioned name ("Opus 4.8") when another live
-    session is already reporting it (the user 2026-07-03, who asked why some say Opus and others Opus 4.8).
-    Family = the model's first word (Opus/Opus 4.8 → 'opus'); the VERSIONED variant (has a space) wins.
-    Display-only + in place; a family no live session runs a versioned variant of just keeps its short
-    label. Never merges across families, so it can't relabel one model as another."""
-    best = {}                                         # family -> the richest (versioned) display name seen
+    """Give a version-less best-effort label ("Opus", from a /model switch or new session that hasn't run
+    a turn yet, incl. a stale-badge heal) the fleet's real versioned name ("Opus 5") when the fleet knows
+    it unambiguously (the user 2026-07-03, who asked why some say Opus and others Opus 4.8).
+    Family = the model's first word (Opus/Opus 5 → 'opus'). Display-only + in place. Two hard rules
+    (the user 2026-07-27, during the Opus 4.8 → 5 transition):
+    - A VERSIONED label is ground truth (that session's own turns reported it) and is NEVER rewritten.
+      The old code relabeled everything to the family's "richest" name, its tiebreak preferred the longer
+      string, and "Opus 4.8" beats "Opus 5" — so sessions genuinely on Opus 5 displayed as 4.8.
+    - A bare label borrows only when the fleet runs exactly ONE versioned variant of that family. During
+      a version transition the fleet runs two, a bare "Opus" is genuinely ambiguous (a fresh session
+      resolves the alias to the NEW version, not the fleet's dominant one), so it stays bare rather than
+      guessing wrong."""
+    variants = {}                                     # family -> set of versioned display names seen live
     for r in rows.values():
         m = (r.get("model") or "").strip()
-        if not m:
-            continue
-        fam = m.split()[0].lower()
-        cur = best.get(fam)
-        # prefer a versioned name (has a space, e.g. "Opus 4.8") over a bare family word ("Opus")
-        if cur is None or (" " in m and " " not in cur) or (" " in m and len(m) > len(cur)):
-            best[fam] = m
+        if " " in m:
+            variants.setdefault(m.split()[0].lower(), set()).add(m)
     for r in rows.values():
         m = (r.get("model") or "").strip()
-        if not m:
+        if not m or " " in m:                         # versioned = that session's own report; keep it
             continue
-        rich = best.get(m.split()[0].lower())
-        if rich and rich != m:
-            r["model"] = rich
+        v = variants.get(m.lower())
+        if v and len(v) == 1:
+            r["model"] = next(iter(v))
 
 
 class Sessions:
@@ -14302,25 +14302,81 @@ window.addEventListener('message',function(e){if(e&&e.data&&e.data.romp==='ready
 setTimeout(hide,5000);})();
 """
 
-# Connection-status banner (the user 2026-06-27): each pane iframe posts {romp:'wsState',app,state} when its
-# kernel WebSocket opens/closes. The shell shows ONE "disconnected — reconnecting…" banner whenever ANY pane's
-# socket is down (the timeline/feed/etc. are pushed from the kernel, so a drop silently freezes them — the user
-# hit exactly this, network gone, timeline stopped moving, no idea why). It clears once every pane is back.
-_LANDING_NET_JS = """
-(function(){var bn=document.getElementById('romp-offline');if(!bn)return;var st={};
-// Only a VISIBLE pane raises the banner (the user 2026-07-06): a pane toggled OFF still holds a live socket
-// (the Fleet pane is hidden by default, its iframe always loaded), so a blip on a pane you can't even see
-// shouldn't cry "Disconnected" while the chat pane you interact through is up. Gate on the pane-enabled body
-// class the toggle sets (po-chat/po-feed/po-timeline/po-fleet), and re-check on toggle so hiding a down pane
-// clears the banner and showing one raises it. A genuinely-down VISIBLE pane still shows it — that pane IS
-// frozen and a reload resyncs it.
+# The shell's NOTIFICATION CENTER (the user 2026-07-27): errors used to drop as fixed banners from the top
+# of the screen ("Disconnected — reconnecting…", usage-limit reached, judge degraded) and got in the way.
+# They now land as entries in a sequential feed behind a bell in the bottom bar's action cluster (next to
+# ↻ / network / gear): the bell goes red with an unread count when something arrives, the popover lists
+# entries newest-first with per-row clear + Clear all, and opening it marks everything seen. Entries persist
+# in localStorage so a reload (kernel restart) keeps the story. Sources: pane WS drops (each pane iframe
+# posts {romp:'wsState',app,state}; the timeline/feed/etc. are pushed from the kernel, so a drop silently
+# freezes them), the usage-limit + judge-degraded signatures (see _LANDING_USAGE_JS), and any
+# {romp:'notify',kind,text} a pane posts. window.__rompNotify(kind,text) is the one write path.
+_LANDING_ERRS_JS = """
+(function(){var icon=document.getElementById('rail-errs'),micon=document.getElementById('merr'),
+back=document.getElementById('rerr-back'),list=document.getElementById('rerr-list'),
+clearBtn=document.getElementById('rerr-clear'),x=document.getElementById('rerr-x'),
+rel=document.getElementById('rerr-reload');
+if(!icon||!back||!list)return;
+var KEY='romp:notices',MAX=100;
+function load(){try{var v=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(v)?v:[];}catch(e){return[];}}
+var NOTES=load();
+function save(){try{localStorage.setItem(KEY,JSON.stringify(NOTES));}catch(e){}}
+function ago(t){var dt=Math.max(0,Math.floor(Date.now()/1000)-t);if(dt<90)return 'just now';
+var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);
+return h<24?h+'h ago':Math.floor(h/24)+'d ago';}
+function unseen(){var n=0;for(var i=0;i<NOTES.length;i++)if(!NOTES[i].seen)n++;return n;}
+// The bell + badge: red while anything is unread OR a visible pane's socket is DOWN right now (the live
+// problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects).
+function paint(){var n=unseen();
+[icon,micon].forEach(function(el){if(!el)return;var b=el.querySelector('.rerr-badge');
+if(b){b.hidden=!n;b.textContent=n>99?'99+':String(n);}
+el.classList.toggle('has',n>0||liveDown());});
+if(!back.hidden)renderList();}
+function renderList(){list.innerHTML='';
+if(!NOTES.length){var e=document.createElement('div');e.className='rerr-empty';e.textContent='No errors';list.appendChild(e);return;}
+for(var i=NOTES.length-1;i>=0;i--)(function(n,i){var row=document.createElement('div');row.className='rerr-row';
+var tm=document.createElement('span');tm.className='rerr-t';tm.textContent=ago(n.t);
+var tx=document.createElement('span');tx.className='rerr-msg';tx.textContent=n.text+(n.n>1?' (x'+n.n+')':'');
+var del=document.createElement('span');del.className='rerr-del';del.textContent='\\u00d7';del.title='Clear';
+del.addEventListener('click',function(ev){ev.stopPropagation();NOTES.splice(i,1);save();renderList();paint();});
+row.appendChild(tm);row.appendChild(tx);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);}
+// One write path. A repeat of the NEWEST entry (same kind+text — e.g. a reconnect loop dropping over and
+// over) coalesces into it with a count instead of flooding the feed: event-exact, no time window.
+window.__rompNotify=function(kind,text){if(!text)return;
+var last=NOTES[NOTES.length-1];
+if(last&&last.kind===kind&&last.text===String(text)){last.n=(last.n||1)+1;last.t=Math.floor(Date.now()/1000);last.seen=false;}
+else{NOTES.push({kind:String(kind||'error'),text:String(text),t:Math.floor(Date.now()/1000),n:1,seen:false});
+if(NOTES.length>MAX)NOTES=NOTES.slice(-MAX);}
+save();paint();};
+// pane iframes can feed the center too
+window.addEventListener('message',function(e){var m=e&&e.data;
+if(m&&m.romp==='notify'&&m.text)window.__rompNotify(m.kind||'error',m.text);});
+// Connection tracking (was the #romp-offline top banner). Only a VISIBLE pane counts (the user 2026-07-06):
+// a pane toggled OFF still holds a live socket (the Fleet pane is hidden by default, its iframe always
+// loaded), so a blip on a pane you can't even see shouldn't cry wolf while the chat pane you interact
+// through is up. Gate on the pane-enabled body class the toggle sets (po-chat/po-feed/po-timeline/po-fleet).
+// Only the up->down TRANSITION logs an entry; the live red cue rides the state itself.
+var st={};
 function shown(k){return document.body.classList.contains('po-'+k);}
-function refresh(){var down=false;for(var k in st){if(st[k]==='down'&&shown(k)){down=true;break;}}bn.classList.toggle('show',down);}
-window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;st[m.app]=(m.state==='up')?'up':'down';refresh();});
-window.addEventListener('romp-panes',refresh);
-// never dead-end: the retries normally win, but a browser holding reconnects back (Firefox failure
-// backoff) leaves nothing to click — the user reloads by hand anyway, so put that action ON the banner.
-var rb=document.getElementById('ro-reload');if(rb)rb.addEventListener('click',function(){location.reload();});})();
+function liveDown(){for(var k in st){if(st[k]==='down'&&shown(k))return true;}return false;}
+var PN={chat:'Chat',feed:'Feed',timeline:'Timeline',fleet:'Outline'};
+window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;
+var s=(m.state==='up')?'up':'down',prev=st[m.app];st[m.app]=s;
+if(s==='down'&&prev!=='down'&&shown(m.app))
+window.__rompNotify('conn','Kernel connection lost \\u2014 '+(PN[m.app]||m.app)+' pane (reconnecting)');
+else paint();});
+window.addEventListener('romp-panes',paint);
+function open(){for(var i=0;i<NOTES.length;i++)NOTES[i].seen=true;save();back.hidden=false;renderList();paint();}
+function close(){back.hidden=true;}
+icon.addEventListener('click',function(){back.hidden?open():close();});
+back.addEventListener('click',function(e){if(e.target===back)close();});
+if(x)x.addEventListener('click',close);
+if(clearBtn)clearBtn.addEventListener('click',function(){NOTES=[];save();renderList();paint();});
+// never dead-end a dead connection: the WS retries normally win, but a browser holding reconnects back
+// (Firefox failure backoff) leaves nothing to click — the reload action lives in the popover header now.
+if(rel)rel.addEventListener('click',function(){location.reload();});
+window.__rompOpenErrs=open;   // the mobile bar's bell routes here (no rail on mobile)
+paint();})();
 """
 
 
@@ -14346,47 +14402,39 @@ var WINS=[['fiveHour',5*3600,'5h','Session','5 hours'],
           ['sevenDay',7*86400,'7d','Weekly','7 days'],
           ['fable',7*86400,'F5','Fable 5','Fable 5']];
 var LAST={};
-// Banner dismissal (the user 2026-07-03): a maxed window — especially Fable 5's 7-DAY one — lingers for
-// days, and the fixed top banner overlaps the tab strip, so a ✕ must clear it. The dismissal is keyed to
-// the SIGNATURE of which windows are limited (not a timer), persisted in localStorage so it survives a
-// reload for THIS limit episode. A NEW window hitting its cap (or a reset that re-limits) changes the
-// signature → the banner returns with the new info; a full clear drops the stored signature.
-var _limSig='';
+// Limit / judge-degraded SIGNATURES (the user 2026-07-03; reshaped 2026-07-27): these used to gate fixed
+// top banners with a ✕ dismissal; the banners are gone — the same situations now log ONE entry each in
+// the shell's notification center (the bell, _LANDING_ERRS_JS). The stored signature means "this exact
+// episode is already logged", persisted in localStorage so a reload doesn't re-log it. A NEW window
+// hitting its cap (or a changed failure count/cause) changes the signature → a fresh entry; a full clear
+// drops the stored signature so a future episode logs again. Keys kept from the old banner dismissals,
+// so an episode the user already dismissed stays quiet across the upgrade.
 function _limGet(){try{return localStorage.getItem('romp:limitDismiss')||'';}catch(e){return '';}}
 function _limPut(v){try{if(v){localStorage.setItem('romp:limitDismiss',v);}else{localStorage.removeItem('romp:limitDismiss');}}catch(e){}}
-(function(){var lb=document.getElementById('romp-limit');if(!lb)return;var x=lb.querySelector('.rl-x');
-if(x){x.addEventListener('click',function(e){e.stopPropagation();_limPut(_limSig);lb.classList.remove('show');});}})();
-var _jdSig='';
 function _jdGet(){try{return localStorage.getItem('romp:judgeDegradedDismiss')||'';}catch(e){return '';}}
 function _jdPut(v){try{if(v){localStorage.setItem('romp:judgeDegradedDismiss',v);}else{localStorage.removeItem('romp:judgeDegradedDismiss');}}catch(e){}}
-(function(){var jb=document.getElementById('romp-judge-degraded');if(!jb)return;var x=jb.querySelector('.rl-x');
-if(x){x.addEventListener('click',function(e){e.stopPropagation();_jdPut(_jdSig);jb.classList.remove('show');});}})();
 function render(u){
-// JUDGE-FAILURE BANNER (the user 2026-07-03): surface at the top when the distiller/brief GAVE UP on cards
-// (kernel `judgeFailures` on the usage payload, count + cause) — like the usage-limit banner, and stacked
-// under it. Names the cause; dismissal is keyed to the count+cause SIGNATURE so a changed situation re-shows.
-// Per-card what-happened detail lives in that card's yellow warning chip → modal.
-var jb=document.getElementById('romp-judge-degraded');
-if(jb){var jf=u&&u.judgeFailures,jon=!!(jf&&jf.count>0);
+// JUDGE-FAILURE entry (the user 2026-07-03): when the distiller/brief GAVE UP on cards (kernel
+// `judgeFailures` on the usage payload, count + cause), log it to the notification center — once per
+// count+cause signature, so a changed situation logs afresh. Per-card what-happened detail lives in that
+// card's yellow warning chip → modal.
+var jf=u&&u.judgeFailures,jon=!!(jf&&jf.count>0);
 var jsig=jon?(jf.count+'|'+(jf.cause||'')):'';
-_jdSig=jsig;if(!jon){_jdPut('');}   // nothing failing → forget any dismissal so a future failure shows again
-var jshow=jon&&jsig!==_jdGet();jb.classList.toggle('show',jshow);
-if(jshow){var jmsg=jb.querySelector('.rl-msg');if(jmsg){var nc=jf.count,noun=(nc===1?'card':'cards');
-jmsg.textContent=nc+' '+noun+" couldn't be summarized — "+(jf.cause||'the summarizer hit errors')+'. Open a flagged card for what happened.';}}}
-// LIMIT BANNER (the user 2026-07-01): a top banner when an ACCOUNT-WIDE window (5h Session / 7d Weekly) is
-// maxed — those pause retries + the judges, so a proactive heads-up is warranted. Fable 5 is DELIBERATELY
-// EXCLUDED (the user 2026-07-04): its window is MODEL-scoped, so exhausting it doesn't stop the models romp
-// uses (Opus/Sonnet/Haiku) and doesn't pause anything — a "Fable limit reached" banner popping every refresh
-// for the 7-day window was pure noise for someone not on Fable. A Fable-only session that hits the wall is
-// surfaced WHEN YOU ACTUALLY USE IT (api-error → blocked on that session), and the rail's third bar still
-// shows the Fable usage passively; the proactive banner just no longer fires on it.
-var lb=document.getElementById('romp-limit');
-if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));
+if(!jon){_jdPut('');}   // nothing failing → forget the logged signature so a future failure logs again
+else if(jsig!==_jdGet()){_jdPut(jsig);var nc=jf.count,noun=(nc===1?'card':'cards');
+if(window.__rompNotify)window.__rompNotify('judge',nc+' '+noun+" couldn't be summarized — "+(jf.cause||'the summarizer hit errors')+'. Open a flagged card for what happened.');}
+// LIMIT entry (the user 2026-07-01): when an ACCOUNT-WIDE window (5h Session / 7d Weekly) is maxed —
+// those pause retries + the judges, so a proactive heads-up is warranted. Fable 5 is DELIBERATELY
+// EXCLUDED (the user 2026-07-04): its window is MODEL-scoped, so exhausting it doesn't stop the models
+// romp uses (Opus/Sonnet/Haiku) and doesn't pause anything — a "Fable limit reached" notice popping every
+// refresh for the 7-day window was pure noise for someone not on Fable. A Fable-only session that hits
+// the wall is surfaced WHEN YOU ACTUALLY USE IT (api-error → blocked on that session), and the rail's
+// third bar still shows the Fable usage passively.
+var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));
 var sig=on?((lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')):'';
-_limSig=sig;if(!on){_limPut('');}   // fully cleared → forget any dismissal so a future limit shows again
-var show=on&&sig!==_limGet();lb.classList.toggle('show',show);
-if(show){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
-msg.textContent=names.join(' and ')+' usage limit reached — retries paused until it resets';}}}
+if(!on){_limPut('');}   // fully cleared → forget the logged signature so a future limit logs again
+else if(sig!==_limGet()){_limPut(sig);var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
+if(window.__rompNotify)window.__rompNotify('limit',names.join(' and ')+' usage limit reached — retries paused until it resets');}
 if(!u||(!u.fiveHour&&!u.sevenDay&&!u.fable)){el.innerHTML='';tip.style.display='none';return;}
 var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
@@ -14836,7 +14884,8 @@ for(var i=0;i<B.length;i++)(function(b){var pk=b.getAttribute('data-pane');if(pk
 var A={settings:function(){var f=F.feed;try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'openSettings'},'*');}catch(e){}},
 net:function(){try{window.__rompOpenNet&&window.__rompOpenNet();}catch(e){}},
 usage:function(){try{window.__rompUsagePanel&&window.__rompUsagePanel();}catch(e){}},
-restart:function(){try{window.__rompRestart&&window.__rompRestart();}catch(e){}}};
+restart:function(){try{window.__rompRestart&&window.__rompRestart();}catch(e){}},
+errs:function(){try{window.__rompOpenErrs&&window.__rompOpenErrs();}catch(e){}}};
 Array.prototype.forEach.call(bar.querySelectorAll('button[data-act]'),function(b){
 b.addEventListener('click',function(){var f=A[b.getAttribute('data-act')];if(f)f();});});
 window.addEventListener('message',function(e){var m=e.data;if(!m)return;if(m.romp==='reveal'&&m.pane)show(m.pane);// the chat header's Fleet pill / the fleet's back-to-chat post toggleFleet — on mobile that IS a tab switch
@@ -15336,46 +15385,48 @@ def _landing():
             # the splash is the BIG version of the shared loader (the swirl-as-o reads large)
             "#romp-boot .rl-in{gap:30px}#romp-boot .rl-word{font-size:120px}"
             "#romp-boot .rl-dots{gap:9px}#romp-boot .rl-dots i{width:11px;height:11px}"
-            # the connection-status banner: a top-centered pill shown only while a pane's WS is down (event-based)
-            "#romp-offline{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:10000;display:none;"
-            "align-items:center;gap:8px;background:#3a1d1d;color:#ffd9d9;border:1px solid #7a3030;border-top:none;"
-            "border-radius:0 0 9px 9px;padding:5px 15px;font-size:12.5px;font-family:var(--vscode-font-family);"
-            "box-shadow:0 3px 12px rgba(0,0,0,.45)}#romp-offline.show{display:flex}"
-            "#romp-offline .ro-dot{width:8px;height:8px;border-radius:50%;background:#ff6b6b;"
-            "animation:roPulse 1.1s ease-in-out infinite}"
-            "@keyframes roPulse{0%,100%{opacity:.3}50%{opacity:1}}"
-            # the banner must not dead-end: retries normally recover on their own, but when the browser
-            # holds reconnects back (Firefox failure backoff) the user's one-click out is a reload.
-            "#ro-reload{font:inherit;cursor:pointer;border-radius:6px;padding:2px 10px;font-weight:600;"
-            "background:#7a3030;color:#ffd9d9;border:1px solid #9a4040}"
-            "#ro-reload:hover{background:#8a3838}"
-            # usage-limit banner (the user 2026-07-01): amber, sits just below the offline slot so the two never
-            # overlap; shown when a usage window hits 100% (kernel `limited`) — retries auto-pause until it resets.
-            "#romp-limit{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9999;display:none;"
-            "align-items:center;gap:8px;background:#3a2f16;color:#ffe6b3;border:1px solid #7a5f24;border-top:none;"
-            "border-radius:0 0 9px 9px;padding:5px 15px;font-size:12.5px;font-family:var(--vscode-font-family);"
-            "box-shadow:0 3px 12px rgba(0,0,0,.45)}#romp-limit.show{display:flex}"
-            "#romp-offline.show ~ #romp-limit.show{top:34px}"   # if both are up, stack the limit banner below
-            "#romp-limit .rl-dot{width:8px;height:8px;border-radius:50%;background:#e0a030;flex:0 0 auto}"
-            "#romp-limit .rl-x{cursor:pointer;margin-left:6px;opacity:.6;font-weight:700;font-size:14px;line-height:1;flex:0 0 auto}"
-            "#romp-limit .rl-x:hover{opacity:1}"
-            # JUDGE-FAILURE banner (the user 2026-07-03): same look as the usage-limit one, stacked below it
-            "#romp-judge-degraded{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9998;display:none;"
-            "align-items:center;gap:8px;background:#3a2f16;color:#ffe6b3;border:1px solid #7a5f24;border-top:none;"
-            "border-radius:0 0 9px 9px;padding:5px 15px;font-size:12.5px;font-family:var(--vscode-font-family);"
-            "box-shadow:0 3px 12px rgba(0,0,0,.45)}#romp-judge-degraded.show{display:flex}"
-            "#romp-offline.show ~ #romp-judge-degraded.show{top:34px}"      # offline above → drop one row
-            "#romp-limit.show ~ #romp-judge-degraded.show{top:34px}"        # limit above → drop one row
-            "#romp-offline.show ~ #romp-limit.show ~ #romp-judge-degraded.show{top:68px}"   # both above → drop two
-            "#romp-judge-degraded .rl-dot{width:8px;height:8px;border-radius:50%;background:#e0a030;flex:0 0 auto}"
-            "#romp-judge-degraded .rl-x{cursor:pointer;margin-left:6px;opacity:.6;font-weight:700;font-size:14px;line-height:1;flex:0 0 auto}"
-            "#romp-judge-degraded .rl-x:hover{opacity:1}"
+            # The notification center (the user 2026-07-27; replaces the fixed top banners — offline /
+            # usage-limit / judge-degraded — which got in the way): the bell in the bottom bar's action
+            # cluster goes RED (with an unread count) when an error lands; the popover is a panel anchored
+            # above the bell (bottom-right), newest first, per-row clear + Clear all.
+            "#rail-errs{position:relative}"
+            "#rail-errs.has,#merr.has{color:#ff6b6b}"
+            ".rerr-badge{position:absolute;top:-4px;right:-6px;background:#ff6b6b;color:#1e1e1e;"
+            "border-radius:8px;min-width:14px;height:14px;padding:0 3px;font-size:9.5px;font-weight:700;"
+            "line-height:14px;text-align:center;pointer-events:none}"
+            "#merr{position:relative}"
+            "#rerr-back{position:fixed;inset:0;z-index:210;background:rgba(0,0,0,.35)}"
+            "#rerr-panel{position:absolute;right:10px;bottom:44px;width:min(440px,94vw);max-height:min(60vh,480px);"
+            "display:flex;flex-direction:column;background:#26282b;border:1px solid #4a4d51;border-radius:10px;"
+            "box-shadow:0 10px 30px #0000008a;font:12.5px/1.45 var(--vscode-font-family)}"
+            "#rerr-panel .rerr-top{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#e8eaed;"
+            "padding:10px 12px;border-bottom:1px solid #3a3d41;flex:0 0 auto}"
+            "#rerr-panel .rerr-top .sp{flex:1}"
+            "#rerr-clear,#rerr-reload{font:inherit;font-size:12px;cursor:pointer;border-radius:6px;padding:3px 10px;"
+            "background:none;color:#9aa0a6;border:1px solid #4a4d51}"
+            "#rerr-clear:hover,#rerr-reload:hover{color:#e6e6e6;border-color:#6a6d71}"
+            "#rerr-x{cursor:pointer;opacity:.6;font-weight:700;font-size:15px;line-height:1}"
+            "#rerr-x:hover{opacity:1}"
+            "#rerr-list{overflow-y:auto;padding:4px 0;flex:1 1 auto}"
+            ".rerr-row{display:flex;align-items:baseline;gap:8px;padding:6px 12px;color:#d6d8da}"
+            ".rerr-row+.rerr-row{border-top:1px solid #2f3236}"
+            ".rerr-t{flex:0 0 auto;color:#8a9099;font-size:11px;white-space:nowrap}"
+            ".rerr-msg{flex:1;min-width:0;overflow-wrap:anywhere}"
+            ".rerr-del{flex:0 0 auto;cursor:pointer;opacity:.5;font-weight:700}"
+            ".rerr-del:hover{opacity:1}"
+            ".rerr-empty{padding:16px 12px;color:#8a9099;text-align:center}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
-            "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span>"
-            "<button id=ro-reload title='Reload the dashboard now instead of waiting out the retries'>Reload</button></div>"
-            "<div id=romp-limit><span class=rl-dot></span><span class=rl-msg>Usage limit reached — retries paused until it resets</span><span class=rl-x title='Dismiss until the limit changes'>×</span></div>"
-            "<div id=romp-judge-degraded><span class=rl-dot></span><span class=rl-msg>Some cards couldn't be summarized</span><span class=rl-x title='Dismiss until this changes'>×</span></div>"
+            # the notification popover (hidden until the bell is clicked; backdrop click closes). The
+            # Reload button keeps the old offline banner's one-click out for a dead connection the
+            # browser's own backoff won't retry.
+            "<div id=rerr-back hidden><div id=rerr-panel>"
+            "<div class=rerr-top>Errors<span class=sp></span>"
+            "<button id=rerr-reload title='Reload the dashboard (for a connection the retries gave up on)'>Reload</button>"
+            "<button id=rerr-clear title='Clear all entries'>Clear all</button>"
+            "<span id=rerr-x title=Close>×</span></div>"
+            "<div id=rerr-list></div>"
+            "</div></div>"
             "<div class=col>"
             "<div class=row>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
@@ -15405,6 +15456,14 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + network + settings, pinned to the far RIGHT (settings last), always visible:
             "<div class=rail-acts>"
+            # the notification bell (the user 2026-07-27): monochrome outline like its neighbors, red +
+            # unread badge when an error lands (see _LANDING_ERRS_JS). ATTRIBUTES QUOTED (the rail-net saga).
+            "<div class=rail-act id=rail-errs title=Errors aria-label=Errors>"
+            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
+            " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
+            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.2'/></svg>"
+            "<span class=rerr-badge hidden></span></div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
             # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
@@ -15448,6 +15507,13 @@ def _landing():
             # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
             # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
             "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>↻</button>"
+            # the notification bell on mobile too (same glyph + badge; opens the same popover)
+            "<button class=mact id=merr data-act=errs aria-label=Errors title=Errors>"
+            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
+            " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
+            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.2'/></svg>"
+            "<span class=rerr-badge hidden></span></button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
             "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"
             "</nav>"
@@ -15518,7 +15584,7 @@ def _landing():
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
             "<script>" + _LANDING_BOOT_JS + "</script>"
-            "<script>" + _LANDING_NET_JS + "</script>"
+            "<script>" + _LANDING_ERRS_JS + "</script>"
             "<script>" + _LANDING_USAGE_JS + "</script>"
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"

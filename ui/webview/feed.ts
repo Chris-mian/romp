@@ -11,6 +11,7 @@ import { spinFor } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes, hostPartsNodes } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
+import { provenanceTitle, provenanceGroupTitle, rootStart, type ProvFmt } from "./provenance";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
@@ -1144,6 +1145,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     og.style.display = "none";
   }
   a._time.textContent = relAge(hostNow - it.t);
+  // hover the stamp for provenance (the user 2026-07-27): the age marks the NEWEST event (a done card's
+  // age is its completion), so the tooltip tells where the thread came from — started when, each sub +
+  // its time, what the stamp marks. Native title: no DOM, click-safe.
+  a._time.title = provenanceTitle(it, hostNow, PROV_FMT);
   // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
   // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
   // is `rejudging`, not `recheck`, and gets no chip: since 2026-07-02 it ALSO moves to Working while the reply
@@ -1605,6 +1610,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, dotFor(g.name));   // working/awaiting dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
+  a._time.title = provenanceGroupTitle(g.members.map(rootStart), g.t, hostNow, PROV_FMT);
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
   if (a._memSig !== memSig) {
@@ -1680,6 +1686,8 @@ function logPhrase(r: NodeLogRow): string {
   return r.kind || "updated";
 }
 const logRowT = (r: NodeLogRow): number => r.at || r.evT || 0;
+// the provenance tooltip (hover the card's age stamp) borrows the same vocabulary the card renders with
+const PROV_FMT: ProvFmt = { rel: relAge, clock: clockHM, phrase: logPhrase };
 // the node's owning session for navigation (a handoff node lives in the recipient's transcript) —
 // the same resolution wireNodeZones uses for its zones
 function navSidOf(it: AskItem, node: AskTreeNode): string {
@@ -2343,6 +2351,7 @@ function renderModal() {
     agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, dotFor(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
+    ageEl.title = provenanceGroupTitle(grp.members.map(rootStart), grp.t, hostNow, PROV_FMT);
     ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId, sid: mem.sid }); fullscreenAskId = null; renderModal(); };
     // follow-up on a group goes to the session that took the typed prompt — one
@@ -2359,6 +2368,7 @@ function renderModal() {
     agent.replaceChildren(...hostNameNodes(it.name, it.sid)); if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, dotFor(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
+    ageEl.title = provenanceTitle(it, hostNow, PROV_FMT);
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
     // "Check status" (the user 2026-07-20): shown when the card has open/blocked subs to sweep and the

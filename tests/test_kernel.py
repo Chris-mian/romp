@@ -5614,6 +5614,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(rows["c"]["model"], "Fable", "no versioned variant in the fleet → keep the short label")
         self.assertEqual(rows["f"]["model"], "", "empty stays empty; never crashes")
 
+    def test_unify_model_labels_never_rewrites_a_versioned_name_and_stays_bare_when_ambiguous(self):
+        # the user 2026-07-27, during the Opus 4.8 → 5 default flip: the old unify relabeled EVERY row to
+        # the family's "richest" name, and its tiebreak preferred the longer string — so "Opus 4.8" beat
+        # "Opus 5" and sessions genuinely running Opus 5 (their own turns said so) DISPLAYED as 4.8, which
+        # is how a brand-new session on the new default looked stuck on the old one. A versioned label is
+        # that session's own report and must never be rewritten; a bare "Opus" amid TWO live versions is
+        # ambiguous (a fresh session resolves the alias to the NEW version, not the fleet's dominant one)
+        # and must stay bare rather than guess.
+        rows = {"old": {"model": "Opus 4.8"}, "new": {"model": "Opus 5"}, "fresh": {"model": "Opus"},
+                "s": {"model": "Sonnet"}, "s5": {"model": "Sonnet 5"}}
+        km._unify_model_labels(rows)
+        self.assertEqual(rows["new"]["model"], "Opus 5", "a session's own versioned report is ground truth")
+        self.assertEqual(rows["old"]["model"], "Opus 4.8")
+        self.assertEqual(rows["fresh"]["model"], "Opus", "two live versions → a bare label stays bare")
+        self.assertEqual(rows["s"]["model"], "Sonnet 5", "one live version → still borrows")
+
     def test_timeline_lane_survives_hidden_tab(self):
         # the user 2026-06-17 (reversing d52f69f): ×-hiding a tab is a tab-strip preference and must NOT
         # erase the lane from the timeline — the timeline is a complete activity history. So a dead AND

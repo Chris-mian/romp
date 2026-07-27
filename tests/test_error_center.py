@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""The shell's notification center (the user 2026-07-27) must actually WORK, not just parse.
+
+Errors used to drop as fixed banners from the top of the screen and got in the way; they now land as
+entries behind the bell in the bottom bar's action cluster. This EXECUTES the real injected
+_LANDING_ERRS_JS in node against a DOM stub (the test_remotes_panel_render.py pattern — source pins
+can't catch scope slips in this class of inline JS) and drives the full story:
+
+  a visible pane's WS drop logs an entry + reddens the bell with an unread count; a repeat of the same
+  drop coalesces (event-exact, no time window); a HIDDEN pane's drop logs nothing; opening the popover
+  marks everything seen; panes can post {romp:'notify'}; per-row clear and Clear all empty the store;
+  entries persist in localStorage.
+
+Synthetic only — no network, no real DOM.
+"""
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ.setdefault("XDG_STATE_HOME", tempfile.mkdtemp())
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel_errc", os.path.join(BIN, "romp-kernel")).load_module()
+
+HARNESS = r"""
+'use strict';
+const STORE = {};
+global.localStorage = {
+  getItem: (k) => (k in STORE ? STORE[k] : null),
+  setItem: (k, v) => { STORE[k] = String(v); },
+  removeItem: (k) => { delete STORE[k]; },
+};
+function mkEl(id) {
+  return {
+    id: id, hidden: true, textContent: '', title: '', className: '',
+    children: [], _cls: new Set(), _ls: {}, _html: '', _badge: null,
+    classList: null,   // filled below (needs `this`)
+    appendChild(c) { this.children.push(c); return c; },
+    querySelector(sel) { return sel === '.rerr-badge' ? this._badge : null; },
+    addEventListener(k, f) { (this._ls[k] = this._ls[k] || []).push(f); },
+    fire(k, ev) { (this._ls[k] || []).forEach((f) => f(ev || { stopPropagation() {}, target: null })); },
+    get innerHTML() { return this._html; },
+    set innerHTML(v) { this._html = v; this.children = []; },
+  };
+}
+function withCls(el) {
+  el._cls = new Set();
+  el.classList = {
+    add: (c) => el._cls.add(c), remove: (c) => el._cls.delete(c),
+    toggle: (c, on) => { if (on === undefined) on = !el._cls.has(c); if (on) el._cls.add(c); else el._cls.delete(c); },
+    contains: (c) => el._cls.has(c),
+  };
+  return el;
+}
+const EL = {};
+['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x', 'rerr-reload'].forEach((id) => {
+  EL[id] = withCls(mkEl(id));
+});
+EL['rail-errs']._badge = withCls(mkEl(''));
+EL['merr']._badge = withCls(mkEl(''));
+const BODY = new Set(['po-chat', 'po-feed', 'po-timeline']);   // fleet pane hidden, like the real default
+const WL = {};
+global.window = {
+  addEventListener: (k, f) => { (WL[k] = WL[k] || []).push(f); },
+};
+global.document = {
+  getElementById: (id) => EL[id] || null,
+  createElement: () => withCls(mkEl('')),
+  body: { classList: { contains: (c) => BODY.has(c) } },
+};
+function post(data) { (WL['message'] || []).forEach((f) => f({ data: data })); }
+function notes() { return JSON.parse(STORE['romp:notices'] || '[]'); }
+"""
+
+DRIVER = r"""
+const out = {};
+// 1) a VISIBLE pane's drop logs an entry + reddens the bell with a count
+post({ romp: 'wsState', app: 'chat', state: 'down' });
+out.afterDrop = { n: notes().length, text: notes()[0].text,
+  red: EL['rail-errs']._cls.has('has'), mred: EL['merr']._cls.has('has'),
+  badge: EL['rail-errs']._badge.textContent, badgeShown: !EL['rail-errs']._badge.hidden };
+// 2) up then down again — the SAME error coalesces into one entry with a count (no flood)
+post({ romp: 'wsState', app: 'chat', state: 'up' });
+post({ romp: 'wsState', app: 'chat', state: 'down' });
+out.afterRepeat = { n: notes().length, times: notes()[0].n, badge: EL['rail-errs']._badge.textContent };
+// 3) a HIDDEN pane's drop logs nothing (fleet is toggled off)
+post({ romp: 'wsState', app: 'fleet', state: 'down' });
+out.afterHidden = { n: notes().length };
+// 4) panes can feed the center directly
+post({ romp: 'notify', kind: 'warn', text: 'TESTHOST delivery failed' });
+out.afterNotify = { n: notes().length, badge: EL['rail-errs']._badge.textContent };
+// 5) opening the popover marks everything seen (badge clears; red stays while chat is still down)
+EL['rail-errs'].fire('click');
+out.afterOpen = { open: !EL['rerr-back'].hidden, rows: EL['rerr-list'].children.length,
+  badgeShown: !EL['rail-errs']._badge.hidden, red: EL['rail-errs']._cls.has('has'),
+  newestFirst: EL['rerr-list'].children[0].children[1].textContent };
+// 6) per-row clear drops just that entry
+EL['rerr-list'].children[0].children[2].fire('click');
+out.afterRowClear = { n: notes().length, rows: EL['rerr-list'].children.length };
+// 7) Clear all empties the store and shows the empty state
+EL['rerr-clear'].fire('click');
+out.afterClearAll = { n: notes().length, rows: EL['rerr-list'].children.length,
+  empty: EL['rerr-list'].children[0].textContent };
+// 8) once the pane reconnects, the live red cue clears too
+post({ romp: 'wsState', app: 'chat', state: 'up' });
+out.afterReconnect = { red: EL['rail-errs']._cls.has('has') };
+console.log(JSON.stringify(out));
+"""
+
+
+class ErrorCenterExecutes(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        script = HARNESS + km._LANDING_ERRS_JS + DRIVER
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(script)
+            path = f.name
+        try:
+            r = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        assert r.returncode == 0, "the center's JS threw: " + r.stderr[:800]
+        cls.out = json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_a_visible_pane_drop_logs_and_reddens_the_bell(self):
+        a = self.out["afterDrop"]
+        self.assertEqual(a["n"], 1)
+        self.assertIn("Chat", a["text"])
+        self.assertTrue(a["red"], "the rail bell goes red")
+        self.assertTrue(a["mred"], "the mobile bell goes red too")
+        self.assertEqual(a["badge"], "1")
+        self.assertTrue(a["badgeShown"])
+
+    def test_a_repeat_of_the_same_error_coalesces(self):
+        a = self.out["afterRepeat"]
+        self.assertEqual(a["n"], 1, "no flood: the same error is one entry")
+        self.assertEqual(a["times"], 2, "with a count")
+
+    def test_a_hidden_panes_drop_logs_nothing(self):
+        self.assertEqual(self.out["afterHidden"]["n"], 1)
+
+    def test_panes_can_post_notify(self):
+        a = self.out["afterNotify"]
+        self.assertEqual(a["n"], 2)
+        self.assertEqual(a["badge"], "2")
+
+    def test_opening_marks_seen_but_a_live_problem_keeps_the_cue(self):
+        a = self.out["afterOpen"]
+        self.assertTrue(a["open"])
+        self.assertEqual(a["rows"], 2)
+        self.assertFalse(a["badgeShown"], "opening marks everything seen")
+        self.assertTrue(a["red"], "chat is still down → the live cue stays")
+        self.assertIn("delivery failed", a["newestFirst"], "newest entry renders first")
+
+    def test_per_row_clear_and_clear_all(self):
+        self.assertEqual(self.out["afterRowClear"]["n"], 1)
+        self.assertEqual(self.out["afterRowClear"]["rows"], 1)
+        self.assertEqual(self.out["afterClearAll"]["n"], 0)
+        self.assertEqual(self.out["afterClearAll"]["rows"], 1)
+        self.assertEqual(self.out["afterClearAll"]["empty"], "No errors")
+
+    def test_reconnect_clears_the_live_cue(self):
+        self.assertFalse(self.out["afterReconnect"]["red"])
+
+
+class ErrorCenterWiring(unittest.TestCase):
+    def test_the_shell_mounts_bell_popover_and_script(self):
+        html = km._landing()
+        for pin in ("id=rail-errs", "id=rerr-back", "id=rerr-list", "id=rerr-clear",
+                    "id=merr", "class=rerr-badge"):
+            self.assertIn(pin, html)
+        self.assertIn("window.__rompNotify=function", html)
+        # the mobile bar routes its bell to the same popover
+        self.assertIn("errs:function(){try{window.__rompOpenErrs&&window.__rompOpenErrs();}catch(e){}}", html)
+
+    def test_the_old_top_banners_are_gone(self):
+        html = km._landing()
+        for gone in ("id=romp-offline", "id=romp-limit", "id=romp-judge-degraded"):
+            self.assertNotIn(gone, html)
+
+
+if __name__ == "__main__":
+    unittest.main()

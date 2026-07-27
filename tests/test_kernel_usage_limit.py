@@ -196,28 +196,24 @@ class AutoPauseOnSpendLimit(unittest.TestCase):
 
 
 class LimitBannerWiring(unittest.TestCase):
-    def test_the_shell_has_the_banner_and_the_widget_drives_it(self):
+    # 2026-07-27: the fixed top banner is GONE — a maxed window now logs ONE entry in the shell's
+    # notification center (the bell; see _LANDING_ERRS_JS + test_error_center.py), still gated on the
+    # limited-window signature so an episode logs exactly once and a NEW episode logs afresh.
+    def test_the_limit_logs_to_the_notification_center_not_a_banner(self):
         land = km._landing()
-        self.assertIn("<div id=romp-limit>", land)
-        self.assertIn("class=rl-msg", land)
-        self.assertIn("#romp-limit.show{display:flex}", land)
+        self.assertNotIn("<div id=romp-limit>", land, "the top banner element is gone")
         js = km._LANDING_USAGE_JS
-        self.assertIn("var lb=document.getElementById('romp-limit');", js)
-        self.assertIn("lb.classList.toggle('show',show);", js)
+        self.assertIn("window.__rompNotify('limit'", js)
         self.assertIn("usage limit reached", js)
 
-    def test_the_banner_has_a_dismiss_button_gated_on_the_limit_signature(self):
-        land = km._landing()
-        # a ✕ affordance is in the banner + styled
-        self.assertIn("class=rl-x", land)
-        self.assertIn("#romp-limit .rl-x", land)
+    def test_the_entry_is_gated_on_the_limit_signature(self):
         js = km._LANDING_USAGE_JS
-        # dismissal is keyed to WHICH windows are limited (a signature), persisted in localStorage
+        # logging is keyed to WHICH windows are limited (a signature), persisted in localStorage
         self.assertIn("romp:limitDismiss", js)
-        self.assertIn("_limPut(_limSig)", js)                 # ✕ stores the current signature → hides
-        self.assertIn("sig!==_limGet()", js)                  # a stored signature suppresses re-showing
-        self.assertIn("if(!on){_limPut('');}", js)            # a full clear forgets the dismissal
-        # a NEW limited-window set has a different signature → the banner returns (episode identity, not a timer)
+        self.assertIn("sig!==_limGet()", js)                  # a stored signature suppresses re-logging
+        self.assertIn("_limPut(sig)", js)                     # logging stores the signature
+        self.assertIn("if(!on){_limPut('');}", js)            # a full clear forgets it
+        # a NEW limited-window set has a different signature → a fresh entry (episode identity, not a timer)
         self.assertIn("(lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')", js)
 
 
@@ -284,15 +280,17 @@ class JudgeFailureBanner(unittest.TestCase):
         finally:
             jd.judge_failure_scan = saved
 
-    def test_the_landing_has_the_banner_and_render_drives_and_dismisses_it(self):
+    def test_a_judge_failure_logs_to_the_notification_center_not_a_banner(self):
+        # 2026-07-27: the top banner is gone — the same situation logs an entry in the shell's
+        # notification center, once per count+cause signature (a changed situation logs afresh)
         land = km._landing()
-        self.assertIn("<div id=romp-judge-degraded>", land)
-        self.assertIn("#romp-judge-degraded.show{display:flex}", land)
+        self.assertNotIn("<div id=romp-judge-degraded>", land, "the top banner element is gone")
         js = km._LANDING_USAGE_JS
         self.assertIn("u.judgeFailures", js)                        # driven off the payload key
+        self.assertIn("window.__rompNotify('judge'", js)
         self.assertIn("couldn't be summarized", js)                # names the count
-        self.assertIn("romp:judgeDegradedDismiss", js)             # signature-keyed dismissal, like the limit one
-        self.assertIn("jf.count+'|'+(jf.cause||'')", js)           # signature = count + cause → re-shows on change
+        self.assertIn("romp:judgeDegradedDismiss", js)             # signature-keyed, like the limit one
+        self.assertIn("jf.count+'|'+(jf.cause||'')", js)           # signature = count + cause → logs on change
 
 
 if __name__ == "__main__":
