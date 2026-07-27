@@ -7949,8 +7949,9 @@ def _seg_peer(seg):
 def _seg_peer_kind(seg):
     """The sender-declared postal kind (delegate|coordinate|question) riding the delivered message's
     romp-msg-kind marker (2026-07-08 — send_message requires it in the schema), or '' for legacy/CLI
-    mail with no declaration. The courier treats it as a strong prior, never the verdict. Mirrors
-    _seg_peer's trigger lookup."""
+    mail with no declaration. coordinate/question are BINDING (filed fyi, no courier call); a declared
+    delegate is a strong prior the courier may demote but never invert (demote-only, the user
+    2026-07-27). Mirrors _seg_peer's trigger lookup."""
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     if not trig:
@@ -8133,13 +8134,14 @@ def _parse_courier(raw, menu_len):
 def courier_llm(message_text, menu_text, declared=""):
     """One courier verdict line from the TRIAGE-tier model (Sonnet) over a postal message + the
     sender's open goals. '' on failure. `declared` = the sender's own kind declaration from the
-    send_message schema (2026-07-08) — a strong prior the model may override when the body clearly
-    shows otherwise (a "coordinate" that hands over work, a "delegate" that transfers nothing)."""
+    send_message schema (2026-07-08). Only a declared DELEGATE (or undeclared legacy mail) reaches
+    this call — run_courier files coordinate/question as fyi without asking (demote-only, the user
+    2026-07-27) — so the model's one open question on declared mail is whether the delegate really
+    hands work over."""
     user = "<message>\n%s\n</message>\n<sender-open-goals>\n%s\n</sender-open-goals>" % (message_text, menu_text)
     if declared:
-        user += ("\n<note>The sender declared this message kind=%s when sending it. That declaration is a "
-                 "strong prior, not the verdict: delegate usually means delegating; coordinate or question "
-                 "usually means coordinating. Override it only when the body clearly shows otherwise.</note>"
+        user += ("\n<note>The sender declared this message kind=%s when sending it. That is a strong "
+                 "prior, not the verdict: file it as coordinating if the body hands no work over.</note>"
                  % declared)
     return _judge_run(_triage_model(), COURIER_SYS, user, judge="courier").strip()[:300]
 
@@ -8255,7 +8257,9 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
 def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
     """One TRIAGE-TIER courier pass: place peer-message (postal) segments as delegations, GLOBAL
     oldest-first across sessions. Idempotent (msgId + seg_id). COORDINATING segments are marked processed
-    without a goal-edit. (Sender goals are read as-of-NOW for the MVP; true as-of-send is a refinement.)"""
+    without a goal-edit; a declared coordinate/question files that way outright, no model call (demote-
+    only, the user 2026-07-27). (Sender goals are read as-of-NOW for the MVP; true as-of-send is a
+    refinement.)"""
     if now is None:
         now = int(time.time())
     fleet = discover(now)[:sessions_cap]
@@ -8297,6 +8301,21 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                              note="peer message unsummarized past the %dh retry horizon (usage-limited) — abandoned"
                                   % (COURIER_RETRY_HORIZON // 3600))
             save_goals(fsid, store)
+            continue
+        if declared in ("coordinate", "question"):
+            # DEMOTE-ONLY (the user 2026-07-27): a declared non-delegation files as fyi with NO model
+            # call — the courier may still demote a declared delegate whose body hands nothing over,
+            # but it can never PROMOTE. The old "strong prior the model may override" let a substantial
+            # question read as a delegation, planting a recipient-side card whose whole content was a
+            # judge summary of the reply — noise, since a question already rides the SENDER's cards
+            # (the owed-reply tracking) and the initiator summarizes the answer. Trusting the declared
+            # kind outright is the same resolution the parse give-up path below has always used.
+            store["placements"][seg_id] = "fyi"
+            store.get("courierDeferred", {}).pop(seg_id, None)
+            store.get("courierFails", {}).pop(seg_id, None)
+            rollup_status(store, closed.get(fsid, False))
+            save_goals(fsid, store)
+            placed += 1
             continue
         sender_store = load_goals(sender)
         menu = open_menu(sender_store)

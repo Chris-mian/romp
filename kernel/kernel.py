@@ -15099,7 +15099,9 @@ _REFRESH_SVG = (
     "<svg viewBox='0 0 16 16' width='18' height='18'>"
     "<path d='M12.5 10.6 A 5.2 5.2 0 1 1 10.6 3.5' fill='none' stroke='currentColor'"
     " stroke-width='1.5' stroke-linecap='round'/>"
-    "<path d='M9.9 4.8 L11.4 2.2 L12.7 4.7 Z' fill='currentColor'/></svg>")
+    # the arrowhead must READ at 18px (the user 2026-07-27: the first cut's ~3px triangle was invisible) —
+    # a 4.4-wide, 3.4-deep triangle straddling the arc's end point, pointing along its clockwise tangent
+    "<path d='M9.5 5.4 L11.7 1.6 L13.5 5.2 Z' fill='currentColor'/></svg>")
 
 
 def _landing():
