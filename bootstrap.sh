@@ -34,7 +34,11 @@ if [ -e "$DIR" ]; then
         exit 1
     fi
 else
-    echo "==> Cloning romp into $DIR"
+    # Name the destination and the knob in the same breath. The clone lands in $HOME
+    # regardless of where you run the one-liner from — reasonable for a `curl | bash`
+    # (your cwd could be /, /tmp, or somebody else's repo), but surprising if unstated
+    # (the user 2026-07-27 asked whether it installs into the current directory).
+    echo "==> Cloning romp into $DIR   (override with ROMP_DIR=/path)"
     git clone --quiet "$REPO" "$DIR"
 fi
 
@@ -55,6 +59,29 @@ git -C "$DIR" checkout --quiet "$ref"
 # Fast-forward when the ref is a branch; a tag leaves a detached HEAD, where
 # pull is meaningless and expected to fail.
 git -C "$DIR" pull --quiet --ff-only >/dev/null 2>&1 || true
+
+# Wire the publishing remote. CLAUDE.md's worktree rule says to publish with
+# `git push -u fork <branch>` and never to origin — upstream rulesets reject a
+# direct push — but a plain clone has only `origin`, so a fresh install could not
+# follow the workflow the repo documents (found on a first Linux install,
+# 2026-07-27). Set it up here so the clone arrives ready to contribute.
+#
+# Best-effort and non-fatal: most people installing romp will never push to it,
+# and gh may be absent or logged out. ROMP_FORK names the fork explicitly;
+# otherwise ask gh who the authenticated user is and point at <user>/romp. Never
+# overwrite an existing `fork` remote — a contributor may have set their own.
+if [ -z "${ROMP_NO_FORK_REMOTE:-}" ] && ! git -C "$DIR" remote get-url fork >/dev/null 2>&1; then
+    fork_url="${ROMP_FORK:-}"
+    if [ -z "$fork_url" ] && command -v gh >/dev/null 2>&1; then
+        gh_user="$(gh api user --jq .login 2>/dev/null || true)"
+        [ -n "$gh_user" ] && fork_url="https://github.com/$gh_user/romp.git"
+    fi
+    if [ -n "$fork_url" ]; then
+        git -C "$DIR" remote add fork "$fork_url" 2>/dev/null || true
+        git -C "$DIR" config remote.pushDefault fork
+        echo "    Publishing remote 'fork' -> $fork_url (a bare \`git push\` goes there, not upstream)"
+    fi
+fi
 
 echo "==> Running install.sh"
 "$DIR/install.sh"

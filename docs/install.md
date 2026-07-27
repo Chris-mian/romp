@@ -20,7 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | ba
 Open a new terminal afterwards, so `~/romp/bin` is on your `PATH`, and type
 `romp` to launch the user interface in a browser.
 
-The same command updates Romp later.
+The same command updates Romp later. To remove Romp, run `romp uninstall` (add
+`--purge` to delete recorded sessions too).
 
 This clones Romp to `~/romp` and installs the newest release.
 [What it installs, in detail](architecture.md#what-the-installer-sets-up).

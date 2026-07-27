@@ -200,6 +200,23 @@ echo "  - this clone:        rm -rf $ROMP_DIR"
 echo "  - the editor extension, where you have one:"
 echo "        code --uninstall-extension romp.romp-chat-view"
 [[ -n "$PURGE" ]] || echo "  - recorded state:    rm -rf $STATE   (or re-run with --purge)"
+# The one consequence you cannot see from the outside. The dashboard is token-gated and the
+# first visit stores a YEAR-LONG cookie, so an open tab or a bookmarked ?token= link keeps
+# working indefinitely — until the state dir goes and the next kernel mints a NEW token. Then
+# that tab silently drops to the token login page, which reads as "the dashboard never loaded"
+# rather than "you are signed out" (exactly how it landed, the user 2026-07-27). Nothing is
+# broken and nothing needs fixing; you just need the new link. Said here because this is the
+# step that causes it, and only when it actually applies.
+if [[ -n "$PURGE" ]]; then
+    echo
+    echo "One thing to expect after reinstalling:"
+    echo "  The dashboard's access token was in the state dir, so a new one is minted on the next"
+    echo "  start. Any romp tab or bookmark you already had is now signed out and will show the"
+    echo "  token page instead of the dashboard — that is expected, not a failed install."
+    echo "  Get the fresh link from the end of the installer's output, or any time with:"
+    echo "      romp url        # prints it        (romp opens it in your browser)"
+fi
+
 echo
 echo "Reinstall from scratch with:"
 echo "  curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | bash"
