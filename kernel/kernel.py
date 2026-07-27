@@ -9711,9 +9711,11 @@ def _clear_wrap_body(gids, nodes):
     """The ONE-round wrap-up directive for a clear of still-OPEN card(s) — the safety net for the
     July-22 lost-prototype post-mortem (a card cleared 3 minutes after its build started; the only copy
     was uncommitted worktree edits, which evaporated). The user clears cards they distrust, so some
-    clears catch real work: the message tells the session to STOP, park any unfinished artifacts on a
-    branch, and surface AT MOST one final keep-or-discard decision — like a file-delete confirm, routed
-    once through the agent (the user 2026-07-24). Deliberately NOT a nudge status check, and it carries
+    clears catch real work: the message tells the session to STOP, park any unfinished work where it
+    won't be lost, and surface AT MOST one final keep-or-discard decision — like a file-delete confirm,
+    routed once through the agent (the user 2026-07-24). The ask names no branch or commit (the user
+    2026-07-26: not every session is coding in git) — an agent in a repo parks on a branch anyway, and
+    one writing a doc saves the draft. Deliberately NOT a nudge status check, and it carries
     NO romp-goal-id markers: a goal-id would make the follow-up judge reopen the cleared goal and file
     the reply under it — the resurrection the anti-loop design rules out. The judge recognizes the
     romp-clear-wrap marker instead (plan_units' note): a nothing-pending reply files nothing; a parked-
@@ -9736,10 +9738,9 @@ def _clear_wrap_body(gids, nodes):
     one = len(gids) == 1
     them = "it" if one else "them"
     body = ("I'm dropping %s. Stop work on %s and don't pick %s back up.\n\n"
-            "If you have work in progress on %s, commit it to a branch so it isn't lost, then reply "
-            "once: what you parked, where it is, and whether I should throw it away or have you "
-            "finish it. If there's nothing pending, say so in one line. Just the one reply, no need "
-            "to follow up after that."
+            "If you have unfinished work on %s, save it somewhere it won't be lost, then reply "
+            "once: what you saved, where it is, and whether I should throw it away or have you "
+            "finish it. If there's nothing pending, say so in one line. Just the one reply."
             % ("this one" if one else "these", them, them, them if one else "any of them"))
     msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
     tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "

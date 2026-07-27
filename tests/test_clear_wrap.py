@@ -4,9 +4,10 @@
 The July-22 post-mortem this encodes (all fixtures SYNTHETIC): a card was cleared from the feed three
 minutes after its build started; the only copy of the work was uncommitted worktree edits, which
 evaporated with no signal. The user clears cards they distrust — some clears catch real work — so the
-clear of a working/blocked card now tells the owning session ONCE: stop, park any unfinished artifacts
-on a branch, and surface at most one final keep-or-discard decision. Like a file-delete confirm, routed
-one time through the agent.
+clear of a working/blocked card now tells the owning session ONCE: stop, park any unfinished work
+where it won't be lost, and surface at most one final keep-or-discard decision. Like a file-delete
+confirm, routed one time through the agent. The ask names no branch or commit (the user 2026-07-26):
+not every session is coding in git.
 
 The invariants:
 - Only still-OPEN top goals notify (completed/settled tops, sub-goals, and stream items don't).
@@ -100,10 +101,12 @@ class ClearWrapBody(unittest.TestCase):
         self.assertIn("> Prototype the floating stamp.", out, "the planner's why rides as context")
         self.assertIn("I'm dropping this one", out)
         self.assertIn("Stop work on it", out)
-        self.assertIn("commit it to a branch", out, "parking WIP on a branch is the loss-proofing")
+        self.assertIn("save it somewhere it won't be lost", out,
+                      "loss-proofing without naming git — not every session is coding (the user "
+                      "2026-07-26); an agent in a repo still reads this as 'commit to a branch'")
         self.assertIn("reply once", out, "exactly one keep-or-discard round")
         self.assertIn("throw it away or have you finish it", out, "the decision the reply must carry")
-        self.assertIn("no need to follow up after that", out)
+        self.assertIn("Just the one reply", out)
 
     def test_bundle_numbers_the_goals(self):
         nodes = _nodes()
@@ -113,7 +116,7 @@ class ClearWrapBody(unittest.TestCase):
         self.assertIn("> 2. Write the migration guide", out)
         self.assertIn("I'm dropping these", out)
         self.assertIn("Stop work on them", out)
-        self.assertIn("work in progress on any of them", out)
+        self.assertIn("unfinished work on any of them", out)
 
     def test_it_reads_as_a_human_ask_not_a_system_notice(self):
         # the user 2026-07-24: the session has no idea romp is tracking it, so the message must not
