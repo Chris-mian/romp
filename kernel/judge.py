@@ -4963,6 +4963,18 @@ def _plan_session(fsid, path, now):
         #                                               LLM call and file its own duplicate node (2026-07-06)
         if _placed_key(store["placements"], key, live):   # drift-safe: a recorded key whose parse t has since
             continue                                  # shifted still dedups (this phase already placed)
+        if u[2] and u[2] < (episode_floor(fsid) or 0):
+            # PRE-EPISODE unit (the user 2026-07-27): its segment predates the current episode's head —
+            # evidence from a conversation the agent can no longer see (_placed_key's own scoping rule),
+            # reachable because the parse stitches the anchor transcript behind a /clear fork. Planning
+            # it re-judges the DEAD conversation: an old unplaced turn re-planned 40s after a /clear
+            # filed done-verdicts on three-day-old cards, resurfacing them as freshly completed. The
+            # boundary settle usually hides this (verdicts on cleared nodes stay dark), but the planner
+            # must not depend on it. RETIRE, not skip, for the same reason as the moot branch below —
+            # an un-retired unit wedges auto-nudge's `_unplanned` gate forever.
+            store["placements"][key] = None
+            retired = True
+            continue
         if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id, live):
             # Work already placed (legacy/fast segment) → this phase is moot, a FINAL ruling like the
             # courier's "fyi" below. RETIRE it rather than skipping: a bare `continue` left the key

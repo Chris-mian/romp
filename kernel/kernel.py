@@ -9995,13 +9995,25 @@ def _episode_boundary_check(sid, path, now):
     head = jd.transcript_head(path)
     if not head or not head["root"]:
         return                       # no head yet, or a resume-style leaf (chains into a prior file):
-    last = jd.episode_last(sid)      # either way the recorded episode is still the current one
-    if last is not None and last.get("head") == head["uuid"]:
-        return
+    #                                  either way the recorded episode is still the current one
+    if any(r.get("head") == head["uuid"] for r in jd.episode_rows(sid)):
+        return                       # this head is already recorded — the current episode, or a
+    #                                  HISTORICAL one re-sighted through a stale path (a peer writer
+    #                                  mid-transition). A re-sighting is never a new boundary, and
+    #                                  skipping its append keeps the race below from growing the log.
     jd.append_episode(sid, head["uuid"], Path(path).stem, head["t"] or int(now))
-    if last is None:
-        return                       # first observation SEEDS the log; a boundary needs a prior recorded
-    #                                  episode (so deploying this never mass-settles existing sessions)
+    # Seed-vs-boundary is decided by RE-READING the log AFTER the append, never from the pre-append
+    # read. Two kernel instances overlapped for about a second on 2026-07-27 (a restart-churn
+    # morning): a stale-path writer seeded row 1 between this writer's read and append, so the
+    # fresh-path writer — holding a pre-read "no rows yet" — took the seed path and a REAL /clear
+    # boundary silently skipped its settle; the judge then re-ran over the dead conversation and the
+    # pre-clear cards resurfaced. Post-append, whichever writer finds rows besides its own settles; a
+    # true first observation finds only itself and seeds (so deploying this never mass-settles
+    # existing fleets). Both interleavings are covered — a double settle is idempotent (tops come
+    # back empty) — and the seed is logged so a swallowed boundary is never invisible again.
+    if all(r.get("head") == head["uuid"] for r in jd.episode_rows(sid)):
+        sys.stderr.write("episode boundary: %s seeded (head %.8s)\n" % (sid[:8], head["uuid"]))
+        return
     store = jd.load_goals(sid)
     nodes, status = store.get("nodes", {}), store.get("status", {})
     tops = [nid for nid, nd in nodes.items()
