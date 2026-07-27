@@ -591,8 +591,20 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
                 return wrap["result"]
         except Exception:
             pass
+        if not out.strip():
+            # DEAD CLI (2026-07-26): the subprocess ended with NOTHING on stdout — a death, not a reply.
+            # This used to fall through the raw-stdout fallback below as "", logged NOWHERE (no error
+            # row, no usage row): a briefer that died three times overnight gave up with zero forensics,
+            # and the card's warn could only GUESS its cause ("errors or timeouts"). The returncode and
+            # stderr tail are the only evidence a dead CLI leaves — record them (fail loudly; a silent
+            # fallback hides the very breakage we need to know about).
+            _log_judge_error(judge or tier, fsid, "call",
+                             note="empty stdout (exit %s): %s"
+                                  % (getattr(p, "returncode", "?"),
+                                     (getattr(p, "stderr", "") or "").strip()[-200:] or "no stderr"))
+            return ""
         _judge_ctx.last["reply"] = _mid_elide(out)
-        return out                                    # wrapper absent/unparseable → raw stdout (defensive)
+        return out                                    # wrapper unparseable but non-empty → raw stdout (defensive)
     finally:
         _active_end(rid)                              # call done (success/timeout/parse-fail) → drop the live bar
 
