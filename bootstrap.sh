@@ -66,15 +66,27 @@ git -C "$DIR" pull --quiet --ff-only >/dev/null 2>&1 || true
 # follow the workflow the repo documents (found on a first Linux install,
 # 2026-07-27). Set it up here so the clone arrives ready to contribute.
 #
-# Best-effort and non-fatal: most people installing romp will never push to it,
-# and gh may be absent or logged out. ROMP_FORK names the fork explicitly;
-# otherwise ask gh who the authenticated user is and point at <user>/romp. Never
-# overwrite an existing `fork` remote — a contributor may have set their own.
+# Only for someone who ACTUALLY HAS a fork. The first cut of this derived <gh-user>/romp from
+# whoever gh happened to be logged in as and wired it blind, so anyone with gh installed — the
+# overwhelming majority, who only ever want to run romp — got a `fork` remote pointing at a repo
+# that does not exist, remote.pushDefault aimed at it, and a line of confusing output in the
+# middle of a plain install (the user 2026-07-27, who asked what it was and whether it leaked
+# someone else's fork; it does not — it shows the READER's own login — but it was still wrong).
+#
+# So the auto-detected case must PROVE the fork exists before touching anything, and say nothing
+# at all when it doesn't. ROMP_FORK is the explicit escape hatch and is trusted as given (it may
+# name a fork on a host gh cannot see). Never overwrites an existing `fork` remote — a
+# contributor may have pointed it somewhere deliberately.
 if [ -z "${ROMP_NO_FORK_REMOTE:-}" ] && ! git -C "$DIR" remote get-url fork >/dev/null 2>&1; then
     fork_url="${ROMP_FORK:-}"
     if [ -z "$fork_url" ] && command -v gh >/dev/null 2>&1; then
         gh_user="$(gh api user --jq .login 2>/dev/null || true)"
-        [ -n "$gh_user" ] && fork_url="https://github.com/$gh_user/romp.git"
+        # `gh repo view` is the existence check the first version lacked. Requiring it to be a
+        # FORK too keeps us off an unrelated repo that merely happens to be called "romp".
+        if [ -n "$gh_user" ] \
+           && [ "$(gh repo view "$gh_user/romp" --json isFork --jq .isFork 2>/dev/null)" = "true" ]; then
+            fork_url="https://github.com/$gh_user/romp.git"
+        fi
     fi
     if [ -n "$fork_url" ]; then
         git -C "$DIR" remote add fork "$fork_url" 2>/dev/null || true
