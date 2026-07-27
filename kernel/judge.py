@@ -5329,15 +5329,35 @@ def _echo_clear_targets(store, minted, now, age=86400):
     return out
 
 
-def run_echo_backfill(now=None, age=86400, window=45 * 86400, max_passes=20, verbose=True):
-    """DRY-RUN of the one-time placement backfill for the 435d9df parse-identity echoes (the user
-    2026-07-26, delegated via session bugz): force the planner through the orphaned backlog for every
-    session whose parse changed identity (orphanReply markers in states/, dormant included, looping per
-    session until a pass places nothing), then REPORT — per session — what was minted and which minted
-    subtrees are all-old (evidence entirely older than `age`, _echo_clear_targets) and therefore due to
-    be cleared. The clear application itself is a separate, supervised step. Returns
-    {sid: {passes, placed, minted, clear_targets}} plus '_skipped' (affected sids discover() couldn't
-    resolve)."""
+def _apply_echo_clears(fsid, store, targets, batch_t, now, why):
+    """Apply the backfill's clears the mute-path way (the user approved this step 2026-07-26):
+    cleared.jsonl rows — one shared batch t across the WHOLE sweep, so a single Undo restores every
+    echo — plus a romp-authored clear verdict per target, then one rollup + save. Deliberately NO
+    clear-wrap notify (these are bookkeeping echoes, not user dismissals; the kernel's injection only
+    runs from its own _clear_all path, which this never touches) and NO delegation cascade. Compaction
+    archives the cleared roots on the kernel's next pass."""
+    if not targets:
+        return 0
+    with (STATE / "cleared.jsonl").open("a") as fh:
+        for tid in targets:
+            fh.write(json.dumps({"id": tid, "t": batch_t, "op": "clear"}) + "\n")
+    for tid in targets:
+        record_verdict(store, store["nodes"][tid], "romp", "clear", now, why=why)
+    rollup_status(store, False)
+    save_goals(fsid, store)
+    return len(targets)
+
+
+def run_echo_backfill(now=None, age=86400, window=45 * 86400, max_passes=20, verbose=True, apply=False):
+    """The one-time placement backfill for the 435d9df parse-identity echoes (the user 2026-07-26,
+    delegated via session bugz): force the planner through the orphaned backlog for every session
+    whose parse changed identity (orphanReply markers in states/, dormant included, looping per
+    session until a pass places nothing), then — per session — find which minted subtrees are all-old
+    (evidence entirely older than `age`, _echo_clear_targets). With apply=False (default), REPORT
+    only; with apply=True, clear those subtrees immediately via _apply_echo_clears ("dropped when the
+    sweep re-filed finished work"): fresh-evidence mints stay on the board untouched. Returns
+    {sid: {passes, placed, minted, clear_targets, cleared}} plus '_skipped' (affected sids discover()
+    couldn't resolve)."""
     if now is None:
         now = int(time.time())
     affected = []
@@ -5351,6 +5371,9 @@ def run_echo_backfill(now=None, age=86400, window=45 * 86400, max_passes=20, ver
     except OSError:
         pass
     lanes = {fsid: str(path) for fsid, path, anchor, name in discover(now, window, forks=False)}
+    batch_t = time.time()
+    why = ("one-time backfill of a bookkeeping change; this work had already finished, days before "
+           "the card resurfaced")
     report = {"_skipped": [s for s in affected if s not in lanes]}
     for sid in affected:
         path = lanes.get(sid)
@@ -5367,11 +5390,13 @@ def run_echo_backfill(now=None, age=86400, window=45 * 86400, max_passes=20, ver
         store = load_goals(sid)
         minted = set(store["nodes"]) - before
         targets = _echo_clear_targets(store, minted, now, age)
+        cleared_n = _apply_echo_clears(sid, store, targets, batch_t, now, why) if apply else 0
         report[sid] = {"passes": passes, "placed": placed, "minted": sorted(minted),
-                       "clear_targets": sorted(targets)}
+                       "clear_targets": sorted(targets), "cleared": cleared_n}
         if verbose:
-            sys.stderr.write("backfill %s: %d passes, %d placed, %d minted, %d clear targets\n"
-                             % (sid[:8], passes, placed, len(minted), len(targets)))
+            sys.stderr.write("backfill %s: %d passes, %d placed, %d minted, %d %s\n"
+                             % (sid[:8], passes, placed, len(minted), len(targets),
+                                "cleared" if apply else "clear targets (dry run)"))
     return report
 
 

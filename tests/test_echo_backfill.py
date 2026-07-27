@@ -60,5 +60,47 @@ class EchoClearTargets(unittest.TestCase):
                          "an already-cleared sub is off the board — it neither blocks nor re-clears")
 
 
+class ApplyEchoClears(unittest.TestCase):
+    """The apply step (user-approved 2026-07-26): mute-path clears — cleared.jsonl rows on ONE shared
+    batch t (a single Undo restores the whole sweep) + a romp-authored clear verdict per target — and
+    deliberately NO clear-wrap notify (no message file is ever produced; bookkeeping, not dismissal)."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.td = tempfile.TemporaryDirectory()
+        self.saved_state = jd.STATE
+        jd._rebind_state(Path(self.td.name))
+        jd.GOALDIR.mkdir(parents=True)
+
+    def tearDown(self):
+        jd._rebind_state(self.saved_state)
+        self.td.cleanup()
+
+    def test_apply_writes_batch_rows_and_romp_clear_verdicts(self):
+        import json
+        g, s1 = SID + ":g1", SID + ":g2"
+        store = jd.load_goals(SID)
+        store["nodes"] = {g: jd.GuardedNode(dict(_n(g, OLD), log=[])),
+                          s1: jd.GuardedNode(dict(_n(s1, OLD, g), log=[]))}
+        jd.save_goals(SID, store)
+        store = jd.load_goals(SID)
+        n = jd._apply_echo_clears(SID, store, [g], 1785200000.5, NOW, "why text")
+        self.assertEqual(n, 1)
+        rows = [json.loads(l) for l in (jd.STATE / "cleared.jsonl").read_text().splitlines()]
+        self.assertEqual(rows, [{"id": g, "t": 1785200000.5, "op": "clear"}],
+                         "one row per target, all on the shared sweep batch t")
+        nd = jd.load_goals(SID)["nodes"][g]
+        ev = [e for e in nd.get("log", []) if e.get("kind") == "clear"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["src"], "romp", "a romp-authored clear, not a user dismissal")
+        self.assertTrue(nd.get("cleared"), "the durable node flag lands with the verdict")
+
+    def test_apply_of_nothing_touches_nothing(self):
+        store = jd.load_goals(SID)
+        self.assertEqual(jd._apply_echo_clears(SID, store, [], 1.0, NOW, "why"), 0)
+        self.assertFalse((jd.STATE / "cleared.jsonl").exists(), "no targets → no rows, no save")
+
+
 if __name__ == "__main__":
     unittest.main()
