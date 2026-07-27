@@ -5289,6 +5289,92 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verb
     return placed
 
 
+def _echo_clear_targets(store, minted, now, age=86400):
+    """Maximal all-old subtrees among sweep-MINTED nodes — the one-time parse-identity backfill's clear
+    selection (the user 2026-07-26). A node is clearable iff it was minted by the sweep, its evidence
+    time `t` predates `now - age`, and every descendant is clearable too; the returned targets are the
+    HIGHEST such nodes (largest granularity), so a mixed-age top keeps its fresh outcomes and only the
+    all-old sub clears. Pre-existing nodes are never targets and never let an ancestor qualify — the
+    sweep curates only what the sweep itself re-minted. Already-cleared nodes count as clearable (they
+    are already off the board) but are not re-emitted as targets."""
+    nodes = store["nodes"]
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    memo = {}
+
+    def clearable(nid):
+        if nid in memo:
+            return memo[nid]
+        nd = nodes[nid]
+        ok = (nd.get("cleared") or
+              (nid in minted and (nd.get("t") or now) < now - age)) and \
+             all(clearable(c) for c in children.get(nid, []))
+        memo[nid] = ok
+        return ok
+
+    out = []
+
+    def walk(nid):
+        if clearable(nid):
+            if not nodes[nid].get("cleared"):
+                out.append(nid)
+            return                                     # the whole subtree rides this clear (roll-down)
+        for c in children.get(nid, []):
+            walk(c)
+
+    for nid, nd in nodes.items():
+        if nd.get("parentId") is None:
+            walk(nid)
+    return out
+
+
+def run_echo_backfill(now=None, age=86400, window=45 * 86400, max_passes=20, verbose=True):
+    """DRY-RUN of the one-time placement backfill for the 435d9df parse-identity echoes (the user
+    2026-07-26, delegated via session bugz): force the planner through the orphaned backlog for every
+    session whose parse changed identity (orphanReply markers in states/, dormant included, looping per
+    session until a pass places nothing), then REPORT — per session — what was minted and which minted
+    subtrees are all-old (evidence entirely older than `age`, _echo_clear_targets) and therefore due to
+    be cleared. The clear application itself is a separate, supervised step. Returns
+    {sid: {passes, placed, minted, clear_targets}} plus '_skipped' (affected sids discover() couldn't
+    resolve)."""
+    if now is None:
+        now = int(time.time())
+    affected = []
+    try:
+        for f in sorted(STATESDIR.glob("*.jsonl")):
+            try:
+                if any('"orphanReply"' in ln for ln in f.read_text(errors="replace").splitlines()):
+                    affected.append(f.stem)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    lanes = {fsid: str(path) for fsid, path, anchor, name in discover(now, window, forks=False)}
+    report = {"_skipped": [s for s in affected if s not in lanes]}
+    for sid in affected:
+        path = lanes.get(sid)
+        if not path:
+            continue
+        before = set(load_goals(sid)["nodes"])
+        placed = passes = 0
+        for _ in range(max_passes):
+            n = _plan_session(sid, path, now)
+            passes += 1
+            placed += n
+            if not n:
+                break
+        store = load_goals(sid)
+        minted = set(store["nodes"]) - before
+        targets = _echo_clear_targets(store, minted, now, age)
+        report[sid] = {"passes": passes, "placed": placed, "minted": sorted(minted),
+                       "clear_targets": sorted(targets)}
+        if verbose:
+            sys.stderr.write("backfill %s: %d passes, %d placed, %d minted, %d clear targets\n"
+                             % (sid[:8], passes, placed, len(minted), len(targets)))
+    return report
+
+
 def fast_forward_placements(fsid, path=None, now=None):
     """Seal every currently-OUTSTANDING planner unit as processed-with-no-goal (the None sentinel the
     retirement path already uses), WITHOUT planning any of it — so the planner resumes from the PRESENT
