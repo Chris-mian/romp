@@ -14783,6 +14783,13 @@ function mruHost(){try{return localStorage.getItem('romp:lastRemoteHost')||'';}c
 // set of machines you can reach. Hosts you attached before are the other source, and that is what makes a
 // typed-in host stick: attaching records it in remotes-known.json, so it completes from then on.
 var _cfg=[],_seen=[];
+// A trust change (and a Match, which crosses the tunnel and confirms only on the peer's next tier
+// gossip) takes real time, and the popover re-renders every poll — so a snapshot fetched BEFORE the
+// change repainted the OLD level after it, which read as "didn't hold" and invited a second click
+// (the user 2026-07-27). Pending is keyed per host and survives re-renders: rows show the CHOSEN
+// level, disabled with an applying cue, until a snapshot agrees (the confirming EVENT — no timer).
+var _pendTrust={},_pendMirror={};
+function pendLvl(map,host,current){var p=map[host];if(p&&current===p){delete map[host];p=null;}return p;}
 function fillHosts(){if(!dl)return;var hs=[];
 [[mruHost()],_seen,_cfg].forEach(function(g){(g||[]).forEach(function(h){if(h&&hs.indexOf(h)<0)hs.push(h);});});   // most-recently-connected first, not just ssh-config order
 dl.innerHTML=hs.map(function(h){return '<option value=\"'+h+'\"></option>';}).join('');}
@@ -14889,9 +14896,10 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Publish this ma
 // your approval, never auto-injected; isolated = dashboard only, no postal. The gate lives in the bus.
 // Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
 // dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
-var tcur=t.trust||'directed';
-var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=rnet-trust data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select></span>';
+var tpd=pendLvl(_pendTrust,t.host,t.trust||'directed');
+var tcur=tpd||t.trust||'directed';
+var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=\"rnet-trust'+(tpd?' rnet-applying':'')+'\"'+(tpd?' disabled':'')+' data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(tpd?'<span class=rnet-pend>applying\\u2026</span>':'')+'</span>';
 // The OTHER direction of the pair (how that host holds mail FROM this machine, declared by its bus on
 // the last exchange). Trust is receiver-evaluated on purpose, so a half-open pair is legal — but it
 // used to be invisible until mail quarantined over there (the user 2026-07-26). A mismatch offers
@@ -14899,8 +14907,10 @@ var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select cl
 // your trust, and this machine never lets one.
 var theirs=tiers[t.host]||'';
 if(theirs){var mm=theirs!==tcur;
-trust+='<span class=\"rnet-back'+(mm?' rnet-mismatch':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.\">'+t.host+' holds yours: '+theirs+'</span>';
-if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
+var mpd=pendLvl(_pendMirror,t.host,theirs);   // confirmed by the peer's next tier gossip, not the POST
+trust+='<span class=\"rnet-back'+(mm&&!mpd?' rnet-mismatch':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.\">'+t.host+' holds yours: '+theirs+'</span>';
+if(mpd){trust+='<button class=rnet-mirror disabled title=\"Set on '+t.host+'; waiting for its bus to confirm on the next exchange.\">Matching\\u2026</button>';}
+else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'+tcur+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
 // Line 1 is what this host is doing right now plus the acts you perform on it; line 2 is the pair of
 // settings you set once and leave. They shared a single flat row before, which gave Detach the same
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
@@ -14926,12 +14936,13 @@ if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
 hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
 list.appendChild(hd);
 known.forEach(function(k){var kr=document.createElement('div');kr.className='rnet-row rnet-known';
-var kcur=k.trust||'directed';
+var kpd=pendLvl(_pendTrust,k.host,k.trust||'directed');
+var kcur=kpd||k.trust||'directed';
 // The SAME trust select as an attached row (data-t → /tunnels/trust): trust is judged by ORIGIN at
 // delivery, so the level applies to this host's mail even when it arrives relayed through a hub —
 // no tunnel required to set it (the user 2026-07-25).
-var ktrust='<select class=rnet-trust data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>';
+var ktrust='<select class=\"rnet-trust'+(kpd?' rnet-applying':'')+'\"'+(kpd?' disabled':'')+' data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(kpd?'<span class=rnet-pend>applying\\u2026</span>':'');
 kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
 '<span class=nm><b>'+k.host+'</b> <span class=st title=\"Not attached; the trust level applies to its mail by origin, and re-attaching keeps it.\">not attached</span></span>'+ktrust+
 '<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
@@ -14944,9 +14955,10 @@ if(via.length){var vh=document.createElement('div');vh.className='rnet-khead';
 vh.textContent='Reachable via relay';vh.title='Machines you have no direct tunnel to; a hub you are attached to relays their mail one hop. Trust is judged by origin, so the level you set here applies to their mail even though it arrives through the hub.';
 list.appendChild(vh);
 via.forEach(function(v){var vr=document.createElement('div');vr.className='rnet-row rnet-known';
-var vcur=v.trust||'directed';
-var vtrust='<select class=rnet-trust data-t=\"'+v.host+'\" title=\"What happens to postal mail from '+v.host+' (it arrives relayed through '+v.via+'; trust is judged by its true origin): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
-['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>';
+var vpd=pendLvl(_pendTrust,v.host,v.trust||'directed');
+var vcur=vpd||v.trust||'directed';
+var vtrust='<select class=\"rnet-trust'+(vpd?' rnet-applying':'')+'\"'+(vpd?' disabled':'')+' data-t=\"'+v.host+'\" title=\"What happens to postal mail from '+v.host+' (it arrives relayed through '+v.via+'; trust is judged by its true origin): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
+['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>'+(vpd?'<span class=rnet-pend>applying\\u2026</span>':'');
 vr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #7a6a3a\" title=\"No direct tunnel; reachable one hop through '+v.via+'.\"></span>'+
 '<span class=nm><b>'+v.host+'</b> <span class=st title=\"Its sessions are gossiped one hop by '+v.via+'; attach it directly for full control.\">via '+v.via+' \\u00b7 '+(v.agents||0)+' session'+((v.agents||0)===1?'':'s')+'</span></span>'+vtrust;
 list.appendChild(vr);});}
@@ -14964,14 +14976,19 @@ var hr=document.createElement('div');hr.className='rnet-row rnet-known';
 hr.innerHTML='<span class=rnet-dot style=\"background:#b58900\" title=\"Mail is waiting for approval on '+hn+'.\"></span>'+
 '<span class=nm><b>'+hn+'</b> <span class=st title=\"'+gl.replace(/\"/g,'&quot;')+'\">'+rows.length+' message'+(rows.length===1?'':'s')+' held for your approval</span></span>';
 list.appendChild(hr);});}
+// Pending is recorded ON THE CLICK (ack now — the buttons rule), so any re-render in the round-trip
+// window repaints the chosen level + applying cue instead of the stale snapshot's old value. A
+// refused/failed write DELETES the pending entry, so the next render honestly reverts — plus the alert.
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
-s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
-if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
-s.disabled=false;refresh();}).catch(function(){s.disabled=false;alert('trust change on '+h+' failed to reach the kernel.');});};});
+_pendTrust[h]=s.value;s.disabled=true;s.classList.add('rnet-applying');
+fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){delete _pendTrust[h];alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+refresh();}).catch(function(){delete _pendTrust[h];alert('trust change on '+h+' failed to reach the kernel.');refresh();});};});
 list.querySelectorAll('button[data-m]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-m');
-b.disabled=true;b.textContent='Matching\\u2026';fetch('/tunnels/trust-mirror',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
-if(!(d&&d.ok)){alert('trust match on '+h+' failed: '+((d&&d.error)||'unknown'));b.disabled=false;b.textContent='Match';return;}   // fail LOUDLY (CLAUDE.md)
-b.textContent='Matched';refresh();}).catch(function(){b.disabled=false;b.textContent='Match';alert('trust match on '+h+' failed to reach the kernel.');});};});
+_pendMirror[h]=b.getAttribute('data-lvl')||'';b.disabled=true;b.textContent='Matching\\u2026';
+fetch('/tunnels/trust-mirror',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){delete _pendMirror[h];alert('trust match on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+refresh();}).catch(function(){delete _pendMirror[h];alert('trust match on '+h+' failed to reach the kernel.');refresh();});};});
 list.querySelectorAll('input[data-k]').forEach(function(c){c.onchange=function(){var h=c.getAttribute('data-k');
 c.disabled=true;fetch('/tunnels/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,on:c.checked})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -15431,6 +15448,10 @@ def _landing():
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
             ".rnet-trust:disabled{opacity:0.55;cursor:default}"
+            # applying = in-progress chrome, so it wears the accent (never a status color); the note's
+            # 11px matches every other annotation on the row (fonts: reuse, don't multiply)
+            ".rnet-trust.rnet-applying{border-color:var(--accent);opacity:0.8}"
+            ".rnet-pend{color:var(--accent);font-size:11px;margin-left:4px}"
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
