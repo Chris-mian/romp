@@ -777,7 +777,13 @@ def synthesize_orphans(states, atoms):
         if not isinstance(orq, dict):
             continue
         txt = (orq.get("text") or "").strip()
-        if not txt or txt.startswith("API Error:"):
+        if not txt or txt.startswith("API Error:") or txt == "(no content)":
+            # "(no content)" is the CLI's own placeholder for a contentless command-feedback message
+            # (an SDK /clear streams one; its transcript record is a system/local_command row). Salvaged
+            # as a real assistant atom it read as MODEL WORK: _seg_command_worked turned True for the
+            # bare /clear turn and the planner minted a "clearing conversation history" card (the user
+            # 2026-07-27). Every such marker in the live corpus rides a command turn, which plans no
+            # units at all once skipped — so this drops no real work and needs no PLACEMENTS_V bump.
             continue
         u = orq.get("uuid") or ""
         if u and u in seen_uuids:
