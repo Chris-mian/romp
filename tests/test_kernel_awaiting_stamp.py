@@ -185,6 +185,60 @@ class SessionLevelStamp(unittest.TestCase):
         self.assertEqual(km._session_stamp_cached(SID), "second wait, a different length so size differs")
 
 
+class OverlayDoesNotVeto(unittest.TestCase):
+    """The production regression (the user 2026-07-27): the SDK Stop hook writes awaiting:false at EVERY
+    turn end, and nothing has written true since 2026-07-07 — so every real SDK session carries a trailing
+    false overlay row. That row is ambient noise, not an answer: it must fall THROUGH to the durable
+    stamp, never veto it (the veto made source 2 unreachable fleet-wide; when bf55a2f narrowed the live
+    sources on 2026-07-24 the awaiting badge visibly vanished). The classes above stub
+    _states_awaiting_overlay to None — precisely the condition production never hits — so this class
+    runs the REAL reader over a real states file."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"
+        km.jd.GOALDIR.mkdir(parents=True)
+        (td / "states").mkdir()
+        km._SESSION_STAMP_CACHE.clear()
+        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+
+    def tearDown(self):
+        km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions = self._saved
+        km._SESSION_STAMP_CACHE.clear()
+        self.td.cleanup()
+
+    def _overlay(self, *rows):
+        (km.jd.STATE / "states" / (SID + ".jsonl")).write_text(
+            "".join(json.dumps(r) + "\n" for r in rows))
+
+    def _seed(self, why="a dispatched release watch; tags when green"):
+        nodes = {"g1": _node("g1", why=why, at=200)}
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
+
+    def test_a_bare_false_row_falls_through_to_the_stamp(self):
+        self._overlay({"t": 100, "awaiting": False})
+        self._seed()
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         "a dispatched release watch; tags when green",
+                         "the Stop hook's ambient false must not hide the judge's stamp")
+
+    def test_a_live_true_row_still_wins_with_its_own_why(self):
+        self._overlay({"t": 100, "awaiting": True, "why": "a job the hook reported"})
+        self._seed()
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True), "a job the hook reported",
+                         "a positive overlay row keeps its channel")
+
+    def test_false_row_and_no_stamp_is_plain_none(self):
+        self._overlay({"t": 100, "awaiting": False})
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {}}))
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
+
+
 class _FakeBackend:
     def __init__(self): self.sent = []
     def send(self, sid, body): self.sent.append((sid, body))
