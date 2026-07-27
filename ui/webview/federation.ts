@@ -74,6 +74,12 @@ function _prefixIdBearing(host: string, o: any, idKey: string): any {
   if (!o || typeof o !== "object" || typeof o[idKey] !== "string") return o;
   const out: any = { ...o, [idKey]: prefixId(host, o[idKey]) };
   if (typeof out.name === "string") out.name = prefixId(host, out.name);
+  // A feed card's delegation origin (asks[].origin): peerHost empty means the SENDER is local to the
+  // card's own kernel — attribute it to that host, and prefix peerSid so the click routes there. A
+  // set peerHost means the sender lives on some OTHER host (that kernel recorded which); keep it,
+  // and keep peerSid bare — the viewer may be that very host, where the bare uuid opens directly.
+  if (out.origin && typeof out.origin === "object" && typeof out.origin.peerSid === "string" && !out.origin.peerHost)
+    out.origin = { ...out.origin, peerHost: host, peerSid: prefixId(host, out.origin.peerSid) };
   return out;
 }
 

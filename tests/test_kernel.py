@@ -4679,7 +4679,7 @@ class ViewBuilder(unittest.TestCase):
                           "origin": {"peer": sender, "goalId": sender + ":g1", "msgId": "m-abc.123"}}},
             "placements": {}, "status": {g: "working"}}))
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-        self.assertEqual(card["origin"], {"peer": "sendersess", "peerSid": sender,
+        self.assertEqual(card["origin"], {"peer": "sendersess", "peerHost": "", "peerSid": sender,
                                           "color": {"bg": "#ff8800", "fg": "#ffffff"}},
                          "origin.peer (a sid) resolves to the sender's name + color")
 
@@ -4697,6 +4697,42 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["origin"]["peer"], sender[:8])
         self.assertIsNone(card["origin"]["color"])
+
+    def test_feed_handoff_origin_uses_couriers_name_host_snapshot_for_federated_sender(self):
+        """A FEDERATED sender's sid resolves to nothing locally; the courier's plant-time snapshot
+        (peerName + peerHost) carries the chip instead — host:name, never a bare sid stub (the user
+        2026-07-26, after a delegation chip read as an 8-char sid prefix)."""
+        sender = "abcdef00-1111-0000-0000-000000000000"
+        self._sender_goal(sender, sender + ":g1")                 # OPEN linked goal → badge shows
+        g = "%s:g21" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 21, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Handoff from a federated peer", "parentId": None,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50,
+                          "origin": {"peer": sender, "goalId": sender + ":g1", "msgId": "m-x.2",
+                                     "peerName": "api", "peerHost": "TESTHOST2"}}},
+            "placements": {}, "status": {g: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["origin"]["peer"], "api")
+        self.assertEqual(card["origin"]["peerHost"], "TESTHOST2")
+
+    def test_feed_handoff_origin_live_local_name_beats_stale_snapshot(self):
+        """A LOCAL sender resolves through the live names registry (which tracks renames), and a local
+        resolve means no host qualifier — even if the origin carries an old peerName/peerHost snapshot."""
+        sender = "abcdef00-2222-0000-0000-000000000000"
+        (jd.NAMES / sender).write_text("renamedsess\t/elsewhere\t#ff8800\n")
+        self._sender_goal(sender, sender + ":g1")
+        g = "%s:g22" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 22, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Handoff with a stale snapshot", "parentId": None,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50,
+                          "origin": {"peer": sender, "goalId": sender + ":g1", "msgId": "m-x.3",
+                                     "peerName": "oldname", "peerHost": "elsewhere"}}},
+            "placements": {}, "status": {g: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["origin"]["peer"], "renamedsess")
+        self.assertEqual(card["origin"]["peerHost"], "")
 
     def test_feed_handoff_origin_hidden_when_fully_absorbed(self):
         """Once the sender's linked goal is done/cleared/gone (or there was no link), the handoff is fully

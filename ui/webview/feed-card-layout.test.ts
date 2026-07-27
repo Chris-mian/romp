@@ -62,7 +62,9 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   // populated from it.origin in the update path: a dim gray "↪ from" + the peer in the bold session-name
   // style (its own identity colour); click opens the sender (the user 2026-06-16)
   assert.match(FEED, /pre\.textContent = "↪ from "/);
-  assert.match(FEED, /peer\.textContent = it\.origin\.peer/);
+  // the peer renders through hostPartsNodes so a FEDERATED sender wears the quiet "host:" prefix,
+  // same treatment as remote session names everywhere else (the user 2026-07-26)
+  assert.match(FEED, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(it\.origin\.peerHost, it\.origin\.peer\)\)/);
   assert.match(FEED, /if \(it\.origin\.color\) peer\.style\.color = it\.origin\.color\.bg/);
   assert.match(FEED, /type: "openSession", id: it\.origin!\.peerSid/, "clicking the marker opens the sender");
   assert.match(CSS, /\.fask-origin-pre \{[^}]*var\(--dim\)/);     // "↪ from" dim gray

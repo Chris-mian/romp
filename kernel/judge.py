@@ -7970,6 +7970,38 @@ def courier_llm(message_text, menu_text, declared=""):
     return _judge_run(_triage_model(), COURIER_SYS, user, judge="courier").strip()[:300]
 
 
+_postal_from_memo = {"key": None, "map": {}}   # messages.jsonl (mtime,size) -> {mid: (from, from_host)}
+
+
+def _postal_from(mid):
+    """(from_name, from_host) for a delivered postal message id, from the messages log's "sent" row —
+    the AUTHORITATIVE record of who sent it. The sender may be a session of ANOTHER kernel (federated
+    mail), so the local names registry cannot resolve it; the log row carries the name the sender
+    wore and, since 2026-07-26, the origin host the postal bus stamped on cross-host delivery.
+    ("", "") for None/unknown mids. Memoized on the log file's (mtime, size)."""
+    if not mid:
+        return ("", "")
+    try:
+        st = os.stat(MESSAGES)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return ("", "")
+    if _postal_from_memo["key"] != key:
+        mp = {}
+        try:
+            for line in MESSAGES.read_text(errors="replace").splitlines():
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("ev") == "sent" and r.get("id"):
+                    mp[r["id"]] = (r.get("from") or "", r.get("from_host") or "")
+        except OSError:
+            return ("", "")
+        _postal_from_memo["key"], _postal_from_memo["map"] = key, mp
+    return _postal_from_memo["map"].get(mid, ("", ""))
+
+
 def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None):
     """Plant a top-level goal in the recipient's tree for a delegating message, with origin
     provenance. Idempotent by seg_id and origin.msgId (one planted goal per message). Returns nid.
@@ -8134,8 +8166,17 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             track_id = _plant_handoff_track(sender_store, link_id, edit["text"], fsid, id2name.get(fsid), seg_t, mid)
             rollup_status(sender_store, False)
             save_goals(sender, sender_store)
-            apply_courier(store, seg_id, seg_t, edit["text"],
-                          {"peer": sender, "goalId": track_id, "msgId": mid}, prompt_uuid=anchor_uuid)
+            # Origin provenance snapshots the sender's NAME (and, for federated mail, HOST) at plant
+            # time: a cross-host sender's sid resolves to nothing in this kernel's names registry, and
+            # without the snapshot the "from" chip degrades to a bare sid prefix (the user 2026-07-26).
+            origin = {"peer": sender, "goalId": track_id, "msgId": mid}
+            frm_name, frm_host = _postal_from(mid)
+            pn = id2name.get(sender) or frm_name       # live local name first; else the log's snapshot
+            if pn:
+                origin["peerName"] = pn
+            if frm_host:                               # stamped only on cross-host delivery
+                origin["peerHost"] = frm_host
+            apply_courier(store, seg_id, seg_t, edit["text"], origin, prompt_uuid=anchor_uuid)
         else:
             store["placements"][seg_id] = "fyi"        # coordinating: no goal, but mark processed
         rollup_status(store, closed.get(fsid, False))

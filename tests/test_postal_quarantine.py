@@ -186,6 +186,28 @@ class ExchangeHandleIsTokenProven(unittest.TestCase):
         box = ps.read_box("sess-web", consume=False)
         self.assertTrue(any("checking the deploy" in (m.get("body") or "") for m in box))
 
+    def test_handle_stamps_senders_origin_host_on_delivered_mail(self):
+        """Cross-host delivery stamps from_host = the sender's ORIGIN host (the forwarder's stamp when
+        the mail hopped, else the dialing peer) — the only durable record of where a federated sender
+        lives; the courier snapshots it into a planted goal's origin (the user 2026-07-26). It rides
+        the maildir header AND the messages.jsonl "sent" row."""
+        req = {"host": "MYSTERY", "epoch": 1, "proto": ps.PEER_PROTO, "presence": [], "holds": [],
+               "relays": [{"mid": "q-hx-2", "to": "web", "frm": "signal", "frm_id": "id-signal",
+                           "body": "apply the fix", "kind": "delegate"},
+                          {"mid": "q-hx-3", "to": "web", "frm": "api", "frm_id": "id-api",
+                           "body": "forwarded along", "kind": "coordinate", "origin": "FARHOST"}],
+               "acks": [], "bounces": [], "wait": False}
+        ps.peer_update({"host": "FARHOST", "port": 47102, "up": True, "trust": "trusted"})
+        resp, status = ps.peer_exchange_handle(req)
+        self.assertEqual(status, 200)
+        box = {m["body"]: m for m in ps.read_box("sess-web", consume=False)}
+        self.assertEqual(box["apply the fix"]["from_host"], "MYSTERY", "direct relay → the dialer's host")
+        self.assertEqual(box["forwarded along"]["from_host"], "FARHOST", "hopped mail → the TRUE origin")
+        rows = [json.loads(l) for l in (ps.TLDIR / "messages.jsonl").read_text().splitlines()]
+        sent = {r["from"]: r for r in rows if r.get("ev") == "sent" and r.get("from_host")}
+        self.assertEqual(sent["signal"]["from_host"], "MYSTERY")
+        self.assertEqual(sent["api"]["from_host"], "FARHOST")
+
 
 class QuarantineDecide(unittest.TestCase):
     def setUp(self):
@@ -207,6 +229,9 @@ class QuarantineDecide(unittest.TestCase):
         box = ps.read_box("sess-web", consume=False)
         self.assertTrue(any("original text" in (m.get("body") or "") for m in box),
                         "approve delivers the held message")
+        approved = next(m for m in box if "original text" in (m.get("body") or ""))
+        self.assertEqual(approved["from_host"], "TESTHOST",
+                         "approve replays the trusted deliver, origin-host stamp included")
 
     def test_approve_with_edited_text(self):
         ps._relay_in("TESTHOST", _relay("q-appr-2", body="raw peer text"))
