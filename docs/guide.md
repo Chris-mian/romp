@@ -222,7 +222,15 @@ is one click and it returns with the trust level you last gave it.
 
 #### Mail across linked machines
 
-Each linked machine carries a trust level that governs its mail; see
+Each linked machine carries a trust level, set on its row, that decides what
+happens to mail arriving from it:
+
+- **trusted** — delivered straight to your sessions.
+- **directed**, the default — held for your approval as a needs-you card.
+- **isolated** — no mail either way; its sessions still appear in your
+  interface.
+
+Which to choose, and what each one guards against, is in
 [Security and trust](#security-and-trust).
 
 Machines that a linked machine can reach appear to you too, under **Reachable
