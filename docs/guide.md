@@ -183,12 +183,17 @@ interface. A linked machine's sessions appear as `host:name` tabs and timeline
 lanes beside your local ones, its cards share the feed, and its sessions message
 yours, so an agent on your desktop can hand work to one on the server.
 
-Two controls do the linking, one per direction, both on the machine's row in the
-network popover. **Attach** brings that machine into your interface: its
-sessions, its cards, and mail flowing both ways over the one connection.
-**Share my sessions there** sends yours the other way, so that machine's
-interface shows your sessions too. You need the second only when the other
-machine cannot reach you.
+You link machines from the network popover, which opens from the button at the
+bottom right beside the settings gear:
+
+![The network button](assets/guide/network-icon.png){ width="72" }
+
+Every machine gets a row there, with two controls on it, one per direction.
+**Attach** brings that machine into your interface: its sessions, its cards, and
+mail flowing both ways over the one connection. **Share my sessions there** sends
+yours the other way, so that machine's interface shows your sessions too. Use the
+second when that machine has no way to `ssh` to yours, so it cannot attach you
+itself, which is the usual case if you work from a laptop.
 
 #### Attach a Romp kernel on another machine
 
@@ -201,11 +206,8 @@ on. Your kernel opens the connection.
    opens the connection in the background, so a password or passphrase prompt
    stops it; set up key-based login if you need to. Any target you could type
    after `ssh` works, including a `~/.ssh/config` alias.
-3. **Attach it from your interface.** Click the network button, at the bottom
-   right beside the settings gear, then **+ Add a host**, type the ssh target,
-   and click **Attach**.
-
-![The network button](assets/guide/network-icon.png){ width="72" }
+3. **Attach it from your interface.** Open the network popover, click **+ Add a
+   host**, type the ssh target, and click **Attach**.
 
 The machine appears as a row with a live status, and Romp reads its kernel's
 access token over ssh so your browser can authorize against it. A row reading
@@ -215,10 +217,11 @@ remote kernel by itself, since a stopped one may be stopped on purpose.
 Detaching keeps the machine under **Previously attached**, so re-linking later
 is one click and it returns with the trust level you last gave it.
 
-#### Share your sessions with a machine that cannot reach you
+#### Share your sessions with a machine that cannot ssh to yours
 
 A laptop moves between networks and usually sits behind a router that accepts no
-incoming connections, so nothing can attach to it. Work from the laptop instead:
+incoming connections, so nothing can `ssh` to it and nothing can attach it. Work
+from the laptop instead:
 
 1. **Attach the always-on machine** you want your sessions to appear on,
    following the steps above.
