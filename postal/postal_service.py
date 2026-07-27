@@ -1054,7 +1054,7 @@ class Handler(BaseHTTPRequestHandler):
             mid = str(data.get("mid") or "")       # blocked card via the kernel; approve delivers, deny drops
             action = str(data.get("action") or "").strip().lower()
             text = data.get("text")                # optional human-edited body for approve
-            ok, err = quarantine_decide(mid, action, text)
+            ok, err = quarantine_decide(mid, action, text, feedback=data.get("feedback"))
             return self._send({"ok": ok} if ok else {"ok": False, "error": err}, 200 if ok else 400)
         self._send({"error": "not found"}, 404)
 
@@ -1557,16 +1557,31 @@ def quarantine_del(mid):
     except OSError:
         return False
 
-def quarantine_decide(mid, action, text=None):
+def quarantine_decide(mid, action, text=None, feedback=None):
     """Approve (deliver, optionally with human-edited text) or deny (drop) a held message. Returns
     (ok, error). Approve replays the deliver() the gate would have run for a trusted peer, so the
     message lands as normal postal mail (from-attribution intact). The mid was already peer_seen'd at
-    hold time, so the sender never resends regardless of the verdict."""
+    hold time, so the sender never resends regardless of the verdict.
+
+    `feedback` (the user 2026-07-26): an optional note back to the SENDER on a deny — parked in the
+    origin host's outbox as ordinary store-and-forward mail from the postal service (so the sender's
+    agent learns why instead of waiting forever), delivered on the next exchange and judged by the
+    origin host's own trust gate like any inbound mail."""
     rec = quarantine_get(mid)
     if rec is None:
         return False, "no held message '%s'" % mid
     if action == "deny":
         quarantine_del(mid)
+        note = " ".join(str(feedback or "").split())
+        if note and rec.get("origin") and rec.get("frm"):
+            gist = " ".join(str(rec.get("body") or "").split())[:60]
+            body = ('Your message to %s ("%s%s") was reviewed there and declined — it was not '
+                    "delivered. Note from the reviewer: %s"
+                    % (rec.get("to") or "?", gist, "…" if len(gist) == 60 else "", note))
+            fb_mid = _unique()
+            outbox_put(rec["origin"], {"mid": fb_mid, "to": rec["frm"], "frm": "Romp Postal Service",
+                                       "frm_id": "", "body": body, "kind": "coordinate"})
+            _peer_wake(rec["origin"]).set()
         return True, None
     if action == "approve":
         body = str(text) if (text is not None and str(text).strip()) else (rec.get("body") or "")
