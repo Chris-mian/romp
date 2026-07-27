@@ -70,7 +70,7 @@ teardown() { rm -rf "$TEST_DIR"; }
 @test "romp --serve: removed — rejected as unknown, writes no state" {
     run "$ROMP_SCRIPT" --serve on
     [ "$status" -ne 0 ]
-    [[ "$output" == *"Unknown option"* ]]
+    [[ "$output" == *"unknown option"* ]]
     [ ! -f "$XDG_STATE_HOME/romp/serve-host" ]
 }
 
