@@ -10746,7 +10746,15 @@ def build_feed(now, tmux=None):
                 psid, gid = o["peer"], o.get("goalId")
                 sgoal = jd.load_goals(psid).get("nodes", {}).get(gid) if gid else None
                 if sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared") and gid not in cleared:
-                    origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
+                    # Name resolution: the live names registry first (a local sender may have been
+                    # renamed), then the courier's plant-time snapshot (the only source for a
+                    # FEDERATED sender, whose sid this kernel can't resolve), then the sid stub.
+                    # peerHost renders as the same quiet "host:" prefix remote sessions wear on the
+                    # timeline (host-prefix.ts) — a local resolve means a local sender, no host.
+                    pname = _name_of(psid)
+                    origin = {"peer": pname or o.get("peerName") or psid[:8],
+                              "peerHost": ("" if pname else o.get("peerHost") or ""),
+                              "peerSid": psid, "color": _name_color(psid)}
             await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent

@@ -216,12 +216,16 @@ def _tl_append(fname, obj):
     except Exception:
         pass
 
-def deliver(to_id, from_name, from_id, body, park=False, kind=""):
+def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host=""):
     # park=True marks a HANDOFF parked for a session that's currently dead. The
     # maildir is keyed by the session UUID (which `romp resume` reuses), so the
     # message simply waits on disk until that session is revived — delivered then,
     # ignored forever if it never returns. Parked mail is also exempt from the
     # orphan sweep (see _sweep_orphans), so it persists indefinitely.
+    # from_host: the sender's ORIGIN host for cross-host (federated) mail, "" for local. A foreign
+    # from_id resolves to nothing in the recipient kernel's names registry, so this is the only
+    # durable record of where the sender lives — the courier snapshots it into a planted goal's
+    # origin so the "from" chip can say host:name instead of a bare sid prefix (the user 2026-07-26).
     mb = _mailbox(to_id)
     name = _unique()
     tmp = mb / "tmp" / name
@@ -230,6 +234,8 @@ def deliver(to_id, from_name, from_id, body, park=False, kind=""):
         hdr += "X-Park: 1\n"
     if kind:
         hdr += "X-Kind: %s\n" % kind                # sender-declared delegate|coordinate|question (2026-07-08)
+    if from_host:
+        hdr += "X-From-Host: %s\n" % from_host
     tmp.write_text(hdr + "\n" + body + "\n")
     tmp.rename(mb / "new" / name)   # atomic within the same filesystem
     _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
@@ -241,6 +247,8 @@ def deliver(to_id, from_name, from_id, body, park=False, kind=""):
         ev["park"] = True
     if kind:
         ev["kind"] = kind                            # additive (consumer contract above)
+    if from_host:
+        ev["from_host"] = from_host                  # additive (consumer contract above)
     _tl_append("messages.jsonl", ev)
     return name   # the message id (maildir filename); joins to the log + status-bar prefix
 
@@ -267,7 +275,8 @@ def read_box(sid, consume):
             meta[k.lower()] = v
         out.append({"from": meta.get("from", "?"), "from_id": meta.get("from-id", ""),
                     "date": meta.get("date", ""), "body": body.rstrip("\n"), "id": f.name,
-                    "park": bool(meta.get("x-park")), "kind": meta.get("x-kind", "")})
+                    "park": bool(meta.get("x-park")), "kind": meta.get("x-kind", ""),
+                    "from_host": meta.get("x-from-host", "")})
         if consume:
             f.rename(mb / "cur" / f.name)
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "exec", "id": f.name})
@@ -837,7 +846,8 @@ def _push(sid, agent):
         for m in msgs:
             if not restore(sid, m.get("id", "")):
                 deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""),
-                        park=m.get("park", False), kind=m.get("kind", ""))
+                        park=m.get("park", False), kind=m.get("kind", ""),
+                        from_host=m.get("from_host", ""))
         _log("push to %s deferred; %d msg(s) restored for the drain backstop" % (sid, len(msgs)))
         return False
     except Exception as e:
@@ -1567,7 +1577,8 @@ def quarantine_decide(mid, action, text=None):
             if not match:
                 return False, "recipient '%s' is no longer a live local session" % (rec.get("to") or "?")
             to_id = match[0]["id"]
-        deliver(to_id, rec.get("frm") or "?", rec.get("frmId") or "", body, kind=rec.get("kind") or "")
+        deliver(to_id, rec.get("frm") or "?", rec.get("frmId") or "", body, kind=rec.get("kind") or "",
+                from_host=rec.get("origin") or "")
         quarantine_del(mid)
         return True, None
     return False, "unknown action '%s' (approve|deny)" % action
@@ -1606,7 +1617,7 @@ def _relay_in(host, m, token_proven=False):
             trust = "trusted"                        # token-proven direct dialer, no explicit tier → deliver (see docstring)
         if trust == "trusted":
             deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
-                    kind=m.get("kind") or "")
+                    kind=m.get("kind") or "", from_host=origin)
         elif trust == "directed":
             _quarantine_put(origin, m, match[0]["id"])   # HELD for human approve/deny/edit; never injects
         # else isolated → drop: ack so the sender stops resending, but deliver nothing (no communication).

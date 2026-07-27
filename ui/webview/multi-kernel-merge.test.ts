@@ -42,6 +42,18 @@ test("prefixInbound: tabOrder order[] and tabs[].id (+ display name)", () => {
   assert.equal(out.tabs[0].name, "gpu1:a", "the tab's display name is host-prefixed too (host:name)");
 });
 
+test("prefixInbound: asks[].origin attributes the delegating sender's host (the user 2026-07-26)", () => {
+  // peerHost empty (or absent, an older kernel) → the sender is local to the card's own kernel:
+  // attribute that host and prefix peerSid so the "↪ from" click routes there.
+  const out = prefixInbound("gpu1", { type: "feed",
+    asks: [{ sid: U, name: "web", origin: { peer: "api", peerSid: V, peerHost: "" } },
+           { sid: U, name: "web", origin: { peer: "signal", peerSid: V, peerHost: "farhost" } }] });
+  assert.deepEqual(out.asks[0].origin, { peer: "api", peerSid: "gpu1:" + V, peerHost: "gpu1" });
+  // a recorded peerHost means the sender lives on some THIRD host that kernel named: keep it, and keep
+  // peerSid bare — the viewer may be that very host, where the bare uuid opens directly.
+  assert.deepEqual(out.asks[1].origin, { peer: "signal", peerSid: V, peerHost: "farhost" });
+});
+
 test("prefixInbound: display name is host-prefixed on session-bearing messages", () => {
   // a session's tab + chat header should read "gpu1:foo" so a remote session never collides visually with a
   // local same-named one. Only prefixed when a co-present id/sid marks it as a session name.
