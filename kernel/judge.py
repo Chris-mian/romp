@@ -3270,12 +3270,19 @@ def episode_last(sid):
     return rows[-1] if rows else None
 
 
-def append_episode(sid, head, fsid, t):
+def append_episode(sid, head, fsid, t, settled=None):
     """Record an observed episode head for `sid` (append-only; the caller has already established
-    this head is NEW — see the kernel's boundary tick)."""
+    this head is NEW — see the kernel's boundary tick). `settled` is the boundary's own settle
+    record (the user 2026-07-27, who found the drop invisible): the open cards dropped with the
+    cleared conversation, [{"id","text"}, ...]. It rides the row so every later surface — the
+    feed's bell notice, the chat boundary card — can say what the clear took with it, instead of
+    the cards leaving the board with nothing shown anywhere."""
     EPIDIR.mkdir(parents=True, exist_ok=True)
+    row = {"head": head, "fsid": fsid, "t": t}
+    if settled:
+        row["settled"] = settled
     with (EPIDIR / (sid + ".jsonl")).open("a") as fh:
-        fh.write(json.dumps({"head": head, "fsid": fsid, "t": t}) + "\n")
+        fh.write(json.dumps(row) + "\n")
     _episode_memo.pop(sid, None)
 
 

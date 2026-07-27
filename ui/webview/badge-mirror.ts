@@ -55,3 +55,25 @@ export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: 
   }
   return { notices, active };
 }
+
+// A /clear boundary that settled open cards (the kernel's clearNotices payload, read from the
+// episodes log's own settle record). Same episode-identity contract as the badges above: one bell
+// entry per boundary (sid + its t), so a clear that silently dropped cards is always findable in
+// the bell after the fact (the user 2026-07-27). The entry names the dropped cards and the way back
+// (Undo clear restores the batch).
+export interface ClearNoticeRow { sid: string; name: string; t: number; titles: string[]; }
+
+export function clearBoundaryNotices(rows: ClearNoticeRow[], seen: Set<string>): { notices: BadgeNotice[]; active: Set<string> } {
+  const notices: BadgeNotice[] = [];
+  const active = new Set<string>();
+  for (const r of rows) {
+    const sig = "c|" + r.sid + "|" + r.t;
+    active.add(sig);
+    if (seen.has(sig)) continue;
+    const n = r.titles.length;
+    notices.push({ kind: "cleared", sig,
+      text: r.name + " — /clear dropped " + n + " open card" + (n === 1 ? "" : "s") + ": "
+        + cap(r.titles.join(", "), 120) + " (Undo clear on the feed restores them)" });
+  }
+  return { notices, active };
+}

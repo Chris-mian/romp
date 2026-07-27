@@ -5,7 +5,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { badgeNotices, type BadgeItem } from "./badge-mirror";
+import { badgeNotices, clearBoundaryNotices, type BadgeItem, type ClearNoticeRow } from "./badge-mirror";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
@@ -56,8 +56,31 @@ test("spend-limit and prompt-too-long blocks say what they are", () => {
   assert.match(tl.text, /prompt too long/);
 });
 
+test("a /clear boundary that dropped cards logs once, naming them and the way back", () => {
+  // the user 2026-07-27: the boundary settle was fully silent — cards left the board with one
+  // stderr line. The bell entry is the durable "you saw it happen" record.
+  const rows: ClearNoticeRow[] = [{ sid: "TESTSID", name: "web", t: 1234,
+    titles: ["ship the notes-api", "tune the rate limits"] }];
+  const first = clearBoundaryNotices(rows, new Set());
+  assert.equal(first.notices.length, 1);
+  assert.equal(first.notices[0].kind, "cleared");
+  assert.match(first.notices[0].text, /^web — \/clear dropped 2 open cards: ship the notes-api, tune the rate limits/);
+  assert.match(first.notices[0].text, /Undo clear/, "the way back is in the entry itself");
+  const again = clearBoundaryNotices(rows, new Set(first.active));
+  assert.equal(again.notices.length, 0, "the same boundary never re-logs across pushes/reloads");
+});
+
+test("a NEWER boundary on the same session is a new entry — its own t keys the signature", () => {
+  const a = clearBoundaryNotices([{ sid: "TESTSID", name: "web", t: 1, titles: ["x"] }], new Set());
+  const b = clearBoundaryNotices([{ sid: "TESTSID", name: "web", t: 2, titles: ["y"] }], new Set(a.active));
+  assert.equal(b.notices.length, 1, "a fresh clear logs afresh");
+  assert.match(b.notices[0].text, /1 open card: y/);
+});
+
 test("the feed posts each notice to the shell and persists only the ACTIVE set", () => {
-  assert.match(FEED, /mirrorBadges\(incomingAsks\);/, "runs on every feed payload, against the FULL list");
+  assert.match(FEED, /mirrorBadges\(incomingAsks, Array\.isArray\(m\.clearNotices\) \? m\.clearNotices : \[\]\)/,
+    "runs on every feed payload, against the FULL list + the kernel's clear notices");
+  assert.match(FEED, /clearBoundaryNotices\(clears, seenSet\)/, "clear drops ride the same seen-set");
   assert.match(FEED, /window\.parent\?\.postMessage\(\{ romp: "notify", kind: n\.kind, text: n\.text \}, "\*"\)/);
   assert.match(FEED, /localStorage\.setItem\(BADGE_SEEN_KEY, JSON\.stringify\(Array\.from\(active\)\)\)/,
     "active-only persistence is what re-arms a cleared badge and bounds the store");

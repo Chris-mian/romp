@@ -9817,7 +9817,11 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         if boundary:
             events.insert(0, {"kind": "clear", "uuid": "clear:%s" % (boundary.get("head") or boundary.get("t")),
                               "ts": iso(boundary["t"]) if boundary.get("t") else None,
-                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows)})
+                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows),
+                              # the open cards the boundary settle dropped (the episode row's own
+                              # settle record) — the card names them so the drop is visible in the
+                              # chat too, not only in the feed's bell (the user 2026-07-27)
+                              "dropped": [d.get("text") or "" for d in (boundary.get("settled") or [])] or None})
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
@@ -9998,15 +10002,20 @@ def _episode_boundary_check(sid, path, now):
     last = jd.episode_last(sid)      # either way the recorded episode is still the current one
     if last is not None and last.get("head") == head["uuid"]:
         return
-    jd.append_episode(sid, head["uuid"], Path(path).stem, head["t"] or int(now))
+    tops, nodes = [], {}
+    if last is not None:             # a real boundary (not the seeding first look): what dies with it?
+        store = jd.load_goals(sid)
+        nodes, status = store.get("nodes", {}), store.get("status", {})
+        tops = [nid for nid, nd in nodes.items()
+                if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"
+                and not (nd.get("nodeComplete") or status.get(nid) == "completed")]
+    # The settle summary rides the episode row itself, so the drop is never silent (the user
+    # 2026-07-27): the feed's bell notice and the chat boundary card both read it back from here.
+    settled = [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops]
+    jd.append_episode(sid, head["uuid"], Path(path).stem, head["t"] or int(now), settled=settled or None)
     if last is None:
         return                       # first observation SEEDS the log; a boundary needs a prior recorded
     #                                  episode (so deploying this never mass-settles existing sessions)
-    store = jd.load_goals(sid)
-    nodes, status = store.get("nodes", {}), store.get("status", {})
-    tops = [nid for nid, nd in nodes.items()
-            if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"
-            and not (nd.get("nodeComplete") or status.get(nid) == "completed")]
     if not tops:
         return
     p = jd.STATE / "cleared.jsonl"
@@ -10773,6 +10782,27 @@ def _card_warn_rows(rows, fsid, subtree, placements, cap=20):
     return out[-cap:]
 
 
+def _boundary_clear_notices(alive):
+    """The newest /clear boundary that SETTLED cards, per living session — read straight from the
+    episodes log's own settle record (the authoritative row, written at the boundary). The feed
+    mirrors each into the shell's notification bell exactly once (client seen-set), so a clear that
+    dropped open cards is always visible after the fact instead of the cards silently leaving the
+    board (the user 2026-07-27). Newest-only bounds the payload; episode_rows is an mtime memo, so
+    this is cheap per push."""
+    out = []
+    for s in alive:
+        try:
+            rows = jd.episode_rows(s["sid"])
+        except Exception:
+            continue
+        for r in reversed(rows):
+            if r.get("settled"):
+                out.append({"sid": s["sid"], "name": s["name"], "t": r.get("t") or 0,
+                            "titles": [str(d.get("text") or "") for d in r["settled"]]})
+                break
+    return out
+
+
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -11452,6 +11482,8 @@ def build_feed(now, tmux=None):
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
             "order": _session_order(),
+            # /clear boundary settles, newest per session → the bell logs each once (the user 2026-07-27)
+            "clearNotices": _boundary_clear_notices(alive),
             "canUndoClear": len(cleared) > 0}
 
 
