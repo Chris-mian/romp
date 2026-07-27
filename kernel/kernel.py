@@ -4148,30 +4148,30 @@ _TMUX = TmuxBackend()
 
 
 def _unify_model_labels(rows):
-    """Make every session in the fleet's live map show the SAME display name for the SAME model — so a
-    session on the version-less best-effort label ("Opus", from a /model switch that hasn't run a turn
-    yet, incl. a stale-badge heal) borrows the fleet's real versioned name ("Opus 4.8") when another live
-    session is already reporting it (the user 2026-07-03, who asked why some say Opus and others Opus 4.8).
-    Family = the model's first word (Opus/Opus 4.8 → 'opus'); the VERSIONED variant (has a space) wins.
-    Display-only + in place; a family no live session runs a versioned variant of just keeps its short
-    label. Never merges across families, so it can't relabel one model as another."""
-    best = {}                                         # family -> the richest (versioned) display name seen
+    """Give a version-less best-effort label ("Opus", from a /model switch or new session that hasn't run
+    a turn yet, incl. a stale-badge heal) the fleet's real versioned name ("Opus 5") when the fleet knows
+    it unambiguously (the user 2026-07-03, who asked why some say Opus and others Opus 4.8).
+    Family = the model's first word (Opus/Opus 5 → 'opus'). Display-only + in place. Two hard rules
+    (the user 2026-07-27, during the Opus 4.8 → 5 transition):
+    - A VERSIONED label is ground truth (that session's own turns reported it) and is NEVER rewritten.
+      The old code relabeled everything to the family's "richest" name, its tiebreak preferred the longer
+      string, and "Opus 4.8" beats "Opus 5" — so sessions genuinely on Opus 5 displayed as 4.8.
+    - A bare label borrows only when the fleet runs exactly ONE versioned variant of that family. During
+      a version transition the fleet runs two, a bare "Opus" is genuinely ambiguous (a fresh session
+      resolves the alias to the NEW version, not the fleet's dominant one), so it stays bare rather than
+      guessing wrong."""
+    variants = {}                                     # family -> set of versioned display names seen live
     for r in rows.values():
         m = (r.get("model") or "").strip()
-        if not m:
-            continue
-        fam = m.split()[0].lower()
-        cur = best.get(fam)
-        # prefer a versioned name (has a space, e.g. "Opus 4.8") over a bare family word ("Opus")
-        if cur is None or (" " in m and " " not in cur) or (" " in m and len(m) > len(cur)):
-            best[fam] = m
+        if " " in m:
+            variants.setdefault(m.split()[0].lower(), set()).add(m)
     for r in rows.values():
         m = (r.get("model") or "").strip()
-        if not m:
+        if not m or " " in m:                         # versioned = that session's own report; keep it
             continue
-        rich = best.get(m.split()[0].lower())
-        if rich and rich != m:
-            r["model"] = rich
+        v = variants.get(m.lower())
+        if v and len(v) == 1:
+            r["model"] = next(iter(v))
 
 
 class Sessions:
