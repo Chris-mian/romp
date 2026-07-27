@@ -701,6 +701,28 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._msg_summaries = saved
 
+    def test_postal_card_never_wears_the_literal_unknown_sender(self):
+        """A sender that couldn't self-name at send time (pre-fix forked sessions, older peers) used to
+        render a name pill reading "unknown" (the user 2026-07-27). The card resolves the sid locally
+        when it can, else falls to host:sid-stub — informative, never the bare word."""
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {}
+        try:
+            inc = [{"kind": "user", "md": "romp-msg-id: m10", "ts": T0, "uuid": "u3"}]
+            fid = "abcdef00-1234-0000-0000-000000000000"
+            idx = {"m10": {"from": "unknown", "fromId": fid, "fromHost": "TESTHOST2",
+                           "body": "the sensors are live", "id": "m10", "t": T0, "park": None}}
+            card = km._hydrate_postal(inc, idx)[0]
+            self.assertEqual(card["peer"], "TESTHOST2:abcdef00",
+                             "an unresolvable foreign sender reads host:sid-stub, not 'unknown'")
+            (jd.NAMES / fid).write_text("signalsess\t/tmp/notes-api\t#ff8800\n")
+            card = km._hydrate_postal(inc, idx)[0]
+            self.assertEqual(card["peer"], "signalsess",
+                             "a locally-resolvable sender sid wins over the stub")
+        finally:
+            km._msg_summaries = saved
+            (jd.NAMES / fid).unlink()
+
     def test_unmuting_fast_forwards_the_planner_so_it_does_not_backfill(self):
         # the user 2026-06-25: re-enabling task tracking must NOT retro-create a burst of goals for the work
         # that happened while muted. Unmuting calls jd.fast_forward_placements (seals the gap); muting must not.

@@ -139,12 +139,32 @@ def _self_id():
     not in a romp session. No tmux fallback: the bus never shells tmux; the env var IS the designed identity."""
     return (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip() or None
 
+def _self_row():
+    """THIS session's live agent row. CLAUDE_CODE_SESSION_ID is the CURRENT transcript fsid, and a
+    /clear or resume fork moves that off the stable romp sid every store is keyed by (names registry,
+    mailboxes, working notes, session flags) — so a forked session that trusted the env var mailed as
+    "unknown", published its working note under an id no peer could see, and read an EMPTY mailbox
+    (the user 2026-07-27). Resolve through the kernel's sessions seam instead: an exact id match
+    first, else the row whose lastSid is our fsid (the SDK registry's authoritative stable→current
+    join, published on every /sessions row). None when not a romp session or the kernel is down."""
+    sid = _self_id()
+    if not sid:
+        return None
+    agents = local_agents()
+    return (next((a for a in agents if a.get("id") == sid), None)
+            or next((a for a in agents if a.get("lastSid") == sid), None))
+
 def my_id():
-    return _self_id()
+    row = _self_row()
+    return row["id"] if row else _self_id()
 
 def my_name():
-    # Resolve the NAME from our real id (names registry) so name + id never disagree — same reason as
-    # _self_id. None when not in a romp session (no tmux fallback: the bus never shells tmux).
+    # The live agent row first (it tracks renames AND survives transcript forks); the names registry as
+    # the kernel-down fallback. None when not in a romp session (no tmux fallback: the bus never shells
+    # tmux).
+    row = _self_row()
+    if row and row.get("name"):
+        return row["name"]
     sid = _self_id()
     if not sid:
         return None
@@ -421,6 +441,7 @@ def local_agents():
             continue
         res.append({"name": s.get("name") or sid[:8], "id": sid, "remote": False,
                     "working": s.get("working", ""), "dir": s.get("dir", ""),
+                    "lastSid": s.get("lastSid", ""),   # the session's CURRENT transcript fsid (self-identity join)
                     "state": s.get("state", "")})   # state: working/idle/waiting/... → working-note freshness
     return res
 
