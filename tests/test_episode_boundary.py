@@ -132,6 +132,16 @@ class EpisodeBoundaryTest(unittest.TestCase):
         rows = jd.episode_rows(SID)
         self.assertEqual([r["head"] for r in rows], ["root1", "root2"])
         self.assertEqual(rows[1]["fsid"], "aaaaaaaa-0000-0000-0000-000000000001")
+        # the boundary's OWN settle record rides the log as an ANNOTATION row keyed to its head
+        # (the user 2026-07-27): the feed's bell notice and the chat boundary card read back what
+        # the clear took, so the settle is never invisible. A separate row, never a field on the
+        # head row — seed-vs-boundary is only decided after the head row lands (the writer race),
+        # so a seed row must never be able to claim a settle.
+        self.assertTrue(all("settled" not in r for r in rows), "head rows never carry the settle")
+        ann = jd.episode_settles(SID).get("root2")
+        self.assertIsNotNone(ann, "the settle annotation is keyed to the boundary head")
+        self.assertEqual({d["id"] for d in ann["settled"]}, {self.g("g1"), self.g("g3")})
+        self.assertTrue(all(d.get("text") for d in ann["settled"]), "titles ride along for the notices")
 
         store = jd.load_goals(SID)
         g = self.g
@@ -148,6 +158,26 @@ class EpisodeBoundaryTest(unittest.TestCase):
         rows = self._cleared_rows()
         self.assertEqual({r["id"] for r in rows}, {g("g1"), g("g3")})
         self.assertEqual(len({r["t"] for r in rows}), 1)
+
+    def test_boundary_settle_feeds_the_bell_notice(self):
+        # build_feed ships the newest settled boundary per living session (clearNotices) so the
+        # shell's bell logs the drop exactly once (client seen-set) — a /clear must never take
+        # cards off the board with nothing shown anywhere (the user 2026-07-27)
+        self._store()
+        anchor = self.proj / (SID + ".jsonl")
+        _write_jsonl(anchor, [_rec("root1")])
+        km._episode_boundary_check(SID, str(anchor), NOW)
+        self.assertEqual(km._boundary_clear_notices([{"sid": SID, "name": "web"}]), [],
+                         "a seeded-but-never-cleared session ships no notice")
+        fork = self.proj / "aaaaaaaa-0000-0000-0000-000000000004.jsonl"
+        _write_jsonl(fork, [_rec("root2", ts="2026-01-02T00:00:00Z")])
+        km._episode_boundary_check(SID, str(fork), NOW)
+        notices = km._boundary_clear_notices([{"sid": SID, "name": "web"}])
+        self.assertEqual(len(notices), 1)
+        n = notices[0]
+        self.assertEqual((n["sid"], n["name"]), (SID, "web"))
+        self.assertEqual(set(n["titles"]), {self.g("g1"), self.g("g3")})
+        self.assertTrue(n["t"], "the boundary's own t keys the bell's once-only signature")
 
     def test_resume_fork_is_not_a_boundary(self):
         self._store()

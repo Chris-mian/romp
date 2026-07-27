@@ -21,7 +21,7 @@ const SDK = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk_bac
 const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
 test("the ChatEvent union carries both /clear kinds, dispatched to their renderers", () => {
-  assert.match(RENDER, /\| \{ kind: "clear"; clearedAt\?: number; episodes\?: number; ts\?: string; uuid\?: string \}/);
+  assert.match(RENDER, /\| \{ kind: "clear"; clearedAt\?: number; episodes\?: number; ts\?: string; uuid\?: string; dropped\?: string\[\] \}/);
   assert.match(RENDER, /\| \{ kind: "clearing"; ts\?: string; uuid\?: string \}/);
   assert.match(RENDER, /if \(ev\.kind === "clearing"\) return renderClearing\(\);/);
   assert.match(RENDER, /if \(ev\.kind === "clear"\) return renderClear\(ev\);/);

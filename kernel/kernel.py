@@ -9854,9 +9854,14 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         if docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode")):
             events.insert(0, sysinfo)
         if boundary:
+            # the open cards the boundary settle dropped (the settle annotation keyed to this head)
+            # — the card names them so the drop is visible in the chat too, not only in the feed's
+            # bell (the user 2026-07-27)
+            _settle = jd.episode_settles(sid).get(boundary.get("head") or "") or {}
             events.insert(0, {"kind": "clear", "uuid": "clear:%s" % (boundary.get("head") or boundary.get("t")),
                               "ts": iso(boundary["t"]) if boundary.get("t") else None,
-                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows)})
+                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows),
+                              "dropped": [d.get("text") or "" for d in (_settle.get("settled") or [])] or None})
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
@@ -10075,6 +10080,12 @@ def _episode_boundary_check(sid, path, now):
     with p.open("a") as fh:
         for nid in tops:
             fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+    # The settle's OWN record — which cards this boundary dropped — rides the episodes log as an
+    # annotation row keyed to this head, appended only on THIS settle path so the race-decided seed
+    # above can never claim one (the user 2026-07-27, who found the drop invisible): the feed's bell
+    # notice and the chat boundary card read it back.
+    jd.append_episode_settle(sid, head["uuid"], int(t),
+                             [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops])
     _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
     sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
@@ -10833,6 +10844,27 @@ def _card_warn_rows(rows, fsid, subtree, placements, cap=20):
     return out[-cap:]
 
 
+def _boundary_clear_notices(alive):
+    """The newest /clear boundary that SETTLED cards, per living session — read from the episodes
+    log's settle annotations (the authoritative record, written on the settle path). The feed
+    mirrors each into the shell's notification bell exactly once (client seen-set), so a clear that
+    dropped open cards is always visible after the fact instead of the cards silently leaving the
+    board (the user 2026-07-27). Newest-only bounds the payload; the log read is an mtime memo, so
+    this is cheap per push."""
+    out = []
+    for s in alive:
+        try:
+            settles = jd.episode_settles(s["sid"])
+        except Exception:
+            continue
+        if not settles:
+            continue
+        r = max(settles.values(), key=lambda x: x.get("t") or 0)
+        out.append({"sid": s["sid"], "name": s["name"], "t": r.get("t") or 0,
+                    "titles": [str(d.get("text") or "") for d in (r.get("settled") or [])]})
+    return out
+
+
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -11512,6 +11544,8 @@ def build_feed(now, tmux=None):
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
             "order": _session_order(),
+            # /clear boundary settles, newest per session → the bell logs each once (the user 2026-07-27)
+            "clearNotices": _boundary_clear_notices(alive),
             "canUndoClear": len(cleared) > 0}
 
 

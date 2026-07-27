@@ -13,7 +13,7 @@ import { hostNameNodes, hostPartsNodes } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
-import { badgeNotices } from "./badge-mirror";
+import { badgeNotices, clearBoundaryNotices, type ClearNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
@@ -1682,7 +1682,9 @@ function logPhrase(r: NodeLogRow): string {
   if (r.kind === "unblock") return r.src === "user" ? "you answered" : "unblocked";
   if (r.kind === "done") return r.src === "user" ? "you checked it off" : "marked done";
   if (r.kind === "reopen") return "reopened";
-  if (r.kind === "clear") return "you cleared it";
+  // a clear is only "you" when the user did it — the episode boundary clears with src "romp"
+  // when a /clear drops the conversation's open cards (the user 2026-07-27)
+  if (r.kind === "clear") return r.src === "romp" ? "dropped with the cleared conversation" : "you cleared it";
   if (r.kind === "dismiss") return "dismissed";
   if (r.kind === "settle") return "settled";
   return r.kind || "updated";
@@ -3085,13 +3087,18 @@ function pipeBanner(up: boolean, queued: number): void {
 // the {romp:'notify'} post the shell's bell listens for. Storing only the ACTIVE set is what re-arms a
 // cleared badge and keeps the store from growing: a card that left the payload takes its sigs with it.
 const BADGE_SEEN_KEY = "romp:cardNotified";
-function mirrorBadges(items: AskItem[]): void {
+function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[]): void {
   let seen: string[] = [];
   try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
-  const { notices, active } = badgeNotices(items, new Set(seen));
-  for (const n of notices) {
+  const seenSet = new Set(seen);
+  const badges = badgeNotices(items, seenSet);
+  // /clear boundary settles share the same seen-set + bell (the user 2026-07-27): a clear that
+  // dropped open cards logs one durable entry naming them, so the drop is never silent.
+  const boundary = clearBoundaryNotices(clears, seenSet);
+  for (const n of [...badges.notices, ...boundary.notices]) {
     try { window.parent?.postMessage({ romp: "notify", kind: n.kind, text: n.text }, "*"); } catch { /* no shell (VS Code view) */ }
   }
+  const active = new Set([...badges.active, ...boundary.active]);
   try { localStorage.setItem(BADGE_SEEN_KEY, JSON.stringify(Array.from(active))); } catch { /* storage full */ }
 }
 
@@ -3133,7 +3140,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
-    mirrorBadges(incomingAsks);   // card trouble chips also log in the shell's bell (chips stay on the cards)
+    mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : []);   // card trouble chips + /clear drops also log in the shell's bell (chips stay on the cards)
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
     if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;

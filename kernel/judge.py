@@ -3193,7 +3193,7 @@ def _sdk_last_sid(sid):
 # on this log, and it is the only durable map from a session to its past episodes' transcript files.
 
 _head_memo = {}      # transcript path -> {"uuid","root","t"} — a file's head record is immutable
-_episode_memo = {}   # sid -> (log mtime, last row or None)
+_episode_memo = {}   # sid -> (log mtime, head rows, settle annotations by head)
 
 
 def transcript_head(path):
@@ -3233,20 +3233,19 @@ def transcript_head(path):
     return head
 
 
-def episode_rows(sid):
-    """Every recorded episode row of `sid` ([{"head","fsid","t"}, ...], oldest first; [] if none).
-    Row 0 is the episode current at first observation; every later row is a /clear boundary.
+def _episode_read(sid):
+    """One memoized read of the episodes log: (head rows oldest-first, settle annotations by head).
     mtime-memoized like _sdk_last_sid — the log only grows at a /clear, so per-pass reads are a stat."""
     p = EPIDIR / (sid + ".jsonl")
     try:
         mt = p.stat().st_mtime
     except OSError:
         _episode_memo.pop(sid, None)
-        return []
+        return [], {}
     hit = _episode_memo.get(sid)
     if hit is not None and hit[0] == mt:
-        return hit[1]
-    rows = []
+        return hit[1], hit[2]
+    rows, settles = [], {}
     try:
         for line in p.read_text(errors="replace").splitlines():
             line = line.strip()
@@ -3258,10 +3257,26 @@ def episode_rows(sid):
                 continue
             if isinstance(r, dict) and r.get("head"):
                 rows.append(r)
+            elif isinstance(r, dict) and r.get("settleFor"):
+                settles[r["settleFor"]] = r           # newest annotation per boundary head wins
     except OSError:
         pass
-    _episode_memo[sid] = (mt, rows)
-    return rows
+    _episode_memo[sid] = (mt, rows, settles)
+    return rows, settles
+
+
+def episode_rows(sid):
+    """Every recorded episode HEAD row of `sid` ([{"head","fsid","t"}, ...], oldest first; [] if
+    none). Row 0 is the episode current at first observation; every later row is a /clear boundary.
+    Settle annotation rows (see append_episode_settle) are not head rows and never appear here."""
+    return _episode_read(sid)[0]
+
+
+def episode_settles(sid):
+    """The boundary settle annotations of `sid` — {boundary head: {"settleFor","t","settled"}}.
+    What each /clear boundary dropped, read back by the feed's bell notice and the chat boundary
+    card (the user 2026-07-27, who found the drop invisible)."""
+    return _episode_read(sid)[1]
 
 
 def episode_last(sid):
@@ -3276,6 +3291,19 @@ def append_episode(sid, head, fsid, t):
     EPIDIR.mkdir(parents=True, exist_ok=True)
     with (EPIDIR / (sid + ".jsonl")).open("a") as fh:
         fh.write(json.dumps({"head": head, "fsid": fsid, "t": t}) + "\n")
+    _episode_memo.pop(sid, None)
+
+
+def append_episode_settle(sid, head, t, settled):
+    """Annotate boundary `head` with its OWN settle record: the open cards dropped with the cleared
+    conversation, [{"id","text"}, ...] (the user 2026-07-27, who found the drop invisible). A
+    SEPARATE append-only row, never a field on the head row, because seed-vs-boundary is decided
+    only AFTER the head row lands (the two-writer race in the kernel's boundary check) — a seed row
+    must never be able to claim a settle. episode_rows skips these rows; episode_settles reads
+    them back."""
+    EPIDIR.mkdir(parents=True, exist_ok=True)
+    with (EPIDIR / (sid + ".jsonl")).open("a") as fh:
+        fh.write(json.dumps({"settleFor": head, "t": t, "settled": settled}) + "\n")
     _episode_memo.pop(sid, None)
 
 
