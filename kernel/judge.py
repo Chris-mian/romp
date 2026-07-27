@@ -342,6 +342,16 @@ def _judge_claude_bin():
             or os.path.expanduser("~/.local/bin/claude"))
 
 
+# Hard wall-clock cap on ONE judge call (perl alarm → SIGALRM, logged as "empty stdout (exit -14)").
+# Was 45s until 2026-07-27, when an API slow patch killed a burst of healthy-but-slow calls across four
+# sessions in one morning and the coerce floor minted a card titled with the user's raw message head from
+# the wreckage. A slow call that lands beats a killed one on both cost and heal latency (the kill burns
+# the tokens AND leaves the pass to re-run next tick), so be permissive (the user 2026-07-27): the alarm
+# guards a truly hung exec, not a slow model. The subprocess timeout below it is the backstop for a perl
+# that never ran; it tracks this constant so the two can't drift apart.
+CALL_ALARM_S = 120
+
+
 def _judge_cmd(model, sys_prompt, effort=None):
     """The `claude -p` argv for ONE judge call, isolated so the model sees ONLY its own prompt. Three
     flags do it (verified by token count: a probe call drops 8334 -> ~165 input tokens):
@@ -351,7 +361,7 @@ def _judge_cmd(model, sys_prompt, effort=None):
         CLAUDE.md was otherwise still injected — privacy rules, the Romp Postal section, etc., all
         noise for a zero-tool classifier). --safe-mode keeps auth + model, so subscription billing is
         unchanged. (NOT --bare: that drops the login too.) (the user, 2026-06-16.)"""
-    cmd = ["perl", "-e", "alarm 45; exec @ARGV", _judge_claude_bin(), "-p", "--safe-mode", "--model", model,
+    cmd = ["perl", "-e", "alarm %d; exec @ARGV" % CALL_ALARM_S, _judge_claude_bin(), "-p", "--safe-mode", "--model", model,
            "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
            "--system-prompt", sys_prompt, "--exclude-dynamic-system-prompt-sections",
            "--output-format", "json"]                 # stdout = {"result", "usage", "duration_ms", "total_cost_usd"}
@@ -573,7 +583,8 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
         try:
             os.makedirs(JUDGE_SCRATCH, exist_ok=True)   # tmpfiles-cleaned /tmp: recreate per call
             p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
-                               capture_output=True, text=True, cwd=JUDGE_SCRATCH, env=env, timeout=50)
+                               capture_output=True, text=True, cwd=JUDGE_SCRATCH, env=env,
+                               timeout=CALL_ALARM_S + 5)
         except Exception as e:
             # _judge_run owns ALL call-level logging (this, the error envelope below, the rate gate above)
             # so callers never double-log: to a caller every failed call is just "", and "call" rows always
@@ -3817,6 +3828,33 @@ def _heal_quote_titles(store):
     return n
 
 
+def _heal_floor_titles(fsid, store):
+    """Deterministic title heal for the coerce floor's OTHER failure shape (the user 2026-07-27): a
+    judge outage at mint time (the gister timed out too, so _prompt_gist was empty) leaves a
+    _coerce_place node wearing the verbatim message head (_seg_label) as its title — and the real
+    gist that lands in captions/ minutes later never reaches it, because nothing retitles an
+    existing node. Retitle from the persisted prompt caption once it exists: the same phrase the
+    timeline dot and the Analyzing card wear, so every surface tells one story, and no LLM call.
+    No age limit, deliberately (the user 2026-07-27: damage heals whenever the missing piece shows
+    up; only a cleared card is past caring — and a cleared node is skipped here). Recognized by the
+    coerce diary why (_COERCE_WHY, stamped on every coerced node) so pre-heal stores qualify with no
+    migration, and gated on the node STILL wearing its floor label (text == _seg_label(quote)) — a
+    planner retitle, or this heal itself, closes the gate for good. Returns the number healed."""
+    n = 0
+    for nd in store.get("nodes", {}).values():
+        if nd.get("cleared") or nd.get("why") != _COERCE_WHY:
+            continue
+        q = (nd.get("quote") or "").strip()
+        if not q or (nd.get("text") or "") != _seg_label(q):
+            continue
+        seg = (nd.get("trail") or [""])[0]              # trail[0] = the minting segment (append-only)
+        gist = _prompt_gist(fsid, seg) if seg else ""
+        if gist and gist != nd["text"]:
+            nd["text"] = gist
+            n += 1
+    return n
+
+
 def _prompt_gist(fsid, seg_id):
     """The persisted INDEX-tier gist of this segment's user message (captions/<fsid>.jsonl, id
     '<seg_id>#p', last-wins) — the same phrase the timeline dot and the Analyzing card show. '' when
@@ -3844,6 +3882,12 @@ def _followup_title(fsid, seg_id, text):
     return _prompt_gist(fsid, seg_id) or gist_llm(text) or _seg_label(text)
 
 
+# The coerce diary line, shared with _heal_floor_titles: the heal recognizes floor-minted nodes in
+# EXISTING stores by this `why` (every coerced node carries it), so old damage heals with no
+# migration and no new node marker.
+_COERCE_WHY = "kept on the board: a user message the planner tried to skip"
+
+
 def _coerce_place(menu, text, title=None):
     """Hard-guard floor: the planner returned skip for a segment carrying a real user message, which
     must never silently vanish. Place it deterministically — a step under the most recent open CARD
@@ -3860,7 +3904,7 @@ def _coerce_place(menu, text, title=None):
     card that is not waiting on the user (its whole on-menu subtree unblocked), or as its own top
     when every card is."""
     label = title or _seg_label(text)
-    why = "kept on the board: a user message the planner tried to skip"
+    why = _COERCE_WHY
     if menu:
         ids = {nd["id"] for nd in menu}
         by_id = {nd["id"]: nd for nd in menu}
@@ -4884,8 +4928,9 @@ def _plan_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
-    if _heal_quote_titles(store):                     # quote-leaked floor titles → the user's own words (no LLM)
-        save_goals(fsid, store)                       # persist even if no new units land this pass
+    if _heal_quote_titles(store) + _heal_floor_titles(fsid, store):   # floor titles (quote-leak → the user's
+        save_goals(fsid, store)                       # own words; raw-head → the landed prompt caption), both
+    #                                                   no-LLM; persist even if no new units land this pass
     # Built once, used only by the KNOWN-target branches below (delegation/nudge/followup) to hand the
     # planner that one goal's own raw history alongside its menu title (the user 2026-07-01) — no LLM
     # call, just an index over already-parsed atoms. Seam-aware (_segs) so a settle-split tail resolves.
