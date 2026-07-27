@@ -1103,7 +1103,15 @@ _romp_uuid() {
 # of letting a bare "tmux: command not found" fall out of the launcher (a fresh
 # Linux box with no tmux, the user 2026-07-27). Same no-silent-fallback rule as the
 # SDK branch above: name the fix, don't quietly do something else.
-if ! command -v tmux >/dev/null 2>&1; then
+# ROMP_TMUX_AVAILABLE overrides the probe, matching install.sh and TmuxBackend.available().
+_romp_tmux_available() {
+    case "${ROMP_TMUX_AVAILABLE-unset}" in
+        unset) command -v tmux >/dev/null 2>&1 ;;
+        ""|0)  return 1 ;;
+        *)     return 0 ;;
+    esac
+}
+if ! _romp_tmux_available; then
     echo "romp: tmux isn't installed — terminal sessions need it." >&2
     echo "  Linux: your distro's tmux package (e.g. sudo apt install tmux)    macOS: brew install tmux" >&2
     if $resume; then
