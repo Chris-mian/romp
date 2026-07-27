@@ -1,5 +1,5 @@
 site_name: Romp
-site_description: Mission control for many AI coding agents at once.
+site_description: Manages multiple Claude Code sessions, so you don't have to.
 
 site_url: https://romp-on.github.io/romp/
 repo_url: https://github.com/romp-on/romp
