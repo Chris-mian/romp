@@ -323,6 +323,13 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       .catch(() => { b.disabled = false; b.textContent = prev; });
   }
 
+  // A trust change confirms on a LATER poll, and renderList rebuilds every poll — so a snapshot
+  // fetched before the change repainted the OLD level after it, which read as "didn't hold" and
+  // invited a second click (the user 2026-07-27). Pending survives re-renders: the select shows the
+  // CHOSEN level, disabled with the accent applying cue, until a snapshot agrees (the confirming
+  // event — no timer). A refused write deletes the entry, so the next render honestly reverts.
+  const pendingTrust = new Map<string, string>();
+
   function renderList(ts: any[], known: any[] = []) {
     list.textContent = "";
     button.classList.toggle("on", ts.some((t) => t.status === "up"));
@@ -345,10 +352,23 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       dot.title = TIP[t.status] || "";
       const nm = document.createElement("span");
       nm.className = "sn-name";
-      nm.textContent = `${t.host} — ${LBL[t.status] || t.status}`
-        + (t.outOfDate ? " · different build" : "");
+      // Version drift names HOW it differs, matching the web popover: behind N (a push delivers
+      // exactly those), ahead N (a pull collects them), diverged, or different build (sha unknown
+      // here). Shas + the remote commit's date ride the tooltip (progressive disclosure).
+      let ver = "";
+      if (t.outOfDate) {
+        const bb = t.behindBy, ab = t.aheadBy;
+        ver = " · different build";
+        if (typeof bb === "number" && typeof ab === "number") {
+          ver = bb > 0 && ab > 0 ? " · diverged"
+            : ab > 0 ? ` · ahead ${ab} commit${ab === 1 ? "" : "s"}`
+            : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
+        }
+      }
+      nm.textContent = `${t.host} — ${LBL[t.status] || t.status}` + ver;
       nm.title = (TIP[t.status] || "")
-        + (t.outOfDate ? "\n\nThis machine is running a different commit than yours; Push sends this machine's committed romp there." : "");
+        + (t.outOfDate ? `\n\nRunning ${t.kernelSha || "?"}${t.kernelDate ? " from " + t.kernelDate : ""}; this machine is at ${t.localSha || "?"}.` : "")
+        + (t.outOfDate && t.checkinPeer ? " No ssh path from this machine (it checked in over its own tunnel) — sync from its own dashboard." : "");
       r.append(dot, nm);
       // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is
       // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
@@ -361,31 +381,52 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       const TRUSTW: Record<string, string> = {
         trusted: "trusted (auto-accept)", directed: "directed (held for you)", isolated: "isolated (no mail)",
       };
+      let pend = pendingTrust.get(t.host);
+      if (pend && (t.trust || "directed") === pend) { pendingTrust.delete(t.host); pend = undefined; }
       for (const lvl of ["trusted", "directed", "isolated"]) {
         const o = document.createElement("option");
         o.value = lvl; o.textContent = TRUSTW[lvl];
-        if ((t.trust || "directed") === lvl) o.selected = true;
+        if ((pend || t.trust || "directed") === lvl) o.selected = true;
         trust.appendChild(o);
       }
+      if (pend) { trust.disabled = true; trust.classList.add("sn-applying"); }
       trust.addEventListener("change", () => {
+        pendingTrust.set(t.host, trust.value);   // ack on the click; re-renders show the chosen level
         trust.disabled = true;
+        trust.classList.add("sn-applying");
         fetch(kernelUrl("/tunnels/trust"), { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ host: t.host, trust: trust.value }) })
           .then((rp) => rp.json())
-          .then((d) => { if (!(d && d.ok)) { /* the next poll re-renders the true level */ } trust.disabled = false; schedule(600); })
-          .catch(() => { trust.disabled = false; });
+          .then((d) => { if (!(d && d.ok)) pendingTrust.delete(t.host); schedule(600); })
+          .catch(() => { pendingTrust.delete(t.host); schedule(600); });
       });
       r.appendChild(trust);
+      if (pend) {
+        const pn = document.createElement("span");
+        pn.className = "sn-pend";
+        pn.textContent = "applying…";
+        r.appendChild(pn);
+      }
       // A push romp is ALREADY doing needs no button — it would only invite a duplicate of the work in
       // flight. The row shows the live phase instead (below); the manual Push returns if it fails.
-      const apx = !!(t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting"));
-      if (t.status === "up" && t.outOfDate && !apx) {
+      const apx = !!(t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting" || t.autoPush.phase === "pulling"));
+      // A checked-in host has no ssh route FROM here (Push/Pull can only fail — the tooltip says where
+      // to sync); a strictly-ahead remote gets Pull in Push's place (a push there would only be refused).
+      if (t.status === "up" && t.outOfDate && !apx && !t.checkinPeer && !t.fastPull) {
         const u = document.createElement("button");
         u.textContent = "Push";
         u.title = `Push this machine's committed romp to ${t.host} and restart its kernel, so it runs exactly this code. `
           + `Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.`;
         u.addEventListener("click", () => act("/tunnels/update", t.host, u, "Pushing…"));
         r.appendChild(u);
+      }
+      if (t.status === "up" && t.fastPull && !apx && !t.checkinPeer) {
+        const pl = document.createElement("button");
+        pl.textContent = "Pull";
+        pl.title = `Pull ${t.host}'s newer commits into this machine's romp (fast-forward only; refuses if this tree `
+          + `has uncommitted changes). This kernel keeps running the old build until you restart romp.`;
+        pl.addEventListener("click", () => act("/tunnels/pull", t.host, pl, "Pulling…"));
+        r.appendChild(pl);
       }
       if (t.status === "no-kernel") {
         const s = document.createElement("button");
@@ -461,7 +502,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       renderList(ts, (d && d.known) || []);
       // An automatic push in flight counts as busy: the button marches while romp works in the background,
       // and the poll runs fast so the phase reads live.
-      const pushing = ts.some((t: any) => t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting"));
+      const pushing = ts.some((t: any) => t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting" || t.autoPush.phase === "pulling"));
       button.classList.toggle("busy", ts.some((t: any) => busy(t.status)) || pushing);
       schedule(ts.some((t: any) => busy(t.status)) || pushing ? 600 : 3000);   // fast while mid-attach/pushing, slow keep-alive after
     }).catch((err) => {
