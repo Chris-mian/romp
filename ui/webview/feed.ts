@@ -3151,9 +3151,9 @@ function showQuarantineDialog(sender: string, to: string, body: string,
   const row = el("div", "qdlg-actions");
   box.append(title, view, row);
 
-  const cancel = () => { const c = el("button", "fdismiss fq") as HTMLButtonElement; c.textContent = "Cancel";
-    c.title = "close without deciding — the message stays held"; c.onclick = () => overlay.remove(); return c; };
-
+  // No Cancel button (the user 2026-07-26: two choices, approve or deny — this gate is only there to
+  // catch something malicious). Clicking the backdrop still closes without deciding; the message
+  // stays held either way.
   const denyStep = () => {
     title.textContent = `Deny the message from ${sender} — send a note back?`;
     const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
@@ -3165,7 +3165,7 @@ function showQuarantineDialog(sender: string, to: string, body: string,
     const bare = el("button", "fdismiss fq") as HTMLButtonElement; bare.textContent = "Deny without note";
     bare.title = "drop the message — nothing is sent back";
     bare.onclick = () => { decide("deny", "Denying…", body); overlay.remove(); };
-    row.append(withNote, bare, cancel());
+    row.append(withNote, bare);
     box.insertBefore(ta, row);
     ta.focus();
   };
@@ -3179,7 +3179,7 @@ function showQuarantineDialog(sender: string, to: string, body: string,
     const no = el("button", "fdismiss fq fq-no") as HTMLButtonElement; no.textContent = "Deny";
     no.title = "drop this message — with the option of a note back to the sender";
     no.onclick = () => denyStep();
-    row.append(ok, no, cancel());
+    row.append(ok, no);
   }
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   document.body.appendChild(overlay);
