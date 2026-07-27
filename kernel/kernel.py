@@ -4566,9 +4566,13 @@ def _start_remote_kernel(host):
 def _reap_stray_tunnels(host):
     """Kill orphaned ssh tunnel procs for `host` left by a PREVIOUS kernel or a re-attach — a kernel restart
     reparents them to init and they keep holding the -L/-R ports, so a fresh spawn would leak a second tunnel
-    (the user saw two -L ports for one host). Match our EXACT signature (our reverse-bus forward + `-N` + the
-    host as the final arg) so we never touch the user's own ssh to that host. Best-effort."""
+    (the user saw two -L ports for one host) — or worse: the respawn dies instantly on ExitOnForwardFailure
+    against the held ports, burning the whole reconnect budget and stranding the row at 'down' (a federated
+    host, 2026-07-26). Match our EXACT signature so we never touch the user's own ssh to that host: `-N` + the host
+    as the final arg + an ours-only forward — the legacy fixed-port -R to our bus, or (peer-bus mode, which
+    carries no -R) an -L whose target is our bus port. Best-effort."""
     sig_r = "-R %d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT)
+    sig_l = re.compile(r"-L \d+:127\.0\.0\.1:%d\b" % BUS_PORT)
     try:
         out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5).stdout
     except Exception:
@@ -4583,7 +4587,7 @@ def _reap_stray_tunnels(host):
             continue
         if pid == mypid:
             continue
-        if sig_r in cmd and "-N" in cmd and "-L " in cmd and cmd.rstrip().endswith(host):
+        if (sig_r in cmd or sig_l.search(cmd)) and "-N" in cmd and "-L " in cmd and cmd.rstrip().endswith(host):
             try:
                 os.kill(pid, 15)   # SIGTERM the orphaned tunnel
             except Exception:

@@ -318,6 +318,32 @@ class ReapStrayTunnels(unittest.TestCase):
             km.subprocess.run, km.os.kill = saved_run, saved_kill
         self.assertEqual(killed, [(12345, 15)], "only the TESTHOST orphan tunnel is SIGTERM'd")
 
+    def test_kills_peer_bus_orphans_with_no_reverse_forward(self):
+        # Peer-bus tunnels (the default) carry NO -R — their ours-only mark is the second -L, which
+        # forwards to OUR postal bus port. An orphan from a dead kernel held the -L ports and every
+        # respawn died on ExitOnForwardFailure, sending the row to 'down' with the budget exhausted
+        # (a federated host, 2026-07-26). The reaper must match this shape too — and still spare the user's
+        # own -N port-forward to the same host.
+        BUS = km.BUS_PORT
+        fake_ps = "\n".join([
+            "  12345 ssh -N -T -o BatchMode=yes -L 63407:127.0.0.1:29855 -L 63408:127.0.0.1:%d -- TESTHOST" % BUS,  # peer-bus orphan → kill
+            "  22222 ssh -N -T -L 63407:127.0.0.1:29855 -L 63408:127.0.0.1:%d -- otherhost" % BUS,   # other host → keep
+            "  33333 ssh -N -L 8080:127.0.0.1:80 TESTHOST",                                          # user's own forward → keep
+            "  %d ssh -N -T -L 1:127.0.0.1:29855 -L 2:127.0.0.1:%d -- TESTHOST" % (os.getpid(), BUS),  # us → keep
+        ])
+
+        class _R:
+            stdout = fake_ps
+        killed = []
+        saved_run, saved_kill = km.subprocess.run, km.os.kill
+        km.subprocess.run = lambda *a, **k: _R()
+        km.os.kill = lambda pid, sig: killed.append((pid, sig))
+        try:
+            km._reap_stray_tunnels("TESTHOST")
+        finally:
+            km.subprocess.run, km.os.kill = saved_run, saved_kill
+        self.assertEqual(killed, [(12345, 15)], "the peer-bus orphan is SIGTERM'd, nothing else")
+
 
 class SshHostSafety(unittest.TestCase):
     """A remote `host` becomes ssh's first positional arg. A host beginning with `-` (e.g.
