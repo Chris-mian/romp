@@ -20,7 +20,7 @@ The Python and shell suites are also the CI gate, across Python 3.10 to 3.13 on
 Linux; the macOS cells run on demand from the Actions tab (they are billed even
 on a public repo, so they are not part of the per-push matrix).
 
-Two things about the test environment are worth knowing, because both have
+Three things about the test environment are worth knowing, because all have
 produced confusing failures:
 
 - The bats suite takes about a minute on Linux and about fifteen on macOS. That
@@ -30,3 +30,9 @@ produced confusing failures:
   to file-derived sessions. Tests that care now pin this explicitly; if you add
   one that calls into session liveness, pin it too rather than inheriting the
   machine's state.
+- On macOS, run the bats suite with a modern bash (`brew install bash`; bats
+  picks it up via `env bash` when `/opt/homebrew/bin` precedes `/bin` on PATH).
+  The stock `/bin/bash` 3.2 does not fail a test on a mid-test `[[ ]]`
+  assertion — only the last command's status counts — so a stale assertion can
+  pass silently for months. Linux CI runs bash 5 and is the arbiter; two
+  assertions went stale exactly this way while CI was offline.
