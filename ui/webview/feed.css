@@ -281,18 +281,17 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    rail's .rail-btn.on. */
 .fask-secbtn.on { color: var(--accent); border-color: var(--accent);
   background: rgba(156, 210, 255, 0.10); font-weight: 600; }
-/* STALLED (the user 2026-07-23) — the one toggle that keeps its OWN colour in every state. The others turn
-   accent-blue when selected, which is the app's "this is the one you picked" language; a stall is not a
-   preference, it is something wrong, so it wears working-yellow (--st-working-bg, the status colour for a
-   card that is supposed to be moving). FILLED at rest, not an outline: the outline version sat as quiet as
-   its neighbours and the stall went unnoticed (the user 2026-07-23, round 2 — "so that it's noticed when
-   something is going on"). It reads like the working status chip because that is what it is: a status, not
-   a preference. Pressed adds only weight; the opened body below is the pressed cue. */
-.fask-stallbtn, .fask-stallbtn.on { color: var(--st-working-fg); background: var(--st-working-bg);
-  border-color: var(--st-working-bg); }
-.fask-stallbtn:hover, .fask-stallbtn.on:hover { color: var(--st-working-fg); background: var(--st-working-bg);
-  border-color: var(--st-working-bg); filter: brightness(1.08); }
-.fask-stallbtn.on { font-weight: 600; }
+/* STALLED — the one toggle that keeps its OWN colour in every state. The others turn accent-blue when
+   selected, which is the app's "this is the one you picked" language; a stall is not a preference, it
+   is something wrong. It wears the PROBLEM-CHIP outline the card's other trouble chips wear (yellow
+   text + translucent yellow border on transparent, the .fask-warnchip / .fask-interrupted family) —
+   the user 2026-07-27, superseding the 2026-07-23 solid fill, which broke ranks with every other
+   trouble chip. Selected (its note showing below) deepens WITHIN the same vocabulary: a yellow wash +
+   full-strength border + weight — clearly pressed, never the solid working-status fill. */
+.fask-stallbtn { color: #ffd166; background: transparent; border-color: rgba(255, 209, 102, 0.6); }
+.fask-stallbtn:hover { color: #ffd166; border-color: #ffd166; background: rgba(255, 209, 102, 0.14); }
+.fask-stallbtn.on, .fask-stallbtn.on:hover { color: #ffd166; border-color: #ffd166;
+  background: rgba(255, 209, 102, 0.18); font-weight: 600; }
 .fask-secs .fask-distill { min-width: 0; margin: 0; }
 /* the background body is typographically IDENTICAL to the summary (.fask-distill) — same font size,
    line height, color, opacity (the user 2026-07-02: one text style for both sections) */
