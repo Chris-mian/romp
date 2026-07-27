@@ -42,6 +42,46 @@ class RefreshButtonDecoupledTest(unittest.TestCase):
         self.assertNotRegex(_gear_src(), r"checked;[^\n]*applyDebug")
 
 
+class RestartReloadRaceTest(unittest.TestCase):
+    """The restart flow reloads on the NEW kernel's answer, never a bare 200 (the user 2026-07-27).
+
+    The old poll reloaded on the first /healthz 200 — but the OLD kernel keeps answering for a beat
+    after the /restart ack (the manager SIGTERMs it asynchronously), so the reload routinely landed on
+    a dying server and the browser sat on its connection-error page until a manual refresh. Now the
+    page embeds the boot id it was served under, /healthz stamps every answer with X-Romp-Boot, and
+    the poll reloads only when the id FLIPS — an exact process-identity event, not a timing guess.
+    While it waits, the romp boot splash is rebuilt over the page (the loading rule), with a reload
+    backstop so the splash can never trap the user."""
+
+    def test_reload_waits_for_the_boot_id_to_flip(self):
+        import json
+        html = km._landing()
+        # the page knows its own kernel's boot id, and the poll compares against it
+        self.assertIn("b!==" + json.dumps(km._BOOT_ID), html)
+        self.assertIn("r.headers.get('X-Romp-Boot')", html)
+        # both splice placeholders were resolved
+        self.assertNotIn("__ROMP_BOOT__", html)
+        self.assertNotIn("__ROMP_LOADER__", html)
+        # the racy first-200 reload is gone
+        self.assertNotIn("if(r&&r.ok)location.reload()", html)
+
+    def test_wait_wears_the_boot_splash(self):
+        import json
+        html = km._landing()
+        # the splash element is rebuilt (the boot JS removed it from the DOM after startup) from the
+        # SAME server-rendered loader markup the boot splash uses — one source, no drifting copy
+        self.assertIn("boot.id='romp-boot'", html)
+        self.assertIn("boot.innerHTML=" + json.dumps(km._loader_inner()), html)
+
+    def test_healthz_and_restart_carry_the_boot_id(self):
+        # source-level pins (the HTTP-level check lives in test_kernel.py's ServeSecurity): /healthz
+        # stamps X-Romp-Boot, and the /restart ack reports which kernel acked
+        import inspect
+        src = inspect.getsource(km.Handler)
+        self.assertIn('"X-Romp-Boot": _BOOT_ID', src)
+        self.assertIn('"restarting": True, "boot": _BOOT_ID', src)
+
+
 if __name__ == "__main__":
     unittest.main()
 
