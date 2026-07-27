@@ -4550,6 +4550,18 @@ def _bus_remote_holds():
     return _bus_peers_snap().get("remoteHolds") or []
 
 
+def _bus_peer_tiers():
+    """{host: tier} — how each peer bus holds THIS machine's mail, from its exchange declaration
+    (bus my_tier_of, gossiped every exchange). Display-only: lets the popover show both directions
+    of a trust pair, so a half-open pair is visible before mail quarantines (the user 2026-07-26).
+    Empty when the bus is down, peering is off, or a peer predates the tier field."""
+    out = {}
+    for h, p in (_bus_peers_snap().get("peers") or {}).items():
+        if isinstance(p, dict) and p.get("theirTier"):
+            out[h] = p["theirTier"]
+    return out
+
+
 def _bus_quarantine_act(body):
     """Proxy a quarantine verdict (approve/deny, optional edited text) to the bus, which OWNS postal
     delivery and the held-message store. On approve the bus re-runs the peer's deliver(), so an approved
@@ -4643,6 +4655,40 @@ def set_trust(host, level):
     _tunnel_wake.set()                     # a prompt supervisor pass pushes the new level to the bus
     with _remotes_lock:
         return (_remote_public(_remotes[host]) if host in _remotes else None), None
+
+
+def mirror_trust(host):
+    """Set OUR current trust level for `host` as ITS trust level for US — through the admin access the
+    user already holds on that machine (the attached tunnel's local forward + that machine's serve
+    token, the same-user trust boundary). This is the deliberate alternative to protocol-level
+    reciprocity (the user 2026-07-26): a peer must NEVER be able to open our gate by declaring trust,
+    so the only mirror is the human with both tokens acting on both kernels. The remote's own
+    /tunnels/trust route does the persisting there (remotes row or origin-trust known entry), so the
+    mirrored level survives that machine's restarts exactly like a locally-set one.
+    Returns ({host, trust}, None) or (None, error)."""
+    host = (host or "").strip()
+    with _remotes_lock:
+        r = dict(_remotes.get(host) or {})
+    if not r:
+        return None, "no attached tunnel to '%s' — set trust from that machine's own dashboard" % host
+    level = r.get("trust") or "directed"
+    port, tok = r.get("local_port") or 0, r.get("token") or ""
+    if not port or not tok:
+        return None, "no admin path to '%s' (missing forward or token) — set trust from its dashboard" % host
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=8)
+        conn.request("POST", "/tunnels/trust",
+                     json.dumps({"host": _self_host(), "trust": level}),
+                     {"Content-Type": "application/json", "X-Romp-Token": tok})
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        j = json.loads(data.decode() or "{}")
+    except Exception as e:
+        return None, "could not reach %s's kernel: %s" % (host, e)
+    if not j.get("ok"):
+        return None, j.get("error") or ("HTTP %s from %s" % (resp.status, host))
+    return {"host": host, "trust": level}, None
 
 
 def _checkin_payload(r):
@@ -14430,7 +14476,7 @@ paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
 icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
 return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[]);   // pmode is refresh-local — render must be GIVEN it
+if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{});   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule((busy||pushing.length)?600:3000);   // poll fast while an auto-push runs, so its progress reads live
@@ -14446,7 +14492,7 @@ schedule(3000);});}
 // as a free variable threw ReferenceError on EVERY render, after list.innerHTML='' had already cleared the
 // list and before any row was appended. The panel therefore showed an empty host list no matter how many
 // hosts were attached, and the bare catch swallowed the error (the user 2026-07-22). Take it as a param.
-function render(ts,known,pmode,via,rholds){list.innerHTML='';known=known||[];via=via||[];rholds=rholds||[];
+function render(ts,known,pmode,via,rholds,tiers){list.innerHTML='';known=known||[];via=via||[];rholds=rholds||[];tiers=tiers||{};
 // Attached rows win; a via/known row for an attached host would be a duplicate.
 var live={};ts.forEach(function(t){live[t.host]=1;});
 // "connect from" (attach-on-behalf, the user 2026-07-25): offer every CONNECTED host as a tunnel
@@ -14505,6 +14551,15 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Publish this ma
 var tcur=t.trust||'directed';
 var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=rnet-trust data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
 ['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select></span>';
+// The OTHER direction of the pair (how that host holds mail FROM this machine, declared by its bus on
+// the last exchange). Trust is receiver-evaluated on purpose, so a half-open pair is legal — but it
+// used to be invisible until mail quarantined over there (the user 2026-07-26). A mismatch offers
+// Match: done by YOU on that kernel through the tunnel + its own serve token; a peer can never set
+// your trust, and this machine never lets one.
+var theirs=tiers[t.host]||'';
+if(theirs){var mm=theirs!==tcur;
+trust+='<span class=\"rnet-back'+(mm?' rnet-mismatch':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.\">'+t.host+' holds yours: '+theirs+'</span>';
+if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
 // Line 1 is what this host is doing right now plus the acts you perform on it; line 2 is the pair of
 // settings you set once and leave. They shared a single flat row before, which gave Detach the same
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
@@ -14572,6 +14627,10 @@ list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(
 s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
 s.disabled=false;refresh();}).catch(function(){s.disabled=false;alert('trust change on '+h+' failed to reach the kernel.');});};});
+list.querySelectorAll('button[data-m]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-m');
+b.disabled=true;b.textContent='Matching\\u2026';fetch('/tunnels/trust-mirror',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){alert('trust match on '+h+' failed: '+((d&&d.error)||'unknown'));b.disabled=false;b.textContent='Match';return;}   // fail LOUDLY (CLAUDE.md)
+b.textContent='Matched';refresh();}).catch(function(){b.disabled=false;b.textContent='Match';alert('trust match on '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('input[data-k]').forEach(function(c){c.onchange=function(){var h=c.getAttribute('data-k');
 c.disabled=true;fetch('/tunnels/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,on:c.checked})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -14989,6 +15048,13 @@ def _landing():
             ".rnet-row2{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;margin:4px 0 0 14px}"
             ".rnet-set{display:flex;align-items:center;gap:5px;color:#6e7681;font-size:11px;white-space:nowrap}"
             ".rnet-lbl{color:#6e7681;font-size:11px}"
+            # The reverse trust direction (how THAT host holds this machine's mail) + the Match button.
+            # A mismatched pair is the state that used to be invisible until mail quarantined, so it
+            # wears a warm tint; matched reads as quiet metadata.
+            ".rnet-back{color:#6e7681;font-size:11px;white-space:nowrap}"
+            ".rnet-back.rnet-mismatch{color:#d29922}"
+            ".rnet-mirror{background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:1px 7px;font-size:11px;cursor:pointer}"
+            ".rnet-mirror:disabled{opacity:0.55;cursor:default}"
             ".rnet-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}"
             ".rnet-row .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".rnet-row .st{color:#999;font-size:11px}"
@@ -15597,6 +15663,7 @@ class Handler(BaseHTTPRequestHandler):
                                                    "viaReach": _bus_via_reach(),   # hosts one relay hop away (trust-by-origin rows hang here)
                                                    "remoteHolds": _bus_remote_holds(),   # quarantine holds on OTHER machines (direct peers + one relay hop)
                                                    "autoUpdate": _auto_update_remotes_on(),   # the popover checkbox reflects the KERNEL, not this tab
+                                                   "peerTiers": _bus_peer_tiers(),   # host → how IT holds OUR mail (both-direction display)
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
@@ -15962,6 +16029,22 @@ class Handler(BaseHTTPRequestHandler):
                     code = 404 if err.startswith("no attached") else 400
                     return self._send(code, json.dumps({"ok": False, "error": err}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/trust-mirror":
+                # Mirror OUR trust level for a host onto THAT host (its trust of us), via the tunnel +
+                # its serve token — the human with both tokens acting on both kernels, never the peer
+                # asking (the user 2026-07-26). Body: {"host"}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                res, err = mirror_trust(host)
+                if err:
+                    code = 404 if err.startswith("no attached") else 502
+                    return self._send(code, json.dumps({"ok": False, "error": err}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "mirrored": res}), "application/json")
             if u.path == "/checkin":
                 # A mobile machine's check-in handshake arriving through its own reverse forward.
                 try:
