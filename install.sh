@@ -152,12 +152,21 @@ echo "  Symlinked romp-postal.mcp.json (Romp Postal Service MCP config)"
 ln -sf "$ROMP_DIR/claude/romp-session-prompt.md" "$HOME/.claude/romp-session-prompt.md"
 echo "  Symlinked romp-session-prompt.md (working-style append-system-prompt)"
 
-# -n: the skill links point at DIRECTORIES — on a re-run, plain -sf would follow the existing
-# dir-symlink and drop a NEW link INSIDE the repo (claude/skills/romp/romp → an absolute personal
-# path, which the no-personal-identifiers test rightly rejects). -n replaces the link itself.
-ln -sfn "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
+# The `romp` skill (convert a plain terminal into a tmux romp session) was retired 2026-07-27.
+# An install from before then still has the symlink, now pointing at a deleted directory, so
+# upgrading has to REMOVE it — leaving a dangling link would put a broken skill in front of
+# every session. Only ever unlinks a symlink, never a real directory someone put there.
+if [ -L "$HOME/.claude/skills/romp" ]; then
+    rm -f "$HOME/.claude/skills/romp"
+    echo "  Removed the retired romp skill"
+fi
+
+# -n: the skill link points at a DIRECTORY — on a re-run, plain -sf would follow the existing
+# dir-symlink and drop a NEW link INSIDE the repo (claude/skills/romp-postal/romp-postal → an
+# absolute personal path, which the no-personal-identifiers test rightly rejects). -n replaces
+# the link itself.
 ln -sfn "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
-echo "  Symlinked romp + romp-postal skills"
+echo "  Symlinked romp-postal skill"
 
 # The Agent SDK venv — the backend plain `romp new` uses. Best-effort: a host missing python >= 3.10
 # or Debian's python3-venv still runs tmux sessions (romp-sdk-setup says exactly what to install).
