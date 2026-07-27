@@ -15145,8 +15145,10 @@ def _landing():
             ".rail-act svg{display:block}"
             # the ↻ is a narrow TEXT glyph whose rendered size rides the browser's fallback font — at the
             # shared 15px it drew visibly smaller than its 18px-svg network neighbor (the user 2026-07-20:
-            # "the restart kernel button got much smaller"). Size it to optically match the icon row.
-            "#rail-refresh{font-size:19px}"
+            # "the restart kernel button got much smaller"; 2026-07-27: still short next to the bell —
+            # span the full 18px icon-row height like the svg neighbors, line-height pinned so the taller
+            # glyph can't grow the bar).
+            "#rail-refresh{font-size:22px;line-height:18px;height:18px}"
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
             ".rail-act.on{color:var(--accent)}"   # the network icon glows accent-blue while a remote is connected
@@ -15221,8 +15223,14 @@ def _landing():
             ".rnet-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}"
             ".rnet-row .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".rnet-row .st{color:#999;font-size:11px}"
-            ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
+            # Buttons wear the settings modal's action-button vocabulary (the user 2026-07-27: sizes and button
+            # styles must match the rest of romp): 12px like the analytics-modal buttons — they inherited the
+            # panel's 13px body size before, the one size in the panel that matched nothing — with that
+            # family's hover (bg #333, text lightens). The trust dropdown + Match button stay at the 11px
+            # per-row-settings size they sit amongst.
+            ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer}"
             ".rnet-row button:disabled{opacity:0.55;cursor:default}"
+            ".rnet-row button:hover:not(:disabled),.rnet-mirror:hover:not(:disabled),.rnet-trust:hover:not(:disabled){background:#333;color:#ddd}"
             # On a phone the panel is ~360px. Splitting the settings onto their own line already takes the
             # squeeze off line 1, but keep the wrap as a backstop: a host row previously packed trust +
             # keep + Push + Start + Detach as flex:0 0 auto, overflowed, and put Detach off the right edge,
@@ -15239,14 +15247,15 @@ def _landing():
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
-            ".rnet-khead{color:#6e7681;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;"
+            # same treatment as the settings modal's .rs-sec section headers (10.5px/700/.08em uppercase)
+            ".rnet-khead{color:#6e7681;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
             "margin:10px 0 2px;padding-top:8px;border-top:1px solid #2a2a2a}"
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
-            ".rnet-empty{color:#777;font-size:11px}"
+            ".rnet-empty{color:#6e7681;font-size:11px}"   # the one dim gray the panel already uses, not a fourth
             # "Automatically update" — a panel-wide setting, so it wears the same muted label treatment as the
             # per-host settings row (.rnet-keep) rather than inventing a third size
             ".rnet-auto{display:flex;align-items:center;gap:5px;color:#6e7681;font-size:11px;cursor:pointer;"
@@ -15371,6 +15380,8 @@ def _landing():
             # action buttons: dimmer + fixed-width so the four pane tabs keep the room; thin divider between
             "#mtabs .mtabs-div{flex:0 0 1px;background:#303031;margin:5px 0}"
             "#mtabs button.mact{flex:0 0 auto;padding:6px 10px;color:#7d848b;font-size:17px;line-height:1}"
+            # the mobile ↻ is the same narrow text glyph as the rail one — same optical-match treatment
+            "#mtabs .mact[data-act=restart]{font-size:21px;line-height:18px}"
             "#mtabs button.mact svg{display:block}"
             "}"
             # default Chat + Feed + Timeline shown, Fleet off (the user 2026-06-25); the rail toggles + ?panes=
@@ -15459,10 +15470,10 @@ def _landing():
             # the notification bell (the user 2026-07-27): monochrome outline like its neighbors, red +
             # unread badge when an error lands (see _LANDING_ERRS_JS). ATTRIBUTES QUOTED (the rail-net saga).
             "<div class=rail-act id=rail-errs title=Errors aria-label=Errors>"
-            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<svg viewBox='0 0 16 16' width='17' height='17'>"
             "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
-            " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
-            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.2'/></svg>"
+            " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
+            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/></svg>"
             "<span class=rerr-badge hidden></span></div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
@@ -15509,10 +15520,10 @@ def _landing():
             "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>↻</button>"
             # the notification bell on mobile too (same glyph + badge; opens the same popover)
             "<button class=mact id=merr data-act=errs aria-label=Errors title=Errors>"
-            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<svg viewBox='0 0 16 16' width='17' height='17'>"
             "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
-            " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
-            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.2'/></svg>"
+            " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
+            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/></svg>"
             "<span class=rerr-badge hidden></span></button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
             "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"

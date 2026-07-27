@@ -37,13 +37,13 @@ function item(over: Partial<ProvItem> = {}): ProvItem {
 
 test("the story: started at the root's mint, each sub at ITS time, the stamp explained last", () => {
   const rows = provenanceRows(item(), NOW, F);
-  assert.deepEqual(rows[0], { when: "150m ago · @1000", what: "started", kind: "start" });
-  assert.deepEqual(rows[1], { when: "80m ago · @5200", what: "✓ write the parser", kind: "sub" },
+  assert.deepEqual(rows[0], { when: "150m ago · @1000", what: "started", t: 1_000, kind: "start" });
+  assert.deepEqual(rows[1], { when: "80m ago · @5200", what: "✓ write the parser", t: 5_200, kind: "sub" },
     "a resolved sub stamps where it RESOLVED (mt)");
-  assert.deepEqual(rows[2], { when: "50m ago · @7000", what: "⏸ ask about the schema", kind: "sub" });
-  assert.deepEqual(rows[3], { when: "20m ago · @8800", what: "· docs pass", kind: "sub" },
+  assert.deepEqual(rows[2], { when: "50m ago · @7000", what: "⏸ ask about the schema", t: 7_000, kind: "sub" });
+  assert.deepEqual(rows[3], { when: "20m ago · @8800", what: "· docs pass", t: 8_800, kind: "sub" },
     "an open sub stamps its mint (nothing resolved yet)");
-  assert.deepEqual(rows[4], { when: "10m ago · @9400", what: "marked done", kind: "stamp" },
+  assert.deepEqual(rows[4], { when: "10m ago · @9400", what: "marked done", t: 9_400, kind: "stamp" },
     "the visible age is named for what it marks");
 });
 
@@ -56,8 +56,8 @@ test("the root's own verdict rows ride between start and subs, in the feed's out
   const it = item();
   it.tree[0].log = [{ kind: "block", src: "romp", at: 3_000 }, { kind: "unblock", src: "romp", evT: 4_000 }];
   const rows = provenanceRows(it, NOW, F);
-  assert.deepEqual(rows[1], { when: "117m ago · @3000", what: "[block]", kind: "event" });
-  assert.deepEqual(rows[2], { when: "100m ago · @4000", what: "[unblock]", kind: "event" },
+  assert.deepEqual(rows[1], { when: "117m ago · @3000", what: "[block]", t: 3_000, kind: "event" });
+  assert.deepEqual(rows[2], { when: "100m ago · @4000", what: "[unblock]", t: 4_000, kind: "event" },
     "evT is the time-nav fallback when `at` is absent");
   assert.equal(rows[3].what, "✓ write the parser", "subs follow the root's events");
 });
@@ -73,7 +73,7 @@ test("cleared subs stay out; a huge tree caps at 8 with an honest remainder", ()
   });
   const rows = provenanceRows(big, NOW, F);
   assert.equal(rows.length, 1 + 8 + 1 + 1, "start + 8 subs + remainder + stamp row");
-  assert.deepEqual(rows[9], { when: "", what: "…and 3 more", kind: "more" }, "no silent truncation");
+  assert.deepEqual(rows[9], { when: "", what: "…and 3 more", t: 0, kind: "more" }, "no silent truncation");
 });
 
 test("rootStart falls back: earliest tree mint without a root row, the card's t on an empty tree", () => {
@@ -84,9 +84,9 @@ test("rootStart falls back: earliest tree mint without a root row, the card's t 
 
 test("a group's story is the fold: earliest member start, the member count, the group stamp", () => {
   const rows = provenanceGroupRows([5_000, 3_000, 7_000], 9_000, NOW, F);
-  assert.deepEqual(rows[0], { when: "117m ago · @3000", what: "started", kind: "start" });
-  assert.deepEqual(rows[1], { when: "", what: "3 cards from one prompt", kind: "sub" });
-  assert.deepEqual(rows[2], { when: "17m ago · @9000", what: "last update", kind: "stamp" });
+  assert.deepEqual(rows[0], { when: "117m ago · @3000", what: "started", t: 3_000, kind: "start" });
+  assert.deepEqual(rows[1], { when: "", what: "3 cards from one prompt", t: 0, kind: "sub" });
+  assert.deepEqual(rows[2], { when: "17m ago · @9000", what: "last update", t: 9_000, kind: "stamp" });
 });
 
 test("the feed wires the popover beside every age write — card, group card, both modal headers", () => {
@@ -96,6 +96,14 @@ test("the feed wires the popover beside every age write — card, group card, bo
   assert.match(FEED, /wireAgeTip\(ageEl, \(\) => provenanceGroupRows\(grp\.members\.map\(rootStart\), grp\.t, hostNow, PROV_FMT\)\);/);
   // …with the same vocabulary the card itself renders in
   assert.match(FEED, /const PROV_FMT: ProvFmt = \{ rel: relAge, clock: clockHM, phrase: logPhrase \};/);
+});
+
+test("every timed line wears its own recency colour — time AND text, the chat tab-tip treatment", () => {
+  // the user 2026-07-27: colour the timestamps and their items the way the chat tab hover does. The
+  // feed tints the whole row (and the when cell explicitly, beating its dim class) from the SHARED
+  // age-color ramp; the un-timed remainder row keeps the panel's dim default (t: 0 guards it).
+  assert.match(FEED, /import \{ ageColorReadable \} from "\.\/age-color";/);
+  assert.match(FEED, /if \(r\.t > 0\) \{ const c = ageColorReadable\(hostNow - r\.t\); row\.style\.color = c; w\.style\.color = c; \}/);
 });
 
 test("the popover is aligned, styled in the feed's own vocabulary, and can never eat a click", () => {
