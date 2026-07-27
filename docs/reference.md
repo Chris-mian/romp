@@ -53,6 +53,13 @@ that want a person are `awaiting`, a permission prompt, and `blocked`. And
 keyed by `id`, while `lastSid` is the live transcript's id and forks on
 `/clear`.
 
+That key opens the per-session records under `~/.local/state/romp/`. The
+per-turn one-liners live in `captions/<id>.jsonl`, one JSON record a line, with
+the text under `caption`. A record's own `id` field is not the session's: it
+identifies the turn within it. There is no `summaries/` directory; an older
+layout had one, and reading it fails silently, since a missing directory just
+yields nothing rather than an error.
+
 ## The Romp Postal Service
 
 How sessions message each other, from either side. Inside a session it is an MCP

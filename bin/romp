@@ -722,7 +722,10 @@ fi
 #     captions/, goals/, episodes/) is filed under `id`. `lastSid` is the live Claude Code
 #     transcript's fsid, which FORKS on /clear — it is what the old tmux @romp-session-id
 #     tracked, being re-anchored per fork, so it is the natural guess and the wrong one. On a
-#     fleet of 11 here, all 11 had records under `id` and only 6 under `lastSid`.
+#     fleet of 11 here, all 11 had records under `id` and only 6 under `lastSid`. That key opens
+#     the per-turn one-liners at captions/<id>.jsonl, text under `caption` (the record's OWN `id`
+#     is the turn's, not the session's). There is no summaries/ any more — the old path returns
+#     nothing rather than erroring, so a consumer on it shows blank text and mtime 0 forever.
 if [[ "${1:-}" == "sessions" ]]; then
     shift
     _json=false
