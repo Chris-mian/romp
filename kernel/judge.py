@@ -1294,7 +1294,12 @@ PLAN_SYS = (
     "to start the next step, or **your** pick between options is a block: the reported progress does not keep "
     "it working, and asking 'shall I proceed?' blocks when the go-ahead is owed by the user — but if it "
     "is waiting on work it dispatched or delegated in order to proceed (agents, a peer, a build), that is "
-    "not a block, it stays working. (Use \"ref\":<k> to block a node created in this reply.)\n"
+    "not a block, it stays working. "
+    "Separate decisions, separate cards: when the segment leaves the user more than one distinct "
+    "decision on genuinely different issues, never fold them into one blocked card's why — give each "
+    "issue its own card (a sub or mint in this same reply) and block each one, so the user can answer "
+    "and cross off each independently. One shared blocked card is right only when the asks are facets "
+    "of a single decision. (Use \"ref\":<k> to block a node created in this reply.)\n"
     '- {\"why\",\"do\":\"retitle\",\"goal\":<n>,\"text\":\"<new title ≤10 words>\"}: change the title of '
     "goal #n itself. Only valid on the **one** goal a <note> explicitly names as retitle-eligible for this segment; "
     "invalid on any other listed goal, so only emit this when such a <note> is present.\n"
@@ -1318,7 +1323,11 @@ PLAN_SYS = (
     "of…\": grammar is only the hint, the test is whether this segment's turn already **shows the "
     "outcome delivered**. Every such sub needs its "
     "paired done (or paired block, when what it delivered ends by asking the user to decide); an "
-    "unpaired past-tense sub sits on the board forever as phantom open work.\n"
+    "unpaired past-tense sub sits on the board forever as phantom open work. And the paired done never "
+    "settles the decision built on the record: a segment that delivers a finding and then ends by "
+    "asking the user what to do about it (\"diagnosed the cause — want me to implement the fix?\") "
+    "must also block the goal that owns that decision, per the block op above; doning the record while "
+    "its card goes unblocked shows the whole card finished when the user still owes the answer.\n"
     "You place each segment's work; you do not reorganize the board (a separate grouper judge nests "
     "related top goals afterward). Keep filing under the matching open goal and minting only a real new "
     "top.\n"
@@ -3026,7 +3035,9 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "as already finished (shipped / deployed / committed / landed / verified / 'already done'), "
                  "even if that work happened in an earlier turn or another session: that report **is** the "
                  "completion signal, so emit a done on #1, not a step. Or **block** it if it needs a decision or "
-                 "answer from the user (the why = that ask). Do **not** file a plain step that merely restates the "
+                 "answer from the user (the why = that ask); a reply that reports the work delivered but **ends** "
+                 "by asking the user to approve or pick the next step is a block, not a done — the owed decision "
+                 "outweighs the finished report. Do **not** file a plain step that merely restates the "
                  "status — a finished-and-reported goal is done. **Exception**: only if the agent has genuinely "
                  "**resumed** real, still-unfinished work on the goal, keep it working — never force a false "
                  "done/block; and in that case say so explicitly with **awaiting** on #1, the why naming what "
@@ -6176,7 +6187,11 @@ CLOSER_SYS = (
     "A sub-goal whose own title **records something already delivered** — an explanation given, a cause "
     "found, options laid out (\"Explained…\", \"Confirmed…\", \"Diagnosed…\") — is done the moment the "
     "turn shows it delivered: the record itself is its outcome, so close it rather than omit it; left "
-    "open it files finished work as still owed.\n"
+    "open it files finished work as still owed. But a done on the record never settles the decision "
+    "built on it: when the turn delivers a finding and then ends by asking the user what to do about "
+    "it (\"found the cause — want me to implement the fix?\"), the goal that owns that decision goes "
+    "in block in the same reply (see blocked); doning the record and leaving its goal unmentioned "
+    "shows the whole card finished while the user still owes the answer.\n"
     "- blocked: it now needs the user, a decision, approval, or answer owed by the user (the human) "
     "before it can proceed. Waiting on a peer, CI, build, agents it dispatched, or other external thing "
     "is not blocked; that stays open and working. A turn that **ends** by handing the decision back to the "
@@ -6234,7 +6249,9 @@ def _parse_close(raw, menu_len):
     the touched open tops now fully DONE / now BLOCKED (needs the user) / now AWAITING async work they set
     in motion; omitted goals stay open (the conservative default). Empty lists → empty maps. None on
     unparseable output or a missing/non-list "done" key (skip the turn). A goal in more than one list →
-    done wins, then block (a resolution outranks an annotation). Out-of-range and duplicate indices
+    block wins, then done (the user 2026-07-27: a hedged both-lists reply is the diagnosed-then-"want
+    me to fix it?" shape, and a wrong done silently buries the owed decision while a wrong block is
+    visible and one click to cross off). Out-of-range and duplicate indices
     dropped (first wins) — except a 0/negative index anywhere, which rejects the whole reply (see
     _zero_based_tell: an off-base reply's other indices silently done/block the wrong goals).
     Tolerant of an absent "block"/"awaiting" key (older replies)."""
@@ -6260,8 +6277,8 @@ def _parse_close(raw, menu_len):
                 out[n] = " ".join(str(it.get("why", "")).split())[:300]
         return out
 
-    done = _collect(obj.get("done"))
-    block = _collect(obj.get("block"), skip=done)                           # done wins for the same goal
+    block = _collect(obj.get("block"))
+    done = _collect(obj.get("done"), skip=block)                            # block wins for the same goal
     return {"done": done, "block": block,
             "awaiting": _collect(obj.get("awaiting"), skip=set(done) | set(block))}
 
@@ -6611,8 +6628,9 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                       "session's work, not only the goals it was asked about. Goal%s %s %s open "
                       "elsewhere on the same board: judge %s ONLY from what the reply explicitly says "
                       "about it — done only where the reply plainly reports that goal's outcome "
-                      "delivered or nothing left to do on it. A goal the reply does not clearly cover "
-                      "is a considered omission, not a completion."
+                      "delivered or nothing left to do on it; block where the reply's account of it "
+                      "ends by asking the user for a decision or go-ahead. A goal the reply does not "
+                      "clearly cover is a considered omission, not a completion."
                       % ("s" if len(tflagged) > 1 else "",
                          ", ".join("#%d" % i for i in tflagged),
                          "are" if len(tflagged) > 1 else "is",

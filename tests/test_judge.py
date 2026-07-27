@@ -3124,6 +3124,27 @@ class BlockCompletionCorrectness(unittest.TestCase):
         for phrase in ("records something already delivered", "close it rather than omit it"):
             self.assertIn(phrase, done_clause, "closer: " + phrase)
 
+    def test_record_done_never_settles_the_owed_decision(self):
+        # the user 2026-07-27: cards kept landing in Completed off turns that diagnosed something and
+        # ended with "want me to implement the fix?" — the record-sub clause above ("Diagnosed…" is
+        # done the moment the turn shows it delivered) sits right next to the approval-ask carve-out
+        # and won. Both judges now say the done on the record never settles the decision built on it:
+        # the goal that owns the decision must be blocked in the same reply.
+        for phrase in ("never settles the decision", "want me to implement the fix?",
+                       "owns that decision"):
+            self.assertIn(phrase, jd.PLAN_SYS, "planner: " + phrase)
+        done_clause = jd.CLOSER_SYS.split("- blocked:", 1)[0]
+        for phrase in ("never settles the decision", "want me to implement the fix?",
+                       "owns that decision"):
+            self.assertIn(phrase, done_clause, "closer done side: " + phrase)
+
+    def test_distinct_blocked_decisions_split_into_their_own_cards(self):
+        # the user 2026-07-27: several unrelated decisions folded into one blocked card can only be
+        # answered and crossed off as a lump. The planner (the one judge that can mint) must give each
+        # distinct issue its own blocked card; one shared card only for facets of a single decision.
+        for phrase in ("Separate decisions, separate cards", "facets of a single decision"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+
     def test_past_tense_sub_pairs_to_a_born_done_landing(self):
         # mechanics: the pairing the planner is told to emit (sub + done ref) lands the record-sub
         # already crossed off under a still-open card — never a new open task
@@ -3218,12 +3239,15 @@ class SweepParse(unittest.TestCase):
         self.assertEqual(jd._parse_close('noise {"done": [{"goal": 2, "why": "done"}]} more', 4),
                          {"done": {2: "done"}, "block": {}, "awaiting": {}}, "the outermost JSON object is isolated from prose")
 
-    def test_block_list_parsed_and_done_wins(self):
+    def test_block_list_parsed_and_block_wins(self):
         # the user 2026-06-17: the closer can now BLOCK a touched top (needs the user), not just complete it
         self.assertEqual(jd._parse_close('{"done": [], "block": [{"goal": 2, "why": "Approve the migration?"}]}', 3),
                          {"done": {}, "block": {2: "Approve the migration?"}, "awaiting": {}})
-        self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 1, "why": "?"}]}', 3),
-                         {"done": {1: "shipped"}, "block": {}, "awaiting": {}}, "a goal in both -> done wins, dropped from block")
+        # the user 2026-07-27: a goal the model hedges into BOTH lists is the diagnosed-then-"want me
+        # to fix it?" shape — block wins, because a wrong done silently buries the owed decision while
+        # a wrong block is visible and one click to cross off (done won until then).
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 1, "why": "Fix it too?"}]}', 3),
+                         {"done": {}, "block": {1: "Fix it too?"}, "awaiting": {}}, "a goal in both -> block wins, dropped from done")
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "x"}]}', 3),
                          {"done": {1: "x"}, "block": {}, "awaiting": {}}, "an absent block key is tolerated")
 
@@ -3395,6 +3419,19 @@ class SweepTurn(unittest.TestCase):
         self.assertEqual(store["nodes"][g1["id"]]["mt"], self.turn["t"],
                          "mt is bumped to the turn time so the done node deep-links to where it resolved")
 
+    def test_hedged_both_lists_reply_blocks_not_completes(self):
+        # the user 2026-07-27: the diagnosed-then-"want me to implement the fix?" turn. A closer that
+        # hedges the same goal into done AND block must land it blocked — a wrong done silently buries
+        # the owed decision; a wrong block is visible and one click to cross off.
+        store = _store(); g1 = _mknode(store, "Fix the flaky login test")
+        store["placements"][self.seg["id"]] = g1["id"]
+        jd.closer_llm = lambda tt, mt, *_a: ('{"done": [{"goal": 1, "why": "found the cause"}], '
+                                             '"block": [{"goal": 1, "why": "Implement the fix?"}]}')
+        self.assertEqual(jd._close_turn(store, self.turn), [], "nothing completes off the hedged reply")
+        self.assertFalse(store["nodes"][g1["id"]].get("nodeComplete"), "the hedged goal must not complete")
+        self.assertTrue(store["nodes"][g1["id"]].get("blocked"), "the owed decision lands as blocked")
+        self.assertEqual(store["nodes"][g1["id"]]["blockWhy"], "Implement the fix?")
+
     def test_llm_failure_completes_nothing(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
@@ -3490,6 +3527,8 @@ class StatusReportMenu(unittest.TestCase):
         self.assertTrue(store["nodes"][g2["id"]]["nodeComplete"])
         self.assertIn("Tune the api rate limits", captured["mt"], "the sibling top rode the menu")
         self.assertIn("status check", captured["mt"], "…with the status-report framing")
+        self.assertIn("decision or go-ahead", captured["mt"],
+                      "…and the framing routes an ending approval-ask to block (the user 2026-07-27)")
 
     def test_a_clear_wrap_turn_widens_too(self):
         turn, seg = self._session("<!-- romp-clear-wrap -->")
