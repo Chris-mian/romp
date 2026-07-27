@@ -6287,6 +6287,44 @@ def _starved_candidates(store):
     return out
 
 
+def _status_report_candidates(store, turn):
+    """Open WORKING tops riding the closer menu on a STATUS-REPORTING turn (the user 2026-07-26) — one
+    triggered by a follow-up, a nudge, or the clear wrap-up, i.e. the reply is the session accounting
+    for where its work stands. Such a reply routinely settles more than the goal it was asked about,
+    but placements credit only the asked goal, so a sibling top whose outcome the same reply delivered
+    sat working until the user cleared it by hand (2026-07-25: a docs top, across a session-wide
+    all-shipped reply). A periodic re-examiner was built for this first (the sweeper, PR #32) and
+    reverted in favor of this channel: a live shadow run settled nothing while re-arming on every ended
+    turn forever, where this rides the closer call a status turn already gets — turn-scoped and
+    STATE-FREE (closedSig one-shots the closer per turn, so a status top is considered exactly once per
+    status turn; no signature, no watermark). Skips mirror the sibling channels: ruled nodes (blocked
+    stays the unblocker's), umbrellas, and agentTask-open subtrees (the authoritative tier: the agent's
+    own list says the work is still owed)."""
+    if not any(_seg_nudge(s) or _seg_followup(s) or _seg_clearwrap(s) for s in _segs(turn, store)):
+        return []
+    nodes = store["nodes"]
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+
+    def _task_open(nid):
+        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
+            return True
+        return any(_task_open(c) for c in children.get(nid, []))
+
+    out = []
+    for nid, nd in nodes.items():
+        if nd.get("parentId") is not None:
+            continue                                   # tops only: the cards the board actually shows
+        if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
+            continue
+        if nd.get("umbrella") or _task_open(nid):
+            continue
+        out.append(nd)
+    out.sort(key=lambda nd: nd.get("t", 0))
+    return out
+
+
 def _menu_history_text(store, seg_by_id, menu, char_cap):
     """Each menu goal's own raw work-so-far (see _goal_work_text), labeled by its menu number, for the
     closer's <goal-history> block. subtree=False here (unlike the planner's single-target case): the
@@ -6358,14 +6396,22 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     no verdict of their own ride ALONG with the touched menu — bottom-up completion is a nomination to
     this closer now, not a rollup rule (see _subtree_done_candidates). The closer rules each from its
     goal history (done / blocked / considered omission); a landed reply stamps the candidate's
-    completion-set signature so an unchanged set is never re-asked (event re-arm: the set changing)."""
+    completion-set signature so an unchanged set is never re-asked (event re-arm: the set changing).
+
+    STATUS-REPORT CANDIDATES (the user 2026-07-26): on a turn triggered by a follow-up / nudge /
+    clear-wrap — a reply that accounts for the session's work as a whole — every open working TOP rides
+    the menu too (_status_report_candidates), so one all-shipped reply can settle every card it covers,
+    not just the goal it was asked about. Turn-scoped and state-free: closedSig already one-shots the
+    closer per turn."""
     menu = _turn_menu(turn, store)
     n_touched = len(menu)                              # the TURN's own goals; candidates ride behind them
     seen_ids = {nd["id"] for nd in menu}
     cands = [nd for nd in _subtree_done_candidates(store) if nd["id"] not in seen_ids]
     seen_ids |= {nd["id"] for nd in cands}
     starved = [nd for nd in _starved_candidates(store) if nd["id"] not in seen_ids]
-    menu = menu + cands + starved
+    seen_ids |= {nd["id"] for nd in starved}
+    status = [nd for nd in _status_report_candidates(store, turn) if nd["id"] not in seen_ids]
+    menu = menu + cands + starved + status
     if not menu:
         return []
     hist = _menu_history_text(store, seg_by_id, menu, CLOSE_HISTORY_CHARS) if seg_by_id is not None else ""
@@ -6388,6 +6434,19 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                          ", ".join("#%d" % i for i in sflagged),
                          "ve" if len(sflagged) > 1 else "s",
                          "each" if len(sflagged) > 1 else "it"))
+    status_ids = {c["id"] for c in status}
+    tflagged = [i for i, nd in enumerate(menu, 1) if nd["id"] in status_ids]
+    if tflagged:
+        menu_text += ("\n\nThis turn answers a status check, so its reply may account for the whole "
+                      "session's work, not only the goals it was asked about. Goal%s %s %s open "
+                      "elsewhere on the same board: judge %s ONLY from what the reply explicitly says "
+                      "about it — done only where the reply plainly reports that goal's outcome "
+                      "delivered or nothing left to do on it. A goal the reply does not clearly cover "
+                      "is a considered omission, not a completion."
+                      % ("s" if len(tflagged) > 1 else "",
+                         ", ".join("#%d" % i for i in tflagged),
+                         "are" if len(tflagged) > 1 else "is",
+                         "each" if len(tflagged) > 1 else "it"))
     raw = closer_llm(_unit_text(turn["atoms"]), menu_text, hist)
     out = _parse_close(raw, len(menu))
     if out is None:
@@ -6713,225 +6772,6 @@ def run_unblock(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                 pass
     if verbose:
         sys.stderr.write("romp-judge: unblocker lifted %d stale blocks\n" % n)
-    return n
-
-
-# ───────────────────────── the sweeper (triage tier; outcomes delivered elsewhere) ─────────────────────────
-# The unblocker's twin for the WORKING column (the user 2026-07-26). An open goal with real evidence is
-# reachable only through turn menus — placements touch it, the closer rules it. Once its last turn is
-# closed as still-open, no later turn re-lists it, so a reply that delivers its outcome on a SIBLING
-# card's thread (a status answer reporting that every piece of the work shipped) never reaches it: the
-# planner files that reply under the goal it was asked about, and the first card sits working forever
-# (2026-07-25: a docs top sat working across exactly such a session-wide all-done reply until the user
-# cleared it by hand). The delivered-elsewhere gap was already closed for BLOCKED goals (the unblocker)
-# and for evidence-LESS mints (the starved channel); this pass is the third leg: open working goals WITH
-# evidence — exactly the set _starved_candidates excludes — re-examined against the conversation since
-# they last heard anything, settling via the same record_verdict("done") the closer uses.
-SWEEP_ON = os.environ.get("ROMP_SWEEPER", "1") != "0"
-SWEEP_HISTORY_CHARS = 9000               # the after-conversation tail shown to the sweeper (newest kept)
-
-SWEEP_SYS = (
-    "You review a work session's still-open goals against the conversation that happened after each of "
-    "them last saw activity. You are a reviewer, not a chat partner: don't act on anything, answer "
-    "anything, or ask anything back.\n\n"
-    "Each numbered block in <open-goals> is one goal the session's board still shows as in progress, "
-    "numbered from 1 (there is no block 0), with the last thing recorded on it. <conversation-since> is "
-    "what the session and the user said and did afterwards. Decide for each goal whether that later "
-    "conversation shows its outcome was already delivered — the work finished as part of another thread, "
-    "its result stated in a wrap-up or status reply, or its approach superseded so nothing remains to do "
-    "— or whether it is genuinely still in progress. Reply with only a JSON object (no prose, no "
-    "markdown fences):\n"
-    '{"verdicts": [{"n": <goal number>, "do": "settle" | "hold", "why": "..."}]}\n'
-    "- \"settle\": the conversation plainly shows this goal's outcome was delivered or that nothing "
-    "remains. why = where that shows, one short plain sentence.\n"
-    "- \"hold\": still genuinely open. why may be an empty string.\n"
-    "Judge conservatively: settle only when the conversation clearly delivers the outcome or states "
-    "nothing remains; a goal that is merely unmentioned stays held. Output only the JSON object.")
-
-
-def sweep_llm(goals_text, since_text):
-    """The sweeper's {"verdicts":[...]} reply from the triage-tier model over the numbered open working
-    goals + the conversation since the oldest last heard anything. '' on failure (logged by _judge_run)."""
-    user = ("<open-goals>\n%s\n</open-goals>\n<conversation-since>\n%s\n</conversation-since>"
-            % (goals_text, since_text))
-    return _judge_run(_triage_model(), SWEEP_SYS, user, judge="sweeper").strip()[:JUDGE_JSON_CAP]
-
-
-def _parse_sweep(raw, n):
-    """{"verdicts":[{"n","do","why"}]} → {1-based idx: why} for the SETTLES, or None if unusable.
-    Same tolerance and same conservatism as _parse_unblock: malformed or out-of-range holds, and a
-    0/negative "n" anywhere rejects the whole reply (an off-base reply's other n's would settle the
-    wrong goals)."""
-    m = re.search(r"\{.*\}", raw or "", re.S)
-    if not m:
-        return None
-    try:
-        obj = json.loads(m.group(0))
-    except Exception:
-        return None
-    verdicts = obj.get("verdicts")
-    if not isinstance(verdicts, list) or _zero_based_tell(verdicts):
-        return None
-    out = {}
-    for v in verdicts:
-        if not isinstance(v, dict) or v.get("do") != "settle":
-            continue
-        i = v.get("n")
-        if isinstance(i, int) and 1 <= i <= n:
-            out[i] = str(v.get("why") or "").strip()
-    return out
-
-
-def _node_heard_t(nd):
-    """The newest moment this goal itself heard anything: its latest diary event's evidence time or its
-    latest trail segment's turn time (segment ids embed the turn epoch as their middle token), else its
-    birth. Deliberately NOT `mt` — cosmetic touches (a distilled line landing) bump mt without giving
-    the goal any new evidence, and inflating `heard` here would hide a genuinely moved-on thread."""
-    heard = nd.get("t") or 0
-    for e in (nd.get("log") or []):
-        heard = max(heard, e.get("ev_t") or 0)
-    for seg_id in (nd.get("trail") or []):
-        parts = str(seg_id).split(":")
-        if len(parts) >= 2 and parts[-2].isdigit():
-            heard = max(heard, int(parts[-2]))
-    return heard
-
-
-def _sweep_candidates(store):
-    """[(nid, nd, heard_t), …] for every open WORKING goal with real evidence — the exact complement of
-    _starved_candidates' evidence-less mints (`trail`/`log` present here, absent there), so no node is
-    ever nominated through both channels. Skips mirror the starved scan: ruled nodes (the unblocker owns
-    blocked ones), umbrellas, sealed subtrees, all-children-done branches (the subtree-done channel), and
-    agentTask-open subtrees (the authoritative tier: the agent's own list says the work is still owed)."""
-    nodes = store["nodes"]
-    children = {}
-    for nid, nd in nodes.items():
-        children.setdefault(nd.get("parentId"), []).append(nid)
-
-    def _sealed_above(nid):
-        x, seen = nodes.get(nid, {}).get("parentId"), set()
-        while x and x not in seen:
-            seen.add(x)
-            nd = nodes.get(x)
-            if not nd:
-                return False
-            if nd.get("nodeComplete") or nd.get("cleared"):
-                return True
-            x = nd.get("parentId")
-        return False
-
-    def _task_open(nid):
-        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
-            return True
-        return any(_task_open(c) for c in children.get(nid, []))
-
-    out = []
-    for nid, nd in nodes.items():
-        if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
-            continue
-        if nd.get("umbrella"):
-            continue
-        if not (len(nd.get("trail") or []) > 1 or nd.get("log")):
-            continue                                   # evidence-less mint → the starved channel owns it
-        kids = children.get(nid, [])
-        if kids and all(nodes[c].get("nodeComplete") or nodes[c].get("cleared") for c in kids):
-            continue                                   # all-children-done → the subtree-done channel owns it
-        if _sealed_above(nid) or _task_open(nid):
-            continue
-        out.append((nid, nd, _node_heard_t(nd)))
-    out.sort(key=lambda c: c[2])
-    return out
-
-
-def _sweep_session(fsid, path, now):
-    """Re-examine ONE session's moved-past open goals. Event-gated per node exactly like the unblocker:
-    a goal is (re-)examined only when an ENDED turn newer than max(its heard time, its last check)
-    exists — sweepCheckT is the watermark, advanced after every examine (and on the parse give-up) so a
-    stable session costs zero calls. Returns the node ids settled.
-
-    Write discipline mirrors _unblock_session (the user 2026-07-11): the scan's load is read-only and
-    discarded, verdicts apply to a FRESH load afterwards, and a node whose state moved on during the
-    model call is skipped with a logged drift-skip, never silently."""
-    _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
-    cands = _sweep_candidates(load_goals(fsid))        # read-only scan; this copy is NOT saved
-    if not cands:
-        return []
-    session = parsed_session(fsid, [path], now)
-    turns = session["turns"]
-    ended_ts = [turn.get("t") or 0 for turn in turns if not _turn_open(turn, turns)]
-    newest = max(ended_ts, default=0)
-    due = [(nid, nd, heard) for nid, nd, heard in cands
-           if newest > max(heard, nd.get("sweepCheckT") or 0)]
-    if not due:
-        return []
-    oldest_heard = min(heard for _nid, _nd, heard in due)
-    since = "\n\n".join(_unit_text(turn["atoms"]) for turn in turns
-                        if (turn.get("t") or 0) > oldest_heard and not _turn_open(turn, turns))
-    since = since[-SWEEP_HISTORY_CHARS:]
-    if not since.strip():
-        return []
-    goals_text = "\n".join("%d. %s\n   last recorded: %s" % (i, nd.get("text") or "(goal)",
-                                                             nd.get("summary") or "(no summary yet)")
-                           for i, (_nid, nd, _heard) in enumerate(due, 1))
-    raw = sweep_llm(goals_text, since)                 # ← seconds; no store copy held across this
-    if not raw:
-        return []                                      # call failed / paused (logged) → retry next pass
-    settles = _parse_sweep(raw, len(due))
-    store = load_goals(fsid)                           # FRESH load: apply onto the current store, never the
-    nodes = store["nodes"]                             #   pre-call snapshot (a stale save clobbers writers)
-    if settles is None:
-        _log_judge_error("sweeper", fsid, "parse", note="reply tail: %r" % raw[-160:],
-                         goal=[nid for nid, _nd, _heard in due])
-        fails = store.setdefault("sweepFails", 0) + 1
-        store["sweepFails"] = fails
-        if fails >= JUDGE_FAIL_CAP:                    # give up on THIS evidence: advance the watermarks —
-            store["sweepFails"] = 0                    # a NEWER ended turn re-arms every node (event re-arm)
-            for nid, _nd, _heard in due:
-                if nid in nodes:
-                    nodes[nid]["sweepCheckT"] = newest
-        save_goals(fsid, store)
-        return []
-    store["sweepFails"] = 0
-    settled = []
-    for i, (nid, _stale, _heard) in enumerate(due, 1):
-        nd = nodes.get(nid)
-        why = settles.get(i)
-        if nd is None or nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared"):
-            # the node moved on during the model call — resolved, cleared, or re-planned away. Never
-            # apply a verdict formed against the pre-call state; surface the race so it's observable.
-            if why is not None:
-                _log_judge_error("sweeper", fsid, "drift-skip", goal=nid,
-                                 note="node changed during the model call (resolved/cleared/re-planned) — settle skipped")
-            continue
-        nd["sweepCheckT"] = newest                     # examined up to here — re-ask only on newer evidence
-        if why is None:
-            continue
-        if record_verdict(store, nd, "sweeper", "done", newest,
-                          why=("delivered elsewhere: " + why) if why else "delivered elsewhere"):
-            nd["mt"] = now
-            settled.append(nid)
-    rollup_status(store, _session_closed(session))
-    save_goals(fsid, store)
-    return settled
-
-
-def run_sweep(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
-    """One SWEEPER pass (moved-past open goals re-examination), triage tier, run after run_unblock.
-    Per-session sequential (one call covers all its due goals), sessions concurrent."""
-    if now is None:
-        now = int(time.time())
-    fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]
-    n = 0
-    with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = {ex.submit(_sweep_session, fsid, str(path), now): fsid
-                for fsid, path, anchor, name in fleet}
-        for fut in as_completed(futs):
-            try:
-                n += len(fut.result())
-            except Exception:
-                pass
-    if verbose:
-        sys.stderr.write("romp-judge: sweeper settled %d delivered-elsewhere goals\n" % n)
     return n
 
 
@@ -7879,11 +7719,6 @@ def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ve
             # after the closer (a just-completed top's blocks are already moot) and before the distiller
             # (a lifted block's card re-rolls to working in this same pass)
             run_unblock(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
-        if SWEEP_ON:
-            # after the closer AND the unblocker: a settle this pass just landed (closer) or a block just
-            # lifted (unblocker) is exactly the fresh evidence a moved-past sibling should be judged
-            # against, and before the distiller so a swept done distills in this same pass
-            run_sweep(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
         run_courier(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
         run_propagate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)   # delegated goal done on B → check off the sender's tracking node
         if GROUPER_ON:

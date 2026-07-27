@@ -3445,6 +3445,88 @@ class SweepTurn(unittest.TestCase):
         self.assertEqual(captured.get("gh"), "", "no seg_by_id -> unchanged behavior, no history block")
 
 
+class StatusReportMenu(unittest.TestCase):
+    """The closer-menu WIDENING (the user 2026-07-26), replacing the reverted sweeper (PR #32): a turn
+    whose trigger is a follow-up / nudge / clear-wrap carries a reply accounting for the whole session's
+    work, so every open working TOP rides its closer menu — one all-shipped reply settles every card it
+    covers, not just the goal it was asked about (2026-07-25: a docs top sat working across exactly such
+    a reply until the user cleared it by hand). State-free by design: closedSig one-shots per turn."""
+
+    def setUp(self):
+        self._llm = jd.closer_llm
+
+    def tearDown(self):
+        jd.closer_llm = self._llm
+
+    def _session(self, marker):
+        """A status-ask turn (trigger carries `marker`) whose reply reports the SIBLING's work shipped."""
+        s = build_session([
+            uline(T0, "Where does the deployment guide stand? " + marker, "u1", ps="typed"),
+            aline(T0 + 20, "Guide shipped - and the rate-limit tuning went out with it. "
+                           "Both are live; nothing left on either.", "a1", "u1", stop="end_turn"),
+        ])
+        return s["turns"][0], em.segments(s["turns"][0])[0]
+
+    def _spy(self, reply):
+        captured = {}
+
+        def spy(tt, mt, gh=""):
+            captured["mt"] = mt
+            return reply
+        jd.closer_llm = spy
+        return captured
+
+    def test_a_status_reply_settles_the_unasked_open_top(self):
+        turn, seg = self._session("<!-- romp-goal-id: %s:g1 --><!-- romp-injected -->" % SID)
+        store = _store()
+        g1 = _mknode(store, "Ship the deployment guide")
+        g2 = _mknode(store, "Tune the api rate limits")     # unasked, open, working — the g689 shape
+        store["placements"][seg["id"]] = g1["id"]
+        captured = self._spy('{"done": [{"goal": 1, "why": "guide shipped"},'
+                             ' {"goal": 2, "why": "the reply reports the tuning live too"}]}')
+        newly = jd._close_turn(store, turn)
+        self.assertEqual(set(newly), {g1["id"], g2["id"]},
+                         "the unasked sibling settles from the same reply")
+        self.assertTrue(store["nodes"][g2["id"]]["nodeComplete"])
+        self.assertIn("Tune the api rate limits", captured["mt"], "the sibling top rode the menu")
+        self.assertIn("status check", captured["mt"], "…with the status-report framing")
+
+    def test_a_clear_wrap_turn_widens_too(self):
+        turn, seg = self._session("<!-- romp-clear-wrap -->")
+        store = _store()
+        g2 = _mknode(store, "Tune the api rate limits")
+        captured = self._spy('{"done": []}')
+        jd._close_turn(store, turn)                     # no placements at all: the widened menu alone runs
+        self.assertIn("Tune the api rate limits", captured["mt"],
+                      "a wrap reply is a status account — open tops ride even with nothing placed")
+
+    def test_an_ordinary_turn_does_not_widen(self):
+        turn, seg = self._session("")                   # no romp marker → a plain typed prompt
+        store = _store()
+        g1 = _mknode(store, "Ship the deployment guide")
+        g2 = _mknode(store, "Tune the api rate limits")
+        store["placements"][seg["id"]] = g1["id"]
+        captured = self._spy('{"done": []}')
+        jd._close_turn(store, turn)
+        self.assertNotIn("Tune the api rate limits", captured["mt"],
+                         "ordinary turns keep the placement-scoped menu")
+
+    def test_ruled_and_agent_owned_tops_stay_off_the_widened_menu(self):
+        turn, seg = self._session("<!-- romp-goal-id: %s:g1 --><!-- romp-injected -->" % SID)
+        store = _store()
+        g1 = _mknode(store, "Ship the deployment guide")
+        store["placements"][seg["id"]] = g1["id"]
+        done = _mknode(store, "already finished", complete=True)
+        blocked = _mknode(store, "waiting on the user"); blocked["blocked"] = True
+        owed = _mknode(store, "agent still owes work")
+        owed["agentTask"] = {"key": "k1", "status": "open"}
+        sub = _mknode(store, "a sub, not a card", parent=g1["id"])
+        captured = self._spy('{"done": []}')
+        jd._close_turn(store, turn)
+        for absent in ("already finished", "waiting on the user", "agent still owes work", "a sub, not a card"):
+            self.assertNotIn(absent, captured["mt"], "%r must not ride the widened menu" % absent)
+
+
 class SweepSession(unittest.TestCase):
     """End-to-end on a sandboxed fleet: the planner (positive-only, never DONE'ing) leaves tops
     working; the negative sweep completes the ones it's told are no longer outstanding, while the
