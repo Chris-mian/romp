@@ -45,6 +45,14 @@ These are for scripting and for agents rather than daily use:
 | `romp resume <id> [--name <n>] [--detach]` | Resume one exact conversation by UUID |
 | `romp refresh --now` | Refresh without waiting for sessions to finish their turns |
 
+Two things to know before building on `romp sessions --json`. **`waiting` means
+at rest**, the ordinary state of a session that has finished its turn, so
+matching it as an alert badges the whole idle fleet as needing you; the states
+that want a person are `awaiting`, a permission prompt, and `blocked`. And
+**`id` is the durable key**, not `lastSid`: everything Romp files per session is
+keyed by `id`, while `lastSid` is the live transcript's id and forks on
+`/clear`.
+
 ## The Romp Postal Service
 
 How sessions message each other, from either side. Inside a session it is an MCP

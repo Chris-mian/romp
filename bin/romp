@@ -709,6 +709,20 @@ fi
 # --json emits the kernel's rows verbatim (id, name, state, dir, bg, fg, backend, working, lastSid);
 # bare prints one aligned line per session. A dead kernel fails LOUDLY rather than printing an empty
 # list, which would read as "no sessions" and hide the breakage this command exists to end.
+#
+# TWO TRAPS for a consumer, both found the hard way (2026-07-27, the downstream editor extension):
+#
+#   * `waiting` is AT REST, not attention-needed. It is the ordinary state of a session sitting
+#     there having finished its turn, and it is what most of the fleet reads most of the time.
+#     Substring-matching /wait/ into an alert paints a "needs you" badge on every idle session,
+#     which is worse than the blank it replaced. The states that DO want the user are `awaiting`
+#     (a permission prompt) and `blocked`. See bin/romp-dashboard, which groups
+#     waiting|idle as at rest.
+#   * `id` is the durable key, NOT `lastSid`. Every per-session store romp keeps (states/,
+#     captions/, goals/, episodes/) is filed under `id`. `lastSid` is the live Claude Code
+#     transcript's fsid, which FORKS on /clear — it is what the old tmux @romp-session-id
+#     tracked, being re-anchored per fork, so it is the natural guess and the wrong one. On a
+#     fleet of 11 here, all 11 had records under `id` and only 6 under `lastSid`.
 if [[ "${1:-}" == "sessions" ]]; then
     shift
     _json=false
