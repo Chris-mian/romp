@@ -374,14 +374,17 @@ background:#101418;color:#dfe7ee;font:15px/1.5 -apple-system,system-ui,sans-seri
 location.replace('/?token='+encodeURIComponent(document.getElementById('t').value.trim()));return false">
   <div style="font-size:1.6em;letter-spacing:.04em;margin-bottom:.4em">romp</div>
   <div style="opacity:.8;margin-bottom:1.2em">This dashboard needs its access token &mdash; every
-  request is token-gated, loopback included.</div>
+  request is token-gated, loopback included. If this tab worked before, romp was reinstalled and
+  minted a new token: you are signed out, not broken.</div>
   <input id="t" autofocus placeholder="paste token"
     style="width:100%;box-sizing:border-box;padding:.55em .7em;border:1px solid #35414d;\
 border-radius:6px;background:#0c1117;color:#dfe7ee">
   <button style="margin-top:.9em;padding:.5em 1.4em;border:0;border-radius:6px;\
 background:#9cd2ff;color:#0c1a2e;font-weight:600;cursor:pointer">Open</button>
   <div style="opacity:.6;margin-top:1.2em;font-size:.9em">Get a ready-made link with
-  <code>romp</code>, or read <code>~/.local/state/romp/serve-token</code>.</div>
+  <code>romp url</code> &mdash; in a NEW terminal if romp was just installed, since the old one
+  has a stale <code>PATH</code>. No <code>romp</code> yet?
+  <code>cat ~/.local/state/romp/serve-token</code></div>
 </form>
 """
 

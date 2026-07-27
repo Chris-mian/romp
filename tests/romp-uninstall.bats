@@ -176,3 +176,25 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"romp uninstall"* ]]
 }
+
+# ── the invisible consequence of --purge ─────────────────────────────────────
+# The dashboard is token-gated and the first visit stores a year-long cookie, so an open tab
+# keeps working until the state dir goes and the next kernel mints a NEW token. Then that tab
+# drops to the token page, which reads as "the dashboard never loaded" rather than "signed out"
+# — which is exactly how it landed on a real reinstall. The teardown step that causes it must
+# say so, so the cycle is self-explanatory without anyone diagnosing it.
+
+@test "romp-uninstall: --purge warns the browser session is invalidated, and how to get back in" {
+    run "$CLONE/bin/romp-uninstall" --yes --purge
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"signed out"* || "$output" == *"token page"* ]]
+    [[ "$output" == *"romp url"* ]]                 # the exact command that fixes it
+    [[ "$output" == *"not a failed install"* ]]     # names the misreading it prevents
+}
+
+@test "romp-uninstall: says nothing about tokens when state is kept (no new token is minted)" {
+    run "$CLONE/bin/romp-uninstall" --yes
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"signed out"* ]]
+    [[ "$output" != *"token page"* ]]
+}
