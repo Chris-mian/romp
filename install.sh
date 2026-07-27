@@ -263,13 +263,22 @@ fi
 
 echo
 if [[ -n "$_tok" ]]; then
-    echo "  romp is running. Your dashboard:"
+    # Lead with the command, not the URL. `romp` opens the dashboard AND prints the link, so it
+    # is the shorter thing to remember and the thing the docs already tell you to type (the user
+    # 2026-07-27). The link stays as the fallback, for two cases the command cannot cover: THIS
+    # terminal still has the pre-install PATH so `romp` will not resolve in it, and a headless or
+    # remote box has no browser to open — there, the URL is the only way in.
+    echo "  romp is running."
+    echo
+    echo "      Open a new terminal and type:  romp"
+    echo
+    echo "  That opens the dashboard in your browser and prints its link. Or open this"
+    echo "  directly — the first visit signs the browser in, and afterwards"
+    echo "  http://127.0.0.1:$_kport/ works on its own:"
     echo
     echo "      http://127.0.0.1:$_kport/?token=$_tok"
     echo
-    echo "  Open that link in your browser: the first visit signs the browser in;"
-    echo "  after that, http://127.0.0.1:$_kport/ works on its own. Print the link"
-    echo "  again anytime:  romp url"
+    echo "  Print the link again anytime:  romp url"
 elif [[ -n "${ROMP_NO_SERVICE:-}" ]]; then
     echo "  Auto-start was skipped (ROMP_NO_SERVICE). Start romp with:  romp up"
     echo "  then open the dashboard link:  romp url"

@@ -198,3 +198,59 @@ EOF
     [[ "$output" != *"signed out"* ]]
     [[ "$output" != *"token page"* ]]
 }
+
+# ── romp's judge scratch, which lives OUTSIDE the state dir ──────────────────
+# romp runs judges as `claude` rooted at /tmp/romp-judge, so Claude Code writes their
+# transcripts to a project dir keyed on that path — outside $STATE, so --purge missed them and a
+# reinstalled romp kept showing judge records from the PREVIOUS install. They are romp's own
+# droppings, never a session anyone started, so the teardown owns them.
+
+@test "romp-uninstall: removes romp's judge scratch and its transcripts" {
+    export ROMP_JUDGE_SCRATCH="$TEST_DIR/romp-judge"
+    export CLAUDE_CONFIG_DIR="$HOME/.claude"
+    mkdir -p "$ROMP_JUDGE_SCRATCH"
+    proj="$CLAUDE_CONFIG_DIR/projects/${ROMP_JUDGE_SCRATCH//\//-}"
+    mkdir -p "$proj"
+    echo '{"synthetic":"judge call"}' > "$proj/11111111-2222-3333-4444-555555555555.jsonl"
+
+    run "$CLONE/bin/romp-uninstall" --yes --purge
+    [ "$status" -eq 0 ]
+
+    [ ! -d "$ROMP_JUDGE_SCRATCH" ]
+    [ ! -d "$proj" ]
+}
+
+@test "romp-uninstall: never touches YOUR sessions under ~/.claude/projects" {
+    export ROMP_JUDGE_SCRATCH="$TEST_DIR/romp-judge"
+    export CLAUDE_CONFIG_DIR="$HOME/.claude"
+    mkdir -p "$ROMP_JUDGE_SCRATCH"
+    mkdir -p "$CLAUDE_CONFIG_DIR/projects/${ROMP_JUDGE_SCRATCH//\//-}"
+    # A real project dir of the user's, which must survive untouched — deleting it would
+    # destroy their own Claude Code history, which is not romp's to remove.
+    mine="$CLAUDE_CONFIG_DIR/projects/-home-someone-notes-api"
+    mkdir -p "$mine"
+    echo '{"synthetic":"my session"}' > "$mine/99999999-8888-7777-6666-555555555555.jsonl"
+
+    run "$CLONE/bin/romp-uninstall" --yes --purge
+    [ "$status" -eq 0 ]
+
+    [ -f "$mine/99999999-8888-7777-6666-555555555555.jsonl" ]
+    [ -d "$CLAUDE_CONFIG_DIR/projects" ]
+}
+
+@test "romp-uninstall: a mangled judge scratch can never resolve to the projects dir itself" {
+    export CLAUDE_CONFIG_DIR="$HOME/.claude"
+    mine="$CLAUDE_CONFIG_DIR/projects/-home-someone-notes-api"
+    mkdir -p "$mine"
+    echo '{"synthetic":"my session"}' > "$mine/99999999-8888-7777-6666-555555555555.jsonl"
+
+    # Each of these would expand to a catastrophic `rm -rf` if taken at face value.
+    for bad in "/" "" "$HOME" "/tmp" "/tmp/romp-judge/.."; do
+        ROMP_JUDGE_SCRATCH="$bad" run "$CLONE/bin/romp-uninstall" --yes --purge
+        [ "$status" -eq 0 ]                       # skipped, not aborted
+        [ -d "$CLAUDE_CONFIG_DIR/projects" ]
+        [ -f "$mine/99999999-8888-7777-6666-555555555555.jsonl" ]
+        [ -d "$HOME" ]
+    done
+    [ -d "/tmp" ]
+}
