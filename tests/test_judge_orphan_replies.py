@@ -72,6 +72,20 @@ class SynthesizeOrphans(unittest.TestCase):
             [_marker(160, "e1", "API Error: 529 Overloaded. This is a server-side issue.")], atoms)
         self.assertEqual(got, [], "pre-tagging markers hold the CLI's error text — noise, not work")
 
+    def test_a_textless_disk_twin_does_not_eat_the_salvage(self):
+        """(the user 2026-07-28): on some model+tool combinations (observed: fable-5 replying before an
+        AskUserQuestion) the CLI persists the streamed reply text as an EMPTY thinking record under the
+        SAME uuid — the very loss the marker salvages. The uuid dedup counted that twin as 'the disk
+        kept it' and dropped the marker; a textless record must not dedup a texty marker."""
+        atoms = [_atom("u1", 100, "the ask", typ="user"),
+                 {"type": "assistant", "uuid": "a5", "session_id": SID, "t": 150, "fsid": "f",
+                  "parentUuid": None, "_seq": 150,
+                  "message": {"role": "assistant",
+                              "content": [{"type": "thinking", "thinking": ""}]}}]
+        got = em.synthesize_orphans([_marker(160, "a5", "the explanation before the picker")], atoms)
+        self.assertEqual([g["uuid"] for g in got], ["a5"])
+        self.assertEqual(got[0]["message"]["content"][0]["text"], "the explanation before the picker")
+
 
 def iso(t):
     return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
