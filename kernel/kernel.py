@@ -14737,8 +14737,12 @@ function unseen(){var n=0;for(var i=0;i<NOTES.length;i++)if(!NOTES[i].seen&&kind
 // problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects —
 // and stays dark entirely while the offline kind is muted).
 // No count badge — it clipped against the bar edge and the number added nothing (the user 2026-07-27).
+// the unread count draws INSIDE the bell (digits 1-9, '+' for many, blank when read — the user
+// 2026-07-28); it reddens with the bell via fill=currentColor.
 function paint(){var n=unseen();
-[icon,micon].forEach(function(el){if(el)el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));});
+[icon,micon].forEach(function(el){if(!el)return;
+el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
+var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
 var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror'];
@@ -15517,6 +15521,20 @@ def _rdrift_block():
             + "<script>" + _RDRIFT_JS + "</script>")
 
 
+# The notification bell, shared by the desktop rail and the mobile bar. The unread COUNT lives
+# INSIDE the bell body (the user 2026-07-28 — the old corner badge clipped): an svg <text> centered
+# in the body, digits 1-9, '+' for more, empty when nothing is unread (the errs JS drives .rerr-n).
+# fill=currentColor so the digit reddens with the bell. SVG ATTRIBUTES QUOTED (the rail-net saga).
+_BELL_SVG = (
+    "<svg viewBox='0 0 16 16' width='17' height='17'>"
+    "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
+    " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
+    "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/>"
+    # size 8 / baseline 10.8 chosen by headless A-B against 7/10.4: visibly fuller at the rendered
+    # 17px, still clear of the body walls (interior x 4.5-11.5, y 2-11.5)
+    "<text class='rerr-n' x='8' y='10.8' text-anchor='middle' font-size='8' font-weight='700'"
+    " fill='currentColor'></text></svg>")
+
 # The kernel-restart glyph, shared by the desktop rail and the mobile bar. A browser-style reload:
 # a circular arc sweeping clockwise from 4 o'clock the long way round to 1 o'clock, arrowhead at the
 # end (the user 2026-07-27 — the ↻ TEXT glyph stopped short at 11 o'clock and read as "weird", and its
@@ -15947,13 +15965,10 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + network + settings, pinned to the far RIGHT (settings last), always visible:
             "<div class=rail-acts>"
-            # the notification bell (the user 2026-07-27): monochrome outline like its neighbors, red +
-            # unread badge when an error lands (see _LANDING_ERRS_JS). ATTRIBUTES QUOTED (the rail-net saga).
+            # the notification bell (the user 2026-07-27): monochrome outline like its neighbors; goes red
+            # with the unread count drawn INSIDE the body when an error lands (see _BELL_SVG + _LANDING_ERRS_JS).
             "<div class=rail-act id=rail-errs title='Errors — click to open' aria-label=Errors>"
-            "<svg viewBox='0 0 16 16' width='17' height='17'>"
-            "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
-            " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
-            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/></svg>"
+            + _BELL_SVG +
             "</div>"
             # the refresh glyph is a REAL browser-style reload icon now (the user 2026-07-27: the ↻ text
             # glyph stopped at 11 o'clock and never read as refresh): a near-full circular arc sweeping
@@ -16004,10 +16019,7 @@ def _landing():
             "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
             # the notification bell on mobile too (same glyph + badge; opens the same popover)
             "<button class=mact id=merr data-act=errs aria-label=Errors title='Errors — click to open'>"
-            "<svg viewBox='0 0 16 16' width='17' height='17'>"
-            "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
-            " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
-            "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/></svg>"
+            + _BELL_SVG +
             "</button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
             "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"
