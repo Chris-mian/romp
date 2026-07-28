@@ -97,9 +97,22 @@ else
     fi
 
     echo "release: watching run $run_id (macOS bats is ~16 min; this is the wait you are paying for)..."
-    "$GH" run watch "$run_id" --exit-status \
-        || die "the macOS run did not pass — NOT tagging $tag.
+    # Poll `run view`, never `gh run watch`: watch holds one long connection and
+    # treats ANY hiccup — a GitHub 502, a local socket error — as run failure.
+    # Twice (2026-07-27) it declared a still-running, ultimately GREEN gate "did
+    # not pass". Here a transient API error just yields an empty conclusion and
+    # we poll again; only the run's own verdict ends the wait.
+    conclusion=""
+    while :; do
+        conclusion="$("$GH" run view "$run_id" --json conclusion -q .conclusion 2>/dev/null || true)"
+        if [ -n "$conclusion" ]; then break; fi
+        if [ "$POLL" = "0" ]; then break; fi     # test mode: never spin
+        sleep "$POLL"
+    done
+    if [ "$conclusion" != "success" ]; then
+        die "the macOS run did not pass (conclusion: ${conclusion:-none}) — NOT tagging $tag.
   Fix it, or re-run with --skip-macos if you have decided to ship anyway."
+    fi
     echo "release: macOS run green."
 fi
 
