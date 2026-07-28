@@ -30,9 +30,6 @@ setup() {
     git -C "$ROMP_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m r2
     git -C "$ROMP_REPO" tag v0.2.0
     git -C "$ROMP_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m post-release
-
-    # Stub dir for per-test fakes (a `gh` standing in for various fork situations).
-    STUB="$TEST_DIR/stub"; mkdir -p "$STUB"
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -99,95 +96,6 @@ teardown() { rm -rf "$TEST_DIR"; }
 # origin (upstream rulesets reject a direct push) — but a plain clone has only `origin`,
 # so a fresh install could not follow the workflow the repo documents.
 
-@test "bootstrap.sh: wires a 'fork' remote and pushDefault so a fresh clone can publish" {
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/someone/romp.git" \
-        run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://example.invalid/someone/romp.git" ]
-    [ "$(git -C "$HOME/romp" config --get remote.pushDefault)" = "fork" ]
-    # A bare `git push` must target the fork, never upstream.
-    [[ "$output" == *"Publishing remote 'fork'"* ]]
-}
-
-@test "bootstrap.sh: never clobbers a fork remote the contributor already set" {
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/first/romp.git" \
-        run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    # Re-running (the documented way to update) must leave their remote alone.
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/second/romp.git" \
-        run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://example.invalid/first/romp.git" ]
-}
-
-@test "bootstrap.sh: a user with NO fork gets no remote and no output about one" {
-    # The overwhelming majority of installs. gh is present and logged in, but this user has never
-    # forked romp — deriving <gh-user>/romp and wiring it blind (the first cut of this) gave them a
-    # remote pointing at a nonexistent repo, pushDefault aimed at it, and a baffling line mid-install.
-    cat > "$STUB/gh" <<'EOF'
-#!/usr/bin/env bash
-# authenticated, but `gh repo view <user>/romp` fails: no such fork
-case "$*" in
-  "api user --jq .login") echo "someone" ;;
-  *"repo view"*)          exit 1 ;;
-esac
-EOF
-    chmod +x "$STUB/gh"
-
-    PATH="$STUB:$PATH" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    ! git -C "$HOME/romp" remote get-url fork 2>/dev/null
-    [ -z "$(git -C "$HOME/romp" config --get remote.pushDefault || true)" ]
-    [[ "$output" != *"Publishing remote"* ]]
-    [[ "$output" != *"someone/romp"* ]]
-}
-
-@test "bootstrap.sh: a user who DOES have a fork still gets it wired" {
-    cat > "$STUB/gh" <<'EOF'
-#!/usr/bin/env bash
-case "$*" in
-  "api user --jq .login") echo "contributor" ;;
-  *"repo view"*)          echo "true" ;;      # it exists AND is a fork
-esac
-EOF
-    chmod +x "$STUB/gh"
-
-    PATH="$STUB:$PATH" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://github.com/contributor/romp.git" ]
-    [ "$(git -C "$HOME/romp" config --get remote.pushDefault)" = "fork" ]
-}
-
-@test "bootstrap.sh: a repo named romp that is NOT a fork is left alone" {
-    cat > "$STUB/gh" <<'EOF'
-#!/usr/bin/env bash
-case "$*" in
-  "api user --jq .login") echo "someone" ;;
-  *"repo view"*)          echo "false" ;;     # exists, but an unrelated repo of the same name
-esac
-EOF
-    chmod +x "$STUB/gh"
-
-    PATH="$STUB:$PATH" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    ! git -C "$HOME/romp" remote get-url fork 2>/dev/null
-}
-
-@test "bootstrap.sh: no fork remote is not fatal — installing is not contributing" {
-    # Most people never push to romp, and gh may be absent or logged out. PATH without gh
-    # and no ROMP_FORK: the install must still succeed, just without the remote.
-    PATH="/usr/bin:/bin" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *STUB_INSTALL_RAN* ]]
-}
-
-@test "bootstrap.sh: ROMP_NO_FORK_REMOTE opts out" {
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/someone/romp.git" \
-        ROMP_NO_FORK_REMOTE=1 run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    ! git -C "$HOME/romp" remote get-url fork 2>/dev/null
-}
-
 # ── where the clone lands ────────────────────────────────────────────────────
 
 @test "bootstrap.sh: names the install directory and the knob, since it ignores cwd" {
@@ -199,4 +107,37 @@ EOF
     [[ "$output" == *"Cloning romp into $HOME/romp"* ]]
     [[ "$output" == *"ROMP_DIR"* ]]
     [ ! -e "$TEST_DIR/romp" ]           # never the cwd
+}
+
+# ── the installer's blast radius ─────────────────────────────────────────────
+# Installing romp is not contributing to it. bootstrap once derived <gh-user>/romp from
+# whoever `gh` was logged in as and wired it as a git remote with remote.pushDefault — so an
+# ordinary installer got a remote pointing at a repo they had never created, a `git push`
+# aimed at it, and an unexplained line mid-install (the user 2026-07-27: don't assume the gh
+# CLI, and that is beyond what an installer should configure anyway). These pin the scope so
+# it cannot creep back.
+
+@test "bootstrap.sh: never assumes or invokes the gh CLI" {
+    # A `gh` that fails loudly if called at all. The installer must never reach for it: it is
+    # not a romp dependency, and plenty of machines that run romp will never have it.
+    cat > "$TEST_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "bootstrap invoked gh" >> "$TEST_DIR/gh-was-called"
+exit 1
+EOF
+    chmod +x "$TEST_DIR/gh"
+
+    PATH="$TEST_DIR:$PATH" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    [ ! -f "$TEST_DIR/gh-was-called" ]
+    ! grep -q 'gh ' "$REPO_ROOT/bootstrap.sh"
+}
+
+@test "bootstrap.sh: configures no git remotes or push defaults beyond the clone's own origin" {
+    ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    # origin, and nothing else — no `fork`, no invented publishing target.
+    [ "$(git -C "$HOME/romp" remote)" = "origin" ]
+    [ -z "$(git -C "$HOME/romp" config --get remote.pushDefault || true)" ]
+    [[ "$output" != *"Publishing remote"* ]]
 }
