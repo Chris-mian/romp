@@ -355,6 +355,12 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       // Version drift names HOW it differs, matching the web popover: behind N (a push delivers
       // exactly those), ahead N (a pull collects them), diverged, or different build (sha unknown
       // here). Shas + the remote commit's date ride the tooltip (progressive disclosure).
+      // STALE (the user 2026-07-28): drift comes from the sha of the LAST SUCCESSFUL poll, and only an `up`
+      // row polled this pass. Drawn as fact, a host unreachable for hours still announced "behind 2 commits"
+      // right beside the word "disconnected" — two claims that cannot both be current. Keep the number (a
+      // blank is less useful) but name it as remembered, and date it in the tooltip.
+      const stale = !!t.stale;
+      const seen = t.lastOk ? new Date(t.lastOk * 1000).toLocaleTimeString() : "";
       let ver = "";
       if (t.outOfDate) {
         const bb = t.behindBy, ab = t.aheadBy;
@@ -364,10 +370,12 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
             : ab > 0 ? ` · ahead ${ab} commit${ab === 1 ? "" : "s"}`
             : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
         }
+        if (stale) ver = ver.replace(" · ", " · last known: ");
       }
       nm.textContent = `${t.host} — ${LBL[t.status] || t.status}` + ver;
       nm.title = (TIP[t.status] || "")
         + (t.outOfDate ? `\n\nRunning ${t.kernelSha || "?"}${t.kernelDate ? " from " + t.kernelDate : ""}; this machine is at ${t.localSha || "?"}.` : "")
+        + (stale && t.outOfDate ? `\nLast confirmed ${seen || "not since this kernel started"}; not re-checked while ${LBL[t.status] || t.status}.` : "")
         + (t.outOfDate && t.checkinPeer ? " No ssh path from this machine (it checked in over its own tunnel) — sync from its own dashboard." : "");
       r.append(dot, nm);
       // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is

@@ -5128,9 +5128,18 @@ def _tunnel_status(proc_alive, port_up, remote_answered):
 def _remote_public(r):
     """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen.
     kernelSha/localSha/outOfDate let the dashboard flag a remote running older code + offer to update it;
-    behindBy/aheadBy/kernelDate say HOW it drifted (computed only when it actually did)."""
+    behindBy/aheadBy/kernelDate say HOW it drifted (computed only when it actually did).
+
+    stale/lastOk (the user 2026-07-28): kernelSha, the drift counts and the mail-tier mirror are all the
+    LAST SUCCESSFUL poll's answer, never a live one — only an `up` row polled this pass. A disconnected row
+    kept shipping them as current, so a peer unreachable for hours still reported "behind 2 commits" and a
+    mail tier it could not possibly know, a readout that contradicted the row's own "disconnected" label.
+    Keep sending the cached values (they remain the best available answer, and the row should not go blank)
+    but SAY they are remembered and when they were last confirmed, so the UI can mark them instead of
+    passing memory off as fact."""
     ood = _remote_out_of_date(r)
     drift = _behind_info(r.get("kernel_sha") or "") if ood else {"behind": 0, "ahead": 0, "date": ""}
+    stale = (r.get("status") or "down") != "up"
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
             "busPort": r.get("bus_port") or 0,   # peer-bus mode: a restarted bus reseeds its peer table from this
             "checkin": bool(r.get("checkin")),           # we publish ourselves to this hub (stage 3)
@@ -5152,7 +5161,28 @@ def _remote_public(r):
             # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
             # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
             "gaveUp": bool(r.get("gave_up")), "fails": int(r.get("fails") or 0),
-            "maxTries": TUNNEL_MAX_TRIES}
+            "maxTries": TUNNEL_MAX_TRIES,
+            # not live: everything above derived from kernel_sha / the peer's declared tier is a memory of
+            # the last successful exchange. lastOk is when that was (0 = never seen up this process).
+            "stale": stale, "lastOk": int(r.get("last_ok") or 0)}
+
+
+_remotes_saved_sig = None   # signature of the last blob written — lets the supervisor save ONLY on a real
+#                             change instead of rewriting a 0600 credential file every pass forever.
+
+
+def _remotes_rows_for_save():
+    with _remotes_lock:
+        return [{k: v for k, v in r.items() if k != "proc"} for r in _remotes.values()]
+
+
+def _remotes_sig(rows):
+    """Change signature for the periodic save. EXCLUDES last_ok on purpose: the supervisor restamps it
+    every pass a host answers, so counting it would make every tick look like a change. It is still
+    WRITTEN — when a real change (a status flip, a new sha, a fail) triggers the save, the current last_ok
+    rides along, which is exactly the moment the stamp earns its keep: the save fired BY a drop carries
+    the last time that host was actually seen up."""
+    return json.dumps([{k: v for k, v in r.items() if k != "last_ok"} for r in rows], sort_keys=True)
 
 
 def _remotes_save():
@@ -5160,12 +5190,27 @@ def _remotes_save():
     0600: every row carries that host's SERVE TOKEN (fetched over ssh at attach), so this file is a
     credential store — at the default 0644 any other local user could lift a remote's token and drive
     that machine's kernel through the tunnel, which would defeat the loopback token gate for federation."""
-    with _remotes_lock:
-        rows = [{k: v for k, v in r.items() if k != "proc"} for r in _remotes.values()]
+    global _remotes_saved_sig
+    rows = _remotes_rows_for_save()
     try:
         _atomic_write(REMOTES_FILE, json.dumps(rows), mode=0o600)
+        _remotes_saved_sig = _remotes_sig(rows)
     except Exception:
         sys.stderr.write("remotes save: %s\n" % traceback.format_exc())
+
+
+def _remotes_save_if_changed():
+    """Persist what the SUPERVISOR owns (the user 2026-07-28). _remotes_save() was called only by the act
+    routes — attach/detach/trust/checkin — so status, fails, gave_up, kernel_sha and detail lived in memory
+    alone. A host that failed, got persisted mid-failure by some unrelated act, then quietly recovered left
+    the file frozen on the failure: hours after the tunnel was healthily up, the on-disk row still read
+    `starting`, with a stale sha and a by-then-unreachable hostname parked in `detail`. Nothing consumes it
+    wrongly today (a boot resets the retry budget anyway), but this file is the record of last known state
+    and it was lying about it. Signature-gated, so an idle healthy fleet writes nothing at all."""
+    if _remotes_sig(_remotes_rows_for_save()) == _remotes_saved_sig:
+        return False
+    _remotes_save()
+    return True
 
 
 def _remotes_load():
@@ -6009,6 +6054,8 @@ def _tunnel_supervisor():
                     if st == "up":
                         r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff
                         r.pop("gave_up", None)             # ...and re-arm the budget for a later drop
+                        r["last_ok"] = time.time()         # the moment the cached sha/tier below were TRUE,
+                        #                                    so a later down row can date what it remembers
                         if r.get("detail"):
                             r["detail"] = ""               # any parked error/hint is moot once it answers
                     elif st == "no-kernel" and not r.get("booting"):
@@ -6061,6 +6108,10 @@ def _tunnel_supervisor():
                 # tier too — their mail arrives relayed through a hub and is judged by true origin.
                 # Once per (host, level); a failed push retries next pass.
                 _push_origin_trust_rows()
+            # Everything above is the supervisor's own state (status, fails, gave_up, kernel_sha, detail).
+            # None of it used to reach disk — only the act routes saved — so the file could sit frozen on a
+            # failure long after the row recovered. Signature-gated: a steady fleet writes nothing.
+            _remotes_save_if_changed()
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
         _tunnel_wake.wait(15)
@@ -15367,14 +15418,22 @@ var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status
 // commits' (a push delivers exactly those), 'ahead N commits'/'diverged' (it has commits this repo lacks — a
 // push would clobber them, and the kernel refuses), or 'different build' (its sha is unknown here, e.g. it was
 // updated from another machine). Shas + the remote commit's date ride the tooltip. Else its sha.
+// STALE (the user 2026-07-28): only an `up` row was polled this pass, so a sha, a drift count and the mail
+// tier below are all a MEMORY of the last exchange. A disconnected row used to draw them as fact — it would
+// report 'behind 2 commits' and a peer's mail tier for a host it had not reached in hours, flatly
+// contradicting the 'disconnected' word sitting beside it. Keep the value (a blank row is worse) but say it
+// is remembered, and date it on hover: glanceable mark, mechanics one hover away.
+var stl=!!t.stale;
+var sw=stl?(t.lastOk?('last confirmed '+new Date(t.lastOk*1000).toLocaleTimeString()):'never confirmed since this kernel started'):'';
+var sq=stl?(' \\u2014 '+sw+'; not re-checked while '+(LBL[t.status]||t.status)+'.'):'';
 var ver='';
 if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
 if(typeof bb==='number'&&typeof ab==='number'){
 w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
 var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'')
 +(t.checkinPeer?' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.':'');
-ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
-else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
+ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+w+'</span>';}
+else if(t.kernelSha){ver=' \\u00b7 <span class=\"rnet-sha'+(stl?' rnet-stale':'')+'\" title=\"'+(stl?'same build as this machine when last reached.'+sq:'same build as this machine')+'\">'+(stl?'last known: ':'')+t.kernelSha+'</span>';}
 // A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
 // flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
 var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');
@@ -15410,7 +15469,7 @@ var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select cl
 var theirs=tiers[t.host]||'';
 if(theirs){var mm=theirs!==tcur;
 var mpd=pendLvl(_pendMirror,t.host,theirs);   // confirmed by the peer's next tier gossip, not the POST
-trust+='<span class=\"rnet-back'+(mm&&!mpd?' rnet-mismatch':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.\">'+t.host+' holds yours: '+theirs+'</span>';
+trust+='<span class=\"rnet-back'+(mm&&!mpd?' rnet-mismatch':'')+(stl?' rnet-stale':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.'+sq+'\">'+t.host+' holds yours: '+(stl?'last known ':'')+theirs+'</span>';
 if(mpd){trust+='<button class=rnet-mirror disabled title=\"Set on '+t.host+'; waiting for its bus to confirm on the next exchange.\">Matching\\u2026</button>';}
 else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'+tcur+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
 // Line 1 is what this host is doing right now plus the acts you perform on it; line 2 is the pair of
@@ -15984,6 +16043,12 @@ def _landing():
             ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
+            # STALE: a remembered value on a row that is not currently up. Muted + dotted underline, and it
+            # OVERRIDES .rnet-old's accent (two classes beat one) — an accent-blue "behind 2 commits" reads as
+            # a live finding you should act on, which is exactly the false confidence being fixed here. A CSS
+            # cue, never a glyph.
+            ".rnet-old.rnet-stale,.rnet-sha.rnet-stale,.rnet-back.rnet-stale{color:#6e7681;font-style:italic;"
+            "text-decoration:underline dotted 1px;text-underline-offset:2px}"
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
             ".rnet-empty{color:#6e7681;font-size:11px}"   # the one dim gray the panel already uses, not a fourth
             # "Automatically update" — a panel-wide setting, so it wears the same muted label treatment as the
