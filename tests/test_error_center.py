@@ -190,7 +190,7 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertTrue(a["open"])
         self.assertEqual(a["rows"], 2)
         self.assertTrue(a["red"], "chat is still down → the live cue stays")
-        self.assertEqual(a["num"], "", "everything read → the bell carries no number")
+        self.assertEqual(a["num"], "!", "everything read → the triangle shows its own '!' glyph again")
         self.assertIn("delivery failed", a["newestFirst"], "newest entry renders first")
 
     def test_rows_lead_with_the_feeds_chip_vocabulary(self):
@@ -256,12 +256,18 @@ class ErrorCenterWiring(unittest.TestCase):
         for pin in ("id=rail-errs", "id=rerr-back", "id=rerr-list", "id=rerr-clear", "id=merr"):
             self.assertIn(pin, html)
         self.assertNotIn("rerr-badge", html)   # the CORNER badge clipped and is gone (the user 2026-07-27);
-        # the count now lives INSIDE the bell body (the user 2026-07-28): an svg <text> the JS drives,
-        # reddening with the bell via fill=currentColor
+        # the count lives INSIDE the glyph (the user 2026-07-28): an svg <text> the JS drives,
+        # reddening with the outline via fill=currentColor
         self.assertIn("<text class='rerr-n'", html)
-        self.assertEqual(html.count("class='rerr-n'"), 2, "rail + mobile, both from the ONE _BELL_SVG")
+        self.assertEqual(html.count("class='rerr-n'"), 2, "rail + mobile, both from the ONE _ERRS_SVG")
         self.assertIn("n>9?'+':String(n)", html)
-        self.assertIn("title='Errors — click to open'", html)   # the bell says what it is
+        # the errors glyph is a warning TRIANGLE since 2026-07-28 — the BELL shape now belongs to the
+        # session/card notification toggles, so the error center must not wear it; when nothing is
+        # unread the JS writes the triangle's own '!' (an empty outline reads as a blank shape)
+        self.assertIn("M8 2.2 L14.6 13.4 L1.4 13.4 Z", html)
+        self.assertIn("n<=0?'!'", html)
+        self.assertNotIn("M8 2 C5.8 2 4.5 3.7", html, "the old bell path left the shell entirely")
+        self.assertIn("title='Errors — click to open'", html)   # the glyph says what it is
         # the panel speaks the shared modal vocabulary (network panel / settings card), never the
         # undefined --vscode-font-family shorthand that rendered oversized in the browser shell
         self.assertIn("font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}#rerr-panel .rerr-top", html)

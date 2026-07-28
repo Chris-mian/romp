@@ -1313,6 +1313,54 @@ def _set_session_flag(sid, flag, value):
             sys.stderr.write("unmute fast-forward: %s\n" % traceback.format_exc())
 
 
+# ── per-card notification subscriptions (the user 2026-07-28) ─────────────────────────────────────
+# The feed card's right-click "Notify me" toggle: {itemId: true} in notify-cards.json under STATE.
+# Session-level subscriptions ride session-flags.json (flag "notify" — the timeline lane bell / tab
+# menu); this file holds the per-card ones. An armed id gets an OS notification when its card enters
+# needs_input or completed (_feed_notifications). Same mtime+size cache as _session_flags — build_feed
+# echoes it on every push. Ids whose card left the feed are pruned on write (the card is gone; a fresh
+# card is a fresh id), so the file tracks the live feed instead of growing forever.
+_notify_cards_cache = {}   # str(path) -> ((mtime_ns,size), dict)
+
+
+def _notify_cards():
+    p = jd.STATE / "notify-cards.json"
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    hit = _notify_cards_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        d = json.loads(p.read_text())
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    _notify_cards_cache[str(p)] = (key, d)
+    return d
+
+
+def _set_notify_card(item_id, value):
+    cur = dict(_notify_cards())                      # copy: never mutate the cached dict in place
+    if value:
+        cur[item_id] = True
+    else:
+        cur.pop(item_id, None)
+    _atomic_write(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+
+
+def _prune_notify_cards(live_ids):
+    """Drop armed ids whose card is no longer in the feed (cleared/archived — the id never comes back).
+    Called from the feed-diff detector, so the write happens only on the event of a card leaving."""
+    cur = _notify_cards()
+    gone = [i for i in cur if i not in live_ids]
+    if gone:
+        kept = {i: True for i in cur if i in live_ids}
+        _atomic_write(jd.STATE / "notify-cards.json", json.dumps(kept, sort_keys=True))
+
+
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
 # When ON, a background pass follows up on an ORPHANED goal: a session that is ALIVE but went IDLE (its
 # turn ended) while its top goal still shows "working" — not blocked, not completed, not awaiting your
@@ -10157,6 +10205,7 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),
+            "notify": _session_flag(sid, "notify"),   # session-level bell: OS notification when its work blocks on you / completes (the user 2026-07-28)
             # NEVER `now`. This rides the chat payload, and _send_client dedups by comparing the
             # SERIALIZED payload against what that client last received — so a firstSeen that ticked
             # with the wall clock made every build differ, defeated the dedup entirely, and re-sent the
@@ -11813,6 +11862,12 @@ def build_feed(now, tmux=None):
     # QUARANTINED PEER MAIL (per-host trust model): mail from a DIRECTED federated host is held, never
     # auto-injected — each is a human decision (approve/deny/edit), so it surfaces as a needs-you card.
     asks.extend(_quarantine_cards(now, cleared))
+    # per-card bell (the user 2026-07-28): one pass over the FINAL ask list — goal cards, placeholders,
+    # parked handoffs and quarantine cards alike — so every card's right-click menu reflects its armed
+    # state. True/None (not False) keeps unarmed payloads byte-identical to pre-bell ones.
+    _ncards = _notify_cards()
+    for _a in asks:
+        _a["notify"] = True if _ncards.get(_a["itemId"]) else None
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
             # session name -> live judge-classified SERVICE descs (a dev server the session keeps around;
@@ -13114,7 +13169,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "clears": [{"t": r["t"]} for r in jd.episode_rows(sid)[1:] if r.get("t")],
             "faded": faded,
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
-            "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")})  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
+            "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
+            "notify": _session_flag(sid, "notify")})   # lane bell → OS notification when this session's work blocks on you / completes (the user 2026-07-28)
     if with_bars:
         messages = _postal_messages(now, set(id2name), id2name)
         _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)
@@ -13984,7 +14040,8 @@ def _fleet_view_sig(now, tmux):
     sig["__judge__"] = _judge_gen[0]
     sig["__bucket__"] = now // 5
     for p, k in ((jd.STATE / "colormap", "__cmap__"), (jd.STATE / "session-flags.json", "__flags__"),
-                 (jd.STATE / "session-order.json", "__order__")):
+                 (jd.STATE / "session-order.json", "__order__"),
+                 (jd.STATE / "notify-cards.json", "__ncards__")):   # per-card bell arming → the card's menu state
         try:
             sig[k] = os.stat(p).st_mtime
         except OSError:
@@ -14008,7 +14065,63 @@ def _cached_feed(now, tmux, sig, connect=False):
     feed = build_feed(now, tmux)
     feed["buildId"] = bid
     _built_feed[:] = [sig, feed, time.time()]
+    for _t, _b in _feed_notifications(feed):              # armed bells: fresh builds are the transition event
+        _system_notify(_t, _b)
     return feed
+
+
+# ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
+# A session's bell (timeline lane / tab menu → session-flags "notify") or a card's bell (right-click →
+# notify-cards.json) arms OS-level notifications, fired when an armed card ENTERS needs_input (blocked
+# on you) or completed. Detection diffs each fresh feed build against the previous one — the exact event
+# the columns move on, no separate heuristic — and the FIRST build after a kernel start is a silent
+# baseline: existing state is status, not news (the same policy as extension.ts freshNeedsYou). A card
+# re-entering needs_input later (a new block after an answer) notifies again by construction.
+_NOTIFY_PREV = [None]   # itemId -> column at the last build; None = baseline pending
+
+
+def _system_notify(title, body):
+    """Best-effort OS notification (macOS osascript; notify-send elsewhere) — fire-and-forget Popen so the
+    pusher thread never blocks on it; never raises."""
+    try:
+        if sys.platform == "darwin":
+            esc = lambda s: str(s).replace("\\", "\\\\").replace('"', '\\"')
+            script = 'display notification "%s" with title "%s"' % (esc(body), esc(title))
+            cmd = ["osascript", "-e", script]
+        else:
+            cmd = ["notify-send", str(title), str(body)]
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def _feed_notifications(feed):
+    """Diff this feed build against the last; return [(title, body)] for every ARMED card that newly
+    entered needs_input or completed (including a card appearing already there — work can surface
+    blocked). Also advances the prev map and prunes armed ids whose card left the feed."""
+    prev = _NOTIFY_PREV[0]
+    cur = {}
+    for a in feed.get("asks") or []:
+        if a.get("provisional"):
+            continue                                 # placeholder churn — not a stable card yet
+        cur[str(a.get("itemId"))] = a
+    _NOTIFY_PREV[0] = {i: a.get("column") for i, a in cur.items()}
+    _prune_notify_cards(set(cur))
+    if prev is None:
+        return []                                    # baseline: existing state is status, not news
+    cards = _notify_cards()
+    out = []
+    for iid, a in cur.items():
+        col = a.get("column")
+        if col not in ("needs_input", "completed") or prev.get(iid) == col:
+            continue
+        if not (cards.get(iid) or _session_flag(str(a.get("sid") or ""), "notify")):
+            continue
+        what = "Needs you" if col == "needs_input" else "Completed"
+        txt = str(a.get("text") or "").strip()
+        out.append(("romp: %s" % (a.get("name") or "session"),
+                    "%s: %s" % (what, txt[:140] if txt else "a task changed state")))
+    return out
 
 
 def _cached_timeline(now, tmux, sig, connect=False):
@@ -14748,16 +14861,16 @@ var FILT=loadFilt();
 function saveFilt(){try{localStorage.setItem(FKEY,JSON.stringify(FILT));}catch(e){}}
 function kindOn(k){return !FILT[k];}
 function unseen(){var n=0;for(var i=0;i<NOTES.length;i++)if(!NOTES[i].seen&&kindOn(NOTES[i].kind))n++;return n;}
-// The bell: red while anything unmuted is unread OR a visible pane's socket is DOWN right now (the live
-// problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects —
+// The triangle: red while anything unmuted is unread OR a visible pane's socket is DOWN right now (the
+// live problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects —
 // and stays dark entirely while the offline kind is muted).
 // No count badge — it clipped against the bar edge and the number added nothing (the user 2026-07-27).
-// the unread count draws INSIDE the bell (digits 1-9, '+' for many, blank when read — the user
-// 2026-07-28); it reddens with the bell via fill=currentColor.
+// the unread count draws INSIDE the triangle (digits 1-9, '+' for many; the triangle's own '!' when
+// read — a warning triangle without a glyph reads as an empty shape); currentColor reddens it too.
 function paint(){var n=unseen();
 [icon,micon].forEach(function(el){if(!el)return;
 el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
-var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'':(n>9?'+':String(n));});
+var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'!':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
 var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','cleared'];
@@ -15558,18 +15671,18 @@ def _rdrift_block():
             + "<script>" + _RDRIFT_JS + "</script>")
 
 
-# The notification bell, shared by the desktop rail and the mobile bar. The unread COUNT lives
-# INSIDE the bell body (the user 2026-07-28 — the old corner badge clipped): an svg <text> centered
-# in the body, digits 1-9, '+' for more, empty when nothing is unread (the errs JS drives .rerr-n).
-# fill=currentColor so the digit reddens with the bell. SVG ATTRIBUTES QUOTED (the rail-net saga).
-_BELL_SVG = (
+# The errors glyph, shared by the desktop rail and the mobile bar: a warning TRIANGLE (was a bell
+# until 2026-07-28 — the bell now means the session/card notification toggles, so the error center
+# wears the unambiguous trouble shape instead). The unread COUNT lives INSIDE the triangle (the user
+# 2026-07-28 — the old corner badge clipped): an svg <text> the errs JS drives (.rerr-n), digits 1-9,
+# '+' for more, and the triangle's own '!' when nothing is unread. fill=currentColor so the digit
+# reddens with the outline. SVG ATTRIBUTES QUOTED (the rail-net saga).
+_ERRS_SVG = (
     "<svg viewBox='0 0 16 16' width='17' height='17'>"
-    "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
+    "<path d='M8 2.2 L14.6 13.4 L1.4 13.4 Z'"
     " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
-    "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/>"
-    # size 7.5 / baseline 10.2 (the user 2026-07-28: at 8/10.8 the digit melded into the bell's mouth
-    # line at y=11.5 — a pixel up and a touch smaller keeps a clear gap; re-checked headlessly)
-    "<text class='rerr-n' x='8' y='10.2' text-anchor='middle' font-size='7.5' font-weight='700'"
+    # size 6.5 / baseline 12 centers the glyph in the triangle's wide lower half, clear of the apex
+    "<text class='rerr-n' x='8' y='12' text-anchor='middle' font-size='6.5' font-weight='700'"
     " fill='currentColor'></text></svg>")
 
 # The kernel-restart glyph, shared by the desktop rail and the mobile bar. A browser-style reload:
@@ -16014,10 +16127,11 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + network + settings, pinned to the far RIGHT (settings last), always visible:
             "<div class=rail-acts>"
-            # the notification bell (the user 2026-07-27): monochrome outline like its neighbors; goes red
-            # with the unread count drawn INSIDE the body when an error lands (see _BELL_SVG + _LANDING_ERRS_JS).
+            # the error center's warning triangle (a bell until 2026-07-28 — the bell now means the
+            # notification toggles): monochrome outline like its neighbors; goes red with the unread
+            # count drawn INSIDE the triangle when an error lands (see _ERRS_SVG + _LANDING_ERRS_JS).
             "<div class=rail-act id=rail-errs title='Errors — click to open' aria-label=Errors>"
-            + _BELL_SVG +
+            + _ERRS_SVG +
             "</div>"
             # the refresh glyph is a REAL browser-style reload icon now (the user 2026-07-27: the ↻ text
             # glyph stopped at 11 o'clock and never read as refresh): a near-full circular arc sweeping
@@ -16066,9 +16180,9 @@ def _landing():
             # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
             # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
             "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
-            # the notification bell on mobile too (same glyph + badge; opens the same popover)
+            # the error triangle on mobile too (same glyph + in-body count; opens the same popover)
             "<button class=mact id=merr data-act=errs aria-label=Errors title='Errors — click to open'>"
-            + _BELL_SVG +
+            + _ERRS_SVG +
             "</button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
             "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"
@@ -16930,6 +17044,11 @@ class Handler(BaseHTTPRequestHandler):
             # timeline lane gear → toggle a per-session view flag (e.g. hideFromFeed). Persisted +
             # re-broadcast so the feed drops/restores that session's cards immediately.
             _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
+            _mark_views_dirty()
+        elif msg and msg.get("type") == "cardNotify" and msg.get("itemId"):
+            # feed card right-click → per-card bell (OS notification when THIS card blocks on you /
+            # completes). Persisted to notify-cards.json; build_feed echoes it back as ask.notify.
+            _set_notify_card(str(msg["itemId"]), bool(msg.get("value")))
             _mark_views_dirty()
         elif msg and msg.get("type") == "setSessionColor" and msg.get("id") and msg.get("bg"):
             # tab right-click color picker → override the session's identity color (persisted to the names
