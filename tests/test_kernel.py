@@ -197,7 +197,7 @@ class ViewBuilder(unittest.TestCase):
         'still slow' report, the user 2026-07-15). The reorder handler now _mark_views_dirty()s, and a dirty
         mark bypasses the throttle so the fresh order ships at once."""
         now = int(time.time()); tmux = km._tmux_sessions()
-        km._built_feed[:] = [None, None, 0.0]; km._views_dirty[0] = 0.0
+        km._built_feed[:] = [None, None, 0.0, 0.0]; km._views_dirty[0] = 0.0
         other = "22222222-3333-4444-5555-666666666666"
         km._write_session_order([SID])
         f1 = km._cached_feed(now, tmux, km._fleet_view_sig(now, tmux))   # warm the cache with this order
@@ -4611,7 +4611,7 @@ class ViewBuilder(unittest.TestCase):
         # hold steady on a cache hit — otherwise an acked prediction clears against a stale payload.
         km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
-        km._built_feed[:] = [None, None, 0.0]
+        km._built_feed[:] = [None, None, 0.0, 0.0]
         km._views_dirty[0] = 0.0
         first = km._cached_feed(NOW, km._tmux_sessions(), ("sig", 1))
         self.assertIsInstance(first.get("buildId"), int)

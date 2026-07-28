@@ -71,7 +71,7 @@ test("client: an ACKED prediction yields only to a payload built AFTER the gestu
   // the exact race the old timer papered over: a build already in flight when the click landed cannot know
   // about the reopen, and taking it as the answer is the bounce back to Completed this replaced
   assert.match(FEED, /const acked = pendingMoveAck\.get\(id\);/);
-  assert.match(FEED, /if \(acked !== undefined && buildId > acked\) clearFollowMove\(id\);/);
+  assert.match(FEED, /if \(acked !== undefined && buildId > acked\) clearFollowMove\(id, "outranked"\);/);
   assert.match(FEED, /function reconcileFollowMove\(incoming: AskItem\[\], buildId: number\)/);
 });
 
@@ -80,7 +80,7 @@ test("client: an ack silences the toast but never lets a prediction wedge", () =
   // a prediction must not outlive the answer either if a payload goes missing
   const ack = FEED.slice(FEED.indexOf("function ackFollowMove("), FEED.indexOf("// On a fresh authoritative payload"));
   assert.match(ack, /pendingMoveAck\.set\(itemId, buildId\);/);
-  assert.match(ack, /clearFollowMove\(itemId\); render\(\);\s*\/\/ silent wedge guard/);
+  assert.match(ack, /clearFollowMove\(itemId, "backstop-noconfirm"\); render\(\);\s*\/\/ silent wedge guard/);
   assert.ok(!/feedToast/.test(ack.slice(ack.indexOf("pendingMoveAck.set"))),
     "no toast on any path after the kernel confirmed the move");
   // a fresh gesture waits on its OWN answer, never inheriting the last one's

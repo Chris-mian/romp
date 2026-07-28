@@ -236,7 +236,8 @@ def _tl_append(fname, obj):
     except Exception:
         pass
 
-def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host=""):
+def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
+            relay_mid="", relay_via=""):
     # park=True marks a HANDOFF parked for a session that's currently dead. The
     # maildir is keyed by the session UUID (which `romp resume` reuses), so the
     # message simply waits on disk until that session is revived — delivered then,
@@ -246,6 +247,10 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host=""):
     # from_id resolves to nothing in the recipient kernel's names registry, so this is the only
     # durable record of where the sender lives — the courier snapshots it into a planted goal's
     # origin so the "from" chip can say host:name instead of a bare sid prefix (the user 2026-07-26).
+    # relay_mid/relay_via: for cross-host mail, the sender's message id and the DIRECT peer it arrived
+    # from — stamped into headers so the read receipt can flow back when the recipient actually reads
+    # it (read_box/restore queue it into the readbox). The maildir file is the durable record: the
+    # receipt route survives a bus restart exactly as long as the unread mail does.
     mb = _mailbox(to_id)
     name = _unique()
     tmp = mb / "tmp" / name
@@ -256,6 +261,8 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host=""):
         hdr += "X-Kind: %s\n" % kind                # sender-declared delegate|coordinate|question (2026-07-08)
     if from_host:
         hdr += "X-From-Host: %s\n" % from_host
+    if relay_mid and relay_via:
+        hdr += "X-Peer-Mid: %s\nX-Peer-Via: %s\n" % (relay_mid, relay_via)
     tmp.write_text(hdr + "\n" + body + "\n")
     tmp.rename(mb / "new" / name)   # atomic within the same filesystem
     _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
@@ -300,6 +307,7 @@ def read_box(sid, consume):
         if consume:
             f.rename(mb / "cur" / f.name)
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "exec", "id": f.name})
+            _queue_read_receipt(meta)                # cross-host mail: the sender's host learns it was read
     if consume:
         _mark_pending(sid)         # cleared the box -> drop the marker (no-op if more arrived)
     return out
@@ -324,6 +332,10 @@ def restore(sid, mid):
     if not src.is_file():                # recalled/swept while we held it — nothing to put back
         return False
     try:
+        head = src.read_text(errors="replace").partition("\n\n")[0]
+    except OSError:
+        head = ""
+    try:
         (MAILROOT / sid / "new").mkdir(parents=True, exist_ok=True)
         src.rename(MAILROOT / sid / "new" / mid)
     except OSError:
@@ -331,8 +343,31 @@ def restore(sid, mid):
     # The exec stamp said "the recipient read it"; it didn't. Retract it so the sender's receipt
     # reads pending again (_sent_receipts drops an exec that a later unexec retracts).
     _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "unexec", "id": mid})
+    meta = {}
+    for ln in head.splitlines():
+        k, _, v = ln.partition(": "); meta[k.lower()] = v
+    _queue_read_receipt(meta, unread=True)   # cross-host: retract the read the claim implied
     _mark_pending(sid)                   # new/ is non-empty again -> raise the marker
     return True
+
+def _queue_read_receipt(meta, unread=False):
+    """Cross-host read backflow: mail delivered over the peer bus carries X-Peer-Mid/X-Peer-Via
+    (see deliver); consuming it queues {mid, t} into the readbox for the DIRECT peer it arrived
+    from, so the sender's host can finally log the exec its receipt view joins on. An `origin`
+    stamp rides along when the mail was forwarded (X-From-Host != the direct peer): the hop
+    re-queues it one host backward (_read_arrived), mirroring how forwarded acks travel. A
+    rolled-back claim (restore) queues unread=True — keyed by mid, it supersedes a still-parked
+    read, and at the origin an unexec for a never-exec'd id is a harmless no-op."""
+    pm, via = meta.get("x-peer-mid", ""), meta.get("x-peer-via", "")
+    if not pm or not via:
+        return
+    rec = {"mid": pm, "t": int(time.time())}
+    if unread:
+        rec["unread"] = True
+    oh = meta.get("x-from-host", "")
+    if oh and oh != via:
+        rec["origin"] = oh
+    readbox_put(via, rec)
 
 # ───────────────────────── formatting (shared) ─────────────────────────
 #
@@ -392,6 +427,12 @@ def format_receipts(recs):
             st = "read %s" % _hhmm_epoch(r["exec"])
         elif r.get("recalled"):
             st = "recalled %s" % _hhmm_epoch(r["recalled"])
+        elif r.get("bounced"):
+            st = "bounced %s — undeliverable, returned to you" % _hhmm_epoch(r["bounced"])
+        elif r.get("parked"):                  # cross-host, link down: waiting in the outbox
+            st = "parked for %s (unreachable) · id %s" % (r["parked"], r.get("id", "?"))
+        elif r.get("relayed"):                 # landed on the peer host; its read receipt hasn't come back
+            st = "delivered %s (not read yet) · id %s" % (_hhmm_epoch(r["relayed"]), r.get("id", "?"))
         else:                                  # still unread -> recallable; show the id to target it
             st = "pending (not read yet) · id %s" % r.get("id", "?")
         out.append("  → %-18s sent %s · %s" % (r.get("to", "?"), _hhmm_epoch(r["sent"]), st))
@@ -1429,6 +1470,7 @@ BUS_EPOCH = int(time.time())               # this bus process's boot — peers k
 # busId lets the receiver recognize "same bus, second name" and fold onto the dialable alias.
 BUS_ID = os.urandom(16).hex()
 OUTBOX = STATE / "outbox"                  # outbox/<host>/<mid>.json — cross-host mail awaiting its ACK
+READBOX = STATE / "readbox"                # readbox/<host>/<mid>.json — read receipts awaiting their peer
 PEER_SEEN = STATE / "peer-seen.jsonl"      # append-only receipt log — the idempotence window
 _SEEN_CAP = 4000
 _seen_ids = None                           # lazy in-memory mirror of PEER_SEEN's tail
@@ -1517,6 +1559,67 @@ def outbox_del(host, mid):
     except Exception:
         return False
 
+def readbox_put(host, rec):
+    """Park one read receipt for `host` (readbox/<host>/<mid>.json) and poke its exchange. Keyed by
+    the RELAY mid, so the latest state wins: a read superseded by a rolled-back claim (unread=True)
+    leaves one file carrying the retraction, never both. Same at-least-once + idempotent-apply
+    contract as the outbox — it survives a bus restart and re-sends until the peer confirms."""
+    mid = (rec or {}).get("mid") or ""
+    if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
+        _log("readbox_put: refusing unsafe host/mid %r/%r" % (host, mid))
+        return
+    d = READBOX / host
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (mid + ".json")).write_text(json.dumps(rec))
+    _peer_wake(host).set()
+
+def readbox_list(host):
+    if not _safe_id(host):
+        return []
+    try:
+        out = []
+        for f in sorted((READBOX / host).glob("*.json")):
+            try:
+                out.append(json.loads(f.read_text()))
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return []
+
+def readbox_del(host, rec):
+    """Clear one CONFIRMED receipt — only if the file still says what the peer confirmed (the unread
+    flag matches), so an ack for a read never deletes the retraction that superseded it mid-flight."""
+    mid = (rec or {}).get("mid") or ""
+    if not (_safe_id(host) and _safe_id(mid)):   # host/mid are path components — block traversal
+        return
+    f = READBOX / host / (mid + ".json")
+    try:
+        cur = json.loads(f.read_text())
+        if bool(cur.get("unread")) == bool((rec or {}).get("unread")):
+            f.unlink()
+    except Exception:
+        pass
+
+def _read_arrived(host, r):
+    """One read receipt from a peer: ours → log the exec (or its unexec retraction) into
+    messages.jsonl, where _sent_receipts joins it to the cross-host sent event by the relay mid.
+    Origin-stamped (the mail was forwarded through us) → re-queue one hop backward with the stamp
+    stripped, so it can never loop — the same one-hop-max rule relays live by."""
+    mid = (r or {}).get("mid") or ""
+    if not _safe_id(mid):
+        return
+    origin = str((r or {}).get("origin") or "")
+    if origin and origin != self_host():
+        if PEERS.get(origin):                    # only toward a peer the kernel told us about
+            fwd = {"mid": mid, "t": r.get("t")}
+            if r.get("unread"):
+                fwd["unread"] = True
+            readbox_put(origin, fwd)
+        return
+    ev = "unexec" if r.get("unread") else "exec"
+    _tl_append("messages.jsonl", {"t": int(r.get("t") or time.time()), "ev": ev, "id": mid})
+
 def _bounce_apply(host, b):
     """A peer refused one of our parked messages — return it to the SENDER as a bus-authored note,
     loudly, and drop it from the outbox. Parking never outlives a definitive refusal."""
@@ -1555,15 +1658,17 @@ def fleet_presence(exclude_host):
 # cards (fast, bus-down-resilient); mutations go through the bus routes below (delivery is postal's).
 QUARANTINE = STATE / "quarantine"
 
-def _quarantine_put(origin, m, to_id):
+def _quarantine_put(origin, m, to_id, via=""):
     """Hold one inbound relay from a directed host: quarantine/<mid>.json with everything approve needs
-    to replay deliver(). Idempotent by mid (a resend overwrites the same file, never double-holds)."""
+    to replay deliver(). Idempotent by mid (a resend overwrites the same file, never double-holds).
+    `via` is the DIRECT peer it arrived from — kept so an approved delivery still carries the
+    read-receipt route (older held records lack it; approve falls back to the origin)."""
     mid = m.get("mid") or ""
     if not _safe_id(mid):
         return False
     rec = {"mid": mid, "to": m.get("to") or "", "toId": to_id, "frm": m.get("frm") or "?",
            "frmId": m.get("frm_id") or "", "body": m.get("body") or "", "kind": m.get("kind") or "",
-           "origin": origin, "at": int(time.time())}
+           "origin": origin, "via": via or origin, "at": int(time.time())}
     try:
         QUARANTINE.mkdir(parents=True, exist_ok=True)
         tmp = QUARANTINE / (mid + ".tmp")
@@ -1641,7 +1746,8 @@ def quarantine_decide(mid, action, text=None, feedback=None):
                 return False, "recipient '%s' is no longer a live local session" % (rec.get("to") or "?")
             to_id = match[0]["id"]
         deliver(to_id, rec.get("frm") or "?", rec.get("frmId") or "", body, kind=rec.get("kind") or "",
-                from_host=rec.get("origin") or "")
+                from_host=rec.get("origin") or "",
+                relay_mid=rec.get("mid") or "", relay_via=rec.get("via") or rec.get("origin") or "")
         quarantine_del(mid)
         return True, None
     return False, "unknown action '%s' (approve|deny)" % action
@@ -1680,9 +1786,10 @@ def _relay_in(host, m, token_proven=False):
             trust = "trusted"                        # token-proven direct dialer, no explicit tier → deliver (see docstring)
         if trust == "trusted":
             deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
-                    kind=m.get("kind") or "", from_host=origin)
+                    kind=m.get("kind") or "", from_host=origin,
+                    relay_mid=mid, relay_via=host)       # read-receipt route: back through the direct peer
         elif trust == "directed":
-            _quarantine_put(origin, m, match[0]["id"])   # HELD for human approve/deny/edit; never injects
+            _quarantine_put(origin, m, match[0]["id"], via=host)   # HELD for human approve/deny/edit; never injects
         # else isolated → drop: ack so the sender stops resending, but deliver nothing (no communication).
         # An isolated host normally never peers at all (the kernel forces its notify down), so this is a
         # defensive backstop for the checkin-peer path where the mobile dials our /peer-exchange.
@@ -1731,7 +1838,7 @@ def _pending(host):
     with _peer_lock:
         p = _peer_pending.get(host)
         if p is None:
-            p = _peer_pending[host] = {"acks": [], "bounces": []}
+            p = _peer_pending[host] = {"acks": [], "bounces": [], "readAcks": []}
         return p
 
 def _canon_peer_name(host, bus_id):
@@ -1782,6 +1889,10 @@ def peer_exchange_handle(data):
         _ack_arrived(host, mid)                      # a forwarded one relays its ack back to the origin
     for b in data.get("bounces") or []:              # ...or refused them → backward, or to our sender
         _bounce_arrived(host, b)
+    for ra in data.get("readAcks") or []:            # the dialer confirmed response-carried receipts
+        readbox_del(host, ra)
+    for r in data.get("reads") or []:                # read receipts flowing back — ours or one hop onward
+        _read_arrived(host, r)
     acks, bounces = [], []
     for m in data.get("relays") or []:
         verdict, bounce = _relay_in(host, m, token_proven=True)   # past the HTTP gate = showed OUR serve token
@@ -1799,36 +1910,44 @@ def peer_exchange_handle(data):
 
     a2, b2 = _drain_backflow()
     acks, bounces = acks + a2, bounces + b2
-    rel = outbox_list(host)
-    if not rel and data.get("wait") and not acks and not bounces:
+    rel, reads = outbox_list(host), readbox_list(host)
+    if not rel and not reads and data.get("wait") and not acks and not bounces:
         # nothing to hand back → park on the wake so anything we accept mid-wait crosses instantly
         _peer_wake(host).clear()
         _peer_wake(host).wait(EXCHANGE_WAIT)
-        rel = outbox_list(host)
+        rel, reads = outbox_list(host), readbox_list(host)
         a2, b2 = _drain_backflow()
         acks, bounces = acks + a2, bounces + b2
+    # `reads` stay parked until the dialer's NEXT request readAcks them — a response can vanish
+    # after we send it, so the dialed side never clears on send. Re-applying a duplicate is a no-op.
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
             "presence": fleet_presence(host), "holds": holds_payload(host),
             "tier": my_tier_of(host),                # how WE hold the dialer's mail (display/mirror, never the gate)
-            "relays": rel, "acks": acks, "bounces": bounces}, 200
+            "relays": rel, "acks": acks, "bounces": bounces, "reads": reads}, 200
 
 def build_exchange_request(host, wait=True):
     p = _pending(host)
     with _peer_lock:
-        acks, bounces = list(p["acks"]), list(p["bounces"])
+        acks, bounces, read_acks = list(p["acks"]), list(p["bounces"]), list(p.get("readAcks") or [])
     return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
             "presence": fleet_presence(host), "holds": holds_payload(host),
             "tier": my_tier_of(host),                # how WE hold the dialed host's mail
             "relays": outbox_list(host),
-            "acks": acks, "bounces": bounces, "wait": bool(wait)}
+            "acks": acks, "bounces": bounces,
+            "reads": readbox_list(host), "readAcks": read_acks, "wait": bool(wait)}
 
 def peer_exchange_apply(host, req_sent, resp):
     """The DIALER's half: fold one exchange response in. `req_sent` is the request that produced it —
-    its included acks/bounces are now delivered and leave the pending queue (kept on send failure)."""
+    its included acks/bounces/readAcks are now delivered and leave the pending queue (kept on send
+    failure), and its reads leave the readbox: a response means the dialed side processed the whole
+    request before answering, so request-carried receipts need no explicit ack."""
     p = _pending(host)
     with _peer_lock:
         p["acks"] = [a for a in p["acks"] if a not in (req_sent.get("acks") or [])]
         p["bounces"] = [b for b in p["bounces"] if b not in (req_sent.get("bounces") or [])]
+        p["readAcks"] = [a for a in p.get("readAcks") or [] if a not in (req_sent.get("readAcks") or [])]
+    for r in req_sent.get("reads") or []:
+        readbox_del(host, r)
     PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
                         "holds": resp.get("holds") or [], "seenAt": int(time.time())}
     bus_id = str(resp.get("busId") or "")
@@ -1841,6 +1960,10 @@ def peer_exchange_apply(host, req_sent, resp):
         _ack_arrived(host, mid)
     for b in resp.get("bounces") or []:
         _bounce_arrived(host, b)
+    for r in resp.get("reads") or []:                # response-carried receipts: apply, ack on the NEXT dial
+        _read_arrived(host, r)
+        with _peer_lock:
+            p["readAcks"].append({"mid": r.get("mid"), "unread": bool(r.get("unread"))})
     for m in resp.get("relays") or []:
         verdict, bounce = _relay_in(host, m)
         with _peer_lock:
