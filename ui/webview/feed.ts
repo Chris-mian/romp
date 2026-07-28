@@ -1455,7 +1455,18 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     // affordance, honest outcome: the click says why the jump can't happen.
     dl.classList.add("fask-distill-link");
     dl.title = "no anchor recorded for this card";
-    dl.onclick = (ev: Event) => { ev.stopPropagation(); feedToast("couldn't locate this in the transcript — no anchor was recorded for this card"); };
+    // Toast AND file it in the error center (the user 2026-07-28): a transient pop-up left no trace of a
+    // click that couldn't do anything, so the failure was unreportable a minute later. The entry carries
+    // the card so clicking it jumps back here.
+    dl.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      feedToast("couldn't locate this in the transcript — no anchor was recorded for this card");
+      try {
+        window.parent?.postMessage({ romp: "notify", kind: "locate",
+          text: "Couldn't jump to this summary: no anchor was recorded for this card",
+          sid: it.sid, itemId: it.itemId }, "*");
+      } catch { /* no shell (VS Code view) */ }
+    };
   } else {
     dl.classList.remove("fask-distill-link");
     dl.onclick = null;

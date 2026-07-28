@@ -214,11 +214,14 @@ class ErrorCenterExecutes(unittest.TestCase):
     def test_the_filter_bar_has_one_toggle_per_kind(self):
         # the user 2026-07-28: every high-level category gets a toggle (offline fires so often it
         # drowns the rest). The toggles ARE the chips, in the same order entries wear them.
+        # 'jump failed' joined on 2026-07-28: a deep-link that can't find its message in the chat files
+        # an entry now, rather than only flashing a toast that leaves nothing to point at afterwards.
         a = self.out["filterBar"]
-        self.assertEqual(a["n"], 9)
+        self.assertEqual(a["n"], 10)
         self.assertEqual(a["first"], "offline")
         self.assertEqual(a["labels"],
-                         "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error|cleared")
+                         "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error|"
+                         "jump failed|cleared")
 
     def test_muting_a_kind_hides_counts_and_live_cue_but_keeps_the_entries(self):
         a = self.out["afterMute"]
