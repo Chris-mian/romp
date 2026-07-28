@@ -43,6 +43,17 @@ from importlib.machinery import SourceFileLoader as _SFL
 _pal = _SFL("romp_palette", str(Path(__file__).resolve().parent / "palette.py")).load_module()
 
 
+def _bin_on_path_env(environ) -> dict:
+    """The env overlay for a spawned CLI: the repo's bin/ prepended to PATH, or {} when it is already
+    there. Pure on its input for tests; _options passes os.environ. Kept additive on purpose — the SDK
+    merges options.env over the inherited environment, so returning only PATH changes nothing else."""
+    rbin = str(Path(__file__).resolve().parent.parent / "bin")
+    cur = environ.get("PATH", "")
+    if rbin in cur.split(os.pathsep):
+        return {}
+    return {"PATH": (rbin + os.pathsep + cur) if cur else rbin}
+
+
 def pick_identity_color(sid: str, state_dir=None) -> tuple[str, str]:
     """A stable (bg, fg) for a session, hashed from its sid into the ACTIVE identity palette
     (STATE/palette, the gear's Session-colors pick; the default set when state_dir is unknown)."""
@@ -2413,6 +2424,13 @@ class SdkBackend:
         kw = dict(
             cli_path=self.claude_bin,
             cwd=sess.cwd,
+            # The repo's bin/ on the CLI's PATH — the postal MCP command (`romp-postal-service`) and
+            # the mail CLI the inbox footer suggests both resolve from it, and a kernel started from a
+            # non-login shell (the attach bootstrap's ssh) hands down a PATH with neither (the
+            # 2026-07-27 federation shakedown: a remote session's `romp mail send` died
+            # command-not-found and re-prompted for permission on the absolute-path retry). options.env
+            # merges OVER the inherited environment in the SDK's transport, so this is additive.
+            env=_bin_on_path_env(os.environ),
             can_use_tool=sess._can_use_tool,
             hooks={"Stop": [HookMatcher(matcher=None, hooks=[sess._stop_hook])],          # awaiting overlay producer
                    "SubagentStart": [HookMatcher(matcher=None, hooks=[sess._subagent_start_hook])],  # live subagent

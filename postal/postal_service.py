@@ -2225,11 +2225,15 @@ def cli_send(argv):
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     me, mid = my_name(), my_id()
     try:
-        _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
-                                "kind": kind})
+        resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
+                                       "kind": kind})
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
-    print("[romp mail] delivered to '%s'" % to)
+    # Echo what actually happened, not a blanket "delivered": a cross-host send is only RELAYING (or
+    # parked for an unreachable host), and the receiving bus may still hold it for the human's
+    # approval — the 2026-07-27 shakedown had this print "delivered" for a quarantined message.
+    note = (resp or {}).get("note")
+    print("[romp mail] %s" % (note or ("delivered to '%s'" % to)))
     return 0
 
 def cli_inbox(peek=False):

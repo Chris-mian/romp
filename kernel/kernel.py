@@ -4490,6 +4490,21 @@ _remotes_lock = threading.Lock()
 _tunnel_wake = threading.Event()
 
 
+def _ensure_postal_bus():
+    """Start the local postal bus if nothing has yet (best-effort, off the boot path). The bus used to
+    start only LAZILY — a session's postal MCP server runs `ensure` — so a freshly attach-bootstrapped
+    machine with no sessions ran a kernel but no bus: invisible to fleet presence, no mail in or out,
+    silently (the 2026-07-27 federation shakedown: the new box answered /sessions while every message
+    to it sat parked). The postal service's own `ensure` is idempotent, respects client-only mode, and
+    no-ops when the bus is already up, so the kernel can insist at every boot. Absolute paths: a
+    bootstrap-started kernel's non-login shell has neither the repo's bin/ nor a guaranteed PATH."""
+    try:
+        subprocess.run([sys.executable, str(BIN / "romp-postal-service"), "ensure"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    except Exception:
+        sys.stderr.write("postal bus ensure failed:\n%s" % traceback.format_exc())
+
+
 def _ssh_config_hosts():
     """Host aliases declared in ~/.ssh/config (the 'find the things' for the attach UI). Concrete 'Host'
     patterns only — wildcards/negations are skipped (not connectable targets). Best-effort: a missing or
@@ -17346,6 +17361,7 @@ def main():
     threading.Thread(target=_parent_watch, daemon=True).start()
     _known_load()                                              # remembered past hosts (popover's re-attach rows)
     _remotes_load()                                            # re-attach remote kernels from a prior run
+    threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     url = "http://127.0.0.1:%d" % PORT
