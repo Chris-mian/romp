@@ -1040,21 +1040,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ctx-item-toggle .ctx-icon.off { color: var(--dim); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
-/* the corner bell BUTTON (the user 2026-07-28, round 3): floated at the TOP-right of row1, ahead of
-   the title, so the text wraps around it — in-flow, never overlapping (round 2's absolute bottom-right
-   collided with grouped mode's right-floated Clear on compact cards; floats can't overlap by
-   construction). Off = slashed dim bell, hidden until the card is hovered (the tab-close idiom — a
-   quiet feed stays quiet); armed (.on) = accent bell, always visible. Accent = mechanics chrome,
-   never a status colour. */
+/* the bell BUTTON (the user 2026-07-28, round 4): inline in row1's metadata cluster, right after the
+   timestamp, and display:none until the card is hovered or it's armed — an off bell costs ZERO space
+   (round 3's float reserved a first-line notch even while invisible, wrapping titles early; the user
+   wants compact). Materializing on hover lands in the slack after "Nm ago", so nothing shifts. Off =
+   slashed dim bell; armed (.on) = accent bell, always visible. Accent = mechanics chrome, never a
+   status colour. */
 .fask-bellbtn {
-  float: right; margin: 0 0 2px 8px;
-  display: flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; border: 0; border-radius: 5px;
-  background: transparent; color: var(--dim); cursor: pointer; opacity: 0;
-  transition: opacity 0.12s ease;
+  display: none; vertical-align: -4px; margin: 0 0 0 5px;
+  align-items: center; justify-content: center;
+  width: 17px; height: 17px; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--dim); cursor: pointer; opacity: 0.55;
 }
-.fitem.ask:hover .fask-bellbtn { opacity: 0.55; }
+.fitem.ask:hover .fask-bellbtn { display: inline-flex; }
 .fitem.ask .fask-bellbtn:hover { opacity: 1; background: rgba(255, 255, 255, 0.10); }
-.fask-bellbtn.on { opacity: 0.85; color: var(--accent); }
-.fitem.ask:hover .fask-bellbtn.on { opacity: 0.85; }
-.fitem.ask .fask-bellbtn.on:hover { opacity: 1; }
+.fask-bellbtn.on { display: inline-flex; opacity: 0.85; color: var(--accent); }
