@@ -6,7 +6,6 @@
 #   romp new api             # start a session named "api" (SDK; lives in the kernel)
 #   romp new -t api          # ...as a terminal (tmux) session, attached
 #   romp resume              # resume a past conversation (full-screen picker)
-#   romp monitor             # live session monitor (terminal dashboard)
 #   romp send api "text"     # scripts/agents: message a session (also: interrupt, end)
 #   romp help                # the full command list
 # Commands are bare words, git-style; options are dashed and belong to their
@@ -21,7 +20,7 @@
 
 set -euo pipefail
 
-# Sibling scripts (romp-postal-service, romp-dashboard, ...) live next to this script;
+# Sibling scripts (romp-postal-service, romp-manager, ...) live next to this script;
 # make them resolvable regardless of the caller's PATH.
 PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd):$PATH"
 
@@ -576,9 +575,6 @@ EOF
     _romp_cmd "romp new -t <name>"         -            "Start it as a terminal (tmux) session and attach (--detach: don't attach)"
     _romp_cmd "romp new -d <dir> <name>"   -            "Working directory for the new session (default: the current folder)"
     _romp_cmd "romp resume [<id>]"         -            "Resume a past conversation (full-screen picker; or an exact UUID)"
-    _romp_cmd "romp monitor"               romp-dashboard "Live session monitor (terminal dashboard)"
-    _romp_cmd "romp feed"                  romp-feed    "Terminal Working/Blocked/Completed board (mirrors the web feed)"
-    _romp_cmd "romp judges"                romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
     _romp_cmd "romp status"                romp-manager "Show manager + kernel status"
     _romp_cmd "romp refresh"               romp-manager "Restart the postal bus + all romp kernels (picks up new code — run after an update)"
     _romp_cmd "romp update [host]"         romp-update  "Push this machine's committed romp to attached remotes and restart them"
@@ -608,39 +604,10 @@ EOF
     exit 0
 fi
 
-# Live session monitor, `romp monitor` — the terminal one; the browser dashboard
-# is bare `romp`. Matched only as the FIRST arg, like the other dispatches.
-if [[ "${1:-}" == "monitor" ]]; then
-    # ROMP_DASHBOARD_BIN: test seam (same pattern as the kernel's
-    # ROMP_FEED_DETAIL_BIN) — the sibling-dir PATH prepend above otherwise
-    # shadows any mock, and the real dashboard is an infinite watch loop
-    # (romp.bats hung on it and leaked a spinning process per run, 2026-06-12).
-    exec "${ROMP_DASHBOARD_BIN:-romp-dashboard}"
-fi
-
-# (Retired) `romp -g` browser timeline — superseded by the VS Code / Obsidian
-# vault-code timeline (db_timeline).
-
-# Feed — terminal Working/Blocked/Completed board: a lightweight, kernel-independent
-# mirror of the web feed. It re-reads the goal stores and re-implements the rollup
-# itself, so it doubles as a cross-check on the kernel/judge render path. Flags pass
-# through (e.g. `romp feed --all`, `romp feed --session NAME`, `romp feed --no-color`).
-# ^C to stop.
-if [[ "${1:-}" == "feed" ]]; then
-    shift
-    exec romp-feed "$@"
-fi
-
-# Judges health monitor — live "are the judges keeping up + are they throwing
-# exceptions" view. Independent of the kernel (re-reads the judge state files +
-# manager.log + a /version probe), same cross-check spirit as the feed. Flags pass
-# through (`romp judges --once|--json`).
-# ROMP_JUDGE_MONITOR_BIN is the test seam (the live TUI is an infinite loop — same
-# pattern as ROMP_DASHBOARD_BIN, so romp.bats can mock it without hanging).
-if [[ "${1:-}" == "judges" ]]; then
-    shift
-    exec "${ROMP_JUDGE_MONITOR_BIN:-romp-judge-monitor}" "$@"
-fi
+# (Retired) the terminal TUIs — `romp monitor`, `romp feed`, `romp judges` — and the
+# `romp -g` browser timeline. All were bootstrapping views from before the browser
+# dashboard existed, and the dashboard, feed and timeline now cover them
+# (the user 2026-07-27).
 
 # Romp Postal Service — peer messaging between romp sessions. A scripting/agent
 # entrypoint (agents usually use the MCP tools). Delegates to romp-postal-service.
@@ -648,7 +615,7 @@ fi
 # it, and delivered text can't be re-issued.
 if [[ "${1:-}" == "mail" || "${1:-}" == "--mail" ]]; then
     shift
-    # ROMP_POSTAL_BIN: test seam — see the monitor dispatch above.
+    # ROMP_POSTAL_BIN: test seam — a mock would otherwise be shadowed by the sibling-dir PATH prepend.
     exec "${ROMP_POSTAL_BIN:-romp-postal-service}" "$@"
 fi
 
@@ -716,8 +683,7 @@ fi
 #     there having finished its turn, and it is what most of the fleet reads most of the time.
 #     Substring-matching /wait/ into an alert paints a "needs you" badge on every idle session,
 #     which is worse than the blank it replaced. The states that DO want the user are `awaiting`
-#     (a permission prompt) and `blocked`. See bin/romp-dashboard, which groups
-#     waiting|idle as at rest.
+#     (a permission prompt) and `blocked`.
 #   * `id` is the durable key, NOT `lastSid`. Every per-session store romp keeps (states/,
 #     captions/, goals/, episodes/) is filed under `id`. `lastSid` is the live Claude Code
 #     transcript's fsid, which FORKS on /clear — it is what the old tmux @romp-session-id
@@ -984,9 +950,9 @@ esac
 _romp_retired_flag_hint() {
     case "$1" in
         -l|--launch)   echo "the dashboard is now just: romp" ;;
-        -d)            echo "the terminal monitor is now: romp monitor (-d is romp new's directory option)" ;;
-        -f)            echo "the feed is now: romp feed" ;;
-        -j)            echo "the judge monitor is now: romp judges" ;;
+        -d)            echo "the terminal monitor is gone; the browser dashboard is: romp (-d is romp new's directory option)" ;;
+        -f)            echo "the terminal feed is gone; the feed lives in the dashboard: romp" ;;
+        -j)            echo "the judge monitor is gone; judge warnings show on the cards themselves" ;;
         -r)            echo "the resume picker is now: romp resume" ;;
         --on)          echo "the foreground manager is now: romp up" ;;
         --refresh)     echo "the fleet restart is now: romp refresh" ;;

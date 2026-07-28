@@ -442,23 +442,6 @@ run_romp() {
     done
 }
 
-# ─── Terminal monitor (romp monitor) ─────────────────────────────────
-
-@test "monitor dispatches to romp-dashboard" {
-    cat > "$MOCK_DIR/romp-dashboard" << 'MOCK'
-#!/usr/bin/env bash
-echo "romp-dashboard called" >> "$MOCK_LOG"
-MOCK
-    chmod +x "$MOCK_DIR/romp-dashboard"
-    # bin/romp prepends its own dir to PATH, so the real (never-exiting)
-    # dashboard shadows the mock — use the test seam instead
-    export ROMP_DASHBOARD_BIN="$MOCK_DIR/romp-dashboard"
-
-    run run_romp monitor
-    [ "$status" -eq 0 ]
-    grep -q 'romp-dashboard called' "$MOCK_LOG"
-}
-
 @test "retired human spellings fail loudly naming today's word, and start nothing" {
     # Rounds 1-2 spellings (short view flags, dashed manager commands). The
     # agent-facing aliases (--mail/--url/--send/--interrupt/--end/--resume,
@@ -468,12 +451,14 @@ MOCK
         run run_romp "$flag"
         [ "$status" -eq 2 ]
         [[ "$output" == *"retired"* ]]
-        [[ "$output" == *"is now"* || "$output" == *"just: romp"* ]]
+        # every hint names today's spelling, or says the command is gone (the terminal TUIs)
+        [[ "$output" == *"is now"* || "$output" == *"just: romp"* || "$output" == *"is gone"* ]]
         [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
     done
-    # spot-check two hints name the exact new spelling
+    # spot-check: a RENAMED command names its new spelling, a DELETED one says so
     run run_romp -d
-    [[ "$output" == *"romp monitor"* ]]
+    [[ "$output" == *"is gone"* ]]
+    [[ "$output" == *"romp"* ]]
     run run_romp --refresh
     [[ "$output" == *"romp refresh"* ]]
 }
@@ -813,9 +798,11 @@ _resume_rows_fn() {   # writes the extracted function to $1
     [[ "$output" == *"romp status"* ]]
     [[ "$output" == *"romp version"* ]]
     # absent backing → hidden
+    [[ "$output" != *"romp mail"* ]]
+    # the retired terminal TUIs must not come back as help rows
     [[ "$output" != *"romp monitor"* ]]
     [[ "$output" != *"romp feed"* ]]
-    [[ "$output" != *"romp mail"* ]]
+    [[ "$output" != *"romp judges"* ]]
 }
 
 # ─── ROMPHOME — never launch a session in $HOME ──────────────────────
@@ -870,21 +857,6 @@ _resume_rows_fn() {   # writes the extracted function to $1
     run run_romp new -t -d "$other" side
     [ "$status" -eq 0 ]
     grep -qF "tmux new-session -d -s side -c $expect" "$MOCK_LOG"
-}
-
-# ─── Judges monitor (romp judges) ────────────────────────────────────
-
-@test "judges dispatches to romp-judge-monitor (honors the ROMP_JUDGE_MONITOR_BIN seam)" {
-    cat > "$MOCK_DIR/romp-judge-monitor" << 'MOCK'
-#!/usr/bin/env bash
-echo "judge-monitor called: $*" >> "$MOCK_LOG"
-MOCK
-    chmod +x "$MOCK_DIR/romp-judge-monitor"
-    export ROMP_JUDGE_MONITOR_BIN="$MOCK_DIR/romp-judge-monitor"
-    run run_romp judges --once
-    [ "$status" -eq 0 ]
-    grep -q 'judge-monitor called: --once' "$MOCK_LOG"
-    ! grep -q 'tmux new-session' "$MOCK_LOG"
 }
 
 @test "romp checkin/checkout: usage without a host, loud failure with no kernel" {

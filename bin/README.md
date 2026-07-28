@@ -48,8 +48,6 @@ no separate implementation to point at.
 
 | Command | Source | What it is |
 |---|---|---|
-| `romp-feed` | `cli/feed.py` | Terminal mirror of the feed (`romp feed`). Backend-agnostic. |
-| `romp-judge-monitor` | `cli/judge_monitor.py` | Terminal health view of the judges (`romp judges`). |
 | `romp-update` | `cli/update.py` | Pushes this machine's committed romp to attached remote kernels and restarts them (`romp update [host]`). |
 | `romp-version` | `cli/version.py` | Version report across the moving parts (`romp version`). |
 | `romp-idle-dots` | `cli/idle_dots.py` | tmux backend only: heals stranded `working` state / fades idle tab dots by inspecting tmux panes. Fired from `hooks/tmux-status.sh`. |
@@ -62,6 +60,5 @@ dropped, these (plus `romp-askparse`, `romp-idle-dots`, and the tmux glue in
 
 | File | Lang | What it is |
 |---|---|---|
-| `romp-dashboard` | Bash | Terminal dashboard over `tmux list-sessions` (`romp monitor`). The web kernel is the modern equivalent. |
 | `romp-interrupt-reset` | Bash | tmux Ctrl-C/Esc bind: resets a stuck `working` state (Claude fires no interrupt hook). |
 | `romp-mail-clear` | Bash | Clears the postal badge in the tmux status bar on session switch. |

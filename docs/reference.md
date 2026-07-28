@@ -19,9 +19,6 @@ update` starts a session called "update".
 | `romp new -d <dir> <name>` | Start it in `<dir>` instead of the current folder |
 | `romp new -t <name>` | Start it as a terminal (tmux) session and attach; add `--detach` to leave it running |
 | `romp resume` | Resume a past conversation, chosen from a full-screen picker |
-| `romp monitor` | Live session monitor, in the terminal |
-| `romp feed` | Working / Blocked / Completed board in the terminal, mirroring the feed |
-| `romp judges` | Judge health: whether they are keeping up, and any exceptions |
 | `romp status` | Manager and kernel status |
 | `romp refresh` | Restart the postal bus and every kernel, picking up new code |
 | `romp update [host…]` | Push this machine's committed Romp to attached remotes and restart them |
