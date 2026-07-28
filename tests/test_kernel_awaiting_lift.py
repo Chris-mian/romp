@@ -85,11 +85,15 @@ class AwaitingLift(unittest.TestCase):
                 f.write(json.dumps(r) + "\n")
         km._bgall_cache.clear(); km._bgtasks_cache.clear()
 
-    def _seed(self, why="waiting on two dispatched investigations; will act when they return"):
+    def _seed(self, why="waiting on two dispatched investigations; will act when they return",
+              born=BORN, anchor=STAMP, written=None):
+        """`anchor` is awaitingAt (the audited turn's TRIGGER time); `written` is when the closer actually
+        wrote the verdict (its `at`), which defaults to the anchor for the pre-2026-07-27 fixture shape."""
         nd = {"id": self.gid, "text": "a goal", "parentId": None, "nodeComplete": False,
-              "blocked": False, "cleared": False, "trail": [], "t": BORN, "mt": BORN,
-              "awaitingWhy": why, "awaitingAt": STAMP,
-              "log": [{"ev_t": STAMP, "src": "closer", "kind": "awaiting", "why": why, "at": STAMP}]}
+              "blocked": False, "cleared": False, "trail": [], "t": born, "mt": born,
+              "awaitingWhy": why, "awaitingAt": anchor,
+              "log": [{"ev_t": anchor, "src": "closer", "kind": "awaiting", "why": why,
+                       "at": anchor if written is None else written}]}
         (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
             {"rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
 
@@ -219,6 +223,50 @@ class AwaitingLift(unittest.TestCase):
         log2 = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())["nodes"][self.gid]["log"]
         self.assertEqual(len([e for e in log2 if e.get("kind") == "awaiting" and e.get("lift")]), 1,
                          "diary-guarded: the sweep never re-lifts")
+
+    # ---- the collapsed window (the user 2026-07-27): mint and stamp in the SAME turn ----
+    # awaitingAt is the audited turn's TRIGGER, but a turn dispatches partway through, always after it.
+    # When that turn also MINTED the goal, born == awaitingAt and [born, awaitingAt] is a single instant:
+    # the fallback matched nothing, so this whole path was dead for the goals it exists to serve. The
+    # bound is the stamp's WRITE time, which is after every launch the closer could have audited.
+    def test_a_same_turn_mint_and_stamp_still_owns_its_mid_turn_dispatch(self):
+        self._transcript([_launch("t1", STAMP + 20), _notification("t1", STAMP + 60)])
+        self._seed(born=STAMP, anchor=STAMP, written=STAMP + 90)   # one turn: trigger STAMP, closed later
+        self.assertIsNotNone(self._stamp(), "precondition: the goal starts stamped")
+        self._tick(now=STAMP + 200)
+        self.assertIsNone(self._stamp(),
+                          "the dispatch was launched inside the very turn the stamp explains → owned, "
+                          "and it came back")
+
+    def test_a_same_turn_dispatch_still_running_keeps_the_stamp(self):
+        # the widened bound must not lift a wait that is genuinely still out
+        self._transcript([_launch("t1", STAMP + 20)])              # never reported
+        self._seed(born=STAMP, anchor=STAMP, written=STAMP + 90)
+        self._tick(now=STAMP + 200)
+        self.assertIsNotNone(self._stamp(), "its own dispatch is still in flight")
+
+    def test_a_dispatch_after_the_stamp_was_written_is_still_not_owned(self):
+        # the bound moved to the WRITE time, not to infinity: a launch the closer could not have seen
+        # belongs to a later turn and says nothing about this wait
+        self._transcript([_launch("t9", STAMP + 150), _notification("t9", STAMP + 180)])
+        self._seed(born=STAMP, anchor=STAMP, written=STAMP + 90)
+        self._tick(now=STAMP + 300)
+        self.assertIsNotNone(self._stamp(), "launched after the stamp was written → a later turn's work")
+
+    def test_written_at_prefers_the_newest_assertion_and_ignores_lifts(self):
+        why = "waiting on a dispatched investigation"
+        nd = {"awaitingAt": STAMP,
+              "log": [{"ev_t": STAMP, "kind": "awaiting", "why": why, "at": STAMP + 10},
+                      {"ev_t": STAMP, "kind": "awaiting", "why": why, "at": STAMP + 90},
+                      {"ev_t": STAMP, "kind": "awaiting", "lift": True, "at": STAMP + 500},
+                      {"ev_t": STAMP, "kind": "done", "at": STAMP + 900}]}
+        self.assertEqual(km._stamp_written_at(nd), STAMP + 90,
+                         "the newest ASSERTION bounds ownership; a lift retracts a wait, never asserts one")
+
+    def test_written_at_floors_at_the_anchor_for_a_legacy_record(self):
+        self.assertEqual(km._stamp_written_at({"awaitingAt": STAMP, "log": []}), STAMP,
+                         "no journalled write time → the old anchor bound, unchanged")
+        self.assertEqual(km._stamp_written_at({"awaitingAt": STAMP}), STAMP, "no log at all is safe")
 
     def test_running_only_scan_still_hides_returned_tasks(self):
         # the want_all split must not change the existing running-only view
