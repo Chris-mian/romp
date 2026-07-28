@@ -14687,35 +14687,60 @@ setTimeout(hide,5000);})();
 _LANDING_ERRS_JS = """
 (function(){var icon=document.getElementById('rail-errs'),micon=document.getElementById('merr'),
 back=document.getElementById('rerr-back'),list=document.getElementById('rerr-list'),
-clearBtn=document.getElementById('rerr-clear'),x=document.getElementById('rerr-x');
+clearBtn=document.getElementById('rerr-clear'),x=document.getElementById('rerr-x'),
+filtBar=document.getElementById('rerr-filters');
 if(!icon||!back||!list)return;
-var KEY='romp:notices',MAX=100;
+var KEY='romp:notices',MAX=100,FKEY='romp:errFilters';
 function load(){try{var v=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(v)?v:[];}catch(e){return[];}}
 var NOTES=load();
 function save(){try{localStorage.setItem(KEY,JSON.stringify(NOTES));}catch(e){}}
 function ago(t){var dt=Math.max(0,Math.floor(Date.now()/1000)-t);if(dt<90)return 'just now';
 var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);
 return h<24?h+'h ago':Math.floor(h/24)+'d ago';}
-function unseen(){var n=0;for(var i=0;i<NOTES.length;i++)if(!NOTES[i].seen)n++;return n;}
-// The bell: red while anything is unread OR a visible pane's socket is DOWN right now (the live
-// problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects).
+// Per-kind FILTERS (the user 2026-07-28: offline fires so often it drowns the rest — every high-level
+// category gets a toggle). FILT holds the kinds turned OFF, persisted so the choice sticks; a muted
+// kind neither renders, counts as unread, nor (for offline) keeps the live red cue up. Entries are
+// still STORED — re-enabling the kind shows what happened while it was muted. Unknown kinds always show.
+function loadFilt(){try{var v=JSON.parse(localStorage.getItem(FKEY)||'{}');return v&&typeof v==='object'?v:{};}catch(e){return{};}}
+var FILT=loadFilt();
+function saveFilt(){try{localStorage.setItem(FKEY,JSON.stringify(FILT));}catch(e){}}
+function kindOn(k){return !FILT[k];}
+function unseen(){var n=0;for(var i=0;i<NOTES.length;i++)if(!NOTES[i].seen&&kindOn(NOTES[i].kind))n++;return n;}
+// The bell: red while anything unmuted is unread OR a visible pane's socket is DOWN right now (the live
+// problem keeps the cue up even after the entry is read; it clears the moment the pane reconnects —
+// and stays dark entirely while the offline kind is muted).
 // No count badge — it clipped against the bar edge and the number added nothing (the user 2026-07-27).
 function paint(){var n=unseen();
-[icon,micon].forEach(function(el){if(el)el.classList.toggle('has',n>0||liveDown());});
+[icon,micon].forEach(function(el){if(el)el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
+var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
 nudge:'follow-up failed',retry:'retrying',apierror:'api error'};
-function renderList(){list.innerHTML='';
-if(!NOTES.length){var e=document.createElement('div');e.className='rerr-empty';e.textContent='No errors';list.appendChild(e);return;}
-for(var i=NOTES.length-1;i>=0;i--)(function(n,i){var row=document.createElement('div');row.className='rerr-row';
+// the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
+// STABLE container; only classes flip on click, so the buttons stay click-safe.
+if(filtBar)KINDS.forEach(function(k){var b=document.createElement('span');
+b.className='rerr-chip rerr-fbtn k-'+k+(kindOn(k)?'':' off');b.textContent=KINDLBL[k];
+b.title='Show / hide '+KINDLBL[k]+' entries';
+b.addEventListener('click',function(ev){ev.stopPropagation();
+if(kindOn(k)){FILT[k]=1;}else{delete FILT[k];}saveFilt();
+b.classList.toggle('off',!kindOn(k));renderList();paint();});
+filtBar.appendChild(b);});
+function renderList(){list.innerHTML='';var shown=0;
+for(var i=NOTES.length-1;i>=0;i--)(function(n,i){if(!kindOn(n.kind))return;shown++;
+var row=document.createElement('div');row.className='rerr-row';
 if(KINDLBL[n.kind]){var ch=document.createElement('span');ch.className='rerr-chip k-'+n.kind;
 ch.textContent=KINDLBL[n.kind];row.appendChild(ch);}
 var tx=document.createElement('span');tx.className='rerr-msg';tx.textContent=n.text+(n.n>1?' (x'+n.n+')':'');
 var tm=document.createElement('span');tm.className='rerr-t';tm.textContent=ago(n.t);
+// the timestamp wears the SAME recency colour every other "(Xm ago)" wears (window.__rompAgeColor,
+// published by dist/age-color-global.js from the shared ramp; dim default if the bundle is stale)
+if(window.__rompAgeColor)tm.style.color=window.__rompAgeColor(Math.max(0,Math.floor(Date.now()/1000)-n.t));
 var del=document.createElement('span');del.className='rerr-del';del.textContent='\\u00d7';del.title='Clear';
 del.addEventListener('click',function(ev){ev.stopPropagation();NOTES.splice(i,1);save();renderList();paint();});
-row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);}
+row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
+if(!shown){var e=document.createElement('div');e.className='rerr-empty';
+e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'No errors';list.appendChild(e);}}
 // One write path. A repeat of the NEWEST entry (same kind+text — e.g. a reconnect loop dropping over and
 // over) coalesces into it with a count instead of flooding the feed: event-exact, no time window.
 window.__rompNotify=function(kind,text){if(!text)return;
@@ -14742,7 +14767,9 @@ if(s==='down'&&prev!=='down'&&shown(m.app))
 window.__rompNotify('conn','Kernel connection lost \\u2014 '+(PN[m.app]||m.app)+' pane (reconnecting)');
 else paint();});
 window.addEventListener('romp-panes',paint);
-function open(){for(var i=0;i<NOTES.length;i++)NOTES[i].seen=true;save();back.hidden=false;renderList();paint();}
+// opening marks seen only what the filters let you SEE — a muted kind's entries stay unread, so
+// re-enabling its toggle re-reddens the bell if something happened while it was muted
+function open(){for(var i=0;i<NOTES.length;i++)if(kindOn(NOTES[i].kind))NOTES[i].seen=true;save();back.hidden=false;renderList();paint();}
 function close(){back.hidden=true;}
 icon.addEventListener('click',function(){back.hidden?open():close();});
 back.addEventListener('click',function(e){if(e.target===back)close();});
@@ -15837,6 +15864,12 @@ def _landing():
             ".rerr-del{flex:0 0 auto;cursor:pointer;opacity:.5;font-weight:700}"
             ".rerr-del:hover{opacity:1}"
             ".rerr-empty{padding:16px 12px;color:#6e7681;text-align:center;font-size:11.5px}"
+            # The per-kind filter bar (the user 2026-07-28): the toggles ARE the chips — lit means shown,
+            # dimmed (with a dashed edge, a second cue beyond opacity) means muted.
+            "#rerr-filters{display:flex;flex-wrap:wrap;gap:5px;padding:8px 12px;border-bottom:1px solid #2a2a2a;flex:0 0 auto}"
+            ".rerr-fbtn{cursor:pointer;user-select:none}"
+            ".rerr-fbtn.off{opacity:0.35;border-style:dashed}"
+            ".rerr-fbtn:hover{opacity:1}"
             # Each entry leads with the SAME chip the card wears in the feed — same pill shape, colours and
             # weight as the .fask-* chip family (feed.css), so "stalled" here looks like "stalled" there.
             ".rerr-chip{flex:0 0 auto;font-size:9px;font-weight:700;letter-spacing:.04em;padding:1px 6px;"
@@ -15855,6 +15888,7 @@ def _landing():
             "<div class=rerr-top>Errors<span class=sp></span>"
             "<button id=rerr-clear title='Clear all entries'>Clear all</button>"
             "<button id=rerr-x aria-label=Close>×</button></div>"
+            "<div id=rerr-filters></div>"
             "<div id=rerr-list></div>"
             "</div></div>"
             "<div class=col>"
@@ -16018,6 +16052,11 @@ def _landing():
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
             "<script>" + _LANDING_BOOT_JS + "</script>"
+            # the shared recency colour ramp (ui/webview/age-color.ts), published as window.__rompAgeColor
+            # by a tiny standalone dist bundle — the shell page loads no webview bundle of its own, and the
+            # bell panel's timestamps wear the same recency colours as every other "(Xm ago)" (the user
+            # 2026-07-28). Loaded BEFORE the errs script, which reads it (with a dim fallback if absent).
+            + ("<script src=/dist/age-color-global.js?v=%d></script>" % v) +
             "<script>" + _LANDING_ERRS_JS + "</script>"
             "<script>" + _LANDING_USAGE_JS + "</script>"
             "<script>" + _LANDING_JS + "</script>"
