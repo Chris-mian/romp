@@ -1245,7 +1245,11 @@ PLAN_SYS = (
     "to read), mint it even mid-conversation while other goals are in flight, and even when it shares a "
     "project or theme with an open goal. Sharing context is not the test; sharing an outcome is. Work "
     "filed as a sub disappears into its parent's card, so burying a separate deliverable hides it from "
-    "the user — an explanation checked off as a sub of a big card is an answer the user never sees.\n"
+    "the user — an explanation checked off as a sub of a big card is an answer the user never sees. "
+    "A card born **blocked** is the tell: when all a new goal would hold is a question about work that "
+    "has not started, it is not a goal. Work the assistant merely **offers** (a fix it proposes after "
+    "diagnosing, a follow-up it volunteers) is not an ask, so block the goal that surfaced the offer, "
+    "with the offer as the why, and mint nothing. It earns a card of its own once the user says go.\n"
     '- {\"why\",\"do\":\"sub\",\"under\":<n>,\"text\":\"<step ≤10 words>\"}: a step or progress under '
     "card #n, where #n must be a **top-level card** (a flush-left line in <open-goals>; the indented "
     "sub-goals are context and done/block targets, not filing spots — where inside the card the step "
