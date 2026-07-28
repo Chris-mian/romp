@@ -39,6 +39,42 @@ BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # loopback only; tailnet
 _STARTED = time.time()                       # this kernel process's start (for /version uptime)
 
 
+# ── ROMP_PERF: where did the time go, and what got re-sent ────────────────────────────────────────
+# Off unless ROMP_PERF is set, so a normal kernel pays one env lookup at import and nothing after.
+# Lines go to stderr, which the login service already funnels into the journal:
+#     ROMP_PERF=1 romp refresh   →   journalctl --user -u romp-manager -f | grep romp-perf
+# Format is `romp-perf <event> k=v k=v`, greppable and awk-able on purpose.
+#
+# This exists because "the chat pane is slow" was, from the outside, indistinguishable between a slow
+# BUILD, a fat PAYLOAD, and a payload that was fine but re-sent every second because one field ticked
+# with the clock. It was the third, and pinning that down needed a hand-written WebSocket client. Two
+# numbers — build ms and per-slot deduped/sent — separate all three at a glance.
+_PERF = bool(os.environ.get("ROMP_PERF"))
+
+
+def _perf(evt, **kw):
+    """One `romp-perf` line. Never raises and never formats anything when disabled — this sits on the
+    per-push hot path, so an exception or a wasted json.dumps here would be a bug of its own."""
+    if not _PERF:
+        return
+    try:
+        sys.stderr.write("romp-perf %s %s\n" % (evt, " ".join("%s=%s" % (k, v) for k, v in sorted(kw.items()))))
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _perf_slot(key):
+    """A dedup key ("chat", "<uuid>") as a short, stable label. The sid is truncated: these lines are
+    read in a terminal, and a full uuid per line buries the numbers that matter."""
+    try:
+        if isinstance(key, tuple):
+            return "%s:%s" % (key[0], str(key[1])[:8]) if len(key) > 1 else str(key[0])
+        return str(key)
+    except Exception:
+        return "?"
+
+
 # ── host-suspend (laptop sleep) awareness ─────────────────────────────────────────────────────────
 # When the lid closes this kernel process is FROZEN: time.monotonic() stops, but time.time() keeps real
 # time — so on resume the producer loop sees wall-clock jump far past the monotonic delta. That divergence
@@ -2086,6 +2122,14 @@ def _mark_awaiting_backstop(gid, at):
     _write_auto_nudge(d)
 
 
+def _last_awaiting_is_lift(nd):
+    """True when the node's newest awaiting diary event is already a lift — the idempotence guard for
+    sweeping rolled-up stamps, whose fields the fold does not re-materialize (rolledUp nodes are
+    display-frozen), so the field alone cannot say whether the lift already happened."""
+    evs = [e for e in (nd.get("log") or []) if e.get("kind") == "awaiting"]
+    return bool(evs) and bool(evs[-1].get("lift"))
+
+
 def _lift_spent_awaiting(now, tmux):
     """Retire a goal's ⏳ awaiting stamp once the dispatches it was waiting on have RETURNED (the user
     2026-07-22). The closer's lift is bounded to the goals a turn actually WORKED ON (`touched`), which is
@@ -2113,17 +2157,55 @@ def _lift_spent_awaiting(now, tmux):
             nodes = store.get("nodes") or {}
             stamped = [nd for nd in nodes.values()
                        if nd.get("awaitingWhy") and nd.get("awaitingAt") and not nd.get("rolledUp")]
+            # A stamped node the roll-down folded under a RESOLVED ancestor: its card's story ended, but
+            # the stamp survives invisibly (every reader skips rolledUp) — lift it explicitly so the
+            # diary says why it went, instead of an unretired wait no surface can show (the user
+            # 2026-07-27). Guarded on the diary so an unmaterialized lift never re-fires each tick.
+            rolled = [nd for nd in nodes.values()
+                      if nd.get("awaitingWhy") and nd.get("rolledUp")
+                      and not _last_awaiting_is_lift(nd)]
+            changed = False
+            for nd in rolled:
+                if jd.record_verdict(store, nd, "romp", "awaiting", now, lift=True):
+                    changed = True
             if not stamped:
+                if changed:
+                    jd.rollup_status(store, False)
+                    jd.save_goals(sid, store)
+                    _mark_views_dirty()
                 continue
             every = _bg_scan_all_cached(s["path"])
             if not every:
+                if changed:
+                    jd.rollup_status(store, False)
+                    jd.save_goals(sid, store)
+                    _mark_views_dirty()
                 continue
             running = {t.get("id") for t in every if t.get("status") == "running"}
-            changed = False
+            placed = _bg_placed_tops(sid, s["path"], [t.get("id") for t in every])
+            def _top_of(x):
+                seen = set()
+                while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
+                    seen.add(x); x = nodes[x]["parentId"]
+                return x
             for nd in stamped:
                 at, born = nd.get("awaitingAt") or 0, nd.get("t") or 0
-                # the dispatches this goal owns: launched during its life, at or before the stamp it explains
-                own = [t for t in every if born <= (t.get("t") or 0) <= at]
+                top = _top_of(nd.get("id"))
+                # The dispatches this goal owns. Placement is authoritative when the judge has spoken:
+                # a task placed under ANOTHER card can never retire this stamp (the user 2026-07-27:
+                # unrelated returns were lifting CI-wait stamps — one lifted the same minute it was
+                # re-asserted). The time window survives only for placement-unknown launches (the
+                # conservative pre-verdict shape): launched during the goal's life, at or before the
+                # stamp it explains.
+                own = []
+                for t in every:
+                    p = placed.get(t.get("id"))
+                    if p is not None:
+                        if p == top:
+                            own.append(t)             # the goal's own thread, before OR after the stamp:
+                            #                           anything of its own still out keeps the wait honest
+                    elif born <= (t.get("t") or 0) <= at:
+                        own.append(t)
                 if not own:                           # nothing dispatched → not a background wait; leave it
                     continue
                 if any(t.get("id") in running for t in own):
@@ -3545,7 +3627,7 @@ def _folder_opener():
     value is a shell-style command; a `{dir}` placeholder is substituted with the clicked path (else the path
     is appended as the last argument). Empty → the OS default opener (see _open_folder).
 
-    Examples (documented in docs/getting-started.md and the romp skill):
+    Examples (documented in docs/reference.md):
       open -a Ghostty {dir}          # macOS: a new Ghostty terminal in that folder
       ghostty --working-directory={dir}   # Linux
       code {dir}                     # open the folder in VS Code instead
@@ -4771,7 +4853,21 @@ def checkin_apply(body):
         return not isinstance(p, int) or isinstance(p, bool) or not (0 < p < 65536)
     if not host or _bad(kp) or _bad(bp):
         return {"ok": False, "error": "host, kernelPort, busPort required"}, 400
+    tok = str((body or {}).get("token") or "")
     with _remotes_lock:
+        if tok:
+            for oh, o in list(_remotes.items()):
+                if o.get("token") != tok:
+                    continue
+                if not o.get("checkin_peer"):
+                    # Same kernel (same serve token), already ssh-attached here — usually under its
+                    # alias while the handshake declares its hostname. The ssh row is strictly more
+                    # capable (we own the tunnel, can push/start), so keep it and file NO second row.
+                    # 200, not an error: the mobile retries a failed handshake every tunnel
+                    # incarnation, and there is nothing here to fix (the user 2026-07-27).
+                    return {"ok": True, "host": oh, "alreadyAttached": True}, 200
+                if oh != host:
+                    _remotes.pop(oh, None)         # same mobile re-checking in under a new name
         r = _remotes.get(host)
         if r is not None and not r.get("checkin_peer"):
             return {"ok": False, "error": "host '%s' is already an ssh-attached remote here" % host}, 409
@@ -4915,7 +5011,10 @@ def _remote_public(r):
             # exact condition the automatic update fires on, so the row can say why it will or won't.
             # autoPush: that host's live phase (pushing / waiting / failed) → the popover's progress line and
             # the rail icon's motion, so background work is never invisible (the user 2026-07-24).
-            "fastForward": _is_fast_forward(r), "autoPush": _auto_push_state(r["host"]),
+            # fastPull: the mirror — the remote is strictly ahead, so pulling only ADDS commits here.
+            # Drives the row's Pull button; the auto-pull additionally requires trusted + local main.
+            "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r),
+            "autoPush": _auto_push_state(r["host"]),
             # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
             # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
             "gaveUp": bool(r.get("gave_up")), "fails": int(r.get("fails") or 0),
@@ -4973,6 +5072,7 @@ def attach_remote(host, kernel_port=None):
         raise ValueError("host required")
     if not _safe_ssh_host(host):
         raise ValueError("invalid host")
+    prior_trust = known_trust(host)   # BEFORE this attach's own _known_note files a default for the name
     with _remotes_lock:
         r = _remotes.get(host)
         if r is None:
@@ -4995,6 +5095,33 @@ def attach_remote(host, kernel_port=None):
         _attach_trust = r.get("trust")
     _known_note(host, _attach_trust)               # remember it for the popover's past-hosts list
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
+    # SAME MACHINE, SECOND NAME (the user 2026-07-27, whose box sat in the registry as both its
+    # hostname and its ssh alias — every session listed twice, bare postal names ambiguous). The serve
+    # token IS the remote kernel's identity — one per machine, fetched from its state dir — so a
+    # fetched token that matches an existing row under a DIFFERENT name means this attach reaches a
+    # machine already registered. Absorb the old row into this one: kill its tunnel, tell the bus that
+    # peer name is gone, and carry its trust level forward when this name has none remembered — the
+    # user chose that level for the MACHINE, and a rename must not quietly drop it to directed.
+    absorbed = None
+    if token:
+        with _remotes_lock:
+            dup = next((o for oh, o in _remotes.items() if oh != host and o.get("token") == token), None)
+            if dup is not None:
+                absorbed = _remotes.pop(dup["host"])
+                r = _remotes.get(host)
+                if r is not None and prior_trust is None and absorbed.get("trust"):
+                    r["trust"] = absorbed["trust"]
+                    _attach_trust = absorbed["trust"]
+    if absorbed:
+        if absorbed.get("proc"):
+            try:
+                absorbed["proc"].terminate()
+            except Exception:
+                pass
+        if _postal_peers_on():                     # the old peer NAME is gone on purpose — tell the bus
+            _notify_bus_peer(absorbed["host"], absorbed.get("bus_port"), False, absorbed.get("token") or "")
+        known_forget(absorbed["host"])             # never re-offer the duplicate name in the popover
+        _known_note(host, _attach_trust)           # the surviving name carries the machine's trust level
     # BOOTSTRAP: no token yet (the kernel there never ran) or nothing listening on its port → start
     # romp-serve over ssh and wait for the port, so "install romp on the box, click attach" is the
     # whole story. A healthy remote costs one extra ssh probe; a romp-less host gets a next-step
@@ -5345,36 +5472,87 @@ def _auto_push_remote(host):
     return ok
 
 
+def _auto_pull_remote(host):
+    """Run ONE automatic pull FROM `host` in the background — the mirror of _auto_push_remote for a
+    trusted remote that is strictly ahead. On success the phase parks at 'pulled' with the restart
+    hint: the drift flag clears at once (HEAD moved), but the running kernel is still the old build,
+    so the trace must outlive the clearing event — a kernel restart (fresh process, empty map) is what
+    removes it. Failures stay visible and red, exactly like a failed push."""
+    _set_auto_push(host, "pulling", "pulling %s's newer commits over SSH" % host)
+    try:
+        ok, detail = _pull_remote(host)
+    except Exception as e:
+        ok, detail = False, str(e)
+    _set_auto_push(host, "pulled" if ok else "failed", detail or ("" if ok else "pull failed"))
+    return ok
+
+
 def _maybe_auto_push(r):
-    """The supervisor's per-pass hook: start an automatic push of this remote when the setting is on and a
-    straight fast-forward is observed. Spawns a THREAD — `_update_remote` is several seconds of ssh, and the
-    supervisor also keeps every tunnel alive, so blocking it here would stall the whole fleet."""
+    """The supervisor's per-pass hook: start an automatic sync of this remote when the setting is on —
+    a PUSH when a straight fast-forward of the remote is observed, a PULL when a TRUSTED remote is
+    strictly ahead and the local checkout sits clean on main (the user 2026-07-27: main syncs itself
+    across trusted machines, both directions ridden by the attaching side's own ssh). Spawns a THREAD —
+    either direction is several seconds of ssh, and the supervisor also keeps every tunnel alive, so
+    blocking it here would stall the whole fleet."""
     host = r.get("host") or ""
     if not host:
         return
+    if r.get("checkin_peer"):
+        return   # no ssh route from here in either direction — auto-sync would just manufacture failures
     if not _remote_out_of_date(r):
         # It matches us now. That is the EVENT that ends a push (never a timer): a 'waiting for it to
         # restart' clears the moment the restarted remote reports our sha, and a stale 'failed' clears too
         # once the host is up to date by any route (a later manual Push, an update from another machine).
+        # 'pulled' deliberately survives this — its restart hint stays until the restart itself.
         with _auto_push_lock:
             if _auto_push.get(host, {}).get("phase") in ("waiting", "failed"):
                 _auto_push.pop(host, None)
         return
-    if not _auto_update_remotes_on() or not _is_fast_forward(r):
+    if not _auto_update_remotes_on():
+        return
+    push = _is_fast_forward(r)
+    pull = (not push and _is_fast_pull(r) and (r.get("trust") or "directed") == "trusted"
+            and _local_branch() == "main")
+    if not push and not pull:
         return
     key = (_sha_base(r.get("kernel_sha") or ""), _local_head() or "")
     with _auto_push_lock:
-        if _auto_push.get(host, {}).get("phase") == "pushing":
-            return                                  # one push per host at a time
+        if _auto_push.get(host, {}).get("phase") in ("pushing", "pulling"):
+            return                                  # one sync per host at a time
         if _auto_push_tried.get(host) == key:
             return                                  # already attempted for this exact advance
         if len(_auto_push_tried) > 64:
             _auto_push_tried.clear()
         _auto_push_tried[host] = key
-    threading.Thread(target=_auto_push_remote, args=(host,), daemon=True).start()
+    threading.Thread(target=_auto_push_remote if push else _auto_pull_remote,
+                     args=(host,), daemon=True).start()
 
 
 _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its HEAD to on the remote
+
+
+def _discover_remote_clone(host):
+    """ssh-discover the remote romp clone (conventional dirs, mirrors _start_remote_kernel) and its
+    state. Returns (dir, head, dirty, error) — error set (and the rest blank) on any failure. Shared
+    by the push (_update_remote) and pull (_pull_remote) directions."""
+    disc = (
+        'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
+        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
+        'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
+        'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
+        'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
+    try:
+        d = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, disc], capture_output=True, text=True, timeout=25)
+    except Exception as e:
+        return "", "", "", str(e)[:200]
+    out = d.stdout or ""
+    if "NOROMP" in out:
+        return "", "", "", "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
+    info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
+    rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
+    if not rdir:
+        return "", "", "", (_ssh_err(d.stderr) or "couldn't locate the remote romp clone on %s" % host).strip()[:200]
+    return rdir, rhead, rdirty, ""
 
 
 def _update_remote(host):
@@ -5395,6 +5573,12 @@ def _update_remote(host):
         return False, "no host"
     with _remotes_lock:
         _rr = _remotes.get(host)
+    if _rr is not None and _rr.get("checkin_peer"):
+        # A checked-in host reached US over its own outbound tunnel; there is no ssh route from here,
+        # so a push can only die with a confusing "No route to host" (the user 2026-07-27). Say what
+        # is actually possible instead.
+        return False, ("no ssh path to %s from this machine (it checked in here over its own tunnel) — "
+                       "sync from that machine's own dashboard" % host)
     kport = int((_rr or {}).get("kernel_port") or _REMOTE_KERNEL_PORT)   # for the restart's port poll
     lfull = _local_head()
     if not lfull:
@@ -5402,23 +5586,9 @@ def _update_remote(host):
     # We push the committed HEAD; uncommitted local edits are not sent ("just take what is committed on local"
     # — the user 2026-07-04). A dirty local tree is NOT refused: it just means HEAD, not the working tree.
     # (1) discover the remote clone + pre-check it's clean
-    disc = (
-        'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
-        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
-        'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
-        'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
-        'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
-    try:
-        d = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, disc], capture_output=True, text=True, timeout=25)
-    except Exception as e:
-        return False, str(e)[:200]
-    out = d.stdout or ""
-    if "NOROMP" in out:
-        return False, "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
-    info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
-    rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
-    if not rdir:
-        return False, (_ssh_err(d.stderr) or "couldn't locate the remote romp clone on %s" % host).strip()[:200]
+    rdir, rhead, rdirty, derr = _discover_remote_clone(host)
+    if derr:
+        return False, derr
     if rdirty:
         return False, "remote %s has uncommitted changes — commit or discard them there first (won't clobber)" % host
     if rhead and rhead == lfull:
@@ -5504,6 +5674,93 @@ def _update_remote(host):
     if tag == "NOLAUNCH":
         return False, "pushed + reset, but found no romp/romp-serve launcher to restart the kernel"
     return False, (_ssh_err(a.stderr) or aout or "remote apply failed").strip()[:180]
+
+
+def _is_fast_pull(r):
+    """Whether pulling this remote's commits would be a STRAIGHT FAST-FORWARD of the local checkout —
+    the remote is strictly AHEAD (it has commits we lack, we have none it lacks), both counts actually
+    known. The mirror of _is_fast_forward, for the other direction (the user 2026-07-27: the attaching
+    side owns BOTH directions of sync — the remote has no ssh route back). None is NOT zero, same as
+    the push gate: an unprovable relationship is exactly what must not be pulled automatically."""
+    if not _remote_out_of_date(r):
+        return False
+    d = _behind_info(r.get("kernel_sha") or "")
+    b, a = d.get("behind"), d.get("ahead")
+    return isinstance(b, int) and isinstance(a, int) and a > 0 and b == 0
+
+
+def _local_branch():
+    """The local checkout's branch name, or '' when detached/unknown — the auto-pull fires on main
+    only (the user 2026-07-27: main syncs itself across trusted machines; feature branches are
+    mid-thought and move when their owner says so)."""
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=3)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _pull_remote(host):
+    """PEER-TO-PEER pull — the other direction of _update_remote (the user 2026-07-27, who wanted sync
+    to ride the attaching side's own ssh: the remote pushing back can only fail, connectivity is
+    one-way). Fetch the remote clone's committed HEAD over the same BatchMode ssh and FAST-FORWARD the
+    local checkout onto it. Guardrails: ff-only (never a merge/rebase on the user's behalf — diverged
+    is refused loudly), and a clean local tree for TRACKED files (the fast-forward rewrites the
+    working tree; peers' uncommitted edits are not ours to move). The local kernel is deliberately NOT
+    restarted — a kernel restart is fleet-visible, so the detail says what to run instead. Returns
+    (ok, detail), fail-loud."""
+    host = str(host or "").strip()
+    if not host:
+        return False, "no host"
+    with _remotes_lock:
+        _rr = _remotes.get(host)
+    if _rr is not None and _rr.get("checkin_peer"):
+        return False, ("no ssh path to %s from this machine (it checked in here over its own tunnel) — "
+                       "sync from that machine's own dashboard" % host)
+    lfull = _local_head()
+    if not lfull:
+        return False, "local kernel isn't a git checkout — nowhere to pull to"
+    try:
+        st = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
+                            capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        return False, str(e)[:200]
+    if (st.stdout or "").strip():
+        return False, "this machine's tree has uncommitted changes — commit or stash them first (won't clobber)"
+    rdir, rhead, _rdirty, derr = _discover_remote_clone(host)   # a DIRTY remote is fine: we take its COMMITS
+    if derr:
+        return False, derr
+    if rhead and rhead == lfull:
+        return True, "already up to date (%s)" % (_local_head(short=True) or lfull[:8])
+    env = dict(os.environ, GIT_SSH_COMMAND="%s %s" % (SSH_BIN, " ".join(_SSH_OPTS)))
+    try:
+        f = subprocess.run(["git", "-C", str(ROOT), "fetch", "%s:%s" % (host, rdir), "HEAD"],
+                           capture_output=True, text=True, timeout=120, env=env)
+    except Exception as e:
+        return False, "git fetch from %s failed: %s" % (host, str(e)[:160])
+    if f.returncode != 0:
+        return False, "git fetch from %s failed: %s" % (host, (_ssh_err(f.stderr) or f.stdout or "").strip()[:160])
+    try:
+        anc = subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        if anc.returncode != 0:
+            return False, ("local and %s have diverged — a pull would need a merge, which is yours to "
+                           "do by hand" % host)
+        n = subprocess.run(["git", "-C", str(ROOT), "rev-list", "--count", "HEAD..FETCH_HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        count = (n.stdout or "").strip() or "?"
+        m = subprocess.run(["git", "-C", str(ROOT), "merge", "--ff-only", "FETCH_HEAD"],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return False, str(e)[:200]
+    if m.returncode != 0:
+        return False, "fast-forward failed: %s" % ((m.stderr or m.stdout or "").strip()[:160] or "unknown")
+    _HEAD_CACHE.update(ts=0.0)             # HEAD moved; the next poll re-reads it and the drift clears
+    short = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5).stdout.strip()
+    return True, "pulled %s commit%s from %s — now at %s; restart romp to run it" % (
+        count, "" if count == "1" else "s", host, short or "HEAD")
 
 
 def _start_remote(host):
@@ -6326,6 +6583,8 @@ def _session_awaiting(sid, path, idle, stamp=False):
          so the death notice — not awaiting — is the truth there. Same pending-only rule as 0.5 (the
          scan rows carry the same launching tool_use id the lifecycle set does).
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
+         POSITIVE rows only: an awaiting:false row contributes nothing and falls through (the Stop hook
+         writes false unconditionally at every turn end, so a false row is ambient, not an answer).
       2. the JUDGE's durable ⏳ stamp (_session_stamp_cached), OPT-IN via stamp=True — the closer's awaiting
          verdict, materialized in the goal store, so it OUTLIVES a kernel restart (sources 0-1 die with the
          backend, which is how a genuinely-waiting session read 'stalled'). LIVE-only: a dormant session's
@@ -6364,8 +6623,15 @@ def _session_awaiting(sid, path, idle, stamp=False):
                 return "waiting on a background task%s" % ((": " + d0) if d0 else "")
             return "waiting on %d background tasks%s" % (len(pending), (" — " + d0 + ", …") if d0 else "")
     ov = _states_awaiting_overlay(sid)
-    if ov is not None:                                # a producer is writing overlay records → trust it
-        return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
+    if ov is not None and ov.get("awaiting"):         # a producer wrote a LIVE awaiting:true → trust its why
+        return ov.get("why") or "waiting on dispatched work"
+    # An awaiting:false overlay row is NOT a veto — it says only that THIS channel has nothing to add.
+    # The SDK Stop hook has written an unconditional false at every turn end since 2026-07-07 while
+    # nothing writes true, so treating "most recent row is false" as the session's answer made source 2
+    # unreachable on every SDK session: the durable stamp never lit the rail chip, chat chip, or
+    # timeline lane, and when bf55a2f (2026-07-24) narrowed the live sources to pending-only the
+    # awaiting badge visibly vanished fleet-wide (the user 2026-07-27). A negative from one layer
+    # falls through to the next; only a POSITIVE short-circuits.
     # Source 2 — the JUDGE's durable ⏳ stamp (restart-proof), OPT-IN. Only for a LIVE CLI (`live is not None`
     # means a backend snapshot exists, tmux or SDK; a dormant session never resurrects off a stale stamp) AND
     # only when the caller asked (stamp=True): the session-scoped display surfaces want it, the per-goal feed
@@ -6387,12 +6653,13 @@ def _bg_live_norm(sid, path):
         return []
     if "bgTasks" in live:
         return [{"tid": t.get("toolUseId"), "desc": str(t.get("desc") or "").strip(),
-                 "t": int(t.get("since") or 0)}
+                 "t": int(t.get("since") or 0), "type": str(t.get("type") or "")}
                 for t in live.get("bgTasks") or [] if isinstance(t, dict)]
     if not path:
         return []
     sp = _sdk_spawned_at(sid)
-    return [{"tid": tk.get("id"), "desc": str(tk.get("summary") or "").strip(), "t": int(tk.get("t") or 0)}
+    return [{"tid": tk.get("id"), "desc": str(tk.get("summary") or "").strip(), "t": int(tk.get("t") or 0),
+             "type": str(tk.get("type") or "")}
             for tk in _bg_scan_cached(path) if not (sp and tk.get("t") and tk["t"] < sp)]
 
 
@@ -6412,13 +6679,18 @@ def _bg_split(sid, path, tasks):
       - placed under a top carrying a live ⏳ stamp → AWAITED: the closer affirmed the wait.
       - placed with NO stamp → a SERVICE: the closer audited past the launch without saying awaiting
         (its stamp/lift is exact there), so nobody is waiting on this process — it is the session's
-        furniture (a dev server), the neutral chip's territory, never the awaiting badge."""
+        furniture (a dev server), the neutral chip's territory, never the awaiting badge.
+      - EXCEPT a dispatched AGENT (task type carries 'agent'): an agent is work the session waits on
+        by construction, never furniture — only shell tasks can be services (the user 2026-07-27: a
+        background agent rode the neutral chip while its card sat plain Working, because the stamp
+        meant to affirm the wait was structurally unable to reach the surfaces)."""
     placed = _bg_placed_tops(sid, path, [t["tid"] for t in tasks])
     stamped = _session_stamped_tops(sid)
     awaited, services = [], []
     for t in tasks:
         top = placed.get(t["tid"]) if t["tid"] else None
-        (services if top and top not in stamped else awaited).append(t)
+        agent = "agent" in (t.get("type") or "")
+        (services if top and top not in stamped and not agent else awaited).append(t)
     return awaited, services
 
 
@@ -9818,9 +10090,14 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         if docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode")):
             events.insert(0, sysinfo)
         if boundary:
+            # the open cards the boundary settle dropped (the settle annotation keyed to this head)
+            # — the card names them so the drop is visible in the chat too, not only in the feed's
+            # bell (the user 2026-07-27)
+            _settle = jd.episode_settles(sid).get(boundary.get("head") or "") or {}
             events.insert(0, {"kind": "clear", "uuid": "clear:%s" % (boundary.get("head") or boundary.get("t")),
                               "ts": iso(boundary["t"]) if boundary.get("t") else None,
-                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows)})
+                              "clearedAt": boundary.get("t"), "episodes": len(_epi_rows),
+                              "dropped": [d.get("text") or "" for d in (_settle.get("settled") or [])] or None})
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
@@ -9838,7 +10115,16 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),
-            "firstSeen": session["turns"][0]["t"] if session["turns"] else now}
+            # NEVER `now`. This rides the chat payload, and _send_client dedups by comparing the
+            # SERIALIZED payload against what that client last received — so a firstSeen that ticked
+            # with the wall clock made every build differ, defeated the dedup entirely, and re-sent the
+            # FULL chat to every connected client about once a second, forever, for any session with no
+            # turns yet. (Measured on an idle session: a complete `session` frame every ~1.1s, each one
+            # making the browser re-run its upsert/reconcile across the transcript — chat felt slow while
+            # every other pane, whose payloads dedup correctly, stayed instant.) The spawn time is
+            # persisted and fixed; None when genuinely unknown, which the client tolerates — render.ts
+            # keeps what it already had (`msg.firstSeen ?? prev.firstSeen`).
+            "firstSeen": session["turns"][0]["t"] if session["turns"] else _sdk_spawned_at(sid)}
 
 
 EPISODE_EVENT_CAP = 200   # events shipped per pre-clear episode expand — bounded, honest about the cut
@@ -10030,6 +10316,12 @@ def _episode_boundary_check(sid, path, now):
     with p.open("a") as fh:
         for nid in tops:
             fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+    # The settle's OWN record — which cards this boundary dropped — rides the episodes log as an
+    # annotation row keyed to this head, appended only on THIS settle path so the race-decided seed
+    # above can never claim one (the user 2026-07-27, who found the drop invisible): the feed's bell
+    # notice and the chat boundary card read it back.
+    jd.append_episode_settle(sid, head["uuid"], int(t),
+                             [{"id": nid, "text": (nodes[nid].get("text") or "")[:120]} for nid in tops])
     _mark_nodes_cleared(tops, True, src="romp", why="dropped when the conversation was cleared")
     sys.stderr.write("episode boundary: %s cleared -> settled %d open card(s)\n" % (sid[:8], len(tops)))
 
@@ -10788,6 +11080,27 @@ def _card_warn_rows(rows, fsid, subtree, placements, cap=20):
     return out[-cap:]
 
 
+def _boundary_clear_notices(alive):
+    """The newest /clear boundary that SETTLED cards, per living session — read from the episodes
+    log's settle annotations (the authoritative record, written on the settle path). The feed
+    mirrors each into the shell's notification bell exactly once (client seen-set), so a clear that
+    dropped open cards is always visible after the fact instead of the cards silently leaving the
+    board (the user 2026-07-27). Newest-only bounds the payload; the log read is an mtime memo, so
+    this is cheap per push."""
+    out = []
+    for s in alive:
+        try:
+            settles = jd.episode_settles(s["sid"])
+        except Exception:
+            continue
+        if not settles:
+            continue
+        r = max(settles.values(), key=lambda x: x.get("t") or 0)
+        out.append({"sid": s["sid"], "name": s["name"], "t": r.get("t") or 0,
+                    "titles": [str(d.get("text") or "") for d in (r.get("settled") or [])]})
+    return out
+
+
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -11467,6 +11780,8 @@ def build_feed(now, tmux=None):
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
             "order": _session_order(),
+            # /clear boundary settles, newest per session → the bell logs each once (the user 2026-07-27)
+            "clearNotices": _boundary_clear_notices(alive),
             "canUndoClear": len(cleared) > 0}
 
 
@@ -13058,11 +13373,18 @@ def _send_client(c, key, msg, pre=None):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
     `pre` is the already-serialized msg (json.dumps(msg)) when the caller has it cached — passing it lets
-    a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache)."""
+    a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache).
+
+    ROMP_PERF=1 logs every send AND every dedup hit. That asymmetry is the point: a payload carrying a
+    field that ticks with the clock looks perfectly normal from the outside — the UI just feels slow —
+    and the only visible symptom is this dedup never hitting. Finding the last one took a hand-written
+    WebSocket client; the log makes the next one obvious."""
     s = pre if pre is not None else json.dumps(msg)
     if c.setdefault("sent", {}).get(key) == s:
+        _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=1)
         return
     c["sent"][key] = s
+    _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=0)
     try:
         c["send"](s)
     except Exception:
@@ -13410,9 +13732,17 @@ def _push(targets, connect=False):
                 hit = _built_chat.get(s["sid"])
                 if not is_active and hit is not None and sig is not None and hit[0] == sig:
                     m, ms = hit[1], hit[2]               # unchanged background tab → reuse, no reshape/serialize
+                    _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
                 else:
+                    _t0 = time.monotonic()
                     m = build_session(s["sid"], now, tmux)
                     ms = json.dumps(m) if m is not None else None
+                    # Build + serialize together: the ACTIVE tab skips the cache above by design, so this
+                    # is what the watched session pays on every single push. If chat ever feels slow again,
+                    # this number and the deduped= on the matching send say which half is at fault.
+                    _perf("chatbuild", sid=str(s["sid"])[:8], cached=0, active=int(is_active),
+                          ms=round((time.monotonic() - _t0) * 1000, 1),
+                          events=(len(m.get("events") or []) if m else 0), bytes=(len(ms) if ms else 0))
                     if m is not None and sig is not None:
                         if len(_built_chat) > 256:       # bounded by fleet size; a wholesale clear is fine
                             _built_chat.clear()
@@ -14647,6 +14977,13 @@ function mruHost(){try{return localStorage.getItem('romp:lastRemoteHost')||'';}c
 // set of machines you can reach. Hosts you attached before are the other source, and that is what makes a
 // typed-in host stick: attaching records it in remotes-known.json, so it completes from then on.
 var _cfg=[],_seen=[];
+// A trust change (and a Match, which crosses the tunnel and confirms only on the peer's next tier
+// gossip) takes real time, and the popover re-renders every poll — so a snapshot fetched BEFORE the
+// change repainted the OLD level after it, which read as "didn't hold" and invited a second click
+// (the user 2026-07-27). Pending is keyed per host and survives re-renders: rows show the CHOSEN
+// level, disabled with an applying cue, until a snapshot agrees (the confirming EVENT — no timer).
+var _pendTrust={},_pendMirror={};
+function pendLvl(map,host,current){var p=map[host];if(p&&current===p){delete map[host];p=null;}return p;}
 function fillHosts(){if(!dl)return;var hs=[];
 [[mruHost()],_seen,_cfg].forEach(function(g){(g||[]).forEach(function(h){if(h&&hs.indexOf(h)<0)hs.push(h);});});   // most-recently-connected first, not just ssh-config order
 dl.innerHTML=hs.map(function(h){return '<option value=\"'+h+'\"></option>';}).join('');}
@@ -14674,7 +15011,7 @@ _auto=!!(d&&d.autoUpdate);
 if(autoCb&&!autoCb.disabled)autoCb.checked=_auto;   // mirror the kernel; never clobber a write in flight
 // An automatic push in flight counts as BUSY: the icon marches while romp works in the background, which is
 // the whole point of replacing the modal (the user 2026-07-24 — animate the icon so you can see it happening).
-var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting');});
+var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');});
 paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count, plus any
 // automatic update's live phase — so the progress is readable WITHOUT opening the panel.
@@ -14731,13 +15068,18 @@ var ver='';
 if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
 if(typeof bb==='number'&&typeof ab==='number'){
 w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
-var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'');
+var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'')
++(t.checkinPeer?' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.':'');
 ver=' \\u00b7 <span class=rnet-old title=\"'+tt+'\">'+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=rnet-sha title=\"same build as this machine\">'+t.kernelSha+'</span>';}
 // A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
 // flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
-var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting');
-var upd=(t.status==='up'&&t.outOfDate&&!apx)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');
+// A checked-in host has no ssh route FROM here, so Push/Pull can only fail — the tooltip above says
+// where to sync instead. A strictly-AHEAD remote gets Pull in Push's place: a push there would only
+// be refused (it has commits this machine lacks), so offering it is a dead end.
+var upd=(t.status==='up'&&t.outOfDate&&!apx&&!t.checkinPeer&&!t.fastPull)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+var pull=(t.status==='up'&&t.fastPull&&!apx&&!t.checkinPeer)?'<button class=rnet-upd data-p=\"'+t.host+'\" title=\"Pull '+t.host+'\\u2019s newer commits into this machine\\u2019s romp (fast-forward only; refuses if this tree has uncommitted changes). This kernel keeps running the old build until you restart romp.\">Pull</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
@@ -14753,9 +15095,10 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Publish this ma
 // your approval, never auto-injected; isolated = dashboard only, no postal. The gate lives in the bus.
 // Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
 // dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
-var tcur=t.trust||'directed';
-var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=rnet-trust data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select></span>';
+var tpd=pendLvl(_pendTrust,t.host,t.trust||'directed');
+var tcur=tpd||t.trust||'directed';
+var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=\"rnet-trust'+(tpd?' rnet-applying':'')+'\"'+(tpd?' disabled':'')+' data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(tpd?'<span class=rnet-pend>applying\\u2026</span>':'')+'</span>';
 // The OTHER direction of the pair (how that host holds mail FROM this machine, declared by its bus on
 // the last exchange). Trust is receiver-evaluated on purpose, so a half-open pair is legal — but it
 // used to be invisible until mail quarantined over there (the user 2026-07-26). A mismatch offers
@@ -14763,14 +15106,16 @@ var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select cl
 // your trust, and this machine never lets one.
 var theirs=tiers[t.host]||'';
 if(theirs){var mm=theirs!==tcur;
-trust+='<span class=\"rnet-back'+(mm?' rnet-mismatch':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.\">'+t.host+' holds yours: '+theirs+'</span>';
-if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
+var mpd=pendLvl(_pendMirror,t.host,theirs);   // confirmed by the peer's next tier gossip, not the POST
+trust+='<span class=\"rnet-back'+(mm&&!mpd?' rnet-mismatch':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.\">'+t.host+' holds yours: '+theirs+'</span>';
+if(mpd){trust+='<button class=rnet-mirror disabled title=\"Set on '+t.host+'; waiting for its bus to confirm on the next exchange.\">Matching\\u2026</button>';}
+else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'+tcur+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
 // Line 1 is what this host is doing right now plus the acts you perform on it; line 2 is the pair of
 // settings you set once and leave. They shared a single flat row before, which gave Detach the same
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-retry+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
+retry+pull+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
 // go away: the work still announces itself, it just does it here instead of over your screen. A FAILURE
@@ -14790,12 +15135,13 @@ if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
 hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
 list.appendChild(hd);
 known.forEach(function(k){var kr=document.createElement('div');kr.className='rnet-row rnet-known';
-var kcur=k.trust||'directed';
+var kpd=pendLvl(_pendTrust,k.host,k.trust||'directed');
+var kcur=kpd||k.trust||'directed';
 // The SAME trust select as an attached row (data-t → /tunnels/trust): trust is judged by ORIGIN at
 // delivery, so the level applies to this host's mail even when it arrives relayed through a hub —
 // no tunnel required to set it (the user 2026-07-25).
-var ktrust='<select class=rnet-trust data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>';
+var ktrust='<select class=\"rnet-trust'+(kpd?' rnet-applying':'')+'\"'+(kpd?' disabled':'')+' data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(kpd?'<span class=rnet-pend>applying\\u2026</span>':'');
 kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
 '<span class=nm><b>'+k.host+'</b> <span class=st title=\"Not attached; the trust level applies to its mail by origin, and re-attaching keeps it.\">not attached</span></span>'+ktrust+
 '<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
@@ -14808,9 +15154,10 @@ if(via.length){var vh=document.createElement('div');vh.className='rnet-khead';
 vh.textContent='Reachable via relay';vh.title='Machines you have no direct tunnel to; a hub you are attached to relays their mail one hop. Trust is judged by origin, so the level you set here applies to their mail even though it arrives through the hub.';
 list.appendChild(vh);
 via.forEach(function(v){var vr=document.createElement('div');vr.className='rnet-row rnet-known';
-var vcur=v.trust||'directed';
-var vtrust='<select class=rnet-trust data-t=\"'+v.host+'\" title=\"What happens to postal mail from '+v.host+' (it arrives relayed through '+v.via+'; trust is judged by its true origin): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
-['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>';
+var vpd=pendLvl(_pendTrust,v.host,v.trust||'directed');
+var vcur=vpd||v.trust||'directed';
+var vtrust='<select class=\"rnet-trust'+(vpd?' rnet-applying':'')+'\"'+(vpd?' disabled':'')+' data-t=\"'+v.host+'\" title=\"What happens to postal mail from '+v.host+' (it arrives relayed through '+v.via+'; trust is judged by its true origin): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
+['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>'+(vpd?'<span class=rnet-pend>applying\\u2026</span>':'');
 vr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #7a6a3a\" title=\"No direct tunnel; reachable one hop through '+v.via+'.\"></span>'+
 '<span class=nm><b>'+v.host+'</b> <span class=st title=\"Its sessions are gossiped one hop by '+v.via+'; attach it directly for full control.\">via '+v.via+' \\u00b7 '+(v.agents||0)+' session'+((v.agents||0)===1?'':'s')+'</span></span>'+vtrust;
 list.appendChild(vr);});}
@@ -14828,14 +15175,19 @@ var hr=document.createElement('div');hr.className='rnet-row rnet-known';
 hr.innerHTML='<span class=rnet-dot style=\"background:#b58900\" title=\"Mail is waiting for approval on '+hn+'.\"></span>'+
 '<span class=nm><b>'+hn+'</b> <span class=st title=\"'+gl.replace(/\"/g,'&quot;')+'\">'+rows.length+' message'+(rows.length===1?'':'s')+' held for your approval</span></span>';
 list.appendChild(hr);});}
+// Pending is recorded ON THE CLICK (ack now — the buttons rule), so any re-render in the round-trip
+// window repaints the chosen level + applying cue instead of the stale snapshot's old value. A
+// refused/failed write DELETES the pending entry, so the next render honestly reverts — plus the alert.
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
-s.disabled=true;fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
-if(!(d&&d.ok)){alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
-s.disabled=false;refresh();}).catch(function(){s.disabled=false;alert('trust change on '+h+' failed to reach the kernel.');});};});
+_pendTrust[h]=s.value;s.disabled=true;s.classList.add('rnet-applying');
+fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){delete _pendTrust[h];alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+refresh();}).catch(function(){delete _pendTrust[h];alert('trust change on '+h+' failed to reach the kernel.');refresh();});};});
 list.querySelectorAll('button[data-m]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-m');
-b.disabled=true;b.textContent='Matching\\u2026';fetch('/tunnels/trust-mirror',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
-if(!(d&&d.ok)){alert('trust match on '+h+' failed: '+((d&&d.error)||'unknown'));b.disabled=false;b.textContent='Match';return;}   // fail LOUDLY (CLAUDE.md)
-b.textContent='Matched';refresh();}).catch(function(){b.disabled=false;b.textContent='Match';alert('trust match on '+h+' failed to reach the kernel.');});};});
+_pendMirror[h]=b.getAttribute('data-lvl')||'';b.disabled=true;b.textContent='Matching\\u2026';
+fetch('/tunnels/trust-mirror',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){delete _pendMirror[h];alert('trust match on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+refresh();}).catch(function(){delete _pendMirror[h];alert('trust match on '+h+' failed to reach the kernel.');refresh();});};});
 list.querySelectorAll('input[data-k]').forEach(function(c){c.onchange=function(){var h=c.getAttribute('data-k');
 c.disabled=true;fetch('/tunnels/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,on:c.checked})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -14857,6 +15209,12 @@ fetch('/tunnels/start',{method:'POST',headers:{'Content-Type':'application/json'
 if(d&&d.ok){b.textContent='Started';schedule(1000);}   // the supervisor's next poll flips the row to connected
 else{b.disabled=false;b.textContent='Retry';alert('Start on '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
 }).catch(function(){b.disabled=false;b.textContent='Retry';alert('Start on '+h+' failed to reach the kernel.');});};});
+list.querySelectorAll('button[data-p]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-p');
+b.disabled=true;b.textContent='Pulling\\u2026';
+fetch('/tunnels/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.ok){b.textContent='Pulled';alert((d.detail||'Pulled.')+'');schedule(1000);}   // the detail carries the restart hint
+else{b.disabled=false;b.textContent='Retry';alert('Pull from '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Pull from '+h+' failed to reach the kernel.');});};});
 list.querySelectorAll('button[data-u]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-u');
 b.disabled=true;b.textContent='Pushing\\u2026';
 fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
@@ -15295,6 +15653,10 @@ def _landing():
             ".rnet-keep input{margin:0;accent-color:var(--accent)}"
             ".rnet-trust{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}"
             ".rnet-trust:disabled{opacity:0.55;cursor:default}"
+            # applying = in-progress chrome, so it wears the accent (never a status color); the note's
+            # 11px matches every other annotation on the row (fonts: reuse, don't multiply)
+            ".rnet-trust.rnet-applying{border-color:var(--accent);opacity:0.8}"
+            ".rnet-pend{color:var(--accent);font-size:11px;margin-left:4px}"
             # "Previously attached": a quiet section header + dimmed rows, so remembered hosts read as
             # history you can act on and never as something currently connected. Hover restores full
             # opacity (they're interactive, not decoration).
@@ -16346,6 +16708,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 ok, detail = _update_remote(host)
+                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
+            if u.path == "/tunnels/pull":
+                # PULL a remote's newer committed code into the local checkout (peer-to-peer, no
+                # GitHub) — the mirror of /tunnels/update, still over THIS machine's ssh (the remote
+                # has no route back). Fast-forward only, clean local tree required; the local kernel
+                # is not restarted (the detail says what to run). Body: {"host": <ssh alias>}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                ok, detail = _pull_remote(host)
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
             if u.path == "/tunnels/start":
                 # START a downed remote kernel — the popover's explicit ASK for an ssh-reachable host

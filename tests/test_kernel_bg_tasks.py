@@ -306,6 +306,50 @@ class DurableAwaitingSource(unittest.TestCase):
             os.unlink(path)
 
 
+class AgentTasksAreNeverServices(unittest.TestCase):
+    """_bg_split (the user 2026-07-27): a dispatched AGENT is work the session waits on by construction,
+    never furniture — only shell tasks can be classified as services. A background agent was riding the
+    neutral bgServices chip while its card sat plain Working, because the placed-with-no-stamp rule
+    assumed the closer's stamp would affirm agent waits and the stamp could not reach the surfaces."""
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def _split(self, tasks, placed, stamped=frozenset()):
+        saved = (km._bg_placed_tops, km._session_stamped_tops)
+        km._bg_placed_tops = lambda sid, path, tids: placed
+        km._session_stamped_tops = lambda sid: stamped
+        try:
+            return km._bg_split(self.SID, "/p", tasks)
+        finally:
+            km._bg_placed_tops, km._session_stamped_tops = saved
+
+    def test_a_placed_unstamped_agent_stays_awaited(self):
+        t = {"tid": "t1", "desc": "a dispatched research agent", "t": 100, "type": "local_agent"}
+        awaited, services = self._split([t], {"t1": self.SID + ":g1"})
+        self.assertEqual(awaited, [t], "an agent is never furniture")
+        self.assertEqual(services, [])
+
+    def test_a_placed_unstamped_shell_task_is_a_service(self):
+        t = {"tid": "t2", "desc": "mkdocs serve", "t": 100, "type": "local_shell"}
+        awaited, services = self._split([t], {"t2": self.SID + ":g1"})
+        self.assertEqual(services, [t], "a shell process with no affirmed wait is the session's furniture")
+        self.assertEqual(awaited, [])
+
+    def test_a_stamped_top_keeps_even_its_shell_tasks_awaited(self):
+        t = {"tid": "t3", "desc": "a watcher loop", "t": 100, "type": "local_shell"}
+        awaited, services = self._split([t], {"t3": self.SID + ":g1"}, stamped=frozenset({self.SID + ":g1"}))
+        self.assertEqual(awaited, [t], "the closer affirmed this thread's wait")
+
+    def test_norm_threads_the_type_through_both_sources(self):
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {self.SID: {"bgTasks": [
+            {"toolUseId": "t4", "desc": "an agent", "since": 5, "type": "local_agent"}]}}
+        try:
+            rows = km._bg_live_norm(self.SID, None)
+        finally:
+            km._tmux_sessions = saved
+        self.assertEqual(rows[0]["type"], "local_agent", "the lifecycle set's type survives normalization")
+
+
 class TaskOutputsForCard(unittest.TestCase):
     """_task_outputs_for joins a completed background command's notification to its shell command (from the
     launch scan) and its output-file tail, so the inline completion card can EXPAND to real detail instead of

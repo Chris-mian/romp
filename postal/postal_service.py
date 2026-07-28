@@ -1420,6 +1420,14 @@ def peers_snapshot():
 
 PEER_PROTO = 1
 BUS_EPOCH = int(time.time())               # this bus process's boot — peers key cached presence on it
+# This bus process's IDENTITY, carried on every exchange (additive, like `tier`; older peers omit it).
+# One machine reaches a fleet under TWO names — the alias its kernel dials (the ssh-config name) and
+# the hostname the machine declares about itself (self_host on ITS inbound dials) — and name-keyed
+# PEER_STATE then holds two rows for one bus: every remote session listed twice, bare names ambiguous,
+# and inbound relays trust-judged under the self-declared name instead of the alias the user tiered
+# (the user 2026-07-27, whose box showed each session twice as <hostname>:<name> and <alias>:<name>).
+# busId lets the receiver recognize "same bus, second name" and fold onto the dialable alias.
+BUS_ID = os.urandom(16).hex()
 OUTBOX = STATE / "outbox"                  # outbox/<host>/<mid>.json — cross-host mail awaiting its ACK
 PEER_SEEN = STATE / "peer-seen.jsonl"      # append-only receipt log — the idempotence window
 _SEEN_CAP = 4000
@@ -1726,6 +1734,31 @@ def _pending(host):
             p = _peer_pending[host] = {"acks": [], "bounces": []}
         return p
 
+def _canon_peer_name(host, bus_id):
+    """The name to file a peer's exchange under: the DIALABLE alias when `bus_id` proves this is a bus
+    we already peer with under another name (see BUS_ID above). The alias row is the one the kernel
+    notifies, the dialer runs on, and the user tiered — so it wins over a self-declared hostname. No
+    bus_id (older peer) → the declared name stands, exactly as before."""
+    if not bus_id or (PEERS.get(host) or {}).get("port"):
+        return host   # a dialable name stands as itself; two dialable names is the kernel's dedupe
+    for k, st in PEER_STATE.items():
+        if k != host and st.get("busId") == bus_id and (PEERS.get(k) or {}).get("port"):
+            return k
+    return host
+
+
+def _drop_peer_name_dupes(host, bus_id):
+    """Forget PEER_STATE rows that are the SAME bus as `host` under another, non-dialable name — the
+    stale half of a fold (e.g. the self-declared hostname row left from before the alias attached).
+    Never drops a dialable row: two dialable names for one bus is a kernel-level duplicate with its
+    own fix (attach_remote's token dedupe), and dropping either here would fight the kernel."""
+    if not bus_id:
+        return
+    for k in [k for k, st in PEER_STATE.items()
+              if k != host and st.get("busId") == bus_id and not (PEERS.get(k) or {}).get("port")]:
+        PEER_STATE.pop(k, None)
+
+
 def peer_exchange_handle(data):
     """The DIALED side of one exchange. Returns (payload, status)."""
     host = str((data or {}).get("host") or "").strip()
@@ -1734,8 +1767,15 @@ def peer_exchange_handle(data):
     if (data or {}).get("proto") != PEER_PROTO:
         return {"error": "peer protocol drift (theirs %r, ours %r) — update romp on one side"
                 % ((data or {}).get("proto"), PEER_PROTO), "proto": PEER_PROTO}, 409
+    # Canonicalize BEFORE anything keys on the name: presence files under the alias (no duplicate
+    # session rows), and the relays below are trust-judged under the alias the user actually tiered.
+    bus_id = str((data or {}).get("busId") or "")
+    host = _canon_peer_name(host, bus_id)
     PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
                         "holds": data.get("holds") or [], "seenAt": int(time.time())}
+    if bus_id:
+        PEER_STATE[host]["busId"] = bus_id
+        _drop_peer_name_dupes(host, bus_id)
     if data.get("tier"):                             # the dialer's declared tier-of-us (additive; older peers omit it)
         PEER_STATE[host]["theirTier"] = str(data["tier"])
     for mid in data.get("acks") or []:               # the dialer confirmed relays landed — end-to-end:
@@ -1767,7 +1807,7 @@ def peer_exchange_handle(data):
         rel = outbox_list(host)
         a2, b2 = _drain_backflow()
         acks, bounces = acks + a2, bounces + b2
-    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
+    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
             "presence": fleet_presence(host), "holds": holds_payload(host),
             "tier": my_tier_of(host),                # how WE hold the dialer's mail (display/mirror, never the gate)
             "relays": rel, "acks": acks, "bounces": bounces}, 200
@@ -1776,7 +1816,7 @@ def build_exchange_request(host, wait=True):
     p = _pending(host)
     with _peer_lock:
         acks, bounces = list(p["acks"]), list(p["bounces"])
-    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO,
+    return {"host": self_host(), "epoch": BUS_EPOCH, "proto": PEER_PROTO, "busId": BUS_ID,
             "presence": fleet_presence(host), "holds": holds_payload(host),
             "tier": my_tier_of(host),                # how WE hold the dialed host's mail
             "relays": outbox_list(host),
@@ -1791,6 +1831,10 @@ def peer_exchange_apply(host, req_sent, resp):
         p["bounces"] = [b for b in p["bounces"] if b not in (req_sent.get("bounces") or [])]
     PEER_STATE[host] = {"presence": resp.get("presence") or [], "epoch": resp.get("epoch"),
                         "holds": resp.get("holds") or [], "seenAt": int(time.time())}
+    bus_id = str(resp.get("busId") or "")
+    if bus_id:                                       # the dialed alias is canonical for this bus: fold any
+        PEER_STATE[host]["busId"] = bus_id           # row it left under its self-declared hostname
+        _drop_peer_name_dupes(host, bus_id)
     if resp.get("tier"):                             # the dialed side's declared tier-of-us
         PEER_STATE[host]["theirTier"] = str(resp["tier"])
     for mid in resp.get("acks") or []:

@@ -34,6 +34,7 @@ These are for scripting and for agents rather than daily use:
 | Command | What it does |
 |---|---|
 | `romp url` | Print only the tokened dashboard URL, for piping |
+| `romp sessions [--json]` | The fleet with each session's state, identity colours, directory and backend |
 | `romp mail …` | The postal service from the shell (below) |
 | `romp send <session> <text>` | Hand a session a message, on either backend |
 | `romp interrupt <session>` | Interrupt whatever turn a session is taking |
@@ -43,6 +44,21 @@ These are for scripting and for agents rather than daily use:
 | `romp debug [on\|off\|status]` | Judge debug mode, where rejection rows carry the full input and reply |
 | `romp resume <id> [--name <n>] [--detach]` | Resume one exact conversation by UUID |
 | `romp refresh --now` | Refresh without waiting for sessions to finish their turns |
+
+Two things to know before building on `romp sessions --json`. **`waiting` means
+at rest**, the ordinary state of a session that has finished its turn, so
+matching it as an alert badges the whole idle fleet as needing you; the states
+that want a person are `awaiting`, a permission prompt, and `blocked`. And
+**`id` is the durable key**, not `lastSid`: everything Romp files per session is
+keyed by `id`, while `lastSid` is the live transcript's id and forks on
+`/clear`.
+
+That key opens the per-session records under `~/.local/state/romp/`. The
+per-turn one-liners live in `captions/<id>.jsonl`, one JSON record a line, with
+the text under `caption`. A record's own `id` field is not the session's: it
+identifies the turn within it. There is no `summaries/` directory; an older
+layout had one, and reading it fails silently, since a missing directory just
+yields nothing rather than an error.
 
 ## The Romp Postal Service
 

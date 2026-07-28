@@ -82,6 +82,35 @@ was no durable map from a session to its past episodes' transcript files (SDK
 transcripts carry no custom-title either). Every future episode surface hangs
 off this file.
 
+## What shipped (second commit): the settle is visible, and consented where possible
+
+The first commit's settle was silent — one stderr line; the cards left the
+feed, the Fleet ledger, and (via compaction) the live store with nothing shown
+anywhere (the user 2026-07-27: "cards must not disappear without you seeing
+anything"). Now:
+
+- **The settle record rides the episodes log.** The settle path appends a
+  `{settleFor: <head>, t, settled: [{id, text}, ...]}` ANNOTATION row to
+  `episodes/<sid>.jsonl` — the authoritative, durable record of what the clear
+  took with it. A separate row, never a field on the head row, because
+  seed-vs-boundary is decided only after the head row lands (the two-writer
+  race fix): a seed row must never be able to claim a settle. `episode_rows`
+  skips annotation rows; `episode_settles` reads them back.
+- **The bell logs the drop.** `build_feed` ships the newest settled boundary
+  per living session (`clearNotices`); the feed mirrors each into the shell's
+  notification bell exactly once (the badge-mirror seen-set), naming the
+  dropped cards and the Undo-clear way back.
+- **The chat boundary card counts and names them.** "Conversation cleared — a
+  fresh one starts here · N open cards dropped with it", titles on hover.
+- **The composer confirms first.** A `/clear` typed into the chat composer is
+  the one place romp sees the command BEFORE it runs; with open cards it now
+  puts up an explicit confirm ("Its N open cards get dropped with it: …",
+  Cancel default-focused) instead of letting Enter drop them silently. A
+  `/clear` typed into a terminal-attached TUI is still detect-after-the-fact —
+  the bell + boundary card are the guarantee there.
+- **The feed's per-node story is src-aware.** A boundary clear (src `romp`)
+  reads "dropped with the cleared conversation", no longer "you cleared it".
+
 ## Deferred — the read-only episode browser
 
 The pieces exist; none are wired. When built:
@@ -101,9 +130,13 @@ The pieces exist; none are wired. When built:
   goal store, so the ledger/TOC panel should hide rather than render empty.
 - **Search** (the user's "searchable rather than deleted"): today no surface
   searches transcript text — the Fleet box matches names + goal trees, the
-  picker matches the one-line archive headline. Cleared boundary cards are
-  already searchable through the Fleet's archived-goals path once compaction
-  moves them; transcript-text search over past episodes is its own project.
+  picker matches the one-line archive headline. NOTE (corrected 2026-07-27):
+  the Fleet's archived-goals path (`_fleet_archived_tops`) deliberately shows
+  completed-or-summarized tops only, so a bare boundary dismissal does NOT
+  surface there — after compaction the dropped cards are reachable via the
+  tab-hover Recent list (any status, newest 5), the episode row's settle
+  record, and Undo clear (newest batch only). Transcript-text search over past
+  episodes is its own project.
 
 ## Known gaps, accepted
 

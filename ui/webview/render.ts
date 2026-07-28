@@ -17,6 +17,7 @@ import { markerLabel } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
+import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { onlyTag, matchesOnly } from "./only-filter";
@@ -130,7 +131,7 @@ type ChatEvent = (
   // chat twin of the timeline's film-splice seam. Its body lazy-loads the PRE-CLEAR conversation on first
   // expand (loadEpisode → chatEpisode, cached per boundary), so the cleared history stays one click away
   // instead of vanishing. `uuid` is "clear:<episode head>" — stable across pushes (the fold key).
-  | { kind: "clear"; clearedAt?: number; episodes?: number; ts?: string; uuid?: string }
+  | { kind: "clear"; clearedAt?: number; episodes?: number; ts?: string; uuid?: string; dropped?: string[] }
   // LIVE /clear in progress (kernel-driven, event-based off the SDK backend's clearing bracket): an
   // animated "Clearing conversation…" element between the /clear delivery and the fresh transcript
   // landing — a stretch that otherwise has NO observable state and used to render as a dead gap, then
@@ -2023,7 +2024,11 @@ function fillClearBody(body: HTMLElement, got: { events: ChatEvent[]; truncated?
 function renderClear(ev: Extract<ChatEvent, { kind: "clear" }>): HTMLElement {
   const sid = renderingSid || "";
   const key = "clear:" + (ev.uuid || sid);
-  const head = "Conversation cleared — a fresh one starts here";
+  // the boundary settle's own record rides the event: the head counts the dropped cards, hover
+  // names them — the drop is visible in the chat too, never only in the feed (the user 2026-07-27)
+  const dropped = ev.dropped || [];
+  const head = "Conversation cleared — a fresh one starts here"
+    + (dropped.length ? " · " + dropped.length + " open card" + (dropped.length === 1 ? "" : "s") + " dropped with it" : "");
   const body = el("div", "clear-body");
   body.dataset.clearKey = key;
   const cached = episodeCache.get(key);
@@ -2037,6 +2042,7 @@ function renderClear(ev: Extract<ChatEvent, { kind: "clear" }>): HTMLElement {
     body.appendChild(p);
   }
   const turn = noticeCard({ variant: "clear", chip: "cleared", head, body, collapsible: true, key });
+  if (dropped.length) turn.querySelector(".notice-head")?.setAttribute("title", "dropped: " + dropped.join(", "));
   // Fetch on FIRST expand (ride the same head click that toggles the fold — noticeCard owns the toggle):
   // one request per boundary, deduped by the pending map; re-renders hit the cache instead.
   const headEl = turn.querySelector(".notice-head");
@@ -6902,27 +6908,43 @@ function setupComposer() {
       ta.value = ""; composerManualH = null; ta.style.height = "";
       return;
     }
-    lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
-    // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
-    // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
-    // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
-    // just seeded by the click. A QUOTE chip (highlighted transcript text, the user 2026-07-13) has no goal:
-    // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage.
-    const cite = composerCitations.get(activeId);
-    if (vscodeApi) {
-      if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
-      else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text, cite.src) });
-      else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
-      // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
+    const sid = activeId;   // the session this send (and any confirm below) was armed for
+    const deliver = () => {
+      if (activeId !== sid) return;   // a confirm outlived a tab switch — never send into the wrong session
+      lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
+      // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
+      // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
+      // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
+      // just seeded by the click. A QUOTE chip (highlighted transcript text, the user 2026-07-13) has no goal:
+      // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage.
+      const cite = composerCitations.get(activeId);
+      if (vscodeApi) {
+        if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
+        else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text, cite.src) });
+        else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
+        // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
+      }
+      if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
+      drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
+      ta.value = "";
+      composerManualH = null;   // a drag-expanded box snaps back to one line after a send (the user 2026-07-07)
+      ta.style.height = "";
+      // The box is empty again, so a live picker re-takes it: send your pre-question draft, then just type the
+      // answer (the user 2026-07-16). Repaints the "answering" tint that draftPredatesAsk had suppressed.
+      setComposerAskMode();
+    };
+    // A typed /clear ends the conversation, and the kernel's episode boundary then settles the
+    // session's open cards with it. The composer sees the command BEFORE it runs — the one
+    // interception point — so open cards put an explicit confirm between Enter and the drop
+    // (the user 2026-07-27). Cancel keeps the text in the box; no open cards → no modal.
+    const dropDetail = isClearCmd(text) ? clearConfirmDetail(openTopTitles(ledgers.get(sid)?.tree)) : null;
+    if (dropDetail) {
+      showConfirm("Clear this conversation?", dropDetail,
+        [{ label: "Cancel", value: "cancel" }, { label: "Clear anyway", value: "clear", danger: true }],
+        (v) => { if (v === "clear") deliver(); });
+      return;
     }
-    if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
-    drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
-    ta.value = "";
-    composerManualH = null;   // a drag-expanded box snaps back to one line after a send (the user 2026-07-07)
-    ta.style.height = "";
-    // The box is empty again, so a live picker re-takes it: send your pre-question draft, then just type the
-    // answer (the user 2026-07-16). Repaints the "answering" tint that draftPredatesAsk had suppressed.
-    setComposerAskMode();
+    deliver();
   };
   // an explicit send button on the right of the box (touch devices have no easy ⏎; desktop gets a click
   // affordance too). mousedown, not click, so the textarea keeps focus and a follow-up keeps typing.

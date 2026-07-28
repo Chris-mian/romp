@@ -96,42 +96,6 @@ teardown() { rm -rf "$TEST_DIR"; }
 # origin (upstream rulesets reject a direct push) — but a plain clone has only `origin`,
 # so a fresh install could not follow the workflow the repo documents.
 
-@test "bootstrap.sh: wires a 'fork' remote and pushDefault so a fresh clone can publish" {
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/someone/romp.git" \
-        run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://example.invalid/someone/romp.git" ]
-    [ "$(git -C "$HOME/romp" config --get remote.pushDefault)" = "fork" ]
-    # A bare `git push` must target the fork, never upstream.
-    [[ "$output" == *"Publishing remote 'fork'"* ]]
-}
-
-@test "bootstrap.sh: never clobbers a fork remote the contributor already set" {
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/first/romp.git" \
-        run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    # Re-running (the documented way to update) must leave their remote alone.
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/second/romp.git" \
-        run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [ "$(git -C "$HOME/romp" remote get-url fork)" = "https://example.invalid/first/romp.git" ]
-}
-
-@test "bootstrap.sh: no fork remote is not fatal — installing is not contributing" {
-    # Most people never push to romp, and gh may be absent or logged out. PATH without gh
-    # and no ROMP_FORK: the install must still succeed, just without the remote.
-    PATH="/usr/bin:/bin" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *STUB_INSTALL_RAN* ]]
-}
-
-@test "bootstrap.sh: ROMP_NO_FORK_REMOTE opts out" {
-    ROMP_DIR="$HOME/romp" ROMP_FORK="https://example.invalid/someone/romp.git" \
-        ROMP_NO_FORK_REMOTE=1 run bash "$REPO_ROOT/bootstrap.sh"
-    [ "$status" -eq 0 ]
-    ! git -C "$HOME/romp" remote get-url fork 2>/dev/null
-}
-
 # ── where the clone lands ────────────────────────────────────────────────────
 
 @test "bootstrap.sh: names the install directory and the knob, since it ignores cwd" {
@@ -143,4 +107,37 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"Cloning romp into $HOME/romp"* ]]
     [[ "$output" == *"ROMP_DIR"* ]]
     [ ! -e "$TEST_DIR/romp" ]           # never the cwd
+}
+
+# ── the installer's blast radius ─────────────────────────────────────────────
+# Installing romp is not contributing to it. bootstrap once derived <gh-user>/romp from
+# whoever `gh` was logged in as and wired it as a git remote with remote.pushDefault — so an
+# ordinary installer got a remote pointing at a repo they had never created, a `git push`
+# aimed at it, and an unexplained line mid-install (the user 2026-07-27: don't assume the gh
+# CLI, and that is beyond what an installer should configure anyway). These pin the scope so
+# it cannot creep back.
+
+@test "bootstrap.sh: never assumes or invokes the gh CLI" {
+    # A `gh` that fails loudly if called at all. The installer must never reach for it: it is
+    # not a romp dependency, and plenty of machines that run romp will never have it.
+    cat > "$TEST_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "bootstrap invoked gh" >> "$TEST_DIR/gh-was-called"
+exit 1
+EOF
+    chmod +x "$TEST_DIR/gh"
+
+    PATH="$TEST_DIR:$PATH" ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    [ ! -f "$TEST_DIR/gh-was-called" ]
+    ! grep -q 'gh ' "$REPO_ROOT/bootstrap.sh"
+}
+
+@test "bootstrap.sh: configures no git remotes or push defaults beyond the clone's own origin" {
+    ROMP_DIR="$HOME/romp" run bash "$REPO_ROOT/bootstrap.sh"
+    [ "$status" -eq 0 ]
+    # origin, and nothing else — no `fork`, no invented publishing target.
+    [ "$(git -C "$HOME/romp" remote)" = "origin" ]
+    [ -z "$(git -C "$HOME/romp" config --get remote.pushDefault || true)" ]
+    [[ "$output" != *"Publishing remote"* ]]
 }
