@@ -58,7 +58,7 @@ function withCls(el) {
   return el;
 }
 const EL = {};
-['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x'].forEach((id) => {
+['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x', 'rerr-filters'].forEach((id) => {
   EL[id] = withCls(mkEl(id));
 });
 const BODY = new Set(['po-chat', 'po-feed', 'po-timeline']);   // fleet pane hidden, like the real default
@@ -110,6 +110,20 @@ out.afterClearAll = { n: notes().length, rows: EL['rerr-list'].children.length,
 // 8) once the pane reconnects, the live red cue clears too
 post({ romp: 'wsState', app: 'chat', state: 'up' });
 out.afterReconnect = { red: EL['rail-errs']._cls.has('has') };
+// 9) the filter bar built one toggle chip per kind, in order, conn ("offline") first
+out.filterBar = { n: EL['rerr-filters'].children.length,
+  first: EL['rerr-filters'].children[0].textContent,
+  labels: EL['rerr-filters'].children.map((c) => c.textContent).join('|') };
+// 10) muting offline: its entries stop rendering, stop counting, and the live-down cue stays dark
+EL['rerr-filters'].children[0].fire('click');
+post({ romp: 'wsState', app: 'chat', state: 'down' });
+out.afterMute = { stored: STORE['romp:errFilters'], n: notes().length,
+  red: EL['rail-errs']._cls.has('has'),
+  emptyText: EL['rerr-list'].children[0].textContent };
+// 11) unmuting shows what happened while muted, and the unread entry re-reddens the bell
+EL['rerr-filters'].children[0].fire('click');
+out.afterUnmute = { red: EL['rail-errs']._cls.has('has'), rows: EL['rerr-list'].children.length,
+  chip: EL['rerr-list'].children[0].children[0].textContent };
 console.log(JSON.stringify(out));
 """
 
@@ -171,6 +185,28 @@ class ErrorCenterExecutes(unittest.TestCase):
     def test_reconnect_clears_the_live_cue(self):
         self.assertFalse(self.out["afterReconnect"]["red"])
 
+    def test_the_filter_bar_has_one_toggle_per_kind(self):
+        # the user 2026-07-28: every high-level category gets a toggle (offline fires so often it
+        # drowns the rest). The toggles ARE the chips, in the same order entries wear them.
+        a = self.out["filterBar"]
+        self.assertEqual(a["n"], 8)
+        self.assertEqual(a["first"], "offline")
+        self.assertEqual(a["labels"],
+                         "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error")
+
+    def test_muting_a_kind_hides_counts_and_live_cue_but_keeps_the_entries(self):
+        a = self.out["afterMute"]
+        self.assertEqual(a["stored"], '{"conn":1}', "the choice persists")
+        self.assertEqual(a["n"], 1, "the entry is still STORED while muted")
+        self.assertFalse(a["red"], "a muted kind neither counts unread nor holds the live-down cue")
+        self.assertIn("hidden by the filters", a["emptyText"])
+
+    def test_unmuting_shows_what_happened_and_re_reddens(self):
+        a = self.out["afterUnmute"]
+        self.assertTrue(a["red"], "the entry logged while muted was never seen")
+        self.assertEqual(a["rows"], 1)
+        self.assertEqual(a["chip"], "offline")
+
 
 class ErrorCenterWiring(unittest.TestCase):
     def test_the_shell_mounts_bell_popover_and_script(self):
@@ -185,6 +221,13 @@ class ErrorCenterWiring(unittest.TestCase):
         # the chip family mirrors feed.css's .fask-* colours
         self.assertIn(".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166", html)
         self.assertIn(".rerr-chip.k-nudge{color:#ff6a6a", html)
+        # the per-kind filter bar sits between header and list, chips doubling as the toggles
+        self.assertIn("id=rerr-filters", html)
+        self.assertIn(".rerr-fbtn.off{opacity:0.35;border-style:dashed}", html)
+        # timestamps wear the SHARED recency ramp: the standalone dist bundle is loaded BEFORE the
+        # errs script and read behind a feature test (dim default if the bundle is stale/missing)
+        self.assertLess(html.index("/dist/age-color-global.js"), html.index("window.__rompAgeColor"))
+        self.assertIn("if(window.__rompAgeColor)tm.style.color=window.__rompAgeColor(", html)
         self.assertIn("window.__rompNotify=function", html)
         # the mobile bar routes its bell to the same popover
         self.assertIn("errs:function(){try{window.__rompOpenErrs&&window.__rompOpenErrs();}catch(e){}}", html)

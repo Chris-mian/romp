@@ -46,6 +46,7 @@ const webview = {
     "../ui/webview/strip.css",           // the romp strip (VS Code-only bottom rail stand-in)
     "../ui/webview/gear.css",            // the settings modal (linked by the kernel feed page + VS Code chat/feed)
     "../ui/webview/federation.ts",   // multi-kernel manager: loaded after the shim on chat/feed/fleet pages
+    "../ui/webview/age-color-global.ts",   // window.__rompAgeColor for the kernel's inline shell scripts (bell panel)
   ],
   nodePaths: [path.join(__dirname, "node_modules")],
   bundle: true,
