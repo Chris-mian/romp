@@ -2122,6 +2122,14 @@ def _mark_awaiting_backstop(gid, at):
     _write_auto_nudge(d)
 
 
+def _last_awaiting_is_lift(nd):
+    """True when the node's newest awaiting diary event is already a lift — the idempotence guard for
+    sweeping rolled-up stamps, whose fields the fold does not re-materialize (rolledUp nodes are
+    display-frozen), so the field alone cannot say whether the lift already happened."""
+    evs = [e for e in (nd.get("log") or []) if e.get("kind") == "awaiting"]
+    return bool(evs) and bool(evs[-1].get("lift"))
+
+
 def _lift_spent_awaiting(now, tmux):
     """Retire a goal's ⏳ awaiting stamp once the dispatches it was waiting on have RETURNED (the user
     2026-07-22). The closer's lift is bounded to the goals a turn actually WORKED ON (`touched`), which is
@@ -2149,17 +2157,55 @@ def _lift_spent_awaiting(now, tmux):
             nodes = store.get("nodes") or {}
             stamped = [nd for nd in nodes.values()
                        if nd.get("awaitingWhy") and nd.get("awaitingAt") and not nd.get("rolledUp")]
+            # A stamped node the roll-down folded under a RESOLVED ancestor: its card's story ended, but
+            # the stamp survives invisibly (every reader skips rolledUp) — lift it explicitly so the
+            # diary says why it went, instead of an unretired wait no surface can show (the user
+            # 2026-07-27). Guarded on the diary so an unmaterialized lift never re-fires each tick.
+            rolled = [nd for nd in nodes.values()
+                      if nd.get("awaitingWhy") and nd.get("rolledUp")
+                      and not _last_awaiting_is_lift(nd)]
+            changed = False
+            for nd in rolled:
+                if jd.record_verdict(store, nd, "romp", "awaiting", now, lift=True):
+                    changed = True
             if not stamped:
+                if changed:
+                    jd.rollup_status(store, False)
+                    jd.save_goals(sid, store)
+                    _mark_views_dirty()
                 continue
             every = _bg_scan_all_cached(s["path"])
             if not every:
+                if changed:
+                    jd.rollup_status(store, False)
+                    jd.save_goals(sid, store)
+                    _mark_views_dirty()
                 continue
             running = {t.get("id") for t in every if t.get("status") == "running"}
-            changed = False
+            placed = _bg_placed_tops(sid, s["path"], [t.get("id") for t in every])
+            def _top_of(x):
+                seen = set()
+                while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
+                    seen.add(x); x = nodes[x]["parentId"]
+                return x
             for nd in stamped:
                 at, born = nd.get("awaitingAt") or 0, nd.get("t") or 0
-                # the dispatches this goal owns: launched during its life, at or before the stamp it explains
-                own = [t for t in every if born <= (t.get("t") or 0) <= at]
+                top = _top_of(nd.get("id"))
+                # The dispatches this goal owns. Placement is authoritative when the judge has spoken:
+                # a task placed under ANOTHER card can never retire this stamp (the user 2026-07-27:
+                # unrelated returns were lifting CI-wait stamps — one lifted the same minute it was
+                # re-asserted). The time window survives only for placement-unknown launches (the
+                # conservative pre-verdict shape): launched during the goal's life, at or before the
+                # stamp it explains.
+                own = []
+                for t in every:
+                    p = placed.get(t.get("id"))
+                    if p is not None:
+                        if p == top:
+                            own.append(t)             # the goal's own thread, before OR after the stamp:
+                            #                           anything of its own still out keeps the wait honest
+                    elif born <= (t.get("t") or 0) <= at:
+                        own.append(t)
                 if not own:                           # nothing dispatched → not a background wait; leave it
                     continue
                 if any(t.get("id") in running for t in own):
@@ -6537,6 +6583,8 @@ def _session_awaiting(sid, path, idle, stamp=False):
          so the death notice — not awaiting — is the truth there. Same pending-only rule as 0.5 (the
          scan rows carry the same launching tool_use id the lifecycle set does).
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
+         POSITIVE rows only: an awaiting:false row contributes nothing and falls through (the Stop hook
+         writes false unconditionally at every turn end, so a false row is ambient, not an answer).
       2. the JUDGE's durable ⏳ stamp (_session_stamp_cached), OPT-IN via stamp=True — the closer's awaiting
          verdict, materialized in the goal store, so it OUTLIVES a kernel restart (sources 0-1 die with the
          backend, which is how a genuinely-waiting session read 'stalled'). LIVE-only: a dormant session's
@@ -6575,8 +6623,15 @@ def _session_awaiting(sid, path, idle, stamp=False):
                 return "waiting on a background task%s" % ((": " + d0) if d0 else "")
             return "waiting on %d background tasks%s" % (len(pending), (" — " + d0 + ", …") if d0 else "")
     ov = _states_awaiting_overlay(sid)
-    if ov is not None:                                # a producer is writing overlay records → trust it
-        return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
+    if ov is not None and ov.get("awaiting"):         # a producer wrote a LIVE awaiting:true → trust its why
+        return ov.get("why") or "waiting on dispatched work"
+    # An awaiting:false overlay row is NOT a veto — it says only that THIS channel has nothing to add.
+    # The SDK Stop hook has written an unconditional false at every turn end since 2026-07-07 while
+    # nothing writes true, so treating "most recent row is false" as the session's answer made source 2
+    # unreachable on every SDK session: the durable stamp never lit the rail chip, chat chip, or
+    # timeline lane, and when bf55a2f (2026-07-24) narrowed the live sources to pending-only the
+    # awaiting badge visibly vanished fleet-wide (the user 2026-07-27). A negative from one layer
+    # falls through to the next; only a POSITIVE short-circuits.
     # Source 2 — the JUDGE's durable ⏳ stamp (restart-proof), OPT-IN. Only for a LIVE CLI (`live is not None`
     # means a backend snapshot exists, tmux or SDK; a dormant session never resurrects off a stale stamp) AND
     # only when the caller asked (stamp=True): the session-scoped display surfaces want it, the per-goal feed
@@ -6598,12 +6653,13 @@ def _bg_live_norm(sid, path):
         return []
     if "bgTasks" in live:
         return [{"tid": t.get("toolUseId"), "desc": str(t.get("desc") or "").strip(),
-                 "t": int(t.get("since") or 0)}
+                 "t": int(t.get("since") or 0), "type": str(t.get("type") or "")}
                 for t in live.get("bgTasks") or [] if isinstance(t, dict)]
     if not path:
         return []
     sp = _sdk_spawned_at(sid)
-    return [{"tid": tk.get("id"), "desc": str(tk.get("summary") or "").strip(), "t": int(tk.get("t") or 0)}
+    return [{"tid": tk.get("id"), "desc": str(tk.get("summary") or "").strip(), "t": int(tk.get("t") or 0),
+             "type": str(tk.get("type") or "")}
             for tk in _bg_scan_cached(path) if not (sp and tk.get("t") and tk["t"] < sp)]
 
 
@@ -6623,13 +6679,18 @@ def _bg_split(sid, path, tasks):
       - placed under a top carrying a live ⏳ stamp → AWAITED: the closer affirmed the wait.
       - placed with NO stamp → a SERVICE: the closer audited past the launch without saying awaiting
         (its stamp/lift is exact there), so nobody is waiting on this process — it is the session's
-        furniture (a dev server), the neutral chip's territory, never the awaiting badge."""
+        furniture (a dev server), the neutral chip's territory, never the awaiting badge.
+      - EXCEPT a dispatched AGENT (task type carries 'agent'): an agent is work the session waits on
+        by construction, never furniture — only shell tasks can be services (the user 2026-07-27: a
+        background agent rode the neutral chip while its card sat plain Working, because the stamp
+        meant to affirm the wait was structurally unable to reach the surfaces)."""
     placed = _bg_placed_tops(sid, path, [t["tid"] for t in tasks])
     stamped = _session_stamped_tops(sid)
     awaited, services = [], []
     for t in tasks:
         top = placed.get(t["tid"]) if t["tid"] else None
-        (services if top and top not in stamped else awaited).append(t)
+        agent = "agent" in (t.get("type") or "")
+        (services if top and top not in stamped and not agent else awaited).append(t)
     return awaited, services
 
 

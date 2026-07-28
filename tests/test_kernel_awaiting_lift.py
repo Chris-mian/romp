@@ -162,6 +162,64 @@ class AwaitingLift(unittest.TestCase):
         self.assertTrue(any(e.get("kind") == "awaiting" and e.get("lift") for e in log),
                         "the retraction is journalled like any other verdict, not a silent field wipe")
 
+    # ---- ownership scoping (the user 2026-07-27): placement is authoritative when the judge has spoken ----
+    def test_a_return_placed_under_another_card_never_lifts_this_stamp(self):
+        # unrelated returns were lifting CI-wait stamps (one lifted the same minute it was re-asserted):
+        # the bare time window claimed every task the session launched in [born, at]
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed(why="waiting on the release pipeline to go green, then will tag")
+        saved = km._bg_placed_tops
+        km._bg_placed_tops = lambda sid, path, tids: {"t1": SID + ":gOTHER"}
+        try:
+            self._tick()
+        finally:
+            km._bg_placed_tops = saved
+        self.assertIsNotNone(self._stamp(), "another card's dispatch can never retire this wait")
+
+    def test_the_goals_own_placed_dispatch_still_lifts(self):
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed()
+        saved = km._bg_placed_tops
+        km._bg_placed_tops = lambda sid, path, tids: {"t1": self.gid}
+        try:
+            self._tick()
+        finally:
+            km._bg_placed_tops = saved
+        self.assertIsNone(self._stamp(), "the goal's own thread returned everything → the wait is over")
+
+    def test_a_later_running_dispatch_on_the_same_thread_keeps_the_stamp(self):
+        # placed under the same top AFTER the stamp: its flight keeps the wait honest, so no lift
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK), _launch("t2", STAMP + 50)])
+        self._seed()
+        saved = km._bg_placed_tops
+        km._bg_placed_tops = lambda sid, path, tids: {"t1": self.gid, "t2": self.gid}
+        try:
+            self._tick()
+        finally:
+            km._bg_placed_tops = saved
+        self.assertIsNotNone(self._stamp(), "the thread's own newer dispatch is still out")
+
+    # ---- rolled-up stamps (the user 2026-07-27): frozen invisible, so retire them on the record ----
+    def test_a_rolled_up_stamp_is_lifted_and_only_once(self):
+        # the roll-down froze a stamped node under a resolved ancestor — every reader skips rolledUp,
+        # so the stamp could neither show nor retire. The sweep lifts it, diary-guarded against re-fire.
+        self._transcript([])
+        nd = {"id": self.gid, "text": "a goal", "parentId": None, "nodeComplete": True,
+              "blocked": False, "cleared": False, "rolledUp": True, "trail": [], "t": BORN, "mt": BORN,
+              "awaitingWhy": "a wait the roll-down froze", "awaitingAt": STAMP,
+              "log": [{"ev_t": STAMP, "src": "closer", "kind": "awaiting",
+                       "why": "a wait the roll-down froze", "at": STAMP}]}
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
+            {"rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
+        self._tick()
+        log = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())["nodes"][self.gid]["log"]
+        self.assertEqual(len([e for e in log if e.get("kind") == "awaiting" and e.get("lift")]), 1,
+                         "the frozen stamp is retired, on the record")
+        self._tick()
+        log2 = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())["nodes"][self.gid]["log"]
+        self.assertEqual(len([e for e in log2 if e.get("kind") == "awaiting" and e.get("lift")]), 1,
+                         "diary-guarded: the sweep never re-lifts")
+
     def test_running_only_scan_still_hides_returned_tasks(self):
         # the want_all split must not change the existing running-only view
         self._transcript([_launch("t1", LAUNCH), _launch("t2", LAUNCH + 5), _notification("t1", BACK)])
