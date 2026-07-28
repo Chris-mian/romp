@@ -211,7 +211,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    the card's own session-colour border (the user 2026-07-15): that colour at 0.5α at rest (--card-r/g/b set
    inline per card), 0.8α when pinned, full opacity when focused/hovered. Order matters: .focused after .pinned
    so a pinned-AND-focused card shows the bright (full) border. */
-.fitem.ask { cursor: pointer; }
+.fitem.ask { cursor: pointer; position: relative; }   /* relative: anchors the corner bell button */
 .fitem.ask, .fitem.fgroup { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.5); }
 .fitem.ask.pinned  { border-color: rgba(var(--card-r, 255), var(--card-g, 255), var(--card-b, 255), 0.85); }   /* pinned: bolded, persistent */
 /* effective focus: full-opacity same colour, thickened a touch by a 1px same-colour ring (a bolder highlight
@@ -1040,5 +1040,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ctx-item-toggle .ctx-icon.off { color: var(--dim); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
-/* the armed marker on the card: mechanics chrome (accent), deliberately not a status colour */
-.fask-bellon { flex: 0 0 auto; display: flex; align-items: center; color: var(--accent); opacity: 0.75; }
+/* the corner bell BUTTON (the user 2026-07-28, round 2): pinned bottom-right in the card's own padding.
+   Off = slashed dim bell, hidden until the card is hovered (the tab-close idiom — a quiet feed stays
+   quiet); armed (.on) = accent bell, always visible. Accent = mechanics chrome, never a status colour. */
+.fask-bellbtn {
+  position: absolute; right: 4px; bottom: 3px; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px;
+  background: transparent; color: var(--dim); cursor: pointer; opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.fitem.ask:hover .fask-bellbtn { opacity: 0.55; }
+.fitem.ask .fask-bellbtn:hover { opacity: 1; background: rgba(255, 255, 255, 0.10); }
+.fask-bellbtn.on { opacity: 0.85; color: var(--accent); }
+.fitem.ask:hover .fask-bellbtn.on { opacity: 0.85; }
+.fitem.ask .fask-bellbtn.on:hover { opacity: 1; }

@@ -556,11 +556,14 @@ function ensureHeader() {
 // Expanded body = the request DAG as a tree of NODES (state machine only); each
 // node clicks to reveal its OWN reply history; ? nodes carry a decision sub-card.
 // ── per-card notification bell (the user 2026-07-28) ─────────────────────────────────────────────
-// Right-click a card → a small context menu (the tab menu's chrome) with one toggle: "Notify me" arms
-// an OS notification for when THIS card blocks on you or completes (kernel notify-cards.json; the
-// session-wide version lives on the timeline lane / tab menu). The armed state shows as a quiet bell
-// beside Clear. Optimism mirrors the lane toggles: pendingNotify holds the clicked value sticky across
-// pushes until the kernel's payload agrees, so the bell never flickers back while the rebuild lands.
+// Every card wears a small bell BUTTON in its bottom-right corner (the user 2026-07-28, round 2 —
+// promoted from a right-click-only toggle): click it to arm/disarm an OS notification for when THIS
+// card blocks on you or completes (kernel notify-cards.json; the session-wide version lives on the
+// timeline lane / tab menu). Armed = accent bell, always visible; off = slashed dim bell, revealed on
+// card hover (the tab-close idiom — no clutter on a quiet feed). Right-clicking the card still opens
+// the labelled menu for the same toggle. Optimism mirrors the lane toggles: pendingNotify holds the
+// clicked value sticky across pushes until the kernel's payload agrees, so the bell never flickers
+// back while the rebuild lands.
 const pendingNotify = new Map<string, boolean>();   // itemId -> clicked value, until the payload confirms
 let cardMenuEl: HTMLElement | null = null;
 
@@ -583,6 +586,26 @@ function cardNotifyOn(it: AskItem): boolean {
   return pendingNotify.has(it.itemId) ? !!pendingNotify.get(it.itemId) : !!it.notify;
 }
 
+// paint the corner bell to a state: armed = accent + unslashed (always visible via .on), off = slashed
+// dim (hover-revealed). The title explains the CLICK, so it always describes the opposite state.
+function paintCardBell(card: HTMLElement, on: boolean): void {
+  const btn = (card as any)._bell as HTMLElement | undefined;
+  if (!btn) return;
+  if ((btn as any)._bellOn === on) return;   // steady state: never churn the svg under a press (click-safety)
+  (btn as any)._bellOn = on;
+  btn.classList.toggle("on", on);
+  btn.innerHTML = cardBellSvg(!on);
+  btn.title = on ? "system notifications on for this task — click to stop"
+    : "notify me when this task blocks on you or completes";
+}
+
+// the ONE toggle path — the corner bell click and the right-click menu both land here
+function setCardNotify(card: HTMLElement, it: AskItem, value: boolean): void {
+  pendingNotify.set(it.itemId, value);               // sticky until the kernel's payload carries it
+  paintCardBell(card, value);                        // acknowledge instantly, before the round-trip
+  vscodeApi?.postMessage({ type: "cardNotify", itemId: it.itemId, sid: it.sid, value });
+}
+
 function showCardMenu(e: MouseEvent, card: HTMLElement): void {
   dismissCardMenu();
   const it = (card as any)._it as AskItem | undefined;   // the freshest payload copy (updateAskCard stashes it)
@@ -602,10 +625,7 @@ function showCardMenu(e: MouseEvent, card: HTMLElement): void {
   item.addEventListener("click", (ev) => {
     ev.stopPropagation();
     dismissCardMenu();
-    pendingNotify.set(it.itemId, !on);               // sticky until the kernel's payload carries it
-    const bell = (card as any)._bell as HTMLElement | undefined;
-    if (bell) bell.style.display = !on ? "" : "none";   // acknowledge instantly, before the round-trip
-    vscodeApi?.postMessage({ type: "cardNotify", itemId: it.itemId, sid: it.sid, value: !on });
+    setCardNotify(card, it, !on);
   });
   menu.appendChild(item);
   document.body.appendChild(menu);
@@ -733,14 +753,17 @@ function makeAskCard(it: AskItem): HTMLElement {
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
-  // armed per-card bell (the user 2026-07-28): a quiet accent bell just left of Clear while this card's
-  // right-click "Notify me" is on — mechanics marker, not a status (session-level arming shows on the
-  // lane/tab instead, so an armed SESSION doesn't stamp every card).
-  const bellOnBadge = el("span", "fask-bellon");
-  bellOnBadge.title = "system notifications on for this card — right-click to change";
-  bellOnBadge.innerHTML = cardBellSvg(false);
-  bellOnBadge.style.display = "none";
-  row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, bellOnBadge, clr);
+  row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
+  // the corner bell BUTTON (the user 2026-07-28, round 2): bottom-right of the card, per-task arming.
+  // Session-level arming shows on the lane/tab instead, so an armed SESSION doesn't stamp every card.
+  // Absolutely positioned in the card's own padding — it never shoves the rows around.
+  const bellBtn = el("button", "fask-bellbtn");
+  bellBtn.onclick = (ev: Event) => {
+    ev.stopPropagation();                            // never open the modal under the toggle
+    const cur = (card as any)._it as AskItem | undefined;   // freshest payload copy, not this closure
+    const live = cur || it;
+    setCardNotify(card, live, !cardNotifyOn(live));
+  };
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -813,7 +836,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const qbody = el("div", "fask-qbody");
   qbody.style.display = "none";
   main.append(row1, row2, row3, secs, qbody, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
-  card.append(main);
+  card.append(main, bellBtn);   // the bell rides the CARD (absolute, bottom-right corner), outside the flex rows
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
   // title → locate the turn the card stands for. A normal card anchors on "prompt" (the originating
@@ -915,7 +938,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
-  a._bell = bellOnBadge;
+  a._bell = bellBtn;
   a._row1 = row1; a._row2 = row2;   // grouped mode re-homes Clear between these (the user 2026-07-13)
   a._doneConfirming = dcBadge;
   a._nudgeFailed = nfBadge;
@@ -1198,7 +1221,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // per-card bell: retire the optimistic value once the kernel's payload agrees (event-based, no timer),
   // then render whichever stands. Same sticky-optimism shape as the timeline lane's _pendingFlags.
   if (pendingNotify.has(it.itemId) && !!it.notify === pendingNotify.get(it.itemId)) pendingNotify.delete(it.itemId);
-  if (a._bell) (a._bell as HTMLElement).style.display = cardNotifyOn(it) ? "" : "none";
+  if (a._bell) (a._bell as HTMLElement).style.display = it.provisional ? "none" : "";   // no stable identity to arm
+  paintCardBell(card, cardNotifyOn(it));
   card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "") + (it.provisional ? " provisional" : "");
   // PROVISIONAL placeholder: a dim, italic, non-interactive card from the live prompt while the planner
   // hasn't classified the in-progress turn yet. No Clear/Nudge (nothing to curate), no auto-line, no tree.
