@@ -4265,8 +4265,12 @@ function scrollToAnchor(uuid: string): boolean {
         expandedGroups.add(toolGroupKey(s.events[hit.indices[0]]));
       const working = s.status.state === "working" || s.status.state === "compacting";
       renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), working);
+      // Re-query with the SAME three selectors the first lookup used. data-mids was missing here, so an
+      // unhydrated postal turn (whose message ids live only in data-mids) could be found in the events,
+      // have its window rendered — and then still honest-fail "pointer-not-rendered" on the re-query.
       target = (v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
-                || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
+                || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)
+                || v.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     } else if (s && (s.headFrom ?? 0) > 0) {
       // The anchor is OLDER than the resident tail — the chat ships only WIRE_TAIL events and streams older
       // history in on demand, so a deep-link to a message past the tail had nothing to match and honest-failed
@@ -4924,7 +4928,15 @@ function landActive(content: HTMLElement | null, v: View): void {
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
     });
-    if (!scrolled && !anchorPendingOlder) landToast("couldn't locate this in the transcript");  // fetching older history → chatHead re-lands, no false "couldn't locate"
+    if (!scrolled && !anchorPendingOlder) {
+      landToast("couldn't locate this in the transcript");  // fetching older history → chatHead re-lands, no false "couldn't locate"
+      // …and file it in the error center. The toast is transient and the locate-audit.jsonl row is invisible
+      // from the UI, so a failed jump left NOTHING the user could point at afterwards — it read as the click
+      // doing nothing (the user 2026-07-28, who wanted this represented as an error, not just a pop-up).
+      // The entry carries the sid so clicking it jumps to the card.
+      notifyShell("locate", "Couldn't jump to this in " + (sessions.get(activeId || "")?.name || "the transcript")
+                  + ". The chat is missing that part of its history.", activeId || "");
+    }
   }
   if (!scrolled) {
     if (!v.shown || v.stick) content.scrollTop = content.scrollHeight;
@@ -6510,6 +6522,7 @@ function sharesAnyUuid(a: ChatEvent[], b: ChatEvent[]): boolean {
 function upsert(msg: any) {
   const existed = sessions.has(msg.id);
   const prev = sessions.get(msg.id);
+  awaitingFull.delete(msg.id);   // a full session landed → this session is re-based; a later gap may ask again
   const s: Session = {
     id: msg.id,
     name: msg.name,
@@ -6615,12 +6628,42 @@ function update(msg: any) {
 // index), so we truncate s.events to `from` and append the suffix, then re-render from exactly `from` (set
 // v.rendered = from) so a deep fill repaints without rebuilding the whole transcript. A new connect / fork /
 // behind-the-change client gets a full {type:"session"} instead (kernel decides), so we always have a base.
+// Post one entry to the shell's error center (the rail's warning triangle). Same {romp:'notify'} bridge the
+// feed's card-badge mirror uses; no-ops in the VS Code view, which has no shell frame around it.
+function notifyShell(kind: string, text: string, sid?: string): void {
+  try { window.parent?.postMessage({ romp: "notify", kind, text, sid: sid || "" }, "*"); } catch { /* no shell */ }
+}
+
+// Sessions we've asked the kernel to re-send in full after a delta gap. ONE ask per desync: the pusher runs
+// every 0.5-3s and would otherwise re-ask on every rejected delta until the reply lands. Cleared in upsert(),
+// so the next gap can ask again.
+const awaitingFull = new Set<string>();
+function requestFullSession(id: string): void {
+  if (!id || awaitingFull.has(id)) return;
+  awaitingFull.add(id);
+  vscodeApi?.postMessage({ type: "needFull", id });
+}
+
 function chatTail(msg: any) {
   const s = sessions.get(msg.id);
   if (!s) return;                                  // no base yet → ignore; a full session must arrive first
   // msg.from is a GLOBAL transcript index; the resident events are the tail [headFrom, …) → map to local.
   const from = (msg.from | 0) - (s.headFrom || 0);
-  if (from < 0 || from > s.events.length) return;  // below the loaded head, or a gap → wait for the next full
+  if (from > s.events.length) {
+    // GAP: the delta starts PAST what we hold, so the events in between never reached us. Applying it would
+    // fabricate a transcript that silently skips them. This used to just `return` and "wait for the next
+    // full" — but no full was ever coming: the kernel's per-client bookkeeping (_send_chat's echat) advances
+    // on SEND, not on ACK, so it goes on believing we're caught up and keeps sending deltas we keep dropping.
+    // The tab then froze at this index — a stale "working" chip, no new messages, and every feed/timeline
+    // deep-link into the missing range honest-failing "couldn't locate this in the transcript" — until the
+    // socket happened to drop and a fresh connect re-sent the whole session (the user 2026-07-28, whose tab
+    // went stale twice in one afternoon: locate-audit.jsonl recorded six pointer-not-rendered misses, then
+    // pointer-exact on the SAME anchor the moment a kernel restart forced a reconnect).
+    // So ASK for the full session — the one message that closes this desync class whatever opened it.
+    requestFullSession(msg.id);
+    return;
+  }
+  if (from < 0) return;                            // below the loaded head → our resident tail is still valid
   const wasLen = s.events.length;
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix

@@ -8220,11 +8220,21 @@ def _chat_build_sig(sess):
     except OSError:
         return None
     fsid = os.path.basename(path).rsplit(".", 1)[0]   # transcript filename stem == the fsid
-    try:
-        ss = os.stat(jd.STATESDIR / (fsid + ".jsonl"))
-        sig += [ss.st_mtime, ss.st_size]
-    except OSError:
-        sig += [0, 0]
+    # Fold in EVERY states file that can change this payload. The fsid is not always the key the state
+    # transitions are written under: a session that forked (a resume/clear mints a new transcript) keeps
+    # writing states/<anchor>.jsonl while its lane is keyed by the new fsid, so a states/<fsid>.jsonl stat
+    # silently fell to [0,0] and no settle EVER busted that lane's cache. Since a settle writes only to
+    # states/ (never the transcript), a forked lane's chat could latch "working" until the next transcript
+    # write (the user 2026-07-28; verified live: two live sessions had a states file under their identity
+    # id and none under the fsid their lane was keyed by). Stat both and keep the pair.
+    for _k in dict.fromkeys([fsid, str(sess.get("anchor") or "")]):
+        if not _k:
+            continue
+        try:
+            ss = os.stat(jd.STATESDIR / (_k + ".jsonl"))
+            sig += [ss.st_mtime, ss.st_size]
+        except OSError:
+            sig += [0, 0]
     sig.append(_judge_gen[0])     # a judge pass (goal/caption change) busts every tab's cache once
     sig.append(_task_store_fp(fsid))   # a store update (incl. a subagent completing a task) refreshes the to-do card
     # a pending DELETE rollback changes the payload with NO transcript write (the parse-cache lesson,
@@ -13993,8 +14003,17 @@ def _push(targets, connect=False):
                 # drops from the whole events array to just what changed.
                 change_from = _chat_diff(_prev_chat_events.get(m["id"]), m.get("events") or [])
                 led_changed = m.get("ledger") != _prev_chat_ledger.get(m["id"])
-                _prev_chat_events[m["id"]] = m.get("events") or []
-                _prev_chat_ledger[m["id"]] = m.get("ledger")
+                # The baseline is SHARED by every client, so only a push that reaches them all may advance it.
+                # A connect push targets ONE client (_push_one → _push([client], connect=True)); when it moved
+                # the baseline, everything written since the last full push fell BELOW the next diff's
+                # change_from and the already-connected clients never got it — they rejected the too-far-ahead
+                # delta and froze (the user 2026-07-28: opening or reloading any pane could silently strand the
+                # others). Leaving the baseline alone costs only a slightly longer next suffix, which every
+                # client — including the one that just connected — applies idempotently (truncate at `from`,
+                # re-append). The fresh client is already served its own full session directly below.
+                if not connect:
+                    _prev_chat_events[m["id"]] = m.get("events") or []
+                    _prev_chat_ledger[m["id"]] = m.get("ledger")
                 for c in chat_clients:
                     _send_chat(c, m, ms, change_from, led_changed)   # flush as built → the active tab lands first
             shown_sids = {s["sid"] for s in chat_list}
@@ -15019,9 +15038,9 @@ el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
 var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'!':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
-var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','cleared'];
+var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','locate','cleared'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
-nudge:'follow-up failed',retry:'retrying',apierror:'api error',cleared:'cleared'};
+nudge:'follow-up failed',retry:'retrying',apierror:'api error',locate:'jump failed',cleared:'cleared'};
 // what each kind MEANS (the user 2026-07-28: the tooltip should explain the badge, not just say
 // show/hide) — worn by the filter toggles AND every entry's chip
 var DESC={conn:"the dashboard lost its live connection to the kernel for a visible pane; it reconnects on its own",
@@ -15032,6 +15051,7 @@ stalled:"romp itself is holding a working thread and nothing is moving it \u2014
 nudge:"romp's one automatic follow-up on a stalled thread didn't resolve it; the thread now needs you",
 retry:"a session is inside an API-error retry storm; auto-retry is already working on it",
 apierror:"a session stopped on an API error (rate limit, spend cap, or prompt too long) and its card is blocked",
+locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo clear on the feed restores them"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
@@ -16244,7 +16264,7 @@ def _landing():
             ".rerr-chip.k-nudge{color:#ff6a6a;border-color:rgba(255,106,106,0.6)}"
             ".rerr-chip.k-retry,.rerr-chip.k-apierror{color:#e5484d;border-color:rgba(229,72,77,0.6)}"
             ".rerr-chip.k-conn{color:#ff6b6b;border-color:rgba(255,107,107,0.6)}"
-            ".rerr-chip.k-limit,.rerr-chip.k-judge{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
+            ".rerr-chip.k-limit,.rerr-chip.k-judge,.rerr-chip.k-locate{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
             ".rerr-chip.k-cleared{color:#9aa0a6;border-color:rgba(154,160,166,0.6)}"   # not an error — quiet gray
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
@@ -17155,6 +17175,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if msg and msg.get("type") == "activeTab":
             client["active"] = msg.get("id")   # tab switch → next push builds the now-active tab first
+            return
+        if msg and msg.get("type") == "needFull" and msg.get("id"):
+            # The client REJECTED a delta because it started past what it holds (render.ts chatTail's gap
+            # branch) — it is missing events and cannot self-repair. Our own per-client bookkeeping can't
+            # detect this: echat advances when we SEND, not when the client APPLIES, so we would keep
+            # sending deltas it keeps dropping and the tab would stay frozen until its socket dropped
+            # (the user 2026-07-28). Forget what we believe this client holds; the next push re-sends the
+            # whole session (_send_chat's full path fires when echat has no entry for the sid) and the
+            # delta stream re-bases from there. Per-CLIENT, so one stale pane never re-sends for the rest.
+            sid = str(msg["id"])
+            client.get("echat", {}).pop(sid, None)
+            client.get("sent", {}).pop(("chat", sid), None)   # …and drop the dedup slot, so the full send lands
+            self._push_one(client)                            # repair NOW, not on the next 0.5-3s tick
             return
         if msg and msg.get("type") == "loadOlder" and msg.get("id"):
             # Browser scrolled back to the top of the loaded tail and there's older history on disk → ship the

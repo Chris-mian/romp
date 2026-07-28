@@ -145,7 +145,12 @@ class RenderHandlesTheTail(unittest.TestCase):
         r = self._render()
         self.assertIn('else if (m.type === "chatTail") chatTail(m);', r)       # dispatched
         self.assertIn("const from = (msg.from | 0) - (s.headFrom || 0);", r)   # GLOBAL index → resident-tail local
-        self.assertIn("if (from < 0 || from > s.events.length) return;", r)    # below the loaded head / gap → wait for a full
+        # The two rejection cases split on 2026-07-28. Below the loaded head → still a quiet return (the
+        # resident tail is fine). A GAP (from past what we hold) → ask for a full session: "wait for the
+        # next full" was a promise nothing kept, and the tab froze there until its socket dropped.
+        self.assertIn("if (from < 0) return;", r)
+        self.assertIn("if (from > s.events.length) {", r)
+        self.assertIn("requestFullSession(msg.id);", r)
         self.assertIn("s.events.length = from;", r)                            # truncate the superseded tail
         self.assertIn("for (const e of (msg.events || [])) s.events.push(e);", r)  # append the suffix
         self.assertIn("v.rendered = Math.min(v.rendered, from);", r)           # repaint from the exact change
