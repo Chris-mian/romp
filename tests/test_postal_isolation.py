@@ -82,9 +82,14 @@ class WiringAcrossSurfaces(unittest.TestCase):
                       "the kernel must publish postalServiceOff in the session boot so the timeline can render it")
 
     def test_timeline_view_draws_and_toggles_the_mailbox(self):
+        # Since 2026-07-28 the mailbox lives in the lane GEAR's drop-down (LANE_TOGGLES) rather than as
+        # its own lane icon — the row still draws the mailboxIcon and toggles postalServiceOff through
+        # the same _setSessionFlag persistence.
         src = open(os.path.join(os.path.dirname(BIN), "ui", "romp-timeline-view.js")).read()
-        self.assertIn("mailboxIcon", src, "the timeline draws a (monochrome) mailbox icon")
-        self.assertIn("_setSessionFlag(s, 'postalServiceOff'", src, "clicking the mailbox toggles the postalServiceOff flag")
+        self.assertIn("mailboxIcon", src, "the gear menu draws the (monochrome) mailbox icon")
+        self.assertIn("flag: 'postalServiceOff', label: 'Postal service', icon: mailboxIcon", src,
+                      "the gear menu row toggles the postalServiceOff flag")
+        self.assertIn("this._setSessionFlag(s, t.flag, next);", src, "menu rows persist via _setSessionFlag")
 
 
 if __name__ == "__main__":

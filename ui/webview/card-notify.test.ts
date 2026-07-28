@@ -11,11 +11,14 @@ import * as path from "node:path";
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("every card carries the corner bell button, riding the CARD (absolute), not the flex rows", () => {
+test("every card carries the bell button at the TOP-right: floated FIRST in row1, in-flow (round 3)", () => {
+  // round 2's absolute bottom-right corner collided with grouped mode's right-floated Clear on compact
+  // cards (the user 2026-07-28, screenshot); a float ahead of the title claims the top-right corner and
+  // the text wraps around it — floats can't overlap by construction.
   assert.match(SRC, /const bellBtn = el\("button", "fask-bellbtn"\);/);
-  assert.match(SRC, /card\.append\(main, bellBtn\);/);
-  assert.match(CSS, /\.fitem\.ask \{ cursor: pointer; position: relative; \}/);   // the corner's anchor
-  assert.match(CSS, /\.fask-bellbtn \{\s*\n\s*position: absolute; right: 4px; bottom: 3px;/);
+  assert.match(SRC, /row1\.prepend\(bellBtn\);/);
+  assert.match(CSS, /\.fask-bellbtn \{\s*\n\s*float: right;/);
+  assert.doesNotMatch(CSS, /\.fask-bellbtn \{\s*\n\s*position: absolute/, "the overlapping absolute corner is gone");
 });
 
 test("off = hover-revealed slashed dim bell; armed (.on) = accent, always visible (mechanics, not status)", () => {

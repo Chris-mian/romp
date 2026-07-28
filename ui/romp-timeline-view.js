@@ -386,6 +386,36 @@ function bellIcon(off, cx, cy, color) {
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
+// The per-lane SETTINGS GEAR (the user 2026-07-28, round 3): the three toggle icons above no longer
+// draw on the lane — three always-on icons crowded the row — so ONE gear opens them as a drop-down
+// (_openLaneMenu), each row wearing its icon, its state, and a plain-language line. Drawn like its
+// neighbors: a toothed ring + a filled hub, monochrome.
+function gearIcon(cx, cy, color) {
+  const g = el('g', { 'pointer-events': 'none' });
+  g.appendChild(el('circle', { cx: cx, cy: cy, r: 3.9, fill: 'none', stroke: color, 'stroke-width': 1.2 }));
+  g.appendChild(el('circle', { cx: cx, cy: cy, r: 1.4, fill: color, stroke: 'none' }));
+  for (let i = 0; i < 8; i++) {
+    const a = (Math.PI / 4) * i;
+    g.appendChild(el('line', { x1: cx + 4.4 * Math.cos(a), y1: cy + 4.4 * Math.sin(a),
+      x2: cx + 6.1 * Math.cos(a), y2: cy + 6.1 * Math.sin(a),
+      stroke: color, 'stroke-width': 1.5, 'stroke-linecap': 'round' }));
+  }
+  return g;
+}
+// The gear menu's rows, one per per-session flag. `enabled` reads the toggle's MEANING off the session
+// (hideFromFeed/postalServiceOff are off-flags; notify is an on-flag), `value` maps a desired
+// enabled-state back to the flag value _setSessionFlag persists.
+const LANE_TOGGLES = [
+  { flag: 'hideFromFeed', label: 'Feed cards', icon: feedCheckIcon,
+    enabled: (s) => !s.hideFromFeed, value: (enable) => !enable,
+    desc: 'its prompts make cards on the feed; off, the lane stays here but new prompts mint none' },
+  { flag: 'postalServiceOff', label: 'Postal service', icon: mailboxIcon,
+    enabled: (s) => !s.postalServiceOff, value: (enable) => !enable,
+    desc: 'visible to peer sessions, can send and receive their messages; off = fully isolated' },
+  { flag: 'notify', label: 'Notifications', icon: bellIcon,
+    enabled: (s) => !!s.notify, value: (enable) => enable,
+    desc: 'system notification when its work blocks on you or completes' },
+];
 // Model + effort choices come from the kernel's /models — the ONE list shared with the chat statusline picker
 // and the judge-tier settings (the user 2026-07-02: no hardcoded model list per surface). Populated in place
 // on load so _openMetaMenu keeps its reference; the lane picker appends its own 'Default' sentinel (not a model).
@@ -713,9 +743,10 @@ class TimelinePanel {
 
     // model/effort drop-down pickers: the open menu element + per-lane optimistic "pending" cues
     // ('sid:kind' → {was, until}) that dim a word until the tmux var actually flips (or 20s elapses).
-    this._metaMenu = null; this._metaPending = {};
-    this._onDocClick = () => this._closeMetaMenu();
-    this._onDocKey = (e) => { if (e.key === 'Escape') this._closeMetaMenu(); };
+    // _laneMenu = the per-lane GEAR drop-down (feed/postal/notify toggles — the user 2026-07-28).
+    this._metaMenu = null; this._metaPending = {}; this._laneMenu = null;
+    this._onDocClick = () => { this._closeMetaMenu(); this._closeLaneMenu(); };
+    this._onDocKey = (e) => { if (e.key === 'Escape') { this._closeMetaMenu(); this._closeLaneMenu(); } };
     document.addEventListener('click', this._onDocClick);
     document.addEventListener('keydown', this._onDocKey);
 
@@ -823,6 +854,7 @@ class TimelinePanel {
     document.removeEventListener('click', this._onDocClick);
     document.removeEventListener('keydown', this._onDocKey);
     this._closeMetaMenu();
+    this._closeLaneMenu();
     if (this.tip) this.tip.remove();
   }
 
@@ -2093,9 +2125,62 @@ class TimelinePanel {
     this._metaMenu = menu;
   }
 
-  // (The old per-lane settings drop-down + its flag list were removed (the user 2026-06-22): with a single
-  // flag, the lane EYE toggles hideFromFeed DIRECTLY on click — no menu. See the render below; the flag is
-  // still persisted by _setSessionFlag.)
+  _closeLaneMenu() { if (this._laneMenu) { this._laneMenu.remove(); this._laneMenu = null; } }
+
+  // The per-lane settings drop-down is BACK (the user 2026-07-28, superseding their 2026-06-22 removal:
+  // that rule held for ONE flag, where a direct icon beat a menu — at THREE flags the icons crowded the
+  // lane). The gear opens one row per LANE_TOGGLES entry: the toggle's own icon (blue = on, slashed
+  // gray = off), its label + state word, and a plain-language line on what it does. Clicking a row
+  // toggles that flag with the SAME optimistic + sticky treatment as the old direct icons, and the menu
+  // stays open, repainting in place — it's a settings panel, not a command.
+  _openLaneMenu(s, anchorEl) {
+    const reopen = this._laneMenu && this._laneMenu._sid === s.id;
+    this._closeLaneMenu(); this._closeMetaMenu();
+    if (reopen) return;
+    // Styled inline like the meta menu (injectStyles can't add rules after a plugin reload).
+    const menu = document.body.createDiv();
+    menu.setAttribute('style', 'position:fixed;z-index:1001;width:280px;padding:4px;background:#1c2430;'
+      + 'border:1px solid #ffffff1f;border-radius:8px;box-shadow:0 8px 24px #00000066;font-size:12px;'
+      + 'color:#e6edf3;user-select:none;');
+    menu._sid = s.id;
+    menu.addEventListener('click', (e) => e.stopPropagation());   // inside clicks must not reach the doc closer
+    const build = () => {
+      menu.textContent = '';
+      for (const t of LANE_TOGGLES) {
+        const on = t.enabled(s);
+        const row = menu.createDiv();
+        row.setAttribute('style', 'display:flex;gap:9px;align-items:flex-start;padding:6px 9px;border-radius:5px;cursor:pointer;');
+        const ic = el('svg', { viewBox: '0 0 17 17', width: 15, height: 15 });
+        ic.setAttribute('style', 'flex:0 0 auto;margin-top:1px;' + (on ? '' : 'opacity:0.55;'));
+        ic.appendChild(t.icon(!on, 8.5, 8.5, on ? ROMP_BLUE : MODEL_FG));
+        row.appendChild(ic);
+        const body = row.createDiv();
+        body.setAttribute('style', 'display:flex;flex-direction:column;line-height:1.35;min-width:0;');
+        const lab = body.createDiv({ text: t.label + ' — ' + (on ? 'on' : 'off') });
+        lab.setAttribute('style', on ? '' : 'opacity:0.75;');
+        const sub = body.createDiv({ text: t.desc });
+        sub.setAttribute('style', 'opacity:0.55;font-size:11px;');
+        row.addEventListener('mouseenter', () => { row.style.background = '#ffffff14'; });
+        row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+        row.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const next = t.value(!on);                 // the flag value that flips this toggle
+          s[t.flag] = next;                          // optimistic …
+          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {})[t.flag] = next;   // … sticky until the kernel confirms
+          this._setSessionFlag(s, t.flag, next);
+          this._reconcilePendingFlags();
+          this.draw();
+          build();                                   // repaint states in place; the panel stays open
+        });
+      }
+    };
+    build();
+    const r = anchorEl.getBoundingClientRect();
+    const left = Math.min(Math.round(r.left), (window.innerWidth || 9999) - 300);   // clamp on-screen
+    menu.style.left = Math.max(6, left) + 'px';
+    menu.style.top = Math.round(r.bottom + 4) + 'px';
+    this._laneMenu = menu;
+  }
 
   // Optimistic per-session view flags (the feed checkbox → hideFromFeed). A click flips the flag locally AND
   // fires _setSessionFlag, but the kernel's confirming rebuild takes ~1s and ANY routine push that lands in
@@ -2308,10 +2393,11 @@ class TimelinePanel {
     // 2026-06-19). Reserve its width only when there IS a live lane, so an all-historical view keeps the
     // tight [name][model] layout.
     const EYE_W = 13, EYE_GAP = 6, anyLive = vis.some((s) => s.live);
-    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [✓feed] [📫postal] [bell] [model+effort] [chip] [ctx]
-    const mailColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);                      // postal-isolation mailbox, just right of the feed checkbox
-    const bellColX = mailColX + (anyLive ? EYE_W + EYE_GAP : 0);                     // notification bell, just right of the mailbox (the user 2026-07-28)
-    const modelColX = bellColX + (anyLive ? EYE_W + EYE_GAP : 0);
+    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [gear] [model+effort] [chip] [ctx]
+    // ONE settings-gear column again (the user 2026-07-28, round 3): the feed checkbox, postal mailbox
+    // and notification bell folded into the gear's drop-down (LANE_TOGGLES), so the lane is back to a
+    // single icon column between the name and the model.
+    const modelColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);
     const effortColX = modelColX + Math.ceil(maxModelPiece) + effortGap;   // fixed left edge for EVERY lane's effort word
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
@@ -2631,109 +2717,27 @@ class TimelinePanel {
       nhit.addEventListener('mouseenter', () => { rowHit.setAttribute('fill', '#ffffff'); rowHit.setAttribute('fill-opacity', '0.035'); for (const f of fadedEls) f.el.setAttribute('fill', f.full); });
       nhit.addEventListener('mouseleave', () => { rowHit.setAttribute('fill', 'transparent'); rowHit.removeAttribute('fill-opacity'); for (const f of fadedEls) f.el.setAttribute('fill', f.faded); });
       svg.appendChild(nhit);
-      // per-session feed show/hide CHECKBOX (live lanes only): one click toggles hideFromFeed directly —
-      // checked = on the feed (default), struck-through + more faded = off it. Always GRAY; the OFF state is
-      // de-emphasised (more faded), never highlighted (the user 2026-06-22). No menu.
+      // per-session settings GEAR (live lanes only — the user 2026-07-28, round 3): the feed checkbox,
+      // postal mailbox and notification bell no longer draw on the lane (three always-on icons crowded
+      // it) — ONE gear opens them as a drop-down with a labelled, explained row per toggle
+      // (_openLaneMenu / LANE_TOGGLES). Same hit-rect + showTip treatment as the old icons; opens on
+      // POINTERDOWN (a redraw between mousedown and mouseup would eat a plain click).
       if (s.live) {
-        const off = !!s.hideFromFeed;
-        const cx = eyeColX + 5, cy = y + 0.5;
-        // The drawn checkbox is PURELY VISUAL (pointer-events:none): thin strokes are nearly unhittable, so a
-        // generous transparent <rect> over it is the real hit target (same trick the work bars use). The
-        // tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills the
-        // hover before it appears; showTip freezes live-follow so it stays — the user 2026-06-22).
-        const dim = off ? '0.3' : '0.9';               // off = faded; on = a confident romp-blue (the user 2026-06-24)
-        const box = feedCheckIcon(off, cx, cy, off ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
-        box.setAttribute('opacity', dim);
-        svg.appendChild(box);
-        const hit = el('rect', { x: eyeColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
-        hit.style.cursor = 'pointer';
-        hit.setAttribute('aria-label', off ? 'session off the feed' : 'session on the feed'); svg.appendChild(hit);
-        const tip = off
-          ? "Off the feed — click to put it back on<div style='opacity:.65;margin-top:2px'>only new prompts make cards; past ones won’t reappear</div>"
-          : "On the feed — click to take it off<div style='opacity:.65;margin-top:2px'>its prompts stop making cards; it stays on the timeline</div>";
-        hit.addEventListener('mouseenter', (e) => { box.setAttribute('opacity', '1'); this.showTip(tip, e); });
-        hit.addEventListener('mousemove', (e) => this.moveTip(e));
-        hit.addEventListener('mouseleave', () => { box.setAttribute('opacity', dim); this.hideTip(); });
-        // Toggle on POINTERDOWN, not click (the user 2026-06-23): the lane redraws on every poll, and a
-        // redraw landing between mousedown and mouseup replaces this hit-rect so the 'click' never fires —
-        // the toggle felt "sometimes unresponsive". pointerdown fires on press, before any redraw can interrupt.
-        hit.addEventListener('pointerdown', (e) => {
+        const gcx = eyeColX + 5, gcy = y + 0.5;
+        const gbox = gearIcon(gcx, gcy, MODEL_FG);
+        gbox.setAttribute('opacity', '0.75');
+        svg.appendChild(gbox);
+        const ghit = el('rect', { x: eyeColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
+        ghit.style.cursor = 'pointer';
+        ghit.setAttribute('aria-label', 'session settings'); svg.appendChild(ghit);
+        const gtip = "Session settings<div style='opacity:.65;margin-top:2px'>feed cards, postal service, notifications</div>";
+        ghit.addEventListener('mouseenter', (e) => { gbox.setAttribute('opacity', '1'); this.showTip(gtip, e); });
+        ghit.addEventListener('mousemove', (e) => this.moveTip(e));
+        ghit.addEventListener('mouseleave', () => { gbox.setAttribute('opacity', '0.75'); this.hideTip(); });
+        ghit.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
-          const next = !s.hideFromFeed;
-          s.hideFromFeed = next;                       // optimistic …
-          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;   // … and held STICKY across pushes until the kernel confirms (no flicker-back)
-          this._setSessionFlag(s, 'hideFromFeed', next);
           this.hideTip();
-          // Apply the optimistic flip onto the CURRENT this.data.sessions before drawing (the user 2026-06-24):
-          // a poll can swap this.data for fresh objects between the last render and this press, leaving the
-          // captured `s` stale — draw() then reads the NEW object's OLD value and the toggle looks dead ("changed
-          // it, but it failed"). Reconcile re-applies _pendingFlags onto the live objects draw() reads, so the
-          // flip always shows AND the kernel still gets it. Keyed by id, so object identity no longer matters.
-          this._reconcilePendingFlags();
-          this.draw();
-        });
-      }
-      // per-session POSTAL ISOLATION toggle (live lanes only): a mailbox icon just right of the feed
-      // checkbox; one click toggles postalServiceOff. Un-slashed = on the Romp Postal Service (default: visible to peers,
-      // can send + receive); slashed + more faded = isolated (hidden from list_agents, no messages in or out
-      // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal-service.
-      if (s.live) {
-        const moff = !!s.postalServiceOff;
-        const mcx = mailColX + 5, mcy = y + 0.5;
-        const mdim = moff ? '0.3' : '0.9';             // off = faded; on = a confident romp-blue (the user 2026-06-24)
-        const mbox = mailboxIcon(moff, mcx, mcy, moff ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
-        mbox.setAttribute('opacity', mdim);
-        svg.appendChild(mbox);
-        const mhit = el('rect', { x: mailColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
-        mhit.style.cursor = 'pointer';
-        mhit.setAttribute('aria-label', moff ? 'session isolated from the Romp Postal Service' : 'session on the Romp Postal Service'); svg.appendChild(mhit);
-        const mtip = moff
-          ? "Isolated from the Romp Postal Service — click to reconnect<div style='opacity:.65;margin-top:2px'>hidden from peers; can’t send or receive messages</div>"
-          : "On the Romp Postal Service — click to isolate<div style='opacity:.65;margin-top:2px'>work privately: hidden from peers, no messages in or out</div>";
-        mhit.addEventListener('mouseenter', (e) => { mbox.setAttribute('opacity', '1'); this.showTip(mtip, e); });
-        mhit.addEventListener('mousemove', (e) => this.moveTip(e));
-        mhit.addEventListener('mouseleave', () => { mbox.setAttribute('opacity', mdim); this.hideTip(); });
-        mhit.addEventListener('pointerdown', (e) => {   // pointerdown, not click: a redraw between mousedown
-          e.stopPropagation();                          // and mouseup ate the click → "sometimes unresponsive"
-          const next = !s.postalServiceOff;
-          s.postalServiceOff = next;                            // optimistic …
-          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalServiceOff = next;   // … held sticky until the kernel confirms
-          this._setSessionFlag(s, 'postalServiceOff', next);
-          this.hideTip();
-          this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
-          this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)
-        });
-      }
-      // per-session NOTIFICATION toggle (live lanes only, the user 2026-07-28): a bell just right of the
-      // mailbox. ON (romp blue) = the kernel fires an OS notification when this session's work blocks on
-      // you or completes; OFF (default: slashed + faded gray) = quiet. NOTE the inverted polarity vs the
-      // other two toggles: `notify` true is the ENABLED state, so off = !s.notify. Same draw/hit/tooltip/
-      // pointerdown pattern as the checkbox + mailbox; the kernel's feed-diff notifier enforces it.
-      if (s.live) {
-        const boff = !s.notify;
-        const bcx = bellColX + 5, bcy = y + 0.5;
-        const bdim = boff ? '0.3' : '0.9';             // off = faded; on = a confident romp-blue
-        const bbox = bellIcon(boff, bcx, bcy, boff ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
-        bbox.setAttribute('opacity', bdim);
-        svg.appendChild(bbox);
-        const bhit = el('rect', { x: bellColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
-        bhit.style.cursor = 'pointer';
-        bhit.setAttribute('aria-label', boff ? 'notifications off for this session' : 'notifications on for this session'); svg.appendChild(bhit);
-        const btip = boff
-          ? "Notifications off — click to turn on<div style='opacity:.65;margin-top:2px'>get a system notification when its work blocks on you or completes</div>"
-          : "Notifications on — click to turn off<div style='opacity:.65;margin-top:2px'>notifies when its work blocks on you or completes</div>";
-        bhit.addEventListener('mouseenter', (e) => { bbox.setAttribute('opacity', '1'); this.showTip(btip, e); });
-        bhit.addEventListener('mousemove', (e) => this.moveTip(e));
-        bhit.addEventListener('mouseleave', () => { bbox.setAttribute('opacity', bdim); this.hideTip(); });
-        bhit.addEventListener('pointerdown', (e) => {   // pointerdown, not click: a redraw between mousedown
-          e.stopPropagation();                          // and mouseup ate the click → "sometimes unresponsive"
-          const next = !s.notify;
-          s.notify = next;                              // optimistic …
-          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).notify = next;   // … held sticky until the kernel confirms
-          this._setSessionFlag(s, 'notify', next);
-          this.hideTip();
-          this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
-          this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)
+          this._openLaneMenu(s, ghit);
         });
       }
       // DEAD lane → a "Clear" pill just right of the struck name (the user 2026-07-02). A dead session lingers
