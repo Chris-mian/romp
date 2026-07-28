@@ -13947,8 +13947,8 @@ def _producer_sig(browser):
 # every session on EVERY push (~2.7s combined, uncached) — a fresh connect waits for that, and an idle
 # dashboard re-does it every tick. Cache each payload, keyed on a fleet fingerprint; an UNCHANGED fleet (a
 # reload, an idle tick) reuses the last build instead of rebuilding.
-_built_feed = [None, None, 0.0]                   # [fleet_sig, payload, built_at]
-_built_timeline = [None, None, 0.0]               # [fleet_sig, payload, built_at]
+_built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_at, build_started_at]
+_built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_at, build_started_at]
 # Each build is intrinsically ~1-1.6s (re-segments every session); the IDEAL is a per-session lane/card cache
 # (only the changed session rebuilds), but that's a big refactor of build_feed/build_timeline. Interim cap: a
 # minimum rebuild interval. With an ACTIVE fleet the fleet_sig busts on every push (the watched session keeps
@@ -14001,23 +14001,33 @@ def _cached_feed(now, tmux, sig, connect=False):
     # UNLESS an optimistic kernel-side mutation postdates the build (_views_dirty): that state is invisible
     # to the sig AND must not wait out REBUILD_MIN_S, or the push meant to show it serves the stale payload.
     e = _built_feed
-    dirty = not connect and _views_dirty[0] > e[2]        # connect still serves the warmed build (never rebuilds)
+    # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
+    # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
+    # not have been read — its payload can predate the gesture while its finish time postdates it.
+    # Comparing against the finish swallowed exactly that case: the reply's dirty mark lost to the
+    # in-flight build's completion, and the pre-reply payload (card still Completed) was re-served
+    # until the next sig bust — the window a client fallback needs to bounce a just-replied card
+    # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
+    # so back-to-back starts must not shrink its window.
+    dirty = not connect and _views_dirty[0] > e[3]        # connect still serves the warmed build (never rebuilds)
     if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
         return e[1]
     bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
-    feed = build_feed(now, tmux)
+    started = time.time()                # …and the dirty floor for the NEXT check: mutations after this
+    feed = build_feed(now, tmux)         # instant may be invisible to the build below → must rebuild
     feed["buildId"] = bid
-    _built_feed[:] = [sig, feed, time.time()]
+    _built_feed[:] = [sig, feed, time.time(), started]
     return feed
 
 
 def _cached_timeline(now, tmux, sig, connect=False):
     e = _built_timeline
-    dirty = not connect and _views_dirty[0] > e[2]
+    dirty = not connect and _views_dirty[0] > e[3]        # start-keyed, same as _cached_feed above
     if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
         return e[1]
+    started = time.time()
     tl = build_timeline(now, tmux)
-    _built_timeline[:] = [sig, tl, time.time()]
+    _built_timeline[:] = [sig, tl, time.time(), started]
     return tl
 
 

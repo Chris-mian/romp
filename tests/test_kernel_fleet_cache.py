@@ -41,10 +41,10 @@ class FleetCacheTest(unittest.TestCase):
         try:
             km._views_dirty[0] = 0.0
             f_sentinel = {"type": "feed", "cards": [], "working": []}
-            km._built_feed[:] = [("SIG",), f_sentinel, time.time()]
+            km._built_feed[:] = [("SIG",), f_sentinel, time.time(), time.time()]
             self.assertIs(km._cached_feed(0, {}, ("SIG",)), f_sentinel, "matching sig reuses, no rebuild")
             t_sentinel = {"type": "data"}
-            km._built_timeline[:] = [("SIG",), t_sentinel, time.time()]
+            km._built_timeline[:] = [("SIG",), t_sentinel, time.time(), time.time()]
             self.assertIs(km._cached_timeline(0, {}, ("SIG",)), t_sentinel)
         finally:
             km._built_feed[:] = feed_save
@@ -60,11 +60,41 @@ class FleetCacheTest(unittest.TestCase):
         dirty_save = km._views_dirty[0]
         try:
             f_stale = {"type": "feed", "cards": ["stale"]}
-            km._built_feed[:] = [("SIG",), f_stale, time.time()]   # fresh build: same sig AND inside REBUILD_MIN_S
+            km._built_feed[:] = [("SIG",), f_stale, time.time(), time.time()]   # fresh build: same sig AND inside REBUILD_MIN_S
             km._mark_views_dirty()                                 # the mutation lands after the build
             got = km._cached_feed(int(time.time()), {}, ("SIG",))
             self.assertIsNot(got, f_stale, "a dirty mark newer than the build must force a rebuild")
         finally:
+            km._built_feed[:] = feed_save
+            km._views_dirty[0] = dirty_save
+
+    def test_a_mutation_landing_mid_build_is_not_swallowed_by_that_build(self):
+        """A build takes ~1-1.6s and reads the stores one session at a time, so a mutation landing
+        MID-build may or may not have been read — its payload can predate the gesture while its finish
+        postdates it. The dirty floor therefore keys on the build's START: comparing against the finish
+        swallowed exactly that case (the user 2026-07-28: a reply landed while a build was in flight,
+        the reply's dirty mark lost to that build's completion, and the pre-reply payload — the card
+        still Completed — was re-served until the next sig bust, the window a client fallback needs to
+        bounce a just-replied card back to Completed)."""
+        feed_save = list(km._built_feed)
+        dirty_save = km._views_dirty[0]
+        real_build = km.build_feed
+        def build_with_midflight_reply(now, tmux):
+            time.sleep(0.005)                         # a real build runs ~1s; keep the mark measurably
+            km._mark_views_dirty()                    # past the start stamp, then: the reply lands while
+            return {"type": "feed", "cards": []}      # this build is mid-read. fresh dict → `is` tells builds apart
+        try:
+            km._views_dirty[0] = 0.0
+            km._built_feed[:] = [None, None, 0.0, 0.0]
+            km.build_feed = build_with_midflight_reply
+            f1 = km._cached_feed(int(time.time()), {}, ("SIG",))
+            km.build_feed = lambda now, tmux: {"type": "feed", "cards": []}
+            f2 = km._cached_feed(int(time.time()), {}, ("SIG",))
+            self.assertIsNot(f2, f1, "a mark set during the build postdates its start → must rebuild")
+            f3 = km._cached_feed(int(time.time()), {}, ("SIG",))
+            self.assertIs(f3, f2, "the mark predates the SECOND build's start → reuse, no rebuild loop")
+        finally:
+            km.build_feed = real_build
             km._built_feed[:] = feed_save
             km._views_dirty[0] = dirty_save
 
@@ -75,7 +105,7 @@ class FleetCacheTest(unittest.TestCase):
         dirty_save = km._views_dirty[0]
         try:
             f_warm = {"type": "feed", "cards": ["warm"]}
-            km._built_feed[:] = [("OLD",), f_warm, time.time()]
+            km._built_feed[:] = [("OLD",), f_warm, time.time(), time.time()]
             km._mark_views_dirty()
             self.assertIs(km._cached_feed(int(time.time()), {}, ("NEW",), connect=True), f_warm)
         finally:
