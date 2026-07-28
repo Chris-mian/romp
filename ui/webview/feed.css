@@ -1006,3 +1006,14 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   white-space: nowrap; font-variant-numeric: tabular-nums; }
 .age-tip-what { overflow-wrap: anywhere; }
 .age-tip-row.stamp { margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255, 255, 255, 0.09); }
+
+/* Bell-entry jump target (the user 2026-07-28): clicking an entry in the shell's error popover lands
+   here — the card pulses accent twice so the eye finds it. Runs once per jump (the class is removed on
+   animationend); accent = highlight chrome, deliberately NOT a status colour. */
+.reveal-pulse { animation: revealPulse 1.6s ease; }
+@keyframes revealPulse {
+  0%, 100% { box-shadow: none; }
+  15%, 40% { box-shadow: 0 0 0 2px var(--accent), 0 0 16px rgba(156, 210, 255, 0.5); }
+  55% { box-shadow: none; }
+  70%, 85% { box-shadow: 0 0 0 2px var(--accent), 0 0 16px rgba(156, 210, 255, 0.5); }
+}

@@ -11,25 +11,27 @@
 // of the same kind (different since/t) is a new entry.
 
 export interface BadgeItem {
-  itemId: string; name: string; text: string;
+  itemId: string; sid: string; name: string; text: string;
   stalled?: { why: string; since: number; note?: string | null } | null;
   nudgeFailed?: boolean;
   retrying?: { since?: number | null; count?: number } | null;
   warns?: { kind: string; t: number; msg: string }[] | null;
   blocked?: { state: string; status?: number; text?: string; tooLong?: boolean; spendLimit?: boolean } | null;
 }
-export interface BadgeNotice { kind: string; text: string; sig: string; }
+// sid + itemId ride along so a bell entry can JUMP back to the card it was minted from (the user
+// 2026-07-28): the shell posts them back as {romp:'revealCard'} and the feed scrolls + pulses the card.
+export interface BadgeNotice { kind: string; text: string; sig: string; sid: string; itemId: string; }
 
 const cap = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: BadgeNotice[]; active: Set<string> } {
   const notices: BadgeNotice[] = [];
   const active = new Set<string>();
-  const add = (sig: string, kind: string, text: string) => {
-    active.add(sig);
-    if (!seen.has(sig)) notices.push({ kind, text, sig });
-  };
   for (const it of items) {
+    const add = (sig: string, kind: string, text: string) => {
+      active.add(sig);
+      if (!seen.has(sig)) notices.push({ kind, text, sig, sid: it.sid, itemId: it.itemId });
+    };
     for (const w of it.warns ?? []) {
       add("w|" + it.itemId + "|" + w.t + "|" + w.kind, "warn", it.name + " — warning: " + cap(w.msg, 100));
     }
@@ -71,7 +73,7 @@ export function clearBoundaryNotices(rows: ClearNoticeRow[], seen: Set<string>):
     active.add(sig);
     if (seen.has(sig)) continue;
     const n = r.titles.length;
-    notices.push({ kind: "cleared", sig,
+    notices.push({ kind: "cleared", sig, sid: r.sid, itemId: "",   // no single card — the jump opens the session
       text: r.name + " — /clear dropped " + n + " open card" + (n === 1 ? "" : "s") + ": "
         + cap(r.titles.join(", "), 120) + " (Undo clear on the feed restores them)" });
   }

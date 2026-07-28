@@ -10,7 +10,7 @@ import { badgeNotices, clearBoundaryNotices, type BadgeItem, type ClearNoticeRow
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 const base = (over: Partial<BadgeItem>): BadgeItem =>
-  ({ itemId: "TESTSID:g1", name: "api", text: "ship the notes-api", ...over });
+  ({ itemId: "TESTSID:g1", sid: "TESTSID", name: "api", text: "ship the notes-api", ...over });
 
 test("every trouble chip becomes one entry, in the session's name", () => {
   const items = [base({
@@ -23,6 +23,8 @@ test("every trouble chip becomes one entry, in the session's name", () => {
   const { notices } = badgeNotices(items, new Set());
   assert.deepEqual(notices.map((n) => n.kind), ["warn", "stalled", "nudge", "retry", "apierror"]);
   assert.ok(notices.every((n) => n.text.startsWith("api — ")), "each entry names the session");
+  // every notice carries its jump target so the bell entry can lead back to the card (2026-07-28)
+  assert.ok(notices.every((n) => n.sid === "TESTSID" && n.itemId === "TESTSID:g1"));
   assert.match(notices[0].text, /warning: the summarizer gave up/);
   assert.match(notices[1].text, /stalled: romp is holding this/, "the staller's note beats the mechanical why");
   assert.match(notices[4].text, /API error 529/);
@@ -81,7 +83,24 @@ test("the feed posts each notice to the shell and persists only the ACTIVE set",
   assert.match(FEED, /mirrorBadges\(incomingAsks, Array\.isArray\(m\.clearNotices\) \? m\.clearNotices : \[\]\)/,
     "runs on every feed payload, against the FULL list + the kernel's clear notices");
   assert.match(FEED, /clearBoundaryNotices\(clears, seenSet\)/, "clear drops ride the same seen-set");
-  assert.match(FEED, /window\.parent\?\.postMessage\(\{ romp: "notify", kind: n\.kind, text: n\.text \}, "\*"\)/);
+  assert.match(FEED,
+    /window\.parent\?\.postMessage\(\{ romp: "notify", kind: n\.kind, text: n\.text, sid: n\.sid, itemId: n\.itemId \}, "\*"\)/,
+    "each notice carries its jump target (sid + itemId) for the bell's click-through");
   assert.match(FEED, /localStorage\.setItem\(BADGE_SEEN_KEY, JSON\.stringify\(Array\.from\(active\)\)\)/,
     "active-only persistence is what re-arms a cleared badge and bounds the store");
+});
+
+
+test("the feed answers revealCard: scroll to the card, pulse it accent, session fallback", () => {
+  // the return path of the bell's jump (the user 2026-07-28): the shell posts {romp:'revealCard'};
+  // the feed finds the card by its data-key, scrolls + pulses; a gone card opens the session instead.
+  assert.match(FEED, /if \(m\.romp === "revealCard"\) \{/);
+  assert.match(FEED, /\[data-key="a:\$\{String\(m\.itemId \|\| ""\)\}"\]/);
+  assert.match(FEED, /target\.scrollIntoView\(\{ block: "center", behavior: "smooth" \}\);/);
+  assert.match(FEED, /target\.classList\.add\("reveal-pulse"\);/);
+  assert.match(FEED, /animationend.*reveal-pulse.*once: true/, "the pulse is one-shot");
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "openSession", id: String\(m\.sid\) \}\)/);
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+  assert.match(CSS, /\.reveal-pulse \{ animation: revealPulse 1\.6s ease; \}/);
+  assert.match(CSS, /box-shadow: 0 0 0 2px var\(--accent\)/, "accent chrome, not a status colour");
 });

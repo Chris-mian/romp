@@ -58,9 +58,12 @@ function withCls(el) {
   return el;
 }
 const EL = {};
-['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x', 'rerr-filters'].forEach((id) => {
+['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x', 'rerr-fgrid', 'f-feed'].forEach((id) => {
   EL[id] = withCls(mkEl(id));
 });
+const POSTED = [];   // what the shell posts into the feed iframe (revealCard)
+EL['f-feed'].contentWindow = { postMessage: (msg) => POSTED.push(msg) };
+const TOGGLES = [];  // window.__rompPaneToggle calls (revealing the feed pane on a jump)
 EL['rail-errs']._num = mkEl('');   // the <text class=rerr-n> INSIDE each bell svg (the in-bell count)
 EL['merr']._num = mkEl('');
 function bellNum() { return EL['rail-errs']._num.textContent; }
@@ -68,6 +71,7 @@ const BODY = new Set(['po-chat', 'po-feed', 'po-timeline']);   // fleet pane hid
 const WL = {};
 global.window = {
   addEventListener: (k, f) => { (WL[k] = WL[k] || []).push(f); },
+  __rompPaneToggle: (k, to) => TOGGLES.push(k + ':' + to),
 };
 global.document = {
   getElementById: (id) => EL[id] || null,
@@ -115,22 +119,33 @@ out.afterClearAll = { n: notes().length, rows: EL['rerr-list'].children.length,
 post({ romp: 'wsState', app: 'chat', state: 'up' });
 out.afterReconnect = { red: EL['rail-errs']._cls.has('has') };
 // 9) the filter bar built one toggle chip per kind, in order, conn ("offline") first
-out.filterBar = { n: EL['rerr-filters'].children.length,
-  first: EL['rerr-filters'].children[0].textContent,
-  labels: EL['rerr-filters'].children.map((c) => c.textContent).join('|') };
+out.filterBar = { n: EL['rerr-fgrid'].children.length,
+  first: EL['rerr-fgrid'].children[0].textContent,
+  labels: EL['rerr-fgrid'].children.map((c) => c.textContent).join('|') };
 // 10) muting offline: its entries stop rendering, stop counting, and the live-down cue stays dark
-EL['rerr-filters'].children[0].fire('click');
+EL['rerr-fgrid'].children[0].fire('click');
 post({ romp: 'wsState', app: 'chat', state: 'down' });
 out.afterMute = { stored: STORE['romp:errFilters'], n: notes().length,
   red: EL['rail-errs']._cls.has('has'),
   emptyText: EL['rerr-list'].children[0].textContent };
 // 11) unmuting shows what happened while muted, and the unread entry re-reddens the bell
-EL['rerr-filters'].children[0].fire('click');
+EL['rerr-fgrid'].children[0].fire('click');
 out.afterUnmute = { red: EL['rail-errs']._cls.has('has'), rows: EL['rerr-list'].children.length,
   chip: EL['rerr-list'].children[0].children[0].textContent, num: bellNum() };
 // 12) past nine unread the in-bell count yields to '+' (a two-glyph "10" can't fit the body)
 for (let i = 0; i < 12; i++) post({ romp: 'notify', kind: 'warn', text: 'distinct problem ' + i });
 out.afterMany = { num: bellNum() };
+// 13) an entry minted from a feed card carries a jump target: clicking the row closes the popover,
+// reveals the feed pane, and posts revealCard into the feed iframe
+post({ romp: 'notify', kind: 'stalled', text: 'api \u2014 stalled: held', sid: 'TESTSID', itemId: 'TESTSID:g9' });
+const jumpRow = EL['rerr-list'].children[0];
+out.jump = { linky: jumpRow.className.indexOf('link') >= 0 };
+jumpRow.fire('click');
+out.jump.closed = EL['rerr-back'].hidden;
+out.jump.posted = POSTED[POSTED.length - 1] || null;
+out.jump.toggles = TOGGLES.join('|');
+// …while a kernel-minted entry (no target) is not clickable
+out.plainRowLinky = EL['rerr-list'].children[1].className.indexOf('link') >= 0;
 console.log(JSON.stringify(out));
 """
 
@@ -200,10 +215,10 @@ class ErrorCenterExecutes(unittest.TestCase):
         # the user 2026-07-28: every high-level category gets a toggle (offline fires so often it
         # drowns the rest). The toggles ARE the chips, in the same order entries wear them.
         a = self.out["filterBar"]
-        self.assertEqual(a["n"], 8)
+        self.assertEqual(a["n"], 9)
         self.assertEqual(a["first"], "offline")
         self.assertEqual(a["labels"],
-                         "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error")
+                         "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error|cleared")
 
     def test_muting_a_kind_hides_counts_and_live_cue_but_keeps_the_entries(self):
         a = self.out["afterMute"]
@@ -218,6 +233,16 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertEqual(a["rows"], 1)
         self.assertEqual(a["chip"], "offline")
         self.assertEqual(a["num"], "1", "the missed entry counts again once unmuted")
+
+    def test_an_entry_click_jumps_to_its_card(self):
+        # the user 2026-07-28: click the chip or the text to jump to the thing — the popover closes,
+        # the feed pane is revealed, and the feed scrolls to + pulses the card (revealCard).
+        a = self.out["jump"]
+        self.assertTrue(a["linky"], "a targeted entry renders as a link row")
+        self.assertTrue(a["closed"], "the popover closes on jump")
+        self.assertEqual(a["posted"], {"romp": "revealCard", "itemId": "TESTSID:g9", "sid": "TESTSID"})
+        self.assertIn("feed:true", a["toggles"], "the feed pane is revealed for the jump")
+        self.assertFalse(self.out["plainRowLinky"], "a kernel-minted entry with no target is not a link")
 
     def test_past_nine_the_count_yields_to_plus(self):
         # the user 2026-07-28: digits 1-9, then "something else to mean many" — a two-glyph "10"
@@ -243,9 +268,22 @@ class ErrorCenterWiring(unittest.TestCase):
         # the chip family mirrors feed.css's .fask-* colours
         self.assertIn(".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166", html)
         self.assertIn(".rerr-chip.k-nudge{color:#ff6a6a", html)
-        # the per-kind filter bar sits between header and list, chips doubling as the toggles
-        self.assertIn("id=rerr-filters", html)
+        # the per-kind filter bar sits between header and list, chips doubling as the toggles: a
+        # vertical white "show" label, then an even 4-column grid (8 kinds -> the minimum 2 rows,
+        # every chip the same cell width) instead of one ragged wrapping row (the user 2026-07-28)
+        self.assertIn("<div id=rerr-filters><span class=rerr-flabel>show</span><div id=rerr-fgrid></div></div>", html)
+        self.assertIn("writing-mode:vertical-rl", html)
+        self.assertIn("#rerr-fgrid{flex:1;display:grid;grid-template-columns:repeat(5,1fr);gap:5px}", html)
         self.assertIn(".rerr-fbtn.off{opacity:0.35;border-style:dashed}", html)
+        # the panel is 60% wider, and entry rows are a grid with a fixed chip column so every message
+        # left-aligns past the widest chip
+        self.assertIn("width:min(700px,94vw)", html)
+        self.assertIn("grid-template-columns:96px 1fr auto auto", html)
+        # every kind's toggle AND entry chip explains itself (not just show/hide)
+        self.assertIn("var DESC={conn:", html)
+        self.assertIn("b.title='Show or hide these entries. '+KINDLBL[k]+': '+DESC[k]", html)
+        # targeted entries jump: close, reveal the feed pane, post revealCard into the feed iframe
+        self.assertIn("{romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''}", html)
         # timestamps wear the SHARED recency ramp: the standalone dist bundle is loaded BEFORE the
         # errs script and read behind a feature test (dim default if the bundle is stale/missing)
         self.assertLess(html.index("/dist/age-color-global.js"), html.index("window.__rompAgeColor"))
