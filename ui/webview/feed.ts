@@ -754,9 +754,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
   row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
-  // the corner bell BUTTON (the user 2026-07-28, round 2): bottom-right of the card, per-task arming.
-  // Session-level arming shows on the lane/tab instead, so an armed SESSION doesn't stamp every card.
-  // Absolutely positioned in the card's own padding — it never shoves the rows around.
+  // the corner bell BUTTON (the user 2026-07-28, round 3): TOP-right, floated FIRST in row1 so the
+  // title text wraps around it — in-flow, so it can never overlap anything (round 2's absolute
+  // bottom-right corner sat exactly where grouped mode floats Clear, and they collided on compact
+  // cards). Session-level arming shows on the lane/tab instead, so an armed SESSION doesn't stamp
+  // every card.
   const bellBtn = el("button", "fask-bellbtn");
   bellBtn.onclick = (ev: Event) => {
     ev.stopPropagation();                            // never open the modal under the toggle
@@ -764,6 +766,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     const live = cur || it;
     setCardNotify(card, live, !cardNotifyOn(live));
   };
+  row1.prepend(bellBtn);   // float-first: it claims the top-right corner before the title flows
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -836,7 +839,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const qbody = el("div", "fask-qbody");
   qbody.style.display = "none";
   main.append(row1, row2, row3, secs, qbody, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
-  card.append(main, bellBtn);   // the bell rides the CARD (absolute, bottom-right corner), outside the flex rows
+  card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
   // title → locate the turn the card stands for. A normal card anchors on "prompt" (the originating
