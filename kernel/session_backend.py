@@ -82,6 +82,17 @@ class SessionBackend(ABC):
         (the known tmux gap in plans/clear-episodes.md)."""
         return None
 
+    def launch_error(self, sid: str):
+        """Why this session's CLI could NOT start — {text, at, limit} — or None when it started fine (and
+        on a backend with no such signal). A launch failure is otherwise invisible: the session settles
+        'waiting', the message the user typed stays in the queue, and nothing anywhere says why (the user
+        2026-07-28, whose send into an out-of-usage account simply never flipped to working). `limit` is
+        True when the cause is the ACCOUNT being out of usage rather than a broken session — the queue is
+        parked, not lost, and the kernel says so (_limit_hold) instead of showing a red error.
+
+        tmux keeps the None default: its CLI launches into a pane where the failure is on screen."""
+        return None
+
     def forwards_sends(self) -> bool:
         """True if this backend accepts a plain composer send at ANY time — even mid-turn — and manages its
         own delivery: forwarding the message to the model at the next tool boundary, folding several queued

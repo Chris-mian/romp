@@ -726,6 +726,73 @@ CRASH_RESUME_NUDGE = (
     "the conversation and pick the work back up where it stopped.")
 
 
+# A CLI that cannot even START says so on the way out — and the ONE cause that reliably does this is the
+# account being out of usage: `claude` refuses the handshake and exits with the limit in its own words
+# ("You've hit your session limit · resets 1:10pm (America/Los_Angeles)"). romp used to swallow that
+# entirely (the user 2026-07-28, on a fresh install): the message they typed sat in the persisted queue,
+# the session settled 'waiting', and NOTHING said why — the send simply never flipped to working. The
+# limit was observable the whole time (romp's own judge calls were getting the same envelope), just never
+# read on this path. usage.json is no help here either: it is written from a RateLimitEvent the CLI streams
+# once CONNECTED, so a limit that blocks the connect blocks its own reporting — _limit_hold stayed None and
+# the queued bubble had nothing to say. This is that missing edge.
+_LAUNCH_LIMIT_RE = re.compile(
+    r"hit your (?:session|usage|weekly|5-hour) limit"      # the CLI's own phrasing
+    r"|usage limit reached"
+    r"|out of (?:usage|credits)"
+    r"|rate.?limit(?:ed)? .{0,40}(?:account|session|usage)", re.I)
+
+
+# The ONE dependency the whole SDK backend rests on. When it is absent every SDK session is a session
+# that can accept a message and never, ever run it — which is exactly what a fresh install looked like on
+# 2026-07-28: romp-sdk-setup had bailed (a python with no ensurepip), the kernel logged one stderr line
+# and BUILT THE BACKEND ANYWAY, and from the user's side sends vanished, no session flipped to working,
+# and the model/effort/usage readouts stayed blank (all three publish only AFTER a connect that could
+# never happen). tmux sessions worked the whole time, which made it read as an Anthropic outage. The
+# remedy is one command, so the error names it rather than describing the symptom.
+SDK_MISSING_TEXT = (
+    "romp's Agent SDK backend isn't installed, so this session can't run — its messages are being kept, "
+    "not sent. Install it with bin/romp-sdk-setup (it prints the OS package to add if one is missing), "
+    "then restart romp. tmux-backed sessions are unaffected.")
+
+
+def sdk_importable() -> bool:
+    """Is claude_agent_sdk actually importable RIGHT NOW? Checked at backend construction so the failure
+    is reported ONCE, up front, for every session — rather than one session at a time as each one's
+    thread dies at the lazy import inside _amain."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("claude_agent_sdk") is not None
+    except Exception:
+        return False
+
+
+def launch_failure_text(exc: BaseException) -> str:
+    """The most SPECIFIC human text a failed CLI launch carries. The SDK's ProcessError keeps the CLI's
+    own stderr on the exception (the class that actually names the cause); everything else falls back to
+    the exception's own text. Truncated, since a stderr dump can run long and this lands in a chat card."""
+    parts = []
+    for attr in ("stderr", "stdout"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, bytes):
+            v = v.decode("utf-8", "replace")
+        if isinstance(v, str) and v.strip():
+            parts.append(v.strip())
+    parts.append(("%s: %s" % (type(exc).__name__, exc)).strip())
+    # prefer whichever part NAMES a limit — that's the line worth showing — else the first non-empty
+    named = next((p for p in parts if _LAUNCH_LIMIT_RE.search(p)), None)
+    text = (named or parts[0]).strip()
+    if len(text) > 600:
+        text = text[:600].rstrip() + "…"
+    return text
+
+
+def is_launch_limit(text: str) -> bool:
+    """True when a launch failure is the ACCOUNT being out of usage rather than a broken install. Drives
+    the kernel's _limit_hold (the queue parks and says what it is waiting for) instead of the plain
+    'this session could not start' card."""
+    return bool(text and _LAUNCH_LIMIT_RE.search(text))
+
+
 def task_death_notice(tasks: list) -> str:
     """The visible romp notice for BACKGROUND TASKS that died with their claude process. Bg tasks are
     the CLI's children, so a kernel restart or CLI crash silently kills a session's timers/watchers —
@@ -1326,11 +1393,18 @@ class SdkSession:
             self.backend._on_session_gone(self)
 
     async def _amain(self):
-        # Lazy SDK import — keeps the module importable without the dep.
-        from claude_agent_sdk import (
-            ClaudeSDKClient, ClaudeAgentOptions,
-            AssistantMessage, ResultMessage, SystemMessage,
-        )
+        # Lazy SDK import — keeps the module importable without the dep. RECORD a failure here before it
+        # propagates: this is the FIRST thing a session does, so with the dep missing every session dies
+        # right here, and the only trace used to be one kernel stderr line per crash while the user's
+        # messages piled up unsent (the user 2026-07-28).
+        try:
+            from claude_agent_sdk import (
+                ClaudeSDKClient, ClaudeAgentOptions,
+                AssistantMessage, ResultMessage, SystemMessage,
+            )
+        except Exception as e:
+            self.backend._record_launch_error(self, e)
+            raise
         self.loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
         with self._lock:
@@ -1415,6 +1489,11 @@ class SdkSession:
                 async with ClaudeSDKClient(options=opts) as client:
                     connected = True
                     self.client = client
+                    # The CLI is demonstrably up, so any recorded launch failure is HISTORY — clear it
+                    # here, at the proof, rather than on a timer. This is what lifts the usage-limit
+                    # hold once the window resets: the next _ensure connects, the error record goes, and
+                    # the queue the limit was holding drains on the following producer pass.
+                    self.backend._clear_launch_error(self.sid)
                     # A pending /effort switch is APPLIED the instant this (re)connect lands (--effort rode _options
                     # above) → clear the switching-dots + "Reloading session…" notice (the user 2026-07-06). Covers
                     # the immediate (idle) reconnect, the deferred (turn-end) one, and a first connect that picked up
@@ -1466,6 +1545,11 @@ class SdkSession:
                 if self._rewind_armed and not connected:
                     self._rewind_failed(e)
                     continue
+                if not connected:
+                    # The CLI never came up. RECORD why, where the user can see it: this thread is about
+                    # to die, and everything downstream of it (_on_session_gone settling 'waiting') is
+                    # silent by design. Without this the only trace is a kernel stderr line nobody reads.
+                    self.backend._record_launch_error(self, e)
                 raise
             if self.ended or not self._reconnect:
                 break        # drain ended on its own (process exit) or we're shutting down → done
@@ -2030,6 +2114,12 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
+        # The dependency check, done ONCE here: absent → every session this backend owns reports the same
+        # launch error (launch_error), instead of each one silently dying at its own lazy import.
+        self._sdk_missing = not sdk_importable()
+        if self._sdk_missing and log:
+            log("claude_agent_sdk is NOT importable — every SDK session will report itself unable to "
+                "start (run bin/romp-sdk-setup). tmux sessions are unaffected.")
         self._heal_attempts: dict[str, int] = {}  # sid -> crash-resume attempts since its last COMPLETED turn
         #                                           (bounds _heal_cut_session to one resume per cut; a completed
         #                                           turn resets it, so a crash LOOP can't respawn forever)
@@ -2563,10 +2653,23 @@ class SdkBackend:
         """Queued-but-not-yet-started user turns for an SDK session (oldest first), or [] if the
         session isn't SDK-backed / not running. The kernel calls this to build the chat's
         kind:"queued" event for SDK sessions — the SDK keeps its queue in memory, so there are no
-        transcript queue-operation records for _pending_queued to read."""
+        transcript queue-operation records for _pending_queued to read.
+
+        A session that is NOT running falls back to the PERSISTED queue (the reg mirror _persist_queue
+        writes on every mutation). That is not a guess: it is the same list, and it is what the boot
+        reconcile re-delivers, so it is exactly what is still owed to the user. Returning [] there made
+        the message VANISH from the chat the moment the CLI died — which is how a send into an
+        out-of-usage account looked like romp had eaten it (the user 2026-07-28). While the session IS
+        running the in-memory queue stays authoritative: the mirror trails it by one write."""
         with self._lock:
             s = self.sessions.get(sid)
-        return s.pending() if s else []
+        if s:
+            return s.pending()
+        try:
+            q = (read_reg(self.state_dir, str(sid)) or {}).get("queue")
+        except Exception:
+            return []
+        return [t for t in q if isinstance(t, str) and t] if isinstance(q, list) else []
 
     def unqueue(self, sid: str, idx: int, expect: str | None = None) -> str | None:
         """Cancel the queued turn at `idx` for an SDK session (the kernel's cancelQueued route). Returns
@@ -3138,6 +3241,53 @@ class SdkBackend:
             reg = read_reg(self.state_dir, sid) or {"sid": sid}   # unserialized RMWs would drop fields
             reg.update(fields)
             write_reg(self.state_dir, sid, reg)
+
+    def _record_launch_error(self, sess: SdkSession, exc: BaseException) -> None:
+        """A session's CLI refused to start — persist WHY onto the session so the user is told, loudly,
+        on the surface they were typing into. The reg is the right home: it outlives this thread (which
+        is dying) and it is what the boot reconcile and the chat build already read, so the error
+        survives a kernel restart exactly like the queue it is holding up.
+
+        `limit` marks the account-out-of-usage flavor, which reads differently to the user: nothing is
+        broken, the queue is simply parked until the window resets (kernel _limit_hold), and the message
+        they typed is still there. Anything else is a real failure and gets the plain error card."""
+        # A missing dependency gets the REMEDY as its text, not the raw ModuleNotFoundError: "No module
+        # named 'claude_agent_sdk'" tells a user nothing about what to run.
+        dep = isinstance(exc, ImportError)
+        text = SDK_MISSING_TEXT if dep else launch_failure_text(exc)
+        rec = {"text": text, "at": int(time.time()), "limit": is_launch_limit(text), "dep": dep}
+        try:
+            self._update_reg(sess.sid, launchError=rec)
+        except Exception:
+            self._log("record launch error (%s): %s" % (sess.name, traceback.format_exc()))
+        self._log("session %s: claude CLI failed to start%s — %s"
+                  % (sess.name, " (account usage limit)" if rec["limit"] else "", text))
+        self._poke()
+
+    def _clear_launch_error(self, sid: str) -> None:
+        """Drop a recorded launch failure — called from the connect that DISPROVES it. Read-then-write so
+        a session that never failed doesn't churn the reg on every reconnect."""
+        try:
+            if not (read_reg(self.state_dir, sid) or {}).get("launchError"):
+                return
+            self._update_reg(sid, launchError=None)
+        except Exception:
+            self._log("clear launch error (%s): %s" % (sid, traceback.format_exc()))
+        self._poke()
+
+    def launch_error(self, sid: str):
+        """The reason this session's CLI could not start, or None — {text, at, limit}. The kernel reads
+        it for the chat's error card and for the usage-limit queue hold (see SessionBackend.launch_error).
+
+        A MISSING SDK outranks any per-session record: it is true of every session immediately, needs no
+        session to have died to be known, and it is the actionable one."""
+        if self._sdk_missing:
+            return {"text": SDK_MISSING_TEXT, "at": 0, "limit": False, "dep": True}
+        try:
+            rec = (read_reg(self.state_dir, str(sid)) or {}).get("launchError")
+        except Exception:
+            return None
+        return rec if isinstance(rec, dict) and rec.get("text") else None
 
     def _on_session_gone(self, sess: SdkSession):
         with self._lock:

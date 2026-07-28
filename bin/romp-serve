@@ -52,7 +52,10 @@ host="${host:-127.0.0.1}"
 pick_python() {
     if [[ -n "${ROMP_PYTHON:-}" ]]; then echo "$ROMP_PYTHON"; return; fi
     local v c
-    for v in 3.13 3.12 3.11 3.10; do
+    # Newest first. The list has to GROW with each release: a machine whose only python is newer than
+    # everything named here falls through to `python3`, which is right when that IS the new one and wrong
+    # when python3 points at something ancient. Seen on a 3.14-only box, 2026-07-28.
+    for v in 3.14 3.13 3.12 3.11 3.10; do
         for c in "python$v" "$HOME/.local/bin/python$v"; do
             if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return; fi
         done
