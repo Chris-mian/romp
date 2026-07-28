@@ -301,3 +301,90 @@ EOF
     # box has no browser for `romp` to open.
     [[ "$output" == *"token=TESTTOKEN123"* ]]
 }
+
+# ── romp installs its own critical dependency, rather than assigning homework ──
+# The SDK backend is what plain `romp new` runs on, so a box without it has a romp that starts,
+# looks healthy and cannot run a single session. romp-sdk-setup used to stop at Debian's missing
+# ensurepip and tell the user to sudo — which an installer cannot do for them, and which is exactly
+# where a fresh python3.14 install stalled (the user 2026-07-28). It now builds the venv without pip
+# and bootstraps pip itself; the sudo message is the LAST resort, not the first answer.
+
+# A python that passes the >= 3.10 gate, has no ensurepip, and can fake `-m venv --without-pip`
+# well enough to exercise the bootstrap. Self-contained for the same reason as the test above: the
+# host's own python3 differs per machine.
+_pipless_python() {
+    cat > "$STUB/python3.12" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"version_info >= (3, 10)"*) exit 0 ;;
+  *'print("%d.%d"'*)           echo "3.12"; exit 0 ;;
+  *"import ensurepip"*)        exit 1 ;;
+  *"-m venv --without-pip"*)
+      v="\${@: -1}"
+      mkdir -p "\$v/bin"
+      # the venv's python: running get-pip.py is what mints bin/pip
+      printf '#!/usr/bin/env bash\ncase "\$*" in *get-pip.py*) printf "#!/usr/bin/env bash\\nexit 0\\n" > "\$(dirname "\$0")/pip"; chmod +x "\$(dirname "\$0")/pip";; esac\nexit 0\n' > "\$v/bin/python"
+      chmod +x "\$v/bin/python"
+      exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "$STUB/python3.12"
+}
+
+@test "romp-sdk-setup: bootstraps pip itself when ensurepip is missing — no sudo, no homework" {
+    _pipless_python
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    # file:// keeps the fetch hermetic — curl handles it, and no test may reach the network.
+    printf '# a stand-in for PyPA get-pip.py\n' > "$TEST_DIR/get-pip.py"
+
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/python3.12" \
+      ROMP_GET_PIP_URL="file://$TEST_DIR/get-pip.py" run "$ROMP_DIR/bin/romp-sdk-setup"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bootstrapping pip"* ]]
+    # the whole point: it must NOT send the user to sudo when it can do the job itself
+    [[ "$output" != *"sudo apt install"* ]]
+    [ -x "$TEST_DIR/state/sdkvenv/bin/pip" ]
+    # the downloaded bootstrap script is not left lying in the venv
+    [ ! -f "$TEST_DIR/state/sdkvenv/get-pip.py" ]
+}
+
+@test "romp-sdk-setup: ROMP_NO_GET_PIP opts out, and then it names the package" {
+    _pipless_python
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/python3.12" ROMP_NO_GET_PIP=1 \
+      run "$ROMP_DIR/bin/romp-sdk-setup"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"sudo apt install"* ]]           # the fallback is still there for anyone who wants it
+    [[ "$output" == *"romp still runs without this"* ]]
+    [ ! -x "$TEST_DIR/state/sdkvenv/bin/python" ]     # and never a husk for the next run to trip over
+}
+
+@test "install.sh: a missing SDK backend is a BANNER, not an optional-pieces footnote" {
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    mkdir -p "$ROMP_STATE_DIR"
+    echo "TESTTOKEN123" > "$ROMP_STATE_DIR/serve-token"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    # Let the real sdk step RUN (ROMP_NO_SDK cleared — that flag is what sets ROMP_SDK_MISSING) but
+    # make it fail at the VERSION gate, so this stays hermetic: no venv built, no network reached.
+    cat > "$STUB/oldpython" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"version_info >= (3, 10)"*) exit 1 ;;
+  *'print("%d.%d"'*)           echo "3.9"; exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "$STUB/oldpython"
+
+    PATH="$(bare_path)" ROMP_TMUX_AVAILABLE=1 ROMP_NO_SDK= ROMP_PYTHON="$STUB/oldpython" \
+      run "$ROMP_DIR/install.sh"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CANNOT START SESSIONS"* ]]
+    # it must NOT be filed under the things you can happily live without
+    [[ "$output" != *"Some optional pieces aren't set up:"*"Agent SDK"* ]]
+}

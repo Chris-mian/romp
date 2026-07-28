@@ -205,3 +205,36 @@ class KernelSurfaces(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionCreationRefusesWhenTheSdkCannotRun(unittest.TestCase):
+    """The gap the user actually hit: they created a session in the BROWSER and got no error at all.
+
+    Both creation paths (the WS createSession op and POST /new for `romp new`) already carried the
+    right refusal — never silently hand back something that can't work — and both asked `_sdk()`.
+    But the backend object is built even with the dependency missing, on purpose, so it can keep
+    owning the registry and the chat. `_sdk()` therefore answered "yes" and the refusal never fired:
+    a session was created that could never run, silently (the user 2026-07-28)."""
+
+    def test_the_backend_reports_its_own_unavailability(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.assertFalse(_backend(td.name, missing=True).available(),
+                         "a backend that cannot import its SDK must not answer 'ready'")
+        self.assertTrue(_backend(td.name, missing=False).available())
+
+    def test_both_creation_paths_gate_on_ready_not_on_the_object(self):
+        src = Path(BIN).parent.joinpath("kernel", "kernel.py").read_text()
+        self.assertIn("def _sdk_ready():", src)
+        self.assertIn("if _sdk_ready():", src, "the WS createSession op")
+        self.assertIn("if not _sdk_ready():", src, "POST /new, the `romp new` path")
+        self.assertNotIn("if _sdk():\n                        _create_sdk_session", src,
+                         "the old check took a dependency-less backend as a yes")
+
+    def test_the_refusal_names_the_remedy_and_says_nothing_was_created(self):
+        src = Path(BIN).parent.joinpath("kernel", "kernel.py").read_text()
+        self.assertIn("SDK_SETUP_HINT = ", src)
+        i = src.index("SDK_SETUP_HINT = ")
+        hint = src[i:i + 400]
+        self.assertIn("Session not created", hint, "say plainly that nothing was made")
+        self.assertIn("romp-sdk-setup", hint, "name the one command that fixes it")

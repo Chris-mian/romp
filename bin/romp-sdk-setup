@@ -40,17 +40,38 @@ fi
 
 # Debian/Ubuntu ship a python3 whose venv module cannot bootstrap pip: ensurepip is split into a
 # separate python3-venv package. `python3 -m venv` there still creates bin/python symlinks and THEN
-# fails, leaving a pip-less husk — so the naive "does bin/python exist" check below would sail past a
-# broken venv and die at the pip line with a bare "No such file or directory". Check the capability up
-# front and name the package (a fresh Ubuntu box, the user 2026-07-27, where this failed silently and
-# left the SDK backend — what plain `romp new` uses — dead with no visible reason).
-if ! "$PY" -c 'import ensurepip' >/dev/null 2>&1; then
-  echo "romp-sdk-setup: $PY has no 'ensurepip' — it cannot create a venv with pip in it." >&2
-  echo "  Debian/Ubuntu: sudo apt install python$(pyver "$PY")-venv   (or: sudo apt install python3-venv)" >&2
-  echo "  Then re-run: $0" >&2
-  echo "  romp still runs without this; only the SDK backend (plain \`romp new\`) is disabled." >&2
-  exit 1
-fi
+# fails, leaving a pip-less husk.
+#
+# This used to stop here and tell the user to `sudo apt install python3-venv`. But an installer cannot
+# sudo for you, so that turned romp's OWN critical dependency into homework — and the SDK backend is
+# what plain `romp new` uses, so a machine that skipped it has a romp that cannot start a session at
+# all (the user 2026-07-28, on a python3.14 box: install "succeeded", every session silently swallowed
+# its messages). So DON'T stop: build the venv without pip and bootstrap pip into it from PyPA's
+# canonical get-pip.py, which needs no root. Only when THAT fails too (offline, no fetcher) do we fall
+# back to naming the package. ROMP_GET_PIP_URL overrides the source; ROMP_NO_GET_PIP=1 opts out of the
+# fetch entirely for anyone who would rather install the OS package themselves.
+GET_PIP_URL="${ROMP_GET_PIP_URL:-https://bootstrap.pypa.io/get-pip.py}"
+
+fetch() {   # $1 url → $2 dest, with whichever fetcher the box has
+  if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time 60 "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
+  else return 1; fi
+}
+
+make_venv() {
+  if "$PY" -c 'import ensurepip' >/dev/null 2>&1; then
+    "$PY" -m venv "$VENV"
+    return
+  fi
+  if [ -n "${ROMP_NO_GET_PIP:-}" ]; then return 1; fi
+  echo "romp-sdk-setup: $PY has no 'ensurepip' — bootstrapping pip from $GET_PIP_URL (no sudo needed)"
+  "$PY" -m venv --without-pip "$VENV" || return 1
+  [ -x "$VENV/bin/python" ] || return 1
+  fetch "$GET_PIP_URL" "$VENV/get-pip.py" || return 1
+  "$VENV/bin/python" "$VENV/get-pip.py" -q || return 1
+  rm -f "$VENV/get-pip.py"
+  [ -x "$VENV/bin/pip" ]
+}
 
 mkdir -p "$STATE"
 # a venv built with a DIFFERENT python than the kernel will run is worse than none — the kernel
@@ -64,7 +85,19 @@ fi
 if [ ! -x "$VENV/bin/python" ] || [ ! -x "$VENV/bin/pip" ]; then
   echo "romp-sdk-setup: creating venv at $VENV (python: $PY)"
   rm -rf "$VENV"
-  "$PY" -m venv "$VENV"
+  if ! make_venv; then
+    # Never leave a pip-less husk behind for the next run to trip over — that husk is what made the
+    # earlier failure surface as a bare "No such file or directory" at the pip line.
+    rm -rf "$VENV"
+    echo "romp-sdk-setup: could not build a venv with pip in it." >&2
+    if ! "$PY" -c 'import ensurepip' >/dev/null 2>&1; then
+      echo "  $PY has no 'ensurepip', and bootstrapping pip from $GET_PIP_URL did not work (offline?)." >&2
+      echo "  Debian/Ubuntu: sudo apt install python$(pyver "$PY")-venv   (or: sudo apt install python3-venv)" >&2
+    fi
+    echo "  Then re-run: $0" >&2
+    echo "  romp still runs without this; only the SDK backend (plain \`romp new\`) is disabled." >&2
+    exit 1
+  fi
 fi
 "$VENV/bin/pip" install -q --upgrade pip >/dev/null
 "$VENV/bin/pip" install -q --upgrade claude-agent-sdk
