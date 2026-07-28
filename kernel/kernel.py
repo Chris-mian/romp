@@ -14730,7 +14730,7 @@ _LANDING_ERRS_JS = """
 (function(){var icon=document.getElementById('rail-errs'),micon=document.getElementById('merr'),
 back=document.getElementById('rerr-back'),list=document.getElementById('rerr-list'),
 clearBtn=document.getElementById('rerr-clear'),x=document.getElementById('rerr-x'),
-filtBar=document.getElementById('rerr-filters');
+filtBar=document.getElementById('rerr-fgrid');
 if(!icon||!back||!list)return;
 var KEY='romp:notices',MAX=100,FKEY='romp:errFilters';
 function load(){try{var v=JSON.parse(localStorage.getItem(KEY)||'[]');return Array.isArray(v)?v:[];}catch(e){return[];}}
@@ -14760,14 +14760,25 @@ el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
 var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
-var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror'];
+var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','cleared'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
-nudge:'follow-up failed',retry:'retrying',apierror:'api error'};
+nudge:'follow-up failed',retry:'retrying',apierror:'api error',cleared:'cleared'};
+// what each kind MEANS (the user 2026-07-28: the tooltip should explain the badge, not just say
+// show/hide) — worn by the filter toggles AND every entry's chip
+var DESC={conn:"the dashboard lost its live connection to the kernel for a visible pane; it reconnects on its own",
+limit:"an account-wide Claude usage window (5h session or 7d weekly) hit 100% \u2014 retries and background judging pause until it resets",
+judge:"romp's summarizer gave up on one or more cards \u2014 open a flagged card to see what happened",
+warn:"romp's judge stamped an anomaly on a card; the card wears the same yellow chip with the detail",
+stalled:"romp itself is holding a working thread and nothing is moving it \u2014 not waiting on you",
+nudge:"romp's one automatic follow-up on a stalled thread didn't resolve it; the thread now needs you",
+retry:"a session is inside an API-error retry storm; auto-retry is already working on it",
+apierror:"a session stopped on an API error (rate limit, spend cap, or prompt too long) and its card is blocked",
+cleared:"a /clear in a session dropped still-open cards at the boundary; Undo clear on the feed restores them"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
 if(filtBar)KINDS.forEach(function(k){var b=document.createElement('span');
 b.className='rerr-chip rerr-fbtn k-'+k+(kindOn(k)?'':' off');b.textContent=KINDLBL[k];
-b.title='Show / hide '+KINDLBL[k]+' entries';
+b.title='Show or hide these entries. '+KINDLBL[k]+': '+DESC[k];
 b.addEventListener('click',function(ev){ev.stopPropagation();
 if(kindOn(k)){FILT[k]=1;}else{delete FILT[k];}saveFilt();
 b.classList.toggle('off',!kindOn(k));renderList();paint();});
@@ -14775,8 +14786,10 @@ filtBar.appendChild(b);});
 function renderList(){list.innerHTML='';var shown=0;
 for(var i=NOTES.length-1;i>=0;i--)(function(n,i){if(!kindOn(n.kind))return;shown++;
 var row=document.createElement('div');row.className='rerr-row';
-if(KINDLBL[n.kind]){var ch=document.createElement('span');ch.className='rerr-chip k-'+n.kind;
-ch.textContent=KINDLBL[n.kind];row.appendChild(ch);}
+// the chip cell ALWAYS exists (grid column 1), empty for an unknown kind, so messages stay aligned
+var ch=document.createElement('span');
+if(KINDLBL[n.kind]){ch.className='rerr-chip k-'+n.kind;ch.textContent=KINDLBL[n.kind];ch.title=DESC[n.kind]||'';}
+row.appendChild(ch);
 var tx=document.createElement('span');tx.className='rerr-msg';tx.textContent=n.text+(n.n>1?' (x'+n.n+')':'');
 var tm=document.createElement('span');tm.className='rerr-t';tm.textContent=ago(n.t);
 // the timestamp wears the SAME recency colour every other "(Xm ago)" wears (window.__rompAgeColor,
@@ -14784,20 +14797,29 @@ var tm=document.createElement('span');tm.className='rerr-t';tm.textContent=ago(n
 if(window.__rompAgeColor)tm.style.color=window.__rompAgeColor(Math.max(0,Math.floor(Date.now()/1000)-n.t));
 var del=document.createElement('span');del.className='rerr-del';del.textContent='\\u00d7';del.title='Clear';
 del.addEventListener('click',function(ev){ev.stopPropagation();NOTES.splice(i,1);save();renderList();paint();});
+// entries minted from a feed card carry a jump target (the user 2026-07-28): clicking the row closes
+// the popover, reveals the feed pane, and asks the feed to scroll to + pulse that card (it falls back
+// to opening the session if the card is gone). The x keeps its own handler (stopPropagation above).
+if(n.tgt&&(n.tgt.itemId||n.tgt.sid)){row.className+=' link';row.title='Jump to this card';
+row.addEventListener('click',function(){close();
+try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',true);}catch(e){}
+var f=document.getElementById('f-feed');
+try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''},'*');}catch(e){}});}
 row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
 if(!shown){var e=document.createElement('div');e.className='rerr-empty';
 e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'No errors';list.appendChild(e);}}
 // One write path. A repeat of the NEWEST entry (same kind+text — e.g. a reconnect loop dropping over and
 // over) coalesces into it with a count instead of flooding the feed: event-exact, no time window.
-window.__rompNotify=function(kind,text){if(!text)return;
+window.__rompNotify=function(kind,text,tgt){if(!text)return;
 var last=NOTES[NOTES.length-1];
-if(last&&last.kind===kind&&last.text===String(text)){last.n=(last.n||1)+1;last.t=Math.floor(Date.now()/1000);last.seen=false;}
-else{NOTES.push({kind:String(kind||'error'),text:String(text),t:Math.floor(Date.now()/1000),n:1,seen:false});
+if(last&&last.kind===kind&&last.text===String(text)){last.n=(last.n||1)+1;last.t=Math.floor(Date.now()/1000);last.seen=false;if(tgt)last.tgt=tgt;}
+else{NOTES.push({kind:String(kind||'error'),text:String(text),t:Math.floor(Date.now()/1000),n:1,seen:false,tgt:tgt||null});
 if(NOTES.length>MAX)NOTES=NOTES.slice(-MAX);}
 save();paint();};
-// pane iframes can feed the center too
+// pane iframes can feed the center too; sid/itemId ride along as the entry's jump target
 window.addEventListener('message',function(e){var m=e&&e.data;
-if(m&&m.romp==='notify'&&m.text)window.__rompNotify(m.kind||'error',m.text);});
+if(m&&m.romp==='notify'&&m.text)window.__rompNotify(m.kind||'error',m.text,
+(m.sid||m.itemId)?{sid:String(m.sid||''),itemId:String(m.itemId||'')}:null);});
 // Connection tracking (was the #romp-offline top banner). Only a VISIBLE pane counts (the user 2026-07-06):
 // a pane toggled OFF still holds a live socket (the Fleet pane is hidden by default, its iframe always
 // loaded), so a blip on a pane you can't even see shouldn't cry wolf while the chat pane you interact
@@ -15545,9 +15567,9 @@ _BELL_SVG = (
     "<path d='M8 2 C5.8 2 4.5 3.7 4.5 6 L4.5 9 L3 11.5 L13 11.5 L11.5 9 L11.5 6 C11.5 3.7 10.2 2 8 2 Z'"
     " fill='none' stroke='currentColor' stroke-width='1.1' stroke-linejoin='round'/>"
     "<path d='M6.5 13.2 A1.6 1.6 0 0 0 9.5 13.2' fill='none' stroke='currentColor' stroke-width='1.1'/>"
-    # size 8 / baseline 10.8 chosen by headless A-B against 7/10.4: visibly fuller at the rendered
-    # 17px, still clear of the body walls (interior x 4.5-11.5, y 2-11.5)
-    "<text class='rerr-n' x='8' y='10.8' text-anchor='middle' font-size='8' font-weight='700'"
+    # size 7.5 / baseline 10.2 (the user 2026-07-28: at 8/10.8 the digit melded into the bell's mouth
+    # line at y=11.5 — a pixel up and a touch smaller keeps a clear gap; re-checked headlessly)
+    "<text class='rerr-n' x='8' y='10.2' text-anchor='middle' font-size='7.5' font-weight='700'"
     " fill='currentColor'></text></svg>")
 
 # The kernel-restart glyph, shared by the desktop rail and the mobile bar. A browser-style reload:
@@ -15905,7 +15927,7 @@ def _landing():
             # shell never defines, so the whole shorthand was invalid and the text rendered oversized in
             # the page default): #252526 card, 13px system-ui body, 14px/600 header, 11.5px rows + 11px
             # dim times (the network panel's information-type sizes), rnet-style action button + close.
-            "#rerr-panel{position:absolute;right:10px;bottom:44px;width:min(440px,94vw);max-height:min(60vh,480px);"
+            "#rerr-panel{position:absolute;right:10px;bottom:44px;width:min(700px,94vw);max-height:min(60vh,480px);"   # 60% wider (the user 2026-07-28)
             "display:flex;flex-direction:column;background:#252526;border:1px solid #3a3a3a;border-radius:10px;"
             "box-shadow:0 12px 36px #000000aa;color:#ccc;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}"
             "#rerr-panel .rerr-top{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#e8eaed;"
@@ -15917,17 +15939,28 @@ def _landing():
             "#rerr-x{background:none;border:none;color:#9aa0a6;font-size:16px;line-height:1;cursor:pointer;padding:0 2px}"
             "#rerr-x:hover{color:#fff}"
             "#rerr-list{overflow-y:auto;padding:4px 0;flex:1 1 auto}"
-            ".rerr-row{display:flex;align-items:baseline;gap:7px;padding:6px 12px;color:#ccc;font-size:11.5px;line-height:1.45}"
+            # grid rows (the user 2026-07-28): a fixed 96px chip column — wider than the widest chip
+            # ("follow-up failed") — so every message starts at the SAME x, left-aligned past the chips.
+            ".rerr-row{display:grid;grid-template-columns:96px 1fr auto auto;align-items:baseline;"
+            "column-gap:8px;padding:6px 12px;color:#ccc;font-size:11.5px;line-height:1.45}"
+            ".rerr-row .rerr-chip{justify-self:start}"
+            ".rerr-row.link{cursor:pointer}"
+            ".rerr-row.link:hover{background:rgba(255,255,255,0.05)}"
             ".rerr-row+.rerr-row{border-top:1px solid #2a2a2a}"
             ".rerr-msg{flex:1;min-width:0;overflow-wrap:anywhere}"
             ".rerr-t{flex:0 0 auto;color:#6e7681;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}"
             ".rerr-del{flex:0 0 auto;cursor:pointer;opacity:.5;font-weight:700}"
             ".rerr-del:hover{opacity:1}"
             ".rerr-empty{padding:16px 12px;color:#6e7681;text-align:center;font-size:11.5px}"
-            # The per-kind filter bar (the user 2026-07-28): the toggles ARE the chips — lit means shown,
-            # dimmed (with a dashed edge, a second cue beyond opacity) means muted.
-            "#rerr-filters{display:flex;flex-wrap:wrap;gap:5px;padding:8px 12px;border-bottom:1px solid #2a2a2a;flex:0 0 auto}"
-            ".rerr-fbtn{cursor:pointer;user-select:none}"
+            # The per-kind filter bar (the user 2026-07-28): a vertical white "show" label on the left, then
+            # the toggles in an even GRID — 8 kinds over the minimum 2 rows x 4 equal columns, every chip the
+            # same cell width, instead of one ragged wrapping row. The toggles ARE the chips — lit means
+            # shown, dimmed (with a dashed edge, a second cue beyond opacity) means muted.
+            "#rerr-filters{display:flex;align-items:stretch;gap:9px;padding:8px 12px;border-bottom:1px solid #2a2a2a;flex:0 0 auto}"
+            ".rerr-flabel{writing-mode:vertical-rl;transform:rotate(180deg);text-align:center;color:#e8eaed;"
+            "font-size:9px;font-weight:700;letter-spacing:.10em;text-transform:uppercase;user-select:none}"
+            "#rerr-fgrid{flex:1;display:grid;grid-template-columns:repeat(5,1fr);gap:5px}"   # 9 kinds -> 2 rows (5+4), the minimum
+            ".rerr-fbtn{cursor:pointer;user-select:none;text-align:center}"
             ".rerr-fbtn.off{opacity:0.35;border-style:dashed}"
             ".rerr-fbtn:hover{opacity:1}"
             # Each entry leads with the SAME chip the card wears in the feed — same pill shape, colours and
@@ -15939,6 +15972,7 @@ def _landing():
             ".rerr-chip.k-retry,.rerr-chip.k-apierror{color:#e5484d;border-color:rgba(229,72,77,0.6)}"
             ".rerr-chip.k-conn{color:#ff6b6b;border-color:rgba(255,107,107,0.6)}"
             ".rerr-chip.k-limit,.rerr-chip.k-judge{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
+            ".rerr-chip.k-cleared{color:#9aa0a6;border-color:rgba(154,160,166,0.6)}"   # not an error — quiet gray
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             # the notification popover (hidden until the bell is clicked; backdrop click closes). No
@@ -15948,7 +15982,7 @@ def _landing():
             "<div class=rerr-top>Errors<span class=sp></span>"
             "<button id=rerr-clear title='Clear all entries'>Clear all</button>"
             "<button id=rerr-x aria-label=Close>×</button></div>"
-            "<div id=rerr-filters></div>"
+            "<div id=rerr-filters><span class=rerr-flabel>show</span><div id=rerr-fgrid></div></div>"
             "<div id=rerr-list></div>"
             "</div></div>"
             "<div class=col>"

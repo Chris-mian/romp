@@ -3096,7 +3096,9 @@ function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[]): void {
   // dropped open cards logs one durable entry naming them, so the drop is never silent.
   const boundary = clearBoundaryNotices(clears, seenSet);
   for (const n of [...badges.notices, ...boundary.notices]) {
-    try { window.parent?.postMessage({ romp: "notify", kind: n.kind, text: n.text }, "*"); } catch { /* no shell (VS Code view) */ }
+    try {
+      window.parent?.postMessage({ romp: "notify", kind: n.kind, text: n.text, sid: n.sid, itemId: n.itemId }, "*");
+    } catch { /* no shell (VS Code view) */ }
   }
   const active = new Set([...badges.active, ...boundary.active]);
   try { localStorage.setItem(BADGE_SEEN_KEY, JSON.stringify(Array.from(active))); } catch { /* storage full */ }
@@ -3107,6 +3109,21 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (!m) return;
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   if (m.romp === "paneFocus") { kbEnterCards(); return; }   // the shell handed us keyboard focus → arm card nav
+  if (m.romp === "revealCard") {
+    // a bell-entry click jumps back to the card it was minted from (the user 2026-07-28): scroll it
+    // into view and pulse it accent so the eye lands on the right card. A card that no longer exists
+    // under its own key (cleared, or folded into a group) falls back to opening the session.
+    const target = document.querySelector(`[data-key="a:${String(m.itemId || "")}"]`) as HTMLElement | null;
+    if (target) {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+      target.classList.remove("reveal-pulse"); void target.offsetWidth;   // restart the animation on a repeat jump
+      target.classList.add("reveal-pulse");
+      target.addEventListener("animationend", () => target.classList.remove("reveal-pulse"), { once: true });
+    } else if (m.sid) {
+      vscodeApi?.postMessage({ type: "openSession", id: String(m.sid) });
+    }
+    return;
+  }
   if (m.type === "feed") {
     const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
     // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
