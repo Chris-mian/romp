@@ -765,7 +765,14 @@ def synthesize_orphans(states, atoms):
     hold that noise, and it must not resurface as work."""
     if not atoms:
         return []
-    seen_uuids = {a.get("uuid") for a in atoms if a.get("uuid")}
+    # TEXT-BEARING uuids only (the user 2026-07-28): a marker whose uuid the disk knows solely as a
+    # TEXTLESS record must still interleave. On some model+tool combinations (observed: fable-5 replying
+    # before an AskUserQuestion) the CLI persists the streamed reply text as an EMPTY thinking record
+    # under the same uuid — the very loss the marker salvages — so counting that twin as "seen" ate the
+    # salvage. A retry that DID re-reply carries its text and still dedups, as does a re-orphaned marker
+    # (the add below); the prefix check against disk_texts guards every remaining double.
+    seen_uuids = {a.get("uuid") for a in atoms
+                  if a.get("uuid") and _text_of(_content(a.get("message"))).strip()}
     disk_texts = [t for a in atoms if a.get("type") == "assistant"
                   if (t := _text_of(_content(a.get("message"))).strip())]
     sid = atoms[0]["session_id"]

@@ -9237,6 +9237,20 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     if not live:
         return session
     tx_uuids = {a.get("uuid") for turn in session["turns"] for a in turn["atoms"] if a.get("uuid")}
+    # A TEXTLESS disk twin must not land a texty live atom (the user 2026-07-28): on some model+tool
+    # combinations (observed: fable-5 replying before an AskUserQuestion) the CLI persists the reply
+    # text that streamed before the tool call as an EMPTY thinking record under the SAME uuid. The
+    # uuid-only prune then retired the live text mid-turn, the settle salvage (retire_live_work) never
+    # saw it, and the explanation the user watched stream vanished from the chat everywhere. Withhold
+    # those uuids: the live text stays visible until settle, where the orphan-reply salvage makes it
+    # durable (event_model._orphan_replies interleaves it back; its dedup is text-aware for the same
+    # reason). Self-neutralizing: a twin that DOES carry the text lands the atom exactly as before.
+    tx_text_uuids = {a.get("uuid") for turn in session["turns"] for a in turn["atoms"]
+                     if a.get("uuid") and _atom_prose_chars(a) > 0}
+    live_text_uuids = {a.get("uuid") for a in live
+                       if not a.get("_echo_text") and not a.get("command")
+                       and _atom_prose_chars(a) > 0}
+    tx_uuids -= (live_text_uuids - tx_text_uuids)
     tx_texts = {t for turn in session["turns"] for a in turn["atoms"] for t in _atom_user_texts(a)}
     # FIFO floor: the newest GENUINE-HUMAN turn the transcript has — retires an input echo whose text can't
     # match because the transcript extracted an image path out of it (screenshots piling up at the bottom, the

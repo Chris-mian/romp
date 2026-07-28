@@ -303,7 +303,12 @@ class LiveTailAndOpen(unittest.TestCase):
     def test_merge_dedups_by_uuid(self):
         self.be._live = {"sid-sdk": [{"type": "assistant", "uuid": "dup", "t": 50,
                                       "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]}}]}
-        session = {"turns": [{"id": "t", "atoms": [{"uuid": "dup", "t": 10}], "ended": True}]}
+        # the disk twin CARRIES the streamed text (the normal case — same record, same uuid). A twin
+        # that kept the uuid but LOST the text no longer dedups: see test_kernel_picker_text_salvage.
+        session = {"turns": [{"id": "t", "atoms": [{"uuid": "dup", "t": 10, "type": "assistant",
+                                                    "message": {"role": "assistant",
+                                                                "content": [{"type": "text", "text": "x"}]}}],
+                              "ended": True}]}
         out = km._merge_live_atoms(session, "sid-sdk")
         self.assertEqual(len(out["turns"][-1]["atoms"]), 1)              # transcript already has it → not re-added
 
