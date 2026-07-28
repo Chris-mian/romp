@@ -19,7 +19,9 @@ VENV="$STATE/sdkvenv"
 pick_python() {
     if [[ -n "${ROMP_PYTHON:-}" ]]; then echo "$ROMP_PYTHON"; return; fi
     local v c
-    for v in 3.13 3.12 3.11 3.10; do
+    # Newest first, and KEPT IN SYNC with bin/romp-serve — see the note there about why the list has to
+    # grow with each python release rather than relying on the `python3` fallback.
+    for v in 3.14 3.13 3.12 3.11 3.10; do
         for c in "python$v" "$HOME/.local/bin/python$v"; do
             if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return; fi
         done

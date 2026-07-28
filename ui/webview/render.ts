@@ -121,7 +121,7 @@ type ChatEvent = (
   // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
   // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
   // for, and how long is left when the API reported a reset (the user 2026-07-24).
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string } }
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -2409,6 +2409,10 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     const label = el("span", "queued-count");
     label.dataset.why = why;      // the ✕'s recount rewrites the count and keeps this suffix as-is
     label.textContent = queuedCountText(n, nCmd) + why;
+    // `detail` is the CLI's OWN sentence about the limit (it carries the reset time as a wall clock, which
+    // is why that flavor has no epoch to count down to). One level deeper on hover, per the compact-by-
+    // default rule — the head keeps its one-line reason.
+    if (held?.detail) label.title = held.detail;
     head.appendChild(label);
     turn.appendChild(head);
   }

@@ -2286,6 +2286,17 @@ def _awaiting_backstop_tick(now, tmux):
         _push_all()
 
 
+def _launch_error(sid):
+    """Why this session's CLI could not start, or None — {text, at, limit}, straight from the backend that
+    tried to start it (SessionBackend.launch_error). Guarded the same way as _backend_queued: a backend
+    hiccup reads as 'no known failure' rather than crashing the chat build."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        return be.launch_error(str(sid)) if be else None
+    except Exception:
+        return None
+
+
 def _backend_queued(sid):
     """True if the session's backend holds queued-but-unstarted user turns (the SDK keeps them in _pending;
     tmux folds them from the transcript's queue-op records). Composer sends now go straight to that queue
@@ -3272,6 +3283,13 @@ def _sdk_locked():
             if not _ensure_sdk_on_path():
                 sys.stderr.write("sdk-backend: claude_agent_sdk not found — run bin/romp-sdk-setup to "
                                  "enable the non-tmux backend (tmux sessions are unaffected)\n")
+                # The backend is STILL built, deliberately: it owns the registry, the persisted queues and
+                # the chat those sessions render from, and dropping it would take the user's unsent
+                # messages off screen along with it. What it must not do is pretend to work — it detects
+                # the missing dep itself and reports every session as unable to start (launch_error), which
+                # is what puts this line in front of the user instead of only in the kernel log. Before
+                # that, a fresh install whose romp-sdk-setup had bailed looked like romp silently eating
+                # every message (the user 2026-07-28).
             sbmod = SourceFileLoader("romp_sdk_backend", str(HERE / "sdk_backend.py")).load_module()
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
@@ -8654,6 +8672,18 @@ def _limit_hold(sid):
     The hold is never silent: it rides the `queued` event onto every parked bubble (so the chat says what
     the queue is waiting for and until when), and every bubble keeps its ✕ — whatever romp is holding, the
     user can see it and drop it."""
+    # The CLI REFUSING TO START on the limit is the first arm, because it is the case usage.json cannot
+    # see: usage.json is written from a RateLimitEvent the CLI streams once connected, so a limit that
+    # blocks the connect blocks its own reporting. On a fresh install that left the hold blind — the user
+    # sent a message, it parked in the SDK queue with nothing to explain it, and the session sat 'waiting'
+    # forever (the user 2026-07-28). The failed launch IS the event; it clears on the connect that
+    # disproves it, so the queue drains a pass after the window reopens. No readable reset stamp comes with
+    # it (the CLI reports a local wall-clock time, not an epoch), so this arm promises no countdown — the
+    # CLI's own words ride along as `detail` instead.
+    _le = _launch_error(sid)
+    if _le and _le.get("limit"):
+        return {"reason": "limit", "resetsAt": None,
+                "what": "waiting for your usage limit to reset", "detail": _le.get("text") or ""}
     try:
         u = _usage() or {}
     except Exception:
@@ -9902,6 +9932,21 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         events = [ev for ev in events
                   if not (ev.get("kind") == "apiErrorNote" and ev.get("uuid") == aerr.get("uuid"))]
         events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"]})
+    elif not (open_now or awaiting_why):
+        # The session's CLI could not START (SessionBackend.launch_error) — a blocked session with NO
+        # transcript atom to detect it by, since nothing ever connected to write one. It rides the same
+        # red card as an API error because it is the same thing to the reader: this session is stopped,
+        # here is why, here is Retry (the user 2026-07-28, whose message vanished into a session that
+        # silently failed to launch). The usage-limit flavor is EXCLUDED: nothing is broken there, the
+        # queue is simply parked, and the queued bubble's hold already says so with the same words —
+        # a red error card on top of it would read as damage instead of a wait.
+        _lerr = _launch_error(sid)
+        if _lerr and not _lerr.get("limit"):
+            # A missing dependency already reads as a whole sentence with its own remedy; only the raw
+            # failures need the "could not start" framing to make sense of a bare stderr line.
+            events.append({"kind": "apiError",
+                           "text": _lerr["text"] if _lerr.get("dep") else
+                           "This session's claude process could not start — %s" % _lerr["text"]})
     # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
     # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)
     arch = jd.load_archive(sid) or {}

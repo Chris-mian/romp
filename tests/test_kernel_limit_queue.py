@@ -243,6 +243,45 @@ class LimitDrain(_Base):
             km._set_retry_paused(False)
 
 
+class LimitThatBlocksTheLaunchItself(_Base):
+    """The case usage.json structurally CANNOT see (the user 2026-07-28): usage.json is written from a
+    RateLimitEvent the CLI streams once CONNECTED, so a limit that refuses the connect blocks its own
+    reporting. With no other source the hold went blind on a fresh install — the message parked in the
+    SDK queue with nothing to explain it and the session sat 'waiting'. The refused launch IS the event."""
+
+    def _launch(self, rec):
+        km._launch_error = lambda sid: rec
+
+    def tearDown(self):
+        km._launch_error = self._saved_launch
+        super().tearDown()
+
+    def setUp(self):
+        super().setUp()
+        self._saved_launch = km._launch_error
+
+    def test_a_launch_the_limit_refused_holds_the_queue(self):
+        self._launch({"text": "You've hit your session limit · resets 4:00pm", "at": 1, "limit": True})
+        hold = km._limit_hold(SID)
+        self.assertEqual(hold["reason"], "limit")
+        self.assertIsNone(hold["resetsAt"], "the CLI reports a wall clock, not an epoch — promise no countdown")
+        self.assertIn("session limit", hold["detail"], "the CLI's own words ride along one level deeper")
+
+    def test_the_held_message_is_parked_not_sent(self):
+        self._launch({"text": "You've hit your session limit · resets 4:00pm", "at": 1, "limit": True})
+        km._send_or_park(self.be, SID, "pick the migration back up", echo="human")
+        self.assertEqual(self.be.calls, [], "sending into an account that cannot serve just buys an error")
+        self._launch(None)                     # the window reopened; the next connect cleared the record
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [("send", "pick the migration back up")])
+
+    def test_a_broken_install_is_not_a_hold(self):
+        # a missing dependency is damage, not a wait — it gets the error card, and must not silently
+        # park input forever behind a limit that does not exist
+        self._launch({"text": "romp's Agent SDK backend isn't installed", "at": 1, "limit": False})
+        self.assertIsNone(km._limit_hold(SID))
+
+
 class HeldQueueIsVisible(unittest.TestCase):
     """A held queue must never be silent — the bubbles say what they're waiting for."""
 

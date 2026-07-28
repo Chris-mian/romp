@@ -197,7 +197,11 @@ test("the kernel parks every drive op while the account can't serve one, and dra
 });
 
 test("a held queue says WHY it isn't moving, and outranks the pending-ask note", () => {
-  assert.match(RENDER, /held\?: \{ reason: string; resetsAt\?: number \| null; what: string \}/);
+  assert.match(RENDER, /held\?: \{ reason: string; resetsAt\?: number \| null; what: string; detail\?: string \}/);
+  // `detail` carries the CLI's own sentence when the limit REFUSED THE LAUNCH (the user 2026-07-28) —
+  // that flavor reports a wall-clock reset, not an epoch, so it has no countdown to render and the exact
+  // words go one level deeper instead of into the one-line head.
+  assert.match(RENDER, /if \(held\?\.detail\) label\.title = held\.detail;/);
   assert.match(RENDER, /const askNote = \(pendingAsk \? " · sends after you answer" : ""\);/);
   assert.match(RENDER, /\? ` · \$\{held\.what\}` \+ \(held\.resetsAt \? ` · in \$\{fmtReset\(held\.resetsAt, Math\.floor\(Date\.now\(\) \/ 1000\)\)\}` : ""\)/);
 });
