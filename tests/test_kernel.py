@@ -6292,7 +6292,28 @@ class NewSessionRoute(unittest.TestCase):
             km._sdk, km._live_names = saved_sdk, saved_live
         self.assertEqual(code, 200)
         self.assertFalse(body["ok"], "no silent tmux session when the SDK is missing")
-        self.assertIn("SDK backend unavailable", body["error"])
+        # asserted by MEANING, not by the old phrasing: nothing was created, and the one command that
+        # fixes it is named (the user 2026-07-28 — "SDK backend unavailable" named nothing to do)
+        self.assertIn("not created", body["error"])
+        self.assertIn("romp-sdk-setup", body["error"])
+
+    def test_a_built_but_dependency_less_backend_is_NOT_a_yes(self):
+        """The real-world shape of the failure: _sdk() hands back a live backend whose SDK cannot
+        import (it stays built on purpose, to own the registry and the chat). The old gate read that
+        as available and created a session that could never run, with no error anywhere — which is
+        exactly what the user hit creating a session from the browser (2026-07-28)."""
+        class _Unusable:
+            def available(self):
+                return False
+
+        saved_sdk, saved_live = km._sdk, km._live_names
+        km._sdk, km._live_names = (lambda: _Unusable()), (lambda t: {})
+        try:
+            code, body = self._post({"name": "api", "dir": tempfile.gettempdir()})
+        finally:
+            km._sdk, km._live_names = saved_sdk, saved_live
+        self.assertFalse(body["ok"], "a backend that cannot import its SDK must refuse, not create")
+        self.assertIn("romp-sdk-setup", body["error"])
 
     def test_existing_live_name_is_an_idempotent_ok(self):
         saved_live = km._live_names

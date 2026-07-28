@@ -3293,6 +3293,12 @@ def _create_sdk_session(nm, cwd):
 # kernel runs unchanged when the SDK (or its dependency) is absent.
 _SDK_MCP = Path(os.path.expanduser("~/.claude/romp-postal.mcp.json"))
 _SDK_PROMPT = Path(os.path.expanduser("~/.claude/romp-session-prompt.md"))
+# What a session-creation refusal says when the Agent SDK isn't provisioned. ONE string for the browser
+# toast and the `romp new` JSON, because they are the same sentence to the same person: nothing was
+# created, and here is the single command that fixes it. Names the remedy, not the missing module.
+SDK_SETUP_HINT = ("Session not created: romp's Agent SDK backend isn't installed. "
+                  "Run bin/romp-sdk-setup, then try again. (tmux sessions still work.)")
+
 _sdk_backend = None   # None = not built yet, False = unavailable, else the SdkBackend
 _sdk_lock = threading.Lock()   # single-flight construction: the eager boot thread races handler
                                # threads, and an unlocked check-then-act built 2-3 duplicate backends
@@ -3319,9 +3325,29 @@ def _ensure_sdk_on_path():
 
 
 def _sdk():
-    """The SdkBackend singleton, or None when the module/dependency is unavailable."""
+    """The SdkBackend singleton, or None when the MODULE is unavailable. NOTE: this returning a backend
+    is not proof the SDK can run anything — the backend is built even with the dependency missing, so it
+    can still own the registry, the persisted queues and the chat. Gate 'can we start a session' on
+    _sdk_ready(), never on this."""
     with _sdk_lock:
         return _sdk_locked()
+
+
+def _sdk_ready():
+    """Can the SDK backend actually RUN a session right now? The truthful gate for session CREATION.
+
+    Both creation paths used to ask `_sdk()` and take a live-but-dependency-less backend as a yes, so the
+    refusal each of them had written — never silently hand back something that can't work — never fired.
+    Creating a session from the browser produced no error and no working session (the user 2026-07-28).
+    getattr-guarded so a backend/test fake without the capability reads as ready (the old meaning)."""
+    be = _sdk()
+    if not be:
+        return False
+    try:
+        fn = getattr(be, "available", None)
+        return bool(fn()) if fn else True
+    except Exception:
+        return False
 
 
 def _sdk_locked():
@@ -16780,10 +16806,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True, "id": live[nm], "existing": True}),
                                       "application/json")
                 if (b.get("backend") or "sdk") == "sdk":
-                    if not _sdk():
-                        return self._send(200, json.dumps({"ok": False, "error":
-                            "SDK backend unavailable on this kernel (claude-agent-sdk not importable; "
-                            "run bin/romp-sdk-setup with Python 3.10+)"}), "application/json")
+                    if not _sdk_ready():          # see _sdk_ready — a built backend is not a working one
+                        return self._send(200, json.dumps({"ok": False, "error": SDK_SETUP_HINT}),
+                                          "application/json")
                     sid = _create_sdk_session(nm, cwd)
                     return self._send(200, json.dumps({"ok": True, "id": sid, "dir": cwd}),
                                       "application/json")
@@ -17256,14 +17281,15 @@ class Handler(BaseHTTPRequestHandler):
                     _reveal_chat({"type": "focus", "id": live[nm]})
                     _mark_views_dirty()          # pusher ships the tab; never a synchronous fleet build here
                 elif msg.get("backend") == "sdk":   # non-tmux: drive via the Agent SDK
-                    if _sdk():
+                    # _sdk_ready(), not _sdk(): the backend object exists even with the dependency
+                    # missing, so the old check took it as a yes and created a session that could never
+                    # run — silently, which is the whole failure (the user 2026-07-28).
+                    if _sdk_ready():
                         _create_sdk_session(nm, cwd)
                     else:
                         # NEVER silently fall back to tmux (the user asked for SDK and got a mystery tmux
                         # session on a remote host without the venv, 2026-07-02). Say what's missing.
-                        client["send"](json.dumps({"type": "warn", "text":
-                            "SDK backend unavailable on this kernel (claude-agent-sdk not importable — "
-                            "run bin/romp-sdk-setup with Python 3.10+). Session not created."}))
+                        client["send"](json.dumps({"type": "warn", "text": SDK_SETUP_HINT}))
                 else:
                     threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
         elif msg and msg.get("type") == "cancelCreate" and msg.get("name"):

@@ -251,17 +251,29 @@ fi
 # command that fixes it; romp is usable in every one of these states, which is why none of them
 # aborted the install. (Before this, all three failures were `|| echo` one-liners buried in the
 # scroll or, worse, a kernel stderr line that only reached the system journal.)
-if [[ -n "$ROMP_TMUX_MISSING$ROMP_SDK_MISSING$ROMP_EXT_FAILED" ]]; then
+# The SDK backend is NOT an optional piece: it is what plain `romp new` uses, so without it romp
+# starts, looks healthy, and cannot run a single session. Listing it among the optional ones let a
+# fresh install read as fine when it wasn't (the user 2026-07-28). It gets its own banner, above the
+# link, in the language of what the user can't do — and it is now rare, since romp-sdk-setup
+# bootstraps pip itself rather than sending anyone to sudo.
+if [[ -n "$ROMP_SDK_MISSING" ]]; then
+    echo
+    echo "  ══════════════════════════════════════════════════════════════════"
+    echo "   romp is installed but CANNOT START SESSIONS yet."
+    echo
+    echo "   Its Agent SDK backend — what \`romp new\` runs on — isn't provisioned."
+    echo "   Sessions you create will not run until it is."
+    echo
+    echo "   Fix it:  $ROMP_DIR/bin/romp-sdk-setup"
+    echo "            (see its message above if it needs a package installed first)"
+    echo "  ══════════════════════════════════════════════════════════════════"
+fi
+if [[ -n "$ROMP_TMUX_MISSING$ROMP_EXT_FAILED" ]]; then
     echo
     echo "  Some optional pieces aren't set up:"
     if [[ -n "$ROMP_EXT_FAILED" ]]; then
         echo "   ! The dashboard UI failed to build — the browser dashboard will come up blank."
         echo "     Retry:  (cd $ROMP_DIR/vscode-extension && npm install && node esbuild.js)"
-    fi
-    if [[ -n "$ROMP_SDK_MISSING" ]]; then
-        echo "   ! The Agent SDK backend isn't provisioned, so \`romp new\` can't start a session."
-        echo "     See the romp-sdk-setup message above for the package to install, then:"
-        echo "         $ROMP_DIR/bin/romp-sdk-setup"
     fi
     if [[ -n "$ROMP_TMUX_MISSING" ]]; then
         echo "   - tmux isn't installed, so terminal sessions (\`romp new -t\`, \`romp resume\`) are off."

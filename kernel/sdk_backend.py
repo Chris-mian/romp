@@ -2336,6 +2336,18 @@ class SdkBackend:
         return {"stopped": len(sessions), "inflight": inflight, "unjoined": len(unjoined),
                 "reaped": len(reaped)}
 
+    def available(self) -> bool:
+        """Can this backend actually RUN a session? False when claude_agent_sdk isn't importable.
+
+        The backend object exists either way, on purpose — it owns the registry, the persisted queues and
+        the chat those sessions render from. So `_sdk()` returning something is NOT proof the SDK works,
+        and every caller gating on "is the SDK usable" must ask THIS instead. Both session-creation paths
+        already carried the right refusal ("never silently fall back — say what's missing") and both
+        tested the object, so the refusal was unreachable in precisely the case it was written for: the
+        user created a session from the browser, got no error at all, and got a session that could never
+        run (the user 2026-07-28)."""
+        return not self._sdk_missing
+
     def busy_count(self) -> int:
         """How many SDK sessions have a turn IN FLIGHT right now — the manager's quiet-window gate
         for deferred deploy restarts (the kernel's /busy route). Authoritative: the same per-session
