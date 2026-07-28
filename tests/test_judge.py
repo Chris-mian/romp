@@ -2957,6 +2957,32 @@ class PlanTuning(unittest.TestCase):
         self.assertIn("decide by the finish line, never by topic overlap", jd.OPENER_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
+    def test_an_unapproved_offer_never_mints_its_own_card(self):
+        # The diagnosis/fix SPLIT (the user 2026-07-28): with diagnose-then-ask filed as a block, one
+        # turn started minting TWO cards for one decision — the diagnosis, and a second card holding
+        # only "want me to implement the fix?". Both landed in Blocked, so answering one left the other
+        # sitting there, and clearing that leftover fires the clear wrap-up ("I'm dropping this one"),
+        # which reads as abandoning the fix the user had just approved on the first card.
+        # The tell is a card born blocked: a mint whose whole content is a question about work that
+        # has not started. Work the assistant only OFFERS belongs to the card that surfaced it.
+        for phrase in ("A card born **blocked** is the tell",
+                       "Work the assistant merely **offers**",
+                       "block the goal that surfaced the offer",
+                       "It earns a card of its own once the user says go"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+        # It has to sit in the MINT bullet, where the mint decision is actually made — the rule read
+        # after the fact (down in the writing guidance) does not reach that choice.
+        mint_at = jd.PLAN_SYS.index('\"do\":\"mint\"')
+        sub_at = jd.PLAN_SYS.index('\"do\":\"sub\"')
+        self.assertLess(mint_at, jd.PLAN_SYS.index("A card born **blocked** is the tell"))
+        self.assertLess(jd.PLAN_SYS.index("A card born **blocked** is the tell"), sub_at)
+        # The ONE path that mints a blocked card on purpose keeps doing so: the clear wrap-up turns
+        # parked work into exactly one keep-or-discard card. That instruction rides in the segment's
+        # own <note>, which is local and explicit, so it still wins over the general rule above
+        # (measured, not assumed: 18/18 wrap-up replays kept minting their single blocked card).
+        import inspect
+        self.assertIn("mint exactly **one** new top-level goal", inspect.getsource(jd.plan_units))
+
     def test_menu_prompts_state_the_numbering_base(self):
         # The zero-based tell's prompt half (the user 2026-07-17): every menu-reading prompt says the
         # numbering counts from 1 and there is no 0, so an off-base reply is a model slip the parsers
