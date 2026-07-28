@@ -754,11 +754,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
   row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
-  // the corner bell BUTTON (the user 2026-07-28, round 3): TOP-right, floated FIRST in row1 so the
-  // title text wraps around it — in-flow, so it can never overlap anything (round 2's absolute
-  // bottom-right corner sat exactly where grouped mode floats Clear, and they collided on compact
-  // cards). Session-level arming shows on the lane/tab instead, so an armed SESSION doesn't stamp
-  // every card.
+  // the bell BUTTON (the user 2026-07-28, round 4): INLINE in row1's metadata cluster, right after
+  // the timestamp — and display:none until the card is hovered or it's armed, so an off bell costs
+  // ZERO space (round 3's float reserved a ~26px notch on the title's first line even while
+  // invisible, wrapping titles a word early and growing cards — the user wants compact). When it
+  // does show, it materializes into the slack after "Nm ago" (the last line's tail), the one spot
+  // that never shoves the title. In-flow, so it still cannot overlap the floated Clear. Session-level
+  // arming shows on the lane/tab instead, so an armed SESSION doesn't stamp every card.
   const bellBtn = el("button", "fask-bellbtn");
   bellBtn.onclick = (ev: Event) => {
     ev.stopPropagation();                            // never open the modal under the toggle
@@ -766,7 +768,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     const live = cur || it;
     setCardNotify(card, live, !cardNotifyOn(live));
   };
-  row1.prepend(bellBtn);   // float-first: it claims the top-right corner before the title flows
+  row1.append(bellBtn);   // inline after the time — the metadata cluster's tail
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
