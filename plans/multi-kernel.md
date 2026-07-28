@@ -68,7 +68,7 @@ everywhere (`Path(os.environ.get("ROMP_STATE_DIR") or Path(XDG...)/"romp")`; she
 `XDG_STATE_HOME` override: XDG leaks into spawned children (SDK `claude` processes) and would
 move THEIR unrelated state. Files: kernel/judge.py, kernel/kernel.py (3 embedded shell snippets),
 kernel/event_model.py, postal/postal_service.py, bin/romp, bin/romp-node-launch, bin/romp-sdk-setup,
-bin/romp-service, cli/feed.py, cli/idle_dots.py, cli/judge_monitor.py, cli/update.py,
+bin/romp-service, cli/idle_dots.py, cli/update.py,
 hooks/*.sh, ui/romp-timeline-view.js (if it reads state paths), vscode-extension where relevant.
 NOTE (romp_docs 2026-07-24): `bin/*` are extension-less symlinks into the packages — enumerate
 with `git ls-files`, never extension globs; edits land on the real files.

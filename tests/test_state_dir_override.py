@@ -64,21 +64,6 @@ class PythonSurfaces(unittest.TestCase):
                 self.assertEqual(got, td + "/xdg/romp" + suffix,
                                  "%s.%s must keep the XDG derivation" % (module, attr))
 
-    def test_cli_helpers_honor_the_override(self):
-        with tempfile.TemporaryDirectory() as td:
-            alt = td + "/alt"
-            for mod in ("cli/feed.py", "cli/judge_monitor.py"):
-                code = ("import importlib.util\n"
-                        "spec = importlib.util.spec_from_file_location('m', %r)\n"
-                        "m = importlib.util.module_from_spec(spec)\n"
-                        "spec.loader.exec_module(m)\n"
-                        "print(m.state_dir())\n" % str(ROOT / mod))
-                out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                                     env={"PATH": os.environ.get("PATH", ""), "HOME": td,
-                                          "ROMP_STATE_DIR": alt}, timeout=60)
-                self.assertEqual(out.returncode, 0, out.stderr[-400:])
-                self.assertEqual(out.stdout.strip(), alt, mod)
-
 
 WRAPPED = "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
 UNWRAPPED = "${XDG_STATE_HOME:-$HOME/.local/state}/romp"

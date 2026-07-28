@@ -5060,7 +5060,7 @@ function agehms(secs: number): string {
 }
 
 // The "(age)" label is colored by recency on the SHARED romp colormap, log age scale, so the ledger
-// matches the feed and the terminal `romp feed`. The bullet TEXT stays at default brightness; only the
+// matches the feed. The bullet TEXT stays at default brightness; only the
 // age label is colored.
 // The recency colormaps — KEEP IN SYNC with bin/romp_colormap.py (the kernel computes the feed's trgb
 // from the same stops). ONE global time colormap, picked in settings (the user 2026-06-17): the ledger
@@ -5145,8 +5145,8 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   };
   return [Math.round(hk(h + 1 / 3) * 255), Math.round(hk(h) * 255), Math.round(hk(h - 1 / 3) * 255)];
 }
-// Recency for the ledger: take the shared hawaii ramp color (same hue progression
-// as the terminal `romp feed` board) but remap its LIGHTNESS into a legible band so
+// Recency for the ledger: take the shared hawaii ramp color (the same hue progression
+// the feed uses) but remap its LIGHTNESS into a legible band so
 // no bullet drops into the unreadable dark-magenta the raw ramp produces at the
 // old end. Brightness still carries recency as a secondary cue — recent bullets
 // are bright, oldest ones fade darker/muted — but the fade is floored (~L0.50) so
