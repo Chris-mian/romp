@@ -3201,6 +3201,35 @@ function makePlaceholderTab(id: string): HTMLElement {
   return tab;
 }
 
+// With NO sessions at all, put a real element in #content — otherwise the chat pane sits under the
+// romp loader for a full THIRTY SECONDS on every load.
+//
+// The loader (kernel _pane_spin) hides on an event: a MutationObserver fires when #content gains a child
+// whose id isn't the always-present #live-ask host. That is exactly right while a session is loading, and
+// unreachable when there is nothing to load — no session means nothing ever renders, the observer never
+// fires, and the only escape is the 30s failsafe that exists for a dead kernel. A fresh install has zero
+// sessions, so the very first thing a new user sees is a half-minute spinner over an empty pane (the user
+// 2026-07-27, on a clean v0.1.1 install: "still takes 10s+ just to load an empty chat", identical on every
+// refresh — because it was a timer, not work).
+//
+// The empty transcript case was already handled with a "No messages yet." placeholder; this is its
+// missing sibling, one level up: no sessions rather than no messages. Saying so also beats a spinner —
+// it tells a new user the pane is working and what to do next.
+function syncNoSessionsPlaceholder(visibleCount: number) {
+  const content = document.getElementById("content");
+  if (!content) return;
+  const existing = document.getElementById("no-sessions");
+  if (visibleCount > 0) {
+    existing?.remove();               // a session arrived → the real view takes over
+    return;
+  }
+  if (existing) return;               // idempotent: renderTabs runs on every push
+  const ph = el("div", "tx-empty");
+  ph.id = "no-sessions";
+  ph.textContent = "No sessions yet. Start one with  romp new <name>  or the + above.";
+  content.appendChild(ph);
+}
+
 function renderTabs() {
   if (renameActive) { renderPendingAfterRename = true; return; }
   if (tabPointerHeld) { renderPendingWhilePressed = true; return; }   // don't destroy a tab mid-click (see tabPointerHeld)
@@ -3347,6 +3376,7 @@ function renderTabs() {
   bar.appendChild(add);
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
+  syncNoSessionsPlaceholder(visibleIds.length);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
