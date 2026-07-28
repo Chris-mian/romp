@@ -215,18 +215,43 @@ function reconcilePendingDone(asks: AskItem[]) {
 }
 type MoveKind = "followup" | "answer";
 const pendingMoveKind = new Map<string, MoveKind>();
-function clearFollowMove(itemId: string) {
+// COLUMN-FLIP TRIPWIRE (the user 2026-07-28, who watched a just-replied card bounce Working →
+// Completed → Working and could not be told afterwards WHICH layer bounced it — every candidate
+// mechanism checked out sound post-hoc, and no surface records what the view actually SHOWED).
+// Every rendered column change posts a clientDiag breadcrumb (client-diag.jsonl) carrying what
+// most recently changed the render's inputs, so the next bounce is attributed from the recorded
+// trail instead of unreproducible archaeology. Ids only, no card text.
+const shownCol = new Map<string, string>();            // itemId → column as last RENDERED (post-prediction)
+let lastFeedEvent = "init";                            // the input change the next render reflects
+let lastPayloadBuildId = 0;
+function auditShownColumns(list: AskItem[]) {
+  const seen = new Set<string>();
+  for (const a of list) {
+    seen.add(a.itemId);
+    const prev = shownCol.get(a.itemId);
+    if (prev !== undefined && prev !== a.column) {
+      vscodeApi?.postMessage({ type: "clientDiag", surface: "feed", what: "colflip",
+        data: { id: a.itemId, from: prev, to: a.column, ev: lastFeedEvent,
+                buildId: lastPayloadBuildId, predicted: pendingFollowMove.has(a.itemId) } });
+    }
+    shownCol.set(a.itemId, a.column);
+  }
+  for (const id of Array.from(shownCol.keys())) if (!seen.has(id)) shownCol.delete(id);
+}
+function clearFollowMove(itemId: string, why = "") {
   const t = pendingFollowMove.get(itemId); if (t) clearTimeout(t);
   pendingFollowMove.delete(itemId); pendingMoveKind.delete(itemId); pendingMoveAck.delete(itemId);
+  if (why) lastFeedEvent = "clear:" + why;             // tripwire attribution only; behavior unchanged
 }
 function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
   pendingMoveKind.set(itemId, kind);
   pendingMoveAck.delete(itemId);                       // a fresh gesture waits on its OWN answer, not the last one's
+  lastFeedEvent = "predict:" + kind;
   const timer = window.setTimeout(() => {
     if (!pendingFollowMove.has(itemId)) return;        // a push already confirmed the move → nothing to do
     const k = pendingMoveKind.get(itemId);
-    clearFollowMove(itemId);                           // give the kernel authority: drop the prediction
+    clearFollowMove(itemId, "backstop-noack");         // give the kernel authority: drop the prediction
     // Reaching here means the kernel never answered AT ALL (see ackFollowMove) — not that it declined the
     // move, which is what the old wording claimed on every mid-pass reply. An "answer" prediction has no
     // ack by design and always yields to the first payload, so it never gets this far.
@@ -244,7 +269,7 @@ function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
 function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
   if (!pendingFollowMove.has(itemId)) return;
   if (!ok) {
-    clearFollowMove(itemId);
+    clearFollowMove(itemId, "ack-fail");
     feedToast("Your reply was sent, but that card isn’t on the board any more to move to Working.");
     render();
     return;
@@ -253,7 +278,7 @@ function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
   pendingFollowMove.set(itemId, window.setTimeout(() => {
     if (!pendingFollowMove.has(itemId)) return;
-    clearFollowMove(itemId); render();                 // silent wedge guard: no payload ever answered the ack
+    clearFollowMove(itemId, "backstop-noconfirm"); render();   // silent wedge guard: no payload ever answered the ack
   }, MOVE_ACK_MS));
 }
 // On a fresh authoritative payload: a predicted card the kernel now lists as working (or no longer lists at
@@ -266,7 +291,7 @@ function reconcileFollowMove(incoming: AskItem[], buildId: number) {
   for (const id of Array.from(pendingFollowMove.keys())) {
     const a = incoming.find((x) => x.itemId === id);
     if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
-      clearFollowMove(id);
+      clearFollowMove(id, !a ? "gone" : a.column === "working" ? "confirmed" : "answer-yield");
       continue;
     }
     // ACKED, yet this payload still shows the card elsewhere. Trust it ONLY if it was built after the kernel
@@ -275,7 +300,7 @@ function reconcileFollowMove(incoming: AskItem[], buildId: number) {
     // is the kernel's own state, so yield to it silently — the reply landed, the card simply moved on (the
     // work finished, a fresh block arrived), which is honest to show and never a failed move.
     const acked = pendingMoveAck.get(id);
-    if (acked !== undefined && buildId > acked) clearFollowMove(id);
+    if (acked !== undefined && buildId > acked) clearFollowMove(id, "outranked");
   }
 }
 // Render-time: keep each still-unconfirmed predicted card in Working, styled like the kernel's own re-checked
@@ -2810,6 +2835,7 @@ function render() {
   const list = document.getElementById("feed-list")!;
   pruneAgeTip();   // drop the tip only if the render tore its hovered stamp out (see pruneAgeTip)
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
+  auditShownColumns(asks); // tripwire: what this render SHOWS is the record a bounce report needs
   const prevScroll = list.scrollTop;
   // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear
   const showCA = !!asks.length;
@@ -3143,7 +3169,9 @@ window.addEventListener("message", (e: MessageEvent) => {
     // payload read the store, which is what makes "the kernel has answered my click" an event and not a
     // guess (see reconcileFollowMove); a kernel too old to send one reads as 0 and simply never confirms
     // an acked prediction early, leaving the backstop to retire it.
-    reconcileFollowMove(incomingAsks, typeof m.buildId === "number" ? m.buildId : 0);
+    lastFeedEvent = "payload";                         // tripwire: this render's inputs are the fresh payload
+    lastPayloadBuildId = typeof m.buildId === "number" ? m.buildId : 0;
+    reconcileFollowMove(incomingAsks, lastPayloadBuildId);
     reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
     // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
