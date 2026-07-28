@@ -167,6 +167,56 @@ class RemotesPanelRender(unittest.TestCase):
         self.assertIn("button[data-m]", js)
         self.assertIn("/tunnels/trust-mirror", js)
 
+    # ---- remembered vs live (the user 2026-07-28) -------------------------------------------------
+    # kernelSha, the drift counts and the peer's mail tier are all answers from the LAST SUCCESSFUL
+    # poll — only an `up` row is polled. The panel drew them as current regardless, so a row could say
+    # "disconnected" and "behind 2 commits" and name the peer's mail tier all at once: three claims,
+    # two of which it had no way to know. The values stay (a blank row is worse); they must be MARKED.
+
+    def _drifted(self, status="up", stale=False, last_ok=0, tiers=None):
+        tn = json.loads(json.dumps(TUNNELS))
+        tn["tunnels"][0].update({"status": status, "outOfDate": True, "behindBy": 2, "aheadBy": 0,
+                                 "kernelSha": "abc1234", "localSha": "def5678",
+                                 "stale": stale, "lastOk": last_ok})
+        if tiers is not None:
+            tn["peerTiers"] = tiers
+        return tn
+
+    def test_a_live_row_states_its_drift_plainly(self):
+        # The control: an `up` row DID just poll, so its drift is fact and wears no hedge.
+        out = self._run(tunnels=self._drifted(status="up", stale=False))
+        html = out.get("html", "")
+        self.assertIn("behind 2 commits", html)
+        self.assertNotIn("last known", html)
+        self.assertNotIn("rnet-stale", html)
+
+    def test_a_disconnected_row_marks_its_drift_as_remembered_not_live(self):
+        out = self._run(tunnels=self._drifted(status="down", stale=True, last_ok=1785272930))
+        html = out.get("html", "")
+        self.assertIn("disconnected", html, "the row still reports its live state")
+        self.assertIn("last known: behind 2 commits", html,
+                      "a drift count from an unreachable host must read as memory, not as a finding")
+        self.assertIn("rnet-stale", html, "and must carry the muted cue that overrides the accent")
+        self.assertIn("last confirmed", html, "hover says WHEN it was true (progressive disclosure)")
+
+    def test_a_never_reached_row_says_so_rather_than_inventing_a_time(self):
+        # lastOk 0 = this kernel has not once seen it up; the hover must not imply a moment that never was.
+        out = self._run(tunnels=self._drifted(status="gave-up", stale=True, last_ok=0))
+        self.assertIn("never confirmed since this kernel started", out.get("html", ""))
+
+    def test_a_disconnected_row_marks_the_peers_mail_tier_as_remembered(self):
+        # The other half of the same bug: the reverse tier is gossiped by the peer's bus on an exchange,
+        # so a disconnected row is quoting an old exchange and must say so.
+        out = self._run(tunnels=self._drifted(status="down", stale=True, last_ok=1785272930,
+                                              tiers={"TESTHOST": "trusted"}))
+        self.assertIn("TESTHOST holds yours: last known trusted", out.get("html", ""))
+
+    def test_a_live_row_states_the_peers_mail_tier_plainly(self):
+        out = self._run(tunnels=self._drifted(status="up", stale=False, tiers={"TESTHOST": "trusted"}))
+        html = out.get("html", "")
+        self.assertIn("TESTHOST holds yours: trusted", html)
+        self.assertNotIn("last known", html)
+
     def test_the_per_host_settings_sit_on_their_own_line(self):
         # Trust and check-in are set once and left; Detach is an act. Splitting them off line 1 is what
         # stops a phone-width row from pushing Detach past the right edge.
