@@ -2130,6 +2130,31 @@ def _last_awaiting_is_lift(nd):
     return bool(evs) and bool(evs[-1].get("lift"))
 
 
+def _stamp_written_at(nd):
+    """WHEN the awaiting stamp was written — the ownership horizon for the time-window fallback below.
+
+    `awaitingAt` is the anchor the fold materializes, and it is the audited turn's TRIGGER time (the
+    awaiting event's `ev_t`), not the moment the stamp was made. But a turn dispatches its background
+    work partway THROUGH, always after that trigger, so bounding ownership at the anchor excludes exactly
+    the launches the stamp is about — and when the goal was minted by the same turn that stamped it,
+    `born == awaitingAt` and the window is a SINGLE INSTANT that can never match anything. The fallback
+    was dead for precisely the goals it exists to serve (the user 2026-07-27: a card stamped at its
+    turn's trigger owned two watchers launched four and twenty-seven minutes later inside that same turn,
+    so its stamp could only ever come off via the 6h backstop).
+
+    The closer writes the stamp having audited the whole turn, so its WRITE time is the exact epistemic
+    boundary: every dispatch that existed when the stamp was made, and nothing from a later turn. That is
+    an event we already journal (`at` on each awaiting verdict), not a margin — no reparse, and no window
+    that could bleed forward the way a fixed slack would. Lift events are skipped (they retract a wait,
+    they don't assert one); floored at the anchor so a legacy record with no `at` keeps the old bound."""
+    best = 0
+    for e in (nd.get("log") or []):
+        if e.get("kind") != "awaiting" or e.get("lift"):
+            continue
+        best = max(best, e.get("at") or e.get("ev_t") or 0)
+    return max(best, nd.get("awaitingAt") or 0)
+
+
 def _lift_spent_awaiting(now, tmux):
     """Retire a goal's ⏳ awaiting stamp once the dispatches it was waiting on have RETURNED (the user
     2026-07-22). The closer's lift is bounded to the goals a turn actually WORKED ON (`touched`), which is
@@ -2189,14 +2214,16 @@ def _lift_spent_awaiting(now, tmux):
                     seen.add(x); x = nodes[x]["parentId"]
                 return x
             for nd in stamped:
-                at, born = nd.get("awaitingAt") or 0, nd.get("t") or 0
+                born = nd.get("t") or 0
                 top = _top_of(nd.get("id"))
                 # The dispatches this goal owns. Placement is authoritative when the judge has spoken:
                 # a task placed under ANOTHER card can never retire this stamp (the user 2026-07-27:
                 # unrelated returns were lifting CI-wait stamps — one lifted the same minute it was
                 # re-asserted). The time window survives only for placement-unknown launches (the
                 # conservative pre-verdict shape): launched during the goal's life, at or before the
-                # stamp it explains.
+                # stamp it explains — bounded by when that stamp was WRITTEN, not by its turn-trigger
+                # anchor, which the launches of that very turn all postdate (see _stamp_written_at).
+                horizon = _stamp_written_at(nd)
                 own = []
                 for t in every:
                     p = placed.get(t.get("id"))
@@ -2204,7 +2231,7 @@ def _lift_spent_awaiting(now, tmux):
                         if p == top:
                             own.append(t)             # the goal's own thread, before OR after the stamp:
                             #                           anything of its own still out keeps the wait honest
-                    elif born <= (t.get("t") or 0) <= at:
+                    elif born <= (t.get("t") or 0) <= horizon:
                         own.append(t)
                 if not own:                           # nothing dispatched → not a background wait; leave it
                     continue
