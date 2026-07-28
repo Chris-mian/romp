@@ -41,7 +41,7 @@ function mkEl(id) {
     children: [], _cls: new Set(), _ls: {}, _html: '', _badge: null,
     classList: null,   // filled below (needs `this`)
     appendChild(c) { this.children.push(c); return c; },
-    querySelector(sel) { return sel === '.rerr-badge' ? this._badge : null; },
+    querySelector(sel) { return sel === '.rerr-n' ? this._num : null; },
     addEventListener(k, f) { (this._ls[k] = this._ls[k] || []).push(f); },
     fire(k, ev) { (this._ls[k] || []).forEach((f) => f(ev || { stopPropagation() {}, target: null })); },
     get innerHTML() { return this._html; },
@@ -61,6 +61,9 @@ const EL = {};
 ['rail-errs', 'merr', 'rerr-back', 'rerr-list', 'rerr-clear', 'rerr-x', 'rerr-filters'].forEach((id) => {
   EL[id] = withCls(mkEl(id));
 });
+EL['rail-errs']._num = mkEl('');   // the <text class=rerr-n> INSIDE each bell svg (the in-bell count)
+EL['merr']._num = mkEl('');
+function bellNum() { return EL['rail-errs']._num.textContent; }
 const BODY = new Set(['po-chat', 'po-feed', 'po-timeline']);   // fleet pane hidden, like the real default
 const WL = {};
 global.window = {
@@ -80,7 +83,8 @@ const out = {};
 // 1) a VISIBLE pane's drop logs an entry + reddens the bell (no count badge — it clipped, 2026-07-27)
 post({ romp: 'wsState', app: 'chat', state: 'down' });
 out.afterDrop = { n: notes().length, text: notes()[0].text,
-  red: EL['rail-errs']._cls.has('has'), mred: EL['merr']._cls.has('has') };
+  red: EL['rail-errs']._cls.has('has'), mred: EL['merr']._cls.has('has'),
+  num: bellNum(), mnum: EL['merr']._num.textContent };
 // 2) up then down again — the SAME error coalesces into one entry with a count (no flood)
 post({ romp: 'wsState', app: 'chat', state: 'up' });
 post({ romp: 'wsState', app: 'chat', state: 'down' });
@@ -90,12 +94,12 @@ post({ romp: 'wsState', app: 'fleet', state: 'down' });
 out.afterHidden = { n: notes().length };
 // 4) panes can feed the center directly
 post({ romp: 'notify', kind: 'warn', text: 'TESTHOST delivery failed' });
-out.afterNotify = { n: notes().length };
+out.afterNotify = { n: notes().length, num: bellNum() };
 // 5) opening the popover marks everything seen (red stays while chat is still down). Each row leads
 // with the feed's own chip vocabulary: [chip, message, time, clear] — newest entry first.
 EL['rail-errs'].fire('click');
 out.afterOpen = { open: !EL['rerr-back'].hidden, rows: EL['rerr-list'].children.length,
-  red: EL['rail-errs']._cls.has('has'),
+  red: EL['rail-errs']._cls.has('has'), num: bellNum(),
   newestChip: EL['rerr-list'].children[0].children[0].textContent,
   newestChipCls: EL['rerr-list'].children[0].children[0].className,
   newestFirst: EL['rerr-list'].children[0].children[1].textContent,
@@ -123,7 +127,10 @@ out.afterMute = { stored: STORE['romp:errFilters'], n: notes().length,
 // 11) unmuting shows what happened while muted, and the unread entry re-reddens the bell
 EL['rerr-filters'].children[0].fire('click');
 out.afterUnmute = { red: EL['rail-errs']._cls.has('has'), rows: EL['rerr-list'].children.length,
-  chip: EL['rerr-list'].children[0].children[0].textContent };
+  chip: EL['rerr-list'].children[0].children[0].textContent, num: bellNum() };
+// 12) past nine unread the in-bell count yields to '+' (a two-glyph "10" can't fit the body)
+for (let i = 0; i < 12; i++) post({ romp: 'notify', kind: 'warn', text: 'distinct problem ' + i });
+out.afterMany = { num: bellNum() };
 console.log(JSON.stringify(out));
 """
 
@@ -148,6 +155,8 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertIn("Chat", a["text"])
         self.assertTrue(a["red"], "the rail bell goes red")
         self.assertTrue(a["mred"], "the mobile bell goes red too")
+        self.assertEqual(a["num"], "1", "…with the unread count drawn inside the bell")
+        self.assertEqual(a["mnum"], "1", "on the mobile bell too")
 
     def test_a_repeat_of_the_same_error_coalesces(self):
         a = self.out["afterRepeat"]
@@ -159,12 +168,14 @@ class ErrorCenterExecutes(unittest.TestCase):
 
     def test_panes_can_post_notify(self):
         self.assertEqual(self.out["afterNotify"]["n"], 2)
+        self.assertEqual(self.out["afterNotify"]["num"], "2")
 
     def test_opening_marks_seen_but_a_live_problem_keeps_the_cue(self):
         a = self.out["afterOpen"]
         self.assertTrue(a["open"])
         self.assertEqual(a["rows"], 2)
         self.assertTrue(a["red"], "chat is still down → the live cue stays")
+        self.assertEqual(a["num"], "", "everything read → the bell carries no number")
         self.assertIn("delivery failed", a["newestFirst"], "newest entry renders first")
 
     def test_rows_lead_with_the_feeds_chip_vocabulary(self):
@@ -206,6 +217,12 @@ class ErrorCenterExecutes(unittest.TestCase):
         self.assertTrue(a["red"], "the entry logged while muted was never seen")
         self.assertEqual(a["rows"], 1)
         self.assertEqual(a["chip"], "offline")
+        self.assertEqual(a["num"], "1", "the missed entry counts again once unmuted")
+
+    def test_past_nine_the_count_yields_to_plus(self):
+        # the user 2026-07-28: digits 1-9, then "something else to mean many" — a two-glyph "10"
+        # cannot fit the bell body, so '+' stands for many
+        self.assertEqual(self.out["afterMany"]["num"], "+")
 
 
 class ErrorCenterWiring(unittest.TestCase):
@@ -213,7 +230,12 @@ class ErrorCenterWiring(unittest.TestCase):
         html = km._landing()
         for pin in ("id=rail-errs", "id=rerr-back", "id=rerr-list", "id=rerr-clear", "id=merr"):
             self.assertIn(pin, html)
-        self.assertNotIn("rerr-badge", html)   # the count badge clipped and is gone (the user 2026-07-27)
+        self.assertNotIn("rerr-badge", html)   # the CORNER badge clipped and is gone (the user 2026-07-27);
+        # the count now lives INSIDE the bell body (the user 2026-07-28): an svg <text> the JS drives,
+        # reddening with the bell via fill=currentColor
+        self.assertIn("<text class='rerr-n'", html)
+        self.assertEqual(html.count("class='rerr-n'"), 2, "rail + mobile, both from the ONE _BELL_SVG")
+        self.assertIn("n>9?'+':String(n)", html)
         self.assertIn("title='Errors — click to open'", html)   # the bell says what it is
         # the panel speaks the shared modal vocabulary (network panel / settings card), never the
         # undefined --vscode-font-family shorthand that rendered oversized in the browser shell
