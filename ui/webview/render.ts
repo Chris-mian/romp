@@ -4031,12 +4031,35 @@ function pickerRows(): HTMLElement[] {
 function setActiveRow(row: HTMLElement | null) {
   document.querySelectorAll("#picker-list .picker-row.active").forEach((r) => r.classList.remove("active"));
   if (row) { row.classList.add("active"); row.scrollIntoView({ block: "nearest" }); }
+  syncNewButton();   // an active row and an armed New-session button are mutually exclusive Enter targets
+}
+
+// Arm the "✛ New session" button exactly when Enter should CREATE: create mode (the + flow), a name
+// typed, and no row explicitly active. A typed name belongs to "create" (the user 2026-07-28) — it
+// must never be re-routed onto a fuzzy match — so matches don't steal the arm; stepping onto a row
+// with ArrowDown (or hovering one) is the explicit act that hands Enter to that row instead.
+function syncNewButton() {
+  const btn = document.getElementById("picker-new-btn");
+  if (!btn) return;
+  const creating = (btn.closest(".picker-actions") as HTMLElement | null)?.style.display !== "none";
+  const q = (document.getElementById("picker-search") as HTMLInputElement | null)?.value.trim() || "";
+  const rowActive = !!document.querySelector("#picker-list .picker-row.active:not(.hidden)");
+  btn.classList.toggle("active", creating && !!q && !rowActive);
 }
 
 function moveActive(delta: number) {
   const rows = pickerRows();
   if (!rows.length) return;
   const cur = rows.findIndex((r) => r.classList.contains("active"));
+  // ArrowUp from the TOP row steps back OUT of the match list: with a typed name in create mode that
+  // re-arms the New-session button (the way back to "Enter creates"), instead of wrapping to the
+  // bottom row (the user 2026-07-28).
+  if (cur === 0 && delta < 0) {
+    const btn = document.getElementById("picker-new-btn");
+    const creating = !!btn && (btn.closest(".picker-actions") as HTMLElement | null)?.style.display !== "none";
+    const q = (document.getElementById("picker-search") as HTMLInputElement | null)?.value.trim() || "";
+    if (creating && q) { setActiveRow(null); return; }
+  }
   const next = cur < 0 ? (delta > 0 ? 0 : rows.length - 1) : (cur + delta + rows.length) % rows.length;
   setActiveRow(rows[next]);
 }
@@ -4049,13 +4072,15 @@ function pickerKey(e: KeyboardEvent) {
   else if (e.key === "ArrowUp") { e.preventDefault(); moveActive(-1); }
   else if (e.key === "Enter") {
     e.preventDefault();
+    // Precedence (the user 2026-07-28): an EXPLICITLY active row (ArrowDown/hover) wins; else an armed
+    // New-session button (create mode + typed name) creates EXACTLY what was typed — never a fuzzy
+    // match; else (empty box) fall back to the first listed row.
     const active = document.querySelector("#picker-list .picker-row.active:not(.hidden)") as HTMLElement | null;
-    const target = active ?? pickerRows()[0];
-    if (target) { target.click(); return; }
-    // No matching session row — if the New-session button is armed (unique
-    // name typed), Enter creates it.
+    if (active) { active.click(); return; }
     const btn = document.getElementById("picker-new-btn");
-    if (btn?.classList.contains("active")) btn.click();
+    if (btn?.classList.contains("active")) { btn.click(); return; }
+    const first = pickerRows()[0];
+    if (first) first.click();
   }
 }
 
@@ -4179,15 +4204,14 @@ function filterPicker(q: string) {
     const hit = !query || (row.dataset.search || "").includes(query);
     row.classList.toggle("hidden", !hit);
   });
-  setActiveRow(pickerRows()[0] ?? null); // keep the highlight on the top of the filtered list
-  // A name that matches NO session is a new one: move the highlight to the
-  // "✛ New session" button so a bare Enter creates it (mirrors how the first
-  // matching row is auto-selected when there ARE matches).
+  // In the + (create) flow a TYPED name means "create this" (the user 2026-07-28): no row
+  // auto-activates, so a bare Enter lands on the armed New-session button and creates EXACTLY the
+  // typed name — reopening one of the matches shown below takes an explicit ArrowDown (or hover/click).
+  // With an empty box (or in pick mode, where creating isn't on offer) the first row still
+  // auto-highlights so Enter opens it, as before. setActiveRow syncs the button's armed state.
   const btn = document.getElementById("picker-new-btn");
-  if (btn) {
-    const actionsShown = (btn.closest(".picker-actions") as HTMLElement | null)?.style.display !== "none";
-    btn.classList.toggle("active", actionsShown && !!q.trim() && pickerRows().length === 0);
-  }
+  const creating = !!btn && (btn.closest(".picker-actions") as HTMLElement | null)?.style.display !== "none";
+  setActiveRow(creating && q.trim() ? null : pickerRows()[0] ?? null);
 }
 
 function nearBottom(c: HTMLElement): boolean {
