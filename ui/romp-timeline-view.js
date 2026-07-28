@@ -371,6 +371,21 @@ function mailboxIcon(off, cx, cy, color) {
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
+// Per-lane NOTIFICATION toggle (the user 2026-07-28): a monochrome BELL just right of the mailbox. ON =
+// the kernel fires an OS notification when this session's work blocks on you or completes (session-flags
+// "notify", read by the kernel's feed-diff notifier); OFF (default) = the same bell struck through + more
+// faded. Same drawn-not-emoji idiom + slash convention as the checkbox/mailbox. (The error center's rail
+// icon stopped being a bell the same day, so the bell shape now means exactly this.)
+function bellIcon(off, cx, cy, color) {
+  const g = el('g', { 'pointer-events': 'none' });
+  const st = { fill: 'none', stroke: color, 'stroke-width': 1.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' };
+  // the dome + skirt, one closed path (side profile, flared mouth)
+  g.appendChild(el('path', Object.assign({ d: 'M' + cx + ' ' + (cy - 4.6) + 'C' + (cx - 2.4) + ' ' + (cy - 4.4) + ' ' + (cx - 3.2) + ' ' + (cy - 2.6) + ' ' + (cx - 3.2) + ' ' + (cy - 0.8) + 'L' + (cx - 3.2) + ' ' + (cy + 1) + 'L' + (cx - 4.4) + ' ' + (cy + 2.8) + 'L' + (cx + 4.4) + ' ' + (cy + 2.8) + 'L' + (cx + 3.2) + ' ' + (cy + 1) + 'L' + (cx + 3.2) + ' ' + (cy - 0.8) + 'C' + (cx + 3.2) + ' ' + (cy - 2.6) + ' ' + (cx + 2.4) + ' ' + (cy - 4.4) + ' ' + cx + ' ' + (cy - 4.6) + 'Z' }, st)));
+  // the clapper: a small arc under the mouth
+  g.appendChild(el('path', Object.assign({ d: 'M' + (cx - 1.3) + ' ' + (cy + 4.2) + 'A 1.3 1.3 0 0 0 ' + (cx + 1.3) + ' ' + (cy + 4.2) }, st)));
+  if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
+  return g;
+}
 // Model + effort choices come from the kernel's /models — the ONE list shared with the chat statusline picker
 // and the judge-tier settings (the user 2026-07-02: no hardcoded model list per surface). Populated in place
 // on load so _openMetaMenu keeps its reference; the lane picker appends its own 'Default' sentinel (not a model).
@@ -2293,9 +2308,10 @@ class TimelinePanel {
     // 2026-06-19). Reserve its width only when there IS a live lane, so an all-historical view keeps the
     // tight [name][model] layout.
     const EYE_W = 13, EYE_GAP = 6, anyLive = vis.some((s) => s.live);
-    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [✓feed] [📫postal] [model+effort] [chip] [ctx]
+    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [✓feed] [📫postal] [bell] [model+effort] [chip] [ctx]
     const mailColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);                      // postal-isolation mailbox, just right of the feed checkbox
-    const modelColX = mailColX + (anyLive ? EYE_W + EYE_GAP : 0);
+    const bellColX = mailColX + (anyLive ? EYE_W + EYE_GAP : 0);                     // notification bell, just right of the mailbox (the user 2026-07-28)
+    const modelColX = bellColX + (anyLive ? EYE_W + EYE_GAP : 0);
     const effortColX = modelColX + Math.ceil(maxModelPiece) + effortGap;   // fixed left edge for EVERY lane's effort word
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
@@ -2683,6 +2699,38 @@ class TimelinePanel {
           s.postalServiceOff = next;                            // optimistic …
           (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalServiceOff = next;   // … held sticky until the kernel confirms
           this._setSessionFlag(s, 'postalServiceOff', next);
+          this.hideTip();
+          this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
+          this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)
+        });
+      }
+      // per-session NOTIFICATION toggle (live lanes only, the user 2026-07-28): a bell just right of the
+      // mailbox. ON (romp blue) = the kernel fires an OS notification when this session's work blocks on
+      // you or completes; OFF (default: slashed + faded gray) = quiet. NOTE the inverted polarity vs the
+      // other two toggles: `notify` true is the ENABLED state, so off = !s.notify. Same draw/hit/tooltip/
+      // pointerdown pattern as the checkbox + mailbox; the kernel's feed-diff notifier enforces it.
+      if (s.live) {
+        const boff = !s.notify;
+        const bcx = bellColX + 5, bcy = y + 0.5;
+        const bdim = boff ? '0.3' : '0.9';             // off = faded; on = a confident romp-blue
+        const bbox = bellIcon(boff, bcx, bcy, boff ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
+        bbox.setAttribute('opacity', bdim);
+        svg.appendChild(bbox);
+        const bhit = el('rect', { x: bellColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
+        bhit.style.cursor = 'pointer';
+        bhit.setAttribute('aria-label', boff ? 'notifications off for this session' : 'notifications on for this session'); svg.appendChild(bhit);
+        const btip = boff
+          ? "Notifications off — click to turn on<div style='opacity:.65;margin-top:2px'>get a system notification when its work blocks on you or completes</div>"
+          : "Notifications on — click to turn off<div style='opacity:.65;margin-top:2px'>notifies when its work blocks on you or completes</div>";
+        bhit.addEventListener('mouseenter', (e) => { bbox.setAttribute('opacity', '1'); this.showTip(btip, e); });
+        bhit.addEventListener('mousemove', (e) => this.moveTip(e));
+        bhit.addEventListener('mouseleave', () => { bbox.setAttribute('opacity', bdim); this.hideTip(); });
+        bhit.addEventListener('pointerdown', (e) => {   // pointerdown, not click: a redraw between mousedown
+          e.stopPropagation();                          // and mouseup ate the click → "sometimes unresponsive"
+          const next = !s.notify;
+          s.notify = next;                              // optimistic …
+          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).notify = next;   // … held sticky until the kernel confirms
+          this._setSessionFlag(s, 'notify', next);
           this.hideTip();
           this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
           this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)

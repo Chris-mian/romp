@@ -14,9 +14,10 @@ const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeli
 test("a per-session feed-checkbox column sits BETWEEN the name and the model (live lanes only)", () => {
   assert.match(SRC, /const eyeColX = PADL \+ Math\.ceil\(maxName\) \+ COLGAP;/);
   // business inserted a postal-isolation mailColX between the feed checkbox and the model (main 56ae453),
-  // so the model column now hangs off mailColX, not eyeColX directly.
+  // and the notification bellColX joined right of the mailbox (the user 2026-07-28) — the model column
+  // hangs off bellColX now.
   assert.match(SRC, /const mailColX = eyeColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
-  assert.match(SRC, /const modelColX = mailColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
+  assert.match(SRC, /const modelColX = bellColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
   assert.match(SRC, /if \(s\.live\) \{[\s\S]*?feedCheckIcon\(off, cx, cy, off \? MODEL_FG : ROMP_BLUE\)/);
 });
 
@@ -58,6 +59,23 @@ test("the toggle RECONCILES the optimistic flip onto the live objects before dra
   // immediately before draw(), so the flip always shows AND the kernel still receives it.
   assert.match(SRC, /'hideFromFeed', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
   assert.match(SRC, /'postalServiceOff', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
+});
+
+test("the lane bell toggles the session-level `notify` flag — inverted polarity, same pattern (the user 2026-07-28)", () => {
+  // a bell column sits between the mailbox and the model, live lanes only
+  assert.match(SRC, /const bellColX = mailColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
+  assert.match(SRC, /const modelColX = bellColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
+  // drawn (not an emoji): dome+skirt path + clapper arc, same slash convention as the other toggles
+  assert.match(SRC, /function bellIcon\(off, cx, cy, color\)/);
+  // `notify` true is the ENABLED state (the other two flags are off-flags), so off = !s.notify
+  assert.match(SRC, /const boff = !s\.notify;/);
+  assert.match(SRC, /const bbox = bellIcon\(boff, bcx, bcy, boff \? MODEL_FG : ROMP_BLUE\);/);
+  // pointerdown + optimistic + sticky + reconcile-before-draw, exactly like the checkbox/mailbox
+  assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.notify = next;/);
+  assert.match(SRC, /'notify', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
+  // the tooltip says what arming does (the kernel's feed-diff notifier fires the OS notification)
+  assert.match(SRC, /Notifications off — click to turn on/);
+  assert.match(SRC, /Notifications on — click to turn off/);
 });
 
 test("the tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills it)", () => {
