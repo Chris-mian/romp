@@ -126,12 +126,19 @@ through to `install.sh`:
 ### Ports
 
 - `ROMP_KERNEL_PORT=<port>` moves the kernel and its dashboard off the default
-  `29855`.
+  `29855`. `ROMP_SERVE_PORT` is a second name for the same port, the one the
+  manager and the supervised service use. Set either and the other follows; set
+  both to different values and the kernel refuses to start rather than picking
+  one for you.
 - `ROMP_POSTAL_PORT=<port>` moves the postal bus off the default `25302`.
 
 Set these if something else on the machine already holds the default. Both have
 to agree across everything that talks to the kernel, so export them where the
 whole environment sees them rather than for one command.
+
+Run `romp-service install` again after changing one. The service unit bakes in
+whatever is set at install time, so a renumbered port that only lives in your
+shell leaves the supervised manager on the old one, and the two collide.
 
 ## Where things live
 

@@ -21,7 +21,7 @@ MOCK
     # Run the suite from inside a romp session and it inherits that kernel's
     # ROMP_SERVE_PORT, which silently turns the default case into an override
     # case — a green CI and a red local run (2026-07-24).
-    unset ROMP_SERVE_PORT
+    unset ROMP_SERVE_PORT ROMP_KERNEL_PORT
     HOOK="$(cd "$(dirname "$BATS_TEST_FILENAME")/../hooks" && pwd)/romp-wake.sh"
 }
 
@@ -41,6 +41,15 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$status" -eq 0 ]
     for _ in $(seq 1 40); do [ -s "$CURL_LOG" ] && break; sleep 0.05; done
     grep -q 'http://127.0.0.1:29855/tick' "$CURL_LOG"
+}
+
+@test "romp-wake accepts ROMP_KERNEL_PORT, the other spelling of the same port" {
+    # bin/romp-serve exports both, but a hook can also run under a shell that set only the
+    # documented one — poking the default kernel from an aux session is a cross-instance poke.
+    ROMP_KERNEL_PORT=7778 run bash -c 'echo "{}" | "'"$HOOK"'"'
+    [ "$status" -eq 0 ]
+    for _ in $(seq 1 40); do [ -s "$CURL_LOG" ] && break; sleep 0.05; done
+    grep -q 'http://127.0.0.1:7778/tick' "$CURL_LOG"
 }
 
 @test "romp-wake sends the serve token header (env override form)" {
