@@ -1674,7 +1674,9 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   border-bottom: 1px solid var(--box-border);
 }
 .picker-error.show { display: block; }
-.picker-dir { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--box-border); }
+/* the row wraps so the completer's status line gets its own line under the field; the folder menu is
+   absolutely positioned so it lays OVER the rows below instead of shoving the dialog around */
+.picker-dir { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--box-border); position: relative; }
 .picker-dir::before { content: "📁"; opacity: 0.55; font-size: 0.9em; flex: 0 0 auto; }
 .picker-dir-input {
   flex: 1 1 auto; min-width: 0;
@@ -1691,6 +1693,30 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   border: 1px solid var(--box-border); border-radius: 5px; padding: 5px 9px; font-size: 0.82em;
 }
 .picker-browse:hover { background: rgba(255, 255, 255, 0.12); }
+/* the typed path's one-line verdict from the kernel that would own the session (exists / will be
+   created / is a file), so the answer arrives before the create does (the user 2026-07-28) */
+.picker-dir-status {
+  flex: 1 0 100%; margin-top: 4px; min-width: 0;
+  color: var(--dim); font-family: var(--mono, monospace); font-size: 0.82em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.picker-dir-status.warn { color: #e0a030; }
+.picker-dir-status.bad { color: #e5484d; }
+/* folder completions: Tab walks into one, so a path is assembled without a modal or a native dialog */
+.picker-dir-menu {
+  position: absolute; left: 14px; right: 14px; top: calc(100% - 4px); z-index: 6;
+  max-height: 216px; overflow-y: auto;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--box-border); border-radius: 6px; box-shadow: 0 8px 24px #000000aa;
+}
+.picker-dir-row {
+  padding: 4px 10px; cursor: pointer;
+  color: var(--fg); font-family: var(--mono, monospace); font-size: 0.82em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.picker-dir-row:hover { background: rgba(255, 255, 255, 0.08); }
+.picker-dir-row.active { background: rgba(156, 210, 255, 0.14); color: var(--accent); }
+.picker-dir-more { padding: 4px 10px; color: var(--dim); font-size: 0.82em; }
 /* per-session backend toggle in the + dialog (the user 2026-06-23): a tmux | SDK segmented control */
 .picker-backend { display: flex; align-items: center; gap: 6px; padding: 6px 14px 8px; }
 .picker-backend-label { flex: 0 0 auto; color: var(--dim); font-size: 0.82em; margin-right: 2px; }

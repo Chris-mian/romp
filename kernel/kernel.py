@@ -3154,18 +3154,104 @@ def _true_case(path):
     return out
 
 
-def _resolve_create_dir(raw):
+def _expand_dir(raw):
+    """A typed directory as an absolute path: ~ and $VAR expanded, a relative path resolved against the
+    kernel's default new-session dir (what the field is prefilled with, so `../peer` means what it looks
+    like) rather than the kernel process's own cwd, which the user can't see."""
+    p = os.path.expanduser(os.path.expandvars(str(raw or "").strip()))
+    if not p:
+        return ""
+    return p if os.path.isabs(p) else os.path.normpath(os.path.join(_default_create_dir(), p))
+
+
+def _resolve_create_dir(raw, create=False):
     """Resolve a UI-supplied new-session directory → (path, error). ~ and $VAR are expanded; the path must
     be an existing directory (the session's cwd is fixed at creation, so a bad path can't be fixed later —
     reject it up front), and it is canonicalized — symlinks and trailing slash via realpath, on-disk
     casing via _true_case — because the string, not just the directory, is load-bearing (see
-    _true_case). Empty/None → the kernel default, no error."""
+    _true_case). Empty/None → the kernel default, no error.
+
+    create=True makes the missing directory instead of refusing (the user 2026-07-28, who wanted the
+    choice offered rather than the create silently failing). The UI only offers it after _dir_status
+    says it CAN be made; this re-checks anyway, because the answer is only as fresh as the filesystem."""
     if not raw or not str(raw).strip():
         return _default_create_dir(), None
-    p = os.path.expanduser(os.path.expandvars(str(raw).strip()))
+    p = _expand_dir(raw)
     if not os.path.isdir(p):
-        return None, "directory not found: %s" % str(raw).strip()
+        if os.path.exists(p):
+            return None, "not a directory: %s" % str(raw).strip()
+        if not create:
+            return None, "directory not found: %s" % str(raw).strip()
+        try:
+            os.makedirs(p)
+        except OSError as e:
+            return None, "could not create %s: %s" % (str(raw).strip(), e)
     return _true_case(os.path.realpath(p)), None
+
+
+def _dir_status(raw):
+    """What THIS kernel's filesystem says about a candidate new-session directory — the authoritative
+    answer, which is why the picker asks over the wire instead of guessing in the browser: for a remote
+    host the question is about the REMOTE machine's disk, and only its kernel can answer (the user
+    2026-07-28, whose new sessions have to work over SSH too).
+
+    `nearest` is the deepest ancestor that does exist, so the create offer can say how much it is about
+    to make rather than just "create it"."""
+    s = str(raw or "").strip()
+    if not s:
+        d = _default_create_dir()
+        return {"value": "", "path": _tilde(d), "exists": True, "isDir": True, "isFile": False,
+                "canCreate": False, "nearest": _tilde(d), "missing": 0, "isDefault": True}
+    p = _expand_dir(s)
+    is_dir = os.path.isdir(p)
+    exists = os.path.exists(p)
+    nearest, missing = p, 0
+    while nearest and nearest != "/" and not os.path.isdir(nearest):
+        nearest = os.path.dirname(nearest)
+        missing += 1
+    return {"value": s, "path": _tilde(p), "exists": exists, "isDir": is_dir,
+            "isFile": exists and not is_dir,
+            # a file (or anything non-directory) in the way can't be made into one — the UI offers Edit only
+            "canCreate": not exists and bool(nearest),
+            "nearest": _tilde(nearest or "/"), "missing": missing, "isDefault": False}
+
+
+DIR_COMPLETE_MAX = 50            # completion rows per reply — a big /usr/lib must not ship thousands
+
+
+def _dir_completions(raw, limit=DIR_COMPLETE_MAX):
+    """Child directories of what's typed so far → the picker's inline completer. `foo/bar` completes
+    `bar` among the children of `foo`; a trailing slash lists that directory's children. Directories
+    only (a session cwd is a directory), hidden ones only once the fragment asks for them by typing the
+    dot, and always capped — this answers a keystroke, so it must stay cheap.
+
+    Runs on the kernel that will OWN the session, so the same op serves a remote host over its tunnel;
+    no shelling out and no second source of truth (see _dir_status)."""
+    s = str(raw or "").strip()
+    p = _expand_dir(s) if s else _default_create_dir()
+    if s.endswith("/") or not s:
+        base, frag = p, ""
+    else:
+        base, frag = os.path.dirname(p), os.path.basename(p)
+    names = []
+    try:
+        with os.scandir(base or "/") as it:
+            for e in it:
+                if e.name.startswith(".") and not frag.startswith("."):
+                    continue
+                if frag and not e.name.lower().startswith(frag.lower()):
+                    continue
+                try:
+                    if e.is_dir():                      # follows symlinks: a symlinked repo is a real choice
+                        names.append(e.name)
+                except OSError:
+                    continue
+    except OSError:
+        return {"base": _tilde(base or "/"), "items": [], "truncated": False}
+    names.sort(key=lambda n: (n.lower(), n))
+    return {"base": _tilde(base or "/"),
+            "items": [{"name": n, "path": _tilde(os.path.join(base, n))} for n in names[:limit]],
+            "truncated": len(names) > limit}
 
 
 def _session_has_history(sid):
@@ -16959,9 +17045,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not nm or not NAME_RE.match(nm):
                     return self._send(400, json.dumps({"ok": False, "error":
                         "session names use letters, digits, . _ - only"}), "application/json")
-                cwd, derr = _resolve_create_dir(b.get("dir"))
+                # mkdir:true makes a missing dir (the WS op's "create it" answer, available headlessly too)
+                cwd, derr = _resolve_create_dir(b.get("dir"), create=bool(b.get("mkdir")))
                 if derr:
-                    return self._send(200, json.dumps({"ok": False, "error": derr}), "application/json")
+                    return self._send(200, json.dumps({"ok": False, "error": derr,
+                                                       "dirStatus": _dir_status(b.get("dir"))}),
+                                      "application/json")
                 live = _live_names(_tmux_sessions())
                 if nm in live:
                     return self._send(200, json.dumps({"ok": True, "id": live[nm], "existing": True}),
@@ -17446,10 +17535,22 @@ class Handler(BaseHTTPRequestHandler):
             if not NAME_RE.match(nm):
                 client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
             else:
-                cwd, derr = _resolve_create_dir(msg.get("dir"))   # the session dir is fixed at creation — validate now
+                # the session dir is fixed at creation — validate now. mkdir: the user already saw the
+                # "that folder doesn't exist" dialog and chose to make it (see createDirMissing below).
+                cwd, derr = _resolve_create_dir(msg.get("dir"), create=bool(msg.get("mkdir")))
                 live = _live_names(_tmux_sessions())
                 if derr:
-                    client["send"](json.dumps({"type": "warn", "text": derr}))
+                    st = _dir_status(msg.get("dir"))
+                    if st["canCreate"] and not msg.get("mkdir"):
+                        # A missing directory is a QUESTION, not a failure: the client raises "create it or
+                        # edit it" and comes back with mkdir set. Before this the create just warned and the
+                        # "Opening…" cue span for 30s over a session that was never going to exist (the user
+                        # 2026-07-28). Everything else (a file in the way, an unreadable parent) has no
+                        # second option, so it stays a plain warning.
+                        client["send"](json.dumps({"type": "createDirMissing", "name": nm,
+                                                   "dir": str(msg.get("dir") or ""), "status": st}))
+                    else:
+                        client["send"](json.dumps({"type": "warn", "text": derr}))
                 elif nm in live:                 # already running → just (re)open it, don't re-spawn
                     _set_hidden_tab(live[nm], False)
                     _reveal_chat({"type": "focus", "id": live[nm]})
@@ -17616,6 +17717,15 @@ class Handler(BaseHTTPRequestHandler):
                 if fp:
                     _reply(c, {"type": "droppedPath", "path": fp})
             threading.Thread(target=_pf, daemon=True).start()
+        elif msg and msg.get("type") == "dirComplete":
+            # Inline path completion for the new-session directory field. Answered by the kernel that will
+            # own the session — federation routes this by the picker's Host selection — so completing a
+            # path on a remote machine lists THAT machine's disk (the user 2026-07-28). reqId is echoed so
+            # a slow answer that lands after a newer keystroke is dropped by the client, not rendered.
+            _val = str(msg.get("value") or "")
+            _reply(client, dict({"type": "dirCompletions", "reqId": msg.get("reqId"),
+                                 "value": _val, "status": _dir_status(_val)},
+                                **_dir_completions(_val)))
         elif msg and msg.get("type") == "browseDir":
             tgt = str(msg.get("target") or "picker")          # which dir field to fill: the new-session picker or the gear
             def _bd(c=client, t=tgt):                          # Browse → native FOLDER dialog (blocks) → fill that field

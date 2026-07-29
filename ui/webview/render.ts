@@ -25,6 +25,7 @@ import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview } from "./preview";
 import { hostNameNodes } from "./host-prefix";
+import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 
@@ -3762,6 +3763,170 @@ function signalPickerOverlay(on: boolean) {
   try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "picker", on }, "*"); } catch (e) { /* standalone: no shell to lift */ }
 }
 
+// ── new-session directory: inline completer ────────────────────────────────────────────────────────
+// Typing a path used to be blind — a datalist of previously-used dirs and a native Browse… dialog that
+// only ever showed the LOCAL machine, so a session on a remote host was typed from memory and only
+// found out it was wrong after the create (the user 2026-07-28). The kernel that will own the session
+// answers instead (dirComplete → dirCompletions), so the same field completes remote paths over the
+// host's tunnel, and the status line under it says what the path IS before anything is committed.
+//
+// No debounce: a request goes out on the keystroke, and while one is in flight the newest value is
+// held and fired when the reply lands. The pacing is the round-trip itself — an event, not a timer —
+// so a fast local kernel completes per keystroke and a slow SSH hop coalesces on its own.
+interface DirItem { name: string; path: string }
+let dirReq = 0;                    // newest request id; a reply for an older one is stale
+let dirInFlight = false;
+let dirQueued: string | null = null;  // typed while a request was out
+let dirItems: DirItem[] = [];
+let dirActive = -1;                   // highlighted completion row (-1 = none; Enter then creates)
+let dirStatus: DirStatus | null = null;
+
+function pickerHost(): string {
+  const sel = document.querySelector("#picker .picker-host .picker-be-opt.sel") as HTMLElement | null;
+  return sel?.dataset.host || "";
+}
+
+function askDirComplete(value: string): void {
+  if (!vscodeApi) return;
+  if (dirInFlight) { dirQueued = value; return; }
+  dirInFlight = true;
+  vscodeApi.postMessage({ type: "dirComplete", value, reqId: ++dirReq, host: pickerHost() });
+}
+
+function onDirCompletions(m: any): void {
+  dirInFlight = false;
+  const stale = m.reqId !== dirReq;
+  if (dirQueued !== null) { const v = dirQueued; dirQueued = null; askDirComplete(v); }
+  if (stale) return;                                   // a newer keystroke already owns the field
+  dirItems = Array.isArray(m.items) ? m.items : [];
+  dirStatus = m.status || null;
+  dirActive = -1;
+  renderDirMenu(!!m.truncated);
+}
+
+function dirMenuOpen(): boolean {
+  const menu = document.getElementById("picker-dir-menu");
+  return !!menu && menu.style.display !== "none";
+}
+
+function closeDirMenu(): void {
+  const menu = document.getElementById("picker-dir-menu");
+  if (menu) { menu.style.display = "none"; menu.replaceChildren(); }
+  dirActive = -1;
+}
+
+// The status line is the one-glance version: what this path is right now. The menu underneath is the
+// deeper level, and it only exists while there is something to choose.
+function renderDirMenu(truncated: boolean): void {
+  const line = document.getElementById("picker-dir-status");
+  if (line) {
+    const said = dirStatusLine(dirStatus);
+    line.className = "picker-dir-status" + (said.cls ? " " + said.cls : "");
+    line.textContent = said.text;
+  }
+  const menu = document.getElementById("picker-dir-menu");
+  if (!menu) return;
+  menu.replaceChildren();
+  if (!dirItems.length) { menu.style.display = "none"; return; }
+  dirItems.forEach((it, i) => {
+    const row = el("div", "picker-dir-row" + (i === dirActive ? " active" : ""));
+    row.textContent = it.name;
+    row.dataset.path = it.path;
+    row.addEventListener("mousedown", (e) => { e.preventDefault(); acceptDir(i); });   // mousedown: the input keeps focus
+    menu.appendChild(row);
+  });
+  if (truncated) {
+    const more = el("div", "picker-dir-more");
+    more.textContent = "more: keep typing to narrow";
+    menu.appendChild(more);
+  }
+  menu.style.display = "";
+}
+
+// Accept a completion: the field becomes that path with a trailing slash, which immediately asks for
+// its children. Tab-tab-tab walks down a tree without a modal, and works the same on a remote host.
+function acceptDir(i: number): void {
+  const it = dirItems[i];
+  const input = document.getElementById("picker-dir") as HTMLInputElement | null;
+  if (!it || !input) return;
+  input.value = it.path + "/";
+  input.focus();
+  askDirComplete(input.value);
+}
+
+function moveDirActive(delta: number): void {
+  if (!dirItems.length) return;
+  dirActive = nextDirActive(dirActive, delta, dirItems.length);
+  renderDirMenu(false);
+  const active = document.querySelector("#picker-dir-menu .picker-dir-row.active") as HTMLElement | null;
+  active?.scrollIntoView({ block: "nearest" });
+}
+
+// Keys belong to the completer only while the dir field has focus — everywhere else in the picker
+// they still walk the session list. Returns true when it handled the key.
+function dirKey(e: KeyboardEvent): boolean {
+  const input = document.getElementById("picker-dir");
+  if (!input || document.activeElement !== input) return false;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (!dirMenuOpen()) return false;
+    e.preventDefault(); e.stopPropagation();
+    moveDirActive(e.key === "ArrowDown" ? 1 : -1);
+    return true;
+  }
+  if (e.key === "Tab" && dirItems.length) {
+    e.preventDefault(); e.stopPropagation();
+    acceptDir(dirActive >= 0 ? dirActive : 0);          // Tab with nothing chosen takes the first match
+    return true;
+  }
+  if (e.key === "Enter" && dirActive >= 0) {
+    e.preventDefault(); e.stopPropagation();
+    acceptDir(dirActive);                                // a chosen row completes; it does NOT create
+    return true;
+  }
+  if (e.key === "Escape" && dirMenuOpen()) {
+    e.preventDefault(); e.stopPropagation();
+    closeDirMenu();                                      // dismiss the menu, keep the picker open
+    return true;
+  }
+  return false;
+}
+
+// ── creating a session, including the "that folder isn't there" fork ───────────────────────────────
+// The create is one round trip: the OWNING kernel checks its own disk and either starts the session or
+// says the directory is missing. A missing one is a question, not a failure — before this the kernel
+// warned into a toast the "Opening…" cue was covering, so the create looked like it silently did
+// nothing for 30 seconds (the user 2026-07-28). The request is remembered so "Create it" can re-send
+// exactly the same create with mkdir set, host and backend included.
+interface CreateReq { name: string; backend: string; dir: string; host: string }
+let lastCreate: CreateReq | null = null;
+
+function startCreate(req: CreateReq, mkdir = false): void {
+  lastCreate = req;
+  if (vscodeApi) vscodeApi.postMessage({ type: "createSession", ...req, ...(mkdir ? { mkdir: true } : {}) });
+  closePicker();
+  // a remote session's tab arrives host-prefixed — register the prefixed name so the cue dismisses
+  showOpeningModal(req.host ? req.host + ":" + req.name : req.name);
+}
+
+function onCreateDirMissing(m: any): void {
+  hideOpeningModal();                    // the cue would otherwise spin over a dialog it hides
+  const req = lastCreate;
+  showConfirm("That folder isn't there",
+    createDirPrompt(String(m.name), (m.status || null) as DirStatus | null, String(m.dir || "")),
+    [{ label: "Create it and start", value: "create" }, { label: "Edit the path", value: "edit" }],
+    (v) => {
+      if (!req) return;
+      if (v === "create") { startCreate(req, true); return; }
+      if (v === "edit") {
+        openPicker();                    // reopen with the same name and path, cursor in the dir field
+        const search = document.getElementById("picker-search") as HTMLInputElement | null;
+        if (search) search.value = req.name;
+        const dir = document.getElementById("picker-dir") as HTMLInputElement | null;
+        if (dir) { dir.value = req.dir; dir.focus(); dir.select(); askDirComplete(dir.value); }
+      }
+    });
+}
+
 function openPicker(pick = false, prompt?: string, allowNew = false) {
   pickMode = pick;
   pickAllowNew = pick && allowNew;
@@ -3789,14 +3954,22 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     dirInput.id = "picker-dir";
     dirInput.spellcheck = false;
     dirInput.placeholder = "New-session directory (blank = default)";
-    dirInput.title = "Working directory for a NEW session — fixed once it starts. Blank uses the kernel's default. ~ and $VARs expand; recent dirs autocomplete.";
+    dirInput.title = "Working directory for a NEW session — fixed once it starts. Blank uses the kernel's default. ~ and $VARs expand; type to complete folders (Tab walks into one), on this machine or the selected host.";
     dirInput.setAttribute("list", "picker-dir-list");
+    dirInput.setAttribute("autocomplete", "off");   // the browser's own dropdown would fight the completer
     const dirList = document.createElement("datalist"); dirList.id = "picker-dir-list";
     const browseBtn = el("button", "picker-browse") as HTMLButtonElement;
     browseBtn.type = "button"; browseBtn.textContent = "Browse…";
     browseBtn.title = "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)";
     browseBtn.addEventListener("click", () => { if (vscodeApi) vscodeApi.postMessage({ type: "browseDir" }); });
+    // the completer's dropdown + the one-line status of whatever is typed, both fed by the owning kernel
+    const dirMenu = el("div", "picker-dir-menu"); dirMenu.id = "picker-dir-menu"; dirMenu.style.display = "none";
+    const dirStat = el("div", "picker-dir-status"); dirStat.id = "picker-dir-status";
+    dirInput.addEventListener("input", () => askDirComplete(dirInput.value));
+    dirInput.addEventListener("focus", () => askDirComplete(dirInput.value));
+    dirInput.addEventListener("blur", () => closeDirMenu());   // a row's mousedown preventDefaults, so it never blurs
     dirWrap.appendChild(dirInput); dirWrap.appendChild(dirList); dirWrap.appendChild(browseBtn);
+    dirWrap.appendChild(dirMenu); dirWrap.appendChild(dirStat);
     // per-session BACKEND picker (the user 2026-06-23): a tmux | SDK segmented toggle, defaulting to the
     // gear's Default backend but overridable for THIS new session. Hidden in pick-mode (like dirWrap).
     const beWrap = el("div", "picker-backend");
@@ -3829,10 +4002,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       const beSel = beWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
       // host: local ("") or an attached SSH host — the federation manager routes createSession there.
       const hostSel = (hostWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null)?.dataset.host || "";
-      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: beSel?.dataset.be || loadSettings().backend, dir: dirInput.value.trim(), host: hostSel });
-      closePicker();
-      // a remote session's tab arrives host-prefixed — register the prefixed name so the cue dismisses
-      showOpeningModal(hostSel ? hostSel + ":" + name : name);   // "Opening…" cue until the new tab arrives (see upsert)
+      startCreate({ name, backend: beSel?.dataset.be || loadSettings().backend,
+                    dir: dirInput.value.trim(), host: hostSel });
     });
     const openAll = el("button", "picker-action");
     openAll.textContent = "↗ Open all running sessions";
@@ -3878,11 +4049,15 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
                   : "Create the session on this machine.";
       b.addEventListener("click", () => {
         hostWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b));
-        // the Browse… dialog and dir autocomplete are LOCAL-machine paths — misleading for a remote host
+        // the native Browse… dialog opens on the LOCAL kernel's screen, so it can't stand for a remote
+        // machine's disk; the inline completer can — it asks that host's own kernel (the user 2026-07-28)
         const browse = overlay!.querySelector(".picker-browse") as HTMLButtonElement | null;
-        if (browse) { browse.disabled = !!h; browse.title = h ? "Directory browsing is host-local; type the remote path (blank = that kernel's default)." : "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)"; }
+        if (browse) { browse.disabled = !!h; browse.title = h ? `The native dialog is local-only. Type the path on ${h} instead; it completes as you type.` : "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)"; }
         const dirIn = document.getElementById("picker-dir") as HTMLInputElement | null;
         if (dirIn) dirIn.placeholder = h ? `New-session directory on ${h} (blank = its default)` : "New-session directory (blank = default)";
+        // the completions on screen belong to the host that just stopped being selected
+        closeDirMenu();
+        if (dirIn) askDirComplete(dirIn.value);
       });
       hostWrapEl.appendChild(b);
     }
@@ -3891,6 +4066,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   }
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
   if (di) di.value = kernelDefaultDir || loadSettings().defaultDir || "";   // the kernel's persisted default (file→env) wins; localStorage is a same-tab cache
+  closeDirMenu();                       // a previous open's folder list is not this one's
+  if (di && !pick) askDirComplete(di.value);   // the status line says what the prefilled path is, before anything is typed
   // In a filtered view (#only=<tag>), a new session created here would vanish from the view unless its name
   // matches. Prefill the name box with the tag so what you launch stays in view (the user 2026-07-15) —
   // editable: clear it to launch outside the filter on purpose. Only when creating is possible here (the
@@ -4067,6 +4244,9 @@ function moveActive(delta: number) {
 function pickerKey(e: KeyboardEvent) {
   const o = document.getElementById("picker");
   if (!o || o.style.display === "none") return;
+  // the directory field's completer owns the arrows / Tab / Enter while it is focused, so walking the
+  // folder list can't also walk the session list underneath it
+  if (dirKey(e)) return;
   if (e.key === "Escape") closePicker();
   else if (e.key === "ArrowDown") { e.preventDefault(); moveActive(1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); moveActive(-1); }
@@ -6844,6 +7024,8 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "warn" && typeof m.text === "string" && m.text) warnToast(m.text);
+  else if (m.type === "dirCompletions") onDirCompletions(m);        // the owning kernel's path completions
+  else if (m.type === "createDirMissing" && m.name) onCreateDirMissing(m);   // create it, or edit the path
   // The AUTHORITATIVE answer to a ✕ on a queued bubble (the user 2026-07-20). ok:false = the message
   // had already left romp's queue (handed to the CLI — no recall exists): toast the kernel's 'too late'
   // and UNDO the optimistic composer restore if the draft is untouched — leaving the copy there invited

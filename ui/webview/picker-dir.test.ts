@@ -20,8 +20,11 @@ test("the picker has a directory field with a recent-dirs datalist", () => {
 });
 
 test("createSession carries the chosen dir, alongside name + backend", () => {
-  // backend now comes from the + dialog's per-session toggle, falling back to the gear default (the user 2026-06-23)
-  assert.match(RENDER, /type: "createSession", name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend, dir: dirInput\.value\.trim\(\)/);
+  // backend comes from the + dialog's per-session toggle, falling back to the gear default (the user
+  // 2026-06-23). The whole request goes through startCreate, which remembers it so a missing directory
+  // can be created and the SAME create re-sent (the user 2026-07-28).
+  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel \}\)/);
+  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "createSession", \.\.\.req/);
 });
 
 test("the dir field is prefilled with the gear default and hidden in pick-mode", () => {
