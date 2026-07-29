@@ -5252,10 +5252,20 @@ def checkin_apply(body):
         r = _remotes.get(host)
         if r is not None and not r.get("checkin_peer"):
             return {"ok": False, "error": "host '%s' is already an ssh-attached remote here" % host}, 409
+        # KEEP the level this machine already chose for that host (the user 2026-07-29, whose remote kept
+        # reverting to directed however many times they set it to trusted). The handshake repeats once per
+        # tunnel INCARNATION — every reconnect, tunnel respawn and kernel restart on the mobile side — and
+        # it used to rebuild the row with a hardcoded 'directed', silently undoing the setting minutes
+        # later. A re-check-in is the same relationship reconnecting, not a new one, so trust comes from
+        # the live row first, then what was remembered for that host, and only then the safe default.
+        # (The mismatch is invisible from the other end: the level a peer DECLARES is read from its own
+        # row, so the sending side went on showing 'trusted' while the receiver quarantined its mail.)
+        trust = (r or {}).get("trust") or known_trust(host) or "directed"
         _remotes[host] = {"host": host, "checkin_peer": True, "kernel_port": kp, "local_port": kp,
                           "bus_port": bp, "token": str((body or {}).get("token") or ""),
-                          "trust": "directed",   # a host that checks in to US is directed by default too
+                          "trust": trust,
                           "proc": None, "status": "connecting", "detail": "", "sids": []}
+    _known_note(host, trust)                   # …and remember it, so a later re-check-in finds it again
     _remotes_save()
     _tunnel_wake.set()                     # poll it now: the row reads up within one supervisor pass
     return {"ok": True, "host": host}, 200
