@@ -6225,6 +6225,140 @@ def _ask_peer_to_pull(host):
     return True, detail + "; restarting it"
 
 
+# ── fleet restart (the user 2026-07-29) ───────────────────────────────────────────────────────────────
+# Restart used to mean "this machine's kernel", which is a half-truth on a fleet: the remotes kept running
+# their old processes on their old code, and nothing said so. Restart now covers every REACHABLE kernel,
+# syncing on the way where a clean fast-forward can be proven in either direction, and reports per host
+# what it did and what it skipped.
+#
+# What it will NOT do is the whole point of the report. A diverged remote, a dirty tree either side, a
+# relationship this repo cannot even evaluate: those are skipped with the reason named, never guessed at.
+# Both fast-forward gates (_is_fast_forward / _is_fast_pull) already refuse anything that could destroy a
+# commit, and the pull direction additionally requires a clean local tree on main — the same rule the
+# automatic sync follows, so the button can't do something the background never would.
+FLEET_REPORT = jd.STATE / "fleet-restart.json"
+
+
+def _restart_remote_kernel(host):
+    """Restart the kernel ON `host` without touching its code — the in-sync case, where there is nothing
+    to push but the process still has to come back on the new build of ITS own code. Same shape as
+    _update_remote's step 3 (manager `ensure` so the restart stays supervised, the `romp-kern[e]l`
+    self-match guard so pkill can't kill the apply shell, setsid so an ssh drop can't leave the host with
+    no kernel at all), minus every git step. Returns (ok, detail)."""
+    with _remotes_lock:
+        r = dict(_remotes.get(host) or {})
+    if r.get("checkin_peer"):
+        return False, "no ssh path from this machine (it checked in over its own tunnel)"
+    kport = int(r.get("kernel_port") or _REMOTE_KERNEL_PORT)
+    rdir, _rhead, _rdirty, derr = _discover_remote_clone(host)
+    if derr:
+        return False, derr
+    apply_cmd = (
+        'LOGDIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"; mkdir -p "$LOGDIR"; R=%s; '
+        'if [ ! -x "$R/bin/romp-serve" ]; then echo NOLAUNCH; exit 0; fi; '
+        'pkill -f "bin/romp-kern[e]l" 2>/dev/null; '
+        'if command -v node >/dev/null 2>&1 && [ -x "$R/bin/romp-manager" ]; then "$R/bin/romp-manager" ensure >>"$LOGDIR/update.log" 2>&1 || true; fi; '
+        'UP=0; for i in 1 2 3 4 5 6 7 8; do sleep 1; if bash -c "exec 3<>/dev/tcp/127.0.0.1/%d" 2>/dev/null; then UP=1; break; fi; done; '
+        'if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null &  sleep 1; fi; '
+        'echo "RESTARTED:$UP"'
+    ) % (shlex.quote(rdir), kport)
+    guarded = ('APPLY=%s; if command -v setsid >/dev/null 2>&1; then exec setsid bash -c "$APPLY"; '
+               'else exec bash -c "$APPLY"; fi' % shlex.quote(apply_cmd))
+    try:
+        a = subprocess.run([SSH_BIN] + _SSH_OPTS + ["--", host, guarded], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, "the restart is running on %s but confirming it timed out" % host
+    except Exception as e:
+        return False, "restart failed: " + str(e)[:150]
+    out = (a.stdout or "").strip()
+    if out.startswith("RESTARTED"):
+        return True, "restarted (same build)"
+    if out == "NOLAUNCH":
+        return False, "found no romp/romp-serve launcher to restart the kernel"
+    return False, (_ssh_err(a.stderr) or out or "remote restart failed").strip()[:180]
+
+
+def _fleet_restart_plan(r):
+    """What a fleet restart would do to ONE remote row → (action, reason). Pure decision, so the report
+    and the tests can both read it without any ssh happening:
+      sync-push  — it is strictly behind us and the push can only add commits
+      sync-pull  — it is strictly ahead and OUR checkout can fast-forward onto it (clean, on main)
+      ask        — a checked-in peer we can only ASK to fast-forward itself (no ssh route from here)
+      restart    — same build: nothing to sync, just bring the process back
+      skip       — anything we cannot prove is safe; the reason says which
+    """
+    host = r.get("host") or "?"
+    if r.get("status") != "up":
+        return "skip", "not connected right now (romp is still dialing it)"
+    if not _remote_out_of_date(r):
+        return ("ask", "checked in here; asking it to restart itself") if r.get("checkin_peer") \
+            else ("restart", "already on this build")
+    if r.get("checkin_peer"):
+        return ("ask", "checked in here; asking it to fast-forward itself") if _is_ask_pull(r) \
+            else ("skip", "checked in over its own tunnel and not provably behind — sync it from its own "
+                          "dashboard")
+    if _is_fast_forward(r):
+        return "sync-push", "behind this build; pushing and restarting"
+    if _is_fast_pull(r):
+        if _local_branch() != "main":
+            return "skip", "%s is ahead, but this checkout isn't on main — pull it yourself" % host
+        return "sync-pull", "ahead of this build; fast-forwarding this machine onto it"
+    d = _behind_info(r.get("kernel_sha") or "")
+    b, a = d.get("behind"), d.get("ahead")
+    if isinstance(b, int) and isinstance(a, int) and b > 0 and a > 0:
+        return "skip", "diverged (it has %d commit(s) this machine lacks) — not clobbering either side" % a
+    return "skip", "its build isn't in this repo's history, so nothing can be proven safe to sync"
+
+
+def _fleet_restart_run():
+    """Do the remote half of a fleet restart, write the report, then restart this machine's kernel last —
+    the local restart kills this process, so anything that must be REPORTED has to be on disk before it.
+    The page reads the report back after it reloads."""
+    rows = []
+    with _remotes_lock:
+        remotes = [dict(x) for x in _remotes.values()]
+    for r in remotes:
+        host = r.get("host") or "?"
+        action, reason = _fleet_restart_plan(r)
+        try:
+            if action == "skip":
+                rows.append({"host": host, "ok": None, "action": "skipped", "detail": reason})
+                continue
+            if action == "sync-push":
+                ok, detail = _update_remote(host)
+            elif action == "sync-pull":
+                ok, detail = _pull_remote(host)
+                if ok:
+                    detail += "; this machine restarts below"
+            elif action == "ask":
+                ok, detail = _ask_peer_to_pull(host)
+            else:
+                ok, detail = _restart_remote_kernel(host)
+            rows.append({"host": host, "ok": bool(ok), "action": action, "detail": detail})
+        except Exception as e:                    # one bad host must never strand the rest of the fleet
+            rows.append({"host": host, "ok": False, "action": action, "detail": str(e)[:180]})
+    report = {"t": int(time.time()), "boot": _BOOT_ID, "rows": rows,
+              "local": {"head": _local_head(short=True) or "", "branch": _local_branch() or ""}}
+    try:
+        _atomic_write(FLEET_REPORT, json.dumps(report))
+    except OSError:
+        sys.stderr.write("fleet-restart: could not write the report: %s\n" % traceback.format_exc())
+    _restart_this_kernel()
+
+
+def _restart_this_kernel():
+    """Ask the manager to restart-all (it SIGTERMs this kernel; its exit handler spawns a fresh one).
+    Standalone (no manager) → nothing to restart, which is not an error."""
+    mport = os.environ.get("ROMP_MANAGER_PORT")
+    if not mport:
+        return
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(mport), timeout=4)
+        c.request("POST", "/restart-all"); c.getresponse(); c.close()
+    except Exception:
+        pass                                       # no manager reachable → nothing to restart
+
+
 def _is_ask_pull(r):
     """Whether this remote can be TOLD to fast-forward itself: a checked-in peer (no ssh from here) that is
     strictly BEHIND us, so what it pulls only ADDS commits. Same provable-fast-forward bar as the push gate
@@ -15693,6 +15827,35 @@ try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'openSettings'},'*');}
 // showed its connection-error page until a manual refresh (the user 2026-07-27). The splash element was
 // removed from the DOM after boot, so this rebuilds it from the same server-rendered loader markup
 // (__ROMP_LOADER__). 120s backstop reload so the splash can never trap the user.
+// What the last fleet Restart actually DID, shown once, after the page comes back (the user 2026-07-29).
+// The restart takes the reporting kernel down with it, so the report is written to disk first and read
+// back here. Keyed on the report's own timestamp in localStorage: seen once, never nagged again. The
+// point of the modal is the SKIPS — a diverged remote or a dirty tree is left alone on purpose, and that
+// silence is exactly what would otherwise look like the restart having worked everywhere.
+function _fleetReport(){try{fetch('/fleet-restart',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+var rows=(d&&d.rows)||[];if(!rows.length)return;var sig='r'+(d.t||0);
+try{if(localStorage.getItem('romp:fleetSeen')===sig)return;}catch(e){}
+try{localStorage.setItem('romp:fleetSeen',sig);}catch(e){}
+var back=document.createElement('div');back.id='rfleet-back';
+var panel=document.createElement('div');panel.id='rfleet-panel';
+var okn=rows.filter(function(x){return x.ok===true;}).length,skn=rows.filter(function(x){return x.ok!==true;}).length;
+var h=document.createElement('div');h.className='rfleet-top';
+h.textContent='Restarted the fleet \u00b7 '+okn+' done'+(skn?', '+skn+' not':'');
+panel.appendChild(h);
+var sub=document.createElement('div');sub.className='rfleet-sub';
+sub.textContent='This machine restarted on '+((d.local&&d.local.head)||'its build')+'.';
+panel.appendChild(sub);
+rows.forEach(function(x){var row=document.createElement('div');
+row.className='rfleet-row'+(x.ok===true?' ok':' skip');
+var nm=document.createElement('b');nm.textContent=x.host;row.appendChild(nm);
+var w=document.createElement('span');w.className='rfleet-what';
+w.textContent=(x.ok===true?'':'not done \u00b7 ')+(x.detail||x.action||'');row.appendChild(w);
+panel.appendChild(row);});
+var close=document.createElement('button');close.className='rfleet-x';close.textContent='Close';
+close.onclick=function(){back.remove();};panel.appendChild(close);
+back.appendChild(panel);back.addEventListener('click',function(e){if(e.target===back)back.remove();});
+document.body.appendChild(back);}).catch(function(){});}catch(e){}}
+_fleetReport();
 // Factored to window.__rompRestart so the mobile bottom bar (no rail there) can trigger the same thing.
 window.__rompRestart=function(){
 var boot=document.getElementById('romp-boot');
@@ -15789,8 +15952,31 @@ var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,
 function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
 function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
-function paintIcon(up,busy){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
-var m=mnet();if(m){m.classList.toggle('on',up);m.classList.toggle('busy',busy);}}
+// One host's contribution to the glyph (the user 2026-07-29): 'ok' connected and on this build, 'warn'
+// it needs you (drifted, no kernel answering, errored, or down long enough that romp's backoff has
+// stopped treating it as a blip), 'wait' a fresh drop romp is actively re-dialing. Severity order
+// warn > wait > ok — the two bottom nodes show the two WORST, so one sick host can never hide behind a
+// healthy one, and a single attached host colours both (its state IS the fleet's).
+function hostSev(t){
+if(t.status==='up')return t.outOfDate?'warn':'ok';
+if(t.status==='no-kernel'||t.status==='error')return 'warn';
+if((t.fails||0)>=12)return 'warn';   // past the long-backoff step: not a blip any more, it needs you
+return 'wait';}
+var SEVRANK={warn:0,wait:1,ok:2};
+function fleetNodes(ts){
+if(!ts.length)return null;                       // nothing attached → leave the glyph exactly as it was
+var sev=ts.map(hostSev).sort(function(a,b){return SEVRANK[a]-SEVRANK[b];});
+return [sev[0],sev.length>1?sev[1]:sev[0]];}     // worst, then next-worst (one host paints both)
+function paintNodes(el,nodes){if(!el)return;
+var a=el.querySelector('.rn-a'),b=el.querySelector('.rn-b'),me=el.querySelector('.rn-me');
+if(!a||!b)return;
+a.setAttribute('class','rn-a'+(nodes?' rn-'+nodes[0]:''));
+b.setAttribute('class','rn-b'+(nodes?' rn-'+nodes[1]:''));
+// this machine is by definition reachable — if you can read this, its kernel answered
+if(me)me.setAttribute('class','rn-me'+(nodes?' rn-ok':''));}
+function paintIcon(up,busy,nodes){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
+paintNodes(icon,nodes);
+var m=mnet();if(m){m.classList.toggle('on',up);m.classList.toggle('busy',busy);paintNodes(m,nodes);}}
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
 _auto=!!(d&&d.autoUpdate);
@@ -15798,10 +15984,14 @@ if(autoCb&&!autoCb.disabled)autoCb.checked=_auto;   // mirror the kernel; never 
 // An automatic push in flight counts as BUSY: the icon marches while romp works in the background, which is
 // the whole point of replacing the modal (the user 2026-07-24 — animate the icon so you can see it happening).
 var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');});
-paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);
+paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length,fleetNodes(ts));
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count, plus any
 // automatic update's live phase — so the progress is readable WITHOUT opening the panel.
-icon.title=ts.length?('Remote kernels\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
+var _sv=ts.map(hostSev),_bad=_sv.filter(function(x){return x==='warn';}).length,
+_wt=_sv.filter(function(x){return x==='wait';}).length;
+var _head=!ts.length?'':(_bad?(_bad+' host'+(_bad===1?'':'s')+' need'+(_bad===1?'s':'')+' attention')
+:(_wt?(_wt+' host'+(_wt===1?'':'s')+' disconnected (romp is retrying)'):'all hosts connected and in sync'));
+icon.title=ts.length?('Remote kernels \\u00b7 '+_head+'\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
 return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
 if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{});   // pmode is refresh-local — render must be GIVEN it
@@ -16401,6 +16591,12 @@ def _landing():
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
             ".rail-act.on{color:var(--accent)}"   # the network icon glows accent-blue while a remote is connected
+            # Per-node fleet colour on the network glyph (the user 2026-07-29). The nodes carry their own
+            # fill, so they override the icon's currentColor: accent = connected and on this build,
+            # grey = attached but not answering (romp is dialing), red = needs you (drift, no kernel, or
+            # an outage past a blip). With nothing attached no class is set and the glyph stays exactly
+            # as it was, monochrome.
+            ".rn-ok{fill:var(--accent)}.rn-wait{fill:#8a8a8a}.rn-warn{fill:#e5484d}\n"
             # mid-attach motion cue (the user 2026-07-12): while any tunnel is authorizing/connecting/starting
             # the network glyph turns accent and its connector lines MARCH (dashes flowing down the bus) — the
             # icon visibly "does something" during the seconds an attach takes. Class-driven off the same
@@ -16506,6 +16702,21 @@ def _landing():
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
+            # the fleet-restart report (the user 2026-07-29): shown once when the page comes back, and
+            # weighted toward the hosts it could NOT do — those are the ones needing a decision.
+            "#rfleet-back{position:fixed;inset:0;z-index:220;display:flex;align-items:center;justify-content:center;"
+            "background:rgba(0,0,0,0.55)}"
+            "#rfleet-panel{width:min(560px,94%);max-height:80vh;overflow:auto;background:#252526;"
+            "border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 12px 36px #000000aa;padding:16px 20px;"
+            "color:#ccc;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}"
+            ".rfleet-top{font-size:14px;font-weight:600;color:#e8eaed;margin-bottom:2px}"
+            ".rfleet-sub{color:#8a8a8a;margin-bottom:10px}"
+            ".rfleet-row{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-top:1px solid #33343a}"
+            ".rfleet-row b{flex:0 0 auto;color:#e8eaed}"
+            ".rfleet-what{flex:1 1 auto;min-width:0;color:#8a8a8a}"
+            ".rfleet-row.skip .rfleet-what{color:#e0a030}"
+            ".rfleet-x{margin-top:12px;background:rgba(255,255,255,0.06);color:#ccc;border:1px solid #3a3a3a;"
+            "border-radius:5px;padding:5px 12px;cursor:pointer}"
             # the reconnect cadence on a down row: romp is still dialing, and this says when the next
             # one lands, so a forever-retry never reads as an abandoned row (the user 2026-07-29)
             ".rnet-retry{color:#6e7681;font-variant-numeric:tabular-nums}"
@@ -16773,9 +16984,14 @@ def _landing():
             # render INVISIBLE and only the connector lines show (the whole "single square" saga, 2026-06-30).
             "<svg viewBox='0 0 16 16' width='18' height='18'>"
             "<path d='M8 5 L8 8 M3 11 L3 8 L13 8 L13 11' fill='none' stroke='currentColor' stroke-width='1' stroke-linejoin='round'/>"
-            "<rect x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
-            "<rect x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
-            "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></div>"
+            # The glyph IS the fleet status (the user 2026-07-29): the top node is this machine, the two
+            # below stand for the remotes, and their colour says whether the fleet needs you — connected
+            # and on this build (accent), attached but not answering right now (grey, romp is dialing),
+            # or needs attention (red: drift, no kernel, or an outage past a blip). Painted per /tunnels
+            # poll by paintIcon, so the whole state reads from the rail without opening the panel.
+            "<rect class=rn-me x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect class=rn-a x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect class=rn-b x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
             "</div>"   # /.pane-rail (bottom bar)
@@ -16801,9 +17017,9 @@ def _landing():
             "<button class=mact data-act=net aria-label='Remote kernels' title='Remote kernels'>"
             "<svg viewBox='0 0 16 16' width='18' height='18'>"
             "<path d='M8 5 L8 8 M3 11 L3 8 L13 8 L13 11' fill='none' stroke='currentColor' stroke-width='1' stroke-linejoin='round'/>"
-            "<rect x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
-            "<rect x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
-            "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></button>"
+            "<rect class=rn-me x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect class=rn-a x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect class=rn-b x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></button>"
             # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
             # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
             "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
@@ -17227,19 +17443,35 @@ class Handler(BaseHTTPRequestHandler):
             if not ok:
                 return self._send(403, "forbidden: " + why, "text/plain")
             if u.path == "/restart":
-                # The web Restart button (↻ in the timeline controls). Ack FIRST, then ask the
-                # romp-manager to restart-all — it SIGTERMs this kernel and its exit handler spawns a
-                # fresh one, so new Python code loads (the button then polls /healthz and reloads).
-                # Standalone (no manager) → nothing to restart; the ack still returns.
-                self._send(200, json.dumps({"ok": True, "restarting": True, "boot": _BOOT_ID}), "application/json")
-                mport = os.environ.get("ROMP_MANAGER_PORT")
-                if mport:
-                    try:
-                        c = http.client.HTTPConnection("127.0.0.1", int(mport), timeout=4)
-                        c.request("POST", "/restart-all"); c.getresponse(); c.close()
-                    except Exception:
-                        pass                                   # no manager reachable → nothing to restart
+                # The web Restart button (↻ in the rail). Ack FIRST, then restart — the manager SIGTERMs
+                # this kernel and its exit handler spawns a fresh one, so new Python code loads (the
+                # button then polls /healthz and reloads). Standalone (no manager) → nothing to restart;
+                # the ack still returns.
+                #
+                # FLEET (the user 2026-07-29): with remotes attached, Restart means the whole fleet, not
+                # just this box — the remotes were being left on their old processes and old code with
+                # nothing saying so. The remote half runs in a thread (each host is seconds of network)
+                # and writes its report to disk BEFORE restarting this kernel, because this process does
+                # not survive to report anything. `fleet:false` keeps the local-only behaviour.
+                _fleet = True
+                try:
+                    _fleet = json.loads(raw_body or b"{}").get("fleet", True)
+                except Exception:
+                    pass
+                self._send(200, json.dumps({"ok": True, "restarting": True, "boot": _BOOT_ID,
+                                            "fleet": bool(_fleet)}), "application/json")
+                if _fleet and _remotes:
+                    threading.Thread(target=_fleet_restart_run, daemon=True).start()
+                else:
+                    _restart_this_kernel()
                 return
+            if u.path == "/fleet-restart":
+                # What the last fleet restart did, read back by the page AFTER it reloads (the restart
+                # itself takes the reporting process down with it). Empty when there has never been one.
+                try:
+                    return self._send(200, FLEET_REPORT.read_text(), "application/json")
+                except OSError:
+                    return self._send(200, json.dumps({"rows": []}), "application/json")
             if u.path == "/tick":
                 # Event-driven wake: the Stop / UserPromptSubmit hooks (and the postal drain) poke this the
                 # instant a turn ends / a prompt lands / a message arrives, so the judges run NOW instead of
