@@ -42,8 +42,40 @@ LAUNCHCTL="${ROMP_LAUNCHCTL:-launchctl}"
 PLIST="$LAUNCHD_DIR/$LABEL.plist"
 UNIT="$SYSTEMD_DIR/romp-manager.service"
 
+# The instance-scoping env: the variables that say WHICH romp this service supervises.
+# A second OS user on one machine (a kernel handed to another person) shares the machine's
+# PORT space, so their manager/kernel/bus have to be renumbered; the rest of the profile
+# (state root, Claude config dir, tmux socket) is the same set romp-manager's specEnv hands
+# an aux kernel. The installing shell has them set; the unit did NOT, so a supervised manager
+# came up on the defaults while every foreground `romp` command used the overrides — the
+# manager's control port then collides with the primary user's and the service dies at login,
+# with the CLI still reporting the configured port. Bake whatever is SET at install time, and
+# nothing that isn't, so a default single-user install writes the same unit it always did.
+# (Reinstall after changing one, exactly like PATH.)
+_INSTANCE_VARS=(ROMP_SERVE_PORT ROMP_POSTAL_PORT ROMP_MANAGER_PORT ROMP_STATE_DIR CLAUDE_CONFIG_DIR ROMP_TMUX_SOCKET)
+
+# The SET ones, formatted for the platform: $1 = plist (EnvironmentVariables dict pairs) or
+# unit (systemd Environment= lines). Each line is newline-TERMINATED; the callers decide what
+# the empty case looks like, because the two files want different things there.
+_instance_env_block() {
+    local v out=""
+    for v in "${_INSTANCE_VARS[@]}"; do
+        [[ -n "${!v:-}" ]] || continue
+        if [[ "$1" == plist ]]; then
+            out+="    <key>$v</key><string>${!v}</string>"$'\n'
+        else
+            out+="Environment=$v=${!v}"$'\n'
+        fi
+    done
+    printf '%s' "$out"
+}
+
 write_plist() {
     mkdir -p "$LAUNCHD_DIR" "$STATE"
+    # $() eats the trailing newline; put it back so </dict> keeps its own line. Empty → the
+    # dict closes exactly as it did before this existed.
+    local _plist_env; _plist_env="$(_instance_env_block plist)"
+    if [[ -n "$_plist_env" ]]; then _plist_env+=$'\n'; fi
     cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +93,7 @@ write_plist() {
     <key>PATH</key><string>$PATH</string>
     <key>ROMP_DIR</key><string>$ROMP_DIR</string>
     <key>ROMP_SUPERVISED</key><string>1</string>
-  </dict>
+${_plist_env}  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG</string>
@@ -73,6 +105,10 @@ EOF
 
 write_unit() {
     mkdir -p "$SYSTEMD_DIR" "$STATE"
+    # $() eats the trailing newline; put it back so the blank line before [Install] survives.
+    # Empty → the block collapses to exactly the unit this wrote before it existed.
+    local _unit_env; _unit_env="$(_instance_env_block unit)"
+    if [[ -n "$_unit_env" ]]; then _unit_env+=$'\n'; fi
     cat > "$UNIT" <<EOF
 [Unit]
 Description=romp kernel supervisor (romp-manager)
@@ -85,7 +121,7 @@ RestartSec=2
 Environment=PATH=$PATH
 Environment=ROMP_DIR=$ROMP_DIR
 Environment=ROMP_SUPERVISED=1
-
+${_unit_env}
 [Install]
 WantedBy=default.target
 EOF
