@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const STYLES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 const st = (over: Partial<DirStatus>): DirStatus => ({
   value: "~/GitRepos/api", path: "~/GitRepos/api", exists: true, isDir: true, isFile: false,
@@ -102,4 +103,46 @@ test("Edit reopens the picker with what was typed, cursor in the path", () => {
 
 test("switching host re-asks: the folders on screen belong to the host that was selected", () => {
   assert.match(RENDER, /\/\/ the completions on screen belong to the host that just stopped being selected\s*\n\s*closeDirMenu\(\);/);
+});
+
+// ── round 2 (the user 2026-07-29) ────────────────────────────────────────────────────────────────
+// Three complaints, all about the field acting before it was asked to: the folder list dropped over
+// the dialog the moment the picker opened; the prefilled path was never vetted against the SERVER the
+// session would run on, so a path that cannot exist there only failed after pressing New; and this
+// machine's default was prefilled into a remote's field, where it is meaningless.
+
+test("opening the picker asks about the path but does NOT drop a folder list over the dialog", () => {
+  assert.match(RENDER, /if \(!dirItems\.length \|\| document\.activeElement !== input\) \{ menu\.style\.display = "none"; return; \}/);
+  assert.match(RENDER, /if \(di && !pick\) askDirComplete\(di\.value\);/, "the status is still fetched on open");
+});
+
+test("the field itself goes red for a path that cannot work, amber for one that isn't there yet", () => {
+  assert.match(RENDER, /box\.classList\.toggle\("bad", said\.cls === "bad"\)/);
+  assert.match(RENDER, /box\.classList\.toggle\("warn", said\.cls === "warn"\)/);
+  assert.match(STYLES, /\.picker-dir-input\.bad \{ border-color: #e5484d;/);
+  assert.match(STYLES, /\.picker-dir-input\.warn \{ border-color: #e0a030; \}/);
+});
+
+test("a path that cannot work refuses the create at the field, not after a round trip", () => {
+  assert.match(RENDER, /if \(dirStatus && dirStatus\.value === typed && !dirStatus\.isDir && !dirStatus\.canCreate && typed\)/,
+    "only when the kernel's answer is about what is typed RIGHT NOW");
+  assert.match(RENDER, /That path is a file, not a folder/);
+  assert.match(RENDER, /can't be reached on the selected host/);
+  // a missing-but-creatable path is NOT refused: that is the create-it-or-edit-it offer
+  assert.doesNotMatch(RENDER, /dirStatus\.canCreate \&\& typed\) \{\s*\n\s*pickerError\("That folder doesn't exist/);
+});
+
+test("each host remembers the directory you last started a session in there", () => {
+  assert.match(RENDER, /const DIR_BY_HOST_KEY = "romp:dirByHost"/);
+  assert.match(RENDER, /rememberDir\(req\.host, req\.dir\);/, "recorded when the create is sent");
+  assert.match(RENDER, /all\[host \|\| ""\] = d;/, "local is a host key too, so it keeps its own last path");
+});
+
+test("a remote's prefill is what you used THERE, never this machine's default", () => {
+  // the gear default is one path on this machine; prefilling it into a Linux box's field is a path
+  // that cannot exist there. Blank asks that kernel for its own default instead.
+  assert.match(RENDER, /return host \? "" : \(kernelDefaultDir \|\| loadSettings\(\)\.defaultDir \|\| ""\);/);
+  assert.match(RENDER, /if \(di\) di\.value = dirPrefill\(""\);/, "the open prefill goes through it");
+  assert.match(RENDER, /if \(dirIn\) \{ dirIn\.value = dirPrefill\(h\); askDirComplete\(dirIn\.value\); \}/,
+    "switching host swaps the path AND re-vets it against that host");
 });

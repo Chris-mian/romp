@@ -3789,6 +3789,37 @@ let dirItems: DirItem[] = [];
 let dirActive = -1;                   // highlighted completion row (-1 = none; Enter then creates)
 let dirStatus: DirStatus | null = null;
 
+// The last directory a session was actually started in, per host (the user 2026-07-29). The gear's
+// "Default directory" is ONE path on THIS machine, so it is the wrong answer for a remote: prefilling a
+// Mac's ~/GitRepos into a Linux box's field is a path that cannot exist there. What you used last on
+// that machine is the answer that is right by construction, and it overrides the gear default for that
+// host. With nothing remembered, a remote is left BLANK, which asks that kernel for its own default —
+// the honest fallback, since only that machine knows where its romp lives.
+const DIR_BY_HOST_KEY = "romp:dirByHost";
+
+function dirByHost(): Record<string, string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(DIR_BY_HOST_KEY) || "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch { return {}; }
+}
+
+function rememberDir(host: string, dir: string): void {
+  const d = (dir || "").trim();
+  if (!d) return;
+  const all = dirByHost();
+  all[host || ""] = d;
+  try { localStorage.setItem(DIR_BY_HOST_KEY, JSON.stringify(all)); } catch { /* storage full */ }
+}
+
+/** What the directory field should start with for `host`: what you last used there, else (local only)
+ *  the gear/kernel default, else blank so that kernel answers with its own. */
+function dirPrefill(host: string): string {
+  const remembered = dirByHost()[host || ""];
+  if (remembered) return remembered;
+  return host ? "" : (kernelDefaultDir || loadSettings().defaultDir || "");
+}
+
 function pickerHost(): string {
   const sel = document.querySelector("#picker .picker-host .picker-be-opt.sel") as HTMLElement | null;
   return sel?.dataset.host || "";
@@ -3827,15 +3858,27 @@ function closeDirMenu(): void {
 // deeper level, and it only exists while there is something to choose.
 function renderDirMenu(truncated: boolean): void {
   const line = document.getElementById("picker-dir-status");
+  const said = dirStatusLine(dirStatus);
   if (line) {
-    const said = dirStatusLine(dirStatus);
     line.className = "picker-dir-status" + (said.cls ? " " + said.cls : "");
     line.textContent = said.text;
   }
+  // and the FIELD itself carries it (the user 2026-07-29): a path that cannot work goes red where the
+  // path is, not only in a line under it, so the problem is visible without reading anything.
+  const box = document.getElementById("picker-dir");
+  if (box) {
+    box.classList.toggle("bad", said.cls === "bad");
+    box.classList.toggle("warn", said.cls === "warn");
+  }
+  const input = document.getElementById("picker-dir");
   const menu = document.getElementById("picker-dir-menu");
   if (!menu) return;
   menu.replaceChildren();
-  if (!dirItems.length) { menu.style.display = "none"; return; }
+  // Only when you are IN the field (the user 2026-07-29): opening the + picker asks the kernel about the
+  // prefilled path so the status line can vet it straight away, and that answer used to drop a folder
+  // list over the dialog before anyone had touched it. The status is the passive half; the menu is the
+  // half you asked for by putting the cursor there.
+  if (!dirItems.length || document.activeElement !== input) { menu.style.display = "none"; return; }
   dirItems.forEach((it, i) => {
     const row = el("div", "picker-dir-row" + (i === dirActive ? " active" : ""));
     row.textContent = it.name;
@@ -3910,6 +3953,7 @@ let lastCreate: CreateReq | null = null;
 
 function startCreate(req: CreateReq, mkdir = false): void {
   lastCreate = req;
+  rememberDir(req.host, req.dir);   // what you used on that machine is the right prefill for it next time
   if (vscodeApi) vscodeApi.postMessage({ type: "createSession", ...req, ...(mkdir ? { mkdir: true } : {}) });
   closePicker();
   // a remote session's tab arrives host-prefixed — register the prefixed name so the cue dismisses
@@ -4006,6 +4050,17 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       const name = search.value.trim();
       if (!name) { pickerError("Type the new session's name in the box above first."); search.focus(); return; }
       if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
+      // A path that CANNOT work stops the create here, where the field is, instead of after a round trip
+      // (the user 2026-07-29). Only when the kernel's answer is about what is typed RIGHT NOW: a reply
+      // for older text is not evidence about this one, and the kernel re-validates anyway. A missing but
+      // creatable directory is not refused — that is the "create it or edit it" offer, deliberately.
+      const typed = dirInput.value.trim();
+      if (dirStatus && dirStatus.value === typed && !dirStatus.isDir && !dirStatus.canCreate && typed) {
+        pickerError(dirStatus.isFile ? "That path is a file, not a folder. Pick a folder for the session."
+                                     : "That folder can't be reached on the selected host. Pick another path.");
+        dirInput.focus(); dirInput.select();
+        return;
+      }
       // backend: this picker's toggle (defaults to the gear's "Default backend", overridable per session)
       const beSel = beWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
       // host: local ("") or an attached SSH host — the federation manager routes createSession there.
@@ -4065,7 +4120,10 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
         if (dirIn) dirIn.placeholder = h ? `New-session directory on ${h} (blank = its default)` : "New-session directory (blank = default)";
         // the completions on screen belong to the host that just stopped being selected
         closeDirMenu();
-        if (dirIn) askDirComplete(dirIn.value);
+        // …and so does the PATH: this machine's default is meaningless on another box. Swap in what was
+        // last used there (blank asks that kernel for its own default) and re-vet it against that host,
+        // so a path that cannot exist there says so before anything is created (the user 2026-07-29).
+        if (dirIn) { dirIn.value = dirPrefill(h); askDirComplete(dirIn.value); }
       });
       hostWrapEl.appendChild(b);
     }
@@ -4073,7 +4131,9 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     if (browse0) browse0.disabled = false;   // fresh open defaults back to local
   }
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
-  if (di) di.value = kernelDefaultDir || loadSettings().defaultDir || "";   // the kernel's persisted default (file→env) wins; localStorage is a same-tab cache
+  // the host row resets to local on every open, so this is the local prefill: what you last used here,
+  // else the kernel's persisted default (file→env; localStorage is a same-tab cache)
+  if (di) di.value = dirPrefill("");
   closeDirMenu();                       // a previous open's folder list is not this one's
   if (di && !pick) askDirComplete(di.value);   // the status line says what the prefilled path is, before anything is typed
   // In a filtered view (#only=<tag>), a new session created here would vanish from the view unless its name
