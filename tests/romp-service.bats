@@ -19,6 +19,11 @@ setup() {
     printf '#!/bin/sh\necho fake-node "$@"\n' > "$TEST_DIR/fake-node"
     chmod +x "$TEST_DIR/fake-node"
     export ROMP_NODE_SRC="$TEST_DIR/fake-node"
+    # Running this suite INSIDE a romp session inherits the live kernel's ROMP_SERVE_PORT /
+    # ROMP_MANAGER_PORT, which the unit now bakes — so a default-vs-override test would be
+    # reading the developer's machine instead of the code. Clear the whole instance set; the
+    # tests that want them set them explicitly.
+    unset ROMP_SERVE_PORT ROMP_POSTAL_PORT ROMP_MANAGER_PORT ROMP_STATE_DIR CLAUDE_CONFIG_DIR ROMP_TMUX_SOCKET
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -205,4 +210,77 @@ EOF2
     ROMP_OS_OVERRIDE=Linux run "$SVC" install
     [ "$status" -eq 0 ]
     grep -q "^Environment=ROMP_SUPERVISED=1$" "$ROMP_SYSTEMD_DIR/romp-manager.service"
+}
+
+# ── the instance env: which romp does this service supervise? ──────────────────────────────
+# A second OS user on one machine (a kernel handed to another person) shares the PORT space,
+# so their manager/kernel/bus must be renumbered. The installing shell had the overrides; the
+# unit did not, so the supervised manager came up on the defaults, its control port collided
+# with the primary user's, and the service died at login while every foreground `romp` command
+# still reported the configured port.
+
+@test "install bakes the renumbered ports into the unit (Linux) and the plist (macOS)" {
+    export ROMP_SERVE_PORT=29856 ROMP_POSTAL_PORT=25303 ROMP_MANAGER_PORT=7433
+    ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
+    grep -q "^Environment=ROMP_SERVE_PORT=29856$"   "$unit"
+    grep -q "^Environment=ROMP_POSTAL_PORT=25303$"  "$unit"
+    grep -q "^Environment=ROMP_MANAGER_PORT=7433$"  "$unit"
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    local plist="$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
+    grep -q "<key>ROMP_SERVE_PORT</key><string>29856</string>"  "$plist"
+    grep -q "<key>ROMP_POSTAL_PORT</key><string>25303</string>" "$plist"
+    grep -q "<key>ROMP_MANAGER_PORT</key><string>7433</string>" "$plist"
+}
+
+@test "install bakes the rest of the profile: state root, Claude config dir, tmux socket" {
+    # The same set romp-manager's specEnv hands an aux kernel — a profile that is only half
+    # carried is the silent-divergence bug, not a smaller version of it.
+    export ROMP_STATE_DIR="$TEST_DIR/alt-state" CLAUDE_CONFIG_DIR="$TEST_DIR/alt-claude" ROMP_TMUX_SOCKET=romp-alt
+    ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
+    grep -q "^Environment=ROMP_STATE_DIR=$TEST_DIR/alt-state$"      "$unit"
+    grep -q "^Environment=CLAUDE_CONFIG_DIR=$TEST_DIR/alt-claude$"  "$unit"
+    grep -q "^Environment=ROMP_TMUX_SOCKET=romp-alt$"               "$unit"
+}
+
+@test "a default install writes NO instance env — unchanged for everyone not doing this" {
+    # setup() cleared the set, so this is the single-user machine's install.
+    ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
+    ! grep -q "ROMP_SERVE_PORT\|ROMP_POSTAL_PORT\|ROMP_MANAGER_PORT\|ROMP_STATE_DIR\|CLAUDE_CONFIG_DIR\|ROMP_TMUX_SOCKET" "$unit"
+    # ...and the file is still well-formed around the seam: blank line, then [Install].
+    grep -q "^Environment=ROMP_SUPERVISED=1$" "$unit"
+    grep -q "^\[Install\]$" "$unit"
+    [ -z "$(sed -n '/^Environment=ROMP_SUPERVISED=1$/{n;p;}' "$unit")" ]
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    ! grep -q "ROMP_SERVE_PORT\|ROMP_STATE_DIR\|ROMP_TMUX_SOCKET" "$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
+}
+
+@test "the rendered unit and plist stay well-formed with the instance env present" {
+    export ROMP_SERVE_PORT=29856 ROMP_MANAGER_PORT=7433
+    ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
+    # every Environment= line sits in [Service], i.e. before [Install]
+    local envlast instline
+    envlast="$(grep -n '^Environment=' "$unit" | tail -1 | cut -d: -f1)"
+    instline="$(grep -n '^\[Install\]$' "$unit" | cut -d: -f1)"
+    [ "$envlast" -lt "$instline" ]
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    local plist="$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
+    # the pairs land INSIDE EnvironmentVariables, and the plist still parses
+    if command -v plutil >/dev/null 2>&1; then plutil -lint "$plist" >/dev/null; fi
+    local dictline portline closeline
+    dictline="$(grep -n '<key>EnvironmentVariables</key>' "$plist" | cut -d: -f1)"
+    portline="$(grep -n '<key>ROMP_SERVE_PORT</key>' "$plist" | cut -d: -f1)"
+    closeline="$(grep -n '<key>RunAtLoad</key>' "$plist" | cut -d: -f1)"
+    [ "$dictline" -lt "$portline" ]
+    [ "$portline" -lt "$closeline" ]
 }
