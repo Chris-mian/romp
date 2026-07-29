@@ -380,13 +380,19 @@ def _queue_read_receipt(meta, unread=False):
 # The HUMAN-FACING prose (banner text, headers, the "⏸ parked" tag, REPLY_HINT) is
 # NOT a contract — consumers must not parse it, so it stays free to change.
 
-def format_inbox(msgs):
+def format_inbox(msgs, me_id=""):
     if not msgs:
         return ""
     out = ["\U0001F4EC New message(s) from your romp peers:"]
     for m in msgs:
         d = " (%s)" % m["date"] if m.get("date") else ""
         pk = "  ⏸ parked while you were offline — may be stale" if m.get("park") else ""
+        # Mail from yourself is indistinguishable from a peer's reply once it is rendered, and
+        # reading your own report back as an answer is worse than losing it (see
+        # resolve_recipient, which now refuses to create these). Anything already on disk, or
+        # looped in from a peer, says so.
+        if me_id and m.get("from_id") == me_id:
+            pk += "  (this is YOUR OWN message, arrived back in your inbox: not a reply)"
         mid = ("\n<!-- romp-msg-id: %s -->" % m["id"]) if m.get("id") else ""   # exact id for the timeline join
         if m.get("kind"):
             mid += "\n<!-- romp-msg-kind: %s -->" % m["kind"]   # sender-declared kind, read by the courier
@@ -394,12 +400,16 @@ def format_inbox(msgs):
     out.append("\n" + REPLY_HINT)
     return "\n".join(out)
 
-def format_agents(agents, me):
+def format_agents(agents, me, me_id=""):
     if not agents:
         return "(no live romp sessions)"
     lines = []
     for a in agents:
-        tag = " (you)" if a["name"] == me else (" [remote]" if a.get("remote") else "")
+        # '(you)' is an IDENTITY claim, so match on the session id when we have one. Matching on
+        # the name alone marks every same-named session as you, which is precisely the case where
+        # the reader most needs to know which row is theirs (see resolve_recipient).
+        mine = (a.get("id") == me_id) if me_id else (a["name"] == me)
+        tag = " (you)" if mine else (" [remote]" if a.get("remote") else "")
         br = ("  [%s]" % a["branch"]) if a.get("branch") else ""
         wk = ""
         if a.get("working"):
@@ -581,6 +591,75 @@ def _recip_id_for(to):
     if _safe_id(to) and (MAILROOT / to).is_dir():  # already an id with a mailbox (in-flight mail)
         return to
     return None
+
+def resolve_recipient(to, frm_id=""):
+    """Resolve a recipient reference to exactly ONE destination, or explain why it can't.
+
+    Returns exactly one of:
+      {"kind": "direct", "agent": row}             -> deliver into that session's mailbox here
+      {"kind": "relay", "host": h, "agent": row}   -> hand to the peer bus on `host`
+      {"kind": "error", "error": str, "status": n} -> refuse, and say why
+
+    Addressing is by unqualified session NAME, and a name is unique only by convention: two live
+    sessions can share one, on two hosts or on the same host. Taking the first match was silent,
+    and its worst tiebreak was the SENDER itself. A session that mailed its own name had three
+    substantive reports delivered straight back into its own inbox, rendered exactly like any
+    peer's message, so the loopback CONFIRMED that the peer was reachable and answering, and the
+    reports never went anywhere (reported by a session 2026-07-29). Nothing legitimate sends to
+    self, so identity is checked FIRST; after that, more than one candidate is a refusal that
+    names the alternatives rather than a pick. `host:name` is how the sender says which one.
+    """
+    if ":" in to:
+        want_host, bare = to.split(":", 1)
+    else:
+        want_host, bare = "", to
+    here = self_host()
+    # Everything this bus can deliver to itself: local sessions plus heartbeating remotes. A
+    # host qualifier naming somebody ELSE takes them all out of the running.
+    direct_all = ([] if (want_host and want_host != here)
+                  else [a for a in all_agents() if a["name"] == bare])
+
+    if frm_id and any(a["id"] == frm_id for a in direct_all):
+        return {"kind": "error", "status": 409,
+                "error": "'%s' is THIS session's own name. A message there lands in your OWN inbox "
+                         "looking exactly like a reply from someone else, so nothing was sent. Run "
+                         "list_agents: your own row is the one marked '(you)'. If you meant a peer "
+                         "that happens to share your name, address it as host:name." % bare}
+
+    direct = [a for a in direct_all if not _postal_off(a["id"])]
+    peer_cands = []
+    if peers_on():
+        ph, hit = peer_route(to)
+        peer_cands = [(ph, hit)] if ph else list(hit)
+
+    if len(direct) + len(peer_cands) > 1:
+        labels = []
+        for a in direct:
+            # Two live sessions HERE share the name: no address can separate them, so show the id
+            # rather than print the same candidate twice and call it a choice.
+            labels.append("%s:%s%s" % (here, a["name"],
+                                       (" [%s]" % a["id"][:8]) if len(direct) > 1 else ""))
+        labels += ["%s:%s" % (h, a.get("name") or bare) for h, a in peer_cands]
+        hint = ("Address it as host:name to say which one you mean." if len(direct) <= 1 else
+                "Two sessions on this host answer to that name, so no address distinguishes them. "
+                "Ask the user which they meant, or have one renamed.")
+        return {"kind": "error", "status": 409,
+                "error": "'%s' is ambiguous: %d live sessions answer to it (%s). Nothing was sent. %s"
+                         % (bare, len(direct) + len(peer_cands), ", ".join(sorted(labels)), hint)}
+
+    if direct:
+        return {"kind": "direct", "agent": direct[0]}
+    if peer_cands:
+        return {"kind": "relay", "host": peer_cands[0][0], "agent": peer_cands[0][1]}
+    if direct_all:                        # live, but every candidate has its mailbox off
+        return {"kind": "error", "status": 403,
+                "error": "isolation: the RECIPIENT '%s' has its mailbox OFF (it's in "
+                         "postal isolation — its mailbox icon is toggled off), so it can't receive "
+                         "mail right now. YOUR mailbox is fine; nothing was sent. It'll "
+                         "be reachable once the user toggles ITS mailbox back on." % to}
+    # Addressing is LIVE-only: no dead-session resurrection, so anything left is a typo.
+    return {"kind": "error", "status": 404, "error": "no live romp session named '%s'" % to}
+
 
 def _recall(from_id, to, mid):
     """Unsend UNREAD mail: delete messages still sitting in a recipient's `new/`
@@ -1045,42 +1124,33 @@ class Handler(BaseHTTPRequestHandler):
                                    "recipient is fine; nothing was sent. To fix, ask the USER to toggle THIS "
                                    "session's mailbox back on in the timeline, then retry. When you relay this, "
                                    "say it's YOUR mailbox that's off, not theirs."}, 403)
-            match = [a for a in all_agents() if a["name"] == to and not _postal_off(a["id"])]
-            if not match and peers_on():
+            # ONE resolution step for every case (self, ambiguous, isolated, relayed, unknown) —
+            # see resolve_recipient. A name that answers to more than one live session is refused
+            # here, not tiebroken.
+            res = resolve_recipient(to, frm_id)
+            if res["kind"] == "error":
+                return self._send({"error": res["error"]}, res["status"])
+            if res["kind"] == "relay":
                 # Peer-bus relay: the name lives on a peer host → park in its outbox; the exchange
                 # (or the next reconnect) carries it, and a definitive refusal bounces back to the
-                # sender. 'host:name' addresses a specific host; a bare name must be fleet-unique.
-                phost, hit = peer_route(to)
-                if phost:
-                    mid = "px-" + _unique()
-                    outbox_put(phost, {"mid": mid, "to": hit.get("name") or to, "frm": frm,
-                                       "frm_id": frm_id, "body": body, "kind": kind,
-                                       "t": int(time.time())})
-                    _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "sent", "id": mid,
-                                                  "from": frm, "from_id": frm_id,
-                                                  "to_id": "peer:%s" % phost,
-                                                  "toName": "%s:%s" % (phost, hit.get("name") or to),
-                                                  "body": body, "kind": kind})
-                    if PEERS.get(phost, {}).get("up"):
-                        return self._send({"ok": True, "id": mid,
-                                           "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
-                    return self._send({"ok": True, "id": mid, "parked": phost,
-                                       "note": "parked for %s (unreachable) — delivers on reconnect, "
-                                               "or bounces back to you" % phost})
-                if hit:                              # >1 candidate across hosts → make the sender choose
-                    cands = ", ".join(sorted({"%s:%s" % (h, (a.get("name") or "?")) for h, a in hit}))
-                    return self._send({"error": "ambiguous name '%s' across the fleet — address it as "
-                                       "host:name (one of: %s)" % (to, cands)}, 409)
-            if not match:
-                # Addressing is LIVE-only: no dead-session resurrection. A live-but-
-                # isolated recipient says so; anything else is a typo -> 404.
-                if any(a["name"] == to for a in all_agents()):   # live, but isolated → say so
-                    return self._send({"error": "isolation: the RECIPIENT '%s' has its mailbox OFF (it's in "
-                                       "postal isolation — its mailbox icon is toggled off), so it can't receive "
-                                       "mail right now. YOUR mailbox is fine; nothing was sent. It'll "
-                                       "be reachable once the user toggles ITS mailbox back on." % to}, 403)
-                return self._send({"error": "no live romp session named '%s'" % to}, 404)
-            a0 = match[0]
+                # sender.
+                phost, hit = res["host"], res["agent"]
+                mid = "px-" + _unique()
+                outbox_put(phost, {"mid": mid, "to": hit.get("name") or to, "frm": frm,
+                                   "frm_id": frm_id, "body": body, "kind": kind,
+                                   "t": int(time.time())})
+                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "sent", "id": mid,
+                                              "from": frm, "from_id": frm_id,
+                                              "to_id": "peer:%s" % phost,
+                                              "toName": "%s:%s" % (phost, hit.get("name") or to),
+                                              "body": body, "kind": kind})
+                if PEERS.get(phost, {}).get("up"):
+                    return self._send({"ok": True, "id": mid,
+                                       "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
+                return self._send({"ok": True, "id": mid, "parked": phost,
+                                   "note": "parked for %s (unreachable) — delivers on reconnect, "
+                                           "or bounces back to you" % phost})
+            a0 = res["agent"]
             mid = deliver(a0["id"], frm, frm_id, body, kind=kind)
             if not a0.get("remote", False):
                 # All through the kernel (it owns the tmux status bar + the wake), off-thread so send latency
@@ -2182,6 +2252,8 @@ Before editing a shared repo, run list_agents and read peers' branches + working
 
 Addressing is live-only: you can message only currently-live sessions (list_agents). Dead names error, with no parked mail or reviving.
 
+A name is not guaranteed unique. When more than one live session answers to it the send is refused and the candidates are listed as `host:name`: pick one and resend rather than assuming the first. Your OWN name is refused outright, because a message there lands in your own inbox looking exactly like a reply from someone else. Your row in list_agents is the one marked `(you)`.
+
 An isolation refusal is FINAL. A mailbox toggled off is a boundary the user drew: if send_message refuses for isolation, do NOT reroute the content through any other door (the kernel's /send route, tmux keystrokes, shared files, another peer as relay). Report the refusal to the user and stop — only they lift the isolation.
 """
 
@@ -2226,8 +2298,16 @@ def _mcp_call(name, args):
             return ("Need 'kind': one of delegate (the recipient owns the work now), "
                     "coordinate (aligning/heads-up), or question (you need an answer).", True)
         try:
-            _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
-                                    "kind": kind})
+            resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
+                                           "kind": kind})
+            # "Delivered" has to MEAN delivered. A cross-host send is only relaying (or parked for
+            # an unreachable host, or held for the human on the far side), and the bus says so in
+            # `note` — which this dropped on the floor, so every one of those read as delivered and
+            # the sender had no way to tell. cli_send has echoed the note since 2026-07-27; this is
+            # the same honesty on the tool surface.
+            note = (resp or {}).get("note")
+            if note:
+                return "Message to '%s': %s" % (to, note), False
             # Echo what the DECLARATION did, not just that bytes moved (the user 2026-07-26): a question
             # or delegate records the SENDER as waiting on the recipient — a real hold that a mis-declared
             # kind creates by accident (a "question" whose prose said no reply was needed parked its
@@ -2247,10 +2327,10 @@ def _mcp_call(name, args):
         if not mid:
             return "Not inside a romp session.", True
         msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
-        return (format_inbox(msgs) or "No new messages."), False
+        return (format_inbox(msgs, mid) or "No new messages."), False
     if name == "list_agents":
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
-        return format_agents(res.get("agents", []), me), False
+        return format_agents(res.get("agents", []), me, mid), False
     if name == "set_working":
         if not mid:
             return "Not inside a romp session.", True
@@ -2369,7 +2449,7 @@ def cli_inbox(peek=False):
         res = _http("GET", "/inbox?id=%s&peek=%d" % (urllib.parse.quote(mid), 1 if peek else 0))
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
-    text = format_inbox(res.get("messages", []))
+    text = format_inbox(res.get("messages", []), mid)
     if text:
         print(text)
     return 0
@@ -2377,12 +2457,12 @@ def cli_inbox(peek=False):
 def cli_agents():
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
-    me = my_name()
+    me, mid = my_name(), my_id()
     try:
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
-    print(format_agents(res.get("agents", []), me))
+    print(format_agents(res.get("agents", []), me, mid))
     return 0
 
 def cli_working(argv):
@@ -2472,7 +2552,7 @@ def cli_drain(argv):
         res = _http("GET", "/drain?id=%s" % urllib.parse.quote(sid))
     except Exception:
         return 0
-    text = format_inbox(res.get("messages", []))
+    text = format_inbox(res.get("messages", []), sid)
     if text:
         print(text)
     return 0

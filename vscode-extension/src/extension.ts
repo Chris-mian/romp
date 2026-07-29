@@ -147,7 +147,10 @@ function cfgPort(key: "kernelPort" | "managerPort", env: string | undefined, dfl
   if (typeof v === "number" && v > 0) return v;
   return Number(env) || dflt;
 }
-function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT, 29855); }
+// Either spelling of the kernel's listen port (bin/romp-serve owns that seam), so a window opened
+// from a shell that exported only the documented ROMP_KERNEL_PORT attaches to that kernel instead
+// of silently trying the default one.
+function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT || process.env.ROMP_KERNEL_PORT, 29855); }
 function managerPort(): number { return cfgPort("managerPort", process.env.ROMP_MANAGER_PORT, 7432); }
 
 let ctx: vscode.ExtensionContext;

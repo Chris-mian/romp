@@ -10,6 +10,9 @@ ROMP_SERVE="$BIN/romp-serve"
 ROMP_SCRIPT="$BIN/romp"
 
 setup() {
+    # Running this suite INSIDE a romp session inherits the live kernel's port env, which would
+    # turn every "unset" case below into an override (same trap tests/romp-service.bats documents).
+    unset ROMP_SERVE_PORT ROMP_KERNEL_PORT
     TEST_DIR="$(mktemp -d)"
     export HOME="$TEST_DIR/home"
     export XDG_STATE_HOME="$HOME/.local/state"
@@ -19,6 +22,7 @@ setup() {
     cat > "$ROMP_KERNEL_BIN" << 'STUB'
 #!/usr/bin/env bash
 echo "PORT=${ROMP_KERNEL_PORT:-}"
+echo "SERVEPORT=${ROMP_SERVE_PORT:-}"
 echo "HOST=${ROMP_SERVE_HOST:-}"
 echo "NOOPEN=${ROMP_KERNEL_NO_OPEN:-}"
 echo "MGRPID=${ROMP_MANAGER_PID:-}"
@@ -65,6 +69,60 @@ teardown() { rm -rf "$TEST_DIR"; }
     ROMP_MANAGER_PID=4242 ROMP_SERVE_PORT=29855 run "$ROMP_SERVE"
     [[ "$output" == *"PORT=29855"* ]]
     [[ "$output" == *"MGRPID=4242"* ]]
+}
+
+# ─── the two spellings of the listen port ───────────────────────────────────────────────────
+# ROMP_SERVE_PORT (service-facing) and ROMP_KERNEL_PORT (process-facing) name ONE value, and
+# this script is the seam where they meet. It used to read only the first and stamp it over the
+# second, so renumbering a second kernel with the documented knob alone put the kernel on the
+# primary's port while the CLI kept printing the configured one.
+
+@test "romp-serve: ROMP_KERNEL_PORT alone (the documented knob) reaches the kernel" {
+    ROMP_KERNEL_PORT=29856 run "$ROMP_SERVE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PORT=29856"* ]]
+}
+
+@test "romp-serve: exports BOTH spellings from the one resolved port" {
+    # Nothing downstream (the postal bus, the wake hook, a `romp` verb in a session) may read a
+    # stale copy of the other name.
+    ROMP_KERNEL_PORT=29856 run "$ROMP_SERVE"
+    [[ "$output" == *"PORT=29856"* ]]
+    [[ "$output" == *"SERVEPORT=29856"* ]]
+    ROMP_SERVE_PORT=29857 run "$ROMP_SERVE"
+    [[ "$output" == *"PORT=29857"* ]]
+    [[ "$output" == *"SERVEPORT=29857"* ]]
+}
+
+@test "romp-serve: --port settles a disagreement and wins over both env spellings" {
+    # The manager always passes --port; that is the kernel's own name for itself, so a stale
+    # inherited env copy must never override it.
+    ROMP_SERVE_PORT=29855 ROMP_KERNEL_PORT=29999 run "$ROMP_SERVE" --port 30001
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PORT=30001"* ]]
+    [[ "$output" == *"SERVEPORT=30001"* ]]
+}
+
+@test "romp-serve: conflicting spellings with no --port REFUSE to start" {
+    # A silent pick here is the collision that reports success. Fail loudly instead.
+    ROMP_SERVE_PORT=29855 ROMP_KERNEL_PORT=29856 run "$ROMP_SERVE"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"29855"* ]]
+    [[ "$output" == *"29856"* ]]
+    ! printf '%s\n' "$output" | grep -q '^PORT='     # the stub kernel never ran
+}
+
+@test "romp-serve: matching spellings are not a conflict" {
+    ROMP_SERVE_PORT=29856 ROMP_KERNEL_PORT=29856 run "$ROMP_SERVE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PORT=29856"* ]]
+}
+
+@test "romp-serve: neither set and no --port leaves both unset (the kernel's own default)" {
+    run "$ROMP_SERVE"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "$output" | grep '^PORT=')" = "PORT=" ]
+    [ "$(printf '%s\n' "$output" | grep '^SERVEPORT=')" = "SERVEPORT=" ]
 }
 
 @test "romp --serve: removed — rejected as unknown, writes no state" {

@@ -79,6 +79,7 @@ test('specEnv carries the whole isolation story, and only what the spec sets', (
   const full = specEnv({ id: 'alice', port: 30001, postalPort: 30002, stateDir: '/tmp/ra',
                          claudeConfigDir: '/tmp/ca', tmuxSocket: 'romp-alice' }, base, ids);
   assert.equal(full.ROMP_SERVE_PORT, '30001');
+  assert.equal(full.ROMP_KERNEL_PORT, '30001', 'both spellings of the listen port move together');
   assert.equal(full.ROMP_POSTAL_PORT, '30002');
   assert.equal(full.ROMP_STATE_DIR, '/tmp/ra');
   assert.equal(full.CLAUDE_CONFIG_DIR, '/tmp/ca');
@@ -90,6 +91,16 @@ test('specEnv carries the whole isolation story, and only what the spec sets', (
     assert.ok(!(k in bare), k + ' must not leak into an unscoped kernel (main keeps the process defaults)');
   }
   assert.ok(!('ROMP_STATE_DIR' in base), 'the base object is never mutated');
+});
+
+test('specEnv overwrites a stale inherited ROMP_KERNEL_PORT from the base env', () => {
+  // The manager's own env may carry the PRIMARY kernel's port under the other spelling. An aux
+  // kernel inheriting that copy is how one profile's sessions end up addressing another
+  // profile's kernel, so the spec's port has to win under BOTH names.
+  const base = { PATH: '/usr/bin', ROMP_KERNEL_PORT: '29855', ROMP_SERVE_PORT: '29855' };
+  const env = specEnv({ id: 'alice', port: 30001 }, base, { managerPid: 42, controlPort: CTRL });
+  assert.equal(env.ROMP_KERNEL_PORT, '30001');
+  assert.equal(env.ROMP_SERVE_PORT, '30001');
 });
 
 test('fileStamp changes when the file changes — the staleness detector', () => {

@@ -30,7 +30,11 @@ const fs = require('fs');
 
 const HOST = '127.0.0.1';
 const CONTROL_PORT = Number(process.env.ROMP_MANAGER_PORT) || 7432;
-const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || 29855;
+// ROMP_SERVE_PORT and ROMP_KERNEL_PORT are two spellings of the primary kernel's listen port
+// (bin/romp-serve owns that seam). Accept either, so a profile renumbered with only the
+// documented ROMP_KERNEL_PORT doesn't leave the manager defaulting to 29855 and spawning a
+// kernel straight into the other instance's port.
+const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || Number(process.env.ROMP_KERNEL_PORT) || 29855;
 
 // The PRIMARY kernel's state root — where the aux-kernel registry file lives (plans/multi-kernel.md
 // phase 3). Aux kernels get their OWN roots via their spec's stateDir; the registry itself is the
@@ -124,7 +128,11 @@ function loadSpecs(file, mainPort, controlPort) {
 // bus) inherit them, so one env set at spawn scopes state, sessions, and mail per kernel.
 function specEnv(spec, base, ids) {
   const env = Object.assign({}, base, {
+    // BOTH spellings of the listen port, always overwritten together: `base` is the manager's own
+    // env, which may carry the PRIMARY kernel's ROMP_KERNEL_PORT, and an aux kernel inheriting
+    // that stale copy is how one profile's sessions end up talking to another profile's kernel.
     ROMP_SERVE_PORT: String(spec.port),
+    ROMP_KERNEL_PORT: String(spec.port),
     ROMP_MANAGER_PID: String(ids.managerPid),  // → kernel's parent-death watchdog
     ROMP_MANAGER_PORT: String(ids.controlPort),
   });

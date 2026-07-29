@@ -23,7 +23,7 @@ setup() {
     # ROMP_MANAGER_PORT, which the unit now bakes — so a default-vs-override test would be
     # reading the developer's machine instead of the code. Clear the whole instance set; the
     # tests that want them set them explicitly.
-    unset ROMP_SERVE_PORT ROMP_POSTAL_PORT ROMP_MANAGER_PORT ROMP_STATE_DIR CLAUDE_CONFIG_DIR ROMP_TMUX_SOCKET
+    unset ROMP_SERVE_PORT ROMP_KERNEL_PORT ROMP_POSTAL_PORT ROMP_MANAGER_PORT ROMP_STATE_DIR CLAUDE_CONFIG_DIR ROMP_TMUX_SOCKET
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -235,6 +235,19 @@ EOF2
     grep -q "<key>ROMP_MANAGER_PORT</key><string>7433</string>" "$plist"
 }
 
+@test "install bakes ROMP_KERNEL_PORT — the spelling the docs tell people to set" {
+    # docs/reference.md names ROMP_KERNEL_PORT and not ROMP_SERVE_PORT, so someone renumbering a
+    # second instance by the book sets only this one. It used to reach no unit at all: the
+    # supervised manager came up on the default and the new kernel bound the primary's port.
+    export ROMP_KERNEL_PORT=29856
+    ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    grep -q "^Environment=ROMP_KERNEL_PORT=29856$" "$ROMP_SYSTEMD_DIR/romp-manager.service"
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    grep -q "<key>ROMP_KERNEL_PORT</key><string>29856</string>" "$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
+}
+
 @test "install bakes the rest of the profile: state root, Claude config dir, tmux socket" {
     # The same set romp-manager's specEnv hands an aux kernel — a profile that is only half
     # carried is the silent-divergence bug, not a smaller version of it.
@@ -252,7 +265,7 @@ EOF2
     ROMP_OS_OVERRIDE=Linux run "$SVC" install
     [ "$status" -eq 0 ]
     local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
-    ! grep -q "ROMP_SERVE_PORT\|ROMP_POSTAL_PORT\|ROMP_MANAGER_PORT\|ROMP_STATE_DIR\|CLAUDE_CONFIG_DIR\|ROMP_TMUX_SOCKET" "$unit"
+    ! grep -q "ROMP_SERVE_PORT\|ROMP_KERNEL_PORT\|ROMP_POSTAL_PORT\|ROMP_MANAGER_PORT\|ROMP_STATE_DIR\|CLAUDE_CONFIG_DIR\|ROMP_TMUX_SOCKET" "$unit"
     # ...and the file is still well-formed around the seam: blank line, then [Install].
     grep -q "^Environment=ROMP_SUPERVISED=1$" "$unit"
     grep -q "^\[Install\]$" "$unit"
