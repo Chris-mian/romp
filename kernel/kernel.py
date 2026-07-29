@@ -4959,6 +4959,52 @@ def _port_open(port):
         s.close()
 
 
+def _primary_addr():
+    """The local address this machine would send from to reach the outside world, or "" when it has no
+    route at all.
+
+    This is romp's handle on THE NETWORK UNDER US MOVED (the user 2026-07-29, who pulled an ethernet cord
+    and moved to Wi-Fi). That is a real event with an exact signature — the source address the routing
+    table picks changes — and it is the event two separate time-based behaviours were approximating: a
+    backoff ladder waiting out up to 15 minutes before its next dial, and every live ssh sitting on a
+    transport that died the instant the interface went away. Both should key on the move itself.
+
+    A UDP `connect` sends no packets; it only asks the kernel which route and source address it would use.
+    The target is TEST-NET-1 (RFC 5737), reserved for documentation and never routed anywhere, so this
+    cannot touch a real host even by accident. No subprocess, no new thread, no dependency."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))
+        return s.getsockname()[0] or ""
+    except OSError:
+        return ""                       # no route: unplugged, asleep, or between networks
+    finally:
+        s.close()
+
+
+def _host_reachable(host):
+    """Does a PLAIN ssh to this host work right now? Returns (ok, reason).
+
+    "I could ssh in the whole time" was the one fact that made this morning's outage obvious to a human
+    and invisible to romp (the user 2026-07-29). It is the discriminator that matters: an ssh that
+    succeeds while our tunnel dial fails means the host, the network and sshd are all fine and the fault
+    is ours — the opposite of what a row reading "no kernel answering" tells you. So romp asks the same
+    question the user did, and puts the answer next to the failure.
+
+    Deliberately carries NO forwards: this must test the host and nothing else, so it cannot fail for the
+    same reason the tunnel did. Only ever run on the death of a dial, never on a poll."""
+    if not _safe_ssh_host(host):
+        return False, "invalid host"
+    try:
+        p = subprocess.run([SSH_BIN, "-n", "-T"] + _SSH_OPTS + ["--", host, "true"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+        return p.returncode == 0, _ssh_err(p.stderr)
+    except subprocess.TimeoutExpired:
+        return False, "ssh did not answer within 20s"
+    except Exception as e:
+        return False, str(e)
+
+
 def _fetch_remote_token(host):
     """Read the remote kernel's serve-token over ssh so the browser can authorize against it (the token
     bypasses the Origin gate — see _authorize). Best-effort: '' if ssh fails or the file is absent (the
@@ -6638,14 +6684,41 @@ def _tunnel_supervisor():
     each host by polling its kernel's /sessions THROUGH the -L tunnel — the host↔sid map the wake-router uses
     to forward a /deliver to the owning remote kernel. Also polls each up host's /version so the dashboard can
     flag (and offer to update) a remote running older code than this local kernel (the user 2026-07-04)."""
+    last_addr = [None]                     # the route we last saw; None until the first pass reads one
     while True:
         _tunnel_wake.clear()
         try:
             with _remotes_lock:
                 rows = list(_remotes.values())
+            # THE NETWORK UNDER US MOVED (the user 2026-07-29, who pulled an ethernet cord and moved to
+            # Wi-Fi, then could not get romp back for a long stretch while plain ssh worked throughout).
+            # Two things were true the moment that cord came out and neither was acted on:
+            #   - every live ssh was riding a transport that no longer existed, and nothing here knew,
+            #     so each one had to be noticed the slow way or not at all;
+            #   - the backoff ladder kept counting, so a host whose route was restored seconds later
+            #     could still be owed up to 15 minutes of waiting before its next dial.
+            # A route change is an exact event (see _primary_addr), so both now key on it: drop every
+            # tunnel, because they are all dead by construction, and clear every ladder, because the
+            # thing they were backing off from is over. The next pass dials all of them fresh.
+            addr = _primary_addr()
+            if last_addr[0] is not None and addr != last_addr[0]:
+                _tunnel_log("-", "network-changed", was=last_addr[0] or "(no route)",
+                            now=addr or "(no route)", hosts=len(rows))
+                with _remotes_lock:
+                    for r in rows:
+                        if r["host"] not in _remotes or r.get("checkin_peer"):
+                            continue
+                        r["fails"], r["next_try"] = 0, 0
+                        if _tunnel_proc_alive(r):
+                            try:
+                                r["proc"].terminate()   # its transport went with the old address
+                            except Exception:
+                                pass
+            last_addr[0] = addr
             for r in rows:
                 now = time.time()
                 skip = False
+                probe_ssh = None            # a dial died this pass → ask whether the HOST is fine (below)
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
@@ -6662,11 +6735,13 @@ def _tunnel_supervisor():
                             err = _tunnel_stderr(r["host"])
                             _tunnel_log(r["host"], "died", code=r["proc"].poll(), stderr=err,
                                         fails=r.get("fails", 0))
+                            probe_ssh = err      # the ssh probe runs below, OUTSIDE this lock
                             if _forward_bind_failed(err):
                                 r["detail"] = ("a forwarded port was already taken, so the tunnel could "
                                                "not open — romp is retrying on fresh ports")
                                 _remint_forward_ports(r)
                                 r["fails"], r["next_try"] = 0, 0   # a NEW argv deserves a fresh ladder
+                                probe_ssh = None                   # cause already known; don't ask twice
                         # BACK OFF re-spawns (exponential — see _tunnel_backoff) so an unreachable host
                         # isn't hammered every tick: repeated ssh attempts can trip the remote sshd's
                         # rate-limit (the user 2026-06-30). It never stops dialing (the user 2026-07-29);
@@ -6680,6 +6755,25 @@ def _tunnel_supervisor():
                             if r.get("status") != "error":
                                 r["status"] = "down"
                             skip = True                        # backing off — don't poll a down tunnel
+                if probe_ssh is not None:
+                    # A dial just died. Ask the question the user asks — "but can I ssh to it?" — because
+                    # the answer splits the two cases that look identical on the board and want opposite
+                    # responses. ssh works and our dial does not: the host, the network and sshd are all
+                    # fine, this is romp's bug, and the row must SAY so rather than implying the far end is
+                    # down. ssh fails too: the machine really is away, and the ladder is doing its job.
+                    # Costs one ssh per DEATH (never per poll), and deaths are already rate-limited by the
+                    # backoff. Outside _remotes_lock on purpose: it is a network round-trip, and holding
+                    # the lock across it would stall every route that reads the remote registry.
+                    ok, why = _host_reachable(r["host"])
+                    _tunnel_log(r["host"], "host-probe", sshOk=ok, sshErr=why, dialErr=probe_ssh)
+                    with _remotes_lock:
+                        if r["host"] in _remotes:
+                            if ok:
+                                _remotes[r["host"]]["detail"] = (
+                                    "ssh to %s works, but romp's tunnel would not open — this is romp's "
+                                    "end, not the host's. See tunnel-dials.jsonl." % r["host"])
+                            elif why:
+                                _remotes[r["host"]]["detail"] = "cannot reach %s: %s" % (r["host"], why)
                 if skip:
                     continue
                 up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
@@ -6717,6 +6811,14 @@ def _tunnel_supervisor():
                             r["detail"] = ("the link to %s stopped carrying traffic — romp is dialing "
                                            "again") % r["host"]
                     if not (st == "down" and r.get("status") == "error") and not r.get("booting"):
+                        # Every status CHANGE on the record, so an outage leaves a timeline instead of a
+                        # single end-state to reason backwards from: when it flipped, what the end-to-end
+                        # probe said, and how many dials had failed by then. On the transition only — a
+                        # steady row writes nothing, so a healthy fleet costs no lines at all.
+                        if st != r.get("status"):
+                            _tunnel_log(r["host"], "status", was=r.get("status") or "(new)", now=st,
+                                        probe=r.get("_probe") or "", fails=r.get("fails", 0),
+                                        portOpen=bool(up))
                         r["status"] = st                   # keep a richer spawn-error label over plain 'down';
                         #                                    a Start in flight (`booting`) owns the row's phase
                     if st == "up":
