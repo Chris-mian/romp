@@ -216,12 +216,14 @@ class ErrorCenterExecutes(unittest.TestCase):
         # drowns the rest). The toggles ARE the chips, in the same order entries wear them.
         # 'jump failed' joined on 2026-07-28: a deep-link that can't find its message in the chat files
         # an entry now, rather than only flashing a toast that leaves nothing to point at afterwards.
+        # 'sdk' joined on 2026-07-28: SDK-backend failures used to live only in the kernel
+        # log, so a session whose thread died just looked odd with nothing to look at.
         a = self.out["filterBar"]
-        self.assertEqual(a["n"], 10)
+        self.assertEqual(a["n"], 11)
         self.assertEqual(a["first"], "offline")
         self.assertEqual(a["labels"],
                          "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error|"
-                         "jump failed|cleared")
+                         "sdk|jump failed|cleared")
 
     def test_muting_a_kind_hides_counts_and_live_cue_but_keeps_the_entries(self):
         a = self.out["afterMute"]

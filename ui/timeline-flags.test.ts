@@ -21,8 +21,12 @@ test("ONE gear column sits between the name and the model (live lanes only)", ()
   assert.match(SRC, /if \(s\.live\) \{[\s\S]*?gearIcon\(gcx, gcy, MODEL_FG\)/);
 });
 
-test("the gear is DRAWN (toothed ring + filled hub) and opens the menu on POINTERDOWN (redraw-proof)", () => {
+test("the gear is DRAWN (hollow toothed ring) and opens the menu on POINTERDOWN (redraw-proof)", () => {
   assert.match(SRC, /function gearIcon\(cx, cy, color\)/);
+  // hollow: no hub dot (the user 2026-07-28), matching the ⛭ the rail's settings button wears
+  const gear = SRC.slice(SRC.indexOf("function gearIcon"), SRC.indexOf("const LANE_TOGGLES"));
+  assert.doesNotMatch(gear, /fill: color/, "the centre stays empty");
+  assert.match(gear, /r: 3\.9, fill: 'none'/);
   assert.match(SRC, /const ghit = el\('rect', \{[^}]*fill: 'transparent', 'pointer-events': 'all'/);
   // pointerdown, not click: a lane redraw between mousedown and mouseup replaced the hit-rect so a
   // plain 'click' never fired (the original direct-toggle lesson, 2026-06-23) — the menu opens on press

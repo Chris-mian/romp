@@ -79,3 +79,22 @@ export function clearBoundaryNotices(rows: ClearNoticeRow[], seen: Set<string>):
   }
   return { notices, active };
 }
+
+// SDK-backend problems (the kernel's sdkNotices payload — SdkBackend._log's problem ring). Same
+// episode-identity contract: the kernel signs each OCCURRENCE (its start + the ring's sequence), so
+// re-renders and reloads never re-log, while a repeat of the same failure is a NEW occurrence and logs
+// again (the bell's own coalescing turns a flood into one counted row). Until 2026-07-28 these went to
+// the kernel log alone, so a session whose thread died just looked odd, with nothing to look at.
+export interface SdkNoticeRow { sig: string; t: number; text: string; }
+
+export function sdkProblemNotices(rows: SdkNoticeRow[], seen: Set<string>): { notices: BadgeNotice[]; active: Set<string> } {
+  const notices: BadgeNotice[] = [];
+  const active = new Set<string>();
+  for (const r of rows ?? []) {
+    if (!r || !r.sig || !r.text) continue;   // a blank line is not an entry
+    active.add(r.sig);
+    if (seen.has(r.sig)) continue;
+    notices.push({ kind: "sdk", text: cap(r.text, 240), sig: r.sig, sid: "", itemId: "" });
+  }
+  return { notices, active };
+}

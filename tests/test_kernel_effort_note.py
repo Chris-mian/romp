@@ -63,8 +63,11 @@ class EffortNoteSourcePins(unittest.TestCase):
         # written inside the `if self._effort_pending:` reconnect-clear block, so the timestamp is the moment
         # the new effort became REAL — not when it was requested (a busy session's in-flight turn ran the old
         # effort). append_effort_applied is called BEFORE the pending flag is cleared, so it still has the value.
-        self.assertIn("append_effort_applied(self.state_dir, self.sid, self._effort_pending)", BACKEND_SRC)
-        i = BACKEND_SRC.index("append_effort_applied(self.state_dir")
+        # self.backend.state_dir, not self.state_dir: a session has no state_dir of its own, and the typo
+        # raised an AttributeError straight out of the connect path — killing the session thread on any
+        # /effort switch that applied at reconnect (fixed 2026-07-28, found in the backend's crash log).
+        self.assertIn("append_effort_applied(self.backend.state_dir, self.sid, self._effort_pending)", BACKEND_SRC)
+        i = BACKEND_SRC.index("append_effort_applied(self.backend.state_dir")
         j = BACKEND_SRC.index('self._effort_pending = ""', i)
         self.assertLess(i, j, "the marker is written while _effort_pending still holds the applied value")
 
