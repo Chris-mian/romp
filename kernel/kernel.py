@@ -11,7 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
-import json, os, re, signal, sys, time, threading, traceback, base64, bisect, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, queue, re, signal, socket, sys, time, threading, traceback, base64, bisect, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -13623,7 +13623,75 @@ def _ws_accept(key):
     return base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
 
 
-def _ws_send(wfile, lock, text):
+# How far behind a client may fall before it is treated as wedged and dropped, measured in QUEUED BYTES.
+# Bytes, not frames: a frame count measures the PRODUCER's burst rate, not the client's health. A push
+# that enqueues several payloads back-to-back can outrun a perfectly healthy client's sender thread by a
+# dozen frames in microseconds, and a frame-count cap drops it — a false positive strictly worse than the
+# stall being fixed here (caught by test_ws_send_bounded, which overran a 32-frame cap with 40 keepalives
+# a healthy client would have drained fine). Bytes track the thing that actually matters: a client behind
+# by 16 MB of view payloads has stopped reading, while any burst of ~40-byte keepalives is noise.
+WS_QUEUE_BYTES = int(os.environ.get("ROMP_WS_QUEUE_BYTES", str(16 * 1024 * 1024)))
+
+
+# Every client OWNS a queue and a sender thread, and the shared push/heartbeat loops only ever ENQUEUE.
+#
+# They used to write to the socket directly, which is the bug this fixes: a client that stops draining — a
+# paused tab, a stalled ssh tunnel to a federated peer — fills the kernel's send buffer, and the write
+# parks the CALLING thread. That thread is shared. _keepalive_all walks every client serially, so one
+# wedged client starves every OTHER client's heartbeat; they all pass the shim's STALE_MS (30s) having
+# received nothing at all, and force-close in lockstep. The whole dashboard "loses the live connection" at
+# once, repeatedly, while the kernel itself is perfectly healthy (diagnosed 2026-07-28 from the panes' own
+# drop logs: chat, feed and timeline each dropping at IDENTICAL 35s intervals = STALE_MS plus one 5s
+# watchdog tick — three independent sockets going silent at the same instant is one shared upstream stall,
+# not three socket failures).
+#
+# A timeout on the write cannot fix this, which is worth recording so it is not "simplified" back:
+#   - settimeout() puts the socket in NON-BLOCKING mode, and this client's handler thread is parked in a
+#     blocking read on that same socket. dup() does not escape it either — a duplicate shares the
+#     file-status flags.
+#   - select()-then-send() does not bound it: on Linux a BLOCKING send() transmits the whole buffer,
+#     blocking as needed (sk_stream_wait_memory). Short writes are a non-blocking-socket behaviour, so
+#     "writable" only promises the first byte, not the frame.
+# Isolating the blocking write on a thread the shared loops never wait for is what actually holds.
+def _ws_sender(q, sock, lock, client):
+    """Drain one client's queue onto its socket. Blocking here is FINE and is the entire point — it blocks
+    only this client's own thread. A dead socket ends the thread and marks the client for reaping."""
+    while True:
+        s = q.get()
+        if s is None:                          # teardown sentinel from the handler's finally
+            return
+        try:
+            _ws_send(sock, lock, s)
+        except OSError:
+            client["alive"] = False
+            return
+        finally:
+            with client["qlock"]:              # released whether the frame landed or the socket died
+                client["qbytes"] -= len(s)
+
+
+def _mk_ws_send(q, sock, client):
+    """The client's `send`: enqueue, never block. Past WS_QUEUE_BYTES the peer has stopped draining, so the
+    client is dropped and its socket shut down — which also unblocks its sender thread, parked in a write
+    that will now fail, instead of leaking it for the life of the kernel."""
+    def send(s):
+        with client["qlock"]:
+            if client["qbytes"] + len(s) > WS_QUEUE_BYTES:
+                client["alive"] = False
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                # Raise: every caller already treats an exception from send as "mark this client dead".
+                raise OSError("ws client %s is %d bytes behind — dropping"
+                              % (client.get("app"), client["qbytes"]))
+            client["qbytes"] += len(s)
+        q.put(s)                               # unbounded; the byte budget above is the real bound
+    return send
+
+
+def _ws_send(sock, lock, text):
+    """Frame and write one text message. Called ONLY from that client's sender thread (see _ws_sender)."""
     data = text.encode("utf-8")
     n = len(data)
     hdr = bytearray([0x81])                   # FIN + text frame
@@ -13634,8 +13702,7 @@ def _ws_send(wfile, lock, text):
     else:
         hdr.append(127); hdr += struct.pack(">Q", n)
     with lock:
-        wfile.write(bytes(hdr) + data)
-        wfile.flush()
+        sock.sendall(bytes(hdr) + data)
 
 
 def _ws_pong(wfile, lock, payload):
@@ -17961,7 +18028,14 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True              # hijacked socket — don't let the handler keep-alive after
         _client_seen[0] = time.time()
         lock = threading.Lock()
-        client = {"app": app, "send": lambda s: _ws_send(self.wfile, lock, s), "alive": True}
+        # Frames are ENQUEUED, never written by the caller: one wedged client must not stall the shared
+        # push/heartbeat loops (see _ws_sender). Pongs still ride self.wfile — they are ≤125-byte control
+        # frames answered on this client's own handler thread, and both paths serialise on the same `lock`.
+        q = queue.Queue()
+        client = {"app": app, "alive": True, "qbytes": 0, "qlock": threading.Lock()}
+        client["send"] = _mk_ws_send(q, self.connection, client)
+        threading.Thread(target=_ws_sender, args=(q, self.connection, lock, client),
+                         daemon=True, name="ws-send").start()
         if active:
             client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         with _clients_lock:
@@ -17989,6 +18063,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             client["alive"] = False
+            q.put(None)                        # end this client's sender thread
             with _clients_lock:
                 if client in _clients:
                     _clients.remove(client)
