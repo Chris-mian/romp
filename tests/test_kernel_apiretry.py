@@ -69,9 +69,11 @@ class ApiRetryRendersAsRomp(unittest.TestCase):
 class ApiRetryIdempotency(unittest.TestCase):
     """Drive _drive({type:'apiRetry'}) with a stubbed backend + gate globals and observe what gets sent."""
     def setUp(self):
+        self._saved_name_of = km._name_of
         self._saved = (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
                        km._api_error, km._path_of)
         km._retry_paused_on = lambda: False
+        km._name_of = lambda sid: "web"   # these tests drive ops on a session this kernel HAS; _drive refuses one it doesn't (2026-07-29)
         km._session_retry_suppressed = lambda sid: False
         # the one-retry-per-error-episode gate (2026-07-20) reads the CURRENT error record; these tests
         # exercise the queued-idempotency layer, so give each its own live error episode (fresh uuid per
@@ -88,6 +90,7 @@ class ApiRetryIdempotency(unittest.TestCase):
     def tearDown(self):
         (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
          km._api_error, km._path_of) = self._saved
+        km._name_of = self._saved_name_of
         km._auto_retried.clear()
 
     def _drive_retry(self, be, **msg):

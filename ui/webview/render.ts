@@ -7044,6 +7044,17 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "warn" && typeof m.text === "string" && m.text) warnToast(m.text);
+  // `err` is the LOUD channel, deliberately distinct from `warn` (the user 2026-07-29): a warn toast fades
+  // after 12s, which is right for "that name has a bad character" and wrong for "the message you just typed
+  // was never sent." This one takes the confirm modal — it has to be dismissed — and hands the text back,
+  // since the composer cleared on Enter and the kernel's record is the only place it survives.
+  else if (m.type === "err" && typeof m.text === "string" && m.text) {
+    const copy = typeof m.copy === "string" ? m.copy : "";
+    showConfirm(typeof m.title === "string" && m.title ? m.title : "That action was not delivered", m.text,
+                copy ? [{ label: "Copy my text", value: "copy" }, { label: "Dismiss", value: "ok" }]
+                     : [{ label: "Dismiss", value: "ok" }],
+                (v) => { if (v === "copy") navigator.clipboard?.writeText(copy); });
+  }
   else if (m.type === "dirCompletions") onDirCompletions(m);        // the owning kernel's path completions
   else if (m.type === "createDirMissing" && m.name) onCreateDirMissing(m);   // create it, or edit the path
   // The AUTHORITATIVE answer to a ✕ on a queued bubble (the user 2026-07-20). ok:false = the message

@@ -3642,6 +3642,72 @@ def _picker_mid_series(sid):
     return isinstance(i, int) and isinstance(n, int) and i < n
 
 
+def _kernel_knows(sid):
+    """Does THIS kernel have a session by this id at all? The names registry is the authority: it is sid-keyed
+    and written at launch by BOTH backends, and the entry outlives the session, so a dormant or long-dead
+    session still answers True and can be sent to (that revives it). The SDK's own view is checked too, so a
+    session mid-launch — spawned but not yet named — is never called foreign. So is the LIVE set, which both
+    backends report from their own view: a session this kernel can see running right now is ours whatever the
+    registry says, and that ordering keeps an unreadable names file from ever turning a live session away.
+    False means exactly one thing: no session with this id exists here, so nothing local can act on it."""
+    sid = str(sid or "")
+    if not sid:
+        return False
+    if _name_of(sid):
+        return True
+    be = _sdk()
+    try:
+        if be and be.owns(sid):
+            return True
+    except Exception:
+        pass
+    try:
+        return sid in Sessions.live()
+    except Exception:
+        return False
+
+
+# What the user is told when an op names a session this kernel doesn't have. Written for the ONE case that
+# actually produces it — a federated board whose panes address several kernels — and phrased as what was lost
+# and what to do, not as an internal fault.
+_FOREIGN_OP_VERB = {"sendMessage": "message", "askFollowUp": "reply", "askText": "answer",
+                    "addCustomAsk": "answer", "answerAsk": "answer", "submitAsk": "answer",
+                    "rewindSend": "edited message", "sendCommand": "command", "renameSession": "rename",
+                    "endSession": "end", "interrupt": "interrupt", "compactSession": "compact"}
+
+
+def _refuse_drive(client, op, sid, msg):
+    """Refuse an op for a session this kernel doesn't have — and make the refusal impossible to miss. THREE
+    places, because a silent drop here costs the user typed work they cannot get back (the user 2026-07-29):
+      1. a MODAL in the pane that fired it — not the `warn` toast, which fades in 12s and can be missed
+         entirely; losing a message you typed deserves a dialog you have to dismiss.
+      2. `undelivered.jsonl` in the state dir, carrying the text VERBATIM, so anything typed survives the
+         refusal and can be copied back out. This is the whole point: the old path lost the words.
+      3. stderr → the kernel log, for the case where the browser is gone by the time it happens.
+    Text is capped for the log line, never for the user's own copy of it."""
+    text = ""
+    for k in ("text", "cmd", "name"):
+        if isinstance(msg.get(k), str) and msg[k]:
+            text = msg[k]
+            break
+    what = _FOREIGN_OP_VERB.get(op, "action")
+    try:
+        with (jd.STATE / "undelivered.jsonl").open("a") as fh:
+            fh.write(json.dumps({"at": int(time.time()), "op": op, "sid": sid, "what": what,
+                                 "itemId": msg.get("itemId") or "", "text": text}) + "\n")
+    except OSError:
+        pass
+    sys.stderr.write("undeliverable %s: this kernel has no session %s — %r\n" % (op, sid, text[:200]))
+    detail = ("Nothing was sent. This romp kernel has no session with id %s, so it could not deliver your %s "
+              "— on a board showing more than one machine, that means the pane addressed the wrong kernel. "
+              "Your text is saved verbatim in undelivered.jsonl under romp's state directory." % (sid, what))
+    try:
+        client["send"](json.dumps({"type": "err", "title": "That %s was not delivered" % what,
+                                   "text": detail, "copy": text}))
+    except Exception:
+        pass
+
+
 def _drive(msg, client):
     """Route a per-session DRIVE op — send / interrupt / compact / ask picker / model·effort·mode / rename /
     end / follow-up — to whichever backend OWNS the sid (Sessions.backend_for(sid)), and return True. UI /
@@ -3663,6 +3729,17 @@ def _drive(msg, client):
         sid = str(msg["itemId"]).rsplit(":", 1)[0] if msg.get("itemId") else str(msg["id"])
     else:
         return False                                      # not a drive op (UI/nav) → _dispatch_ws handles it
+    # A drive op for a session THIS kernel has never heard of is undeliverable — refuse it here, loudly.
+    # backend_for() falls through to tmux for any unrecognized sid, and TmuxBackend.send then types at a pane
+    # named after the sid; when no such pane exists the keystrokes evaporate with nothing raised and nothing
+    # logged. That silence swallowed real user messages (the user 2026-07-29): a federated dashboard sent a
+    # card reply here that belonged to another machine's kernel, and it simply ceased to exist — no bubble,
+    # no error, no record. Per the fail-loudly rule, an op we cannot deliver must SAY so instead of degrading
+    # into a no-op. `_kernel_knows` is the registry, not liveness: a dead-but-ours session still resolves, so
+    # reviving sends keep working — only a genuinely foreign sid lands here.
+    if not _kernel_knows(sid):
+        _refuse_drive(client, t, sid, msg)
+        return True                                       # consumed: refused, reported, and recorded
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
