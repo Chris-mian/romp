@@ -87,13 +87,16 @@ class SupervisorActsOnTheVerdict(unittest.TestCase):
         # branch that writes the row's detail.
         lines = self.src.splitlines()
         guard = [i for i, ln in enumerate(lines) if 'st == "no-kernel" and r.get("_probe") == "timeout"' in ln]
-        kills = [i for i, ln in enumerate(lines) if "terminate()" in ln]
         self.assertEqual(len(guard), 1, "one guard")
-        self.assertEqual(len(kills), 1, "one kill")
-        self.assertLess(guard[0], kills[0], "the kill is inside the guard")
-        self.assertLess(kills[0] - guard[0], 6, "and directly under it, not in some later branch")
+        # the only kill in the STATUS-handling region belongs to that guard. (The route-change block near
+        # the top of the loop drops tunnels too, and legitimately so — the network moved under all of them —
+        # so this is scoped to the per-host status branch rather than counting the whole function.)
+        region = [i for i, ln in enumerate(lines) if "terminate()" in ln and i > guard[0] - 20]
+        self.assertEqual(len(region), 1, "one kill in the status branch")
+        self.assertLess(guard[0], region[0], "the kill is inside the guard")
+        self.assertLess(region[0] - guard[0], 6, "and directly under it, not in some later branch")
         plain = [i for i, ln in enumerate(lines) if 'elif st == "no-kernel"' in ln]
-        self.assertTrue(plain and plain[0] > kills[0],
+        self.assertTrue(plain and plain[0] > region[0],
                         "the detail-only no-kernel branch comes after, and kills nothing")
 
     def test_a_dead_dial_is_logged_once_with_what_ssh_printed(self):
@@ -176,6 +179,106 @@ class TryNowActuallyDials(unittest.TestCase):
         self.assertIn("forced-redial", src)
         self.assertIn('r["proc"].wait(timeout=3)', src,
                       "wait for the old ssh to exit, or the new dial dies on its listener")
+
+
+class TheNetworkMoved(unittest.TestCase):
+    """Pulling the cord is an EVENT, and both the dead tunnels and the ladder key on it.
+
+    Waiting out a backoff that is counting down from an outage which has already ended is the exact shape
+    the design rule warns about: a time window standing in for an event that exists. The event is the
+    route changing, and _primary_addr reads it.
+    """
+
+    def test_the_route_probe_names_this_machine_s_source_address_without_sending_anything(self):
+        addr = km._primary_addr()
+        self.assertIsInstance(addr, str)
+        if addr:                                   # "" is legitimate: a machine with no route at all
+            self.assertRegex(addr, r"^\d+\.\d+\.\d+\.\d+$")
+
+    def test_it_targets_reserved_documentation_space_so_it_can_never_touch_a_real_host(self):
+        import inspect as _i
+        src = _i.getsource(km._primary_addr)
+        self.assertIn('s.connect(("192.0.2.1", 9))', src, "TEST-NET-1, RFC 5737 — never routed")
+        self.assertIn("SOCK_DGRAM", src, "a UDP connect only consults the routing table")
+
+    def test_it_is_stable_when_the_network_has_not_moved(self):
+        # the whole mechanism rests on this: a re-read must not look like a change
+        self.assertEqual(km._primary_addr(), km._primary_addr())
+
+    def test_no_route_at_all_reads_as_empty_rather_than_raising(self):
+        import inspect as _i
+        src = _i.getsource(km._primary_addr)
+        self.assertIn("except OSError:", src)
+        self.assertIn('return ""', src, "unplugged is a value, not an exception")
+
+    def test_a_route_change_drops_every_tunnel_and_clears_every_ladder(self):
+        import inspect as _i
+        src = _i.getsource(km._tunnel_supervisor)
+        self.assertIn("if last_addr[0] is not None and addr != last_addr[0]:", src)
+        self.assertIn('_tunnel_log("-", "network-changed"', src)
+        i = src.index("network-changed")
+        after = src[i:i + 900]
+        self.assertIn('r["fails"], r["next_try"] = 0, 0', after,
+                      "the ladder was backing off from something that is over")
+        self.assertIn('r["proc"].terminate()', after,
+                      "every live ssh is riding a transport that went with the old address")
+        self.assertIn('r.get("checkin_peer")', after, "a checked-in peer owns no ssh here to drop")
+
+    def test_the_first_pass_is_not_a_change(self):
+        import inspect as _i
+        src = _i.getsource(km._tunnel_supervisor)
+        self.assertIn("last_addr = [None]", src)
+        # None means "we have not looked yet" — boot already dials everything, and a spurious
+        # network-changed at startup would log a move that never happened
+        self.assertIn("last_addr[0] is not None", src)
+
+
+class AskingWhetherSshWorks(unittest.TestCase):
+    """The one fact that made this obvious to a human and invisible to romp."""
+
+    def test_the_probe_carries_no_forwards_so_it_cannot_fail_for_the_tunnel_s_reason(self):
+        import inspect as _i
+        src = _i.getsource(km._host_reachable)
+        self.assertIn('["--", host, "true"]', src)
+        self.assertNotIn('"-L"', src)
+        self.assertNotIn('"-R"', src)
+
+    def test_a_host_ssh_could_parse_as_an_option_is_refused_before_it_is_run(self):
+        ok, why = km._host_reachable("-oProxyCommand=touch /tmp/pwned")
+        self.assertFalse(ok)
+        self.assertEqual(why, "invalid host")
+
+    def test_it_runs_on_a_DEATH_and_outside_the_registry_lock(self):
+        import inspect as _i
+        src = _i.getsource(km._tunnel_supervisor)
+        self.assertIn("probe_ssh = err", src, "armed where the dial's death is logged")
+        call = src.index("_host_reachable(r[\"host\"])")
+        # the probe is a network round-trip; holding _remotes_lock across it would stall every route
+        # that reads the remote registry
+        guard = src.index("if probe_ssh is not None:")
+        self.assertLess(guard, call)
+        self.assertNotIn("with _remotes_lock", src[guard:call])
+
+    def test_a_known_cause_does_not_get_asked_twice(self):
+        import inspect as _i
+        src = _i.getsource(km._tunnel_supervisor)
+        self.assertIn("probe_ssh = None                   # cause already known", src,
+                      "a bind failure already names itself; no ssh needed to confirm it")
+
+    def test_the_verdict_reaches_the_row_so_the_panel_stops_blaming_the_far_end(self):
+        import inspect as _i
+        src = _i.getsource(km._tunnel_supervisor)
+        self.assertIn("end, not the host's", src)
+        self.assertIn('_tunnel_log(r["host"], "host-probe", sshOk=ok', src)
+
+
+class StatusTimeline(unittest.TestCase):
+    def test_a_status_change_is_logged_and_a_steady_row_is_not(self):
+        import inspect as _i
+        src = _i.getsource(km._tunnel_supervisor)
+        self.assertIn('if st != r.get("status"):', src, "on the transition, never every pass")
+        self.assertIn('_tunnel_log(r["host"], "status", was=r.get("status") or "(new)", now=st', src)
+        self.assertIn("probe=r.get(\"_probe\")", src, "the timeline carries WHY, not just the flip")
 
 
 if __name__ == "__main__":
