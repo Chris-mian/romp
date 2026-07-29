@@ -85,6 +85,8 @@ class RefusesForeignDriveOps(unittest.TestCase):
         self.assertIn(THEIRS, msg["text"], "names the session it could not find, so the cause is diagnosable")
         # the typed text rides back so the user can recover it — the composer cleared it on Enter
         self.assertEqual(msg["copy"], "did you get this?")
+        # …and the sid rides along, so the shell's error-center entry says WHICH session it was meant for
+        self.assertEqual(msg["sid"], THEIRS)
 
     def test_a_card_reply_is_refused_the_same_way(self):
         # the exact shape that lost real messages: askFollowUp derives its sid from the itemId

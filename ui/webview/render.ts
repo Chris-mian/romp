@@ -7048,9 +7048,15 @@ window.addEventListener("message", (e: MessageEvent) => {
   // after 12s, which is right for "that name has a bad character" and wrong for "the message you just typed
   // was never sent." This one takes the confirm modal — it has to be dismissed — and hands the text back,
   // since the composer cleared on Enter and the kernel's record is the only place it survives.
+  // …and it ALSO files an entry in the shell's error center, the bell in the bottom bar (the user
+  // 2026-07-29). A modal is the interrupt; the bell is the durable record you can come back to — the same
+  // split the card-badge mirror already makes. Dismissing the dialog must not erase the fact that a message
+  // of yours never landed.
   else if (m.type === "err" && typeof m.text === "string" && m.text) {
     const copy = typeof m.copy === "string" ? m.copy : "";
-    showConfirm(typeof m.title === "string" && m.title ? m.title : "That action was not delivered", m.text,
+    const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
+    notifyShell("undelivered", copy ? title + ": " + copy : title, typeof m.sid === "string" ? m.sid : "");
+    showConfirm(title, m.text,
                 copy ? [{ label: "Copy my text", value: "copy" }, { label: "Dismiss", value: "ok" }]
                      : [{ label: "Dismiss", value: "ok" }],
                 (v) => { if (v === "copy") navigator.clipboard?.writeText(copy); });

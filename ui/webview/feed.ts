@@ -3349,8 +3349,14 @@ window.addEventListener("message", (e: MessageEvent) => {
     applyExtHover();
     if (extHoverEid) document.querySelector(".dot-hl[data-eid]")?.scrollIntoView({ block: "center" });
   } else if (m.type === "err" && typeof m.text === "string" && m.text) {
-    showErrDialog(typeof m.title === "string" && m.title ? m.title : "That action was not delivered",
-                  m.text, typeof m.copy === "string" ? m.copy : "");
+    // the dialog interrupts; the bell KEEPS it (the user 2026-07-29) — dismissing the modal must not erase
+    // the fact that a message never landed. Same {romp:'notify'} bridge the card-badge mirror below uses.
+    const title = typeof m.title === "string" && m.title ? m.title : "That action was not delivered";
+    const copy = typeof m.copy === "string" ? m.copy : "";
+    window.parent?.postMessage({ romp: "notify", kind: "undelivered",
+                                 text: copy ? title + ": " + copy : title,
+                                 sid: typeof m.sid === "string" ? m.sid : "" }, "*");
+    showErrDialog(title, m.text, copy);
   } else if (m.type === "pickerOptions" && typeof m.name === "string") {
     // the host read the blocked session's live resume-picker screen — show the
     // same options in-page; a choice goes back as keystrokes (transport only,
