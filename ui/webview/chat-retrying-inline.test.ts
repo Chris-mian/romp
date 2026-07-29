@@ -35,7 +35,9 @@ test("renderRetrying surfaces the api_retry payload's own detail (the user 2026-
   // the error behind the backoff on its own muted line, full message in the tooltip
   assert.match(body, /el\("div", "retrying-err"\)/);
   assert.match(body, /`HTTP \$\{info\.status\}`/);
-  assert.match(body, /err\.title = msg/);
+  // the tooltip carries the message AND the request id since 2026-07-29 — the id is the one detail worth
+  // quoting to support and the one nobody reads at a glance, so it lives a hover away, not on the line
+  assert.match(body, /err\.title = \[msg, info\.requestId/);
 });
 
 test("the next-try countdown TICKS every second — it is not frozen at render time (the user 2026-07-24)", () => {

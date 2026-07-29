@@ -7750,7 +7750,12 @@ def _session_retrying(sid, tm):
         count = int(tm.get("retryCount") or 0)
     except (TypeError, ValueError):
         count = 0
-    return {"since": since, "count": count}
+    # The storm's own detail rides along so the card chip and the bell entry can name WHAT is failing, not
+    # just that a storm exists (the user 2026-07-29). Same retryInfo the chat's retrying element reads.
+    info = tm.get("retryInfo") if isinstance(tm.get("retryInfo"), dict) else {}
+    return {"since": since, "count": count,
+            "max": info.get("max"), "status": info.get("status"),
+            "networkDown": info.get("networkDown"), "rateLimitType": info.get("rateLimitType")}
 
 
 def _retry_recoveries(sid):

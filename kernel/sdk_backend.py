@@ -952,6 +952,10 @@ class _AskCancelled(Exception):
 class SdkSession:
     """One long-lived SDK client running in its own thread + asyncio loop."""
 
+    # One diagnostic per process if an api_retry payload stops matching every spelling we know (see the
+    # api_retry branch): the retry detail goes blank silently otherwise, which is how it stayed broken.
+    _retry_shape_warned = False
+
     def __init__(self, backend: "SdkBackend", reg: dict):
         self.backend = backend
         self.sid = reg["sid"]
@@ -1692,24 +1696,69 @@ class SdkSession:
             self.retry_count += 1                      # one backoff attempt → the live 'attempt N' count
             # The event's own detail — attempt number/budget, the error behind the backoff, and when the
             # next attempt fires — so the chat's retrying element can say WHAT is failing and what happens
-            # next, not just that a storm exists (the user 2026-07-10). Field names are the CLI's api_retry
-            # payload (number / max_retries / retry_delay_ms / error_status / retryAt); every read is
-            # defensive since only status has been seen on the wire so far.
+            # next, not just that a storm exists (the user 2026-07-10).
+            #
+            # The field names were GUESSED when this was written (number / max_retries / retry_delay_ms /
+            # error_status / retryAt) and every one of them was wrong, so `retry_info` came back all-None on
+            # every real storm and the whole detail UI below it rendered blank — the user saw a bare "API
+            # retrying" with no attempt count, no countdown and no reason, for months (the user 2026-07-29).
+            # The names are now VERIFIED against two authoritative sources rather than guessed:
+            #   * the WIRE frame (SDKAPIRetryMessage, subtype api_retry) — snake_case, per the CLI's own
+            #     embedded schema: retry_in_ms / is_network_down / is_ssl_error / rate_limit_type;
+            #   * the TRANSCRIPT twin the same frame is written from (system / subtype api_error) — camelCase:
+            #     retryAttempt / maxRetries / retryInMs / error{status,formatted,requestId,isNetworkDown,
+            #     rateLimits}.
+            # We accept BOTH spellings (plus the old guesses) because the two surfaces genuinely differ and
+            # either may reach us; `error` arrives as a dict on the transcript side and a string on the wire.
             d = msg.data if isinstance(msg.data, dict) else {}
             _now = time.time()
-            _ra = d.get("retryAt")
+
+            def _pick(*names, want=(int, float, str)):
+                """First present, correctly-typed value among alternate spellings of one field."""
+                for nm in names:
+                    v = d.get(nm)
+                    if isinstance(v, want) and not isinstance(v, bool):
+                        return v
+                return None
+
+            _e = d.get("error") if isinstance(d.get("error"), dict) else {}
+            _ra = _pick("retryAt", "retry_at")
+            _in_ms = _pick("retry_in_ms", "retryInMs", "retry_delay_ms")
             retry_at = (_ra / 1000.0 if isinstance(_ra, (int, float)) and _ra > 1e12 else
                         _ra if isinstance(_ra, (int, float)) and _ra > 1e9 else
-                        _now + d["retry_delay_ms"] / 1000.0
-                        if isinstance(d.get("retry_delay_ms"), (int, float)) else None)
-            _err = d.get("error") or d.get("message")
+                        _now + _in_ms / 1000.0 if isinstance(_in_ms, (int, float)) else None)
+            # The human string: the transcript's error.formatted ("529 Overloaded") is the best of these;
+            # error.message carries the raw JSON envelope, so it is the last resort.
+            _err = (_e.get("formatted") or _e.get("message") if _e else None) \
+                or _pick("display_message", "message", want=(str,))
+            _status = _pick("status_code", "error_status", "status") \
+                or (_e.get("status") if isinstance(_e.get("status"), (int, str)) else None)
+            _net = d.get("is_network_down", d.get("isNetworkDown", _e.get("isNetworkDown")))
             self.retry_info = {
-                "attempt": d.get("number") if isinstance(d.get("number"), int) else self.retry_count,
-                "max": d.get("max_retries") if isinstance(d.get("max_retries"), int) else None,
-                "status": d.get("error_status") if isinstance(d.get("error_status"), (int, str)) else None,
+                "attempt": _pick("retry_attempt", "retryAttempt", "number", want=(int,)) or self.retry_count,
+                "max": _pick("max_retries", "maxRetries", want=(int,)),
+                "status": _status,
                 "error": _err[:300] if isinstance(_err, str) else None,
                 "retryAt": retry_at,
+                # New detail the guessed reads never reached. requestId is what support/debugging actually
+                # needs; networkDown separates "this machine fell off the internet" from "the API is busy",
+                # which are opposite problems wearing the same red card; rateLimitType names WHICH quota a
+                # 429 hit (null unless it is a quota 429, per the CLI's schema).
+                "requestId": (_e.get("requestId") if _e else None) or _pick("request_id", want=(str,)),
+                "networkDown": bool(_net) if isinstance(_net, bool) else None,
+                "rateLimitType": _pick("rate_limit_type", want=(str,)),
             }
+            # Fail LOUDLY on an unrecognised payload instead of quietly rendering an empty banner — the exact
+            # failure mode above. If a future CLI renames these again we get a one-line diagnostic naming the
+            # keys it actually sent, rather than months of silently blank detail (CLAUDE.md: authoritative
+            # sources — a visible error beats data that looks fine and misleads). Once per process.
+            if d and self.retry_info["max"] is None and self.retry_info["status"] is None \
+                    and self.retry_info["error"] is None and not SdkSession._retry_shape_warned:
+                SdkSession._retry_shape_warned = True
+                sys.stderr.write(
+                    "romp: api_retry payload has no field this build understands — keys=%r. The retry "
+                    "detail (attempt/max, status, countdown) will be blank until these are mapped.\n"
+                    % (sorted(d)[:20],))
             self._mark("retrying")
             self.backend._poke()
         elif isinstance(msg, SystemMessage) and msg.subtype in (

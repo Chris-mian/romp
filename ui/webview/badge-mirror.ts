@@ -10,11 +10,13 @@
 // re-log, a badge that clears leaves the active set (so a recurrence logs afresh), and a NEW episode
 // of the same kind (different since/t) is a new entry.
 
+import { apiErrorReason } from "./api-error-reason";
+
 export interface BadgeItem {
   itemId: string; sid: string; name: string; text: string;
   stalled?: { why: string; since: number; note?: string | null } | null;
   nudgeFailed?: boolean;
-  retrying?: { since?: number | null; count?: number } | null;
+  retrying?: { since?: number | null; count?: number; max?: number | null; status?: number | string | null; networkDown?: boolean | null; rateLimitType?: string | null } | null;
   warns?: { kind: string; t: number; msg: string }[] | null;
   blocked?: { state: string; status?: number; text?: string; tooLong?: boolean; spendLimit?: boolean } | null;
 }
@@ -43,16 +45,22 @@ export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: 
       add("n|" + it.itemId, "nudge", it.name + " — follow-up failed on “" + cap(it.text, 50) + "”");
     }
     if (it.retrying) {
-      add("r|" + it.itemId + "|" + (it.retrying.since || 0), "retry", it.name + " — API retry storm");
+      // Name the failure behind the storm, not just that one exists — "API retry storm" was true of every
+      // cause and actionable for none (the user 2026-07-29). The count says whether it is nearly out of road.
+      const r = it.retrying;
+      const why = apiErrorReason(r);
+      const n = r.count ? ` (attempt ${r.count}${r.max ? " of " + r.max : ""})` : "";
+      add("r|" + it.itemId + "|" + (r.since || 0), "retry",
+        it.name + " — API retry storm" + n + (why ? ": " + why : ""));
     }
     // only the API-error block is an ERROR; a permission ask / picker is ordinary Needs-you traffic
     if (it.blocked && it.blocked.state === "apiError") {
       const b = it.blocked;
-      const what = b.spendLimit ? "spend limit reached"
-        : b.tooLong ? "prompt too long (needs compaction)"
-        : "API error" + (b.status ? " " + b.status : "");
+      // spendLimit / tooLong already read as plain words; apiErrorReason covers them too, so the whole
+      // verdict comes from one place and the bell can't describe a failure differently than the chat does.
+      const what = apiErrorReason(b) || "API error" + (b.status ? " " + b.status : "");
       add("e|" + it.itemId + "|" + (b.status || "") + "|" + (b.spendLimit ? "sl" : b.tooLong ? "tl" : ""),
-        "apierror", it.name + " — " + what);
+        "apierror", it.name + " — " + (b.status && !b.spendLimit && !b.tooLong ? "API error " + b.status + ": " : "") + what);
     }
   }
   return { notices, active };
