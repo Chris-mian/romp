@@ -28,7 +28,7 @@ test("createSession carries the chosen dir, alongside name + backend", () => {
 });
 
 test("the dir field is prefilled with the gear default and hidden in pick-mode", () => {
-  assert.match(RENDER, /di\.value = kernelDefaultDir \|\| loadSettings\(\)\.defaultDir \|\| ""/);
+  assert.match(RENDER, /return host \? "" : \(kernelDefaultDir \|\| loadSettings\(\)\.defaultDir \|\| ""\);/);
   assert.match(RENDER, /dirWrap\.style\.display = pick \? "none" : ""/);
 });
 
@@ -67,7 +67,8 @@ test("a Browse button opens the host-native folder dialog (browseDir → browseR
 });
 
 test("the dir field prefills with the kernel's real default path (not blank), still editable", () => {
-  assert.match(RENDER, /if \(typeof m\.defaultDir === "string"\) kernelDefaultDir = m\.defaultDir/);
+  // …and only from the LOCAL reply: a remote kernel's default directory is that machine's, not this one's
+  assert.match(RENDER, /if \(typeof m\.defaultDir === "string" && !from\) kernelDefaultDir = m\.defaultDir/);
   assert.match(RENDER, /di\.value = kernelDefaultDir \|\| loadSettings\(\)\.defaultDir \|\| ""/);
 });
 

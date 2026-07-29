@@ -61,6 +61,18 @@ export function prefixInbound(host: string, msg: any): any {
   // local same-named one. Guarded by a co-present id/sid so we never touch an unrelated `name` field.
   if (typeof out.name === "string" && (typeof out.id === "string" || typeof out.sid === "string"))
     out.name = prefixId(host, out.name);
+  // The + picker's session list (the user 2026-07-29: switching Host should list THAT machine's sessions,
+  // so a remote one can be reopened or revived from here). Its rows are keyed `id`, not `sid`, so the
+  // generic passes above leave them alone — and prefixing them is what makes a click route back: the row
+  // posts openSession with the id, and routeOutbound sends it to the host in the prefix. Stamped with
+  // the source host too, so the picker can drop a late reply for a host it is no longer showing.
+  if (out.type === "sessionList" && Array.isArray(out.items)) {
+    out.items = out.items.map((it: any) => (it && typeof it === "object" && typeof it.id === "string"
+      ? { ...it, id: prefixId(host, it.id),
+          name: typeof it.name === "string" ? prefixId(host, it.name) : it.name }
+      : it));
+    out.host = host;
+  }
   // timeline payloads: the lanes skeleton nests everything under `data`; the bars detail is top-level.
   if (out.type === "data" && out.data && typeof out.data === "object") out.data = prefixTimelineData(host, out.data);
   else if (out.type === "bars") return { ...out, ..._prefixTimelineDetail(host, out) };

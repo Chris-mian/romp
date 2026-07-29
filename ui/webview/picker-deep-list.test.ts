@@ -15,7 +15,7 @@ const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kern
 const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "judge.py"), "utf8");
 
 test("opening the picker asks for the whole list once — no lazy second fetch to wait on", () => {
-  assert.match(RENDER, /postMessage\(\{ type: "requestSessions" \}\)/);
+  assert.match(RENDER, /postMessage\(\{ type: "requestSessions", host \}\)/);   // host-addressed since 2026-07-29
   // the lazy machinery is gone: no deep flag, no pending state, no scroll trigger, no loader to strand
   assert.doesNotMatch(RENDER, /requestSessions", deep: true/);
   assert.doesNotMatch(RENDER, /pickerDeep/);
