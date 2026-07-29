@@ -54,9 +54,23 @@ test("Backspace at the start of the box deletes the citation like a character", 
 
 test("sending with a GOAL citation routes as an askFollowUp (reopen) and consumes the chip", () => {
   assert.match(RENDER, /const cite = composerCitations\.get\(activeId\);/);
-  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
+  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text, sid: activeId \}\);/);
   assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\); registerOptimistic\(activeId, text\); \}/);
   assert.match(RENDER, /if \(cite\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
+});
+
+test("a citation follow-up carries its SID, so a reply to a REMOTE card reaches that card's kernel", () => {
+  // The user 2026-07-29: replies typed into a remote session's chat vanished on Enter — box cleared, no
+  // provisional bubble, nothing on the far side. federation.routeOutbound picks the owning kernel from
+  // `id`/`sid` ONLY, and an itemId can never join that list: it is "‹sid›:‹goalId›", so hostOf() would read
+  // the session uuid as a host name. With no sid the message routed to the LOCAL kernel, which derives the
+  // sid from the itemId, owns no such session, and hands it to tmux by uuid — dropped in silence. The card
+  // still flashed to Working (the kernel's cardPredict fires before any of that) and snapped back on the
+  // ok:false ack, so the only visible trace was a bounce.
+  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text, sid: activeId \}\);/);
+  // every OTHER card-addressed op already routes this way — the citation follow-up was the lone omission
+  assert.match(FEED, /type: "askClear", itemId: it\.itemId, sid: it\.sid/);
+  assert.match(FEED, /type: "askFollowUp", itemId: tgt \? tgt\.itemId : fbId, title: tgt \? tgt\.title : fbTitle, text: txt, sid: fbSid/);
 });
 
 test("a citation survives a RELOAD but is dropped on tab SWITCH (the user 2026-07-01)", () => {
@@ -103,7 +117,7 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
 });
 
 test("a quote chip sends a plain message wrapped by quoteReplyBody — never askFollowUp (no goal to reopen)", () => {
-  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text \}\);/);
+  assert.match(RENDER, /if \(cite\?\.itemId\) vscodeApi\.postMessage\(\{ type: "askFollowUp", itemId: cite\.itemId, text, sid: activeId \}\);/);
   assert.match(RENDER, /else if \(cite\?\.quote\) vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text: quoteReplyBody\(cite\.quote, text, cite\.src\) \}\);/);
   // the wrap: a lead-in + the highlighted text as a markdown quote block, then the typed message
   assert.match(RENDER, /return lead \+ "\\n" \+ q \+ "\\n\\n" \+ text;/);
