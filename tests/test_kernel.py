@@ -6029,8 +6029,10 @@ class ServeSecurity(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=5) as r:
                 self.assertEqual(r.status, 200)
                 # the ack also names WHICH kernel acked (boot id, 2026-07-27) — see RestartReloadRaceTest
+                # `fleet` says which kind of restart it took (the user 2026-07-29): with remotes attached
+                # this covers the whole fleet, so the ack names it rather than leaving the caller guessing
                 self.assertEqual(_json.loads(r.read().decode()),
-                                 {"ok": True, "restarting": True, "boot": km._BOOT_ID})
+                                 {"ok": True, "restarting": True, "boot": km._BOOT_ID, "fleet": True})
         finally:
             if saved is not None:
                 os.environ["ROMP_MANAGER_PORT"] = saved

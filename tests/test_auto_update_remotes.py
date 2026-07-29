@@ -208,7 +208,7 @@ class BannerAndPopoverWiring(unittest.TestCase):
                       "the box mirrors the kernel, and never clobbers a write in flight")
 
     def test_an_in_flight_push_animates_the_icon_and_hides_the_duplicate_button(self):
-        self.assertIn("paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);",
+        self.assertIn("paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length,fleetNodes(ts));",
                       km._LANDING_REMOTES_JS, "the rail icon marches while romp pushes in the background")
         self.assertIn("t.fastForward&&!apx", km._LANDING_REMOTES_JS,
                       "no manual Push button for work already in flight — nor for a push that cannot succeed")
