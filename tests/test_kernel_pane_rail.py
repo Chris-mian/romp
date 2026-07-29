@@ -101,7 +101,7 @@ class PaneRailTest(unittest.TestCase):
         # Pinned as the flex-column STRUCTURE this test is about, not as the whole declaration list: it
         # broke on an unrelated right-edge padding (the user 2026-07-23) that says nothing about where the
         # band sits. test_kernel_mobile owns that strip.
-        self.assertIn(".col{display:flex;flex-direction:column;height:100vh", self.html)
+        self.assertIn(".col{display:flex;flex-direction:column;height:100%", self.html)
         self.assertIn("#tl-pane{flex:0 0 var(--tl,200px)}", self.html)          # a fixed-height bottom band
         self.assertIn("body:not(.po-timeline) #gh,body:not(.po-timeline) #tl-pane{display:none}", self.html)
         self.assertIn("<div class=gh id=gh></div>", self.html)                  # the row-resize gutter is back

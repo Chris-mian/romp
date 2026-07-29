@@ -16359,7 +16359,13 @@ _LANDING_MOBILE_JS = """
 function fit(){try{var h=(window.visualViewport&&window.visualViewport.height)||window.innerHeight;
 if(h)document.documentElement.style.setProperty('--app-h',h+'px');}catch(e){}}
 fit();window.addEventListener('resize',fit);window.addEventListener('orientationchange',fit);
-if(window.visualViewport){window.visualViewport.addEventListener('resize',fit);}
+// iOS Safari collapses/expands its toolbars AS YOU SCROLL, and the visible height changes with them
+// without a window resize; the visual viewport's own scroll event is where that settles. pageshow covers
+// a restore from the back/forward cache, which hands back the height the page had when it was frozen.
+// (the user 2026-07-29, whose iPad clipped the bottom off with the toolbars showing.)
+window.addEventListener('pageshow',fit);
+if(window.visualViewport){window.visualViewport.addEventListener('resize',fit);
+window.visualViewport.addEventListener('scroll',fit);}
 var bar=document.getElementById('mtabs');if(!bar)return;
 // The bar is position:fixed (glued to the viewport bottom), so it's out of flow — reserve its real
 // rendered height (button text + padding) on .col as --mtabs-h so the iframes tile above it and the
@@ -16625,7 +16631,17 @@ def _landing():
             "<meta name=viewport content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             ":root{--accent:#9cd2ff;--accent-fg:#0c1a2e}"
-            "html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}"
+            # The chain, widest support last-wins: 100% (always right where the viewport is static), then
+            # 100dvh (tracks browser chrome appearing/collapsing), then --app-h, the live
+            # visualViewport.height _LANDING_MOBILE_JS publishes. This used to be a mobile-only rule, so a
+            # LANDSCAPE TABLET — too wide for both mobile breakpoints — took this branch and threw the
+            # accurate measurement away (the user 2026-07-29, on an iPad).
+            "html,body{margin:0;height:100%;height:100dvh;height:var(--app-h,100dvh);"
+            "background:#1e1e1e;overflow:hidden}"
+            # A pane whose document has not painted yet is a WHITE rectangle in the shell's dark frame
+            # (Firefox shows it plainly). Give the frames the shell's own background so a slow or blank
+            # pane reads as empty romp rather than as a white strip torn out of the UI.
+            "iframe{background:#1e1e1e}"
             # A hair of breathing room down the right edge (the user 2026-07-23). The panes tiled flush to
             # the window, so whatever sits hard right inside them — a feed card's controls, the timeline's
             # lock padlock at the now-edge, the rail's own right-pinned actions — was pressed against the
@@ -16633,7 +16649,13 @@ def _landing():
             # and the bottom rail alike. border-box so the strip comes OUT of the 100vh box instead of
             # adding to it and overflowing. Deliberately tiny — a visible margin would read as a design
             # element rather than as slack.
-            ".col{display:flex;flex-direction:column;height:100vh;box-sizing:border-box;padding-right:3px}"
+            # height:100% — of the BODY, deliberately not 100vh (the user 2026-07-29, whose iPad clipped
+            # the whole bottom off and whose Firefox showed a strip over the bottom bar). body is what
+            # CLIPS (overflow:hidden) and it measures the real viewport; 100vh on iOS Safari is the LARGE
+            # viewport, the one you get with the address bar collapsed, so while any browser chrome is on
+            # screen this box was taller than the body containing it and the rail fell out of the bottom.
+            # Two height bases for the same box is the bug; there is now one, and it is the body's.
+            ".col{display:flex;flex-direction:column;height:100%;box-sizing:border-box;padding-right:3px}"
             # the shell is a single flex row: far-left pane rail, then up to FOUR independently-toggled panes
             # (chat | fleet | feed | timeline, fixed order) separated by draggable gutters (the user 2026-06-24).
             # The timeline is just the 4th pane now — no more bottom band / minimize button.
@@ -16649,14 +16671,16 @@ def _landing():
             # iframe must render + lift over the whole window EVEN WHEN the feed pane is toggled off (the user
             # 2026-06-25) — un-hide the pane and pin the iframe full-screen while the modal is open.
             "body.settings-open #feed-pane{display:block!important}"
-            "body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
+            # inset:0 alone sizes a fixed box to the viewport; the explicit 100vw/100vh OVERRODE it and
+            # overshot on iOS, hanging the modal's own actions below the fold (the user 2026-07-29).
+            "body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200}"
             # New-session PICKER full-screen (the user 2026-07-05): the picker lives INSIDE the /chat iframe, so
             # its position:fixed;inset:0 only covered the chat PANE — a short pane couldn't scroll the session
             # list. Same bridge as settings: render.ts posts {romp:'picker',on} and the shell lifts the chat
             # iframe over the whole window (body.picker-open) so the overlay fills the screen and the list gets
             # the full height to scroll. Restored on close.
             "body.picker-open #chat-pane{display:block!important}"
-            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
+            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200}"
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
             # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
