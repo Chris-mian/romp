@@ -16,7 +16,8 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("chat: an `err` takes the confirm MODAL, not the warn toast", () => {
   assert.match(RENDER, /else if \(m\.type === "err" && typeof m\.text === "string" && m\.text\) \{/);
-  assert.match(RENDER, /showConfirm\(typeof m\.title === "string" && m\.title \? m\.title : "That action was not delivered", m\.text,/);
+  assert.match(RENDER, /const title = typeof m\.title === "string" && m\.title \? m\.title : "That action was not delivered";/);
+  assert.match(RENDER, /showConfirm\(title, m\.text,/);
   // the fading toast stays for the soft cases it was written for
   assert.match(RENDER, /m\.type === "warn" && typeof m\.text === "string" && m\.text\) warnToast\(m\.text\);/);
 });
@@ -34,7 +35,8 @@ test("feed: the pane that fires card ops gets an error dialog of its own", () =>
   assert.doesNotMatch(FEED, /m\.type === "warn"/);
   assert.match(FEED, /function showErrDialog\(title: string, text: string, copy: string\)/);
   assert.match(FEED, /\} else if \(m\.type === "err" && typeof m\.text === "string" && m\.text\) \{/);
-  assert.match(FEED, /showErrDialog\(typeof m\.title === "string" && m\.title \? m\.title : "That action was not delivered",/);
+  assert.match(FEED, /const title = typeof m\.title === "string" && m\.title \? m\.title : "That action was not delivered";/);
+  assert.match(FEED, /showErrDialog\(title, m\.text, copy\);/);
 });
 
 test("feed: the dialog reuses the resume-picker chrome rather than inventing another look", () => {
@@ -53,4 +55,27 @@ test("feed: the dialog reuses the resume-picker chrome rather than inventing ano
 test("feed: copying acknowledges the click, per the always-acknowledge rule", () => {
   const dlg = FEED.split("function showErrDialog(")[1].split("\n}")[0];
   assert.match(dlg, /c\.onclick = \(\) => \{ navigator\.clipboard\?\.writeText\(copy\); c\.textContent = "Copied"; \};/);
+});
+
+// …and it is also FILED, not just flashed (the user 2026-07-29). romp's error center — the bell in the
+// shell's bottom bar, opening a newest-first panel with per-kind filters — is where a problem is findable
+// after the fact. A dismissed modal must not erase the fact that a message never landed, so `err` writes an
+// entry there too, through the same {romp:'notify'} bridge the card-badge mirror uses.
+test("both panes file the refusal in the error center, not only in the modal", () => {
+  assert.match(RENDER, /notifyShell\("undelivered", copy \? title \+ ": " \+ copy : title, typeof m\.sid === "string" \? m\.sid : ""\);/);
+  assert.match(FEED, /window\.parent\?\.postMessage\(\{ romp: "notify", kind: "undelivered",/);
+  // the entry carries the text and the session, so the log answers "what did I lose, and where to?"
+  assert.match(FEED, /text: copy \? title \+ ": " \+ copy : title,/);
+  assert.match(FEED, /sid: typeof m\.sid === "string" \? m\.sid : "" \}, "\*"\);/);
+});
+
+test("the error center knows the new kind: chip label, description and filter toggle", () => {
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  // KINDS drives the filter row, KINDLBL the chip, DESC the tooltip — a kind missing from any of the three
+  // renders as an unlabelled entry with no way to mute it
+  assert.match(KERNEL, /var KINDS=\[[^\]]*'undelivered'\]/);
+  assert.match(KERNEL, /undelivered:'not sent'/);
+  assert.match(KERNEL, /undelivered:"something you sent never reached a session/);
+  // and it wears the follow-up-failed red: both mean a message of yours didn't land
+  assert.match(KERNEL, /\.rerr-chip\.k-nudge,\.rerr-chip\.k-undelivered\{color:#ff6a6a/);
 });

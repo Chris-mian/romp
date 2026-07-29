@@ -218,12 +218,15 @@ class ErrorCenterExecutes(unittest.TestCase):
         # an entry now, rather than only flashing a toast that leaves nothing to point at afterwards.
         # 'sdk' joined on 2026-07-28: SDK-backend failures used to live only in the kernel
         # log, so a session whose thread died just looked odd with nothing to look at.
+        # 'not sent' joined on 2026-07-29: an op the kernel can't deliver (no session by that id — on a
+        # multi-machine board, the pane addressed the wrong kernel) used to vanish into a tmux send at a
+        # pane that wasn't there, losing whatever had been typed with nothing anywhere to show for it.
         a = self.out["filterBar"]
-        self.assertEqual(a["n"], 11)
+        self.assertEqual(a["n"], 12)
         self.assertEqual(a["first"], "offline")
         self.assertEqual(a["labels"],
                          "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error|"
-                         "sdk|jump failed|cleared")
+                         "sdk|jump failed|cleared|not sent")
 
     def test_muting_a_kind_hides_counts_and_live_cue_but_keeps_the_entries(self):
         a = self.out["afterMute"]
@@ -278,7 +281,8 @@ class ErrorCenterWiring(unittest.TestCase):
         self.assertIn("font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}#rerr-panel .rerr-top", html)
         # the chip family mirrors feed.css's .fask-* colours
         self.assertIn(".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166", html)
-        self.assertIn(".rerr-chip.k-nudge{color:#ff6a6a", html)
+        # 'not sent' shares the follow-up-failed red: both mean a message of yours didn't land
+        self.assertIn(".rerr-chip.k-nudge,.rerr-chip.k-undelivered{color:#ff6a6a", html)
         # the per-kind filter bar sits between header and list, chips doubling as the toggles: a
         # vertical white "show" label, then an even 4-column grid (8 kinds -> the minimum 2 rows,
         # every chip the same cell width) instead of one ragged wrapping row (the user 2026-07-28)

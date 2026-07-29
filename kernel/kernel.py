@@ -3702,8 +3702,11 @@ def _refuse_drive(client, op, sid, msg):
               "— on a board showing more than one machine, that means the pane addressed the wrong kernel. "
               "Your text is saved verbatim in undelivered.jsonl under romp's state directory." % (sid, what))
     try:
+        # `sid` rides along so the shell's error-center entry carries the session it was meant for, the way
+        # every card-badge entry does — the bell is a log you read later, and "which one?" is the first thing
+        # you ask of it.
         client["send"](json.dumps({"type": "err", "title": "That %s was not delivered" % what,
-                                   "text": detail, "copy": text}))
+                                   "text": detail, "copy": text, "sid": sid}))
     except Exception:
         pass
 
@@ -15670,10 +15673,10 @@ el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
 var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'!':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
-var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','sdk','locate','cleared'];
+var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','sdk','locate','cleared','undelivered'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
 nudge:'follow-up failed',retry:'retrying',apierror:'api error',sdk:'sdk',
-locate:'jump failed',cleared:'cleared'};
+locate:'jump failed',cleared:'cleared',undelivered:'not sent'};
 // what each kind MEANS (the user 2026-07-28: the tooltip should explain the badge, not just say
 // show/hide) — worn by the filter toggles AND every entry's chip
 var DESC={conn:"the dashboard lost its live connection to the kernel for a visible pane; it reconnects on its own",
@@ -15686,7 +15689,8 @@ retry:"a session is inside an API-error retry storm; auto-retry is already worki
 apierror:"a session stopped on an API error (rate limit, spend cap, or prompt too long) and its card is blocked",
 sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an error: a session thread that died, a stream that dropped, a setting the CLI refused. The session usually recovers on its own, and the full traceback is in the kernel log under ~/.local/state/romp",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
-cleared:"a /clear in a session dropped still-open cards at the boundary; Undo clear on the feed restores them"};
+cleared:"a /clear in a session dropped still-open cards at the boundary; Undo clear on the feed restores them",
+undelivered:"something you sent never reached a session — the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
 // STABLE container; only classes flip on click, so the buttons stay click-safe.
 if(filtBar)KINDS.forEach(function(k){var b=document.createElement('span');
@@ -17006,7 +17010,9 @@ def _landing():
             ".rerr-chip{flex:0 0 auto;font-size:9px;font-weight:700;letter-spacing:.04em;padding:1px 6px;"
             "border-radius:999px;line-height:1.4;white-space:nowrap;border:1px solid transparent}"
             ".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166;border-color:rgba(255,209,102,0.6)}"
-            ".rerr-chip.k-nudge{color:#ff6a6a;border-color:rgba(255,106,106,0.6)}"
+            # "not sent" rides with the follow-up-failed red: both mean a message of yours didn't land, and
+            # this one is the harder loss of the two — nothing was delivered at all (the user 2026-07-29)
+            ".rerr-chip.k-nudge,.rerr-chip.k-undelivered{color:#ff6a6a;border-color:rgba(255,106,106,0.6)}"
             ".rerr-chip.k-retry,.rerr-chip.k-apierror,.rerr-chip.k-sdk{color:#e5484d;border-color:rgba(229,72,77,0.6)}"
             ".rerr-chip.k-conn{color:#ff6b6b;border-color:rgba(255,107,107,0.6)}"
             ".rerr-chip.k-limit,.rerr-chip.k-judge,.rerr-chip.k-locate{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
