@@ -193,11 +193,24 @@ class AutoPullFiring(unittest.TestCase):
         self._run({"host": "TESTHOST", "kernel_sha": REMOTE, "trust": "trusted"})
         self.assertEqual(self.calls, [])
 
-    def test_a_checked_in_row_fires_neither_direction(self):
-        # no ssh route from here — an auto-sync could only manufacture "No route to host" failures
+    def test_a_checked_in_row_never_fires_this_machine_s_ssh(self):
+        # no ssh route from here — a push or pull of OURS could only manufacture "No route to host"
         self._run({"host": "TESTHOST", "kernel_sha": REMOTE, "trust": "trusted", "checkin_peer": True})
-        km._behind_info = lambda sha: {"behind": 2, "ahead": 0, "date": ""}   # …and the push side too
+        self.assertEqual(self.calls, [], "strictly ahead + no route: nothing this machine can run")
+
+    def test_a_checked_in_peer_that_is_BEHIND_is_asked_to_update_itself(self):
+        # the third direction (the user 2026-07-28): the peer owns the only ssh between the machines, so
+        # the fast-forward is driven through the tunnel IT holds instead of offered as an impossible push
+        km._behind_info = lambda sha: {"behind": 2, "ahead": 0, "date": ""}
         self._run({"host": "TESTHOST", "kernel_sha": REMOTE, "trust": "trusted", "checkin_peer": True})
+        self.assertEqual(self.calls, [("_auto_ask_peer", "TESTHOST")])
+
+    def test_a_checked_in_peer_is_never_driven_on_an_unproven_relationship(self):
+        # same bar as the push gate: diverged, or a build this repo has never seen, is not driven at all
+        for drift in ({"behind": 2, "ahead": 1, "date": ""}, {"behind": None, "ahead": None, "date": ""}):
+            km._auto_push_tried.clear()
+            km._behind_info = lambda sha, d=drift: d
+            self._run({"host": "TESTHOST", "kernel_sha": REMOTE, "trust": "trusted", "checkin_peer": True})
         self.assertEqual(self.calls, [])
 
     def test_the_same_advance_is_not_pulled_twice(self):

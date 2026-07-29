@@ -210,8 +210,8 @@ class BannerAndPopoverWiring(unittest.TestCase):
     def test_an_in_flight_push_animates_the_icon_and_hides_the_duplicate_button(self):
         self.assertIn("paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length);",
                       km._LANDING_REMOTES_JS, "the rail icon marches while romp pushes in the background")
-        self.assertIn("t.outOfDate&&!apx", km._LANDING_REMOTES_JS,
-                      "no manual Push button for work already in flight")
+        self.assertIn("t.fastForward&&!apx", km._LANDING_REMOTES_JS,
+                      "no manual Push button for work already in flight — nor for a push that cannot succeed")
         self.assertIn("auto-update: ", km._LANDING_REMOTES_JS, "the row carries the live phase")
 
     def test_the_icon_tooltip_reports_the_live_phase(self):

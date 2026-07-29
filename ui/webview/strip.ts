@@ -376,7 +376,11 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       nm.title = (TIP[t.status] || "")
         + (t.outOfDate ? `\n\nRunning ${t.kernelSha || "?"}${t.kernelDate ? " from " + t.kernelDate : ""}; this machine is at ${t.localSha || "?"}.` : "")
         + (stale && t.outOfDate ? `\nLast confirmed ${seen || "not since this kernel started"}; not re-checked while ${LBL[t.status] || t.status}.` : "")
-        + (t.outOfDate && t.checkinPeer ? " No ssh path from this machine (it checked in over its own tunnel) — sync from its own dashboard." : "");
+        + (t.outOfDate && t.checkinPeer
+          ? (t.askPull
+            ? " No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds."
+            : " No ssh path from this machine (it checked in over its own tunnel) — sync from its own dashboard.")
+          : "");
       r.append(dot, nm);
       // Federation trust (per-host): trusted = full two-way postal; directed (default) = its mail is
       // HELD for your approval; isolated = dashboard only, no postal. The gate lives in the bus.
@@ -417,16 +421,29 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       }
       // A push romp is ALREADY doing needs no button — it would only invite a duplicate of the work in
       // flight. The row shows the live phase instead (below); the manual Push returns if it fails.
-      const apx = !!(t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting" || t.autoPush.phase === "pulling"));
-      // A checked-in host has no ssh route FROM here (Push/Pull can only fail — the tooltip says where
-      // to sync); a strictly-ahead remote gets Pull in Push's place (a push there would only be refused).
-      if (t.status === "up" && t.outOfDate && !apx && !t.checkinPeer && !t.fastPull) {
+      const apx = !!(t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting"
+        || t.autoPush.phase === "pulling" || t.autoPush.phase === "asking"));
+      // Every button is gated on the action being PROVABLY possible (the user 2026-07-28, whose laptop was
+      // offered a push that could never run). Push needs an ssh route from here AND a straight fast-forward:
+      // a checked-in host has no route, and a diverged — or unknown — remote build is refused by the
+      // remote's own ancestor check every time (a commit this repo has never seen cannot be an ancestor of
+      // its HEAD). Those states get the action that CAN work instead: Pull when the remote is strictly
+      // ahead, Update when a checked-in peer is behind, else the drift word and its tooltip.
+      if (t.status === "up" && t.fastForward && !apx && !t.checkinPeer) {
         const u = document.createElement("button");
         u.textContent = "Push";
         u.title = `Push this machine's committed romp to ${t.host} and restart its kernel, so it runs exactly this code. `
-          + `Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.`;
+          + `Uncommitted local edits are not sent, so commit first.`;
         u.addEventListener("click", () => act("/tunnels/update", t.host, u, "Pushing…"));
         r.appendChild(u);
+      }
+      if (t.status === "up" && t.askPull && !apx) {
+        const a = document.createElement("button");
+        a.textContent = "Update";
+        a.title = `${t.host} checked in over its own tunnel, so this machine cannot push to it. This asks its romp `
+          + `to pull these commits from here and restart, over the link it already holds.`;
+        a.addEventListener("click", () => act("/tunnels/askpull", t.host, a, "Asking…"));
+        r.appendChild(a);
       }
       if (t.status === "up" && t.fastPull && !apx && !t.checkinPeer) {
         const pl = document.createElement("button");
