@@ -12530,6 +12530,10 @@ def build_feed(now, tmux=None):
             "clearNotices": _boundary_clear_notices(alive),
             # SDK-backend failures → the same bell, one entry per occurrence (the user 2026-07-28)
             "sdkNotices": _sdk_problem_rows(),
+            # This machine's own name, so a card can say which SIDE of a federated exchange it is (the
+            # user 2026-07-29: held mail should read sender-host:session -> recipient-host:session). A
+            # local sid carries no host prefix, so the receiving end has no other way to name itself.
+            "selfHost": _self_host(),
             "canUndoClear": len(cleared) > 0}
 
 
@@ -16036,7 +16040,14 @@ starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its p
 down:'The ssh tunnel is not up. romp keeps retrying on its own, waiting longer between tries the longer it stays down, so a machine that comes back is picked up without you doing anything. Try now dials immediately.',
 error:'The connection failed. Hover the status text for the reason romp got back. romp keeps retrying in the background.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
-function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
+function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}
+// HOW a host's build differs from this machine's, in words. ONE definition, worn by the panel row and
+// by the rail's hover (the user 2026-07-29, who wanted the count without opening the panel) — two
+// spellings of the same drift would eventually disagree, and the number is the whole point of it.
+function driftWord(t){var bb=t.behindBy,ab=t.aheadBy;
+if(typeof bb!=='number'||typeof ab!=='number')return 'different build';
+return (bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s')
+:(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):'different build';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
 function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
 // One host's contribution to the glyph (the user 2026-07-29): 'ok' connected and on this build, 'warn'
@@ -16080,7 +16091,8 @@ var _head=!ts.length?'':(_bad?(_bad+' host'+(_bad===1?'':'s')+' need'+(_bad===1?
 :(_wt?(_wt+' host'+(_wt===1?'':'s')+' disconnected (romp is retrying)'):'all hosts connected and in sync'));
 icon.title=ts.length?('Remote kernels \\u00b7 '+_head+'\\n'+ts.map(function(t){var n=(t.sids&&t.sids.length)||0;
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
-return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
+var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):'';
+return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+dw+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
 if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{});   // pmode is refresh-local — render must be GIVEN it
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
@@ -16136,9 +16148,7 @@ var stl=!!t.stale;
 var sw=stl?(t.lastOk?('last confirmed '+new Date(t.lastOk*1000).toLocaleTimeString()):'never confirmed since this kernel started'):'';
 var sq=stl?(' \\u2014 '+sw+'; not re-checked while '+(LBL[t.status]||t.status)+'.'):'';
 var ver='';
-if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
-if(typeof bb==='number'&&typeof ab==='number'){
-w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
+if(t.outOfDate){var w=driftWord(t);
 var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'')
 +(t.checkinPeer?(t.askPull?' No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds.':' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.'):'');
 ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+w+'</span>';}

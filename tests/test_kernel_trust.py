@@ -191,6 +191,23 @@ class QuarantineCards(unittest.TestCase):
         self.assertTrue(gist.startswith("ship the parser fix"), gist)
         self.assertEqual(len(gist), 90, "whitespace-collapsed and clamped like the federation gossip gist")
 
+    def test_the_card_carries_both_ENDS_of_the_delivery(self):
+        """The route the card draws (the user 2026-07-29): sender host + session, recipient session, and
+        the recipient's host, which for a locally-held message is THIS machine — a local sid has no host
+        prefix, so the payload has to name it or the receiving end cannot be named at all."""
+        self._write_held("qc-5")
+        c = km._quarantine_cards(2000, set())[0]
+        b = c["blocked"]
+        for k in ("origin", "frm", "to", "body", "gist"):
+            self.assertIn(k, b, "the card names %s" % k)
+        self.assertTrue(b["origin"], "the sending HOST")
+        self.assertTrue(b["frm"], "the sending SESSION")
+        self.assertEqual(c["name"], b["to"], "the card sits under the recipient session")
+
+    def test_the_feed_payload_names_this_machine(self):
+        import inspect
+        self.assertIn('"selfHost": _self_host(),', inspect.getsource(km.build_feed))
+
     def test_cleared_card_is_hidden(self):
         self._write_held("qc-2")
         self.assertEqual(km._quarantine_cards(2000, {"quarantine:qc-2"}), [])

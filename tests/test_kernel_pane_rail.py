@@ -127,6 +127,18 @@ class PaneRailTest(unittest.TestCase):
         # drew visibly smaller than the 17-18px svg icons beside it, so the row looked ragged.
         self.assertIn("#rail-gear{font-size:19px}", self.html)
 
+    def test_the_rail_hover_names_each_host_s_drift_without_opening_the_panel(self):
+        # the red node says SOMETHING is out of step; the hover says what, by how much, and for which
+        # host (the user 2026-07-29). ONE definition of the wording, worn by the panel row and the
+        # tooltip alike — two spellings of the same drift would eventually disagree.
+        self.assertIn("function driftWord(t){", self.html)
+        self.assertIn("'behind '+bb+' commit'", self.html)
+        self.assertIn("'ahead '+ab+' commit'", self.html)
+        self.assertIn("var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):''", self.html)
+        self.assertIn("+dw+", self.html, "the per-host tooltip line carries it")
+        # the panel row reads the same function rather than re-deriving the words
+        self.assertIn("if(t.outOfDate){var w=driftWord(t);", self.html)
+
     def test_network_icon_lights_accent_when_a_remote_is_connected(self):
         # the remote-kernels icon goes accent-blue (.on) while a tunnel is up, driven by the /tunnels poll
         self.assertIn("id=rail-net", self.html)
