@@ -113,7 +113,9 @@ class LandingShell(unittest.TestCase):
         # pressed against the frame or clipped by it (the user 2026-07-23). .col is the one wrapper that
         # covers the pane row, the timeline band and the bottom rail together.
         html = km._landing()
-        self.assertIn(".col{display:flex;flex-direction:column;height:100vh;box-sizing:border-box;padding-right:3px}", html)
+        # height:100%, not 100vh: the body is what clips, and on iOS 100vh is the address-bar-collapsed
+        # viewport, which pushed the rail out of the bottom (the user 2026-07-29)
+        self.assertIn(".col{display:flex;flex-direction:column;height:100%;box-sizing:border-box;padding-right:3px}", html)
         # border-box, or the strip ADDS to the 100vh box and the shell overflows instead of insetting
         self.assertIn("box-sizing:border-box;padding-right:3px", html)
 

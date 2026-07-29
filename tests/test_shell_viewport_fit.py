@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""The shell fits the VISIBLE viewport, on every browser (the user 2026-07-29).
+
+Two reports, one root cause. On an iPad the whole bottom of the UI was cut off; in Firefox a strip along
+the bottom sat over the rail. The shell sized its column with `100vh` while the body that CLIPS it
+(overflow:hidden) was sized `height:100%`. Those are the same number only when no browser chrome is
+moving: on iOS Safari `100vh` is the LARGE viewport, the one you get with the address bar collapsed, so
+whenever a toolbar is on screen the column was taller than the box containing it and the rail fell out of
+the bottom. Two height bases for one box is the bug.
+
+Worse, the accurate measurement already existed and was thrown away: _LANDING_MOBILE_JS publishes the
+live visualViewport height as --app-h, but only the MOBILE media query consumed it, and a landscape
+tablet is too wide for both mobile breakpoints, so it took the desktop branch.
+
+Verified in real Firefox before/after by forcing --app-h shorter than 100vh (the iOS toolbar case): the
+rail measured 870..900 inside a 600px-tall body before, and 570..600 after.
+"""
+import os
+import tempfile
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ.setdefault("XDG_STATE_HOME", tempfile.mkdtemp())
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel_vhfit", os.path.join(BIN, "romp-kernel")).load_module()
+
+
+class OneHeightBasis(unittest.TestCase):
+    def setUp(self):
+        self.html = km._landing()
+
+    def test_the_column_is_measured_against_the_body_that_clips_it(self):
+        self.assertIn(".col{display:flex;flex-direction:column;height:100%;box-sizing:border-box;", self.html)
+        self.assertNotIn("height:100vh;box-sizing:border-box", self.html,
+                         "the column must not carry a viewport unit of its own")
+
+    def test_the_shell_height_chain_applies_at_every_width(self):
+        # 100% → 100dvh → --app-h, last-wins, so an old browser still gets a full-height shell and a
+        # modern one tracks chrome appearing and collapsing. NOT inside a media query any more: a
+        # landscape tablet matches neither mobile breakpoint.
+        self.assertIn("html,body{margin:0;height:100%;height:100dvh;height:var(--app-h,100dvh);"
+                      "background:#1e1e1e;overflow:hidden}", self.html)
+
+    def test_no_full_height_box_is_left_on_a_raw_viewport_unit(self):
+        # every remaining 100vh in the shell would be a box that ignores the toolbars
+        shell = self.html
+        for frag in ("width:100vw;height:100vh", ".col{display:flex;flex-direction:column;height:100vh"):
+            self.assertNotIn(frag, shell, frag)
+
+    def test_a_lifted_pane_is_sized_by_its_insets_not_by_viewport_units(self):
+        # inset:0 already IS the viewport box for a fixed element; the explicit 100vw/100vh overrode it
+        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200}", self.html)
+        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200}", self.html)
+
+    def test_an_unpainted_pane_is_dark_not_white(self):
+        # a pane whose document has not painted is a white rectangle in a dark frame (Firefox shows it
+        # plainly) — which is exactly what "a white strip at the bottom" looks like
+        self.assertIn("iframe{background:#1e1e1e}", self.html)
+
+
+class RefitsWhenTheVisibleHeightChanges(unittest.TestCase):
+    def setUp(self):
+        self.js = km._LANDING_MOBILE_JS
+
+    def test_it_drives_app_h_off_the_live_visual_viewport(self):
+        self.assertIn("var h=(window.visualViewport&&window.visualViewport.height)||window.innerHeight;", self.js)
+        self.assertIn("setProperty('--app-h',h+'px')", self.js)
+
+    def test_it_refits_on_the_events_ios_actually_changes_the_height_on(self):
+        # iOS collapses its toolbars AS YOU SCROLL, with no window resize; the visual viewport's own
+        # scroll event is where that settles. pageshow covers a back/forward-cache restore.
+        for ev in ("'resize',fit", "'orientationchange',fit", "'pageshow',fit"):
+            self.assertIn("window.addEventListener(" + ev, self.js)
+        self.assertIn("window.visualViewport.addEventListener('scroll',fit)", self.js)
+        self.assertIn("window.visualViewport.addEventListener('resize',fit)", self.js)
+
+    def test_the_fit_runs_even_with_no_mobile_tab_bar(self):
+        # it must apply on a desktop/tablet layout too, so the fit and its listeners come BEFORE the
+        # #mtabs early return — that ordering is the whole reason a landscape tablet gets a real height
+        fit_at = self.js.index("fit();window.addEventListener('resize',fit)")
+        bar_at = self.js.index("var bar=document.getElementById('mtabs');if(!bar)return;")
+        self.assertLess(fit_at, bar_at)
+
+
+if __name__ == "__main__":
+    unittest.main()
