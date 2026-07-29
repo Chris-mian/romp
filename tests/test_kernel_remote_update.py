@@ -235,24 +235,27 @@ class UpdateEndpoint(unittest.TestCase):
 
 
 class UpdateUI(unittest.TestCase):
-    def test_drift_banner_uses_the_push_framing(self):
-        # mirrors the #rstale reload banner, but asks to PUSH the local build (the user 2026-07-04)
+    def test_drift_banner_uses_the_update_framing(self):
+        # mirrors the #rstale reload banner, but asks to bring the remote onto the local build (the user
+        # 2026-07-04). ONE neutral word since 2026-07-28: the same button covers a push we run and an ask
+        # a checked-in peer runs for itself, and what the user agrees to — that machine ends up on this
+        # build — is identical either way.
         self.assertIn("id=rdrift", km._RDRIFT_HTML)
-        self.assertIn(">Push<", km._RDRIFT_HTML, "the action button says Push")
-        self.assertIn("Push your version", km._RDRIFT_JS, "the prompt asks to push your version to the remote")
+        self.assertIn(">Update<", km._RDRIFT_HTML, "the action button says Update")
+        self.assertIn("Update it to this one?", km._RDRIFT_JS, "the prompt asks to bring the remote onto this build")
         self.assertIn("/tunnels/update", km._RDRIFT_JS)
         self.assertIn("outOfDate", km._RDRIFT_JS)
         self.assertIn("_rdrift_block()", inspect_src())
 
     def test_drift_banner_shows_live_progress_success_and_failure(self):
-        # the user 2026-07-04: the banner must stay up through the push with a spinner + status, a success
+        # the user 2026-07-04: the banner must stay up through the work with a spinner + status, a success
         # confirmation, and a persistent actionable error — not silently flip back to the prompt.
         self.assertIn("rd-spin", km._RDRIFT_HTML)
         self.assertIn("romp-swirl-glyph.svg", km._RDRIFT_CSS)   # the spinner is the romp loader glyph
-        self.assertIn("Pushing your build", km._RDRIFT_JS, "a 'pushing…' progress message")
+        self.assertIn("Updating ", km._RDRIFT_JS, "an 'updating…' progress message")
         self.assertIn("waiting for", km._RDRIFT_JS, "a 'waiting for it to restart' verify phase")
         self.assertIn("Up to date", km._RDRIFT_JS, "a success confirmation")
-        self.assertIn("Push failed", km._RDRIFT_JS, "a persistent, specific failure message")
+        self.assertIn("Update failed", km._RDRIFT_JS, "a persistent, specific failure message")
         self.assertIn("phase", km._RDRIFT_JS, "a state machine drives the flow")
 
     def test_popover_shows_behind_and_a_push_button(self):

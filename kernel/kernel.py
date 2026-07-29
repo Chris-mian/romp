@@ -5222,7 +5222,10 @@ def _remote_public(r):
             # the rail icon's motion, so background work is never invisible (the user 2026-07-24).
             # fastPull: the mirror — the remote is strictly ahead, so pulling only ADDS commits here.
             # Drives the row's Pull button; the auto-pull additionally requires trusted + local main.
-            "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r),
+            # askPull: a CHECKED-IN peer that is strictly behind. No ssh runs from here, so a push can
+            # only be refused — the row offers "tell it to update itself" instead (_ask_peer_to_pull),
+            # which is the one route that exists between the two machines (the user 2026-07-28).
+            "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r), "askPull": _is_ask_pull(r),
             "autoPush": _auto_push_state(r["host"]),
             # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
             # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
@@ -5732,18 +5735,32 @@ def _auto_pull_remote(host):
     return ok
 
 
+def _auto_ask_peer(host):
+    """Run ONE automatic 'fast-forward yourself' ask against a checked-in peer, publishing phase as it
+    goes — the third direction of the same sync, for the host this machine cannot reach by ssh at all.
+    Ends in 'waiting' (it pulled and is restarting; the EVENT that clears it is that host coming back
+    reporting our sha) or a visible 'failed' carrying the peer's own reason."""
+    _set_auto_push(host, "asking", "asking %s to fast-forward itself over its own SSH" % host)
+    try:
+        ok, detail = _ask_peer_to_pull(host)
+    except Exception as e:
+        ok, detail = False, str(e)
+    _set_auto_push(host, "waiting" if ok else "failed",
+                   detail or ("asked; waiting for it to restart" if ok else "the ask failed"))
+    return ok
+
+
 def _maybe_auto_push(r):
     """The supervisor's per-pass hook: start an automatic sync of this remote when the setting is on —
     a PUSH when a straight fast-forward of the remote is observed, a PULL when a TRUSTED remote is
     strictly ahead and the local checkout sits clean on main (the user 2026-07-27: main syncs itself
-    across trusted machines, both directions ridden by the attaching side's own ssh). Spawns a THREAD —
-    either direction is several seconds of ssh, and the supervisor also keeps every tunnel alive, so
-    blocking it here would stall the whole fleet."""
+    across trusted machines, both directions ridden by the attaching side's own ssh), and an ASK when a
+    CHECKED-IN peer is behind — no ssh runs from here, so the fast-forward is driven through the tunnel
+    that peer holds open (the user 2026-07-28). Spawns a THREAD — every direction is several seconds of
+    network, and the supervisor also keeps every tunnel alive, so blocking it here would stall the fleet."""
     host = r.get("host") or ""
     if not host:
         return
-    if r.get("checkin_peer"):
-        return   # no ssh route from here in either direction — auto-sync would just manufacture failures
     if not _remote_out_of_date(r):
         # It matches us now. That is the EVENT that ends a push (never a timer): a 'waiting for it to
         # restart' clears the moment the restarted remote reports our sha, and a stale 'failed' clears too
@@ -5755,21 +5772,23 @@ def _maybe_auto_push(r):
         return
     if not _auto_update_remotes_on():
         return
-    push = _is_fast_forward(r)
-    pull = (not push and _is_fast_pull(r) and (r.get("trust") or "directed") == "trusted"
+    ci = bool(r.get("checkin_peer"))
+    ask = _is_ask_pull(r)          # checked in here + strictly behind → drive it from ITS side
+    push = not ci and _is_fast_forward(r)
+    pull = (not ci and not push and _is_fast_pull(r) and (r.get("trust") or "directed") == "trusted"
             and _local_branch() == "main")
-    if not push and not pull:
-        return
+    if not (push or pull or ask):
+        return                     # includes a checked-in peer we cannot prove is behind: nothing safe to drive
     key = (_sha_base(r.get("kernel_sha") or ""), _local_head() or "")
     with _auto_push_lock:
-        if _auto_push.get(host, {}).get("phase") in ("pushing", "pulling"):
+        if _auto_push.get(host, {}).get("phase") in ("pushing", "pulling", "asking"):
             return                                  # one sync per host at a time
         if _auto_push_tried.get(host) == key:
             return                                  # already attempted for this exact advance
         if len(_auto_push_tried) > 64:
             _auto_push_tried.clear()
         _auto_push_tried[host] = key
-    threading.Thread(target=_auto_push_remote if push else _auto_pull_remote,
+    threading.Thread(target=_auto_push_remote if push else (_auto_pull_remote if pull else _auto_ask_peer),
                      args=(host,), daemon=True).start()
 
 
@@ -5821,8 +5840,10 @@ def _update_remote(host):
     if _rr is not None and _rr.get("checkin_peer"):
         # A checked-in host reached US over its own outbound tunnel; there is no ssh route from here,
         # so a push can only die with a confusing "No route to host" (the user 2026-07-27). Say what
-        # is actually possible instead.
-        return False, ("no ssh path to %s from this machine (it checked in here over its own tunnel) — "
+        # is actually possible instead — since 2026-07-28 that includes Update, which asks the peer to
+        # fast-forward itself over the tunnel it holds (_ask_peer_to_pull).
+        return False, ("no ssh path to %s from this machine (it checked in here over its own tunnel). "
+                       "When it is behind this build, Update asks it to fast-forward itself; otherwise "
                        "sync from that machine's own dashboard" % host)
     kport = int((_rr or {}).get("kernel_port") or _REMOTE_KERNEL_PORT)   # for the restart's port poll
     lfull = _local_head()
@@ -6006,6 +6027,105 @@ def _pull_remote(host):
                            capture_output=True, text=True, timeout=5).stdout.strip()
     return True, "pulled %s commit%s from %s — now at %s; restart romp to run it" % (
         count, "" if count == "1" else "s", host, short or "HEAD")
+
+
+def _peer_call(r, method, path, body=None, timeout=8):
+    """One control call to a CHECKED-IN peer's kernel, through the tunnel IT holds open and authorized
+    with the serve token it handed us at check-in. Returns (status, parsed json) — status 0 with an
+    {"error"} when the call never landed. Unlike _remote_forward, which folds every failure to None, the
+    BODY of a non-200 is kept: the peer's routes report a refusal as {"ok": false, "detail": ...} with a
+    502, and passing that reason through IS the point of asking (CLAUDE.md: fail loudly, with the why)."""
+    import urllib.parse
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r.get("local_port") or 0), timeout=timeout)
+        p = path + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        if body is None:
+            c.request(method, p)
+        else:
+            c.request(method, p, json.dumps(body), {"Content-Type": "application/json"})
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        try:
+            j = json.loads(data.decode("utf-8") or "{}")
+        except Exception:
+            j = {}
+        return resp.status, (j if isinstance(j, dict) else {})
+    except Exception as e:
+        return 0, {"error": str(e)[:160]}
+
+
+def _peer_hub_name(r):
+    """The name a checked-in peer knows THIS machine by — the ssh destination it must be handed to pull
+    FROM here. Read from the peer's OWN /tunnels through its tunnel, the authoritative source: that row
+    carries the ssh alias it actually reaches us at, which need not be our hostname. We are the row it
+    checks IN to whose running build is the one we report; when exactly one row checks in anywhere, that
+    is us regardless of sha. Falls back to _self_host() — the same identity _push_trust_to_peer hands
+    over — when the peer answers nothing usable, so an odd answer degrades to today's behaviour rather
+    than to a confidently wrong host."""
+    me = _self_host()
+    st, j = _peer_call(r, "GET", "/tunnels", timeout=6)
+    if st != 200:
+        return me
+    rows = [t for t in (j.get("tunnels") or []) if isinstance(t, dict) and t.get("checkin")]
+    mine = [t for t in rows if _shas_agree(t.get("kernelSha") or "", _kernel_sha() or "")]
+    pick = mine[0] if len(mine) == 1 else (rows[0] if len(rows) == 1 else None)
+    return str((pick or {}).get("host") or me) or me
+
+
+_ASK_PULL_TIMEOUT = 180   # the PEER's git fetch + fast-forward over its own ssh, not a local operation
+
+
+def _ask_peer_to_pull(host):
+    """Get a CHECKED-IN peer to FAST-FORWARD ITSELF onto this machine's build (the user 2026-07-28, whose
+    laptop kept being offered a push that could never run).
+
+    A peer that checked in here owns the ONLY ssh between the two machines, so this side cannot push and
+    the drift was a dead end: the banner offered Push, _update_remote refused with "no ssh path", nothing
+    moved, and the offer came straight back. But a route does exist — the peer's own. It holds an ssh to
+    us, and its kernel already knows how to fetch a hub's HEAD and fast-forward onto it. So drive that
+    from here, through the tunnel it keeps open:
+      1. ask its kernel to pull from us (its /tunnels/pull — ff-only, refused on a dirty tree there), so
+         every guardrail stays on the side where a clobber would happen, and
+      2. ask it to restart, so it RUNS what it just pulled. Its /version reports the sha its process
+         BOOTED from, so a pull alone would leave the old kernel up still reporting the old sha — the
+         drift would never clear and this would re-offer itself forever. The push direction restarts the
+         remote for exactly the same reason; this is that step, asked instead of done.
+    Returns (ok, detail), fail-loud: the peer's own refusal is passed through verbatim."""
+    host = str(host or "").strip()
+    if not host:
+        return False, "no host"
+    with _remotes_lock:
+        r = dict(_remotes.get(host) or {})
+    if not r:
+        return False, "no attached host '%s'" % host
+    if not r.get("checkin_peer"):
+        return False, "%s is attached over this machine's own ssh — push to it instead" % host
+    if not (r.get("local_port") and r.get("token")):
+        return False, ("no admin path to %s (missing forward or token) — sync from that machine's own "
+                       "dashboard" % host)
+    if not _local_head():
+        return False, "local kernel isn't a git checkout — there is nothing for %s to pull" % host
+    st, j = _peer_call(r, "POST", "/tunnels/pull", {"host": _peer_hub_name(r)}, timeout=_ASK_PULL_TIMEOUT)
+    if st == 0:
+        return False, "couldn't reach %s's kernel: %s" % (host, j.get("error") or "no answer")
+    if st == 404:
+        return False, ("%s runs a romp too old to be asked to update itself — update it once by hand "
+                       "there" % host)
+    if not j.get("ok"):
+        return False, "%s refused: %s" % (host, j.get("detail") or j.get("error") or ("HTTP %s" % st))
+    detail = str(j.get("detail") or "pulled this machine's commits")
+    rst, _rj = _peer_call(r, "POST", "/restart", {}, timeout=10)
+    if rst != 200:
+        return True, detail + "; it took the commits but did not ack the restart — restart romp on %s" % host
+    return True, detail + "; restarting it"
+
+
+def _is_ask_pull(r):
+    """Whether this remote can be TOLD to fast-forward itself: a checked-in peer (no ssh from here) that is
+    strictly BEHIND us, so what it pulls only ADDS commits. Same provable-fast-forward bar as the push gate
+    — a diverged or unknown relationship is never driven automatically, and never offered as one click."""
+    return bool(r.get("checkin_peer")) and _is_fast_forward(r)
 
 
 def _start_remote(host):
@@ -15522,16 +15642,21 @@ if(t.outOfDate){var bb=t.behindBy,ab=t.aheadBy,w='different build';
 if(typeof bb==='number'&&typeof ab==='number'){
 w=(bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s'):(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):w;}
 var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'')
-+(t.checkinPeer?' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.':'');
++(t.checkinPeer?(t.askPull?' No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds.':' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.'):'');
 ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+w+'</span>';}
 else if(t.kernelSha){ver=' \\u00b7 <span class=\"rnet-sha'+(stl?' rnet-stale':'')+'\" title=\"'+(stl?'same build as this machine when last reached.'+sq:'same build as this machine')+'\">'+(stl?'last known: ':'')+t.kernelSha+'</span>';}
 // A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
 // flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
-var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');
-// A checked-in host has no ssh route FROM here, so Push/Pull can only fail — the tooltip above says
-// where to sync instead. A strictly-AHEAD remote gets Pull in Push's place: a push there would only
-// be refused (it has commits this machine lacks), so offering it is a dead end.
-var upd=(t.status==='up'&&t.outOfDate&&!apx&&!t.checkinPeer&&!t.fastPull)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first. It refuses if that machine has its own commits.\">Push</button>':'';
+var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling'||t.autoPush.phase==='asking');
+// Every button here is gated on the action being PROVABLY possible (the user 2026-07-28, whose laptop was
+// offered a push that could never run). Push needs an ssh route from here AND a straight fast-forward: a
+// checked-in host has no route, and a remote whose commit is diverged from — or unknown to — this repo is
+// refused by the remote's own ancestor check every single time (a commit this repo has never seen cannot be
+// an ancestor of its HEAD). Those states get the action that CAN work instead: Pull when the remote is
+// strictly ahead, Update when a checked-in peer is behind, and otherwise the drift word plus its tooltip,
+// which say what happened without dead-ending on a button.
+var upd=(t.status==='up'&&t.fastForward&&!apx&&!t.checkinPeer)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s committed romp to '+t.host+' and restart its kernel, so it runs exactly this code. Uncommitted local edits are not sent, so commit first.\">Push</button>':'';
+var ask=(t.status==='up'&&t.askPull&&!apx)?'<button class=rnet-upd data-a=\"'+t.host+'\" title=\"'+t.host+' checked in over its own tunnel, so this machine cannot push to it. This asks its romp to pull these commits from here and restart, over the link it already holds.\">Update</button>':'';
 var pull=(t.status==='up'&&t.fastPull&&!apx&&!t.checkinPeer)?'<button class=rnet-upd data-p=\"'+t.host+'\" title=\"Pull '+t.host+'\\u2019s newer commits into this machine\\u2019s romp (fast-forward only; refuses if this tree has uncommitted changes). This kernel keeps running the old build until you restart romp.\">Pull</button>':'';
 // ssh alive but no kernel answering -> the explicit ASK (the user 2026-07-10): a Start button that
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
@@ -15568,7 +15693,7 @@ else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
-retry+pull+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
+retry+pull+ask+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
 // go away: the work still announces itself, it just does it here instead of over your screen. A FAILURE
@@ -15673,7 +15798,13 @@ b.disabled=true;b.textContent='Pushing\\u2026';
 fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
 if(d&&d.ok){b.textContent='Pushed';schedule(2000);}   // the remote restarts + re-polls → the flag clears itself
 else{b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
-}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed to reach the kernel.');});};});}
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed to reach the kernel.');});};});
+list.querySelectorAll('button[data-a]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-a');
+b.disabled=true;b.textContent='Asking\\u2026';   // the work runs on the PEER, over its own ssh; this drives it through the tunnel it holds
+fetch('/tunnels/askpull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.ok){b.textContent='Updating';schedule(2000);}   // it pulled + is restarting → its next /version clears the flag
+else{b.disabled=false;b.textContent='Retry';alert('Updating '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Updating '+h+' failed to reach the kernel.');});};});}
 attach.onclick=function(){var h=(hostIn.value||'').trim();if(!h)return;
 try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}   // remember for MRU-first ordering next time
 attach.disabled=true;attach.textContent='Attaching\\u2026';
@@ -15867,18 +15998,20 @@ _RDRIFT_CSS = (
     "#rdrift .rd-dismiss:hover{color:#e6e6e6}")
 _RDRIFT_HTML = (
     "<div id=rdrift role=alert><span class=rd-spin aria-hidden=true></span><span class=rd-msg></span>"
-    "<button class=rd-upd id=rdrift-upd>Push</button>"
+    "<button class=rd-upd id=rdrift-upd>Update</button>"
     "<button class=rd-dismiss id=rdrift-dismiss>Dismiss</button></div>")
 _RDRIFT_JS = (
     "(function(){var box=document.getElementById('rdrift');if(!box)return;"
     "var msg=box.querySelector('.rd-msg'),up=document.getElementById('rdrift-upd'),dm=document.getElementById('rdrift-dismiss');"
-    "var stale=[],dismissed='',phase='idle',pushed=[],vtick=0;"   # phase: idle|pushing|verifying|failed|done
+    "var stale=[],route={},dismissed='',phase='idle',pushed=[],vtick=0;"   # phase: idle|pushing|verifying|failed|done
     "function key(hs){return hs.slice().sort().join(',');}"
     # ONE renderer for every state: message + spinner + which buttons show. Keeps the banner UP the whole flow.
     "function set(text,busy,showPush,showDismiss){msg.textContent=text;box.classList.toggle('rd-busy',!!busy);"
     "up.style.display=showPush?'':'none';dm.style.display=showDismiss?'':'none';box.classList.add('show');}"
-    "function prompt(hs){return hs.length===1?(hs[0]+' is on an older romp build. Push your version to it?')"
-    ":(hs.length+' remotes are on an older romp build. Push your version? ('+hs.join(', ')+')');}"
+    # One neutral word for both routes: a push we run, and an ask a checked-in peer runs for itself. What
+    # the user is agreeing to is the same either way — that machine ends up on this build.
+    "function prompt(hs){return hs.length===1?(hs[0]+' is on an older romp build. Update it to this one?')"
+    ":(hs.length+' remotes are on an older romp build. Update them to this one? ('+hs.join(', ')+')');}"
     "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     # AUTOMATIC UPDATE ON → this banner does not exist (the user 2026-07-24). It was the modal landing
     # mid-screen on every advance, and the whole point of the setting is that romp just does the push and
@@ -15886,26 +16019,37 @@ _RDRIFT_JS = (
     # deliberately leaves alone (diverged, unknown build) still has to be raised somewhere — the popover row
     # keeps its Push button and its explanation, which is where a decision belongs.
     "if(d&&d.autoUpdate){box.classList.remove('show');phase='idle';return;}"
-    "var ts=(d&&d.tunnels)||[];stale=ts.filter(function(t){return t.status==='up'&&t.outOfDate;}).map(function(t){return t.host;});"
+    # Only raise a host romp can actually MOVE (the user 2026-07-28). This used to prompt on any drift, so a
+    # laptop that had checked in over its own tunnel — no ssh route from here at all — was offered a push
+    # every four seconds that /tunnels/update refused on sight. Same for a diverged or unknown build: the
+    # remote's own ancestor check rejects those every time. So the banner asks about exactly two states,
+    # each with a route that works: a provable fast-forward we can push, and a checked-in peer we can ask
+    # to fast-forward itself. Anything else stays on the row, where the drift word and its tooltip explain
+    # it without a button that can only produce an error.
+    "var ts=(d&&d.tunnels)||[];route={};"
+    "stale=ts.filter(function(t){return t.status==='up'&&t.outOfDate&&((t.fastForward&&!t.checkinPeer)||t.askPull);})"
+    ".map(function(t){route[t.host]=t.askPull?'/tunnels/askpull':'/tunnels/update';return t.host;});"
     "if(phase==='pushing'||phase==='failed'||phase==='done')return;"   # an active/terminal state owns the banner
     "if(phase==='verifying'){var still=pushed.filter(function(h){return stale.indexOf(h)>=0;});"
     "if(!still.length){set('\\u2713 Up to date.',false,false,false);phase='done';"
     "setTimeout(function(){if(phase==='done'){phase='idle';box.classList.remove('show');}},2500);return;}"
-    "if(++vtick>18){set('Pushed, but '+still.join(', ')+' still reports the old build \\u2014 it may still be restarting, or check it directly.',false,false,true);phase='failed';return;}"
-    "set('Pushed \\u2014 waiting for '+still.join(', ')+' to restart\\u2026',true,false,false);return;}"
-    "if(stale.length&&key(stale)!==dismissed){up.textContent='Push';up.disabled=false;set(prompt(stale),false,true,true);}"
+    "if(++vtick>18){set('Sent, but '+still.join(', ')+' still reports the old build \\u2014 it may still be restarting, or check it directly.',false,false,true);phase='failed';return;}"
+    "set('Sent \\u2014 waiting for '+still.join(', ')+' to restart\\u2026',true,false,false);return;}"
+    "if(stale.length&&key(stale)!==dismissed){up.textContent='Update';up.disabled=false;set(prompt(stale),false,true,true);}"
     "else if(!stale.length){box.classList.remove('show');}}).catch(function(){});}"
     "up.onclick=function(){var hosts=stale.slice();if(!hosts.length){box.classList.remove('show');return;}"
-    "phase='pushing';vtick=0;up.disabled=true;up.textContent='Pushing\\u2026';"
-    "set('Pushing your build to '+hosts.join(', ')+' over SSH\\u2026',true,false,false);"
+    "phase='pushing';vtick=0;up.disabled=true;up.textContent='Updating\\u2026';"
+    "set('Updating '+hosts.join(', ')+' over SSH\\u2026',true,false,false);"
     "var done=0,fails=[],oks=[];"
-    "hosts.forEach(function(h){fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})})"
+    # Per host, the route that can work: a push we run over our ssh, or the ask that a checked-in peer
+    # runs for itself over the link IT holds. One button, two mechanics — the user picks an outcome.
+    "hosts.forEach(function(h){fetch(route[h]||'/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})})"
     ".then(function(r){return r.json();}).then(function(x){if(x&&x.ok){oks.push(h);}else{fails.push(h+': '+((x&&x.detail)||'failed'));}})"
     ".catch(function(){fails.push(h+': couldn\\u2019t reach the kernel');})"
     ".then(function(){done++;if(done!==hosts.length)return;up.textContent='Retry';"
-    "if(fails.length&&!oks.length){up.disabled=false;set('Push failed \\u2014 '+fails.join('; '),false,true,true);phase='failed';}"    # fail LOUDLY (CLAUDE.md)
-    "else if(fails.length){up.disabled=false;pushed=oks;set('Pushed '+oks.join(', ')+'; failed '+fails.join('; '),false,true,true);phase='failed';}"
-    "else{pushed=oks;phase='verifying';vtick=0;set('Pushed to '+oks.join(', ')+'. Waiting for '+(oks.length===1?'it':'them')+' to restart\\u2026',true,false,false);setTimeout(check,1500);}"
+    "if(fails.length&&!oks.length){up.disabled=false;set('Update failed \\u2014 '+fails.join('; '),false,true,true);phase='failed';}"    # fail LOUDLY (CLAUDE.md)
+    "else if(fails.length){up.disabled=false;pushed=oks;set('Updated '+oks.join(', ')+'; failed '+fails.join('; '),false,true,true);phase='failed';}"
+    "else{pushed=oks;phase='verifying';vtick=0;set('Sent to '+oks.join(', ')+'. Waiting for '+(oks.length===1?'it':'them')+' to restart\\u2026',true,false,false);setTimeout(check,1500);}"
     "});});};"
     "dm.onclick=function(){dismissed=key(stale);phase='idle';box.classList.remove('show');};"
     "check();setInterval(check,4000);})();")   # 4s so progress feels live (was 30s)
@@ -17218,6 +17362,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 ok, detail = _pull_remote(host)
+                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
+            if u.path == "/tunnels/askpull":
+                # ASK a checked-in peer to fast-forward ITSELF to this machine's build — the third
+                # direction, for the host no ssh of ours can reach (it holds the only link). The work
+                # happens on the peer, over its own ssh; we drive it through the tunnel it keeps open
+                # and report its answer verbatim. Body: {"host": <checked-in peer>}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                ok, detail = _ask_peer_to_pull(host)
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
             if u.path == "/tunnels/start":
                 # START a downed remote kernel — the popover's explicit ASK for an ssh-reachable host
