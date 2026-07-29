@@ -50,7 +50,7 @@ class SessionRetrying(unittest.TestCase):
                       {"t": T0 + 200, "state": "retrying"},
                       {"t": T0 + 300, "state": "retrying"}])
         got = km._session_retrying(SID, {"state": "retrying", "retryCount": 7})
-        self.assertEqual(got, {"since": T0 + 100, "count": 7},
+        self.assertEqual({"since": got["since"], "count": got["count"]}, {"since": T0 + 100, "count": 7},
                          "the stretch dates from its FIRST retrying row, not the latest attempt")
 
     def test_a_recovery_ends_the_stretch_so_a_new_storm_dates_from_its_own_start(self):
@@ -77,12 +77,29 @@ class SessionRetrying(unittest.TestCase):
     def test_no_states_row_yet_renders_timeless(self):
         # the live snapshot can lead the log by a beat — the chip still shows, just without a time
         got = km._session_retrying(SID, {"state": "retrying", "retryCount": 2})
-        self.assertEqual(got, {"since": None, "count": 2})
+        self.assertEqual({"since": got["since"], "count": got["count"]}, {"since": None, "count": 2})
 
     def test_junk_retry_count_degrades_to_zero(self):
         self._states([{"t": T0, "state": "retrying"}])
         got = km._session_retrying(SID, {"state": "retrying", "retryCount": "lots"})
         self.assertEqual(got["count"], 0, "a malformed count never crashes the feed build")
+
+    def test_the_storms_own_detail_rides_along(self):
+        """The chip and the bell entry name WHAT is failing, not just that a storm exists (the user
+        2026-07-29). Same retryInfo the chat's retrying element reads, so all three agree."""
+        self._states([{"t": T0, "state": "retrying"}])
+        got = km._session_retrying(SID, {"state": "retrying", "retryCount": 7,
+                                         "retryInfo": {"max": 10, "status": 529, "networkDown": False,
+                                                       "rateLimitType": None}})
+        self.assertEqual((got["max"], got["status"]), (10, 529))
+        self.assertIs(got["networkDown"], False)
+
+    def test_a_snapshot_with_no_detail_still_builds(self):
+        """A storm whose payload romp couldn't read must not break the chip — the detail is optional."""
+        self._states([{"t": T0, "state": "retrying"}])
+        got = km._session_retrying(SID, {"state": "retrying", "retryCount": 3, "retryInfo": None})
+        self.assertEqual(got["count"], 3)
+        self.assertIsNone(got["status"])
 
 
 class FeedCardRetryingChip(unittest.TestCase):

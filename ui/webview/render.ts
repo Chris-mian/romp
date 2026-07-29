@@ -28,6 +28,7 @@ import { hostNameNodes, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
+import { apiErrorReason } from "./api-error-reason";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -155,7 +156,7 @@ type ChatEvent = (
   // the error status+message behind the backoff, and the next-attempt moment (epoch s) — so the element
   // says WHAT is failing and when it retries, not just that a storm exists. Every field optional (only
   // status has been seen on the wire so far).
-  | { kind: "retrying"; retries?: number; info?: { attempt?: number | null; max?: number | null; status?: number | string | null; error?: string | null; retryAt?: number | null } | null; ts?: string; uuid?: string }
+  | { kind: "retrying"; retries?: number; info?: { attempt?: number | null; max?: number | null; status?: number | string | null; error?: string | null; retryAt?: number | null; requestId?: string | null; networkDown?: boolean | null; rateLimitType?: string | null } | null; ts?: string; uuid?: string }
   // A stalled api_retry turn RECOVERED — a persistent, rail-anchored "Recovered after N retries" note left
   // where output resumed, the historical counterpart of the transient element above (the user 2026-07-08).
   | { kind: "retried"; retries: number; ts?: string; uuid?: string }
@@ -2184,16 +2185,19 @@ function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLEleme
   turn.appendChild(line);
   // The error behind the backoff, when the payload names it — status code and/or message on its own muted
   // line (same size as the retrying text: one size per information type), full message in the tooltip.
-  if (info.status || info.error) {
+  if (info.status || info.error || info.networkDown) {
     const err = el("div", "retrying-err");
     const status = info.status ? `HTTP ${info.status}` : "";
     const msg = (info.error || "").trim();
-    err.textContent = [status, msg].filter(Boolean).join(" — ");
-    if (msg) err.title = msg;
+    err.textContent = [status, msg, apiErrorReason(info)].filter(Boolean).join(" — ");
+    // The request id belongs in the tooltip, not the line: it is the one thing worth quoting to support and
+    // the one thing nobody reads at a glance (progressive disclosure — gist on the line, mechanics a hover away).
+    err.title = [msg, info.requestId ? `request ${info.requestId}` : ""].filter(Boolean).join("\n") || "";
     turn.appendChild(err);
   }
   return turn;
 }
+
 
 // The next-attempt countdown's text. Past due (the attempt is firing, or the CLI slipped its own estimate)
 // reads "retrying now…" rather than a stuck "0s" or a negative — the wait is over either way, and the loader

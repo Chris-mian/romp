@@ -1,0 +1,92 @@
+// An API failure says whose problem it is, in words that decide what to do next (the user 2026-07-29).
+// EXECUTES ./api-error-reason; the two callers (chat retry line, bell entry) are source-pinned so neither
+// can quietly go back to printing a bare status code.
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { apiErrorReason } from "./api-error-reason";
+import { badgeNotices, type BadgeItem } from "./badge-mirror";
+
+const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+
+test("529 is named as server-side and temporary, not a fault of the session", () => {
+  const s = apiErrorReason({ status: 529 });
+  assert.match(s, /overloaded/i);
+  assert.match(s, /server-side/i);
+  // the whole point of the sentence: a long thread bouncing while a fresh one connects is NOT a broken thread
+  assert.match(s, /not this session/i);
+});
+
+test("the on-you cases outrank the status code, because only they are actionable", () => {
+  // a spend cap arrives as a 4xx; read by status alone it would misreport as an ordinary rejection
+  assert.match(apiErrorReason({ status: 400, spendLimit: true }), /spend limit reached/i);
+  assert.match(apiErrorReason({ status: 400, tooLong: true }), /prompt too long/i);
+});
+
+test("a dead network and a busy API are told apart", () => {
+  assert.match(apiErrorReason({ status: 529, networkDown: true }), /offline/i);
+  assert.doesNotMatch(apiErrorReason({ status: 529, networkDown: true }), /overloaded/i);
+});
+
+test("a quota 429 names which limit it hit", () => {
+  assert.match(apiErrorReason({ status: 429, rateLimitType: "output_tokens" }), /output_tokens/);
+  assert.match(apiErrorReason({ status: 429 }), /rate limited/i);
+});
+
+test("unknown facts produce no sentence rather than an invented cause", () => {
+  assert.equal(apiErrorReason({}), "");
+  assert.equal(apiErrorReason({ status: null }), "");
+  assert.equal(apiErrorReason({ status: "not-a-number" }), "");
+  assert.equal(apiErrorReason({ status: 200 }), "", "a non-error status explains nothing");
+});
+
+test("other server errors still read as server-side", () => {
+  assert.match(apiErrorReason({ status: 500 }), /server-side/i);
+  assert.match(apiErrorReason({ status: 503 }), /server-side/i);
+  assert.match(apiErrorReason({ status: 404 }), /model/i);
+});
+
+test("the bell entry carries the reason and the attempt count, not just 'retry storm'", () => {
+  const it: BadgeItem = {
+    itemId: "TESTSID:g1", sid: "TESTSID", name: "api", text: "ship the notes-api",
+    retrying: { since: 300, count: 7, max: 10, status: 529 },
+  };
+  const { notices } = badgeNotices([it], new Set());
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].text, /attempt 7 of 10/, "how far into the backoff it is");
+  assert.match(notices[0].text, /overloaded/i, "and what is actually failing");
+});
+
+test("a blocked API-error entry explains the status instead of only quoting it", () => {
+  const it: BadgeItem = {
+    itemId: "TESTSID:g1", sid: "TESTSID", name: "api", text: "ship the notes-api",
+    blocked: { state: "apiError", status: 529 },
+  };
+  const { notices } = badgeNotices([it], new Set());
+  assert.match(notices[0].text, /API error 529/, "the code is still there for the record");
+  assert.match(notices[0].text, /server-side/i, "and now says what it means");
+});
+
+test("a spend-limit block reads as the spend limit, with no bare status pasted in front", () => {
+  const it: BadgeItem = {
+    itemId: "TESTSID:g1", sid: "TESTSID", name: "api", text: "ship the notes-api",
+    blocked: { state: "apiError", status: 400, spendLimit: true },
+  };
+  const { notices } = badgeNotices([it], new Set());
+  assert.match(notices[0].text, /spend limit/i);
+  assert.doesNotMatch(notices[0].text, /API error 400/);
+});
+
+test("the chat's retry line shows the reason and hides the request id in the tooltip", () => {
+  // progressive disclosure: the gist is on the line, the id is one hover away (CLAUDE.md)
+  assert.match(RENDER, /apiErrorReason\(info\)/, "the retry line renders the shared reason");
+  assert.match(RENDER, /request \$\{info\.requestId\}/, "the request id rides the tooltip");
+  assert.doesNotMatch(RENDER, /err\.textContent = \[status, msg\]\.filter/,
+    "the old status+message-only line is gone");
+});
+
+test("the retrying element renders whenever there is anything to say", () => {
+  // networkDown alone (status 0 / no message) must still surface — it is the most actionable case of all
+  assert.match(RENDER, /if \(info\.status \|\| info\.error \|\| info\.networkDown\)/);
+});
