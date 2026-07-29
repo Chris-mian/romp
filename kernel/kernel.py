@@ -11,7 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
-import json, os, queue, re, signal, socket, sys, time, threading, traceback, base64, bisect, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, queue, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -4784,6 +4784,59 @@ TUNNEL_BACKOFF_MAX = 300         # steady ceiling for a fresh outage (5 min)
 TUNNEL_BACKOFF_LONG = 900        # relaxed to 15 min once the outage is clearly not a blip
 TUNNEL_LONG_AFTER = 12           # consecutive failures before the long ceiling applies (~38 min of trying)
 
+# Every dial, death and probe verdict, on the record (the user 2026-07-29, after a morning lost to a host
+# that would not come back while plain `ssh <host>` worked throughout). _spawn_tunnel used to send ssh's
+# stdout AND stderr to DEVNULL, so the one line that names the cause — "Address already in use",
+# "remote port forwarding failed for listen port …", "Permission denied", "Timeout, server not
+# responding" — was destroyed at the moment it was printed, and afterwards NOTHING on this machine
+# could say why a single dial had failed. The reason is the whole diagnosis, so it is kept: ssh's stderr
+# goes to a per-host file (truncated each dial, so it always holds the LAST attempt verbatim) and is
+# copied into an append-only jsonl next to it, with the argv, the exit code and the probe verdict.
+#   jq 'select(.host=="…")' ~/.local/state/romp/tunnel-dials.jsonl
+TUNNEL_LOG = jd.STATE / "tunnel-dials.jsonl"
+TUNNEL_ERR_DIR = jd.STATE / "tunnel-err"
+TUNNEL_LOG_MAX = 2_000_000       # rotate at ~2MB; one dial is a few hundred bytes, so this is months
+
+
+def _tunnel_log(host, event, **kw):
+    """Append one record to the dial log. Best-effort and never raises: logging must not be able to break
+    the supervisor that is trying to reconnect you."""
+    try:
+        TUNNEL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        if TUNNEL_LOG.exists() and TUNNEL_LOG.stat().st_size > TUNNEL_LOG_MAX:
+            TUNNEL_LOG.replace(TUNNEL_LOG.with_suffix(".jsonl.1"))     # keep exactly one generation back
+        rec = {"t": round(time.time(), 3), "host": host, "event": event}
+        rec.update(kw)
+        with open(TUNNEL_LOG, "a") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _tunnel_err_path(host):
+    return TUNNEL_ERR_DIR / ("%s.log" % re.sub(r"[^A-Za-z0-9_.-]", "_", str(host)))
+
+
+def _tunnel_stderr(host, limit=4000):
+    """What the LAST dial for this host printed, minus benign chatter. '' when it said nothing."""
+    try:
+        return _ssh_err(_tunnel_err_path(host).read_text(errors="replace"))[-limit:]
+    except Exception:
+        return ""
+
+
+# An ssh whose forward cannot bind is a PERMANENT wedge, not a transient failure: ExitOnForwardFailure=yes
+# (which we want — a tunnel with a silently missing forward is worse) means the dial dies instantly, and
+# since the ports are minted once by _free_port and then persisted forever, the NEXT dial rebuilds exactly
+# the same doomed argv. That loops until whatever holds the port lets go, which for an ssh corpse on either
+# end can be tens of minutes. Detected off ssh's own words, then healed by re-minting the ports.
+_FWD_BIND_FAIL = ("Address already in use", "cannot listen to port", "remote port forwarding failed",
+                  "bind: ", "Error: remote port forwarding failed")
+
+
+def _forward_bind_failed(err):
+    return any(s in (err or "") for s in _FWD_BIND_FAIL)
+
 
 def _tunnel_backoff(fails):
     """Seconds before the next dial, after `fails` consecutive failures. There is no "stop" answer: the
@@ -5354,14 +5407,50 @@ def _reap_stray_tunnels(host):
 
 
 def _spawn_tunnel(r):
-    """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock."""
+    """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock.
+
+    ssh's stderr is CAPTURED, not discarded (see TUNNEL_LOG): it is the only place the reason for a failed
+    dial is ever stated, and throwing it away is what made a real outage undiagnosable after the fact."""
     _reap_stray_tunnels(r["host"])   # clear any orphan on this host's ports first, so we never leak a 2nd tunnel
+    argv = _tunnel_argv(r)
     try:
-        r["proc"] = subprocess.Popen(_tunnel_argv(r), stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        TUNNEL_ERR_DIR.mkdir(parents=True, exist_ok=True)
+        # truncated per dial, so the file always holds THIS attempt's words; the jsonl keeps the history
+        errf = open(_tunnel_err_path(r["host"]), "w+b")
+    except Exception:
+        errf = None
+    try:
+        r["proc"] = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=(errf or subprocess.DEVNULL))
         r["status"], r["detail"] = "starting", ""
+        r["_death_logged"] = False
+        _tunnel_log(r["host"], "dial", pid=r["proc"].pid, fails=r.get("fails", 0), argv=argv)
     except Exception as e:
         r["proc"], r["status"], r["detail"] = None, "error", str(e)
+        _tunnel_log(r["host"], "spawn-failed", error=str(e), argv=argv)
+    finally:
+        if errf:
+            try:
+                errf.close()      # the child holds its own dup of the fd; we only needed it to hand over
+            except Exception:
+                pass
+
+
+def _remint_forward_ports(r):
+    """Give this row fresh local/reverse forward ports after a bind failure, so the next dial is not the
+    same doomed argv (the user 2026-07-29). The ports were minted ONCE by _free_port and then persisted,
+    so a collision — a corpse of ours, another kernel, or an unrelated process that grabbed the number out
+    of the ephemeral range — wedged every future dial identically and forever. Caller holds _remotes_lock."""
+    old = {k: r.get(k) for k in ("local_port", "bus_port", "rk_port", "rb_port") if r.get(k)}
+    r["local_port"] = _free_port()
+    r["bus_port"] = _free_port()
+    if r.get("checkin"):
+        r["rk_port"], r["rb_port"] = _free_port(), _free_port()
+        r.pop("_handshook", None)        # the hub must be re-told the new ports
+    r["_peer_notified"] = None           # bus_port moved: the local bus is holding a stale endpoint
+    new = {k: r.get(k) for k in ("local_port", "bus_port", "rk_port", "rb_port") if r.get(k)}
+    _tunnel_log(r["host"], "ports-reminted", old=old, new=new)
 
 
 def _tunnel_proc_alive(r):
@@ -5591,6 +5680,20 @@ def attach_remote(host, kernel_port=None):
             r["token"] = token
         if not _tunnel_proc_alive(r):
             _spawn_tunnel(r)
+        elif r.get("status") != "up":
+            # An attach gesture on a row that is NOT up means "dial again, now" — that is what the panel's
+            # Try now sends. It used to do NOTHING here, because a live ssh proc satisfied the check above:
+            # the one wedge the button existed to break — a tunnel whose proc is fine and whose transport
+            # is gone — was the exact case it declined to act on (the user 2026-07-29). Drop the old ssh
+            # and dial fresh. Waiting for the process to actually exit is what frees the forwarded ports,
+            # so the new dial does not die on its predecessor's listener.
+            _tunnel_log(host, "forced-redial", pid=r["proc"].pid, status=r.get("status"))
+            try:
+                r["proc"].terminate()
+                r["proc"].wait(timeout=3)
+            except Exception:
+                pass
+            _spawn_tunnel(r)
         if boot_detail and not token:
             r["detail"] = boot_detail              # the popover's next step (e.g. "run bin/romp-host-setup")
         pub = _remote_public(r)
@@ -5695,7 +5798,17 @@ def list_remotes():
 
 def _poll_remote_sids(r):
     """GET the remote kernel's /sessions THROUGH the -L tunnel; return its session ids (for the wake-router's
-    host↔sid map). None on any failure — leave the last-known map in place."""
+    host↔sid map). None on any failure — leave the last-known map in place.
+
+    Also files HOW it failed in r["_probe"], because the shape of the failure is the one thing that tells a
+    live tunnel with no romp behind it apart from an ssh that is still holding its listener over a transport
+    that is gone (the user 2026-07-29). ssh answers the local connect either way, so "the port accepts" says
+    nothing. But the two fail DIFFERENTLY, and exactly:
+      refused — ssh reached the far side, the far side said no. The channel-open failure comes back as a
+                reset/refusal, promptly. The tunnel is fine; romp is not running over there.
+      timeout — nothing came back at all. The far side never spoke, because there is no longer a path to
+                it. The tunnel is a corpse holding a socket open, and only a re-dial fixes it.
+    That is an exact event, not a threshold, so the supervisor can act on it without guessing."""
     import urllib.parse
     try:
         c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=4)
@@ -5705,10 +5818,23 @@ def _poll_remote_sids(r):
         data = resp.read()
         c.close()
         if resp.status != 200:
+            r["_probe"] = "http-%d" % resp.status         # it ANSWERED — the tunnel carries traffic
             return None
         rows = json.loads(data.decode("utf-8"))
+        r["_probe"] = "ok"
         return [x.get("id") for x in rows if isinstance(x, dict) and x.get("id")]
+    except (socket.timeout, TimeoutError):
+        r["_probe"] = "timeout"
+        return None
+    except (ConnectionResetError, ConnectionRefusedError, ConnectionAbortedError, BrokenPipeError):
+        r["_probe"] = "refused"
+        return None
+    except OSError as e:
+        r["_probe"] = "refused" if e.errno in (errno.ECONNRESET, errno.ECONNREFUSED) else "error"
+        return None
     except Exception:
+        # a malformed body still proves the far side spoke, so this is never a dead transport
+        r["_probe"] = "refused"
         return None
 
 
@@ -6527,6 +6653,20 @@ def _tunnel_supervisor():
                         # (A checked-in host owns NO ssh here — the mobile machine supervises its own
                         # tunnel, so there is nothing to spawn or back off; its status comes purely
                         # from polling the reverse-forwarded port below.)
+                        # A dial that just DIED is where the reason lives: read what ssh printed before
+                        # anything overwrites it, put it on the record, and heal the one failure that
+                        # would otherwise repeat forever — a forward that cannot bind (the user
+                        # 2026-07-29). Once per death, so a row waiting out its backoff logs nothing.
+                        if r.get("proc") is not None and not r.get("_death_logged"):
+                            r["_death_logged"] = True
+                            err = _tunnel_stderr(r["host"])
+                            _tunnel_log(r["host"], "died", code=r["proc"].poll(), stderr=err,
+                                        fails=r.get("fails", 0))
+                            if _forward_bind_failed(err):
+                                r["detail"] = ("a forwarded port was already taken, so the tunnel could "
+                                               "not open — romp is retrying on fresh ports")
+                                _remint_forward_ports(r)
+                                r["fails"], r["next_try"] = 0, 0   # a NEW argv deserves a fresh ladder
                         # BACK OFF re-spawns (exponential — see _tunnel_backoff) so an unreachable host
                         # isn't hammered every tick: repeated ssh attempts can trip the remote sshd's
                         # rate-limit (the user 2026-06-30). It never stops dialing (the user 2026-07-29);
@@ -6554,6 +6694,28 @@ def _tunnel_supervisor():
                         st = "up" if (up and sids is not None) else ("no-kernel" if up else "down")
                     else:
                         st = _tunnel_status(_tunnel_proc_alive(r), up, sids is not None)
+                        # A LIVE ssh is not proof of a live tunnel (the user 2026-07-29). ssh answers the
+                        # local connect from its own listener, so a proc whose transport is gone looks
+                        # exactly like a healthy tunnel with no romp behind it — and this branch only
+                        # re-dials a DEAD proc, so that row sat at 'no-kernel' forever: no re-dial, no
+                        # backoff, no reap, and a panel offering only "Start", which says to go reboot the
+                        # REMOTE kernel. That is the dead end this outage ran into.
+                        #
+                        # The probe verdict tells the two apart exactly (see _poll_remote_sids): a far side
+                        # that REFUSED is a real no-kernel and must be left alone, while one that never
+                        # answered at all means the path is gone. Kill it and let the branch above re-dial —
+                        # once, on the transition, never on a timer.
+                        if st == "no-kernel" and r.get("_probe") == "timeout":
+                            _tunnel_log(r["host"], "stale-tunnel",
+                                        pid=(r["proc"].pid if r.get("proc") else 0),
+                                        note="local forward accepts but nothing answered through it")
+                            try:
+                                r["proc"].terminate()
+                            except Exception:
+                                pass
+                            st = "down"
+                            r["detail"] = ("the link to %s stopped carrying traffic — romp is dialing "
+                                           "again") % r["host"]
                     if not (st == "down" and r.get("status") == "error") and not r.get("booting"):
                         r["status"] = st                   # keep a richer spawn-error label over plain 'down';
                         #                                    a Start in flight (`booting`) owns the row's phase
@@ -16079,6 +16241,20 @@ if(me)me.setAttribute('class','rn-me'+(nodes?' rn-ok':''));}
 function paintIcon(up,busy,nodes){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
 paintNodes(icon,nodes);
 var m=mnet();if(m){m.classList.toggle('on',up);m.classList.toggle('busy',busy);paintNodes(m,nodes);}}
+// A host DROPPING is an EVENT, and it gets an event's cue: the rail's network glyph flashes red three
+// times and stops (the user 2026-07-29). This replaces a banner that dropped across the top of the pane
+// and covered the session tabs — the one strip you are actually reading — to announce a machine going
+// away. The steady state is already on the rail (a red fleet node) and on the tab (dimmed, host struck,
+// the why on hover); this only says something just CHANGED, and costs no pixels of transcript.
+var _wasUp={};
+function dropCue(ts){var fell=false,seen={};
+ts.forEach(function(t){var up=(t.status==='up');seen[t.host]=up;if(_wasUp[t.host]&&!up)fell=true;});
+_wasUp=seen;                       // a host we have never seen up cannot "drop": a page opened on an
+if(fell)flashDrop();}              // already-down fleet stays quiet, and the colours carry that state
+function flashDrop(){[icon,mnet()].forEach(function(el){if(!el)return;
+el.classList.remove('rn-drop');void el.offsetWidth;   // reflow: a second drop replays the flash
+el.classList.add('rn-drop');
+el.addEventListener('animationend',function(){el.classList.remove('rn-drop');},{once:true});});}
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
 _auto=!!(d&&d.autoUpdate);
@@ -16087,6 +16263,7 @@ if(autoCb&&!autoCb.disabled)autoCb.checked=_auto;   // mirror the kernel; never 
 // the whole point of replacing the modal (the user 2026-07-24 — animate the icon so you can see it happening).
 var pushing=ts.filter(function(t){return t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling');});
 paintIcon(ts.some(function(t){return t.status==='up';}),busy||!!pushing.length,fleetNodes(ts));
+dropCue(ts);   // paint the new state first, then flash if this poll is where a host fell off
 // hover tooltip on the rail icon: which hosts are attached + their phase and session count, plus any
 // automatic update's live phase — so the progress is readable WITHOUT opening the panel.
 var _sv=ts.map(hostSev),_bad=_sv.filter(function(x){return x==='warn';}).length,
@@ -16179,7 +16356,11 @@ var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" 
 var wait=(t.nextTry&&(t.status==='down'||t.status==='error'))?Math.max(0,t.nextTry-Math.floor(Date.now()/1000)):0;
 var when=wait>90?('next try in '+Math.round(wait/60)+'m'):(wait>0?('next try in '+wait+'s'):'retrying\\u2026');
 var again=(t.status==='down'||t.status==='error')?'<span class=rnet-retry title=\"romp keeps dialing '+t.host+' on its own, waiting longer between tries the longer it is down ('+(t.fails||0)+' so far).\">'+when+'</span>':'';
-var retry=(t.status==='down'||t.status==='error')?'<button data-ra=\"'+t.host+'\" title=\"Dial '+t.host+' now instead of waiting out the backoff.\">Try now</button>':'';
+// Offered on EVERY row that is not up, not just down/error (the user 2026-07-29). A 'no-kernel' row used
+// to carry only Start — "this pushes this machine's romp there and boots its kernel" — so a link that had
+// quietly stopped carrying traffic read as a dead remote, and the only button on offer told you to go
+// restart the far end. That is the path that cost a morning of restarting kernels that were never down.
+var retry=(t.status!=='up'&&t.status!=='starting')?'<button data-ra=\"'+t.host+'\" title=\"Dial '+t.host+' now: drop the current ssh and open a fresh one. Use this when the link looks connected but nothing is coming through.\">Try now</button>':'';
 // The check-in publishes THIS machine TO that host, which is the opposite direction from everything else
 // in the row. Its old label, "keep connected", read as the reconnect setting so plainly that the tooltip
 // had to spend a sentence saying what it was NOT. Name it for what it does instead.
@@ -16698,6 +16879,13 @@ def _landing():
             # an outage past a blip). With nothing attached no class is set and the glyph stays exactly
             # as it was, monochrome.
             ".rn-ok{fill:var(--accent)}.rn-wait{fill:#8a8a8a}.rn-warn{fill:#e5484d}\n"
+            # A host dropping flashes the glyph red three times and stops (the user 2026-07-29). It
+            # replaces a banner that covered the session tabs to say the same thing. The flash rides
+            # background + ring, NOT color, so it composes with whatever fleet colour the glyph is
+            # already wearing instead of fighting it.
+            ".rail-act.rn-drop,#mtabs .mact.rn-drop{animation:rnet-drop 0.42s ease-in-out 3}"
+            "@keyframes rnet-drop{0%,100%{background:transparent;box-shadow:none}"
+            "50%{background:rgba(229,72,77,0.45);box-shadow:0 0 0 2px rgba(229,72,77,0.9)}}"
             # mid-attach motion cue (the user 2026-07-12): while any tunnel is authorizing/connecting/starting
             # the network glyph turns accent and its connector lines MARCH (dashes flowing down the bus) — the
             # icon visibly "does something" during the seconds an attach takes. Class-driven off the same
