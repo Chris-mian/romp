@@ -1994,9 +1994,8 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    browser shim's self-injected stale bar. Defined in feed.css too (the .romp-acted precedent). */
 #rpipe { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; text-align: center;
   background: #2b2d30; color: #e6e6e6; border-bottom: 1px solid #4a4d51; padding: 7px 14px; }
-/* The open tab's HOST is unreachable (the user 2026-07-29): the transcript below is the last thing romp
-   got from that machine, and a frozen chat is otherwise indistinguishable from a quiet one. Sits in the
-   flow at the top of the pane, quieter than #rpipe — nothing here is broken locally. */
-#rhostoff { position: fixed; top: 0; left: 0; right: 0; z-index: 99998; text-align: center;
-  background: #33302a; color: #e0c48a; border-bottom: 1px solid #4a4436; padding: 6px 14px;
-  font-size: 0.86em; }
+/* (#rhostoff, an unreachable-host banner pinned to the top of the pane, lived here for a few hours on
+   2026-07-29 and was removed the same day: fixed to the top, it landed squarely on the session tab strip
+   and hid the sessions to announce that one machine had gone away. The drop now flashes the rail's
+   network glyph — .rn-drop / @keyframes rnet-drop, in the shell the kernel serves — and the steady state
+   stays on .tab.host-off and .host-prefix.off above, which cost no space to begin with.) */

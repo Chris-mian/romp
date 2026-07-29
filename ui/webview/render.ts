@@ -3385,7 +3385,6 @@ function renderTabs() {
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
   syncNoSessionsPlaceholder(visibleIds.length);
-  hostBanner();   // the open tab may have just become (or stopped being) one on an unreachable host
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
@@ -3552,7 +3551,7 @@ function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: st
 // A remote host coming or going flips the disconnected marks on its tabs. The federation manager fires
 // this only when the reachable set actually CHANGES (its own /tunnels poll is the event), so this is a
 // repaint per connect/drop, not per poll (the user 2026-07-29).
-window.addEventListener("romp-hosts", () => { renderTabs(); hostBanner(); });
+window.addEventListener("romp-hosts", () => { renderTabs(); });
 window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissTabMenu(); }, true);
 window.addEventListener("scroll", dismissTabMenu, true);
@@ -7045,17 +7044,12 @@ function pipeBanner(up: boolean, queued: number): void {
     : "romp is unreachable — reconnecting…";
 }
 
-// The open tab's own host is unreachable (the user 2026-07-29, who read a remote's transcripts for a
-// while before noticing nothing was connected). The tab dims and its "host:" is struck, but the thing
-// being READ is the transcript, so the pane it fills says so too: this stopped updating, here is when it
-// last did, and romp is still dialing. Runs on every render and on the reachable-set event.
-function hostBanner(): void {
-  const b = document.getElementById("rhostoff");
-  const off = !!activeId && hostIsDown(activeId);
-  if (!off) { if (b) b.remove(); return; }
-  const bar = b || document.body.appendChild(Object.assign(document.createElement("div"), { id: "rhostoff" }));
-  bar.textContent = hostDownNote(activeId);
-}
+// (A banner used to drop across the top of this pane when the open tab's host went away. It covered the
+// session tab strip — the thing you steer by — to report what the tabs already say themselves: the tab on
+// an unreachable host dims, its "host:" token is struck, and the note lives on hover. A host dropping now
+// flashes the rail's network glyph red three times instead (the user 2026-07-29, whose sessions the banner
+// hid). An event gets a transient cue; the steady state stays on the surfaces already carrying it; no pixel
+// of transcript is spent. hostDownNote is still the one place that note is worded — see host-prefix.ts.)
 
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
