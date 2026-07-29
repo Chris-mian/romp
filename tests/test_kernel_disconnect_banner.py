@@ -30,7 +30,9 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("ws.onerror=function(){try{ws.close();}catch(e){}};", js)
         # a RECONNECT no longer silently reloads (the user 2026-07-05): it PROMPTS via raiseStale, and the fresh
         # socket resyncs live. The old auto-reload-on-reopen is gone.
-        self.assertIn("if(wasReconn)raiseStale();", js)
+        # the reconnect ALSO fires romp:wsup, which is what takes the pane loader back down
+        # (test_pane_loader_reconnect.py owns that half)
+        self.assertIn('if(wasReconn){raiseStale();try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}', js)
         self.assertNotIn("if(everConnected){location.reload();return;}", js,
                          "the silent auto-reload-on-reconnect is replaced by a reload PROMPT")
         self.assertNotIn("ws.onclose=function(){setTimeout(function(){location.reload();},1500);};", js,

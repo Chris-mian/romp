@@ -14755,7 +14755,11 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaces the old silent location.reload() (the user: don't foist a reload; let me click — [[prefer-reload-banner-not-auto]]).
-ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn)raiseStale();};
+// A RECONNECT also fires `romp:wsup`, the counterpart to the `romp:wsdown` below: whatever went up when the
+// socket dropped (the pane's romp loader) needs the socket's RETURN as its event to come back down. The
+// first connect deliberately doesn't fire it — nothing is waiting on it, and the loader must stay up until
+// real content lands.
+ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){raiseStale();try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}   // keepalive: stamped lastRecv above; carries the build token (drift → reload banner); nothing for the bundle to render
 if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
@@ -14946,9 +14950,23 @@ def _pane_spin(cid, ignore_id=""):
     wsdown), never in the load path.
 
     It RE-SHOWS on a kernel restart / WS drop (the user 2026-06-29): the shim fires `romp:wsdown` on
-    ws.onclose, and the loader un-fades over the stale pane — "romp is reconnecting" — until fresh content
-    arrives after the reconnect-reload. Event-based (the WS close), not a timer. Kept in the DOM (never
-    removeChild) precisely so it can be shown again.
+    ws.onclose, and the loader un-fades over the stale pane — "romp is reconnecting" — until the socket is
+    back. Event-based (the WS close), not a timer. Kept in the DOM (never removeChild) precisely so it can
+    be shown again.
+
+    That re-show needs its own way DOWN, which it did not have (the user 2026-07-28: every few seconds the
+    dashboard said it had lost the connection and the chat then sat under the romp loader until a manual
+    reload). Neither exit worked a second time:
+      - The MutationObserver can't fire on a reconnect. render.ts's ensureView inserts one `.thread` div per
+        session ONCE and keeps it in a map for the life of the page, so a post-reconnect push mutates nodes
+        that are already there — the container's direct children never change again, and a childList
+        observer is deaf to that.
+      - The 30s failsafe was armed once at page load, i.e. it only ever covered the FIRST show. By the time
+        a drop re-showed the loader that timer had long since fired.
+    So the loader went up on the drop and nothing could take it down. Both exits are now repeatable: the
+    failsafe re-arms on every show, and `romp:wsup` (the shim's reconnect) hides it — the socket being back
+    IS the event that ends "romp is reconnecting", and the shell's own reload prompt covers the staleness
+    of what's on screen until the next push lands.
 
     ignore_id: a permanent child of `cid` that does NOT count as content (the user 2026-06-27) — the chat's
     #content always holds a hidden #live-ask picker host, so without this the loader hid instantly over a blank
@@ -14958,11 +14976,16 @@ def _pane_spin(cid, ignore_id=""):
             "#pane-spin.gone{opacity:0;pointer-events:none}" + _LOADER_CSS + "</style>"
             "<div id=pane-spin>" + _loader_inner() + "</div>"
             "<script>(function(){var o=document.getElementById('pane-spin'),c=document.getElementById('" + cid + "'),IGN='" + ignore_id + "';"
-            "if(!o)return;function show(){o.classList.remove('gone');}function hide(){o.classList.add('gone');}"
+            "if(!o)return;var fail=0;"
+            "function arm(){clearTimeout(fail);fail=setTimeout(hide,30000);}"   # per SHOW, not per page load
+            "function show(){o.classList.remove('gone');arm();}"
+            "function hide(){clearTimeout(fail);o.classList.add('gone');}"
             "function ready(){if(!c)return false;for(var i=0;i<c.children.length;i++){if(!IGN||c.children[i].id!==IGN)return true;}return false;}"
+            "arm();"
             "if(c){try{new MutationObserver(function(){if(ready())hide();}).observe(c,{childList:true});}catch(e){}"
-            "if(ready())hide();}setTimeout(hide,30000);"
-            "window.addEventListener('romp:wsdown',show);})();</script>")
+            "if(ready())hide();}"
+            "window.addEventListener('romp:wsdown',show);"
+            "window.addEventListener('romp:wsup',hide);})();</script>")
 
 
 def _chat_page():
