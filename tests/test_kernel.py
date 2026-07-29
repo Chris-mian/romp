@@ -6549,6 +6549,11 @@ class WsLoopResilience(unittest.TestCase):
             path = "/ws?app=chat"
             rfile = io.BytesIO()
             wfile = io.BytesIO()
+            # Frames now go out on the SOCKET: each client owns a queue + sender thread so one wedged
+            # client cannot stall the shared push/heartbeat walk (see _ws_sender). This loop exercises
+            # only the READ side, so the socket just has to absorb writes.
+            connection = type("FakeSock", (), {"sendall": lambda self, b: None,
+                                               "shutdown": lambda self, how: None})()
             close_connection = False
             def send_response(self, *a): pass
             def send_header(self, *a): pass
