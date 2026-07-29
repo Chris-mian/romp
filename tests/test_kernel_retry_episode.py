@@ -40,10 +40,12 @@ class _FakeBackend:
 class RetryPerEpisode(unittest.TestCase):
     def setUp(self):
         self.be = _FakeBackend()
+        self._saved_name_of = km._name_of
         self._saved = (km.Sessions.backend_for, km._api_error, km._path_of,
                        km._retry_paused_on, km._session_retry_suppressed, dict(km._auto_retried))
         km.Sessions.backend_for = lambda sid: self.be
         km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
+        km._name_of = lambda sid: "web"   # these tests drive ops on a session this kernel HAS; _drive refuses one it doesn't (2026-07-29)
         km._retry_paused_on = lambda: False
         km._session_retry_suppressed = lambda sid: False
         self.aerr = {"text": "500 server_error", "status": 500, "category": "server_error",
@@ -54,6 +56,7 @@ class RetryPerEpisode(unittest.TestCase):
     def tearDown(self):
         (km.Sessions.backend_for, km._api_error, km._path_of,
          km._retry_paused_on, km._session_retry_suppressed, saved) = self._saved
+        km._name_of = self._saved_name_of
         km._auto_retried.clear()
         km._auto_retried.update(saved)
 

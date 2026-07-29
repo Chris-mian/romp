@@ -901,6 +901,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
 }
 .pickdlg-title { font-weight: 700; color: var(--vscode-foreground, #ccc); margin-bottom: 4px; }
+/* the err dialog's body sentence — the resume-picker dialog is all buttons, so its box carried no prose style */
+.pickdlg-detail { color: var(--vscode-descriptionForeground, #999); margin-bottom: 10px; line-height: 1.45; }
 .pickdlg-opt {
   padding: 8px 10px; cursor: pointer; text-align: left;
   background: rgba(255, 255, 255, 0.05); color: var(--vscode-foreground, #ccc);

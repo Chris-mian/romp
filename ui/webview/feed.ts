@@ -3348,6 +3348,9 @@ window.addEventListener("message", (e: MessageEvent) => {
     renderModal();
     applyExtHover();
     if (extHoverEid) document.querySelector(".dot-hl[data-eid]")?.scrollIntoView({ block: "center" });
+  } else if (m.type === "err" && typeof m.text === "string" && m.text) {
+    showErrDialog(typeof m.title === "string" && m.title ? m.title : "That action was not delivered",
+                  m.text, typeof m.copy === "string" ? m.copy : "");
   } else if (m.type === "pickerOptions" && typeof m.name === "string") {
     // the host read the blocked session's live resume-picker screen — show the
     // same options in-page; a choice goes back as keystrokes (transport only,
@@ -3455,6 +3458,32 @@ function showPickerDialog(name: string, options: string[]) {
   cancel.textContent = "Cancel";
   cancel.onclick = () => overlay.remove();
   box.append(cancel);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+  (box.querySelector("button") as HTMLElement | null)?.focus();
+}
+
+// The kernel's LOUD channel (the user 2026-07-29). The feed had no error surface at all: every failure here
+// went to feedToast, which fades, and a kernel `warn` had no handler on this page whatsoever — so an action
+// fired from a card could fail with the page showing nothing. A refused reply is typed work that is gone, so
+// it gets a dialog you must dismiss, reusing the resume-picker dialog's chrome rather than inventing another.
+function showErrDialog(title: string, text: string, copy: string) {
+  document.getElementById("err-dialog")?.remove();
+  const overlay = el("div", "pickdlg-overlay"); overlay.id = "err-dialog";
+  const box = el("div", "pickdlg-box");
+  const h = el("div", "pickdlg-title"); h.textContent = title;
+  const d = el("div", "pickdlg-detail"); d.textContent = text;
+  box.append(h, d);
+  if (copy) {
+    const c = el("button", "pickdlg-opt");
+    c.textContent = "Copy my text";
+    c.onclick = () => { navigator.clipboard?.writeText(copy); c.textContent = "Copied"; };
+    box.append(c);
+  }
+  const ok = el("button", "pickdlg-opt pickdlg-cancel");
+  ok.textContent = "Dismiss";
+  ok.onclick = () => overlay.remove();
+  box.append(ok);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   document.body.appendChild(overlay);
   (box.querySelector("button") as HTMLElement | null)?.focus();

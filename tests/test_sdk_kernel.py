@@ -96,15 +96,19 @@ class KernelWiring(unittest.TestCase):
     def test_non_sdk_sid_routes_to_the_tmux_backend(self):
         # a non-SDK sid no longer "falls through" — _drive routes it to the tmux backend via
         # Sessions.backend_for (the fallback). The unified dispatch handles BOTH kinds.
+        # It must be a session this kernel HAS, though: since 2026-07-29 _drive refuses an id it has never
+        # heard of rather than letting backend_for's tmux fallback type at a pane that isn't there. The
+        # names entry is what a real tmux session would carry; test_drive_foreign_sid.py owns the refusal.
         tm = FakeBackend(); tm._owned = set()
-        saved = km._TMUX
+        saved, saved_name = km._TMUX, km._name_of
         km._TMUX = tm
+        km._name_of = lambda sid: "web"
         try:
             self.assertTrue(self._route({"type": "sendMessage", "id": "sid-tmux", "text": "hi"}))
             self.assertIn(("send", "sid-tmux", "hi"), tm.calls)   # routed to the tmux backend
             self.assertEqual(self.be.calls, [])                   # the SDK backend was untouched
         finally:
-            km._TMUX = saved
+            km._TMUX, km._name_of = saved, saved_name
             km._tmux_echo.pop("sid-tmux", None)                   # the optimistic echo wrote here — don't leak it
 
     def test_ui_op_falls_through_even_for_sdk_sid(self):

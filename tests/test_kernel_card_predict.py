@@ -54,9 +54,11 @@ class PredictWorkingFanOut(unittest.TestCase):
     def setUp(self):
         self.frames = []
         self.be = _FakeBackend()
+        self._saved_name_of = km._name_of
         self._saved = (km._send_to_app, list(km._built_feed), km.Sessions.backend_for,
                        km._send_or_park, km.jd.optimistic_followup)
         km._send_to_app = lambda app, m: self.frames.append((app, m))
+        km._name_of = lambda sid: "web"   # these tests drive ops on a session this kernel HAS; _drive refuses one it doesn't (2026-07-29)
         km.Sessions.backend_for = lambda sid: self.be
         km._send_or_park = lambda *a, **k: None
         km.jd.optimistic_followup = lambda *a, **k: False
@@ -72,6 +74,7 @@ class PredictWorkingFanOut(unittest.TestCase):
     def tearDown(self):
         (km._send_to_app, built, km.Sessions.backend_for,
          km._send_or_park, km.jd.optimistic_followup) = self._saved
+        km._name_of = self._saved_name_of
         km._built_feed[:] = built
 
     def _feed_frames(self):

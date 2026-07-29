@@ -62,8 +62,10 @@ class DriveOpsAckFast(unittest.TestCase):
     def setUp(self):
         self.be = _FakeBackend()
         self.pushes = []
+        self._saved_name_of = km._name_of
         self._saved = (km._push_all, km._ops_gate, km.Sessions.backend_for, km._optimistic_echo)
         km._push_all = lambda: self.pushes.append(1)
+        km._name_of = lambda sid: "web"   # these tests drive ops on a session this kernel HAS; _drive refuses one it doesn't (2026-07-29)
         km._ops_gate = lambda sid: False
         km.Sessions.backend_for = lambda sid: self.be
         km._optimistic_echo = lambda *a, **k: None
@@ -73,6 +75,7 @@ class DriveOpsAckFast(unittest.TestCase):
 
     def tearDown(self):
         (km._push_all, km._ops_gate, km.Sessions.backend_for, km._optimistic_echo) = self._saved
+        km._name_of = self._saved_name_of
         km._pusher_wake.clear()
         km._pending_ops.clear()
         km._interrupt_clicked.clear()
