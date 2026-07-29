@@ -4688,11 +4688,29 @@ REMOTES_FILE = jd.STATE / "remotes.json"
 # no tunnel to poll. Also remembers the trust level, so re-attaching a box you had marked `trusted`
 # doesn't silently drop back to `directed`.
 KNOWN_FILE = jd.STATE / "remotes-known.json"
-# Reconnect is BOUNDED (the user 2026-07-22): try a host on every kernel start, then give up and wait for
-# an explicit Attach — an unreachable box used to be retried forever (backoff capped at 5min, no give-up),
-# so a machine that was simply off sat there re-dialing all day with nothing in the UI saying so. The
-# budget resets on each boot (_remotes_load) and on a manual attach, so "try again" is always one click.
-TUNNEL_MAX_TRIES = 5
+# Reconnect KEEPS TRYING (the user 2026-07-29): an attached host is a standing instruction to hold the
+# link, so a machine that is merely asleep, rebooting or off the network is picked up whenever it comes
+# back, without anyone having to remember to click Attach. This reverses the bounded budget of
+# 2026-07-22, but keeps what that budget was actually for: the objection then was a box re-dialing all
+# day with NOTHING in the UI saying so. So it is both halves now. Dial forever, back off far enough to be
+# inaudible, and say the state in words: the row names the attempts and when the next dial lands.
+#
+# The ladder doubles from 15s to a 5-minute ceiling, and a LONG outage settles at 15 minutes — a host
+# unreachable for half an hour is likely off for the day, and 4 dials an hour stays cheap while still
+# finding it within 15 minutes of its return. Even the fast end is far under anything an sshd rate limit
+# would notice.
+TUNNEL_BACKOFF_BASE = 15         # first wait after a failed dial; doubles from there
+TUNNEL_BACKOFF_MAX = 300         # steady ceiling for a fresh outage (5 min)
+TUNNEL_BACKOFF_LONG = 900        # relaxed to 15 min once the outage is clearly not a blip
+TUNNEL_LONG_AFTER = 12           # consecutive failures before the long ceiling applies (~38 min of trying)
+
+
+def _tunnel_backoff(fails):
+    """Seconds before the next dial, after `fails` consecutive failures. There is no "stop" answer: the
+    caller always has a next attempt to schedule."""
+    if fails >= TUNNEL_LONG_AFTER:
+        return TUNNEL_BACKOFF_LONG
+    return min(TUNNEL_BACKOFF_MAX, TUNNEL_BACKOFF_BASE * (2 ** min(fails, 5)))
 BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # this laptop's postal bus (reverse-forwarded)
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
@@ -5313,10 +5331,10 @@ def _remote_public(r):
             # which is the one route that exists between the two machines (the user 2026-07-28).
             "fastForward": _is_fast_forward(r), "fastPull": _is_fast_pull(r), "askPull": _is_ask_pull(r),
             "autoPush": _auto_push_state(r["host"]),
-            # reconnect budget (the user 2026-07-22): the popover has to be able to SAY that romp stopped
-            # dialing, instead of a silent forever-retry that looks identical to a healthy idle row
-            "gaveUp": bool(r.get("gave_up")), "fails": int(r.get("fails") or 0),
-            "maxTries": TUNNEL_MAX_TRIES,
+            # reconnect state (the user 2026-07-22, kept when the give-up went away 2026-07-29): a
+            # forever-retry must never look identical to a healthy idle row, so the popover can say how
+            # many dials have failed and when the next one lands.
+            "fails": int(r.get("fails") or 0), "nextTry": int(r.get("next_try") or 0),
             # not live: everything above derived from kernel_sha / the peer's declared tier is a memory of
             # the last successful exchange. lastOk is when that was (0 = never seen up this process).
             "stale": stale, "lastOk": int(r.get("last_ok") or 0)}
@@ -5356,7 +5374,7 @@ def _remotes_save():
 
 def _remotes_save_if_changed():
     """Persist what the SUPERVISOR owns (the user 2026-07-28). _remotes_save() was called only by the act
-    routes — attach/detach/trust/checkin — so status, fails, gave_up, kernel_sha and detail lived in memory
+    routes — attach/detach/trust/checkin — so status, fails, next_try, kernel_sha and detail lived in memory
     alone. A host that failed, got persisted mid-failure by some unrelated act, then quietly recovered left
     the file frozen on the failure: hours after the tunnel was healthily up, the on-disk row still read
     `starting`, with a stale sha and a by-then-unreachable hostname parked in `detail`. Nothing consumes it
@@ -5387,8 +5405,8 @@ def _remotes_load():
             r["proc"], r["status"] = None, "down"
             r["booting"] = False       # transient in-flight Start flag — persisted mid-boot it would
             #                            freeze the row's status against the supervisor forever
-            r["fails"], r["next_try"] = 0, 0   # every kernel start gets a FRESH reconnect budget...
-            r.pop("gave_up", None)             # ...so a host that gave up last run is tried again now
+            r["fails"], r["next_try"] = 0, 0   # a fresh boot dials immediately rather than resuming
+            r.pop("gave_up", None)             #   a long backoff (and drops any pre-2026-07-29 give-up)
             r.setdefault("sids", [])
             r.setdefault("trust", "directed")   # pre-trust remotes.json rows read as directed (safe default)
             r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
@@ -5423,7 +5441,7 @@ def attach_remote(host, kernel_port=None):
             _remotes[host] = r
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
-        # An explicit Attach is the "try again" gesture, so it re-arms a row that gave up (see TUNNEL_MAX_TRIES)
+        # An explicit Attach means "try NOW", so it clears the backoff a long outage has built up
         r["fails"], r["next_try"] = 0, 0
         r.pop("gave_up", None)
         _attach_trust = r.get("trust")
@@ -6285,23 +6303,15 @@ def _tunnel_supervisor():
                         # (A checked-in host owns NO ssh here — the mobile machine supervises its own
                         # tunnel, so there is nothing to spawn or back off; its status comes purely
                         # from polling the reverse-forwarded port below.)
-                        # BACK OFF re-spawns (exponential, capped 5min) so an unreachable host isn't hammered
-                        # every tick — repeated ssh attempts can trip the remote sshd's rate-limit (the user
-                        # 2026-06-30). A healthy tunnel resets the backoff below.
-                        if r.get("gave_up"):
-                            # spent its budget — stay quiet until an explicit Attach (or the next boot)
-                            r["status"] = "gave-up"
-                            skip = True
-                        elif now >= r.get("next_try", 0):
+                        # BACK OFF re-spawns (exponential — see _tunnel_backoff) so an unreachable host
+                        # isn't hammered every tick: repeated ssh attempts can trip the remote sshd's
+                        # rate-limit (the user 2026-06-30). It never stops dialing (the user 2026-07-29);
+                        # a healthy tunnel resets the backoff below.
+                        if now >= r.get("next_try", 0):
                             fails = r.get("fails", 0)
-                            if fails >= TUNNEL_MAX_TRIES:
-                                r["gave_up"] = True            # stop dialing; the row now says "click Attach"
-                                r["status"] = "gave-up"
-                                skip = True
-                            else:
-                                r["next_try"] = now + min(300, 15 * (2 ** min(fails, 5)))
-                                r["fails"] = fails + 1
-                                _spawn_tunnel(r)
+                            r["next_try"] = now + _tunnel_backoff(fails)
+                            r["fails"] = fails + 1
+                            _spawn_tunnel(r)
                         else:
                             if r.get("status") != "error":
                                 r["status"] = "down"
@@ -6324,8 +6334,8 @@ def _tunnel_supervisor():
                         r["status"] = st                   # keep a richer spawn-error label over plain 'down';
                         #                                    a Start in flight (`booting`) owns the row's phase
                     if st == "up":
-                        r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff
-                        r.pop("gave_up", None)             # ...and re-arm the budget for a later drop
+                        r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff, so a
+                        r.pop("gave_up", None)             #   later drop starts its ladder from 15s again
                         r["last_ok"] = time.time()         # the moment the cached sha/tier below were TRUE,
                         #                                    so a later down row can date what it remembers
                         if r.get("detail"):
@@ -6380,7 +6390,7 @@ def _tunnel_supervisor():
                 # tier too — their mail arrives relayed through a hub and is judged by true origin.
                 # Once per (host, level); a failed push retries next pass.
                 _push_origin_trust_rows()
-            # Everything above is the supervisor's own state (status, fails, gave_up, kernel_sha, detail).
+            # Everything above is the supervisor's own state (status, fails, next_try, kernel_sha, detail).
             # None of it used to reach disk — only the act routes saved — so the file could sit frozen on a
             # failure long after the row recovered. Signature-gated: a steady fleet writes nothing.
             _remotes_save_if_changed()
@@ -15640,18 +15650,17 @@ function fillHosts(){if(!dl)return;var hs=[];
 dl.innerHTML=hs.map(function(h){return '<option value=\"'+h+'\"></option>';}).join('');}
 function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(){});}
-var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error','gave-up':'stopped trying'};
+var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
 // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
 var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
 authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
 connecting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
 starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
 'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine\\u2019s romp there and boots it.',
-down:'The ssh tunnel is not up. romp is still retrying for now; check that `ssh <host>` works from a terminal.',
-error:'The connection failed. Hover the status text for the reason romp got back.',
-'gave-up':'romp tried this host, gave up, and is no longer dialing it in the background. It tries again on the next kernel start; Retry tries now.'};
+down:'The ssh tunnel is not up. romp keeps retrying on its own, waiting longer between tries the longer it stays down, so a machine that comes back is picked up without you doing anything. Try now dials immediately.',
+error:'The connection failed. Hover the status text for the reason romp got back. romp keeps retrying in the background.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
-function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel'&&s!=='gave-up';}   // mid-attach (authorizing/connecting); no-kernel and gave-up are SETTLED (no marching dashes)
+function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
 function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
 function paintIcon(up,busy){icon.classList.toggle('on',up);icon.classList.toggle('busy',busy);
@@ -15710,7 +15719,7 @@ ts.forEach(function(t){var item=document.createElement('div');item.className='rn
 var row=document.createElement('div');row.className='rnet-row';
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
-var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':(t.status==='down'||t.status==='gave-up')?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
+var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status==='no-kernel')?'background:#E5534B':(t.status==='down')?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
 // version drift: an up remote running a DIFFERENT commit than this kernel names HOW it differs — 'behind N
 // commits' (a push delivers exactly those), 'ahead N commits'/'diverged' (it has commits this repo lacks — a
 // push would clobber them, and the kernel refuses), or 'different build' (its sha is unknown here, e.g. it was
@@ -15748,9 +15757,12 @@ var pull=(t.status==='up'&&t.fastPull&&!apx&&!t.checkinPeer)?'<button class=rnet
 // pushes this machine's committed romp to the host FIRST, then boots its kernel. Never auto-starts —
 // a stopped kernel may be stopped on purpose; the click is the consent.
 var strt=(t.status==='no-kernel')?'<button class=rnet-upd data-s=\"'+t.host+'\" title=\"No kernel is answering on '+t.host+'. This pushes this machine\\u2019s romp there and boots its kernel.\">Start</button>':'';
-// A host that gave up is no longer being dialed, so the row itself has to offer the way back in. It used
-// to say "click Attach" and point at a control that now lives behind +, which would have been a dead end.
-var retry=(t.status==='gave-up')?'<button data-ra=\"'+t.host+'\" title=\"Dial '+t.host+' again now. romp stopped after '+(t.maxTries||5)+' tries; this restarts that budget.\">Retry</button>':'';
+// A down row is BEING re-dialed on a widening backoff (the user 2026-07-29), so it says when the next
+// dial lands — a silent retry loop is indistinguishable from a dead row — and offers to skip the wait.
+var wait=(t.nextTry&&(t.status==='down'||t.status==='error'))?Math.max(0,t.nextTry-Math.floor(Date.now()/1000)):0;
+var when=wait>90?('next try in '+Math.round(wait/60)+'m'):(wait>0?('next try in '+wait+'s'):'retrying\\u2026');
+var again=(t.status==='down'||t.status==='error')?'<span class=rnet-retry title=\"romp keeps dialing '+t.host+' on its own, waiting longer between tries the longer it is down ('+(t.fails||0)+' so far).\">'+when+'</span>':'';
+var retry=(t.status==='down'||t.status==='error')?'<button data-ra=\"'+t.host+'\" title=\"Dial '+t.host+' now instead of waiting out the backoff.\">Try now</button>':'';
 // The check-in publishes THIS machine TO that host, which is the opposite direction from everything else
 // in the row. Its old label, "keep connected", read as the reconnect setting so plainly that the tooltip
 // had to spend a sentence saying what it was NOT. Name it for what it does instead.
@@ -15778,7 +15790,7 @@ else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'
 // settings you set once and leave. They shared a single flat row before, which gave Detach the same
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
 retry+pull+ask+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
@@ -16368,6 +16380,9 @@ def _landing():
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
+            # the reconnect cadence on a down row: romp is still dialing, and this says when the next
+            # one lands, so a forever-retry never reads as an abandoned row (the user 2026-07-29)
+            ".rnet-retry{color:#6e7681;font-variant-numeric:tabular-nums}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             # STALE: a remembered value on a row that is not currently up. Muted + dotted underline, and it
             # OVERRIDES .rnet-old's accent (two classes beat one) — an accent-blue "behind 2 commits" reads as

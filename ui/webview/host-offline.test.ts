@@ -1,0 +1,108 @@
+// A DISCONNECTED remote's sessions must SAY so (the user 2026-07-29, who read a remote host's
+// transcripts for a while before realising nothing was connected). Its tabs, lanes and cards stay —
+// dropping them would lose the thread — but the "host:" token is struck, the tab dims, and the chat
+// says what it is showing and when it last updated. hostIsDown/hostDownNote are executed here against a
+// stub manager; the per-surface wiring is pinned at source.
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { hostIsDown, hostDownNote } from "./host-prefix";
+
+const UI = path.resolve(process.cwd(), "..", "ui", "webview");
+const read = (f: string) => fs.readFileSync(path.join(UI, f), "utf8");
+const RENDER = read("render.ts");
+const FED = read("federation.ts");
+const CSS = read("styles.css");
+const FEEDCSS = read("feed.css");
+const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+
+const withFed = (fed: any, fn: () => void) => {
+  const g = globalThis as any;
+  const prev = g.__rompFed;
+  g.__rompFed = fed;
+  try { fn(); } finally { if (prev === undefined) delete g.__rompFed; else g.__rompFed = prev; }
+};
+
+test("a session on an unreachable host is marked; one on a reachable host is not", () => {
+  withFed({ down: () => ["TESTHOST"], lastSeen: () => 0 }, () => {
+    assert.equal(hostIsDown("TESTHOST:1111-2222"), true);
+    assert.equal(hostIsDown("otherhost:1111-2222"), false);
+  });
+});
+
+test("a LOCAL session is never marked — a bare uuid has no host to lose", () => {
+  withFed({ down: () => ["TESTHOST"], lastSeen: () => 0 }, () => {
+    assert.equal(hostIsDown("11111111-2222-3333-4444-555555555555"), false);
+    assert.equal(hostIsDown(""), false);
+    assert.equal(hostIsDown(null), false);
+  });
+});
+
+test("no federation manager (single-kernel page, Obsidian panel) means nothing is marked", () => {
+  const g = globalThis as any;
+  const prev = g.__rompFed;
+  delete g.__rompFed;
+  try {
+    assert.equal(hostIsDown("TESTHOST:1111"), false);
+  } finally { if (prev !== undefined) g.__rompFed = prev; }
+  // ...and a manager too old to publish the set is not an error either
+  withFed({ hosts: () => [] }, () => assert.equal(hostIsDown("TESTHOST:1111"), false));
+});
+
+test("the note says what is wrong, when it was last reached, and that romp is still on it", () => {
+  withFed({ down: () => ["TESTHOST"], lastSeen: () => 1_770_000_000 }, () => {
+    const note = hostDownNote("TESTHOST:1111");
+    assert.match(note, /^TESTHOST is disconnected, last reached /);
+    assert.match(note, /last state romp got from it/);
+    assert.match(note, /still trying to reconnect/);
+  });
+  // never reached in this kernel's life → no time claimed, rather than a fake one
+  withFed({ down: () => ["TESTHOST"], lastSeen: () => 0 }, () => {
+    assert.equal(hostDownNote("TESTHOST:1111").indexOf("last reached"), -1);
+  });
+  assert.equal(hostDownNote("11111111-2222"), "", "a local session has no such note");
+});
+
+test("the manager publishes reachability off the KERNEL's tunnel health, and only on a change", () => {
+  assert.match(FED, /down: \(\) => \[\.\.\.this\.downHosts\]/);
+  assert.match(FED, /const down = new Set\(\[\.\.\.want\.keys\(\)\]\.filter\(\(h\) => want\.get\(h\)\.status !== "up"\)\)/);
+  assert.match(FED, /if \(changed\) window\.dispatchEvent\(new Event\("romp-hosts"\)\)/,
+    "a repaint per connect/drop, not per poll");
+  assert.match(FED, /if \(typeof t\.lastOk === "number" && t\.lastOk\) this\.lastSeen\[host\] = t\.lastOk/,
+    "last-seen comes from the kernel, so it survives a page reload");
+});
+
+test("the mark goes on the HOST token, never on the session name", () => {
+  // a struck WHOLE name already means a dead session; this session may be perfectly alive
+  assert.match(read("host-prefix.ts"), /h\.className = off \? "host-prefix off" : "host-prefix"/);
+  assert.match(CSS, /\.host-prefix\.off \{ text-decoration: line-through; opacity: 0\.75; \}/);
+  assert.match(FEEDCSS, /\.host-prefix\.off \{ text-decoration: line-through/, "the feed page loads only feed.css");
+});
+
+test("the tab dims as a whole and carries the why on hover", () => {
+  assert.match(RENDER, /if \(hostIsDown\(id\)\) \{ tab\.classList\.add\("host-off"\); tab\.title = hostDownNote\(id\); \}/);
+  assert.match(CSS, /\.tab\.host-off \{ opacity: 0\.62; \}/);
+  assert.match(CSS, /\.tab\.host-off:hover, \.tab\.host-off\.active \{ opacity: 1; \}/, "hover still reads clearly");
+});
+
+test("the chat pane says the transcript it is showing has stopped updating", () => {
+  assert.match(RENDER, /function hostBanner\(\): void \{/);
+  assert.match(RENDER, /const off = !!activeId && hostIsDown\(activeId\)/);
+  assert.match(RENDER, /bar\.textContent = hostDownNote\(activeId\)/);
+  assert.match(RENDER, /hostBanner\(\);   \/\/ the open tab may have just become/, "repainted with the tabs");
+  assert.match(CSS, /#rhostoff \{/);
+});
+
+test("both surfaces repaint on the reachability event", () => {
+  assert.match(RENDER, /window\.addEventListener\("romp-hosts", \(\) => \{ renderTabs\(\); hostBanner\(\); \}\)/);
+  assert.match(TL, /window\.addEventListener\('romp-hosts', this\._onHosts\)/);
+  assert.match(TL, /window\.removeEventListener\('romp-hosts', this\._onHosts\)/, "and let go on teardown");
+});
+
+test("the timeline strikes the lane's host token, keeping the dead-session strike distinct", () => {
+  assert.match(TL, /function _rompHostDown\(sid\)/);
+  assert.match(TL, /if \(_rompHostDown\(s\.id\)\) hostTsp\.setAttribute\('text-decoration', 'line-through'\)/);
+  // the dead-lane strike is the WHOLE label and stays that way
+  assert.match(TL, /if \(!s\.live\) lblA\['text-decoration'\] = 'line-through';/);
+});

@@ -14,6 +14,7 @@ ReferenceError, typo, or scope slip in that path fails the test.
 Synthetic only — placeholder host/token, no network (fetch is stubbed).
 """
 import json
+import time
 import os
 import subprocess
 import tempfile
@@ -277,14 +278,22 @@ class RemotesPanelRender(unittest.TestCase):
         self.assertIn("TESTHOST", out.get("hostsHtml", ""))
         self.assertIn("otherbox", out.get("hostsHtml", ""))
 
-    def test_a_host_that_gave_up_offers_the_way_back_in(self):
-        # It is no longer being dialed, and the attach control now lives behind +, so the row itself has
-        # to carry the retry. The label used to point at a control that would no longer be on screen.
+    def test_a_down_host_says_it_is_still_being_dialed_and_when(self):
+        # romp never stops dialing an attached host (the user 2026-07-29), so the row's job is to prove
+        # it: the countdown to the next attempt, and a way to skip the wait. A silent retry loop reads
+        # exactly like an abandoned row, which is what the old give-up state was really objecting to.
         tun = json.loads(json.dumps(TUNNELS))
-        tun["tunnels"][0].update({"status": "gave-up", "gaveUp": True, "fails": 5})
+        tun["tunnels"][0].update({"status": "down", "fails": 3, "nextTry": int(time.time()) + 240})
         out = self._run(tunnels=tun)
-        self.assertIn("Retry", out.get("html", ""))
-        self.assertIn("stopped trying", out.get("html", ""))
+        html = out.get("html", "")
+        self.assertIn("Try now", html)
+        self.assertIn("next try in 4m", html)
+        self.assertNotIn("stopped trying", html)
+
+    def test_a_down_host_with_no_deadline_yet_still_says_it_is_retrying(self):
+        tun = json.loads(json.dumps(TUNNELS))
+        tun["tunnels"][0].update({"status": "down", "fails": 1, "nextTry": 0})
+        self.assertIn("retrying", self._run(tunnels=tun).get("html", ""))
 
 
 if __name__ == "__main__":

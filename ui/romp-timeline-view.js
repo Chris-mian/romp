@@ -29,6 +29,17 @@ function _rompMatchesOnly(name, tag) {
   const n = (name || "").toLowerCase();
   return tag.split(",").map((t) => t.trim()).filter(Boolean).some((t) => n.indexOf(t) === 0);
 }
+// Is this lane's session on a remote host romp cannot currently reach? federation.js publishes the set
+// (filled by the KERNEL's own ssh health checks) and fires 'romp-hosts' when it changes. No manager on
+// the page — a single-kernel dashboard, the Obsidian panel — means no remote lanes, so: false.
+function _rompHostDown(sid) {
+  const i = typeof sid === 'string' ? sid.indexOf(':') : -1;
+  if (i <= 0) return false;
+  try {
+    const fed = typeof window !== 'undefined' && window.__rompFed;
+    return !!fed && typeof fed.down === 'function' && fed.down().indexOf(sid.slice(0, i)) >= 0;
+  } catch (e) { return false; }
+}
 // Each directed flow (A→B) is ONE line; its thickness = MSG_W0 + (count-1)*MSG_GROW
 // — linear in message count, no max cap (BAR_H=8 is the work-bar reference: a flow
 // passes that around ~5-6 messages and keeps growing). Drawn at alpha .5 so
@@ -753,6 +764,10 @@ class TimelinePanel {
     this._onResize = () => this.draw();
     this._onWheel = (e) => this.onWheel(e);
     window.addEventListener('resize', this._onResize);
+    // A remote host dropping (or coming back) changes what the lanes MEAN, so redraw the disconnected
+    // marks on that event — fired by federation.js only when the reachable set actually changes.
+    this._onHosts = () => this.draw();
+    window.addEventListener('romp-hosts', this._onHosts);
     // Trackpad gestures over the plot: two-finger horizontal scroll pans the offset, pinch/expand
     // zooms the window width (anchored at the cursor). Pinch reaches us as a ctrlKey wheel event in
     // Chromium/Electron. Non-passive so we can preventDefault.
@@ -843,6 +858,7 @@ class TimelinePanel {
 
   destroy() {
     window.removeEventListener('resize', this._onResize);
+    if (this._onHosts) window.removeEventListener('romp-hosts', this._onHosts);
     if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep); this.wrap.removeEventListener('mouseleave', this._onPtrOut);
       this.wrap.removeEventListener('touchstart', this._onTouchStart); this.wrap.removeEventListener('touchmove', this._onTouchMove); this.wrap.removeEventListener('touchend', this._onTouchEnd); this.wrap.removeEventListener('touchcancel', this._onTouchEnd); }
     if (this._drawRAF) cancelAnimationFrame(this._drawRAF);
@@ -2690,6 +2706,11 @@ class TimelinePanel {
         // its own fill, so the parent <text>'s faded color can NOT reach it — fade it explicitly (and
         // un-fade it with the name on hover, below) or "host:" outshines the dimmed name (the user 2026-07-22)
         hostTsp = el('tspan', { fill: F(MODEL_FG), 'font-weight': 400, 'font-style': 'italic', 'font-size': 10.5 });
+        // A lane whose HOST is unreachable strikes the "host:" token (the user 2026-07-29): the lane
+        // keeps its bars — they happened — but nothing on it is current, and a frozen lane is otherwise
+        // indistinguishable from an idle one. Striking the host, not the name, keeps it distinct from
+        // the dead-session strike above (that one crosses the whole label).
+        if (_rompHostDown(s.id)) hostTsp.setAttribute('text-decoration', 'line-through');
         hostTsp.textContent = hpre;
         const tn = el('tspan', {}); tn.textContent = s.name.slice(hpre.length);
         lbl.appendChild(hostTsp); lbl.appendChild(tn);

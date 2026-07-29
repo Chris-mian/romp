@@ -14,14 +14,49 @@ export function hostPrefix(name: string | null | undefined, sid: string | null |
 }
 
 /** Child nodes for a session-name element: [<span.host-prefix>host:</span>, "name"] for a remote
- *  session, or just the plain text for a local one. Use with `elm.replaceChildren(...)`. */
+ *  session, or just the plain text for a local one. Use with `elm.replaceChildren(...)`.
+ *
+ *  Passing the sid alone marks the host automatically when its link is down (the user 2026-07-29, who
+ *  read a remote's transcripts for a while before noticing nothing was connected). The mark goes on the
+ *  "host:" token, not the session name: the LINK is what is gone, not the session — and a struck WHOLE
+ *  name already means a dead session, so the two can never be confused. A CSS cue and a title, never a
+ *  glyph. */
 export function hostNameNodes(name: string, sid: string | null | undefined): Node[] {
   const p = hostPrefix(name, sid);
   if (!p) return [document.createTextNode(name)];
   const h = document.createElement("span");
-  h.className = "host-prefix";
+  const off = hostIsDown(sid);
+  h.className = off ? "host-prefix off" : "host-prefix";
   h.textContent = p.host;
+  if (off) h.title = hostDownNote(sid);
   return [h, document.createTextNode(p.rest)];
+}
+
+/** Is this (prefixed) sid's host unreachable right now? Reads the federation manager's published set,
+ *  which the KERNEL's own tunnel health fills. False wherever no manager is loaded (a single-kernel
+ *  page, the Obsidian panel), so a local session never wears the mark. */
+export function hostIsDown(sid: string | null | undefined): boolean {
+  const i = typeof sid === "string" ? sid.indexOf(":") : -1;
+  if (i <= 0) return false;
+  try {
+    const fed = (globalThis as any).__rompFed;
+    return !!fed && typeof fed.down === "function" && fed.down().indexOf((sid as string).slice(0, i)) >= 0;
+  } catch { return false; }
+}
+
+/** The tooltip a marked host wears: what is wrong, when it was last reached, and that romp is still on it. */
+export function hostDownNote(sid: string | null | undefined): string {
+  const i = typeof sid === "string" ? sid.indexOf(":") : -1;
+  if (i <= 0) return "";
+  const host = (sid as string).slice(0, i);
+  let seen = 0;
+  try {
+    const fed = (globalThis as any).__rompFed;
+    seen = (fed && typeof fed.lastSeen === "function" && fed.lastSeen(host)) || 0;
+  } catch { seen = 0; }
+  const when = seen ? ", last reached " + new Date(seen * 1000).toLocaleTimeString() : "";
+  return host + " is disconnected" + when + ". This is the last state romp got from it, and romp is "
+    + "still trying to reconnect.";
 }
 
 /** Same rendering when the host rides its OWN field instead of a sid prefix — the feed card's

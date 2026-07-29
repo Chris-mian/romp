@@ -24,7 +24,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview } from "./preview";
-import { hostNameNodes } from "./host-prefix";
+import { hostNameNodes, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
@@ -3338,6 +3338,9 @@ function renderTabs() {
     }
     const label = el("span", "tab-label");
     label.replaceChildren(...hostNameNodes(s.name, id));   // remote "host:" prefix renders as quiet metadata
+    // ...and the whole tab dims when that host is unreachable, so a disconnected session reads as one at
+    // a glance rather than only on inspection (the user 2026-07-29). The struck "host:" carries the why.
+    if (hostIsDown(id)) { tab.classList.add("host-off"); tab.title = hostDownNote(id); }
     if (s.status.faded && id !== activeId && s.color) {
       const full = s.color.bg;
       label.style.color = fadedColor(full);
@@ -3382,6 +3385,7 @@ function renderTabs() {
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
   syncNoSessionsPlaceholder(visibleIds.length);
+  hostBanner();   // the open tab may have just become (or stopped being) one on an unreachable host
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
@@ -3545,6 +3549,10 @@ function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: st
   menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
   menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
 }
+// A remote host coming or going flips the disconnected marks on its tabs. The federation manager fires
+// this only when the reachable set actually CHANGES (its own /tunnels poll is the event), so this is a
+// repaint per connect/drop, not per poll (the user 2026-07-29).
+window.addEventListener("romp-hosts", () => { renderTabs(); hostBanner(); });
 window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissTabMenu(); }, true);
 window.addEventListener("scroll", dismissTabMenu, true);
@@ -6975,6 +6983,18 @@ function pipeBanner(up: boolean, queued: number): void {
   bar.textContent = queued > 0
     ? `romp is unreachable — reconnecting… ${queued} message${queued === 1 ? "" : "s"} held, sending when it's back`
     : "romp is unreachable — reconnecting…";
+}
+
+// The open tab's own host is unreachable (the user 2026-07-29, who read a remote's transcripts for a
+// while before noticing nothing was connected). The tab dims and its "host:" is struck, but the thing
+// being READ is the transcript, so the pane it fills says so too: this stopped updating, here is when it
+// last did, and romp is still dialing. Runs on every render and on the reachable-set event.
+function hostBanner(): void {
+  const b = document.getElementById("rhostoff");
+  const off = !!activeId && hostIsDown(activeId);
+  if (!off) { if (b) b.remove(); return; }
+  const bar = b || document.body.appendChild(Object.assign(document.createElement("div"), { id: "rhostoff" }));
+  bar.textContent = hostDownNote(activeId);
 }
 
 window.addEventListener("message", (e: MessageEvent) => {

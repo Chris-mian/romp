@@ -363,6 +363,8 @@ export class FederationManager {
   private perHostTl: Record<string, any> = {}; //   last timeline lanes payload ({type:"data"}.data) per host
   private perHostTlBars: Record<string, any> = {}; // last timeline {type:"bars"} detail per host
   private hostSeq: string[] = [LOCAL]; // local first, then attach order — fixes the group order in the strip
+  private downHosts = new Set<string>(); // attached, but its tunnel isn't up: what's on screen is a memory
+  private lastSeen: Record<string, number> = {}; // host -> epoch secs of its last `up` poll
 
   start(): void {
     const w = window as any;
@@ -371,6 +373,12 @@ export class FederationManager {
       inbound: (h: string, m: any) => this.inbound(h, m),
       outbound: (m: any) => this.outbound(m),
       hosts: () => this.hostSeq.filter((h) => h !== LOCAL), // attached hosts (the + modal's host picker)
+      // Hosts that are attached but NOT reachable right now. Their sessions stay on screen — dropping
+      // them would lose the thread — but every surface that shows one has to say the link is down, or
+      // you are reading a transcript that stopped updating with nothing telling you (the user
+      // 2026-07-29). `lastSeen` dates what is on screen.
+      down: () => [...this.downHosts],
+      lastSeen: (h: string) => this.lastSeen[h] || 0,
     };
     this.poll();
     setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
@@ -497,6 +505,15 @@ export class FederationManager {
       c.live = t.status === "up";
       if (c.live && (!c.ws || c.ws.readyState === 3)) this.connect(c);
     }
+    // Publish reachability for the panes. The kernel's own tunnel health is the authority (it dials and
+    // health-checks the ssh), and it keeps retrying, so this flips back on its own when the host returns.
+    const down = new Set([...want.keys()].filter((h) => want.get(h).status !== "up"));
+    // lastOk comes from the KERNEL's row (when it last had that host answering end to end), so the
+    // "last seen" a pane shows survives a page reload and doesn't restart with the browser.
+    for (const [host, t] of want) if (typeof t.lastOk === "number" && t.lastOk) this.lastSeen[host] = t.lastOk;
+    const changed = down.size !== this.downHosts.size || [...down].some((h) => !this.downHosts.has(h));
+    this.downHosts = down;
+    if (changed) window.dispatchEvent(new Event("romp-hosts"));   // panes repaint their disconnected marks
   }
 
   private openRemote(host: string, port: number, token: string, live: boolean): void {
