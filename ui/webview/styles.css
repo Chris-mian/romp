@@ -516,19 +516,27 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 @keyframes slash-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .slash-spin { animation: none; } }
 #composer-attach, #composer-send {
-  position: absolute; bottom: 12px;
-  width: 26px; height: 26px; padding: 0; line-height: 1;
+  position: absolute;   /* size + offsets: the sizing block below (they differ per button now) */
+  padding: 0; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: none; border-radius: 5px;
   font-size: 15px; opacity: 0.55; cursor: pointer;
 }
 /* the paperclip + send glyphs wear the romp accent blue (the user 2026-07-15) — action affordances, not
    status, so var(--accent) is the intended use; resting a touch dim, full on hover */
-#composer-attach { right: 58px; color: var(--accent); opacity: 0.8; }   /* clip sits LEFT of the send button */
-#composer-send   { right: 30px; font-size: 13px; }   /* the explicit ⏎ send button, rightmost */
+#composer-attach { color: var(--accent); opacity: 0.8; }   /* clip sits LEFT of the send button */
 #composer-attach:hover, #composer-send:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
 #composer-send:not(:disabled) { color: var(--accent); opacity: 0.85; }   /* romp-blue send affordance */
 #composer-send:disabled { opacity: 0.3; cursor: not-allowed; }
+/* SIZE (the user 2026-07-29). Both were 26px squares tucked in the corner: passable for a mouse, a poor
+   target for a thumb. Send is the primary action of the whole pane, so it gets real width — the widest
+   thing in the corner rather than the same square as the paperclip beside it. Offsets are measured from
+   #composer, whose own right padding (24px here) is what puts the textarea's edge at 24: 28 is 4px
+   inside the box. */
+#composer-attach, #composer-send { bottom: 10px; height: 30px; }
+#composer-send { right: 28px; width: 46px; font-size: 16px; }
+#composer-attach { right: 82px; width: 34px; font-size: 16px; }
+#composer-input { padding-right: 92px; }   /* text stops clear of both buttons */
 #composer-input {
   width: 100%; resize: none; box-sizing: border-box;
   /* Floor at one line + padding + border, so the box can never collapse to a
@@ -549,6 +557,34 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    full hint is visible; growComposer's inline height still floors on this, and a real message grows past it. */
 @media (pointer: coarse) {
   #composer-input { min-height: calc(2.8em + 18px); }
+}
+/* TOUCH (the user 2026-07-29, on an iPad): the two buttons sat in the corner of a two-line resting box,
+   which read as a stray row under the placeholder AND gave a thumb two 26px squares to hit. Here they
+   become a real button ROW along the bottom of the box: 44px tall (the tap target a finger expects),
+   send filled in the accent because it is the primary action, and the text runs the FULL width above
+   them instead of being squeezed into a column beside them. Same two elements, same corner — they are
+   simply big enough to be the controls they are. */
+@media (pointer: coarse) {
+  #composer-attach, #composer-send { bottom: 12px; height: 44px; border-radius: 8px; }
+  #composer-send { right: 28px; width: 96px; font-size: 21px; }
+  #composer-attach { right: 136px; width: 60px; font-size: 19px; }
+  /* the fill is the accent itself, so the glyph flips to the on-accent colour (--accent-fg) */
+  #composer-send, #composer-send:not(:disabled), #composer-send:hover:not(:disabled) {
+    background: var(--accent); color: var(--accent-fg); opacity: 1;
+  }
+  /* disabled reads as a muted FILL, not a ghost: at 0.3 opacity a 96px button looked like a render bug */
+  #composer-send:disabled { background: rgba(255, 255, 255, 0.10); color: var(--dim); opacity: 1; }
+  #composer-attach { background: rgba(255, 255, 255, 0.07); }
+  /* full-width text, with the button row's height reserved underneath it */
+  #composer-input { padding-right: 12px; padding-bottom: 62px; min-height: calc(2.8em + 62px); }
+}
+/* The mobile shell narrows #composer's own padding to 10px (kernel _CHAT_MOBILE_CSS), so the offsets
+   that put a button 4px inside the box change with it. Matched to the SAME query the padding uses, or a
+   landscape iPad — coarse but wider than 1024 — would take phone offsets against desktop padding and
+   hang both buttons outside the box. */
+@media (pointer: coarse) and (max-width: 1024px) {
+  #composer-send { right: 14px; }
+  #composer-attach { right: 122px; }
 }
 /* Cursor in the message box → a thin romp-blue border, exactly on the box edge — the same accent blue that
    marks the focused panel (the user 2026-06-26). It only fills in the existing 1px border (no glow, no layout

@@ -61,9 +61,12 @@ test("the send button is disabled on a closed (read-only) session", () => {
 });
 
 test("the send button is styled to the right of 📎 and the textarea reserves room for both", () => {
-  assert.match(CSS, /#composer-send\s+\{ right: 30px/);
-  assert.match(CSS, /#composer-attach \{ right: 58px/);
+  // resized 2026-07-29 (send is the primary action, so it is the wider of the two); the touch layout and
+  // the arithmetic that keeps the pair inside the box live in composer-buttons.test.ts
+  assert.match(CSS, /#composer-send \{ right: 28px; width: 46px/);
+  assert.match(CSS, /#composer-attach \{ right: 82px; width: 34px/);
   assert.match(CSS, /#composer-input \{[\s\S]*padding: 8px 64px 8px 10px/);
+  assert.match(CSS, /#composer-input \{ padding-right: 92px; \}/, "…widened for the bigger pair");
 });
 
 test("the composer sits tight to the bottom — no wasted gap below it (the user 2026-06-23)", () => {
