@@ -9,7 +9,7 @@
 import { distillText, distillInputs, applyDistillLine, distillPending } from "./distiller-line";
 import { spinFor } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
-import { hostNameNodes, hostPartsNodes } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
@@ -406,6 +406,12 @@ let sessionOrder: string[] = [];
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
+// This machine's own name (kernel _self_host, on every feed payload) and the identity colour of every
+// session the feed knows, keyed "host:name" for a remote one and plain for a local one. Held mail names
+// BOTH ends of the exchange, and a session's colour is its identity everywhere else, so the card has to
+// be able to look one up by name — the quarantine record carries names, not sids (the user 2026-07-29).
+let feedSelfHost = "";
+const sessionColors = new Map<string, string>();
 // session name -> live background-process descriptions the JUDGE classified as services (kernel bgServices:
 // a dev server the session keeps around — nobody waits on it, so it is session furniture, not a status).
 // Rendered as a neutral chip on the grouped-mode session header; flat mode has no headers (the chat view's
@@ -1541,8 +1547,17 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.style.display = isQuar ? "" : "none";
   if (isQuar && it.blocked) {
     const mid = it.blocked.mid || "";
-    const sender = `${it.blocked.origin || "?"}:${it.blocked.frm || "?"}`;
-    qBody.textContent = `from ${sender} — ${it.blocked.gist || it.blocked.body || ""}`;
+    // WHO to WHO, then what it says (the user 2026-07-29). Held mail is a delivery between two named
+    // sessions on two named machines, and the card used to render that as one grey run of text with the
+    // recipient missing entirely — you could not tell which of your sessions was about to receive it.
+    // Hosts stay quiet metadata (the same .host-prefix every surface uses), session names wear their
+    // identity colours, and the gist gets its own line under the route.
+    const toHost = (it.sid && it.sid.indexOf(":") > 0) ? it.sid.slice(0, it.sid.indexOf(":")) : feedSelfHost;
+    qBody.replaceChildren(
+      quarWho(it.blocked.origin || "", it.blocked.frm || "?"),
+      Object.assign(el("span", "fq-arrow"), { textContent: "\u2192" }),
+      quarWho(toHost, it.blocked.to || it.name || "?", it.color?.bg),
+      Object.assign(el("div", "fq-gist"), { textContent: it.blocked.gist || it.blocked.body || "" }));
     qBody.title = "click to read the whole message and decide";
     a._qApprove.disabled = false; a._qApprove.textContent = "Approve";
     a._qDeny.disabled = false; a._qDeny.textContent = "Deny";
@@ -1551,9 +1566,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       for (const b of [a._qApprove, a._qDeny] as HTMLButtonElement[]) b.disabled = true;
       (action === "deny" ? a._qDeny : a._qApprove).textContent = busy;
     };
-    qBody.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(sender, it.blocked!.to || "?", it.blocked!.body || "", decide, false); };
+    const ends = (): [QuarEnd, QuarEnd] => [
+      { host: it.blocked!.origin || "", name: it.blocked!.frm || "?" },
+      { host: toHost, name: it.blocked!.to || it.name || "?", color: it.color?.bg }];
+    qBody.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(...ends(), it.blocked!.body || "", decide, false); };
     a._qApprove.onclick = (ev: Event) => { ev.stopPropagation(); decide("approve", "Delivering…", it.blocked!.body || ""); };
-    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(sender, it.blocked!.to || "?", it.blocked!.body || "", decide, true); };
+    a._qDeny.onclick = (ev: Event) => { ev.stopPropagation(); showQuarantineDialog(...ends(), it.blocked!.body || "", decide, true); };
   }
   (a._clr as HTMLElement).style.display = isQuar ? "none" : "";
 
@@ -1595,6 +1613,26 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   r2.style.display = gmode && !r2live ? "none" : "";
 
   // (bg / summary / sub-goals are wired above in applySections — one mutually-exclusive selection.)
+}
+
+// One end of a held message's route: "host:" as quiet metadata, the session name in its identity
+// colour. The colour is looked up by the name a peer addresses (sessionColors, filled per payload) and
+// simply absent when that session has no cards here — an invented colour would be a lie about identity.
+// A host romp cannot currently reach wears the same struck mark its tabs and lanes do.
+function quarWho(host: string, name: string, known?: string): HTMLElement {
+  const who = el("span", "fq-who");
+  if (host) {
+    const h = el("span", "host-prefix");
+    h.textContent = host + ":";
+    if (hostIsDown(host + ":x")) { h.classList.add("off"); h.title = hostDownNote(host + ":x"); }
+    who.appendChild(h);
+  }
+  const n = el("span", "fq-name");
+  n.textContent = name;
+  const color = known || sessionColors.get(host ? host + ":" + name : name) || sessionColors.get(name);
+  if (color) n.style.color = color;
+  who.appendChild(n);
+  return who;
 }
 
 // Resolve a focus key (set on hoverAskId/pinnedAskId) to the itemId the timeline
@@ -3307,6 +3345,16 @@ window.addEventListener("message", (e: MessageEvent) => {
       for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
     }
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
+    if (typeof m.selfHost === "string" && m.selfHost) feedSelfHost = m.selfHost;
+    // Index every session's colour by the name a peer would address it by. Federation merges the hosts'
+    // payloads, so one pass over the merged asks covers the whole fleet; a card whose session has no
+    // cards of its own simply gets no colour, which is honest rather than invented.
+    for (const a of incomingAsks) {
+      if (!a.color || !a.name) continue;
+      sessionColors.set(a.name, a.color.bg);
+      const c = a.sid ? a.sid.indexOf(":") : -1;             // remote sid → also index the bare name under its host
+      if (c > 0 && !a.name.includes(":")) sessionColors.set(a.sid.slice(0, c) + ":" + a.name, a.color.bg);
+    }
     awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // straw awaiting dots (the user 2026-07-13)
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
@@ -3395,14 +3443,23 @@ window.addEventListener("message", (e: MessageEvent) => {
 // mails it to the origin host so the sender's agent learns why instead of waiting forever. Lives on
 // document.body OUTSIDE the re-rendered feed root, so a kernel push mid-decision can't eat the note.
 // `decide` is the owning card's decision closure — it carries the mid + sid and flips the card buttons.
-function showQuarantineDialog(sender: string, to: string, body: string,
+interface QuarEnd { host: string; name: string; color?: string }
+
+function showQuarantineDialog(from: QuarEnd, to: QuarEnd, body: string,
                               decide: (action: string, busy: string, text: string, feedback?: string) => void,
                               denyFirst: boolean) {
   document.getElementById("quar-dialog")?.remove();
   const overlay = el("div", "pickdlg-overlay"); overlay.id = "quar-dialog";
   const box = el("div", "pickdlg-box qdlg-box");
   const title = el("div", "pickdlg-title");
-  title.textContent = `New message from ${sender} to ${to}`;
+  // the SAME route the card shows, so opening the message doesn't re-word who it is between
+  const sender = `${from.host}:${from.name}`;
+  const route = () => title.replaceChildren(
+    Object.assign(el("span", "qdlg-lead"), { textContent: "New message" }),
+    quarWho(from.host, from.name, from.color),
+    Object.assign(el("span", "fq-arrow"), { textContent: "\u2192" }),
+    quarWho(to.host, to.name, to.color));
+  route();
   const view = el("div", "qdlg-view");
   view.textContent = body;
   const row = el("div", "qdlg-actions");
@@ -3412,7 +3469,7 @@ function showQuarantineDialog(sender: string, to: string, body: string,
   // catch something malicious). Clicking the backdrop still closes without deciding; the message
   // stays held either way.
   const denyStep = () => {
-    title.textContent = `Deny the message from ${sender} — send a note back?`;
+    title.replaceChildren(document.createTextNode(`Deny the message from ${sender}. Send a note back?`));
     const ta = el("textarea", "qdlg-text qdlg-feedback") as HTMLTextAreaElement;
     ta.placeholder = "optional: tell the sender why (delivered to them as postal mail)";
     row.replaceChildren();

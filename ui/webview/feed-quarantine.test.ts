@@ -20,10 +20,16 @@ test("the quarantine card is compact: Approve/Deny buttons + a one-line sender/g
   assert.match(FEED, /const qApprove = el\("button", "fdismiss fq fq-ok"\)[\s\S]*?qApprove\.textContent = "Approve"/);
   assert.match(FEED, /const qDeny = el\("button", "fdismiss fq fq-no"\)[\s\S]*?qDeny\.textContent = "Deny"/);
   assert.doesNotMatch(FEED, /qEdit/, "editing was cut from the flow (the user 2026-07-26)");
-  // the body line is a dim one-liner (sender + gist), click-through to the decision dialog
+  // the body is the ROUTE then the gist (the user 2026-07-29): host:session -> host:session, hosts as
+  // quiet metadata, session names in their identity colours, click-through to the decision dialog
   assert.match(FEED, /const qbody = el\("div", "fask-qbody"\)/);
-  assert.match(FEED, /qBody\.textContent = `from \$\{sender\} — \$\{it\.blocked\.gist \|\| it\.blocked\.body \|\| ""\}`/);
-  assert.match(FEED, /qBody\.onclick = [\s\S]*?showQuarantineDialog\(sender, it\.blocked!\.to \|\| "\?", it\.blocked!\.body \|\| "", decide, false\)/);
+  assert.match(FEED, /qBody\.replaceChildren\(\s*\n\s*quarWho\(it\.blocked\.origin \|\| "", it\.blocked\.frm \|\| "\?"\),/);
+  assert.match(FEED, /Object\.assign\(el\("span", "fq-arrow"\), \{ textContent: "\\u2192" \}\)/);
+  assert.match(FEED, /quarWho\(toHost, it\.blocked\.to \|\| it\.name \|\| "\?", it\.color\?\.bg\)/);
+  assert.match(FEED, /Object\.assign\(el\("div", "fq-gist"\), \{ textContent: it\.blocked\.gist \|\| it\.blocked\.body \|\| "" \}\)/);
+  // the recipient's host: this card's own kernel — a remote card's sid prefix, else this machine's name
+  assert.match(FEED, /const toHost = \(it\.sid && it\.sid\.indexOf\(":"\) > 0\) \? it\.sid\.slice\(0, it\.sid\.indexOf\(":"\)\) : feedSelfHost;/);
+  assert.match(FEED, /qBody\.onclick = [\s\S]*?showQuarantineDialog\(\.\.\.ends\(\), it\.blocked!\.body \|\| "", decide, false\)/);
   assert.match(FEED, /a\._qApprove = qApprove; a\._qDeny = qDeny; a\._qBody = qbody;/);
 });
 
@@ -39,7 +45,7 @@ test("the decision carries the card's sid so a remote hold's verdict reaches the
   assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "quarantineDecision", mid, action, text, sid: it\.sid, feedback \}\)/);
   assert.match(FEED, /a\._qApprove\.onclick = [\s\S]*?decide\("approve", "Delivering…", it\.blocked!\.body \|\| ""\)/);
   // the card's Deny goes through the dialog's feedback step, never a blind drop
-  assert.match(FEED, /a\._qDeny\.onclick = [\s\S]*?showQuarantineDialog\(sender, it\.blocked!\.to \|\| "\?", it\.blocked!\.body \|\| "", decide, true\)/);
+  assert.match(FEED, /a\._qDeny\.onclick = [\s\S]*?showQuarantineDialog\(\.\.\.ends\(\), it\.blocked!\.body \|\| "", decide, true\)/);
 });
 
 test("the decision dialog: read-only body, Approve/Deny, deny step offers a note to the sender", () => {

@@ -661,15 +661,21 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss.fq-ok:hover:not(:disabled) { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
 .fdismiss.fq-no { color: #e5484d; border-color: rgba(229, 72, 77, 0.6); }
 .fdismiss.fq-no:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
-/* Compact quarantine line (the user 2026-07-26): one dim sender+gist line, click opens the decision
-   modal — the full body never renders on the card. */
+/* Compact quarantine line (the user 2026-07-26; given its route 2026-07-29): line one is WHO to WHO —
+   host:session -> host:session, hosts as quiet metadata, session names in their identity colours — and
+   line two is the gist. Click opens the decision modal; the full body never renders on the card. */
 .fask-qbody {
   display: block; width: 100%; box-sizing: border-box; margin: 4px 0 2px;
   font: inherit; font-size: 12px; line-height: 1.45;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: var(--dim); cursor: pointer;
 }
-.fask-qbody:hover { color: #dfe7ee; }
+.fask-qbody:hover .fq-gist { color: #dfe7ee; }
+.fq-who { white-space: nowrap; }
+.fq-name { font-weight: 600; }               /* the identity colour rides an inline style */
+.fq-arrow { margin: 0 6px; opacity: 0.6; }
+.fq-gist {                                    /* one line, whatever the message length */
+  margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim);
+}
 /* The quarantine decision dialog rides the pickdlg overlay/box; the body is READ-ONLY (.qdlg-view);
    the textarea appears only on the deny step, for the optional note back to the sender. */
 .qdlg-box { width: min(640px, 96%); }
@@ -901,6 +907,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
 }
 .pickdlg-title { font-weight: 700; color: var(--vscode-foreground, #ccc); margin-bottom: 4px; }
+/* the quarantine dialog's title IS the card's route line, so opening a held message never re-words who
+   it is between: "New message" then host:session -> host:session, same colours (the user 2026-07-29) */
+.qdlg-lead { margin-right: 8px; }
+.pickdlg-title .fq-name { font-weight: 700; }
 /* the err dialog's body sentence — the resume-picker dialog is all buttons, so its box carried no prose style */
 .pickdlg-detail { color: var(--vscode-descriptionForeground, #999); margin-bottom: 10px; line-height: 1.45; }
 .pickdlg-opt {
