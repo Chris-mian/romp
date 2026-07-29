@@ -1686,6 +1686,12 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   padding: 5px 8px; outline: none;
 }
 .picker-dir-input:focus { border-color: var(--vscode-focusBorder, #4daafc); }
+/* the field carries the verdict too (the user 2026-07-29): red for a path that cannot work on the
+   selected host — the create refuses while it stands — amber for one that does not exist yet, which is
+   an offer to make it, not an error. These sit after :focus and beat it, on purpose: a path that cannot
+   work should read that way while you are standing in the field fixing it. */
+.picker-dir-input.bad { border-color: #e5484d; background: rgba(229, 72, 77, 0.07); }
+.picker-dir-input.warn { border-color: #e0a030; }
 .picker-dir-input::placeholder { color: var(--dim); }
 .picker-browse {
   flex: 0 0 auto; cursor: pointer; white-space: nowrap;
