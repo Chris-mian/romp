@@ -7230,9 +7230,15 @@ function setupComposer() {
       // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
       // just seeded by the click. A QUOTE chip (highlighted transcript text, the user 2026-07-13) has no goal:
       // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage.
+      // `sid: activeId` is what ROUTES this to the owning kernel in a federated dashboard (the user 2026-07-29):
+      // federation keys routing off `id`/`sid` only, and an `itemId` ("‹sid›:‹goal›") can't be one — its own
+      // colon would read the session uuid as a host. Without the sid a follow-up on a REMOTE card went to the
+      // LOCAL kernel, which owns no such session and dropped it into tmux by uuid — nothing sent, no error,
+      // the card flashing to Working and back. The kernel keeps deriving its sid from itemId, so this is inert
+      // locally; every other card op (askClear/cardNotify/showOnTimeline) already carries the sid the same way.
       const cite = composerCitations.get(activeId);
       if (vscodeApi) {
-        if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
+        if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text, sid: activeId });
         else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text, cite.src) });
         else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
         // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)

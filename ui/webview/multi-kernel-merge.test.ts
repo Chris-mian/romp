@@ -105,6 +105,22 @@ test("routeOutbound: a remote id routes to its host with the prefix stripped", (
   assert.equal(routes[0].msg.text, "hello");
 });
 
+test("routeOutbound: a card op routes by its SID — an itemId alone can only go local", () => {
+  // Why every card-addressed op has to carry `sid` (the user 2026-07-29): an itemId is "‹sid›:‹goalId›", so
+  // it can never join SCALAR_ID — hostOf() splits on the FIRST colon and would read the session uuid as a
+  // host name. The sid is the routing key; the itemId is already bare on both sides and rides through
+  // untouched. A follow-up sent without the sid went to the LOCAL kernel, which owns no such session and
+  // dropped it in silence: the reply was simply lost.
+  const routes = routeOutbound({ type: "askFollowUp", itemId: U + ":g4", text: "and the fix?", sid: "gpu1:" + U });
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].host, "gpu1", "the sid picks the owning kernel");
+  assert.equal(routes[0].msg.sid, U, "sid stripped back to bare");
+  assert.equal(routes[0].msg.itemId, U + ":g4", "itemId was never prefixed, so it passes through as-is");
+  // the regression: drop the sid and the SAME message lands on the wrong kernel
+  const orphan = routeOutbound({ type: "askFollowUp", itemId: U + ":g4", text: "and the fix?" });
+  assert.equal(orphan[0].host, "", "no sid → local, whoever the card belongs to");
+});
+
 test("routeOutbound: a global message (no session id) goes local", () => {
   const routes = routeOutbound({ type: "setColormap", name: "viridis" });
   assert.deepEqual(routes, [{ host: "", msg: { type: "setColormap", name: "viridis" } }]);
