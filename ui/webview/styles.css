@@ -534,9 +534,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    #composer, whose own right padding (24px here) is what puts the textarea's edge at 24: 28 is 4px
    inside the box. */
 #composer-attach, #composer-send { bottom: 10px; height: 30px; }
-#composer-send { right: 28px; width: 46px; font-size: 16px; }
-#composer-attach { right: 82px; width: 34px; font-size: 16px; }
-#composer-input { padding-right: 92px; }   /* text stops clear of both buttons */
+#composer-send { right: 26px; width: 36px; font-size: 16px; }
+#composer-attach { right: 62px; width: 32px; font-size: 16px; }
+#composer-input { padding-right: 78px; }   /* text stops clear of both buttons */
 #composer-input {
   width: 100%; resize: none; box-sizing: border-box;
   /* Floor at one line + padding + border, so the box can never collapse to a
