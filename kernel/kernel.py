@@ -13887,21 +13887,57 @@ def _segment_of_uuid(sid, uuid, now):
     return (None, [])
 
 
+# Top-level payload fields that tick on every BUILD while carrying no view state of their own: the host
+# clock (`now` — the client's hostNow, used for age math) and the feed's build counter (`buildId`, which
+# sequences optimistic move acks). Comparing them defeats the dedup below outright: a payload that is
+# otherwise byte-identical looks new on every push, so the kernel re-sends the WHOLE view forever. That is
+# how app=feed came to ship ~46 KB every ~2s to every client on a fleet that wasn't changing (the user
+# 2026-07-28, whose dashboard dropped the live connection every few minutes; measured on the wire as 12 of
+# 12 consecutive frames byte-distinct, differing ONLY in these two fields). Identical failure to the chat's
+# `firstSeen` clock leak — see tests/test_payload_dedup_invariant.py, which asserts the invariant one level
+# up from the chat file's: a payload MAY carry the clock, but everything the dedup compares must not.
+_DEDUP_VOLATILE = ("now", "buildId")
+
+# A deduped view still has to FADE. The feed colors each card by age against the payload's `now`, so a
+# client that received nothing for many minutes would hold its colors frozen. The client already keeps the
+# "Xm ago" text honest from its own clock on a 15s tick; this preserves the host repost that the fade was
+# always documented to ride on (feed.ts: "host reposts ~1×/min for color fade") and nothing beyond it.
+# So an UNCHANGED view costs one repost a minute instead of ~30.
+_DEDUP_REPOST_S = 60.0
+
+
+def _dedup_sig(msg, s):
+    """The string a payload is DEDUPED on: its serialization minus the always-ticking fields above.
+    Falls back to the full serialization `s` when the payload carries none of them, so a payload that is
+    already clock-invariant (chat) keeps comparing its cached serialization with no extra work."""
+    if isinstance(msg, dict) and any(k in msg for k in _DEDUP_VOLATILE):
+        return json.dumps({k: v for k, v in msg.items() if k not in _DEDUP_VOLATILE},
+                          sort_keys=True, default=str)
+    return s
+
+
 def _send_client(c, key, msg, pre=None):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
     `pre` is the already-serialized msg (json.dumps(msg)) when the caller has it cached — passing it lets
     a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache).
 
+    Dedup compares _dedup_sig, NOT the raw bytes: a field that ticks with the clock would otherwise make
+    every payload look new. The bytes actually sent are still the full `s`, so the client keeps receiving a
+    fresh `now`/`buildId` on every send it does get.
+
     ROMP_PERF=1 logs every send AND every dedup hit. That asymmetry is the point: a payload carrying a
     field that ticks with the clock looks perfectly normal from the outside — the UI just feels slow —
     and the only visible symptom is this dedup never hitting. Finding the last one took a hand-written
     WebSocket client; the log makes the next one obvious."""
     s = pre if pre is not None else json.dumps(msg)
-    if c.setdefault("sent", {}).get(key) == s:
+    sig = _dedup_sig(msg, s)
+    prev = c.setdefault("sent", {}).get(key)
+    now = time.time()
+    if prev is not None and prev[0] == sig and (now - prev[1]) < _DEDUP_REPOST_S:
         _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=1)
         return
-    c["sent"][key] = s
+    c["sent"][key] = (sig, now)
     _perf("send", slot=_perf_slot(key), bytes=len(s), deduped=0)
     try:
         c["send"](s)
