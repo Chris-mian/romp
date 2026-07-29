@@ -18,9 +18,9 @@ test("the + dialog builds a Host row listing local + attached hosts, hidden with
 
 test("createSession carries the picked host (empty = local) so the manager routes it to that kernel", () => {
   assert.match(RENDER, /const hostSel = \(hostWrap\.querySelector\("\.picker-be-opt\.sel"\) as HTMLElement \| null\)\?\.dataset\.host \|\| ""/);
-  assert.match(RENDER, /type: "createSession", name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend, dir: dirInput\.value\.trim\(\), host: hostSel/);
+  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel \}\)/);
   // the "Opening…" cue must match the PREFIXED tab name a remote create produces
-  assert.match(RENDER, /showOpeningModal\(hostSel \? hostSel \+ ":" \+ name : name\)/);
+  assert.match(RENDER, /showOpeningModal\(req\.host \? req\.host \+ ":" \+ req\.name : req\.name\)/);
 });
 
 test("picking a remote host disables the (host-local) Browse… dialog", () => {
