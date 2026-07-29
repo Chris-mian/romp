@@ -389,11 +389,11 @@ function bellIcon(off, cx, cy, color) {
 // The per-lane SETTINGS GEAR (the user 2026-07-28, round 3): the three toggle icons above no longer
 // draw on the lane — three always-on icons crowded the row — so ONE gear opens them as a drop-down
 // (_openLaneMenu), each row wearing its icon, its state, and a plain-language line. Drawn like its
-// neighbors: a toothed ring + a filled hub, monochrome.
+// neighbors: a toothed ring, monochrome and HOLLOW — no hub dot (the user 2026-07-28), which also
+// matches the ⛭ the rail's settings button wears at the bottom right.
 function gearIcon(cx, cy, color) {
   const g = el('g', { 'pointer-events': 'none' });
   g.appendChild(el('circle', { cx: cx, cy: cy, r: 3.9, fill: 'none', stroke: color, 'stroke-width': 1.2 }));
-  g.appendChild(el('circle', { cx: cx, cy: cy, r: 1.4, fill: color, stroke: 'none' }));
   for (let i = 0; i < 8; i++) {
     const a = (Math.PI / 4) * i;
     g.appendChild(el('line', { x1: cx + 4.4 * Math.cos(a), y1: cy + 4.4 * Math.sin(a),

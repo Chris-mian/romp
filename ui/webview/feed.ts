@@ -13,7 +13,8 @@ import { hostNameNodes, hostPartsNodes } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
-import { badgeNotices, clearBoundaryNotices, type ClearNoticeRow } from "./badge-mirror";
+import { badgeNotices, clearBoundaryNotices, sdkProblemNotices,
+  type ClearNoticeRow, type SdkNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { previewThumb, previewKind } from "./preview";
@@ -3235,7 +3236,7 @@ function pipeBanner(up: boolean, queued: number): void {
 // the {romp:'notify'} post the shell's bell listens for. Storing only the ACTIVE set is what re-arms a
 // cleared badge and keeps the store from growing: a card that left the payload takes its sigs with it.
 const BADGE_SEEN_KEY = "romp:cardNotified";
-function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[]): void {
+function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[]): void {
   let seen: string[] = [];
   try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
   const seenSet = new Set(seen);
@@ -3243,12 +3244,15 @@ function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[]): void {
   // /clear boundary settles share the same seen-set + bell (the user 2026-07-27): a clear that
   // dropped open cards logs one durable entry naming them, so the drop is never silent.
   const boundary = clearBoundaryNotices(clears, seenSet);
-  for (const n of [...badges.notices, ...boundary.notices]) {
+  // …and so do SDK-backend failures (the user 2026-07-28): a crashed session thread, a dropped stream
+  // or a refused setting is a romp problem, and it belongs where the user's other problems are.
+  const sdkProblems = sdkProblemNotices(sdk, seenSet);
+  for (const n of [...badges.notices, ...boundary.notices, ...sdkProblems.notices]) {
     try {
       window.parent?.postMessage({ romp: "notify", kind: n.kind, text: n.text, sid: n.sid, itemId: n.itemId }, "*");
     } catch { /* no shell (VS Code view) */ }
   }
-  const active = new Set([...badges.active, ...boundary.active]);
+  const active = new Set([...badges.active, ...boundary.active, ...sdkProblems.active]);
   try { localStorage.setItem(BADGE_SEEN_KEY, JSON.stringify(Array.from(active))); } catch { /* storage full */ }
 }
 
@@ -3307,7 +3311,8 @@ window.addEventListener("message", (e: MessageEvent) => {
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
-    mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : []);   // card trouble chips + /clear drops also log in the shell's bell (chips stay on the cards)
+    mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
+      Array.isArray(m.sdkNotices) ? m.sdkNotices : []);   // card trouble chips + /clear drops + SDK failures also log in the shell's bell (chips stay on the cards)
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
     if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;

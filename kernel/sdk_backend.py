@@ -24,6 +24,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -1085,8 +1086,8 @@ class SdkSession:
         if cb:
             try:
                 cb()
-            except Exception:
-                pass
+            except Exception as e:
+                self.backend._log("boot-settled callback (%s) failed: %s" % (self.name, e))
 
     def enqueue(self, text: str):
         """Deliver a user turn (called from the kernel thread). Held in self._pending —
@@ -1280,8 +1281,8 @@ class SdkSession:
     async def _do_set_model(self, model):
         try:
             await self.client.set_model(model)
-        except Exception:
-            pass
+        except Exception as e:
+            self.backend._log("set_model (%s -> %s) refused by the SDK: %s: %s" % (self.name, model, type(e).__name__, e))
         # Pull the real new name NOW rather than waiting for the next turn's assistant message — an idle
         # session the user switched but doesn't drive again would otherwise sit on the switching-dots
         # indefinitely (the user 2026-07-03). get_context_usage reports the current model, so this
@@ -1292,8 +1293,8 @@ class SdkSession:
     async def _do_set_mode(self, mode):
         try:
             await self.client.set_permission_mode(mode)
-        except Exception:
-            pass
+        except Exception as e:
+            self.backend._log("set_permission_mode (%s -> %s) refused by the SDK: %s: %s" % (self.name, mode, type(e).__name__, e))
 
     async def _do_refresh_context(self):
         """Pull authoritative context-window usage from the SDK — the DESIGNED source. `get_context_usage()` is
@@ -1333,8 +1334,8 @@ class SdkSession:
         if upd:
             try:
                 self.backend._update_reg(self.sid, **upd)
-            except Exception:
-                pass
+            except Exception as e:
+                self.backend._log("context refresh (%s): registry write failed: %s" % (self.name, e))
 
     async def _do_refresh_usage(self):
         """Pull the EXACT account-wide /usage snapshot from the CLI — the designed data behind the /usage
@@ -1386,7 +1387,11 @@ class SdkSession:
             self.backend._heal_stale_awaiting(self.sid)
             asyncio.run(self._amain())
         except Exception as e:                       # surfaced for debugging; never crash kernel
-            self.backend._log(f"sdk session {self.name} crashed: {type(e).__name__}: {e}")
+            # The TRACEBACK too, not just the type and message: a bare "KeyError: <uuid>" names no line,
+            # so a crash that killed a session left nothing to fix it by. The error center shows the
+            # first line; the kernel log keeps the whole thing.
+            self.backend._log(f"sdk session {self.name} crashed: {type(e).__name__}: {e}\n"
+                              f"{traceback.format_exc()}")
         finally:
             self._fire_boot_settled()   # a dead thread must free its boot-stagger slot (first, so
             #                             a raising _on_session_gone can never leak the slot)
@@ -1504,7 +1509,11 @@ class SdkSession:
                         # which prunes on the next message (the user 2026-07-16). Written here, not at request
                         # time, so it pins when the new effort became REAL — turn-end for a busy session, whose
                         # in-flight turn ran at the OLD effort (recording at request would misdate it).
-                        append_effort_applied(self.state_dir, self.sid, self._effort_pending)
+                        # self.backend.state_dir, not self.state_dir: a session has no state_dir of its own,
+                        # and the typo raised straight out of the connect path — killing the session thread
+                        # on any /effort switch that applied at reconnect (found 2026-07-28 in the backend's
+                        # own crash log, which until now nothing showed the user).
+                        append_effort_applied(self.backend.state_dir, self.sid, self._effort_pending)
                         self._effort_pending = ""
                         self.backend._update_reg(self.sid, effortPending=False)
                         self.backend._poke()
@@ -1571,8 +1580,8 @@ class SdkSession:
             self._persist_queue()
         try:
             self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="", rewindBare=False)
-        except Exception:
-            pass
+        except Exception as e:
+            self.backend._log("rewind (%s): registry clear failed: %s" % (self.name, e))
         self.backend._log("rewind (%s): the CLI refused --resume-session-at (%s: %s) — flag dropped, "
                           "%s" % (self.name, type(exc).__name__, exc,
                                   "the rollback did not happen" if bare else "edited message returned to the user"))
@@ -1581,8 +1590,8 @@ class SdkSession:
                 ("the rollback failed (the session's CLI refused it) — the conversation is unchanged" if bare else
                  "the rewind failed (the session's CLI refused it) — your edited message was NOT sent%s"
                  % ((": " + dropped) if dropped else ""))})
-        except Exception:
-            pass
+        except Exception as e:
+            self.backend._log("rewind (%s): could not tell the chat the rewind failed: %s" % (self.name, e))
         self.backend._poke()
 
     def _learn_model(self, pm):
@@ -1604,8 +1613,8 @@ class SdkSession:
         self.model = pm
         try:
             self.backend._update_reg(self.sid, liveModel=pm, modelPending=bool(self._model_pending))
-        except Exception:
-            pass
+        except Exception as e:
+            self.backend._log("model learn (%s): registry write failed: %s" % (self.name, e))
         self.backend._poke()
 
     def _resolve_model_pending(self, pm) -> bool:
@@ -1616,8 +1625,8 @@ class SdkSession:
         self._model_pending = ""
         try:
             self.backend._update_reg(self.sid, modelPending=False)
-        except Exception:
-            pass
+        except Exception as e:
+            self.backend._log("model-pending clear (%s): registry write failed: %s" % (self.name, e))
         return True
 
     def _ctx_pct(self):
@@ -1763,8 +1772,8 @@ class SdkSession:
                 self._rewind_armed = False
                 try:
                     self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="", rewindBare=False)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.backend._log("rewind (%s): registry clear failed after the turn landed: %s" % (self.name, e))
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
             self._mark("waiting")
             self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
@@ -2004,8 +2013,8 @@ class SdkSession:
             # normally clear here, so the mirror never false-alarms.
             try:
                 self.backend._update_reg(self.sid, bgTasks=self._live_bg_tasks())
-            except Exception:
-                pass
+            except Exception as e:
+                self.backend._log("background tasks (%s): registry mirror write failed: %s" % (self.name, e))
             self.backend._poke()
 
     def _live_bg_tasks(self) -> list:
@@ -2114,12 +2123,18 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
+        # Backend PROBLEMS, kept in a bounded ring so the dashboard can show them (see _log): until
+        # 2026-07-28 every SDK failure went to the kernel log alone, which nobody tails, so a session
+        # whose stream died or whose model switch was refused just looked odd with no way to find out.
+        self._problems: list[dict] = []
+        self._problem_seq = 0
+        self._problem_lock = threading.Lock()
         # The dependency check, done ONCE here: absent → every session this backend owns reports the same
         # launch error (launch_error), instead of each one silently dying at its own lazy import.
         self._sdk_missing = not sdk_importable()
         if self._sdk_missing and log:
-            log("claude_agent_sdk is NOT importable — every SDK session will report itself unable to "
-                "start (run bin/romp-sdk-setup). tmux sessions are unaffected.")
+            self._log("claude_agent_sdk is NOT importable — every SDK session will report itself unable to "
+                      "start (run bin/romp-sdk-setup). tmux sessions are unaffected.", problem=True)
         self._heal_attempts: dict[str, int] = {}  # sid -> crash-resume attempts since its last COMPLETED turn
         #                                           (bounds _heal_cut_session to one resume per cut; a completed
         #                                           turn resets it, so a crash LOOP can't respawn forever)
@@ -2154,8 +2169,8 @@ class SdkBackend:
         try:
             if last_awaiting(self.state_dir, sid) is True:
                 append_awaiting(self.state_dir, sid, False)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log("awaiting heal (%s): %s" % (sid[:8], e))
 
     def _session_cli_pid(self, session) -> int | None:
         """The live CLI pid for `session` — a child of THIS kernel resuming its sid (or lastSid, the
@@ -2301,8 +2316,8 @@ class SdkBackend:
         for s in sessions:
             try:
                 s.shutdown()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log("drain: shutdown failed for %s: %s" % (s.name, e))
         deadline = time.time() + timeout
         for s in sessions:
             s.thread.join(max(0.05, deadline - time.time()))
@@ -2509,16 +2524,47 @@ class SdkBackend:
         self._poke()   # nudge the producer so the rail re-reads usage.json promptly, not on the next backstop
 
     # ---- logging / wakeups ----
-    def _log(self, m):
+    PROBLEM_RING = 100        # how many backend problems are kept for the dashboard (oldest dropped)
+
+    def _log(self, m, problem=None):
+        """Every backend line goes to the kernel log; the ones that report a FAILURE also land in a ring
+        the dashboard's error center reads, so an SDK problem shows up where the user is looking instead
+        of only in a file nobody tails (the user 2026-07-28, who could tell exceptions were happening and
+        was never shown any).
+
+        What counts as a problem is the exact event, not a keyword sniff on the message: a line logged
+        while an exception is being handled IS that exception's report. sys.exc_info() is live for the
+        whole dynamic extent of an `except` block — helpers called from inside one included — so the
+        classification follows the code path that produced the line. `problem=` overrides either way."""
+        if problem is None:
+            problem = sys.exc_info()[0] is not None
+        if problem:
+            with self._problem_lock:
+                self._problem_seq += 1
+                self._problems.append({"seq": self._problem_seq, "t": time.time(), "text": str(m)})
+                if len(self._problems) > self.PROBLEM_RING:
+                    del self._problems[:-self.PROBLEM_RING]
         if self._log_cb:
             self._log_cb(m)
+
+    def problem_seq(self) -> int:
+        """How many problems this backend has recorded — a cheap cache key for the view builders, so a
+        fresh failure busts the feed on the event instead of riding the next unrelated change."""
+        with self._problem_lock:
+            return self._problem_seq
+
+    def problems(self, limit: int = 0) -> list[dict]:
+        """The recorded problems, oldest first (a copy — callers must not mutate the ring)."""
+        with self._problem_lock:
+            rows = list(self._problems)
+        return rows[-limit:] if limit else rows
 
     def _poke(self):
         if self._poke_cb:
             try:
                 self._poke_cb()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log("producer wake failed: %s" % e)
 
     # ---- SDK option assembly (mirrors the tmux launch flags) ----
     def _options(self, sess: SdkSession, ClaudeAgentOptions):
@@ -2551,8 +2597,8 @@ class SdkBackend:
             try:
                 kw["system_prompt"] = {"type": "preset", "preset": "claude_code",
                                        "append": Path(self.append_prompt_path).read_text()}
-            except OSError:
-                pass
+            except OSError as e:
+                self._log("system-prompt append unreadable (%s) — sessions start WITHOUT it: %s" % (self.append_prompt_path, e))
         if sess.chosen_model and sess.chosen_model != "default":
             kw["model"] = sess.chosen_model    # keep the picked model across a reconnect (runtime set_model is per-connection)
         if sess.resume_sid:
@@ -2577,8 +2623,8 @@ class SdkBackend:
             sess._rewind_bare = False
             try:
                 self._update_reg(sess.sid, rewindTo="", rewindLeaf="", rewindBare=False)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log("rewind (%s): registry clear failed: %s" % (sess.name, e))
             self._log("rewind (%s): conversation moved since the request — flag spent, resuming plainly"
                       % sess.name)
         if self.mcp_config:
@@ -2634,8 +2680,8 @@ class SdkBackend:
             if on_boot_settled:
                 try:
                     on_boot_settled()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log("boot-settled callback failed: %s" % e)
         with self._lock:
             s = self.sessions.get(sid)
             if s and s.thread.is_alive():
@@ -2780,8 +2826,8 @@ class SdkBackend:
                 for a in d.values() if a.get("_echo_text") and not a.get("command")]
         try:
             self._update_reg(sid, echoes=snap)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log("echo mirror (%s): registry write failed: %s" % (sid[:8], e))
 
     def _reseed_echoes(self, regs: list[dict]) -> None:
         """Kernel boot: re-create each alive session's persisted unlanded echoes in the live store, so a
@@ -3150,8 +3196,8 @@ class SdkBackend:
         if self._push_cb:
             try:
                 self._push_cb()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log("chat push wake failed: %s" % e)
 
     def live_atoms(self, sid: str) -> list:
         """The session's in-memory live-tail atoms (newest last), for build_session to merge ahead of disk."""
@@ -3324,14 +3370,14 @@ class SdkBackend:
             sess._model_pending = ""
             try:
                 self._update_reg(sess.sid, liveModel=_alias_label(sess.chosen_model), modelPending=False)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log("session gone (%s): model-pending clear failed: %s" % (sess.name, e))
         if sess._effort_pending:          # an /effort reconnect that never landed before the thread died → clear the dots/notice
             sess._effort_pending = ""
             try:
                 self._update_reg(sess.sid, effortPending=False)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log("session gone (%s): effort-pending clear failed: %s" % (sess.name, e))
         # Background tasks are the CLI's children, so they just died too. A session idle-waiting on a
         # timer/watcher would wait FOREVER for a completion that can never arrive — tell it, visibly,
         # and wake it so it can relaunch what still matters (the user 2026-07-11: nimbus's campaign

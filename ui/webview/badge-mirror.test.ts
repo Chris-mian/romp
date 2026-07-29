@@ -80,7 +80,7 @@ test("a NEWER boundary on the same session is a new entry — its own t keys the
 });
 
 test("the feed posts each notice to the shell and persists only the ACTIVE set", () => {
-  assert.match(FEED, /mirrorBadges\(incomingAsks, Array\.isArray\(m\.clearNotices\) \? m\.clearNotices : \[\]\)/,
+  assert.match(FEED, /mirrorBadges\(incomingAsks, Array\.isArray\(m\.clearNotices\) \? m\.clearNotices : \[\],/,
     "runs on every feed payload, against the FULL list + the kernel's clear notices");
   assert.match(FEED, /clearBoundaryNotices\(clears, seenSet\)/, "clear drops ride the same seen-set");
   assert.match(FEED,

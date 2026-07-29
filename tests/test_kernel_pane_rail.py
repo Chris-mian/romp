@@ -123,6 +123,9 @@ class PaneRailTest(unittest.TestCase):
         # the gear is the bigger ⛭ (gear-without-hub) the user restored — NOT the thinner ⚙
         self.assertIn("aria-label=Settings>⛭</div>", self.html)
         self.assertNotIn("⚙", self.html)
+        # …and it is sized UP from the shared .rail-act 15px (the user 2026-07-28): a text glyph at 15px
+        # drew visibly smaller than the 17-18px svg icons beside it, so the row looked ragged.
+        self.assertIn("#rail-gear{font-size:19px}", self.html)
 
     def test_network_icon_lights_accent_when_a_remote_is_connected(self):
         # the remote-kernels icon goes accent-blue (.on) while a tunnel is up, driven by the /tunnels poll

@@ -3374,8 +3374,74 @@ def _sdk_locked():
                 reconcile=True)   # boot reconcile: reap orphaned CLIs, resume cut turns, deliver persisted queues
         except Exception:
             sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
+            _sdk_problem("the SDK backend could not be built: %s" % traceback.format_exc())
             _sdk_backend = False
     return _sdk_backend or None
+
+
+# ── SDK problems → the dashboard's error center (the user 2026-07-28) ─────────────────────────────────────
+# The backend keeps a ring of everything that went wrong (SdkBackend._log, problem=True). Those used to
+# live only in the kernel log, so a stream that died or a model switch the CLI refused was invisible: the
+# session just behaved oddly. The feed payload carries the ring and the feed mirrors it into the bell,
+# the same path card badges and /clear boundaries already take (badge-mirror.ts).
+# _SDK_BOOT_PROBLEMS covers the window where there is no backend to hold a ring — the construction itself
+# failed — which is exactly when the user most needs to be told.
+_SDK_BOOT_PROBLEMS = []
+
+
+def _sdk_problem(text):
+    _SDK_BOOT_PROBLEMS.append({"seq": len(_SDK_BOOT_PROBLEMS) + 1, "t": time.time(), "text": str(text)})
+    del _SDK_BOOT_PROBLEMS[:-20]
+
+
+def _sdk_problem_count():
+    """Total problems recorded so far (boot + backend). The view-cache key: it changes only when
+    something actually failed, so a failure lands in the payload on its own event."""
+    n = len(_SDK_BOOT_PROBLEMS)
+    be = _sdk_backend if _sdk_backend else None
+    if be is not None and hasattr(be, "problem_seq"):
+        try:
+            n += int(be.problem_seq())
+        except Exception:
+            pass
+    return n
+
+
+def _sdk_problem_text(text, cap=400):
+    """One line naming what broke, out of a message that may be a whole traceback. The head says what
+    romp was doing ("boot reconcile failed"), the LAST line says what actually raised ("KeyError: 'x'"),
+    and the frames in between are the kernel log's business — so the entry reads as a cause, not as
+    "Traceback (most recent call last):". Deterministic slicing, no parsing of the frames."""
+    lines = [ln.strip() for ln in str(text or "").strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    head = lines[0]
+    if head.endswith("Traceback (most recent call last):"):
+        head = head[:-len("Traceback (most recent call last):")].rstrip(" :")
+    out = head if len(lines) == 1 or lines[-1] == head else ((head + " … " if head else "") + lines[-1])
+    return out[:cap - 1] + "…" if len(out) > cap else out
+
+
+def _sdk_problem_rows(limit=20, cap=400):
+    """Recent SDK-backend problems for the feed payload, oldest first. The signature keys the OCCURRENCE
+    (this kernel's start + the ring's own sequence number), so a re-render or a page reload never re-logs
+    and a repeat of the same failure DOES log again — the bell coalesces a flood into one counted row.
+    Bodies are capped: a full traceback stays in the kernel log, the entry names what broke."""
+    rows = [("boot", r) for r in _SDK_BOOT_PROBLEMS]
+    be = _sdk_backend if _sdk_backend else None
+    if be is not None and hasattr(be, "problems"):
+        try:
+            rows += [("be", r) for r in be.problems(limit)]
+        except Exception:
+            pass   # a fake/older backend without a usable ring: the boot problems still ride
+    out = []
+    for src, r in rows[-limit:]:
+        txt = _sdk_problem_text(r.get("text"), cap)
+        if not txt:
+            continue
+        out.append({"sig": "sdk|%d|%s|%d" % (int(_STARTED), src, int(r.get("seq") or 0)),
+                    "t": float(r.get("t") or 0), "text": txt})
+    return out
 
 
 # ── slash-command list for the composer's "/" autocomplete (the user 2026-06-29) ──────────────────────────────
@@ -12025,6 +12091,8 @@ def build_feed(now, tmux=None):
             "order": _session_order(),
             # /clear boundary settles, newest per session → the bell logs each once (the user 2026-07-27)
             "clearNotices": _boundary_clear_notices(alive),
+            # SDK-backend failures → the same bell, one entry per occurrence (the user 2026-07-28)
+            "sdkNotices": _sdk_problem_rows(),
             "canUndoClear": len(cleared) > 0}
 
 
@@ -14194,6 +14262,7 @@ def _fleet_view_sig(now, tmux):
     sig = _producer_sig(True)
     sig["__judge__"] = _judge_gen[0]
     sig["__bucket__"] = now // 5
+    sig["__sdkp__"] = _sdk_problem_count()   # a fresh SDK failure is its own event → rebuild now, don't wait
     for p, k in ((jd.STATE / "colormap", "__cmap__"), (jd.STATE / "session-flags.json", "__flags__"),
                  (jd.STATE / "session-order.json", "__order__"),
                  (jd.STATE / "notify-cards.json", "__ncards__")):   # per-card bell arming → the card's menu state
@@ -15038,9 +15107,10 @@ el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
 var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'!':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
-var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','locate','cleared'];
+var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','sdk','locate','cleared'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
-nudge:'follow-up failed',retry:'retrying',apierror:'api error',locate:'jump failed',cleared:'cleared'};
+nudge:'follow-up failed',retry:'retrying',apierror:'api error',sdk:'sdk',
+locate:'jump failed',cleared:'cleared'};
 // what each kind MEANS (the user 2026-07-28: the tooltip should explain the badge, not just say
 // show/hide) — worn by the filter toggles AND every entry's chip
 var DESC={conn:"the dashboard lost its live connection to the kernel for a visible pane; it reconnects on its own",
@@ -15051,6 +15121,7 @@ stalled:"romp itself is holding a working thread and nothing is moving it \u2014
 nudge:"romp's one automatic follow-up on a stalled thread didn't resolve it; the thread now needs you",
 retry:"a session is inside an API-error retry storm; auto-retry is already working on it",
 apierror:"a session stopped on an API error (rate limit, spend cap, or prompt too long) and its card is blocked",
+sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an error: a session thread that died, a stream that dropped, a setting the CLI refused. The session usually recovers on its own, and the full traceback is in the kernel log under ~/.local/state/romp",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo clear on the feed restores them"};
 // the toggles ARE the chips (same pill, same colours) — lit = shown, dimmed = muted. Built once on a
@@ -15951,6 +16022,11 @@ def _landing():
             # wrapper) of the bottom bar and ALWAYS visible — settings (⛭, last in the DOM) at the far right.
             ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:1px 4px;padding:4px 0;"
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
+            # the settings gear is a text glyph among 18px svg siblings, so at the shared 15px it drew
+            # visibly smaller than the triangle / reload / network icons beside it — sized up on its own
+            # to match them (the user 2026-07-28). Font sizes stay few: this is one glyph matched to the
+            # icon row it sits in, not a new size for text.
+            "#rail-gear{font-size:19px}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
             ".rail-act svg{display:block}"
@@ -16262,7 +16338,7 @@ def _landing():
             "border-radius:999px;line-height:1.4;white-space:nowrap;border:1px solid transparent}"
             ".rerr-chip.k-stalled,.rerr-chip.k-warn{color:#ffd166;border-color:rgba(255,209,102,0.6)}"
             ".rerr-chip.k-nudge{color:#ff6a6a;border-color:rgba(255,106,106,0.6)}"
-            ".rerr-chip.k-retry,.rerr-chip.k-apierror{color:#e5484d;border-color:rgba(229,72,77,0.6)}"
+            ".rerr-chip.k-retry,.rerr-chip.k-apierror,.rerr-chip.k-sdk{color:#e5484d;border-color:rgba(229,72,77,0.6)}"
             ".rerr-chip.k-conn{color:#ff6b6b;border-color:rgba(255,107,107,0.6)}"
             ".rerr-chip.k-limit,.rerr-chip.k-judge,.rerr-chip.k-locate{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
             ".rerr-chip.k-cleared{color:#9aa0a6;border-color:rgba(154,160,166,0.6)}"   # not an error — quiet gray
