@@ -3823,6 +3823,16 @@ function dirPrefill(host: string): string {
   return host ? "" : (kernelDefaultDir || loadSettings().defaultDir || "");
 }
 
+// Which host's sessions the picker list is currently showing ("" = this machine). The Host row picks the
+// machine a NEW session would be created on; it now also picks whose EXISTING sessions are listed, so a
+// remote session can be reopened or revived without going to that machine's own dashboard.
+let pickerListHost = "";
+
+function requestSessionList(host: string): void {
+  pickerListHost = host;
+  if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions", host });
+}
+
 function pickerHost(): string {
   const sel = document.querySelector("#picker .picker-host .picker-be-opt.sel") as HTMLElement | null;
   return sel?.dataset.host || "";
@@ -4121,6 +4131,13 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
         if (browse) { browse.disabled = !!h; browse.title = h ? `The native dialog is local-only. Type the path on ${h} instead; it completes as you type.` : "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)"; }
         const dirIn = document.getElementById("picker-dir") as HTMLInputElement | null;
         if (dirIn) dirIn.placeholder = h ? `New-session directory on ${h} (blank = its default)` : "New-session directory (blank = default)";
+        // …and the SESSIONS listed above belong to that machine now too (the user 2026-07-29): the list
+        // becomes that host's, so a remote session can be reopened or revived from here. Its rows arrive
+        // host-prefixed, so a click routes straight back to the kernel that owns them.
+        requestSessionList(h);
+        const lst = document.getElementById("picker-list");
+        if (lst) lst.replaceChildren(Object.assign(el("div", "picker-more"),
+          { textContent: h ? `loading ${h}'s sessions…` : "loading sessions…" }));
         // the completions on screen belong to the host that just stopped being selected
         closeDirMenu();
         // …and so does the PATH: this machine's default is meaningless on another box. Swap in what was
@@ -4156,7 +4173,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   }
   filterPicker(seed); // reset row visibility; arm the New-session button for the (possibly seeded) value
   pickerError(null);
-  if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
+  requestSessionList("");   // the Host row resets to local on open, so the list starts local too
 }
 
 // ---- revive loader (the user 2026-07-05) ----
@@ -4409,6 +4426,13 @@ function renderPicker(items: any[]) {
     const rest = avail.filter((it) => !it.running);
     if (running.length) { list.appendChild(label("Running — reopen")); for (const it of running) list.appendChild(mkRow(it)); }
     if (rest.length) { if (running.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
+  }
+  if (!list.children.length && pickerListHost) {
+    // a machine romp can reach but which has no sessions in the window: say that, or an empty list reads
+    // as a search that failed or a request that never answered
+    const none = el("div", "picker-more");
+    none.textContent = `no sessions on ${pickerListHost} in the last 30 days`;
+    list.appendChild(none);
   }
   if (pickAllowNew) {
     const row = el("div", "picker-row picker-new");
@@ -7150,7 +7174,12 @@ window.addEventListener("message", (e: MessageEvent) => {
   // menu opened after the switch offers the NEW palette (the kernel remaps + repaints sessions itself).
   else if (m.type === "palette" && Array.isArray(m.colors)) paletteColors = m.colors;
   else if (m.type === "sessionList") {
-    if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir;
+    // Whose list is this? federation stamps the source host; a local reply carries none. A reply for a
+    // host the picker has since switched away from is dropped rather than painted over the current one
+    // (the user 2026-07-29) — two kernels answer at their own speeds, so order is not a given.
+    const from = typeof m.host === "string" ? m.host : "";
+    if (from !== pickerListHost) return;
+    if (typeof m.defaultDir === "string" && !from) kernelDefaultDir = m.defaultDir;   // the LOCAL default dir
     renderPicker(m.items || []);
   }
   else if (m.type === "browseResult" && typeof m.path === "string") {   // native Browse dialog returned a folder
