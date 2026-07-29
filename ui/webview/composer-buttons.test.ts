@@ -23,11 +23,33 @@ test("the old 26px squares are gone", () => {
   assert.match(CSS, /#composer-attach, #composer-send \{ bottom: 10px; height: 30px; \}/);
 });
 
-test("send is the widest control in the corner, not a twin of the paperclip", () => {
-  assert.match(CSS, /#composer-send \{ right: 28px; width: 46px; font-size: 16px; \}/);
-  assert.match(CSS, /#composer-attach \{ right: 82px; width: 34px; font-size: 16px; \}/);
-  // 28 + 46 = 74, so the paperclip at 82 clears it with room; the text stops clear of both
-  assert.match(CSS, /#composer-input \{ padding-right: 92px; \}/);
+test("send is the wider control in the corner, and the two sit FLUSH", () => {
+  assert.match(CSS, /#composer-send \{ right: 26px; width: 36px; font-size: 16px; \}/);
+  assert.match(CSS, /#composer-attach \{ right: 62px; width: 32px; font-size: 16px; \}/);
+  assert.match(CSS, /#composer-input \{ padding-right: 78px; \}/);
+});
+
+// The gap that MATTERS is between the drawn glyphs, not the boxes (the user 2026-07-29, round 2: on a
+// desktop the pair looked "goofy", far apart). A wide button centres a small glyph, so it contributes
+// half its slack to the visible gap on each side: at 46px wide with 8px between the boxes the arrow and
+// the paperclip sat 33px apart, which reads as two unrelated controls. Flush boxes and a narrower send
+// bring that to 19px, measured in a browser — and they can only stay flush if the arithmetic holds.
+test("the boxes are adjacent by arithmetic, so the glyphs read as one pair", () => {
+  const num = (re: RegExp) => {
+    const m = CSS.match(re);
+    assert.ok(m, `missing rule: ${re}`);
+    return Number(m![1]);
+  };
+  const sendRight = num(/#composer-send \{ right: (\d+)px/);
+  const sendWidth = num(/#composer-send \{ right: \d+px; width: (\d+)px/);
+  const attachRight = num(/#composer-attach \{ right: (\d+)px/);
+  assert.equal(sendRight + sendWidth, attachRight,
+    "a gap here is doubled by each button's own centring slack — keep them touching");
+  // and the text's inset clears the pair with a little air
+  const pad = num(/#composer-input \{ padding-right: (\d+)px; \}/);
+  const attachWidth = num(/#composer-attach \{ right: \d+px; width: (\d+)px/);
+  assert.ok(pad >= attachRight + attachWidth - 24 + 4,
+    `padding-right ${pad} must clear the pair (offsets are from #composer, 24px outside the box)`);
 });
 
 test("a coarse pointer gets a 44px row: the tap target a finger expects", () => {
