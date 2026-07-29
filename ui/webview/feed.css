@@ -984,6 +984,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* the "host:" prefix on a federated session's name — see styles.css (one treatment, two sheets) */
 .host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.88em; }
+/* DISCONNECTED host (the user 2026-07-29): its sessions keep their tabs, lanes and cards — dropping them
+   would lose the thread — but the "host:" token says the link is down, so nobody reads a frozen transcript
+   thinking it is live. Struck + dimmed, the strike on the HOST only: a struck WHOLE name already means a
+   dead session, and this session may be perfectly alive on a machine we simply cannot reach. */
+.host-prefix.off { text-decoration: line-through; opacity: 0.75; }
 
 /* the VS Code pipe-down banner — see styles.css (one treatment, two sheets) */
 #rpipe { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; text-align: center;

@@ -1973,9 +1973,24 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    while its name dimmed (the user 2026-07-22). renderTabs adds .name-faded whenever it applies the faded
    name color, and drops it on hover, so the two always move together. */
 .tab-label.name-faded .host-prefix { opacity: 0.5; }
+/* DISCONNECTED host (the user 2026-07-29): its sessions keep their tabs, lanes and cards — dropping them
+   would lose the thread — but the "host:" token says the link is down, so nobody reads a frozen transcript
+   thinking it is live. Struck + dimmed, the strike on the HOST only: a struck WHOLE name already means a
+   dead session, and this session may be perfectly alive on a machine we simply cannot reach. */
+.host-prefix.off { text-decoration: line-through; opacity: 0.75; }
+/* the tab of a session on an unreachable host: dimmed as a whole, so "not connected" is glanceable and
+   the struck "host:" inside it is the detail one look further in. */
+.tab.host-off { opacity: 0.62; }
+.tab.host-off:hover, .tab.host-off.active { opacity: 1; }
 
 /* VS Code pipe-down banner (the user 2026-07-21): while the extension host's kernel socket is
    down the pane says so — never a silently frozen frame — and counts held messages. Mirrors the
    browser shim's self-injected stale bar. Defined in feed.css too (the .romp-acted precedent). */
 #rpipe { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; text-align: center;
   background: #2b2d30; color: #e6e6e6; border-bottom: 1px solid #4a4d51; padding: 7px 14px; }
+/* The open tab's HOST is unreachable (the user 2026-07-29): the transcript below is the last thing romp
+   got from that machine, and a frozen chat is otherwise indistinguishable from a quiet one. Sits in the
+   flow at the top of the pane, quieter than #rpipe — nothing here is broken locally. */
+#rhostoff { position: fixed; top: 0; left: 0; right: 0; z-index: 99998; text-align: center;
+  background: #33302a; color: #e0c48a; border-bottom: 1px solid #4a4436; padding: 6px 14px;
+  font-size: 0.86em; }

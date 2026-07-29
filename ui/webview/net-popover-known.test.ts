@@ -42,16 +42,17 @@ test("VS Code strip renders remembered hosts with re-attach + forget", () => {
 test("both copies explain every status on hover, with the same wording", () => {
   // one TIP map per copy, covering every status the LBL map can show
   for (const [name, src] of [["kernel", KERNEL], ["strip", STRIP]] as const) {
-    for (const status of ["up", "authorizing", "connecting", "no-kernel", "down", "error", "gave-up"]) {
+    for (const status of ["up", "authorizing", "connecting", "no-kernel", "down", "error"]) {
       assert.ok(new RegExp(`['"]?${status}['"]?\\s*:`).test(src), `${name}: TIP covers ${status}`);
     }
     // the wording that makes each status actionable
     assert.ok(src.includes("ssh tunnel is open"), `${name}: 'up' says what connected means`);
     assert.ok(src.includes("no romp kernel is answering"), `${name}: 'no-kernel' says what to do`);
-    // 'down' is the STILL-retrying phase — hedged, because the budget is finite now and the row moves to
-    // 'gave-up' once it is spent. It must not promise the old forever-retry.
-    assert.ok(src.includes("still retrying for now"), `${name}: 'down' says romp is retrying, for now`);
-    assert.ok(!src.includes("romp keeps retrying"), `${name}: no forever-retry promise`);
+    // 'down' says the retrying is UNCONDITIONAL again (the user 2026-07-29) — an attached host is a
+    // standing instruction to hold the link, so the copy promises it plainly instead of hedging.
+    assert.ok(src.includes("romp keeps retrying on its own"), `${name}: 'down' promises the retry`);
+    assert.ok(src.includes("waiting longer between tries"), `${name}: ...and says the backoff widens`);
+    assert.ok(!src.includes("still retrying for now"), `${name}: the hedged budget copy is gone`);
   }
 });
 
@@ -68,22 +69,22 @@ test("both copies explain the destructive/confusing controls on hover", () => {
   }
 });
 
-// Reconnect is BOUNDED and the panel must SAY so (the user 2026-07-22, who could find no way to stop
-// romp re-dialing a host). A spent budget lands the row on `gave-up`: a settled state, not a busy one.
-test("both copies label the gave-up state and treat it as SETTLED, not busy", () => {
+// Reconnect NEVER gives up (the user 2026-07-29, reversing the bounded budget of 2026-07-22). The
+// panel still has to SAY what is happening — the 07-22 objection was a silent forever-retry that looked
+// identical to an idle row — so a down row names the next dial and offers to skip the wait.
+test("a down row says romp is still dialing, when next, and offers to try now", () => {
   for (const [name, src] of [["web", KERNEL], ["strip", STRIP]] as const) {
-    assert.match(src, /gave-up/, `${name}: the status is known to the popover`);
-    assert.match(src, /no longer dialing it in the background/, `${name}: explains it stopped on hover`);
+    assert.doesNotMatch(src, /gave-up/, `${name}: the give-up state is gone`);
+    assert.doesNotMatch(src, /no longer dialing it in the background/, `${name}: and its copy with it`);
   }
-  // the same label in each copy. It used to read "not connected, click Attach" and point at a control
-  // that the web panel now keeps behind +; that copy names the state and the row carries the action.
-  assert.match(KERNEL, /'gave-up':'stopped trying'/, "web label");
-  assert.match(STRIP, /"gave-up": "stopped trying"/, "strip label");
-  assert.match(KERNEL, /data-ra=\\"'\+t\.host\+'\\" title=\\"Dial /, "the web row offers Retry");
-  assert.match(KERNEL, /s!=='no-kernel'&&s!=='gave-up'/, "web busyStatus excludes it");
-  assert.match(STRIP, /s !== "no-kernel" && s !== "gave-up"/, "strip busy() excludes it");
-  assert.match(KERNEL, /t\.status==='down'\|\|t\.status==='gave-up'\)\?'background:#8a8a8a'/, "web dot is gray");
-  assert.match(STRIP, /t\.status === "down" \|\| t\.status === "gave-up"\) \? "#8a8a8a"/, "strip dot is gray");
+  assert.match(KERNEL, /next try in /, "the row counts down to the next dial");
+  assert.match(KERNEL, /romp keeps dialing '\+t\.host\+' on its own/, "and says it is unconditional");
+  assert.match(KERNEL, /data-ra=\\"'\+t\.host\+'\\" title=\\"Dial /, "the web row offers Try now");
+  assert.match(KERNEL, /Try now<\/button>/, "named for what it does");
+  assert.match(KERNEL, /s!=='no-kernel';/, "web busyStatus no longer knows the state");
+  assert.match(STRIP, /s !== "no-kernel";/, "strip busy() no longer knows it");
+  assert.match(KERNEL, /t\.status==='down'\)\?'background:#8a8a8a'/, "web dot is gray");
+  assert.match(STRIP, /t\.status === "down"\) \? "#8a8a8a"/, "strip dot is gray");
 });
 
 test("the check-in control is named for what it does, not for what it is not", () => {
