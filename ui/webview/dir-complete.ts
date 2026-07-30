@@ -15,11 +15,12 @@ export function dirStatusLine(s: DirStatus | null): { text: string; cls: string 
   if (s.isDefault) return { text: s.path + "  (the default)", cls: "" };
   if (s.isDir) return { text: "✓ " + s.path, cls: "" };
   // a file where a folder was typed can never become one — no create offer follows, so say so plainly
-  if (s.isFile) return { text: "that's a file, not a folder", cls: "bad" };
-  if (s.canCreate) {
-    return { text: "not there yet. Starting will offer to create it, under " + s.nearest, cls: "warn" };
-  }
-  return { text: "can't be reached: " + s.path, cls: "bad" };
+  if (s.isFile) return { text: "not a folder: " + s.path, cls: "bad" };
+  // Plain words for what is wrong (the user 2026-07-29: "still not there" read as waffle). A missing
+  // folder is not INVALID, though, since starting here creates it, so it says which of the two it is
+  // rather than collapsing both into one wrong label.
+  if (s.canCreate) return { text: "no such folder yet. Starting will create it", cls: "warn" };
+  return { text: "invalid path: " + s.path, cls: "bad" };
 }
 
 /** Walk the completion list. -1 ("nothing chosen") is part of the cycle in BOTH directions, so walking

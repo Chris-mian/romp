@@ -3820,6 +3820,7 @@ let dirQueued: string | null = null;  // typed while a request was out
 let dirItems: DirItem[] = [];
 let dirActive = -1;                   // highlighted completion row (-1 = none; Enter then creates)
 let dirStatus: DirStatus | null = null;
+let dirAskedHost = "";          // the host the in-flight question was about; a reply for any other is stale
 
 // The last directory a session was actually started in, per host (the user 2026-07-29). The gear's
 // "Default directory" is ONE path on THIS machine, so it is the wrong answer for a remote: prefilling a
@@ -3871,12 +3872,21 @@ function askDirComplete(value: string): void {
   if (!vscodeApi) return;
   if (dirInFlight) { dirQueued = value; return; }
   dirInFlight = true;
-  vscodeApi.postMessage({ type: "dirComplete", value, reqId: ++dirReq, host: pickerHost() });
+  dirAskedHost = pickerHost();
+  // The old verdict belongs to whatever was asked BEFORE this (the user 2026-07-29, who switched host and
+  // watched the field keep insisting the path was fine). It is about a different machine, or a different
+  // path, so it stops standing the instant a new question goes out: the line says it is checking, and a
+  // host whose kernel never answers (an older build with no such op) leaves it saying that rather than
+  // showing a verdict from somewhere else.
+  dirStatus = null;
+  dirItems = [];
+  renderDirMenu(false);
+  vscodeApi.postMessage({ type: "dirComplete", value, reqId: ++dirReq, host: dirAskedHost });
 }
 
 function onDirCompletions(m: any): void {
   dirInFlight = false;
-  const stale = m.reqId !== dirReq;
+  const stale = m.reqId !== dirReq || (typeof m.host === "string" ? m.host : "") !== pickerHost();
   if (dirQueued !== null) { const v = dirQueued; dirQueued = null; askDirComplete(v); }
   if (stale) return;                                   // a newer keystroke already owns the field
   dirItems = Array.isArray(m.items) ? m.items : [];
@@ -3900,7 +3910,8 @@ function closeDirMenu(): void {
 // deeper level, and it only exists while there is something to choose.
 function renderDirMenu(truncated: boolean): void {
   const line = document.getElementById("picker-dir-status");
-  const said = dirStatusLine(dirStatus);
+  const said = dirStatus || !dirInFlight ? dirStatusLine(dirStatus)
+    : { text: dirAskedHost ? `checking on ${dirAskedHost}…` : "checking…", cls: "" };
   if (line) {
     line.className = "picker-dir-status" + (said.cls ? " " + said.cls : "");
     line.textContent = said.text;

@@ -8,7 +8,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 
-const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8")
+  + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
 const STYLES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 const st = (over: Partial<DirStatus>): DirStatus => ({
@@ -29,20 +30,20 @@ test("the untouched default says it is the default", () => {
 test("a missing folder warns and names where it would go", () => {
   const said = dirStatusLine(st({ exists: false, isDir: false, canCreate: true, missing: 2 }));
   assert.equal(said.cls, "warn");
-  assert.match(said.text, /not there yet/);
-  assert.match(said.text, /under ~\/GitRepos$/, "the offer says where, so it isn't a blind yes");
+  assert.match(said.text, /no such folder yet/);
+  assert.match(said.text, /Starting will create it$/, "it says what happens next, not just what is wrong");
 });
 
 test("a file where a folder was typed is an error, not an offer", () => {
   const said = dirStatusLine(st({ isDir: false, isFile: true, canCreate: false }));
   assert.equal(said.cls, "bad");
-  assert.match(said.text, /file, not a folder/);
+  assert.match(said.text, /not a folder: /);
 });
 
 test("an unreachable path says so rather than offering to create it", () => {
   const said = dirStatusLine(st({ exists: false, isDir: false, canCreate: false, nearest: "" }));
   assert.equal(said.cls, "bad");
-  assert.match(said.text, /can't be reached/);
+  assert.match(said.text, /invalid path: /);
 });
 
 test("no answer yet says nothing at all", () => {
@@ -68,13 +69,14 @@ test("the create dialog names the path and how much it would make", () => {
 });
 
 test("the field asks the kernel that would OWN the session, so a remote host completes its own disk", () => {
-  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "dirComplete", value, reqId: \+\+dirReq, host: pickerHost\(\) \}\)/);
+  assert.match(RENDER, /dirAskedHost = pickerHost\(\);/);
+  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "dirComplete", value, reqId: \+\+dirReq, host: dirAskedHost \}\)/);
   assert.match(RENDER, /#picker \.picker-host \.picker-be-opt\.sel/, "the host comes off the picker's own selection");
 });
 
 test("pacing is the round trip, not a timer: one request in flight, the newest value queued behind it", () => {
   assert.match(RENDER, /if \(dirInFlight\) \{ dirQueued = value; return; \}/);
-  assert.match(RENDER, /dirInFlight = false;\s*\n\s*const stale = m\.reqId !== dirReq;/);
+  assert.match(RENDER, /dirInFlight = false;\s*\n\s*const stale = m\.reqId !== dirReq \|\| \(typeof m\.host === "string" \? m\.host : ""\) !== pickerHost\(\);/);
   assert.match(RENDER, /if \(dirQueued !== null\) \{ const v = dirQueued; dirQueued = null; askDirComplete\(v\); \}/);
   assert.match(RENDER, /if \(stale\) return;/, "a reply for an older keystroke never renders");
   assert.doesNotMatch(RENDER.slice(RENDER.indexOf("function askDirComplete"), RENDER.indexOf("function dirMenuOpen")),
@@ -145,4 +147,14 @@ test("a remote's prefill is what you used THERE, never this machine's default", 
   assert.match(RENDER, /if \(di\) di\.value = dirPrefill\(""\);/, "the open prefill goes through it");
   assert.match(RENDER, /if \(dirIn\) \{ dirIn\.value = dirPrefill\(h\); askDirComplete\(dirIn\.value\); \}/,
     "switching host swaps the path AND re-vets it against that host");
+});
+
+test("a new question drops the old verdict, so no answer ever describes another host's disk", () => {
+  // the user 2026-07-29: switching host left the field insisting the path was fine. The verdict is about
+  // one machine and one path, so it stops standing the moment a different question goes out — and a host
+  // whose kernel is too old to answer leaves the line saying "checking", never a borrowed verdict.
+  assert.match(RENDER, /dirStatus = null;\s*\n\s*dirItems = \[\];\s*\n\s*renderDirMenu\(false\);/);
+  assert.match(RENDER, /checking on \$\{dirAskedHost\}…/);
+  assert.match(RENDER, /if \(out\.type === "dirCompletions"\) out\.host = host;/,
+    "federation stamps a remote answer with the machine that gave it");
 });

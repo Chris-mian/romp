@@ -66,6 +66,9 @@ export function prefixInbound(host: string, msg: any): any {
   // generic passes above leave them alone — and prefixing them is what makes a click route back: the row
   // posts openSession with the id, and routeOutbound sends it to the host in the prefix. Stamped with
   // the source host too, so the picker can drop a late reply for a host it is no longer showing.
+  // the path checker's answer, stamped with the machine that gave it: the picker drops a verdict that
+  // arrives for a host it is no longer on, instead of showing one machine's answer about another's disk.
+  if (out.type === "dirCompletions") out.host = host;
   if (out.type === "sessionList" && Array.isArray(out.items)) {
     out.items = out.items.map((it: any) => (it && typeof it === "object" && typeof it.id === "string"
       ? { ...it, id: prefixId(host, it.id),
