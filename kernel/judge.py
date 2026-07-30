@@ -3775,17 +3775,19 @@ def plan_units(session, store=None):
                                  "nothing and mint nothing. Only work that advances an open goal, or a "
                                  "genuinely **new** thread of work, belongs on the board.\n\n") + work_text
                 elif _seg_clearwrap(seg):                 # the ONE-round wrap-up of cleared card(s) (the user
-                    # 2026-07-24): a nothing-pending reply files nothing; a parked-WIP reply becomes exactly
-                    # one keep-or-discard decision card, blocked on the user. Never the cleared goal reborn.
+                    # 2026-07-24). It asks for NO reply since 2026-07-29, so this files NOTHING by default;
+                    # only a session that raises something needing the user mints one card, blocked on them.
+                    # Never the cleared goal reborn.
                     work_text = ("Note: this stretch is the one-time wrap-up of goals the user just "
                                  "**cleared** off their board — a dismissal, not a completion. Never "
-                                 "re-create or reopen the cleared goals themselves. If the wrap-up parked "
-                                 "unfinished work (e.g. committed a draft to a branch, saved notes to a "
-                                 "file) and asks whether to "
-                                 "keep or discard it, mint exactly **one** new top-level goal for that "
-                                 "decision and block it on the user — the why is the keep-or-discard "
-                                 "question itself, naming where the work is parked. If it reports nothing "
-                                 "pending, **skip** — file nothing and mint nothing.\n\n") + work_text
+                                 "re-create or reopen the cleared goals themselves. The wrap-up asks for "
+                                 "NO reply (the user 2026-07-29), so the DEFAULT is to **skip**: file "
+                                 "nothing and mint nothing. A session that merely stops, or reports what "
+                                 "it parked, or says nothing is pending, files nothing. Mint exactly "
+                                 "**one** new top-level goal, blocked on the user, ONLY when the session "
+                                 "raises something that genuinely needs them: an explicit question it is "
+                                 "waiting on, or a warning that the dismissal looks premature. The why is "
+                                 "that question, naming where any parked work is.\n\n") + work_text
                 out.append((seg["id"], "work", seg["t"], work_text, human, followup, trig, vq))   # ENDED segment → WORK-run
     return out
 
