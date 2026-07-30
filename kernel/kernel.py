@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote, urlencode
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -4854,12 +4854,16 @@ def _tmux_sessions():
 # For the browser to reach a remote kernel — and for that machine's sessions to reach THIS laptop's
 # postal bus — the kernel manages the ssh tunnels (it's the long-lived local process, the natural owner
 # of the child ssh procs). ONE ssh per host carries both directions:
-#     -L <local_port>:127.0.0.1:<remote_kernel_port>   browser → remote kernel   (dashboard view)
+#     -L <local_port>:127.0.0.1:<remote_kernel_port>   this kernel → remote kernel  (dashboard relay)
 #     -R <bus_port>:127.0.0.1:<bus_port>               remote sessions → this bus (postal messaging)
-# The kernel is NOT a data relay — the browser talks to the remote kernel DIRECTLY through the -L
-# tunnel (authorizing with the remote's token, which a valid-token request carries past the Origin
-# gate; see _authorize). We just open the door + report state. The registry persists to
-# STATE/remotes.json so attached hosts survive a kernel restart (the supervisor re-spawns their procs).
+# The browser reaches a remote kernel via GET /remote/<host>/ws on THIS kernel, which splices the
+# connection onto the -L port byte-for-byte (_remote_ws). It has to be a relay: the forwarded port
+# lives on THIS machine's loopback, so when the browser dialed it directly, any dashboard viewed
+# from OFF this machine — the phone, through `tailscale serve` — reached its own loopback instead
+# and every remote host silently vanished, with no disconnected mark (the user 2026-07-30). The
+# kernel still reads nothing (no frame parsing; the remote enforces its own token per connection),
+# and this registry still just opens the door + reports state. It persists to STATE/remotes.json
+# so attached hosts survive a kernel restart (the supervisor re-spawns their procs).
 
 REMOTES_FILE = jd.STATE / "remotes.json"
 # Hosts you have EVER attached, kept after detach (the user 2026-07-22: the popover should list past
@@ -17916,6 +17920,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, "forbidden: " + why, "text/plain")
             if p == "/ws":
                 return self._ws()
+            if p.startswith("/remote/") and p.endswith("/ws"):
+                # federated dashboard, viewed off this machine: relay to the attached host's kernel
+                return self._remote_ws(unquote(p[len("/remote/"):-len("/ws")]), u.query)
             if p == "/analytics":                             # token-usage analytics (the settings modal's chart)
                 try:
                     w = int((q.get("window") or ["86400"])[0])
@@ -18939,6 +18946,86 @@ class Handler(BaseHTTPRequestHandler):
             with _clients_lock:
                 if client in _clients:
                     _clients.remove(client)
+
+    def _remote_ws(self, host, query):
+        """GET /remote/<host>/ws — relay a federated-dashboard WebSocket to an attached host's
+        kernel through this kernel's own ssh -L tunnel. The federated merge happens in the
+        browser (one WS per kernel), and the remote dial used to go straight to
+        127.0.0.1:<forwarded port> — an address that only exists on THIS machine, so a dashboard
+        viewed from anywhere else (the phone, through `tailscale serve`) reached its own loopback
+        and every remote host's sessions silently vanished (the user 2026-07-30). Relaying under
+        the kernel's own origin gives any client that can reach this kernel the whole fleet, with
+        no per-host setup. The kernel stays a dumb pipe: after do_GET's local auth gate the two
+        sockets are spliced byte-for-byte (no frame parsing), and the REMOTE kernel still enforces
+        its own token — rewritten into the forwarded query here, so the browser only ever needs
+        its local credential — keeping the per-host trust boundary unchanged."""
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, "no attached host %r" % host, "text/plain")
+        if not self.headers.get("Sec-WebSocket-Key"):
+            return self._send(400, "expected websocket", "text/plain")
+        q = parse_qs(query or "")
+        if rtok:
+            q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
+        try:
+            up = socket.create_connection(("127.0.0.1", int(port)), timeout=6)
+        except OSError:
+            return self._send(502, "tunnel to %s is not answering" % host, "text/plain")
+        up.settimeout(None)          # create_connection's timeout would otherwise cut the long-lived splice
+        lines = ["GET /ws?%s HTTP/1.1" % urlencode(q, doseq=True),
+                 "Host: 127.0.0.1:%d" % int(port)]
+        for hn in ("Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version",
+                   "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"):
+            v = self.headers.get(hn)
+            if v:
+                lines.append("%s: %s" % (hn, v))
+        try:
+            up.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1", "replace"))
+        except OSError:
+            up.close()
+            return self._send(502, "tunnel to %s dropped" % host, "text/plain")
+        self.close_connection = True             # hijacked socket — no keep-alive after the splice
+        down = self.connection
+
+        def _quiet_shutdown(s):
+            # shutdown only, never close: `down` still belongs to the base handler (its finish()
+            # flushes wfile over this socket and must find a socket object, not a closed one).
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        def _pump_remote_to_client():
+            try:
+                while True:
+                    b = up.recv(65536)
+                    if not b:
+                        break
+                    down.sendall(b)
+            except OSError:
+                pass
+            finally:
+                _quiet_shutdown(down)            # unblock the rfile read below → both halves die together
+
+        threading.Thread(target=_pump_remote_to_client, daemon=True, name="remote-ws").start()
+        try:
+            while True:
+                # rfile, not the raw socket: the buffered reader may already hold client bytes
+                # that arrived on the heels of the upgrade request
+                b = self.rfile.read1(65536)
+                if not b:
+                    break
+                up.sendall(b)
+        except (OSError, ValueError):
+            pass
+        finally:
+            _quiet_shutdown(up)
+            try:
+                up.close()                       # ours alone — safe to close fully
+            except OSError:
+                pass
 
     def _push_one(self, client):
         _push([client], connect=True)             # full state to a fresh client (its per-client dedup is empty);

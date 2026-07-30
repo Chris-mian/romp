@@ -23,7 +23,17 @@ test("the /tunnels poll refreshes live from t.status and re-dials a closed conn 
   assert.match(FED, /c\.live = t\.status === "up";/);
   assert.match(FED, /if \(c\.live && \(!c\.ws \|\| c\.ws\.readyState === 3\)\) this\.connect\(c\);/);
   // openRemote seeds the flag from the same status so the first dial is gated too
-  assert.match(FED, /this\.openRemote\(host, t\.localPort, t\.token, t\.status === "up"\)/);
+  assert.match(FED, /this\.openRemote\(host, t\.token, t\.status === "up"\)/);
+});
+
+test("remotes are dialed through the kernel's /remote relay on the page origin, never a loopback port", () => {
+  // The forwarded ssh -L port only exists on the kernel's own machine. A direct dial to
+  // 127.0.0.1:<port> works from a browser ON that machine and silently reaches nothing from
+  // anywhere else (the phone, over `tailscale serve`) — every remote host just vanished, with no
+  // disconnected mark (2026-07-30). The kernel's /remote/<host>/ws route splices the connection
+  // onto the tunnel server-side, so the same-origin dial works from every client.
+  assert.match(FED, /\$\{proto\}\$\{location\.host\}\/remote\/\$\{encodeURIComponent\(host\)\}\/ws\?/);
+  assert.ok(!/\$\{proto\}127\.0\.0\.1/.test(FED), "the direct loopback dial must not come back");
 });
 
 test("the down-tunnel 2s blind-retry loop is gone (the retry rides connect()'s own gate)", () => {
