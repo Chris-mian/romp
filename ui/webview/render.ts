@@ -65,7 +65,7 @@ type TaskOutputs = Record<string, { command: string; output: string }>;
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -1615,6 +1615,41 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         for (const im of ev.images) bubble.appendChild(userImage(im, !!(im.path && mdText.includes(im.path))));
       }
       turn.appendChild(bubble);
+      // NEVER-DELIVERED send (kernel ev.undelivered, from the backend's dropped-echo marking): the
+      // session's process died holding this message, so it was never seen — say so instead of letting
+      // it pose as history (the user 2026-07-29: a two-day-old lost send kept resurfacing mid-chat as
+      // an ordinary sent bubble, hopping turns, with its stale timestamp reading as a glitch). The
+      // bubble stays — it is the only surviving copy of the text — and the note under it names the
+      // loss and offers the two honest moves: put the text back in the composer, or dismiss the
+      // record. Buttons ride the body delegate (data-act): the tail rebuilds every push, and a
+      // per-render listener eats a mid-press click (CLAUDE.md).
+      if (ev.undelivered) {
+        turn.classList.add("undelivered");
+        bubble.classList.add("undelivered-bubble");
+        const note = el("div", "undelivered-note");
+        note.title = "This message never reached the session: its process died holding it before it was written to the conversation.";
+        const label = el("span", "undelivered-label");
+        label.textContent = "never delivered";
+        note.appendChild(label);
+        if (!romp && !injected && ev.md) {   // restore only the user's own words, not a romp injection's
+          const re = el("button", "undelivered-act") as HTMLButtonElement;
+          re.type = "button";
+          re.textContent = "copy to composer";
+          re.title = "Put the text back in the composer to review and send again";
+          re.dataset.act = "echorestore";
+          (re as any)._etext = ev.md;
+          note.appendChild(re);
+        }
+        const dx = el("button", "undelivered-act") as HTMLButtonElement;
+        dx.type = "button";
+        dx.textContent = "dismiss";
+        dx.title = "Remove this never-delivered message";
+        dx.dataset.act = "echodismiss";
+        if (ev.uuid) dx.dataset.euuid = ev.uuid;
+        if (ev.echoT) dx.dataset.et = String(ev.echoT);
+        note.appendChild(dx);
+        turn.appendChild(note);
+      }
       // EDIT affordance (SDK sessions): rewind the conversation to just before this message and take a
       // new branch with an edited version — the cloud-UI edit semantics. Shown on genuine human bubbles
       // the backend can address (reconcileRewind's _editable set: has a transcript uuid, newer than the
@@ -7815,6 +7850,24 @@ setupSettings();
       const grp = bub?.closest(".turn-queued") as HTMLElement | null;
       bub?.remove();
       if (grp) reflowQueuedGroup(grp);
+    },
+    // "copy to composer" on a never-delivered bubble: the echo is the only surviving copy of the text —
+    // hand it back for review-and-resend (the same restore the queued ✕ uses). Delegated like qx: the
+    // tail rebuilds every push, and a per-render listener eats a mid-press click.
+    echorestore: (el) => {
+      const t = (el as any)._etext as string | undefined;
+      if (t) restoreToComposer(t);
+    },
+    // "dismiss" on a never-delivered bubble: the user has seen the loss — retire the echo. The node
+    // goes NOW (acknowledge the click); the kernel's dismiss_echo is idempotent, so a miss just means
+    // it was already gone and the next push paints without it either way.
+    echodismiss: (el) => {
+      if (!activeId || !vscodeApi) return;
+      const msg: Record<string, unknown> = { type: "dismissEcho", id: activeId };
+      if (el.dataset.euuid) msg.uuid = el.dataset.euuid;
+      if (el.dataset.et) msg.t = Number(el.dataset.et);
+      vscodeApi.postMessage(msg);
+      (el.closest(".turn-user") as HTMLElement | null)?.remove();
     },
     // gist↔full toggle on a compact nudge bubble (the user 2026-07-17: progressive disclosure) —
     // delegated for the same reason as qx: the tail rebuilds every push, and a per-render bubble

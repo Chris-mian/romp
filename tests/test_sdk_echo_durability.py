@@ -2,14 +2,17 @@
 """An SDK input echo is the ONLY visible record of a send the transcript hasn't caught up on — since
 queued sends forward into the CLI mid-turn (2026-07-17) there is a window where a message is neither
 queued nor landed, and the echo must own it (the user 2026-07-20: a reply sat invisible in the chat,
-and one message was silently LOST across a kernel restart with no trace anywhere). Three durability
+and one message was silently LOST across a kernel restart with no trace anywhere). Four durability
 guarantees, each pinned here:
   1. the live-tail overflow cap never evicts an echo (work atoms are disposable; echoes aren't),
   2. the genuine-human-turn floor retires only PATH-BEARING echoes (the image-extraction case whose
      text-match structurally fails) — a plain-text echo prunes only by its own text landing, and a
      dropped send's echo PERSISTS so the loss shows (the tmux echo's semantics),
   3. unlanded echoes mirror to the registry (reg['echoes']) and reseed on backend construction, so a
-     kernel restart cannot wipe the only evidence of an in-flight send.
+     kernel restart cannot wipe the only evidence of an in-flight send,
+  4. an echo that survives its holder is MARKED dropped at the event that orphaned it (boot reseed /
+     fresh CLI spawn), so persistence reads as "never delivered", not as delivered history (the user
+     2026-07-29: a two-day-old lost send kept resurfacing mid-chat, posing as an ordinary bubble).
 SYNTHETIC fixtures only."""
 import os
 import tempfile
@@ -130,6 +133,119 @@ class EchoesSurviveARestart(unittest.TestCase):
         be._persist_echoes(SID)
         self.assertEqual(sb.read_reg(be.state_dir, SID).get("echoes"), [],
                          "a stale /model confirmation must not replay after a restart")
+
+
+class DroppedSendsAnnounceThemselves(unittest.TestCase):
+    """Guarantee 4 (the user 2026-07-29): an echo that survives its holder is marked `dropped` at the
+    exact event that orphaned it — the boot reseed, or a fresh CLI spawning — so the chat can render
+    "never delivered" instead of a sent-looking bubble posing as history. A two-day-old lost send kept
+    resurfacing mid-chat, hopping turns as new ones landed, its stale timestamp reading as a glitch:
+    durable BY DESIGN, but illegible. The marking is self-correcting (a landed text still prunes the
+    echo, flag and all) and rides the registry mirror across further restarts."""
+
+    def _backend(self, state=None):
+        return sb.SdkBackend(state or tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+
+    def test_boot_reseed_marks_an_unqueued_echo_dropped(self):
+        state = tempfile.mkdtemp()
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k, e = _echo("the send the dead CLI was holding")
+        be._live[SID] = dict([(k, e)])
+        be._persist_echoes(SID)
+        be2 = self._backend(state)               # "kernel restart": nothing re-delivers this text
+        atoms = be2.live_atoms(SID)
+        self.assertTrue(atoms and atoms[0].get("dropped"),
+                        "a reseeded echo with no queue entry has provably lost its message")
+        self.assertTrue((sb.read_reg(state, SID).get("echoes") or [{}])[0].get("dropped"),
+                        "the flag rides the mirror, so the NEXT restart keeps the verdict")
+
+    def test_boot_reseed_spares_an_echo_still_in_the_queue(self):
+        state = tempfile.mkdtemp()
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True,
+                                         "queue": ["still queued across the restart"]})
+        k, e = _echo("still queued across the restart")
+        be._live[SID] = dict([(k, e)])
+        be._persist_echoes(SID)
+        be2 = self._backend(state)               # boot reconcile will re-deliver the queue → not lost
+        atoms = be2.live_atoms(SID)
+        self.assertTrue(atoms and not atoms[0].get("dropped"),
+                        "a queued send is in flight, not lost — it must not read as never-delivered")
+
+    def test_spawn_marking_spares_the_pending_queue(self):
+        be = self._backend()
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k1, e1 = _echo("orphaned by the respawn", key="echo:a")
+        k2, e2 = _echo("delivered to the fresh CLI", t=1001, key="echo:b")
+        be._live[SID] = {k1: e1, k2: e2}
+        be._mark_dropped_echoes(SID, ["delivered to the fresh CLI"])
+        d = be._live[SID]
+        self.assertTrue(d[k1].get("dropped"))
+        self.assertFalse(d[k2].get("dropped"))
+
+    def test_spawn_marking_ignores_command_feedback(self):
+        be = self._backend()
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        be._live[SID] = {"cmd:1": {"type": "user", "uuid": "cmd:1", "t": 5, "command": "/model",
+                                   "_echo_text": "/model opus", "author": "human",
+                                   "message": {"role": "user", "content": [{"type": "text", "text": "/model opus"}]}}}
+        be._mark_dropped_echoes(SID, [])
+        self.assertFalse(be._live[SID]["cmd:1"].get("dropped"),
+                         "command feedback is not a lost message; it retires via the command floor")
+
+    def test_a_fresh_cli_spawn_runs_the_marking(self):
+        # the spawn half is a call inside Session._run (spawning a real CLI in a unit test is not
+        # practical) — pin it the way error-visibility's NoSilentSwallows pins handlers: read the source
+        import ast
+        import inspect
+        run = next(n for n in ast.walk(ast.parse(inspect.getsource(sb)))
+                   if isinstance(n, ast.FunctionDef) and n.name == "_run")
+        calls = [n.func.attr for n in ast.walk(run)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        self.assertIn("_mark_dropped_echoes", calls,
+                      "_run no longer marks orphaned echoes when a fresh CLI spawns")
+
+    def test_landing_still_prunes_a_dropped_echo(self):
+        # the self-correcting guarantee: a premature mark can never stick to a delivered message
+        state = tempfile.mkdtemp()
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k, e = _echo("actually landed after all")
+        e["dropped"] = True
+        be._live[SID] = dict([(k, e)])
+        be._persist_echoes(SID)
+        be.prune_live(SID, tx_uuids=set(), tx_user_texts={"actually landed after all"}, human_floor=0)
+        self.assertNotIn(SID, be._live)
+        self.assertEqual(sb.read_reg(state, SID).get("echoes"), [])
+
+    def test_dismiss_retires_by_key_and_by_send_time(self):
+        state = tempfile.mkdtemp()
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k, e = _echo("seen and dismissed")
+        e["dropped"] = True
+        be._live[SID] = dict([(k, e)])
+        self.assertEqual(be.dismiss_echo(SID, uuid=k), "seen and dismissed")
+        self.assertNotIn(SID, be._live)
+        self.assertEqual(sb.read_reg(state, SID).get("echoes"), [], "dismissal empties the mirror")
+        # by send time: the uuid regenerates at every boot reseed, but t survives it
+        k2, e2 = _echo("dismissed after a restart", t=4242, key="echo:regen")
+        e2["dropped"] = True
+        be._live[SID] = dict([(k2, e2)])
+        self.assertEqual(be.dismiss_echo(SID, uuid="echo:stale-painted-key", t=4242),
+                         "dismissed after a restart")
+        self.assertIsNone(be.dismiss_echo(SID, uuid="echo:stale-painted-key", t=4242),
+                          "a second click is an idempotent miss, not an error")
+
+    def test_dismiss_never_touches_a_pending_echo(self):
+        be = self._backend()
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k, e = _echo("still in flight")
+        be._live[SID] = dict([(k, e)])
+        self.assertIsNone(be.dismiss_echo(SID, uuid=k, t=e["t"]),
+                          "an undropped echo is the send's only record — undismissable")
+        self.assertIn(k, be._live[SID])
 
 
 if __name__ == "__main__":

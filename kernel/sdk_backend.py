@@ -1389,6 +1389,10 @@ class SdkSession:
             # waiting displays that read as a wedged session (nimbus, the user 2026-07-10).
             self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
             self.backend._heal_stale_awaiting(self.sid)
+            # The SPAWN half of the dropped-echo marking (boot half: _reseed_echoes): a fresh CLI means
+            # whatever held any earlier send is gone. An echo neither in self._pending (delivered to the
+            # new CLI) nor landed has no holder left — flag it so the chat says "never delivered".
+            self.backend._mark_dropped_echoes(self.sid, self.pending())
             asyncio.run(self._amain())
         except Exception as e:                       # surfaced for debugging; never crash kernel
             # The TRACEBACK too, not just the type and message: a bare "KeyError: <uuid>" names no line,
@@ -2871,7 +2875,7 @@ class SdkBackend:
         after a restart would assert something that may no longer be true."""
         d = self._live.get(sid) or {}
         snap = [{"t": a.get("t", 0), "text": a["_echo_text"], "author": a.get("author") or "human",
-                 "rompAuto": bool(a.get("rompAuto"))}
+                 "rompAuto": bool(a.get("rompAuto")), "dropped": bool(a.get("dropped"))}
                 for a in d.values() if a.get("_echo_text") and not a.get("command")]
         try:
             self._update_reg(sid, echoes=snap)
@@ -2881,7 +2885,10 @@ class SdkBackend:
     def _reseed_echoes(self, regs: list[dict]) -> None:
         """Kernel boot: re-create each alive session's persisted unlanded echoes in the live store, so a
         send in flight across the restart stays visible until its real record lands (then the normal
-        text-prune retires it and the mirror empties)."""
+        text-prune retires it and the mirror empties). Reseeding is also the BOOT half of the dropped
+        marking: whatever process held these sends died with the previous kernel, so any echo whose text
+        is not in the persisted queue (which _boot_reconcile is about to re-deliver) has provably lost
+        its message — _mark_dropped_echoes flags it so the chat can say so."""
         for reg in regs:
             if not (reg.get("alive") and reg.get("sid")):
                 continue
@@ -2896,7 +2903,58 @@ class SdkBackend:
                         "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
                 if e.get("rompAuto"):
                     atom["rompAuto"] = True
+                if e.get("dropped"):
+                    atom["dropped"] = True
                 self._live.setdefault(reg["sid"], {})[key] = atom
+            if self._live.get(reg["sid"]):
+                self._mark_dropped_echoes(reg["sid"], reg.get("queue") or [])
+
+    def _mark_dropped_echoes(self, sid: str, queued_texts) -> None:
+        """A fresh CLI is spawning for this sid, or the kernel just booted: whatever process held any
+        earlier send is gone. An input echo whose text is neither in the surviving queue (about to be
+        delivered to the new CLI) nor landed in the transcript has no holder left — its send is provably
+        LOST. Flag it `dropped`, so the chat renders "never delivered" with restore/dismiss instead of a
+        sent-looking bubble that rides the live tail with a stale timestamp forever (the user 2026-07-29:
+        a two-day-old lost send kept resurfacing mid-chat, hopping turns as new ones landed, posing as
+        history). Event-based — keyed on the spawn/boot that orphaned the send, never on age — and
+        self-correcting: an echo whose text actually LANDED still prunes by text on the next build, so a
+        premature flag can never stick to a delivered message. The flag rides the registry mirror
+        (_persist_echoes), so it survives further restarts."""
+        d = self._live.get(sid)
+        if not d:
+            return
+        qs = {q for q in queued_texts if isinstance(q, str)}
+        newly = [a for a in d.values()
+                 if a.get("_echo_text") and not a.get("command") and not a.get("dropped")
+                 and a["_echo_text"] not in qs]
+        if not newly:
+            return
+        for a in newly:
+            a["dropped"] = True
+            self._log("%s: a send never reached its CLI (the process died holding it) — kept in the chat "
+                      "as never-delivered: %.80r" % (sid[:8], a["_echo_text"]), problem=True)
+        self._persist_echoes(sid)
+        self._wake_push()
+
+    def dismiss_echo(self, sid: str, uuid: str | None = None, t: int | None = None) -> str | None:
+        """✕ on a never-delivered bubble: retire a DROPPED echo the user has acknowledged. Matched by the
+        live-store key first (the uuid this kernel painted), falling back to the echo's send time — the
+        key regenerates on every boot reseed, so a click racing a kernel restart still lands. DROPPED
+        only: a live (pending) echo is the sole visible record of an in-flight send and must stay until
+        it lands or its loss is proven. Returns the retired text, or None on a miss (already gone —
+        idempotent; the next push simply paints without it)."""
+        live = self._live.get(sid) or {}
+        for k, a in list(live.items()):                    # snapshot: the live-tail thread may mutate concurrently
+            if not (a.get("_echo_text") and a.get("dropped")):
+                continue
+            if (uuid is not None and k == uuid) or (t is not None and int(a.get("t") or 0) == t):
+                live.pop(k, None)
+                if not live:
+                    self._live.pop(sid, None)
+                self._persist_echoes(sid)
+                self._wake_push()
+                return a.get("_echo_text")
+        return None
 
     def rewind(self, sid: str, target_uuid: str, text: str) -> "tuple[bool, str]":
         """Rewind the conversation to `target_uuid` (a transcript record uuid the KERNEL has validated:

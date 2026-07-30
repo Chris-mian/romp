@@ -3762,7 +3762,7 @@ def _drive(msg, client):
         return False
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
-              "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
+              "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode",
               "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
@@ -3920,6 +3920,15 @@ def _drive(msg, client):
         err = _cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))
         client["send"](json.dumps({"type": "cancelResult", "ok": not err, "id": sid,
                                    "md": str(msg.get("md") or ""), "text": err or ""}))
+        _push_soon()
+    elif t == "dismissEcho" and hasattr(be, "dismiss_echo"):
+        # ✕ on a never-delivered bubble (a send whose CLI died holding it — the backend's dropped-echo
+        # marking): the user has seen the loss, so retire the echo. Idempotent: a miss means it is
+        # already gone, and the next push simply paints without it (the client removed its node
+        # optimistically, per the acknowledge-the-click rule).
+        _et = msg.get("t")
+        be.dismiss_echo(sid, uuid=str(msg.get("uuid") or "") or None,
+                        t=int(_et) if isinstance(_et, (int, float)) and not isinstance(_et, bool) else None)
         _push_soon()
     elif t == "dismissDialog":
         # Dismiss the CLI's spend-cap modal (the chat card's tmux-only affordance): the backend VERIFIES
@@ -10662,6 +10671,14 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                             # interrupt marker on the rail instead of a person-blue bubble (the user 2026-07-02).
                             if prompt.strip().startswith("[Request interrupted by user"):
                                 ev["interruptMarker"] = True
+                            # A provably-LOST send (a live echo whose CLI died holding it — the backend's
+                            # dropped-echo marking): the client renders "never delivered" with restore/
+                            # dismiss instead of a sent-looking bubble that poses as history (the user
+                            # 2026-07-29). echoT is the dismiss handle that survives kernel restarts —
+                            # the echo uuid regenerates on every boot reseed; its send time does not.
+                            if a.get("dropped") and a.get("_echo_text"):
+                                ev["undelivered"] = True
+                                ev["echoT"] = a.get("t")
                             if fu_goal is not None or (author == "human" and "romp-goal-id" in text):
                                 ev["followUp"] = True
                                 if fu_goal:
