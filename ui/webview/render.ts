@@ -3790,7 +3790,17 @@ function cancelOpening() {
 // the picker is up, so the overlay fills the screen and the list gets the full viewport height. Standalone
 // (no parent) is a no-op.
 function signalPickerOverlay(on: boolean) {
-  try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "picker", on }, "*"); } catch (e) { /* standalone: no shell to lift */ }
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ romp: "picker", on }, "*");
+      // …and get out of the way while lifted (the user 2026-07-29). The shell lifts this iframe over the
+      // whole window, and the iframe is OPAQUE, so the picker read as the chat pane blown up to full
+      // screen rather than as a dialog over the dashboard. Dropping this page's background and hiding
+      // its own content leaves only the picker drawn, so the timeline, feed and chat stay visible
+      // (dimmed by the picker's own backdrop) behind a modal that floats over all of them.
+      document.body.classList.toggle("picker-lifted", on);
+    }
+  } catch (e) { /* standalone: no shell to lift */ }
 }
 
 // ── new-session directory: inline completer ────────────────────────────────────────────────────────

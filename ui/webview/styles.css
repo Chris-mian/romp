@@ -1681,8 +1681,23 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 .opening-dots span:nth-child(3) { animation-delay: 0.3s; }
 @keyframes opening-bounce { 0%, 80%, 100% { opacity: 0.3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-5px); } }
 
+/* LIFTED over the dashboard (the user 2026-07-29): while the shell has this iframe full-window, the page
+   itself steps aside — no background, and its own content hidden — so what remains on screen is the
+   picker alone, floating over the panes behind it. Without this the opaque chat page covered the
+   timeline and feed, which is why the picker read as the chat expanded to full screen instead of as a
+   dialog. `visibility` (not display) so nothing reflows: layout is untouched, and the chat is exactly
+   where it was when the picker closes. */
+body.picker-lifted { background: transparent !important; }
+body.picker-lifted > * { visibility: hidden; }
+body.picker-lifted > #picker { visibility: visible; }
+/* centred, like every other modal. Top-aligned made sense when this filled the screen and the list
+   wanted every pixel of height; as a dialog over the dashboard it should sit in the middle. */
+body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
+
 .picker-box {
-  width: min(560px, 96%);
+  /* two thirds of the window, not a narrow column: it is a dialog over the whole dashboard now, and the
+     session list is the thing you came to read (the user 2026-07-29) */
+  width: min(66vw, 900px); min-width: min(560px, 96vw);
   /* The picker is lifted full-window while open (shell body.picker-open lifts #f-chat), so this vh now
      measures the FULL viewport, not the chat pane. Cap it to the viewport minus the overlay's top+bottom
      padding so the actions row is always on screen and .picker-list scrolls the rest (the user 2026-07-05,
