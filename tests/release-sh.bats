@@ -1,11 +1,14 @@
 #!/usr/bin/env bats
 
-# scripts/release.sh — the release gate. Two rules it exists to enforce:
-#   * the tag must be v-prefixed (bootstrap.sh's `git tag -l 'v*'` selector matches
-#     nothing otherwise, and the installer silently falls back to main), and
-#   * the macOS CI run — which is dispatch-only, since macOS is billed even on public
-#     repos — must be GREEN before a version is tagged.
-# The GitHub CLI is stubbed via ROMP_GH so none of this touches real CI.
+# scripts/release.sh — the release gate. What it exists to enforce:
+#   * VERSION is the ONE source of truth and the tag is DERIVED from it, so the two can
+#     never disagree — the script takes no tag argument at all (2026-07-29);
+#   * the tag is therefore always v-prefixed (bootstrap.sh's `git tag -l 'v*'` selector
+#     matches nothing otherwise, and the installer silently falls back to main);
+#   * the macOS CI run — dispatch-only, since macOS is billed even on public repos — must
+#     be GREEN before a version is tagged.
+# The GitHub CLI is stubbed via ROMP_GH so none of this touches real CI, and most tests run
+# with --skip-tests: the fixture repo has no suites of its own.
 
 ROMP_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
@@ -15,19 +18,29 @@ setup() {
     mkdir -p "$REPO/scripts"
     cp "$ROMP_DIR/scripts/release.sh" "$REPO/scripts/"
     git init -q "$REPO"
+    # `git init -b main` needs git 2.28+; setting HEAD before the first commit works on every
+    # version, which matters because this suite also runs on the CI's older shells.
+    git -C "$REPO" symbolic-ref HEAD refs/heads/main
     git -C "$REPO" config user.email t@e.invalid
     git -C "$REPO" config user.name t
     echo "0.1.0" > "$REPO/VERSION"
     git -C "$REPO" add -A
     git -C "$REPO" commit -qm init
+    # A real origin, because the script now pushes the tag and (on a bump) the branch. A
+    # bare repo is enough and keeps every test on the same footing as a real clone.
+    git init -q --bare "$TEST_DIR/origin.git"
+    git -C "$REPO" remote add origin "$TEST_DIR/origin.git"
+    git -C "$REPO" push -q origin main
+    export REPO_FOR_STUB="$REPO"
     export ROMP_RELEASE_POLL=0          # no sleeping in tests
     export GH_LOG="$TEST_DIR/gh.log"
 }
 teardown() { rm -rf "$TEST_DIR"; }
 
 # STUB_CONCLUSION = what the stubbed `gh run view` reports (default success).
-# STUB_FLAKY_VIEWS = report nothing for the first N `run view` calls, as a
-# transient API error looks to the poll loop, then the real conclusion.
+# STUB_FLAKY_VIEWS = report nothing for the first N `run view` calls, as a transient API
+# error looks to the poll loop, then the real conclusion.
+# STUB_PR_STATE = what `gh pr view` reports (default MERGED).
 _stub_gh() {
     cat > "$TEST_DIR/gh" <<STUB
 #!/usr/bin/env bash
@@ -41,6 +54,13 @@ case "\$1 \$2" in
       n=\$(( \$(cat "$TEST_DIR/views" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$TEST_DIR/views"
       if [ "\$n" -le "\${STUB_FLAKY_VIEWS:-0}" ]; then exit 1; fi
       echo "\${STUB_CONCLUSION:-success}" ;;
+  # Auto-merge really lands the branch on origin/main, so the script's post-merge
+  # fast-forward has something to pull and VERSION genuinely changes on main. Simulating
+  # the merge as a no-op would let the bump path "pass" while proving nothing.
+  "pr merge")   if [ "\${STUB_PR_STATE:-MERGED}" = "MERGED" ]; then
+                    git -C "$REPO" push -q origin HEAD:main
+                fi ;;
+  "pr view")    echo "\${STUB_PR_STATE:-MERGED}" ;;
 esac
 exit 0
 STUB
@@ -48,18 +68,105 @@ STUB
     export ROMP_GH="$TEST_DIR/gh"
 }
 
-@test "release: refuses a tag that is not v-prefixed" {
+# ── the source-of-truth contract ──────────────────────────────────────
+
+@test "release: with no argument it releases whatever VERSION says" {
     _stub_gh
-    run "$REPO/scripts/release.sh" 0.1.0
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ "$output" = "v0.1.0" ]
+}
+
+@test "release: refuses a v-prefixed argument and names the version to pass instead" {
+    # the tag is derived, so accepting one would re-open the mismatch this design closed
+    _stub_gh
+    run "$REPO/scripts/release.sh" v0.1.0
     [ "$status" -ne 0 ]
-    [[ "$output" == *"must be v-prefixed"* ]]
-    # and it bailed BEFORE spending 16 minutes of macOS CI
+    [[ "$output" == *"WITHOUT the leading v"* ]]
+    [[ "$output" == *"'0.1.0'"* ]]
     [ ! -s "$GH_LOG" ]
 }
 
+@test "release: the derived tag is always v-prefixed" {
+    _stub_gh
+    echo "1.2.3" > "$REPO/VERSION"
+    git -C "$REPO" commit -qam ver
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ "$output" = "v1.2.3" ]
+}
+
+@test "release: a bump level computes the next version and PRs it" {
+    _stub_gh
+    run "$REPO/scripts/release.sh" minor --skip-tests
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"0.1.0 → 0.2.0"* ]]
+    grep -q "pr create" "$GH_LOG"
+    grep -q "pr merge" "$GH_LOG"
+    run git -C "$REPO" tag -l
+    [ "$output" = "v0.2.0" ]
+}
+
+@test "release: patch and major bump the right component" {
+    _stub_gh
+    echo "1.4.7" > "$REPO/VERSION"
+    git -C "$REPO" commit -qam ver
+    run "$REPO/scripts/release.sh" patch --skip-tests --dry-run
+    [[ "$output" == *"1.4.7 → 1.4.8"* ]]
+    run "$REPO/scripts/release.sh" major --skip-tests --dry-run
+    [[ "$output" == *"1.4.7 → 2.0.0"* ]]
+}
+
+@test "release: an explicit number is taken as the target" {
+    _stub_gh
+    run "$REPO/scripts/release.sh" 3.0.0 --skip-tests --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"releasing v3.0.0"* ]]
+}
+
+@test "release: refuses a target that is not semver" {
+    _stub_gh
+    run "$REPO/scripts/release.sh" not-a-version --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is not semver"* ]]
+}
+
+@test "release: VERSION already at the target needs no bump PR" {
+    # the resumable case: a bump PR landed earlier, so only the tagging half remains
+    _stub_gh
+    run "$REPO/scripts/release.sh" 0.1.0 --skip-tests
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no bump PR needed"* ]]
+    ! grep -q "pr create" "$GH_LOG"
+    run git -C "$REPO" tag -l
+    [ "$output" = "v0.1.0" ]
+}
+
+@test "release: a version PR that never merges does NOT tag" {
+    _stub_gh
+    STUB_PR_STATE=OPEN run "$REPO/scripts/release.sh" minor --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"did not merge"* ]]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
+@test "release: a version PR closed unmerged does NOT tag" {
+    _stub_gh
+    STUB_PR_STATE=CLOSED run "$REPO/scripts/release.sh" minor --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"closed without merging"* ]]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+}
+
+# ── the macOS gate ────────────────────────────────────────────────────
+
 @test "release: refuses when the macOS run fails, and does NOT tag" {
     _stub_gh
-    STUB_CONCLUSION=failure run "$REPO/scripts/release.sh" v0.1.0
+    STUB_CONCLUSION=failure run "$REPO/scripts/release.sh" --skip-tests
     [ "$status" -ne 0 ]
     [[ "$output" == *"macOS run did not pass"* ]]
     run git -C "$REPO" tag -l
@@ -67,10 +174,10 @@ STUB
 }
 
 @test "release: a transient API error while watching does not fail the gate" {
-    # `gh run watch` treated a dropped connection as a failed RUN and refused a
-    # green release twice (2026-07-27); the poll must ride out empty answers.
+    # `gh run watch` treated a dropped connection as a failed RUN and refused a green
+    # release twice (2026-07-27); the poll must ride out empty answers.
     _stub_gh
-    ROMP_RELEASE_POLL=0.01 STUB_FLAKY_VIEWS=3 run "$REPO/scripts/release.sh" v0.1.0
+    ROMP_RELEASE_POLL=0.01 STUB_FLAKY_VIEWS=3 run "$REPO/scripts/release.sh" --skip-tests
     [ "$status" -eq 0 ]
     [[ "$output" == *"macOS run green"* ]]
     run git -C "$REPO" tag -l
@@ -79,7 +186,7 @@ STUB
 
 @test "release: tags when the macOS run is green" {
     _stub_gh
-    run "$REPO/scripts/release.sh" v0.1.0
+    run "$REPO/scripts/release.sh" --skip-tests
     [ "$status" -eq 0 ]
     [[ "$output" == *"macOS run green"* ]]
     run git -C "$REPO" tag -l
@@ -89,26 +196,41 @@ STUB
 
 @test "release: --skip-macos tags without CI, but says so loudly" {
     _stub_gh
-    run "$REPO/scripts/release.sh" v0.1.0 --skip-macos
+    run "$REPO/scripts/release.sh" --skip-macos --skip-tests
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPING the macOS check"* ]]
-    [ ! -s "$GH_LOG" ]                        # no CI was dispatched
+    ! grep -q "workflow run CI" "$GH_LOG"     # no CI was dispatched
     run git -C "$REPO" tag -l
     [ "$output" = "v0.1.0" ]
 }
 
-@test "release: refuses when VERSION disagrees with the tag" {
+# ── publishing ────────────────────────────────────────────────────────
+
+@test "release: pushes the tag and publishes the release" {
     _stub_gh
-    run "$REPO/scripts/release.sh" v9.9.9
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"VERSION says"* ]]
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -eq 0 ]
+    grep -q "release create v0.1.0" "$GH_LOG"
+    # the tag really reached the remote — a local-only tag installs for nobody
+    run git -C "$TEST_DIR/origin.git" tag -l
+    [ "$output" = "v0.1.0" ]
 }
+
+@test "release: notes start at the PREVIOUS tag, never at the one being cut" {
+    _stub_gh
+    git -C "$REPO" tag v0.0.9
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -eq 0 ]
+    grep -q -- "--notes-start-tag v0.0.9" "$GH_LOG"
+}
+
+# ── the ordinary guards ───────────────────────────────────────────────
 
 @test "release: refuses a dirty tree" {
     _stub_gh
     echo dirty > "$REPO/junk.txt"
     git -C "$REPO" add junk.txt
-    run "$REPO/scripts/release.sh" v0.1.0
+    run "$REPO/scripts/release.sh" --skip-tests
     [ "$status" -ne 0 ]
     [[ "$output" == *"dirty"* ]]
 }
@@ -116,17 +238,67 @@ STUB
 @test "release: refuses a tag that already exists" {
     _stub_gh
     git -C "$REPO" tag v0.1.0
-    run "$REPO/scripts/release.sh" v0.1.0
+    run "$REPO/scripts/release.sh" --skip-tests
     [ "$status" -ne 0 ]
     [[ "$output" == *"already exists"* ]]
+    [ ! -s "$GH_LOG" ]                        # bailed before spending any CI
 }
 
-@test "release: the v-prefix guard accepts a prerelease tag" {
+@test "release: refuses when VERSION is missing" {
+    _stub_gh
+    rm "$REPO/VERSION"
+    git -C "$REPO" commit -qam rmver
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"source of truth"* ]]
+}
+
+@test "release: refuses a VERSION that is not X.Y.Z" {
+    _stub_gh
+    echo "nightly" > "$REPO/VERSION"
+    git -C "$REPO" commit -qam ver
+    run "$REPO/scripts/release.sh" --skip-tests
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is not X.Y.Z"* ]]
+}
+
+@test "release: a prerelease version tags as-is" {
     _stub_gh
     echo "0.2.0-rc.1" > "$REPO/VERSION"
     git -C "$REPO" commit -qam ver
-    run "$REPO/scripts/release.sh" v0.2.0-rc.1
+    run "$REPO/scripts/release.sh" --skip-tests
     [ "$status" -eq 0 ]
     run git -C "$REPO" tag -l
     [ "$output" = "v0.2.0-rc.1" ]
+}
+
+@test "release: a prerelease bumps from its release number" {
+    _stub_gh
+    echo "0.2.0-rc.1" > "$REPO/VERSION"
+    git -C "$REPO" commit -qam ver
+    run "$REPO/scripts/release.sh" minor --skip-tests --dry-run
+    [[ "$output" == *"0.2.0-rc.1 → 0.3.0"* ]]
+}
+
+@test "release: --dry-run changes nothing at all" {
+    _stub_gh
+    run "$REPO/scripts/release.sh" minor --skip-tests --dry-run
+    [ "$status" -eq 0 ]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
+    run cat "$REPO/VERSION"
+    [ "$output" = "0.1.0" ]
+}
+
+@test "release: a failing suite stops the release before any tag" {
+    _stub_gh
+    # a fixture 'suite' that fails collection, so the gate is exercised for real
+    mkdir -p "$REPO/tests"
+    echo "raise SystemExit(1)" > "$REPO/tests/conftest.py"
+    git -C "$REPO" add -A && git -C "$REPO" commit -qm suite
+    run "$REPO/scripts/release.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Python suite failed"* ]]
+    run git -C "$REPO" tag -l
+    [ -z "$output" ]
 }
