@@ -1274,7 +1274,10 @@ PLAN_SYS = (
     "filing under one card never exempts the other cards the segment settled. "
     "An explanation or answer to a user's question "
     "counts as done: once you have fully answered, with nothing left for the user to act on, the goal "
-    "is done. But if the answer, plan, or scoping writeup ends by asking the user to approve or decide "
+    "is done. The answer must be IN the segment: a segment that shows a question with no assistant "
+    "reply to it (or only work on other matters) has NOT answered it — never supply the answer from "
+    "your own knowledge and file done; that goal simply stays open, however sure you are of the "
+    "answer. But if the answer, plan, or scoping writeup ends by asking the user to approve or decide "
     "a clear next step (\"want me to build this?\", \"which option?\", \"shall I proceed?\"), that is a "
     "block, not a done (see block): the go-ahead is still owed by the user. Being thorough is not the "
     "same as being finished. Set the \"why\" to a concise summary of the "
@@ -2291,6 +2294,40 @@ def _restrict_retitle(ops, allowed):
     it may retitle (see plan_llm). A defensive floor against the model retitling some OTHER listed goal;
     `allowed=None` drops every retitle (no eligible goal this call)."""
     return [o for o in ops if o["do"] != "retitle" or o.get("goal") == allowed]
+
+
+def _seg_spliced(seg):
+    """True when this segment's TRIGGER is an ABSORBED atom — a prompt the CLI spliced into a
+    RUNNING turn (a queued_command attachment; em._absorbed_atom marks the synthesized atom
+    `absorbed`). The atoms after such a trigger are the interrupted turn's CONTINUING work: by
+    wall-clock they follow the enqueue, but they answer the turn's ORIGINAL ask — deterministically
+    indistinguishable from a reply to the splice. So work in this segment is never proof that the
+    spliced ask, or any listed goal, was answered (see _strip_spliced_dones)."""
+    trig = (seg or {}).get("trigger")
+    if not trig:
+        return False
+    return any(a.get("uuid") == trig and a.get("absorbed") for a in seg.get("atoms") or [])
+
+
+def _strip_spliced_dones(ops, seg, fsid, seg_id):
+    """Drop planner DONE ops filed off a SPLICED-trigger segment (_seg_spliced). A capable planner,
+    handed 'USER ASKED: …' plus the interrupted turn's unrelated tail work, answers the question
+    from its OWN knowledge and files done with a confabulated summary — a queued question completed
+    as a card 30 seconds after it was typed, before the assistant's first post-splice token, off a
+    turn that then crashed without ever replying (the user 2026-07-29). Same failure family as the
+    API-error confabulation (the user 2026-07-25), but that guard keys on NO assistant work, and a
+    splice defeats it: the absorbed segment inherits the running turn's real atoms. Mint/sub/block
+    still apply — placing the ask and filing the tail work are right — and the goal stays OPEN,
+    which is the truth; the turn-level closer keeps done authority once the turn actually ends.
+    Logged (judge-errors, kind 'spliced-done'), never silent."""
+    if not ops or not _seg_spliced(seg):
+        return ops
+    kept = [o for o in ops if o.get("do") != "done"]
+    if len(kept) != len(ops):
+        _log_judge_error("planner", fsid, "spliced-done", seg=seg_id,
+                         note="dropped %d done op(s): a spliced-trigger segment cannot evidence an answer"
+                              % (len(ops) - len(kept)))
+    return kept
 
 
 def _depth(nodes, nid):
@@ -5108,6 +5145,9 @@ def _plan_session(fsid, path, now):
             hist = _goal_work_text(store, seg_by_id, target, GOAL_HISTORY_CHARS)
             ops = _parse_plan(plan_llm(text, _menu_text(store, sub), human=False,
                                        goal_history=hist, goal_num=1), len(sub)) or []
+            ops = _strip_spliced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # a peer message spliced
+            #                                           mid-turn can't evidence an answer any more than a
+            #                                           spliced human ask can — the fallback sub still files
             # Full expressivity, ROOTED under G: a delegation gets the same sub/done/block a human-minted top
             # does (over G's subtree), and a top-level MINT is re-rooted as a sub under G (#1) so a handoff is
             # never a competing top. Skips drop; an empty/skip-only reply falls back to one sub under G.
@@ -5194,6 +5234,9 @@ def _plan_session(fsid, path, now):
                 ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
                        if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
                 ops = _restrict_retitle(ops, 1)          # goal_num=1 above → retitle is only valid on #1
+                ops = _strip_spliced_dones(ops, _tseg, fsid, seg_id)   # a nudge spliced mid-turn reads the
+                #                                           interrupted turn's work as its reply — resolve
+                #                                           nothing; the goal stays open and re-nudgeable
                 apply_plan(store, seg_id, seg_t, ops, sub, place_key=_pkey, prompt_uuid=trig, quote=vq)
                 placed += 1
                 _group_store(store, fsid, now)
@@ -5227,6 +5270,10 @@ def _plan_session(fsid, path, now):
                                            goal_history=hist, goal_num=gi, followup=True,
                                            lifted_blocks=[(i, a) for i, (_n, a) in sorted(lifted_by_num.items())] or None),
                                   len(menu)) or []
+                ops = _strip_spliced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # a card reply spliced
+                #                                           mid-turn: strip BEFORE the pivot apply and before
+                #                                           the continuation lifts `res`, so a confabulated
+                #                                           done never re-completes the reopened target
                 if any(o["do"] == "mint" for o in ops):
                     # PIVOT: the model says this reply starts a new thread — honor its own placement. The
                     # cited goal is NOT reopened, and the pivot itself must drop its followupPending: this
@@ -5349,6 +5396,14 @@ def _plan_session(fsid, path, now):
             ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # HARD GUARD: a user
             #                                           message never silently vanishes
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
+        ops = _strip_spliced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # the incident path (the user
+        #                                           2026-07-29): a queued ask's work-run confabulated a done
+        if not ops:                                    # the reply was done-ONLY and stripped → same floor as a
+            if not human or p_target:                  #  skip: record processed, or hard-place the ask (a user
+                store["placements"][seg_id] = None     #  message never silently vanishes)
+                save_goals(fsid, store)
+                continue
+            ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)
         ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
         ops = _card_route_subs(store, ops, menu)       # card-first: route subs to the card, then the placer
         apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq,
@@ -6237,7 +6292,9 @@ CLOSER_SYS = (
     "built on it: when the turn delivers a finding and then ends by asking the user what to do about "
     "it (\"found the cause — want me to implement the fix?\"), the goal that owns that decision goes "
     "in block in the same reply (see blocked); doning the record and leaving its goal unmentioned "
-    "shows the whole card finished while the user still owes the answer.\n"
+    "shows the whole card finished while the user still owes the answer. The delivery must be in the "
+    "turn itself: a question the turn never answered is not done — never answer it yourself in the "
+    "why; that goal stays open, however sure you are of the answer.\n"
     "- blocked: it now needs the user, a decision, approval, or answer owed by the user (the human) "
     "before it can proceed. Waiting on a peer, CI, build, agents it dispatched, or other external thing "
     "is not blocked; that stays open and working. A turn that **ends** by handing the decision back to the "

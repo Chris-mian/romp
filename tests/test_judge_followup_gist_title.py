@@ -120,8 +120,8 @@ class SourcePins(unittest.TestCase):
     def test_every_coerce_place_call_passes_the_gist(self):
         calls = self.src.count("ops = _coerce_place(menu, text")
         gisted = self.src.count("ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)")
-        self.assertEqual(calls, 4, "a new floor site must decide its title source explicitly")
-        self.assertEqual(gisted, 4, "every floor site titles from the stored gist when one exists")
+        self.assertEqual(calls, 5, "a new floor site must decide its title source explicitly")
+        self.assertEqual(gisted, 5, "every floor site titles from the stored gist when one exists")
 
 
 if __name__ == "__main__":

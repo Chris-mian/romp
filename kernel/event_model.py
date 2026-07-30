@@ -485,6 +485,11 @@ class FileAdapter:
             "parentUuid": (self.by_uuid.get(auid) or {}).get("parentUuid"),
             "message": {"role": "user", "content": blocks},
             "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
+            "absorbed": True,   # a mid-turn splice: the turn's FOLLOWING atoms are the interrupted
+            #                     ask's continuing work, not provably a reply to this — judges must
+            #                     not read them as one (jd._seg_spliced / _strip_spliced_dones).
+            #                     Metadata only: the atom set and seg ids are unchanged (no
+            #                     PLACEMENTS_V bump).
             "_seq": seq,
         }
         if ROMP_AUTO_RE.search(full):   # an AUTO-nudge → flag it, mirroring the native user-record path
