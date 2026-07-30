@@ -29,6 +29,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import deque
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -767,17 +768,36 @@ def sdk_importable() -> bool:
         return False
 
 
-def launch_failure_text(exc: BaseException) -> str:
+# What the SDK puts on ProcessError.stderr when NOBODY registered an options.stderr callback: it does
+# not pipe the child's stderr at all, and substitutes this literal (subprocess_cli.py). Surfacing it is
+# worse than useless — it tells the user to go read an output romp never captured, and it outranked the
+# exception text that would at least have named the error class. Every SDK session dying at launch showed
+# exactly this and nothing else on 2026-07-29 (a moved repo, so every --resume hit "No conversation
+# found"; the CLI's own stderr said so, and it went nowhere). romp now registers the callback (see
+# SdkSession._on_cli_stderr), so this is only reachable if that ever regresses — treat it as no text.
+SDK_STDERR_PLACEHOLDER = "Check stderr output for details"
+
+# How many trailing stderr lines to keep per session. A launch failure's cause is always in the last
+# handful (the CLI prints one line and exits); the cap is what keeps a chatty or looping CLI from
+# growing the buffer without bound.
+STDERR_TAIL_LINES = 40
+
+
+def launch_failure_text(exc: BaseException, tail: str = "") -> str:
     """The most SPECIFIC human text a failed CLI launch carries. The SDK's ProcessError keeps the CLI's
-    own stderr on the exception (the class that actually names the cause); everything else falls back to
-    the exception's own text. Truncated, since a stderr dump can run long and this lands in a chat card."""
+    own stderr on the exception (the class that actually names the cause); `tail` is what romp captured
+    off the child's stderr itself, used when the exception carries only the SDK's placeholder; everything
+    else falls back to the exception's own text. Truncated, since a stderr dump can run long and this
+    lands in a chat card."""
     parts = []
     for attr in ("stderr", "stdout"):
         v = getattr(exc, attr, None)
         if isinstance(v, bytes):
             v = v.decode("utf-8", "replace")
-        if isinstance(v, str) and v.strip():
+        if isinstance(v, str) and v.strip() and SDK_STDERR_PLACEHOLDER not in v:
             parts.append(v.strip())
+    if tail.strip():
+        parts.append(tail.strip())
     parts.append(("%s: %s" % (type(exc).__name__, exc)).strip())
     # prefer whichever part NAMES a limit — that's the line worth showing — else the first non-empty
     named = next((p for p in parts if _LAUNCH_LIMIT_RE.search(p)), None)
@@ -976,6 +996,11 @@ class SdkSession:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
         self.inflight = 0
+        # The CLI's own stderr, last few lines (see _on_cli_stderr). The SDK only PIPES the child's
+        # stderr when this callback is registered, so without it a launch failure's real cause — the
+        # line the CLI printed before exiting — is discarded by the transport and never reaches the
+        # user or the log. Bounded: a chatty CLI must not grow this without limit.
+        self._stderr_tail = deque(maxlen=STDERR_TAIL_LINES)
         # AUTHORITATIVE compacting signal (the user 2026-07-14): set when a /compact is delivered, cleared by
         # the compact_boundary event (a real compaction landed → the continuation is normal work) OR by the
         # /compact turn's ResultMessage (nothing-to-compact → no boundary ever comes). This replaces the
@@ -1643,6 +1668,31 @@ class SdkSession:
         we no longer guess the window). Refreshed on connect/init and after every turn by _do_refresh_context.
         None until the first refresh lands."""
         return self._ctx
+
+    def _on_cli_stderr(self, line: str) -> None:
+        """One line off the CLI's stderr. Registering this at all is the point: the SDK transport pipes
+        the child's stderr ONLY when options.stderr is set, and otherwise drops it and reports the
+        literal SDK_STDERR_PLACEHOLDER instead — so the CLI's own explanation of why it refused to start
+        was thrown away before anything could show it.
+
+        Buffered, not logged per line: a healthy CLI writes plenty of stderr nobody needs, and a running
+        session would drown the kernel log. The tail is drained where it matters — _record_launch_error
+        logs it and puts it on the session's error card.
+
+        Called from the SDK's stderr reader task; it isolates exceptions per line, but keep it total
+        anyway (a raise here would lose the very diagnostics this exists to keep)."""
+        try:
+            if line and line.strip():
+                self._stderr_tail.append(line.rstrip("\n"))
+        except Exception:
+            pass
+
+    def stderr_tail(self) -> str:
+        """What the CLI last wrote to stderr, newest-last, as one block ('' if it wrote nothing)."""
+        try:
+            return "\n".join(self._stderr_tail)
+        except Exception:
+            return ""
 
     def _mark(self, state: str) -> None:
         """Persist a lifecycle STATE to states/<sid>.jsonl AND track whether the CLI is producing.
@@ -2632,6 +2682,11 @@ class SdkBackend:
             # command-not-found and re-prompted for permission on the absolute-path retry). options.env
             # merges OVER the inherited environment in the SDK's transport, so this is additive.
             env=_bin_on_path_env(os.environ),
+            # Registering this is what makes the CLI's stderr EXIST for romp at all: the SDK transport
+            # pipes the child's stderr only when options.stderr is set (otherwise it hands the child
+            # our own stderr and reports SDK_STDERR_PLACEHOLDER on failure). Without it, a CLI that
+            # refuses to start takes its reason to the grave — see _on_cli_stderr.
+            stderr=sess._on_cli_stderr,
             can_use_tool=sess._can_use_tool,
             hooks={"Stop": [HookMatcher(matcher=None, hooks=[sess._stop_hook])],          # awaiting overlay producer
                    "SubagentStart": [HookMatcher(matcher=None, hooks=[sess._subagent_start_hook])],  # live subagent
@@ -3419,7 +3474,8 @@ class SdkBackend:
         # A missing dependency gets the REMEDY as its text, not the raw ModuleNotFoundError: "No module
         # named 'claude_agent_sdk'" tells a user nothing about what to run.
         dep = isinstance(exc, ImportError)
-        text = SDK_MISSING_TEXT if dep else launch_failure_text(exc)
+        tail = "" if dep else sess.stderr_tail()   # what the CLI itself said before it exited
+        text = SDK_MISSING_TEXT if dep else launch_failure_text(exc, tail)
         rec = {"text": text, "at": int(time.time()), "limit": is_launch_limit(text), "dep": dep}
         try:
             self._update_reg(sess.sid, launchError=rec)
@@ -3427,6 +3483,14 @@ class SdkBackend:
             self._log("record launch error (%s): %s" % (sess.name, traceback.format_exc()))
         self._log("session %s: claude CLI failed to start%s — %s"
                   % (sess.name, " (account usage limit)" if rec["limit"] else "", text))
+        # The FULL captured stderr to the log, once, at the failure. The card gets one truncated line
+        # (it has to stay glanceable); the log is where the whole thing belongs, and it is what the
+        # user goes looking for the moment a session won't start (the user 2026-07-29, whose fleet all
+        # died at launch and whose only clue was an SDK placeholder telling them to read a stderr that
+        # was never captured). Skipped when the tail is already the card's text, so it never doubles.
+        if tail and tail.strip() != text.strip():
+            self._log("session %s: claude CLI stderr (last %d lines):\n%s"
+                      % (sess.name, len(sess._stderr_tail), tail))
         self._poke()
 
     def _clear_launch_error(self, sid: str) -> None:

@@ -23,7 +23,9 @@ SYNTHETIC fixtures only (placeholder ids, hostname TESTHOST).
 """
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -37,11 +39,24 @@ OTHER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 class _FakeSess:
-    """The two attributes _record_launch_error reads off a session."""
+    """What _record_launch_error reads off a session: its identity, plus the stderr the CLI wrote
+    before it died (a real SdkSession buffers that in _stderr_tail — see _on_cli_stderr)."""
 
-    def __init__(self, sid=SID, name="api"):
+    def __init__(self, sid=SID, name="api", stderr=()):
         self.sid = sid
         self.name = name
+        self._stderr_tail = list(stderr)
+
+    def stderr_tail(self):
+        return "\n".join(self._stderr_tail)
+
+
+def _sess_for_options(state=None):
+    """A REAL SdkSession — the stderr buffer and its callback are the things under test, so a stub
+    would pin nothing. Construction is plain attribute setup; no event loop is needed."""
+    td = state or tempfile.mkdtemp()
+    be = _backend(td)
+    return sb.SdkSession(be, {"sid": SID, "name": "api", "cwd": td, "mode": "acceptEdits"})
 
 
 def _backend(state, missing=False):
@@ -135,11 +150,122 @@ class LaunchFailureText(unittest.TestCase):
     def test_a_bare_exception_still_yields_text(self):
         self.assertIn("ValueError", sb.launch_failure_text(ValueError("no executable found")))
 
+    def test_the_sdks_placeholder_is_never_shown_as_the_reason(self):
+        """"Check stderr output for details" is what the SDK substitutes when nobody piped the
+        child's stderr. Showing it sends the user to read an output romp never captured — and it
+        used to OUTRANK the exception text, so the card said strictly less than nothing."""
+        exc = RuntimeError("Command failed with exit code 1")
+        exc.stderr = sb.SDK_STDERR_PLACEHOLDER
+        text = sb.launch_failure_text(exc)
+        self.assertNotIn("Check stderr output", text)
+        self.assertIn("exit code 1", text, "fall through to the text that at least names the failure")
+
+    def test_the_captured_tail_answers_when_the_exception_only_has_the_placeholder(self):
+        """The whole point of piping stderr: the CLI's own line becomes the reason shown."""
+        exc = RuntimeError("Command failed with exit code 1")
+        exc.stderr = sb.SDK_STDERR_PLACEHOLDER
+        tail = "No conversation found with session ID: 11111111-2222-3333-4444-555555555555"
+        self.assertIn("No conversation found", sb.launch_failure_text(exc, tail))
+
+    def test_a_real_stderr_still_outranks_the_captured_tail(self):
+        exc = RuntimeError("Command failed")
+        exc.stderr = "claude: command not found"
+        self.assertIn("command not found", sb.launch_failure_text(exc, "some older noise"))
+
     def test_usage_limits_are_classified_apart_from_breakage(self):
         self.assertTrue(sb.is_launch_limit("You've hit your session limit · resets 4:00pm"))
         self.assertTrue(sb.is_launch_limit("usage limit reached"))
         self.assertFalse(sb.is_launch_limit("claude: command not found"))
         self.assertFalse(sb.is_launch_limit(""))
+
+
+class TheClisStderrIsCaptured(unittest.TestCase):
+    """The CLI's stderr has to be PIPED to exist at all, and the reason has to reach the log.
+
+    The failure this closes (the user 2026-07-29): every SDK session in the fleet died at launch and
+    each card said only "Check stderr output for details". There was no stderr to check — romp had
+    never registered options.stderr, so the SDK handed the child romp's own stderr and dropped the
+    line the CLI printed on its way out. The cause (a moved repo, so every --resume looked for a
+    conversation under a path that no longer held it) was knowable the whole time and shown nowhere.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.be = _backend(self.td.name)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def test_options_register_the_stderr_callback(self):
+        """Without this the transport never pipes the child's stderr — the whole failure above."""
+        captured = {}
+
+        class _FakeOptions:
+            def __init__(self, **kw):
+                captured.update(kw)
+
+        sess = _sess_for_options()
+        fake_sdk = types.ModuleType("claude_agent_sdk")
+        fake_sdk.HookMatcher = lambda **kw: kw
+        saved = sys.modules.get("claude_agent_sdk")
+        sys.modules["claude_agent_sdk"] = fake_sdk
+        try:
+            self.be._options(sess, _FakeOptions)
+        finally:
+            if saved is None:
+                del sys.modules["claude_agent_sdk"]
+            else:
+                sys.modules["claude_agent_sdk"] = saved
+        cb = captured.get("stderr")
+        self.assertIsNotNone(cb, "options.stderr must be registered or the CLI's stderr is discarded")
+        self.assertIs(getattr(cb, "__func__", None), sb.SdkSession._on_cli_stderr)
+        self.assertIs(getattr(cb, "__self__", None), sess, "and bound to THIS session's buffer")
+
+    def test_the_tail_keeps_the_last_lines_and_is_bounded(self):
+        sess = _sess_for_options()
+        for i in range(sb.STDERR_TAIL_LINES * 3):
+            sess._on_cli_stderr("line %d\n" % i)
+        tail = sess.stderr_tail().splitlines()
+        self.assertEqual(len(tail), sb.STDERR_TAIL_LINES, "a chatty CLI must not grow this forever")
+        self.assertEqual(tail[-1], "line %d" % (sb.STDERR_TAIL_LINES * 3 - 1),
+                         "the LAST lines are the ones that name the exit")
+
+    def test_blank_stderr_lines_are_not_kept(self):
+        sess = _sess_for_options()
+        for line in ("\n", "   ", "real trouble\n", ""):
+            sess._on_cli_stderr(line)
+        self.assertEqual(sess.stderr_tail(), "real trouble")
+
+    def test_the_recorded_failure_shows_what_the_cli_said(self):
+        sess = _FakeSess(stderr=["No conversation found with session ID: %s" % SID])
+        exc = RuntimeError("Command failed with exit code 1")
+        exc.stderr = sb.SDK_STDERR_PLACEHOLDER
+        self.be._record_launch_error(sess, exc)
+        text = (sb.read_reg(Path(self.td.name), SID) or {})["launchError"]["text"]
+        self.assertIn("No conversation found", text)
+        self.assertNotIn("Check stderr output", text)
+
+    def test_the_full_stderr_reaches_the_kernel_log(self):
+        """The card gets one glanceable line; the log is where the user goes looking, so it gets
+        everything the CLI said."""
+        lines = []
+        be = sb.SdkBackend(self.td.name, "/bin/true", lambda *a, **k: None,
+                           log=lambda m, *a, **k: lines.append(m))
+        sess = _FakeSess(stderr=["first complaint", "No conversation found with session ID: %s" % SID])
+        exc = RuntimeError("Command failed with exit code 1")
+        exc.stderr = sb.SDK_STDERR_PLACEHOLDER
+        be._record_launch_error(sess, exc)
+        blob = "\n".join(lines)
+        self.assertIn("first complaint", blob, "the whole tail belongs in the log, not just the last line")
+        self.assertIn("No conversation found", blob)
+
+    def test_a_dependency_failure_still_reports_the_remedy(self):
+        """The tail must not displace the one text that names what to run."""
+        sess = _FakeSess(stderr=["irrelevant chatter"])
+        self.be._record_launch_error(sess, ImportError("No module named 'claude_agent_sdk'"))
+        rec = (sb.read_reg(Path(self.td.name), SID) or {})["launchError"]
+        self.assertIn("romp-sdk-setup", rec["text"])
+        self.assertNotIn("irrelevant chatter", rec["text"])
 
 
 class QueuedMessagesSurviveTheSessionsDeath(unittest.TestCase):
