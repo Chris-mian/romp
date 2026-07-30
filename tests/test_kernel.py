@@ -4859,9 +4859,12 @@ class ViewBuilder(unittest.TestCase):
         # opening a DEAD session pops the chat's confirmRevive modal — no silent reopen — and now from
         # ANY pane (feed/timeline included), since dead = timeline-only (the user 2026-06-17). A LIVE
         # session just reopens/focuses, no prompt.
-        cap, orig_rc, orig_tx, orig_pa = [], km._reveal_chat, km._tmux_sessions, km._push_all
+        # _reveal_chat_for since 2026-07-29: the reveal is aimed at the dashboard that asked (its wid),
+        # so a jump in one window no longer drags every other open one to the same turn. With no client
+        # in scope it still broadcasts, which is the path this exercises.
+        cap, orig_rc, orig_tx, orig_pa = [], km._reveal_chat_for, km._tmux_sessions, km._push_all
         try:
-            km._reveal_chat = lambda m: cap.append(m)
+            km._reveal_chat_for = lambda c, m: cap.append(m)
             km._push_all = lambda: None
             km._tmux_sessions = lambda: {SID: {}}            # SID alive; deadsid000 dead
             cap.clear(); km._open_or_revive("deadsid000")
@@ -4876,7 +4879,7 @@ class ViewBuilder(unittest.TestCase):
             live_focus = next(m for m in cap if m.get("type") == "focus" and m.get("id") == SID)
             self.assertTrue(live_focus.get("live"), "live open lands the chat on its live tail (the picker prompt)")
         finally:
-            km._reveal_chat = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
+            km._reveal_chat_for = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
 
     def test_revive_session_resumes_and_unhides_tab(self):
         # confirming the modal's "Revive" must actually resume the session AND un-hide its tab. The
