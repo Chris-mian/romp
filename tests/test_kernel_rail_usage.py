@@ -81,9 +81,12 @@ class RailUsage(unittest.TestCase):
         # "updated ... ago" (the user 2026-07-02): the bars lagged the CLI's own /usage with no cue the reading
         # was old — usage.json refreshes only when a statusline render or a rate-limit event produces a NEW
         # reading, so staleness must be VISIBLE, not silent. The footer formats usage.json's `t`.
-        self.assertIn("LAST._t=(typeof u.t==='number')?u.t:null", self.html, "render() keeps the snapshot time")
+        # (2026-07-30: the snapshot time moved into the per-ACCOUNT detail object, since a second Claude
+        # login has its own reading with its own age — the footer itself is unchanged.)
+        self.assertIn("det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null", self.html,
+                      "the renderer keeps the snapshot time")
         self.assertIn("ru-tip-age", self.html, "the tooltip carries an age footer")
-        self.assertIn("updated '+fmtAgo(LAST._t)", self.html, "formatted as 'updated ... ago'")
+        self.assertIn("updated '+fmtAgo(d._t)", self.html, "formatted as 'updated ... ago'")
         self.assertIn("function fmtAgo(ep)", self.html)
 
     def test_the_fable_window_is_a_third_bar_everywhere(self):

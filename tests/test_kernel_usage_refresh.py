@@ -67,8 +67,10 @@ class UsageRefreshWiring(unittest.TestCase):
         self.assertIn("id=rail-usage", html)
         self.assertIn("el.style.cursor='pointer'", html)
         self.assertIn("Click to refresh usage", html)
-        # a click fetches the on-demand endpoint and re-renders through the normal render() path
-        self.assertIn("fetch('/usage'", html)
+        # a click fetches the on-demand endpoint and re-renders through the normal render() path.
+        # (2026-07-30: /usage/fleet — /usage plus one row per OTHER Claude account signed in across the
+        # fleet. It collapses to the single local row whenever every machine is on the same login.)
+        self.assertIn("fetch('/usage/fleet'", html)
         self.assertIn("el.addEventListener('click'", html)
         # instant acknowledgement BEFORE the round-trip (dim), then restored — per the button rules
         self.assertIn("el.style.opacity='0.45'", html)

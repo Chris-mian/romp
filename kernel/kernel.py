@@ -5709,9 +5709,14 @@ _remotes_saved_sig = None   # signature of the last blob written — lets the su
 #                             change instead of rewriting a 0600 credential file every pass forever.
 
 
+_NOT_SAVED = ("proc",       # the live Popen
+              "usage",      # a remote's rate-limit snapshot: re-polled a minute after any boot, and
+              "_usage_at")  # persisting it would rewrite this 0600 credential file every minute forever
+
+
 def _remotes_rows_for_save():
     with _remotes_lock:
-        return [{k: v for k, v in r.items() if k != "proc"} for r in _remotes.values()]
+        return [{k: v for k, v in r.items() if k not in _NOT_SAVED} for r in _remotes.values()]
 
 
 def _remotes_sig(rows):
@@ -6102,6 +6107,60 @@ def _poll_remote_version(r):
         return {"sha": sha, "ver": str(j.get("kernel_ver") or "")} if sha else None
     except Exception:
         return None
+
+
+REMOTE_USAGE_EVERY = 60.0    # a usage window moves over hours; polling it per supervisor pass would be waste
+
+
+def _poll_remote_usage(r):
+    """GET a remote kernel's /usage THROUGH the -L tunnel, so its rate-limit windows can be drawn beside
+    this machine's (the user 2026-07-30, who runs different Claude accounts on different machines and had
+    two separate allowances collapsed into one set of bars). Returns the parsed payload or None.
+
+    Rate-limited to REMOTE_USAGE_EVERY per host: these windows are 5 hours and 7 days wide, so a poll per
+    supervisor pass would cost a network round-trip every 3 seconds to watch a number that barely moves."""
+    import urllib.parse
+    now = time.time()
+    if now - float(r.get("_usage_at") or 0) < REMOTE_USAGE_EVERY:
+        return r.get("usage")
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=5)
+        path = "/usage" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("GET", path)
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        if resp.status != 200:
+            return r.get("usage")
+        u = json.loads(data.decode("utf-8"))
+        r["_usage_at"] = now
+        return u if isinstance(u, dict) and u else None
+    except Exception:
+        return r.get("usage")   # keep the last good reading rather than blanking the bars on one blip
+
+
+def _fleet_usage():
+    """Every DISTINCT Claude account across the fleet, each with the usage to draw for it.
+
+    The rail drew one set of bars for this machine alone, which is right exactly when every machine is
+    signed into the same account — the windows are account-wide, so drawing them per host would just
+    repeat one number. When accounts DIFFER the single set was wrong instead: two real allowances shown
+    as one (the user 2026-07-30). So group by account digest and emit one row per group, labelled with a
+    host that is on it. Rows whose account matches this machine's collapse into the local row, and a
+    remote that cannot report an account at all (an older kernel) is left out rather than guessed at —
+    a phantom second set of bars would be worse than the honest single one."""
+    local = _usage() or {}
+    rows = [{"host": "", "acct": local.get("acct") or "", "usage": local or None}]
+    seen = {rows[0]["acct"]} if rows[0]["acct"] else set()
+    with _remotes_lock:
+        cand = [(r["host"], r.get("usage")) for r in _remotes.values() if (r.get("status") == "up") and r.get("usage")]
+    for host, u in sorted(cand):
+        acct = (u or {}).get("acct") or ""
+        if not acct or acct in seen:
+            continue      # same login as somewhere already drawn (or a kernel too old to say) → one set
+        seen.add(acct)
+        rows.append({"host": host, "acct": acct, "usage": u})
+    return rows
 
 
 def _sha_base(s):
@@ -6999,6 +7058,9 @@ def _tunnel_supervisor():
                 sids = _poll_remote_sids(r) if up else None
                 rver = _poll_remote_version(r) if up else None   # the code the remote is running (drift check)
                 rsha = (rver or {}).get("sha")
+                # …and which Claude account it burns, so the rail can draw a second set of bars when it is
+                # a different one (self-rate-limited to a minute — these windows are hours wide)
+                ruse = _poll_remote_usage(r) if up else None
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
@@ -7061,6 +7123,8 @@ def _tunnel_supervisor():
                     if rsha is not None:
                         r["kernel_sha"] = rsha
                         r["kernel_ver"] = (rver or {}).get("ver") or ""
+                    if ruse is not None:
+                        r["usage"] = ruse
                     auto_check = (st == "up")
                     peer_up = (st == "up")
                     peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
@@ -13099,6 +13163,38 @@ def _state_intervals(sid, want, now):
     return out
 
 
+_ACCT_CACHE = {"mtime": -1.0, "val": ""}
+
+
+def _claude_account():
+    """WHICH Claude login this machine's sessions run under, as an opaque 12-hex digest — or "" when
+    there is no signed-in account to read (the user 2026-07-30, who switches between accounts and wanted
+    the usage bars to stop pooling two of them into one).
+
+    The authoritative source is Claude Code's own `~/.claude.json`: `oauthAccount.accountUuid` is the
+    account identity the CLI itself uses, and there is no API that reports it. accountUuid, never
+    emailAddress — the comparison only needs "same or not", and an email is a personal identifier that
+    would then travel to every federated host, sit in a payload and show up in any screenshot of the
+    bars. A digest answers the question and carries nothing back. Cached on the file's mtime.
+    """
+    p = os.path.expanduser("~/.claude.json")
+    try:
+        m = os.stat(p).st_mtime
+    except OSError:
+        return ""
+    if _ACCT_CACHE["mtime"] == m:
+        return _ACCT_CACHE["val"]
+    val = ""
+    try:
+        uuid = ((json.loads(open(p, encoding="utf-8").read()) or {}).get("oauthAccount") or {}).get("accountUuid")
+        if uuid:
+            val = hashlib.sha256(str(uuid).encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        val = ""
+    _ACCT_CACHE["mtime"], _ACCT_CACHE["val"] = m, val
+    return val
+
+
 def _usage():
     """The /usage rate-limit bars (5h + weekly + Fable 5) from usage.json, or None. File-based, like the
     obsidian timeline's readUsage. `fable` is the included-Fable-5 weekly allowance Claude Code added to
@@ -13130,6 +13226,11 @@ def _usage():
     t = o.get("t")
     return {"fiveHour": five, "sevenDay": seven, "fable": fable,
             "t": t if isinstance(t, (int, float)) else None,
+            # WHOSE allowance this is. These windows are account-wide, so two machines signed into the
+            # SAME account share one set of numbers and must not be drawn twice; two machines on
+            # DIFFERENT accounts have genuinely separate allowances and pooling them was a lie (the user
+            # 2026-07-30). An opaque digest — equality is the whole question, and no identifier travels.
+            "acct": _claude_account(),
             "limited": limited if any(limited.values()) else None}
 
 
@@ -16345,7 +16446,10 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;
 var WINS=[['fiveHour',5*3600,'5h','Session','5 hours'],
           ['sevenDay',7*86400,'7d','Weekly','7 days'],
           ['fable',7*86400,'F5','Fable 5','Fable 5']];
-var LAST={};
+// ROWS is one entry per DISTINCT Claude account across the fleet, local first (see /usage/fleet); LAST is
+// the tooltip detail for the ones actually drawn; SELF names this machine, for labelling the local set
+// when there is more than one. A one-account fleet keeps a single unlabelled set, exactly as before.
+var ROWS=[],LAST=[],SELF='';
 // Limit / judge-degraded SIGNATURES (the user 2026-07-03; reshaped 2026-07-27): these used to gate fixed
 // top banners with a ✕ dismissal; the banners are gone — the same situations now log ONE entry each in
 // the shell's notification center (the bell, _LANDING_ERRS_JS). The stored signature means "this exact
@@ -16357,38 +16461,41 @@ function _limGet(){try{return localStorage.getItem('romp:limitDismiss')||'';}cat
 function _limPut(v){try{if(v){localStorage.setItem('romp:limitDismiss',v);}else{localStorage.removeItem('romp:limitDismiss');}}catch(e){}}
 function _jdGet(){try{return localStorage.getItem('romp:judgeDegradedDismiss')||'';}catch(e){return '';}}
 function _jdPut(v){try{if(v){localStorage.setItem('romp:judgeDegradedDismiss',v);}else{localStorage.removeItem('romp:judgeDegradedDismiss');}}catch(e){}}
-function render(u){
+// The account-wide notices (limit, judge failures) belong to THIS machine's login, which is the one
+// whose retries and judges actually pause — so they are read off the local row, never off a remote's.
+function notices(u){
 // JUDGE-FAILURE entry (the user 2026-07-03): when the distiller/brief GAVE UP on cards (kernel
 // `judgeFailures` on the usage payload, count + cause), log it to the notification center — once per
 // count+cause signature, so a changed situation logs afresh. Per-card what-happened detail lives in that
-// card's yellow warning chip → modal.
+// card's yellow warning chip -> modal.
 var jf=u&&u.judgeFailures,jon=!!(jf&&jf.count>0);
 var jsig=jon?(jf.count+'|'+(jf.cause||'')):'';
-if(!jon){_jdPut('');}   // nothing failing → forget the logged signature so a future failure logs again
+if(!jon){_jdPut('');}   // nothing failing -> forget the logged signature so a future failure logs again
 else if(jsig!==_jdGet()){_jdPut(jsig);var nc=jf.count,noun=(nc===1?'card':'cards');
-if(window.__rompNotify)window.__rompNotify('judge',nc+' '+noun+" couldn't be summarized — "+(jf.cause||'the summarizer hit errors')+'. Open a flagged card for what happened.');}
-// LIMIT entry (the user 2026-07-01): when an ACCOUNT-WIDE window (5h Session / 7d Weekly) is maxed —
+if(window.__rompNotify)window.__rompNotify('judge',nc+' '+noun+" couldn't be summarized \u2014 "+(jf.cause||'the summarizer hit errors')+'. Open a flagged card for what happened.');}
+// LIMIT entry (the user 2026-07-01): when an ACCOUNT-WIDE window (5h Session / 7d Weekly) is maxed \u2014
 // those pause retries + the judges, so a proactive heads-up is warranted. Fable 5 is DELIBERATELY
 // EXCLUDED (the user 2026-07-04): its window is MODEL-scoped, so exhausting it doesn't stop the models
-// romp uses (Opus/Sonnet/Haiku) and doesn't pause anything — a "Fable limit reached" notice popping every
+// romp uses (Opus/Sonnet/Haiku) and doesn't pause anything \u2014 a "Fable limit reached" notice popping every
 // refresh for the 7-day window was pure noise for someone not on Fable. A Fable-only session that hits
-// the wall is surfaced WHEN YOU ACTUALLY USE IT (api-error → blocked on that session), and the rail's
+// the wall is surfaced WHEN YOU ACTUALLY USE IT (api-error -> blocked on that session), and the rail's
 // third bar still shows the Fable usage passively.
 var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));
 var sig=on?((lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')):'';
-if(!on){_limPut('');}   // fully cleared → forget the logged signature so a future limit logs again
+if(!on){_limPut('');}   // fully cleared -> forget the logged signature so a future limit logs again
 else if(sig!==_limGet()){_limPut(sig);var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
-if(window.__rompNotify)window.__rompNotify('limit',names.join(' and ')+' usage limit reached — retries paused until it resets');}
-if(!u||(!u.fiveHour&&!u.sevenDay&&!u.fable)){el.innerHTML='';tip.style.display='none';return;}
-var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
+if(window.__rompNotify)window.__rompNotify('limit',names.join(' and ')+' usage limit reached \u2014 retries paused until it resets');}}
+function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
+// One account's windows, as markup + the tooltip detail for them. Pure: the caller decides where it goes.
+function winsHTML(u,det){var nowS=Math.floor(Date.now()/1000),html='';
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
-LAST[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
-// Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks — the
+det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
+// Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks \u2014 the
 // used-% bar (colormap colour) ON TOP of the elapsed-% bar (slate) so you can compare pace at a glance (used
-// ahead of elapsed = burning too fast) — then the used-% readout. All inline (label · bars · %).
+// ahead of elapsed = burning too fast) \u2014 then the used-% readout. All inline (label \u00b7 bars \u00b7 %).
 html+='<div class=ru-w data-w="'+w[0]+'">'
 +'<div class=ru-name>'+w[4]+'</div>'
 +'<div class=ru-bars>'
@@ -16396,7 +16503,30 @@ html+='<div class=ru-w data-w="'+w[0]+'">'
 +'<div class=ru-track><i class=ru-fill style="width:'+(tp||0)+'%;background:#6b7a8c"></i></div>'
 +'</div>'
 +'<div class=ru-pct>'+pct+'%</div></div>';});
+return html;}
+// ONE SET PER CLAUDE ACCOUNT (the user 2026-07-30). These windows are ACCOUNT-wide, so a fleet signed into
+// one login has one allowance and drawing it per host would repeat the same number \u2014 that is the common
+// case and it renders exactly as it always did, bare. Sign a machine into a SECOND account, though, and the
+// single set was flatly wrong: two independent allowances added up and shown as one. So the kernel groups
+// by account and each group gets its own bars, labelled with a host that is on it, in the quiet lowercase
+// italic `host:` the chat tabs already wear for a federated session \u2014 same idea, same treatment.
+function renderRows(rows,selfHost){ROWS=rows||[];LAST={};
+var live=ROWS.filter(function(r){return hasBars(r.usage);});
+if(!live.length){el.innerHTML='';tip.style.display='none';return;}
+if(live.length===1){var det={};det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null;
+LAST=[{host:'',det:det}];el.innerHTML=winsHTML(live[0].usage,det);return;}
+var html='';LAST=[];
+live.forEach(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
+var hn=r.host||selfHost||'this machine';
+LAST.push({host:hn,det:det});
+html+='<div class=ru-set title="The Claude account signed in on '+esc(hn)+'. Its allowance is separate from the others here, so each login gets its own bars.">'
++'<span class=ru-host>'+esc(hn)+':</span>'+winsHTML(r.usage,det)+'</div>';});
 el.innerHTML=html;}
+// The single-payload path the timeline still posts (and the mobile panel's own fetch): treat it as this
+// machine's row, leaving any other account's bars alone.
+function render(u){notices(u);
+var rest=ROWS.filter(function(r){return r.host;});
+renderRows([{host:'',acct:(u&&u.acct)||'',usage:u}].concat(rest),SELF);}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
 function barRows(d){return '<div class=ru-tip-row><span class=ru-tip-k>used</span>'
@@ -16405,12 +16535,19 @@ function barRows(d){return '<div class=ru-tip-row><span class=ru-tip-k>used</spa
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
-function tipHTML(){var keys=['fiveHour','sevenDay','fable'].filter(function(k){return LAST[k];});
+// LAST is one entry per ACCOUNT (2026-07-30), so the tooltip is the same window rows it always was, once
+// per login \u2014 with the host heading it only when there IS more than one, so the ordinary single-account
+// hover is byte-for-byte what it used to be.
+function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
 if(!keys.length)return '';
-return keys.map(function(k){var d=LAST[k];
-return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(d.name)+' ('+esc(d.span)+')</span>'
-+(d.reset?'<span class=ru-tip-reset>resets in '+esc(d.reset)+'</span>':'')+'</div>'+barRows(d)+'</div>';}).join('')
-+(LAST._t?'<div class=ru-tip-age>updated '+fmtAgo(LAST._t)+'</div>':'');}
+return (many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'')
++keys.map(function(k){var v=d[k];
+return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
++(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':'')+'</div>'+barRows(v)+'</div>';}).join('')
++(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');}
+function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
+var many=sets.length>1;
+return sets.map(function(e){return setHTML(e,many);}).join('');}
 function showTip(){var h=tipHTML();
 if(!h){tip.style.display='none';return;}
 tip.classList.remove('ru-modal');tip.innerHTML=h;
@@ -16427,9 +16564,7 @@ var off=function(){tip.style.display='none';tip.classList.remove('ru-modal');bac
 document.removeEventListener('keydown',esc2,true);};
 var esc2=function(e){if(e.key==='Escape')off();};
 back.onclick=off;document.addEventListener('keydown',esc2,true);}
-fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
-.then(function(u){if(u&&(u.fiveHour||u.sevenDay||u.fable))render(u);openIt();})
-.catch(function(){openIt();});};
+pullFleet().then(openIt,openIt);};
 el.addEventListener('mouseenter',showTip);
 el.addEventListener('mouseleave',function(){tip.style.display='none';});
 // Refresh-from-source (the user 2026-06-30): GET /usage re-reads usage.json — the snapshot Claude Code's
@@ -16440,12 +16575,17 @@ el.addEventListener('mouseleave',function(){tip.style.display='none';});
 // The listener sits on the STABLE #rail-usage container, so render()'s innerHTML swap can't drop it.
 el.style.cursor='pointer';el.title='Click to refresh usage';
 var _ruBusy=false;
+// /usage/fleet is /usage plus one row per OTHER Claude account in the fleet (the remote readings come from
+// the tunnel supervisor's own cached poll, so this never dials anything). It collapses to a single row \u2014
+// today's exact rendering \u2014 whenever every machine is signed into the same login.
+function pullFleet(){return fetch('/usage/fleet',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
+.then(function(d){var rows=(d&&d.rows)||[];SELF=(d&&d.host)||SELF;
+var local=rows.length?rows[0].usage:null;
+notices(local);renderRows(rows,SELF);});}
 function pull(ack){if(_ruBusy)return;_ruBusy=true;
 if(ack){el.style.opacity='0.45';tip.style.display='none';}   // instant ack only on a real click
 var done=function(){_ruBusy=false;el.style.opacity='';};
-fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
-.then(function(u){render(u&&(u.fiveHour||u.sevenDay||u.fable)?u:null);done();})
-.catch(function(){done();});}
+pullFleet().then(done,done);}
 el.addEventListener('click',function(){pull(true);});
 setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s
 pull(false);                                     // fill on load, independent of the timeline-forward path
@@ -17530,6 +17670,21 @@ def _landing():
             ".ru-tip-v{min-width:30px;text-align:right;font-variant-numeric:tabular-nums}"
             ".ru-tip-age{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);"
             "opacity:.55;font-size:10px}"
+            # PER-ACCOUNT bar sets (the user 2026-07-30): a machine on a different Claude login has its own
+            # allowance, so it gets its own set, named by a host that is on it. The label is the exact
+            # treatment a federated session's name wears in the chat tabs — quiet, lowercase, italic, and
+            # visibly metadata rather than part of the reading. Only rendered when there IS more than one
+            # account; a same-login fleet keeps a single bare set and this costs nothing.
+            ".ru-set{display:flex;flex-direction:row;align-items:center;gap:10px;flex:0 0 auto}"
+            # a hairline between allowances, so two sets of bars read as two accounts rather than one long
+            # run of windows. Only ever drawn between sets, so the single-account rail is untouched.
+            ".ru-set+.ru-set{padding-left:16px;border-left:1px solid #313234}"
+            ".ru-host{font:italic 400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "color:#6e7681;white-space:nowrap;text-transform:lowercase}"
+            ".ru-tip-host{font:italic 400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "color:#9aa0a6;text-transform:lowercase;margin:0 0 4px}"
+            "#ru-tip .ru-tip-host:not(:first-child){margin-top:10px;padding-top:8px;"
+            "border-top:1px solid rgba(255,255,255,0.08)}"
             # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}"
@@ -18120,6 +18275,18 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 return self._send(200, json.dumps(_usage() or {}), "application/json", cache="no-cache")
+            if p == "/usage/fleet":                           # one set of bars PER CLAUDE ACCOUNT (the user
+                # 2026-07-30, who switches accounts and had two separate allowances drawn as one). The rail
+                # collapses to today's single set whenever every machine is on the same login, which is the
+                # common case; the remote readings come from the tunnel poll's cache, so this never dials.
+                try:
+                    be = _sdk()
+                    if be:
+                        be.refresh_usage()
+                except Exception:
+                    pass
+                return self._send(200, json.dumps({"rows": _fleet_usage(), "host": _self_host()}),
+                                  "application/json", cache="no-cache")
             if p == "/followup-preview":                      # the EXACT wrapped body a citation chip will send (the
                 # user 2026-07-01): clicking the composer chip shows this so you can AUDIT what romp is telling the
                 # model — the goal-context quote it injects + your draft + the hidden romp-goal-id marker. Built from
