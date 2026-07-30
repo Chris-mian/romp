@@ -4528,7 +4528,9 @@ def _fold_node(nd):
                    async work it set in motion, will act when it lands" ruling on the goal's latest
                    audited turn. The latest un-lifted assert wins; ANY later landed state event (a
                    user reopen, a done/block landing, a clear, a dismiss-restore) or an explicit lift
-                   row ends it — so the stamp can never outlive the story it annotates."""
+                   row ends it — so the stamp can never outlive the story it annotates. "Later" for a
+                   reopen means a strictly newer ev_t: a reopen sharing the stamp's trigger is the
+                   audited turn's own processing, not a fresh event (see the guard in the loop)."""
     state, floor = "open", 0
     cur_settle, prev_settle = None, None
     awaiting_why = awaiting_at = None     # the live ⏳ stamp (see docstring); None = not awaiting
@@ -4545,7 +4547,17 @@ def _fold_node(nd):
     for e in sorted(nd.get("log") or [], key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0)):
         src, kind, t = e.get("src"), e.get("kind"), e.get("ev_t") or 0
         if kind == "reopen":
-            awaiting_why = awaiting_at = None          # the user spoke / an undo landed: the wait's story moved
+            if awaiting_at is None or t > awaiting_at:
+                # the user spoke / an undo landed: the wait's story moved. STRICTLY later in ev_t only
+                # (the user 2026-07-30): a reopen SHARING the stamp's trigger is the pipeline processing
+                # the same turn the closer audited — the planner's "reopened (followup)" files minutes
+                # after the closer's awaiting verdict, both riding the follow-up's ev_t — not the user
+                # speaking again. Clearing on it erased the stamp the closer had just ruled, and with it
+                # the ⏳ chip, the nudge exemption AND the 6h backstop: a session waiting on a fleet
+                # peer's postal reply sat wedged-invisible in Working. Same-trigger symmetry as the
+                # assert's own `t >= floor` equality-lands rule below: within one turn the reopen is the
+                # trigger, the wait is how the turn ENDED.
+                awaiting_why = awaiting_at = None
             if e.get("undo") and clear_snap is not None:
                 state, cur_settle, prev_settle = clear_snap      # restore what the cross-off displaced
                 clear_snap = None
