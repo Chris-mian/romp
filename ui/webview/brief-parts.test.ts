@@ -14,6 +14,9 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const JUDGE = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "judge.py"), "utf8");
+// Prompts are WRAPPED string literals, so any phrase in them spans source lines. Join adjacent literals
+// before matching, or these pins assert where the line breaks fall rather than what the prompt says.
+const JUDGE_FLAT = JUDGE.replace(/"[ \t]*\n[ \t]*"/g, "");
 
 test("the AskItem declares briefParts and summaryParts in the kernel's shape", () => {
   assert.match(FEED, /briefParts\?: \{ id\?: string; since: number \}\[\] \| null;/);
@@ -26,7 +29,7 @@ test("the kernel ships briefParts and summaryParts beside the brief and takeaway
 });
 
 test("the distiller side is the model's call — split per item or stay one story", () => {
-  assert.ok(JUDGE.includes("Never pad a single story into per-item paragraphs."),
+  assert.ok(JUDGE_FLAT.includes("Never pad a single story into per-item paragraphs."),
     "DISTILL_SYS offers the per-item form without forcing takeaway bloat");
   assert.ok(JUDGE.includes('nodes[top]["summaryParts"] = ([{"id": d["id"], "since": _done_since(d)} for d in _dsubs]'),
     "summaryParts written in <completed-items> order with each item's own done time");
@@ -39,15 +42,33 @@ test("the judge stores one {id, since} per owed item, in order, multi-item only"
     "single-item briefs store nothing — the card header's age is that stamp (the user's rule)");
 });
 
-test("the renderer gates on state-matched parts + multi-item + an exact paragraph-count match", () => {
+test("the renderer gates on state-matched parts + multi-item + the paragraph-count match", () => {
   assert.ok(FEED.includes("const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;"),
     "parts must belong to the state being shown: briefParts <-> blocked brief, summaryParts <-> takeaway");
   assert.ok(FEED.includes("if (distillShown && bp && bp.length > 1)"),
     "multi-item only; a single ask keeps the header age");
-  assert.ok(FEED.includes("if (paras.length === bp.length)"),
-    "the model may merge paragraphs — a missing stamp beats a wrong one");
+  assert.ok(FEED.includes("if (paras.length === bp.length || paras.length === bp.length + 1)"),
+    "the model may merge paragraphs — a missing stamp beats a wrong one — but ONE extra trailing "
+    + "paragraph is the still-open line, which is expected, not a mismatch");
   assert.match(FEED, /split\(\/\\n\\s\*\\n\/\)/, "paragraphs split on blank lines, the brief's own separator");
 });
+
+// The still-open paragraph (the user 2026-07-29): all three judge prompts now end a summary with whatever
+// is NOT finished, alone, in one short sentence. That paragraph belongs to no <completed-items> item and no
+// <owed> row, so it must render WITHOUT an age chip — and, before this, its mere presence pushed the count
+// to items+1 and the exact-match gate silently dropped every stamp on the card.
+test("the trailing still-open paragraph renders unstamped, and only the item paragraphs get ages", () => {
+  assert.ok(FEED.includes("if (i < bp.length) {"),
+    "the chip is appended only for paragraphs that HAVE a part; the extra one gets none");
+  const block = FEED.slice(FEED.indexOf("// PER-PARAGRAPH ages"), FEED.indexOf("// The distiller line is a LINK"));
+  assert.ok(/paras\.forEach\(\(p, i\) => \{[\s\S]*?if \(i < bp\.length\) \{[\s\S]*?relAge\(nowS - \(bp\[i\]\.since/.test(block),
+    "the guard wraps the relAge lookup itself, so bp[i] is never read past the end");
+  assert.ok(block.includes("ONE EXTRA TRAILING PARAGRAPH"), "the why is recorded where the gate lives");
+});
+
+// The prompt side of this contract is asserted in tests/test_distill_paragraph_contract.py, which loads
+// judge.py and reads the CONCATENATED prompt strings. Don't re-assert it over the source text here: the
+// prompts are wrapped literals, so any phrase spans source lines and a grep pins line breaks, not behavior.
 
 test("each paragraph wears its own live age chip", () => {
   assert.ok(FEED.includes('el("span", "fask-para-age")'));
