@@ -86,12 +86,14 @@ class ApiRetryIdempotency(unittest.TestCase):
         km._api_error = _aerr
         km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
         km._auto_retried.clear()
+        km._auto_retry_state.clear()   # …and the backoff ladder (2026-07-29): each case starts at rung one
 
     def tearDown(self):
         (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
          km._api_error, km._path_of) = self._saved
         km._name_of = self._saved_name_of
         km._auto_retried.clear()
+        km._auto_retry_state.clear()
 
     def _drive_retry(self, be, **msg):
         km.Sessions = types.SimpleNamespace(backend_for=lambda sid: be)

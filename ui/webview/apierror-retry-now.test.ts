@@ -37,3 +37,27 @@ test("a usage-limit pause counts down to the window reset instead of a mute labe
   // the LIVE (newest) error card ticks — older cards in the transcript are settled history
   assert.match(RENDER, /const cd = cds\.length \? \(cds\[cds\.length - 1\] as HTMLElement\) : null;/);
 });
+
+// ── the cadence is the KERNEL's (the user 2026-07-29) ───────────────────────────────────────────────
+// A usage-limited thread was collecting a ridiculous number of attempts: one-per-episode stops retries
+// stacking, but every failure writes a new error record, so a new episode, so the 10s tick retried for
+// as long as the block lasted. The kernel now backs each outage off to at most half an hour and
+// publishes when the next attempt may fire; this view follows that instead of its own tick.
+test("the tick holds off while the kernel's deadline stands, and adopts it as the countdown", () => {
+  assert.match(RENDER, /const kernelNext = sessions\.get\(id\)\?\.status\.retryNextAt;/);
+  assert.match(RENDER, /apiRetryNext\.set\(id, kernelNext \* 1000\);/, "the countdown shows the real schedule");
+  assert.match(RENDER, /if \(now < kernelNext \* 1000\) return;/, "no asking inside the window");
+  // no deadline published (a fresh block, an older kernel) → the local 10s tick still makes the first ask
+  assert.match(RENDER, /\} else if \(!apiRetryNext\.has\(id\)\) \{\s*\n\s*apiRetryNext\.set\(id, now \+ API_RETRY_MS\);/);
+});
+
+test("a long wait reads in minutes, with the attempt count explaining the gap", () => {
+  // "retrying in 1750s" is not a readable wait, and a silent 30-minute gap reads as stuck rather than
+  // as deliberate — the count is what says the backoff has stepped up
+  assert.match(RENDER, /const when = left >= 90 \? `\$\{Math\.round\(left \/ 60\)\}m` : `\$\{left\}s`;/);
+  assert.match(RENDER, /tries > 1 \? ` · \$\{tries\} tries so far` : ""/);
+});
+
+test("the status carries the schedule", () => {
+  assert.match(RENDER, /retryNextAt\?: number \| null; retryTries\?: number \| null;/);
+});

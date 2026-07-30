@@ -3590,6 +3590,46 @@ RETRY_MSG = "retry\n\n<!-- romp-injected -->"
 # sid → the error-record uuid its last retry was sent FOR (the one-retry-per-error-episode gate in the
 # apiRetry route). A new error record = a new episode = one more retry; recovery = no key = no retries.
 _auto_retried = {}
+# ...and how long to WAIT before that next episode's retry (the user 2026-07-29, whose usage-limited thread
+# collected a ridiculous number of attempts). One-per-episode alone slows nothing down when every attempt
+# fails instantly: each failure writes a new error record, which is a new episode, so a blocked session
+# re-tried on the client's 10s tick indefinitely. A usage limit lasts minutes to hours, and hammering it
+# changes nothing.
+#
+# So the attempts back off: 1s, 5s, 15s, 45s, then 2, 5, 15 and 30 minutes, staying at 30. Roughly x3 per
+# step, which reaches the half-hour cadence about 23 minutes in, so a blip still recovers in seconds while
+# a real limit costs a handful of attempts instead of hundreds. The ladder is the KERNEL's, not each open
+# view's: the tick runs per client, so client-side spacing would multiply by the number of dashboards.
+# sid -> {"n": attempts this outage, "next": epoch before which no auto-retry fires}
+_auto_retry_state = {}
+RETRY_BACKOFF = (1, 5, 15, 45, 120, 300, 900, 1800)
+
+
+def _retry_backoff(n):
+    """Seconds to wait after `n` consecutive failed auto-retries (n=1 is the wait after the first).
+    Clamped to the last rung, so it never stops trying, it just stops hurrying (the tunnel dialer's
+    shape)."""
+    return RETRY_BACKOFF[min(max(int(n) - 1, 0), len(RETRY_BACKOFF) - 1)]
+
+
+def _retry_gate_state(sid):
+    st = _auto_retry_state.get(sid) or {}
+    return int(st.get("n") or 0), float(st.get("next") or 0)
+
+
+def _note_retry_sent(sid, manual=False):
+    """Record an attempt and when the next may fire. A MANUAL Retry-now resets the ladder, since the user
+    asked for this one and the following automatic attempt should not inherit a half-hour wait, but it
+    still sets a deadline so the auto loop cannot stack an attempt behind it."""
+    n, _ = _retry_gate_state(sid)
+    nxt = 1 if manual else n + 1
+    if len(_auto_retry_state) > 256:
+        _auto_retry_state.clear()
+    _auto_retry_state[sid] = {"n": 0 if manual else nxt, "next": time.time() + _retry_backoff(nxt)}
+
+
+def _clear_retry_backoff(sid):
+    _auto_retry_state.pop(sid, None)   # recovered: the next outage starts at the bottom rung again
 
 
 def _predict_working(flavor, ids=None, sid=None):
@@ -3925,11 +3965,15 @@ def _drive(msg, client):
             _rk = (_rerr.get("uuid") or _rerr.get("text") or "") if _rerr else None
         except Exception:
             pass                                              # unreadable state → manual still fires below
+        if _rk is None:
+            _clear_retry_backoff(sid)                         # recovered (or never blocked): reset the ladder
         if not msg.get("manual"):
             if _rk is None:
                 return                                        # not api-blocked right now → nothing to retry
             if _auto_retried.get(sid) == _rk:
                 return                                        # this episode already got its retry
+            if time.time() < _retry_gate_state(sid)[1]:
+                return                                        # backing off: this outage's next rung isn't due
         if _rk is not None:
             if len(_auto_retried) > 256:
                 _auto_retried.clear()
@@ -3941,6 +3985,7 @@ def _drive(msg, client):
         # board…", 71 of them in one API-error storm). The marker makes author_of return 'romp' (ROMP_INJECT_RE)
         # so the echo + transcript render gray and the planner skips a work-less retry instead of minting a goal.
         be.send(sid, RETRY_MSG)
+        _note_retry_sent(sid, manual=bool(msg.get("manual")))
     elif t == "setModel" and msg.get("value"):
         _set_model_or_park(be, sid, str(msg["value"])); _push_soon()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):
@@ -11060,6 +11105,11 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
+                  # the auto-retry ladder (the user 2026-07-29): when the next attempt may fire, and how
+                  # many this outage has already spent. The kernel owns the cadence, so the card counts
+                  # down to the real thing instead of to each view's own 10s tick.
+                  "retryNextAt": int(_retry_gate_state(sid)[1]) or None,
+                  "retryTries": _retry_gate_state(sid)[0] or None,
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
