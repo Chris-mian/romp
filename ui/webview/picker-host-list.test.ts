@@ -70,3 +70,22 @@ test("a reachable host with no sessions says so, instead of looking like a faile
   assert.match(RENDER, /if \(!list\.children\.length && pickerListHost\)/);
   assert.match(RENDER, /no sessions on \$\{pickerListHost\} in the last 30 days/);
 });
+
+// ── the picker is a dialog over the dashboard, not the chat pane blown up (the user 2026-07-29) ──────
+// The shell lifts this iframe full-window so the session list gets the whole height, but the iframe is
+// opaque, so the picker read as the chat expanded to fill the screen. While lifted the page steps aside
+// and only the picker draws, leaving the timeline, feed and chat visible behind it.
+test("the page steps aside while the shell has it lifted", () => {
+  const STYLES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+  assert.match(RENDER, /document\.body\.classList\.toggle\("picker-lifted", on\);/);
+  assert.match(RENDER, /window\.parent\.postMessage\(\{ romp: "picker", on \}, "\*"\);/, "the shell still lifts it");
+  assert.match(STYLES, /body\.picker-lifted \{ background: transparent !important; \}/);
+  assert.match(STYLES, /body\.picker-lifted > \* \{ visibility: hidden; \}/);
+  assert.match(STYLES, /body\.picker-lifted > #picker \{ visibility: visible; \}/);
+  // visibility, not display: nothing reflows, so the chat is exactly where it was when the picker closes
+  assert.doesNotMatch(STYLES, /body\.picker-lifted > \* \{ display: none/);
+  // …and it centres like a modal instead of hugging the top edge
+  assert.match(STYLES, /body\.picker-lifted > #picker \{ align-items: center;/);
+  // two thirds of the window: the list is what you came to read
+  assert.match(STYLES, /width: min\(66vw, 900px\); min-width: min\(560px, 96vw\);/);
+});
