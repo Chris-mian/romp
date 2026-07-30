@@ -4372,10 +4372,13 @@ class ViewBuilder(unittest.TestCase):
         return g
 
     def test_feed_plain_reply_moves_block_to_working_while_in_flight(self):
-        # the user 2026-07-02 (who wanted it immediate): a PLAIN thread reply after a soft block moves the card
-        # to WORKING — but only WHILE the reply is in flight (open turn / just-sent echo), so an unrelated
-        # reply can never strand a real block in Working forever (the 2026-06-30 regression): when the turn
-        # ends and the judge left the goal blocked, the card RETURNS to Needs-You on its own.
+        # the user 2026-07-02 (who wanted it immediate) + 2026-07-29 (who wanted it to STOP strobing): a
+        # PLAIN thread reply after a soft block moves the card to WORKING, and it HOLDS there across turn
+        # boundaries until the UNBLOCKER has re-examined the block with evidence covering the reply
+        # (blockCheckT reaches it). The old bound — the open turn — made the card round-trip
+        # working↔needs-you at EVERY turn boundary of an active session (seven flips in six minutes on the
+        # audited card); the watermark is the event the turn-bound was approximating, so the card now
+        # returns exactly once, when the judge has actually re-considered and kept the block.
         g = self._blocked_store()
         saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
         try:
@@ -4385,10 +4388,17 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(card["column"], "working", "the reply moves the block to Working at once")
             self.assertFalse(card["recheck"], "a plain reply is not a TARGETED follow-up → recheck stays False")
             self.assertTrue(card["rejudging"], "the 'Re-judging…' swirl rides along in Working")
-            km._session_working = lambda turns: False                # turn ended, judge left it blocked
+            km._session_working = lambda turns: False                # turn ended — but the judge hasn't looked yet
             card_idle = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertEqual(card_idle["column"], "needs_input", "unresolved after the turn → back to Needs-You")
-            self.assertFalse(card_idle["rejudging"], "no turn in flight → no spinner (not a permanent spin)")
+            self.assertEqual(card_idle["column"], "working",
+                             "a turn boundary is not new information — the card HOLDS until the judge re-examines")
+            self.assertTrue(card_idle["rejudging"], "still pending the judge → the swirl stays")
+            g = self._blocked_store(blockCheckT=NOW - 5)             # the unblocker examined evidence PAST the reply
+            card_ruled = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card_ruled["column"], "needs_input",
+                             "the judge re-examined and kept the block → back to Needs-You, exactly once")
+            self.assertFalse(card_ruled["rejudging"], "ruled → no spinner (the latch cannot stick past a judge look)")
+            g = self._blocked_store()
             km._last_plain_user_turn_t = lambda turns: NOW - 300     # a reply that PRE-dates the block
             km._session_working = lambda turns: True
             card_pre = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
@@ -4397,34 +4407,39 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
 
-    def test_feed_rejudging_ignores_a_stranded_echo_only_the_open_turn_drives_it(self):
+    def test_feed_rejudging_ignores_a_stranded_echo_and_cannot_stick_past_a_judge_look(self):
         # REGRESSION (the user 2026-07-22): rejudging used to ALSO ride the backend send-echo, moving a card
         # to Working the instant you hit send (before the turn opened). But a composer slash-command echo
         # NEVER retires — its expanded transcript form ("<command-name>/jld…") doesn't text-match the raw
         # echo, and the parser skips it from the human floor — so a stranded echo pinned the card in Working,
-        # idle, FOREVER, invisible to the nudge (which reads the still-blocked store). The flip is now bounded
-        # by the OPEN TURN alone: a cached parse can't show who_working past a turn that ended, so a stale
-        # echo can never strand it. (A hair less instant on the first push; a TARGETED card-reply still moves
-        # instantly via the store-backed followupPending reopen.)
+        # idle, FOREVER, invisible to the nudge (which reads the still-blocked store). The arm reads ONLY the
+        # PARSE's plain-reply floor (a real transcript atom, never the echo), and since 2026-07-29 the flag
+        # clears on the unblocker's watermark (blockCheckT) instead of the turn boundary — so the two
+        # stranding properties to pin are: the echo alone arms nothing, and the watermark always releases.
         g = self._blocked_store()
         km._tmux_echo.pop(SID, None)
         saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
         try:
-            # a plain reply exists in the parse AFTER the block (mt NOW-100), but the session is now IDLE
-            km._last_plain_user_turn_t = lambda turns: NOW - 10
+            # NO plain reply since the block in the parse — only a stranded echo in the live tail (the
+            # slash-command case that never prunes). It must not arm the flip, working or idle.
+            km._last_plain_user_turn_t = lambda turns: NOW - 300
             km._session_working = lambda turns: False
-            # …and a stranded echo of a send is still sitting in the live tail (the slash-command case that
-            # never prunes). It must NOT resurrect the flip.
             km._tmux_echo_add(SID, "/jld go ahead, do option B", author="human")
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertFalse(card["rejudging"], "a stranded echo on an IDLE session no longer drives rejudging")
+            self.assertFalse(card["rejudging"], "a stranded echo can never arm rejudging — only a parsed reply can")
             self.assertEqual(card["column"], "needs_input",
                              "so the blocked card stays in Needs-You where the nudge sees it — never stuck in Working")
-            # the moment a turn actually opens, the plain reply legitimately moves it (the kept who_working arm)
-            km._session_working = lambda turns: True
+            # a REAL parsed reply after the block arms the latch even while idle (pending the judge)…
+            km._last_plain_user_turn_t = lambda turns: NOW - 10
             card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertTrue(card2["rejudging"], "an OPEN turn after a plain reply still lights 'Re-judging…'")
+            self.assertTrue(card2["rejudging"], "a parsed plain reply arms the latch — idle or not, it's the judge's move")
             self.assertEqual(card2["column"], "working")
+            # …and the unblocker's watermark ALWAYS releases it — advanced on every examine and on the
+            # parse give-up path, so the 2026-07-22 stuck-in-Working failure has no revival route.
+            g = self._blocked_store(blockCheckT=NOW - 5)
+            card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertFalse(card3["rejudging"], "the watermark passed the reply → released")
+            self.assertEqual(card3["column"], "needs_input")
         finally:
             km._tmux_echo.pop(SID, None)
             km._last_plain_user_turn_t, km._session_working = saved_p, saved_w

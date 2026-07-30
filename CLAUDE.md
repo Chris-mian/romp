@@ -160,6 +160,30 @@ Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is
 approximating and key on that event instead.
 
+### Cards move on new information, never on inference flaps (user rule, 2026-07-29)
+Every card move claims something changed, and the user's eye follows it — so a
+card may move only when NEW INFORMATION arrives (a judge verdict filed from fresh
+evidence, a user gesture), and must move MINIMALLY: accurate, but never
+ping-ponging without user action. Two standing corollaries:
+- **Transient states latch until the deciding event.** A state like "reply
+  pending judgment" holds its column until the judge actually rules — never
+  re-derived per build from a flapping input (an open-turn bit, a per-build
+  recomputation). The audited card flipped working↔needs-you seven times in six
+  minutes because its drop-to-Working was bounded by the open turn, a proxy that
+  toggles at every turn boundary of an active session; the fix latches on the
+  unblocker's `blockCheckT` watermark, the event the proxy was approximating.
+- **A writer whose evidence predates the diary stands down.** Any mechanism about
+  to move a card must check, at the write moment, whether a verdict was FILED
+  after the evidence it is acting on — and if so, yield (the judges already ruled
+  on a newer world). The nudge does this at both ends now (`_nudge_fire_list`
+  arm-time guard, `_mark_nudge_failed` moot retire): before it, a nudge fired
+  five seconds after the unblocker had ruled its question answered, and then
+  converted its own cut-off response turn into a false needs-you block
+  presenting a brief the user had already answered.
+When adding any mechanism that can change a card's column, name the exact event
+that justifies the move; if the trigger can flap between builds without new
+information, it is the wrong trigger.
+
 ### Progressive disclosure is the UI's organizing principle (user rule, 2026-07-17)
 Every surface defaults to its most COMPACT legible form, and you can always click
 to go one level deeper — gist → summary → full mechanics, each level a click. When
