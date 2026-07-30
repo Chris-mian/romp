@@ -15952,7 +15952,8 @@ window.addEventListener('message',function(e){if(e&&e.data&&e.data.romp==='ready
 setTimeout(hide,5000);})();
 """
 
-# The shell's NOTIFICATION CENTER (the user 2026-07-27): errors used to drop as fixed banners from the top
+# The shell's LOG (the user 2026-07-27; named "Log" 2026-07-29 — "Errors" was a misnomer once quiet
+# informational kinds joined the error-ish ones): errors used to drop as fixed banners from the top
 # of the screen ("Disconnected — reconnecting…", usage-limit reached, judge degraded) and got in the way.
 # They now land as entries in a sequential feed behind a bell in the bottom bar's action cluster (next to
 # ↻ / network / gear): the bell goes red when something arrives (no count badge — it clipped and the
@@ -16047,7 +16048,7 @@ var f=document.getElementById('f-feed');
 try{f&&f.contentWindow&&f.contentWindow.postMessage({romp:'revealCard',itemId:n.tgt.itemId||'',sid:n.tgt.sid||''},'*');}catch(e){}});}
 row.appendChild(tx);row.appendChild(tm);row.appendChild(del);list.appendChild(row);})(NOTES[i],i);
 if(!shown){var e=document.createElement('div');e.className='rerr-empty';
-e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'No errors';list.appendChild(e);}}
+e.textContent=NOTES.length?'Nothing to show \\u2014 hidden by the filters above':'Nothing logged';list.appendChild(e);}}
 // One write path. A repeat of the NEWEST entry (same kind+text — e.g. a reconnect loop dropping over and
 // over) coalesces into it with a count instead of flooding the feed: event-exact, no time window.
 window.__rompNotify=function(kind,text,tgt){if(!text)return;
@@ -17402,7 +17403,7 @@ def _landing():
             # Reload button (the user 2026-07-27: redundant next to the rail's own restart/refresh —
             # and a dead page is one browser-refresh away regardless).
             "<div id=rerr-back hidden><div id=rerr-panel>"
-            "<div class=rerr-top>Errors<span class=sp></span>"
+            "<div class=rerr-top>Log<span class=sp></span>"
             "<button id=rerr-clear title='Clear all entries'>Clear all</button>"
             "<button id=rerr-x aria-label=Close>×</button></div>"
             "<div id=rerr-filters><span class=rerr-flabel>show</span><div id=rerr-fgrid></div></div>"
@@ -17437,10 +17438,10 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + network + settings, pinned to the far RIGHT (settings last), always visible:
             "<div class=rail-acts>"
-            # the error center's warning triangle (a bell until 2026-07-28 — the bell now means the
+            # the log's warning triangle (a bell until 2026-07-28 — the bell now means the
             # notification toggles): monochrome outline like its neighbors; goes red with the unread
-            # count drawn INSIDE the triangle when an error lands (see _ERRS_SVG + _LANDING_ERRS_JS).
-            "<div class=rail-act id=rail-errs title='Errors — click to open' aria-label=Errors>"
+            # count drawn INSIDE the triangle when an entry lands (see _ERRS_SVG + _LANDING_ERRS_JS).
+            "<div class=rail-act id=rail-errs title='Log — click to open' aria-label=Log>"
             + _ERRS_SVG +
             "</div>"
             # the refresh glyph is a REAL browser-style reload icon now (the user 2026-07-27: the ↻ text
@@ -17495,8 +17496,8 @@ def _landing():
             # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
             # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
             "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
-            # the error triangle on mobile too (same glyph + in-body count; opens the same popover)
-            "<button class=mact id=merr data-act=errs aria-label=Errors title='Errors — click to open'>"
+            # the log triangle on mobile too (same glyph + in-body count; opens the same popover)
+            "<button class=mact id=merr data-act=errs aria-label=Log title='Log — click to open'>"
             + _ERRS_SVG +
             "</button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
