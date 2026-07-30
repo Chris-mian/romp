@@ -33,13 +33,17 @@ test("on a phone (coarse pointer) Enter is a newline, not send — the Send butt
   assert.match(RENDER, /function isCoarsePointer\(\)/);
   assert.match(RENDER, /matchMedia\("\(pointer:coarse\)"\)\.matches/);
   assert.match(RENDER, /e\.key === "Enter" && !e\.shiftKey && !isCoarsePointer\(\)/);
-  // the resting placeholder drops the ⏎/⇧⏎ hint on mobile (it's wrong there and clipped the one-line box)
+  // the resting placeholder drops every hint on mobile (⏎/⇧⏎ is wrong there, and even the "/" hint
+  // wrapped and clipped the one-line pill)
   assert.match(RENDER, /function composerRestingPlaceholder\(\)/);
-  assert.match(RENDER, /isCoarsePointer\(\)\s*\?\s*"Message this session…  \(type \/ for commands\)"/);
+  assert.match(RENDER, /isCoarsePointer\(\)\s*\?\s*"Message this session…"/);
 });
 
-test("the empty composer floors at two lines on a phone so the wrapped resting placeholder isn't clipped (the user 2026-07-15)", () => {
-  assert.match(CSS, /@media \(pointer: coarse\) \{\s*#composer-input \{ min-height: calc\(2\.8em \+ 18px\); \}/);
+test("on a phone the resting box is ONE line — the Signal-style pill — with a placeholder that fits it (the user 2026-07-30)", () => {
+  // the old two-line floor existed only to show a wrapped placeholder; the placeholder is short now, so
+  // the floor is gone and the empty composer rests as a single-line pill between the two circles
+  assert.doesNotMatch(CSS, /min-height: calc\(2\.8em/);
+  assert.match(CSS, /@media \(pointer: coarse\) \{[\s\S]*?#composer-input \{ min-height: 40px;/);
 });
 
 test("⏎ jumps focus to the tab bar after sending so ←/→ switch sessions (the user 2026-06-25)", () => {
@@ -60,20 +64,18 @@ test("the send button is disabled on a closed (read-only) session", () => {
   assert.match(RENDER, /if \(sendBtn\) sendBtn\.disabled = closed/);
 });
 
-test("the send button is styled to the right of 📎 and the textarea reserves room for both", () => {
-  // resized 2026-07-29 (send is the primary action, so it is the wider of the two); the touch layout and
-  // the arithmetic that keeps the pair inside the box live in composer-buttons.test.ts
-  assert.match(CSS, /#composer-send \{ right: 26px; width: 36px/);
-  assert.match(CSS, /#composer-attach \{ right: 62px; width: 32px/);
-  assert.match(CSS, /#composer-input \{[\s\S]*padding: 8px 64px 8px 10px/);
-  assert.match(CSS, /#composer-input \{ padding-right: 78px; \}/, "…widened for the bigger pair");
+test("send sits on the input's right, the paperclip on its left — flex order, not offsets", () => {
+  // re-laid 2026-07-30 as the Signal-style compose row; the circle sizing and the touch layout live in
+  // composer-buttons.test.ts
+  assert.match(CSS, /#composer-attach \{ color: var\(--accent\); opacity: 0\.8; order: 1; \}/);
+  assert.match(CSS, /#composer-send \{ order: 3; \}/);
 });
 
 test("the composer sits tight to the bottom — no wasted gap below it (the user 2026-06-23)", () => {
-  // the bottom padding was trimmed 12px → 6px so the box hugs the pane's bottom; the 📎/send buttons drop
-  // 18px → 12px in step so they stay vertically centred on the one-line textarea.
+  // the bottom padding was trimmed 12px → 6px so the box hugs the pane's bottom; the buttons ride the
+  // row's bottom edge by flex (align-items: flex-end), with no offsets to keep in step any more.
   assert.match(CSS, /#composer \{[^}]*padding: 8px 24px 6px;/);
-  assert.match(CSS, /#composer-attach, #composer-send \{[\s\S]*bottom: 12px;/);
+  assert.match(CSS, /#composer \{[^}]*align-items: flex-end;/);
 });
 
 test("focusing a tab (after ⏎-send) draws NO white UA focus ring around its colored border (the user 2026-06-25)", () => {

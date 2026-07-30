@@ -144,11 +144,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    sit side by side — prevents thin columns that break words mid-word ("Shippe/d") */
 @container (max-width: 540px) {
   .feed-cols { flex-direction: column; }
-  /* stacked, the columns read TOP-DOWN as Blocked (needs you) → Completed → Working (the user 2026-07-08):
-     what needs you first, then what's done, then what's still running. DOM order stays Working/Blocked/
-     Completed (unchanged for the side-by-side layout); `order` only re-sequences the stacked case. */
-  .feed-col.col-needsInput { order: 1; }
-  .feed-col.col-completed  { order: 2; }
+  /* stacked, the columns read TOP-DOWN as Completed → Blocked (needs you) → Working (the user 2026-07-30,
+     moving Completed up from the middle; supersedes the 2026-07-08 Blocked-first order): what finished
+     first, then what needs you, then what's still running. DOM order stays Working/Blocked/Completed
+     (unchanged for the side-by-side layout); `order` only re-sequences the stacked case. */
+  .feed-col.col-completed  { order: 1; }
+  .feed-col.col-needsInput { order: 2; }
   .feed-col.col-asks       { order: 3; }
 }
 
