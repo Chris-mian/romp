@@ -111,7 +111,9 @@ test("a session dying on its OWN is not recorded as a close of ours", () => {
 // ---- the wiring in render.ts -------------------------------------------------------------------------
 
 test("closeTabLocally records the close, then drops the tab", () => {
-  assert.match(RENDER, /function closeTabLocally\(id: string\): void \{\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);\s*\n\s*dismissSession\(id\);/);
+  // (2026-07-30: a PROVISIONAL tab short-circuits above this — there is no session to close, so the ✕
+  // means "never mind" and cancels the spawn instead. A real tab's path is unchanged.)
+  assert.match(RENDER, /if \(isProvisionalId\(id\)\) \{ cancelProvisional\(\); return; \}\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);\s*\n\s*dismissSession\(id\);/);
   // declared beside tabMeta, NOT down by dismissSession: renderTabs reads it and can run before the module
   // finishes evaluating, which would make a `const` down there a temporal-dead-zone throw.
   assert.match(RENDER, /const tabMeta = new Map[\s\S]{0,900}?const closingTabs = new Map<string, number>\(\);/);

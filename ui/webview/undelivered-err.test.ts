@@ -18,8 +18,9 @@ test("chat: an `err` takes the confirm MODAL, not the warn toast", () => {
   assert.match(RENDER, /else if \(m\.type === "err" && typeof m\.text === "string" && m\.text\) \{/);
   assert.match(RENDER, /const title = typeof m\.title === "string" && m\.title \? m\.title : "That action was not delivered";/);
   assert.match(RENDER, /showConfirm\(title, m\.text,/);
-  // the fading toast stays for the soft cases it was written for
-  assert.match(RENDER, /m\.type === "warn" && typeof m\.text === "string" && m\.text\) warnToast\(m\.text\);/);
+  // the fading toast stays for the soft cases it was written for (unless a create is in flight, in which
+  // case the warn IS that create's verdict and takes a dialog of its own — 2026-07-30)
+  assert.match(RENDER, /if \(provisionalId\) failProvisional\(m\.text\); else warnToast\(m\.text\);/);
 });
 
 test("chat: the refused text is offered back, because the composer already cleared it", () => {

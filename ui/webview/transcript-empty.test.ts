@@ -15,7 +15,10 @@ test("syncView shows a 'No messages yet.' placeholder for a zero-event transcrip
   // the empty branch is the FIRST thing syncView does after resolving the session, so it covers every
   // entry point (sync show, deferred build, append, compact + non-compact) uniformly.
   assert.match(RENDER, /if \(s\.events\.length === 0\) \{/);
-  assert.match(RENDER, /el\("div", "tx-empty"\); ph\.textContent = "No messages yet\.";/);
+  // (2026-07-30: a PROVISIONAL tab takes the romp loader instead — it is not empty, it is starting —
+  // so the placeholder text moved to the else branch. A real empty transcript reads exactly as before.)
+  assert.match(RENDER, /el\("div", "tx-empty"\); v\.el\.appendChild\(ph\);/);
+  assert.match(RENDER, /\} else ph\.textContent = "No messages yet\.";/);
   // idempotent: an already-present placeholder is left alone (no churn on repeated pushes that stay empty)
   assert.match(RENDER, /only\.classList\?\.contains\("tx-empty"\)/);
 });
