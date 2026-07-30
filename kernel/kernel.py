@@ -1750,6 +1750,7 @@ def _mark_nudge_failed(gid, ev_t=None):
     planner has processed it too) and the goal is STILL working-stalled: the one ask didn't resolve it, and
     per the anti-loop rule we never re-ask. Event-based — stamped at the tick's re-arm gate, whose
     session-level gates ARE "response turn ended + judged"; cleared by the next genuine fire's fresh record.
+    Returns "failed" when the stamp landed, "moot" when the story had moved on, None when skipped.
 
     AND (the user 2026-07-07): a failed nudge IS a block — romp asked, the answer didn't resolve it, romp
     won't ask again, so by definition the goal now needs the user. Record the block verdict so the card
@@ -1763,10 +1764,10 @@ def _mark_nudge_failed(gid, ev_t=None):
     try:
         _sid = gid.rsplit(":", 1)[0]
         if _session_awaiting(_sid, _path_of(_sid) or "", True):
-            return
+            return None
         if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid,
                                 answered_at=_peer_answered_at(_sid)):
-            return                                     # the judge's durable ⏳ stamp says the goal waits on
+            return None                                # the judge's durable ⏳ stamp says the goal waits on
             #                                            async work — same rule as above, restart-proof
     except Exception:
         pass
@@ -1774,8 +1775,31 @@ def _mark_nudge_failed(gid, ev_t=None):
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     rec = nudged.get(gid)
-    if not rec or rec.get("failed"):
-        return
+    if not rec or rec.get("failed") or rec.get("moot"):
+        return None
+    # MOOT, NOT FAILED (the user 2026-07-29): if a real judge FILED a verdict on this node after the
+    # response turn — an unblock ("answered in passing"), a fresh planner/closer block, a completion —
+    # then the judges have already ruled on evidence at least as new as ours, and "the response didn't
+    # resolve this" is a stale claim. Filing our procedural block anyway would overwrite that ruling AND
+    # resurface the node's LAST decision brief, which the later verdict may have just answered — the
+    # audited card sat in Needs-you presenting a question the user had answered and the unblocker had
+    # ruled answered, five minutes after the fact. Retire the record instead (`moot`, no `failed`, no
+    # block): the anti-loop gate keeps this arm from ever re-firing, and a genuinely still-stalled goal
+    # re-arms on the next GENUINE ended turn, judged against the post-verdict world. The verdict's
+    # FILING time (`at`; ev_t for legacy rows) is the event — same discipline as _nudge_fire_list's
+    # arm-time guard, applied at the eval end of the race.
+    _ev = int(ev_t or now)
+    try:
+        _nd0 = jd.load_goals(gid.rsplit(":", 1)[0]).get("nodes", {}).get(gid)
+        if _nd0 is not None and any((e.get("at") or e.get("ev_t") or 0) > _ev
+                                    and e.get("src") != "nudge"
+                                    for e in _nd0.get("log") or []):
+            nudged[gid] = dict(rec, moot=True)
+            d["nudged"] = nudged
+            _write_auto_nudge(d)
+            return "moot"
+    except Exception:
+        pass
     # failedAt: the build_feed chip's retire fallback when the block row below goes missing — the two
     # writes land in different files and only this one is guaranteed (g52, 2026-07-16: a planner pass's
     # stale save erased the row, and the row-keyed retire left the chip saying "waiting on you" through
@@ -1789,11 +1813,11 @@ def _mark_nudge_failed(gid, ev_t=None):
         nd = store.get("nodes", {}).get(gid)
         why = jd.NUDGE_BLOCK_WHY          # shared constant: the briefer recognizes it as PROCEDURAL and
         #                                   writes no decision brief, rather than inventing one from <work>
-        # EVIDENCE TIME = the nudge RESPONSE turn, not wall-clock `now` (the user 2026-07-22). The block's
-        # evidence IS that response; claiming `now` made the stamp structurally outrank the user's own
-        # reply floor (_block_is_stale voids a block only when ev_t <= followupAt), so a reply could NEVER
-        # void a nudge block — the one mechanism built to stop a judge re-blocking a just-answered card.
-        _ev = int(ev_t or now)
+        # EVIDENCE TIME (_ev, hoisted above for the moot check) = the nudge RESPONSE turn, not wall-clock
+        # `now` (the user 2026-07-22). The block's evidence IS that response; claiming `now` made the stamp
+        # structurally outrank the user's own reply floor (_block_is_stale voids a block only when
+        # ev_t <= followupAt), so a reply could NEVER void a nudge block — the one mechanism built to stop
+        # a judge re-blocking a just-answered card.
         if nd is not None and jd.record_verdict(store, nd, "nudge", "block", _ev, why=why):
             nd["mt"] = _ev                            # the event materialized blocked + blockWhy
             jd.append_block(sid, gid, "nudge", why, _ev)  # journal before the save it protects: a judge
@@ -1804,6 +1828,7 @@ def _mark_nudge_failed(gid, ev_t=None):
             _mark_views_dirty()
     except Exception:
         sys.stderr.write("nudge-failed block: %s\n" % traceback.format_exc())
+    return "failed"
 
 
 def _interrupt_focus_top(store):
@@ -2806,7 +2831,9 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
             # settled), yet the goal is STILL 'working' (the per-goal status gate above). The one ask
             # didn't resolve it and we never re-ask — surface it to the human instead: stamp the record
             # so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
-            if rec and not rec.get("failed"):
+            # A `moot` record is one the judges superseded mid-flight (see _mark_nudge_failed) — settled,
+            # like `failed`, but with no chip and no block; skip it without re-running the ready gates.
+            if rec and not rec.get("failed") and not rec.get("moot"):
                 ready, resp = _nudge_response_ready(turns, store, rec, gid, now)
                 if not ready:
                     continue                           # the response hasn't arrived / hasn't been ruled /
@@ -2822,9 +2849,12 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
                 _sdefer = _revivers_pending(sid, store, turns, gid)
                 if _sdefer and not _nudge_deferred_ok(gid, _sdefer, now, sid):
                     continue                           # something else can still move it → not needs-you
-                _mark_nudge_failed(gid, ev_t=(resp or {}).get("t") or lt.get("end") or lt.get("t"))
-                nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
-                fired = True                           # push so the chip/floor reaches the feed now
+                _fate = _mark_nudge_failed(gid, ev_t=(resp or {}).get("t") or lt.get("end") or lt.get("t"))
+                if _fate == "failed":
+                    nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
+                    fired = True                           # push so the chip/floor reaches the feed now
+                elif _fate == "moot":
+                    nudged[gid] = dict(rec, moot=True)     # the judges superseded the ask — no chip, no block
             continue
         count = rec.get("count", 0) + 1
         # (the nudge-fire forensics side-log was retired with the P3.4 sweep, 2026-07-07 — the goal's
@@ -2844,7 +2874,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         # closes the race to the file write itself. An unreadable re-read fires on the tick's snapshot,
         # as before — never silently drops the nudge.
         try:
-            to_fire = _nudge_fire_list(jd.load_goals(sid), to_fire)
+            to_fire = _nudge_fire_list(jd.load_goals(sid), to_fire, arm_t=arm.get("t") or 0)
         except Exception:
             pass
     if len(to_fire) == 1:
@@ -2874,17 +2904,29 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     return fired
 
 
-def _nudge_fire_list(fresh, to_fire):
+def _nudge_fire_list(fresh, to_fire, arm_t=None):
     """The subset of this tick's due nudges still worth sending, judged against a FRESH store read
     (the closer-race guard — see the call site). A goal the judges moved off plain 'working' since the
     tick's snapshot — completed, blocked, cleared, or status-rolled — gets no status check: the answer
-    already landed. Pure and store-shaped for tests."""
+    already landed. Pure and store-shaped for tests.
+
+    arm_t = the ended turn the stall was armed on. A goal whose diary gained a verdict FILED after that
+    turn is also dropped, even if it reads plain 'working' now (the user 2026-07-29): the judges have
+    already ruled on evidence at least as new as the stall's, so the "it looks stalled" inference is
+    stale by construction. The audited case: a card blocked on a question, the user answered, the
+    unblocker lifted the block — and five seconds later the nudge status-checked the freshly-unblocked
+    goal off its pre-answer arm; the response turn then got cut by a restart and the failed-nudge path
+    converted the mess into a false needs-you block. The verdict's FILING (`at`; ev_t for legacy
+    entries) is the event: filed after the arm → the story moved → no fire. The next GENUINE ended
+    turn re-arms and may nudge afresh, judged against the post-verdict world."""
     nodes, status = fresh.get("nodes", {}) or {}, fresh.get("status", {}) or {}
     keep = []
     for f in to_fire:
         if f[0] not in nodes:
             continue                                 # gone from the fresh store: cleared + compacted mid-tick
         nd = nodes[f[0]]
+        if arm_t and any((e.get("at") or e.get("ev_t") or 0) > arm_t for e in nd.get("log") or []):
+            continue                                 # a verdict landed AFTER the arm — the stall read is stale
         if status.get(f[0], "working") == "working" and not nd.get("cleared") \
                 and not nd.get("nodeComplete") and not nd.get("blocked"):
             keep.append(f)
@@ -12585,28 +12627,34 @@ def build_feed(now, tmux=None):
             recheck = bool(col == "blocked" and nid != api_top and nid != perm_top
                            and nodes[nid].get("followupPending"))
             # RE-JUDGING (the user 2026-06-30; MOVED to Working 2026-07-02): a PLAIN reply on the thread
-            # AFTER the block moves the card to WORKING while the reply's turn runs — it's the agent's move
-            # now, and the delay before the card left Needs-You was the user's complaint (2026-07-02). This
-            # is NOT the old permanent sweep whose failure mode was an unrelated reply stranding a real
-            # block in Working forever (the 2026-06-30 regression): the move is EVENT-BOUNDED by the OPEN
-            # TURN (who_working). When the turn ends and the judge left the goal blocked, the flag drops and
-            # the card RETURNS to Needs-You on its own; if the judge resolved it, the store moves it out
-            # authoritatively. The "Re-judging…" swirl rides along in Working. Never the hard floors
-            # (api/permission).
+            # AFTER the block moves the card to WORKING — it's the agent's move now, and the delay before
+            # the card left Needs-You was the user's complaint (2026-07-02). The flag holds until the
+            # UNBLOCKER has re-examined the block with evidence covering the reply (blockCheckT, its
+            # persisted watermark, reaches the reply); then the card returns to Needs-You exactly once —
+            # or leaves authoritatively if the judge lifted the block. The "Re-judging…" swirl rides along
+            # in Working. Never the hard floors (api/permission).
+            #
+            # LATCHED ON THE WATERMARK, NOT THE OPEN TURN (the user 2026-07-29). The flag used to be
+            # bounded by who_working, which made a blocked card on an ACTIVE session strobe
+            # working↔needs-you at every turn boundary — the audited card flipped seven times in six
+            # minutes while nothing about it changed. The turn-bound was a proxy for "the judge hasn't
+            # ruled on the reply yet"; blockCheckT IS that event: the unblocker advances it on every
+            # examine AND on the parse give-up path, so the latch cannot stick past a judge look. This is
+            # the same trust the TARGETED-reply arm (followupPending) already places in the judge to
+            # clear its store-backed flag. Cards move on new information, never on activity boundaries.
             #
             # NO ECHO ARM (the user 2026-07-22): the flip used to ALSO ride the backend send-echo
             # (echo_send_t), for a sub-second flip before the turn's atom lands in the cached parse. But a
             # composer slash-command echo never retires — its expanded transcript form ("<command-name>…")
             # doesn't text-match the raw echo, and the parser skips it from the human floor — so the stale
             # echo pinned rejudging TRUE forever: the card sat in Working, idle, invisible to the nudge
-            # (which reads the still-blocked store). Bounding on the open turn alone is self-limiting — a
-            # cached parse cannot show who_working past a turn that ended — so it can never stick. A hair
-            # less instant on the very first push; the store-backed reopen (followupPending) still gives the
-            # instant flip for a TARGETED card reply.
+            # (which reads the still-blocked store). The latch arms only off the PARSE's plain-reply turn
+            # (a real transcript atom, never the echo), and the watermark clear is judge-driven, so the
+            # stranded-echo failure stays impossible.
             rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
                              and not nodes[nid].get("followupPending")
                              and plain_user_t > disp_t
-                             and who_working)
+                             and plain_user_t > (nodes[nid].get("blockCheckT") or 0))
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
             # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
             # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely
