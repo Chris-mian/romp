@@ -5002,9 +5002,13 @@ class SourceCitation(unittest.TestCase):
         # fallback): the SOURCE line is part of the reply's SHAPE — "complete ONLY with" a final line that
         # is exactly the citation — not an advisory "add one final line" the model can skim past. Both
         # judges also forbid inventing an unshown label (the other observed miss flavor).
+        # Matched case-insensitively since 2026-07-29: stripping the em dashes from these prompts (they
+        # banned the punctuation they themselves used, and 11% of takeaways leaked one) turned this
+        # mid-sentence clause into its own sentence, so "never" is capitalized now. The wording is the
+        # requirement; its case is not.
         for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
             self.assertIn("complete **only**", sys_prompt, "the line is required, not suggested")
-            self.assertIn("never omit it while labels are present", sys_prompt)
+            self.assertIn("never omit it while labels are present", sys_prompt.lower())
             self.assertIn("never invent a label", sys_prompt)
 
     def test_shape_sentence_admits_the_source_line(self):
@@ -5662,10 +5666,14 @@ class Distiller(unittest.TestCase):
     def test_block_brief_prompt_teaches_per_subgoal_paragraphs(self):
         # the user 2026-07-21: several owed items → one short paragraph per item, in <owed> order, each led by
         # its own decision and blank-line separated, so the user can answer each blocked thing on its own.
+        # Widened 2026-07-29: the "single item → one paragraph" clause now also covers several rows that
+        # come down to the SAME decision. A live card handed three such rows wrote the decision three times,
+        # twice announcing out loud that it was restating itself.
         self.assertIn("When <owed> lists more than one", jd.BLOCK_BRIEF_SYS)
         self.assertIn("one short paragraph per item", jd.BLOCK_BRIEF_SYS)
         self.assertIn("separated from the ", jd.BLOCK_BRIEF_SYS)   # "...next by a blank line"
-        self.assertIn("When <owed> lists a single", jd.BLOCK_BRIEF_SYS)
+        self.assertIn("come down to the SAME decision, write ONE paragraph", jd.BLOCK_BRIEF_SYS)
+        self.assertIn("never remark that the items repeat", jd.BLOCK_BRIEF_SYS)
 
     def test_brief_llm_renders_a_multi_owed_list_as_numbered_lines(self):
         # a LIST of (sub-goal, why) pairs → a numbered <owed> block, one line per pair, so the prompt can map

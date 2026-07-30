@@ -1428,19 +1428,28 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // paragraph count must MATCH briefParts (the model may merge items; a missing stamp beats a wrong
   // one — then the plain applyDistillLine text above stands untouched). Rebuilt every push, so the
   // ages tick live like every other relAge on the card.
+  //
+  // ONE EXTRA TRAILING PARAGRAPH is allowed and left UNSTAMPED (the user 2026-07-29): all three judge
+  // prompts now put whatever is still open in a last paragraph of its own, and that paragraph belongs to
+  // no item, so it carries no item's age. Without this the count-match gate saw items+1 paragraphs on
+  // every multi-item card that had a leftover and dropped every stamp. Exactly one extra, always the
+  // last: a bigger surplus means the model split some other way and the mapping can no longer be trusted,
+  // so the gate falls through to the plain text as before.
   const bp = dCompleted ? it.summaryParts : dBlocked ? it.briefParts : null;
   if (distillShown && bp && bp.length > 1) {
     const paras = distillShown.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
-    if (paras.length === bp.length) {
+    if (paras.length === bp.length || paras.length === bp.length + 1) {
       const dle = a._distill as HTMLElement;
       dle.textContent = "";
       const nowS = Date.now() / 1000;
       paras.forEach((p, i) => {
         const para = el("div", "fask-para");
         para.textContent = p;
-        const age = el("span", "fask-para-age");
-        age.textContent = relAge(nowS - (bp[i].since || nowS));
-        para.append(" ", age);
+        if (i < bp.length) {
+          const age = el("span", "fask-para-age");
+          age.textContent = relAge(nowS - (bp[i].since || nowS));
+          para.append(" ", age);
+        }
         dle.append(para);
       });
     }
