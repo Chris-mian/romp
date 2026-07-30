@@ -19,7 +19,13 @@ export function dirStatusLine(s: DirStatus | null): { text: string; cls: string 
   // Plain words for what is wrong (the user 2026-07-29: "still not there" read as waffle). A missing
   // folder is not INVALID, though, since starting here creates it, so it says which of the two it is
   // rather than collapsing both into one wrong label.
-  if (s.canCreate) return { text: "no such folder yet. Starting will create it", cls: "warn" };
+  if (s.canCreate) {
+    // Name what will be MADE, and where (the user 2026-07-29). "will create it" left you to work out
+    // which folder, at which path, on which machine, from a line that had just told you the path was
+    // wrong. Say the path outright, and when the parent is missing too, say how much is being made.
+    const above = s.missing > 1 ? ` and the ${s.missing - 1} folder${s.missing > 2 ? "s" : ""} above it` : "";
+    return { text: `no such folder yet. Starting will create ${s.path}${above}`, cls: "warn" };
+  }
   return { text: "invalid path: " + s.path, cls: "bad" };
 }
 
