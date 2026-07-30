@@ -16595,7 +16595,10 @@ else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'
 // settings you set once and leave. They shared a single flat row before, which gave Detach the same
 // weight as a dropdown, and on a phone pushed it off the edge entirely.
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||'')+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
+// A host mid-attach gets the romp loader inline (the user 2026-07-29): the swirl glyph spinning beside
+// the status word, so "connecting" reads as something HAPPENING rather than a label that might be stuck.
+// The repo's loading rule spelled small: same glyph, same reverse spin as the composer's slash spinner.
+'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(busyStatus(t.status)?'<img class=rnet-spin src=/media/romp-swirl-glyph.svg alt="">':'')+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
 retry+pull+ask+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
@@ -17240,6 +17243,12 @@ def _landing():
             # the reconnect cadence on a down row: romp is still dialing, and this says when the next
             # one lands, so a forever-retry never reads as an abandoned row (the user 2026-07-29)
             ".rnet-retry{color:#6e7681;font-variant-numeric:tabular-nums}"
+            # the inline romp loader on a connecting row: the swirl glyph, reverse-spun, beside the phase
+            # word. Reduced-motion drops the animation and keeps the glyph (the cue stays, the motion goes).
+            ".rnet-spin{display:inline-block;width:11px;height:11px;vertical-align:-1px;margin-right:5px;"
+            "animation:rnet-swirl 2.4s linear infinite}"
+            "@keyframes rnet-swirl{to{transform:rotate(-360deg)}}"
+            "@media (prefers-reduced-motion: reduce){.rnet-spin{animation:none}}"
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             # STALE: a remembered value on a row that is not currently up. Muted + dotted underline, and it
             # OVERRIDES .rnet-old's accent (two classes beat one) — an accent-blue "behind 2 commits" reads as
