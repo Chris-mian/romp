@@ -75,26 +75,34 @@ class SupervisorActsOnTheVerdict(unittest.TestCase):
         self.src = _i.getsource(km._tunnel_supervisor)
 
     def test_a_timed_out_no_kernel_row_is_killed_so_the_dead_proc_path_redials(self):
-        self.assertIn('if st == "no-kernel" and r.get("_probe") == "timeout":', self.src,
-                      "the stale-tunnel kill keys on the probe verdict, never on a timer or a counter")
+        # The verdict is unchanged; what changed on 2026-07-30 is that it now takes a RUN of them. A
+        # single 4-second timeout used to condemn a link that had been carrying traffic milliseconds
+        # earlier, which is what made a remote flap twice a minute for hours (see test_tunnel_flap.py).
+        self.assertIn('silent = (st == "no-kernel" and r.get("_probe") == "timeout")', self.src,
+                      "the kill still keys on the probe verdict, never on a timer")
+        self.assertIn("if _note_poll(r, not silent):", self.src, "…and now on a run of them")
         self.assertIn('r["proc"].terminate()', self.src)
         self.assertIn("stale-tunnel", self.src, "and it goes on the record")
 
     def test_the_kill_is_never_reached_on_a_refusal(self):
         # A refusal proves the tunnel carries traffic — churning its ssh would be pure damage, and would
         # re-dial every 15s forever against a box whose romp is deliberately off. So the ONLY terminate()
-        # in the supervisor must sit under the timeout-qualified guard, not under the plain no-kernel
-        # branch that writes the row's detail.
+        # in the supervisor must sit under the silence-qualified guard, not under the plain no-kernel
+        # branch that writes the row's detail. `silent` is false for a refusal, so _note_poll is told the
+        # link ANSWERED and the run resets — a refusing host can never accumulate its way to a kill.
         lines = self.src.splitlines()
-        guard = [i for i, ln in enumerate(lines) if 'st == "no-kernel" and r.get("_probe") == "timeout"' in ln]
+        verdict = [i for i, ln in enumerate(lines) if 'silent = (st == "no-kernel"' in ln]
+        self.assertEqual(len(verdict), 1, "one place decides what silence is")
+        guard = [i for i, ln in enumerate(lines) if "if _note_poll(r, not silent):" in ln]
         self.assertEqual(len(guard), 1, "one guard")
+        self.assertLess(verdict[0], guard[0], "the verdict is computed before it is counted")
         # the only kill in the STATUS-handling region belongs to that guard. (The route-change block near
         # the top of the loop drops tunnels too, and legitimately so — the network moved under all of them —
         # so this is scoped to the per-host status branch rather than counting the whole function.)
         region = [i for i, ln in enumerate(lines) if "terminate()" in ln and i > guard[0] - 20]
         self.assertEqual(len(region), 1, "one kill in the status branch")
         self.assertLess(guard[0], region[0], "the kill is inside the guard")
-        self.assertLess(region[0] - guard[0], 6, "and directly under it, not in some later branch")
+        self.assertLess(region[0] - guard[0], 8, "and directly under it, not in some later branch")
         plain = [i for i, ln in enumerate(lines) if 'elif st == "no-kernel"' in ln]
         self.assertTrue(plain and plain[0] > region[0],
                         "the detail-only no-kernel branch comes after, and kills nothing")

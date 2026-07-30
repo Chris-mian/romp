@@ -20,7 +20,8 @@ export function hostPrefix(name: string | null | undefined, sid: string | null |
  *  read a remote's transcripts for a while before noticing nothing was connected). The mark goes on the
  *  "host:" token, not the session name: the LINK is what is gone, not the session — and a struck WHOLE
  *  name already means a dead session, so the two can never be confused. A CSS cue and a title, never a
- *  glyph. */
+ *  glyph. The cue itself is the STALE treatment, not strikethrough (2026-07-30): what this says is "the
+ *  last state romp got", which is what .rnet-stale already says in the network panel. */
 export function hostNameNodes(name: string, sid: string | null | undefined): Node[] {
   const p = hostPrefix(name, sid);
   if (!p) return [document.createTextNode(name)];
