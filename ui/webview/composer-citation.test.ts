@@ -15,7 +15,8 @@ const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skelet
 
 test("the composer has a chip strip above the textarea", () => {
   assert.match(SKELETON, /<div id="composer-chips" style="display:none"><\/div><textarea id="composer-input"/);
-  assert.match(CSS, /#composer-chips \{ display: flex/);
+  // flex: 1 1 100% claims a full-width row of its own above the Signal-style compose row (2026-07-30)
+  assert.match(CSS, /#composer-chips \{ flex: 1 1 100%; display: flex/);
   assert.match(CSS, /\.composer-chip \{/);
 });
 

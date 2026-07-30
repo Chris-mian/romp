@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""The mobile shell's composer padding is load-bearing for the send button's position (2026-07-29).
+"""The composer buttons no longer couple to the mobile shell's padding (2026-07-30).
 
-The Send and Attach buttons are absolutely positioned inside #composer, so their `right` offsets are
-measured from ITS padding edge. The kernel's mobile CSS narrows that padding from 24px to 10px, and
-styles.css carries a second set of offsets under the SAME media query to match. Change the padding here
-and the buttons move relative to the box they are supposed to sit inside — which is exactly the class of
-breakage this pins, since the two live in different files and the coupling is otherwise invisible.
+From 2026-07-29 to 2026-07-30 the Send and Attach buttons were absolutely positioned inside #composer,
+with `right` offsets measured from its padding edge — and the kernel's mobile CSS narrows that padding
+from 24px to 10px, so styles.css carried a second offset set under a matching media query. Two files had
+to move in lockstep for the buttons to land inside the box at all.
 
-(A landscape iPad is a coarse pointer WIDER than 1024, so it keeps the desktop padding: that is why the
-query carries a max-width at all, and why the offsets cannot simply live in the coarse block.)
+The Signal-style compose row dissolved that: the buttons are in-flow flex items now, so the kernel's
+padding override is just padding again. This pins the DISSOLUTION — the kernel side still narrows the
+padding for phones, and no absolutely-positioned button offsets may sneak back into styles.css, because
+nothing would keep them aligned with the kernel's padding this time either.
 """
 import os
 import re
@@ -26,39 +27,21 @@ STYLES = open(os.path.join(os.path.dirname(HERE), "ui", "webview", "styles.css")
 
 
 class MobileComposerPadding(unittest.TestCase):
-    def test_the_mobile_shell_narrows_the_composer_padding_to_10px(self):
+    def test_the_mobile_shell_still_narrows_the_composer_padding_to_10px(self):
         self.assertIn("#composer{padding:8px 10px 6px}", km._CHAT_MOBILE_CSS)
 
     def test_it_is_scoped_to_coarse_pointers_up_to_1024px(self):
         self.assertIn("@media (pointer:coarse) and (max-width:1024px)", km._CHAT_MOBILE_CSS)
 
-    def test_the_button_offsets_carry_a_matching_query(self):
-        self.assertIn("@media (pointer: coarse) and (max-width: 1024px) {", STYLES)
-        block = STYLES.split("@media (pointer: coarse) and (max-width: 1024px) {")[1].split("}")[0]
-        self.assertIn("right: 14px", block, "send sits 4px inside the narrowed 10px padding")
+    def test_no_absolute_button_offsets_may_return(self):
+        """In-flow flex items need no offsets; an offset would re-create the two-file coupling."""
+        self.assertIsNone(re.search(r"#composer-(send|attach)[^{]*\{[^}]*\bright:", STYLES))
+        self.assertIsNone(re.search(r"#composer-(send|attach)[^{]*\{[^}]*position: absolute", STYLES))
 
-    def test_the_offsets_keep_both_buttons_inside_the_box_at_both_paddings(self):
-        """Arithmetic, so a future nudge to one number cannot quietly overlap the two buttons."""
-        def px(pattern, where=STYLES):
-            m = re.search(pattern, where)
-            self.assertIsNotNone(m, "missing rule: %s" % pattern)
-            return int(m.group(1))
-
-        coarse = STYLES[STYLES.index("/* TOUCH (the user 2026-07-29"):]
-        narrow = STYLES.split("@media (pointer: coarse) and (max-width: 1024px) {")[1].split("\n}")[0]
-        send_w = px(r"#composer-send \{ right: 28px; width: (\d+)px", coarse)
-        att_w = px(r"#composer-attach \{ right: 136px; width: (\d+)px", coarse)
-        for label, send_right, att_right, pad in (
-                ("wide (iPad landscape, 24px padding)", 28, 136, 24),
-                ("narrow (mobile shell, 10px padding)", px(r"#composer-send \{ right: (\d+)px; \}", narrow),
-                 px(r"#composer-attach \{ right: (\d+)px; \}", narrow), 10)):
-            with self.subTest(label):
-                self.assertGreaterEqual(send_right, pad, "send would hang outside the box's right edge")
-                self.assertGreaterEqual(att_right, send_right + send_w,
-                                        "the paperclip would overlap the send button")
-                self.assertGreaterEqual(att_right, pad)
-                # and neither is so far left that it lands under the text's own inset
-                self.assertLess(att_right + att_w, 400, "the pair would eat a phone's whole box width")
+    def test_the_buttons_are_in_flow_flex_circles(self):
+        self.assertIn(
+            "#composer-attach, #composer-send {\n"
+            "  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%;", STYLES)
 
 
 if __name__ == "__main__":

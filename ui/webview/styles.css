@@ -455,12 +455,19 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   max-width: var(--chat-col); margin: 0 auto; padding: 7px 24px 0 44px;   /* left matches .thread's 44px gutter so the controls align with the transcript column */
   display: flex; align-items: center; gap: 10px;
 }
-#composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 6px; }
+/* Signal-style compose ROW (the user 2026-07-30): paperclip · pill input · round send — the layout every
+   phone messenger trained thumbs on. Laid out by flex `order` so the shared markup (input before the two
+   buttons) needn't change on either surface; align-items flex-end keeps the buttons seated at the bottom
+   of the row while the input grows upward. */
+#composer {
+  position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 6px;
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px;
+}
 
 /* ── citation chip strip (the user 2026-07-01) ── a click on a feed card summary / sub-goal seeds a
    dismissible pill here, ABOVE the textarea: "you're following up on THIS". Accent-blue, with an ✕ to
    dismiss (Backspace-at-start dismisses too). Reads as attached context, not typed text. */
-#composer-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px 2px; }
+#composer-chips { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px 2px; }   /* full-width row of its own, above the compose row */
 .composer-chip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
@@ -515,30 +522,27 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   animation: slash-spin 2.4s linear infinite; }
 @keyframes slash-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .slash-spin { animation: none; } }
+/* The two buttons are the SAME circle (the user 2026-07-30: the 07-29 wide send read as a bar on a
+   phone, nothing like the round send messengers put there, and the pair's aspect ratios didn't match).
+   In-flow flex items now, not corner overlays — so no offset arithmetic couples them to the composer's
+   padding any more, and a peer's padding change can't strand them outside the box. */
 #composer-attach, #composer-send {
-  position: absolute;   /* size + offsets: the sizing block below (they differ per button now) */
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%;
   padding: 0; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  background: transparent; border: none; border-radius: 5px;
-  font-size: 15px; opacity: 0.55; cursor: pointer;
+  background: transparent; border: none;
+  font-size: 16px; opacity: 0.55; cursor: pointer;
 }
 /* the paperclip + send glyphs wear the romp accent blue (the user 2026-07-15) — action affordances, not
    status, so var(--accent) is the intended use; resting a touch dim, full on hover */
-#composer-attach { color: var(--accent); opacity: 0.8; }   /* clip sits LEFT of the send button */
+#composer-attach { color: var(--accent); opacity: 0.8; order: 1; }   /* clip sits LEFT of the input */
 #composer-attach:hover, #composer-send:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
+#composer-send { order: 3; }                                         /* send on the input's right */
 #composer-send:not(:disabled) { color: var(--accent); opacity: 0.85; }   /* romp-blue send affordance */
 #composer-send:disabled { opacity: 0.3; cursor: not-allowed; }
-/* SIZE (the user 2026-07-29). Both were 26px squares tucked in the corner: passable for a mouse, a poor
-   target for a thumb. Send is the primary action of the whole pane, so it gets real width — the widest
-   thing in the corner rather than the same square as the paperclip beside it. Offsets are measured from
-   #composer, whose own right padding (24px here) is what puts the textarea's edge at 24: 28 is 4px
-   inside the box. */
-#composer-attach, #composer-send { bottom: 10px; height: 30px; }
-#composer-send { right: 26px; width: 36px; font-size: 16px; }
-#composer-attach { right: 62px; width: 32px; font-size: 16px; }
-#composer-input { padding-right: 78px; }   /* text stops clear of both buttons */
 #composer-input {
-  width: 100%; resize: none; box-sizing: border-box;
+  order: 2; flex: 1 1 auto; min-width: 0;
+  resize: none; box-sizing: border-box;
   /* Floor at one line + padding + border, so the box can never collapse to a
      sliver: growComposer() sets an inline height from scrollHeight, which reads
      ~0 when it runs mid-pane-switch (textarea momentarily unlaid-out); min-height
@@ -547,44 +551,27 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   background: var(--vscode-input-background, rgba(255, 255, 255, 0.05));
   color: var(--vscode-input-foreground, var(--fg));
   border: 1px solid var(--vscode-input-border, var(--box-border));
-  border-radius: 6px; padding: 8px 64px 8px 10px;   /* right room for the 📎 + send buttons */
+  border-radius: 18px; padding: 8px 14px;   /* pill at one line, rounded box as it grows */
   font-family: var(--sans); font-size: var(--fs); line-height: 1.4; outline: none;
 }
 #composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
 #composer-input::placeholder { color: var(--dim); }
-/* On a phone (coarse pointer) the resting placeholder still wraps to two lines on a narrow screen, and a
-   one-line box clipped its second line (the user 2026-07-15). Floor the empty box at two lines there so the
-   full hint is visible; growComposer's inline height still floors on this, and a real message grows past it. */
+/* TOUCH (the user 2026-07-30): the same row, thumb-sized — 44px circles (the tap target a finger
+   expects), send FILLED with the accent like a messenger's round send, the paperclip on a faint chip
+   fill so both read as buttons. The resting box stays ONE line, like Signal's; the mobile placeholder
+   is shortened to fit it (composerRestingPlaceholder). */
 @media (pointer: coarse) {
-  #composer-input { min-height: calc(2.8em + 18px); }
-}
-/* TOUCH (the user 2026-07-29, on an iPad): the two buttons sat in the corner of a two-line resting box,
-   which read as a stray row under the placeholder AND gave a thumb two 26px squares to hit. Here they
-   become a real button ROW along the bottom of the box: 44px tall (the tap target a finger expects),
-   send filled in the accent because it is the primary action, and the text runs the FULL width above
-   them instead of being squeezed into a column beside them. Same two elements, same corner — they are
-   simply big enough to be the controls they are. */
-@media (pointer: coarse) {
-  #composer-attach, #composer-send { bottom: 12px; height: 44px; border-radius: 8px; }
-  #composer-send { right: 28px; width: 96px; font-size: 21px; }
-  #composer-attach { right: 136px; width: 60px; font-size: 19px; }
-  /* the fill is the accent itself, so the glyph flips to the on-accent colour (--accent-fg) */
+  #composer-attach, #composer-send { width: 44px; height: 44px; }
+  #composer-attach { font-size: 19px; background: rgba(255, 255, 255, 0.07); }
+  #composer-send { font-size: 21px; }
+  /* hover is included on purpose: a touch device can leave a sticky :hover that would otherwise
+     repaint the fill with the toolbar hover grey; the fill flips the glyph to the on-accent colour */
   #composer-send, #composer-send:not(:disabled), #composer-send:hover:not(:disabled) {
     background: var(--accent); color: var(--accent-fg); opacity: 1;
   }
-  /* disabled reads as a muted FILL, not a ghost: at 0.3 opacity a 96px button looked like a render bug */
+  /* disabled reads as a muted FILL, not a ghost: at 0.3 opacity a 44px filled circle looked like a render bug */
   #composer-send:disabled { background: rgba(255, 255, 255, 0.10); color: var(--dim); opacity: 1; }
-  #composer-attach { background: rgba(255, 255, 255, 0.07); }
-  /* full-width text, with the button row's height reserved underneath it */
-  #composer-input { padding-right: 12px; padding-bottom: 62px; min-height: calc(2.8em + 62px); }
-}
-/* The mobile shell narrows #composer's own padding to 10px (kernel _CHAT_MOBILE_CSS), so the offsets
-   that put a button 4px inside the box change with it. Matched to the SAME query the padding uses, or a
-   landscape iPad — coarse but wider than 1024 — would take phone offsets against desktop padding and
-   hang both buttons outside the box. */
-@media (pointer: coarse) and (max-width: 1024px) {
-  #composer-send { right: 14px; }
-  #composer-attach { right: 122px; }
+  #composer-input { min-height: 40px; border-radius: 20px; padding: 10px 14px; }
 }
 /* Cursor in the message box → a thin romp-blue border, exactly on the box edge — the same accent blue that
    marks the focused panel (the user 2026-06-26). It only fills in the existing 1px border (no glow, no layout
@@ -1207,15 +1194,24 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .ask-head { font-size: 0.72em; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
 .ask-q + .ask-q { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--box-border); }
 .ask-qtext { font-weight: 600; color: var(--vscode-foreground, #fff); margin-bottom: 5px; }
-.ask-opt { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; color: var(--dim); }
-.ask-opt .ask-mark { color: var(--dim); font-size: 0.8em; flex: 0 0 auto; }
+/* Option rows must survive a narrow screen (the user 2026-07-30, on a phone). The old flex row held a
+   RIGID label (flex: 0 0 auto): wider than the card, it pushed past the right edge, and the description —
+   squeezed to its one-character min width beyond it — wrapped a letter per line: an answered card
+   rendered as a clipped option atop a screen of blank box. A flex row can't fix this cleanly (a flex
+   line breaks BEFORE a too-wide item, so a long label orphans the mark on a line of its own), so the
+   answered row is INLINE with a hanging indent: the mark hangs in the indent, the label wraps beside it
+   like prose, and the description takes its own dim line(s) at the same indent. */
+.ask-opt { display: block; padding: 2px 0 2px 18px; color: var(--dim); }
+.ask-opt .ask-mark { display: inline-block; width: 18px; margin-left: -18px; color: var(--dim); font-size: 0.8em; }
 .ask-opt.chosen { color: var(--fg); }
 .ask-opt.chosen .ask-mark { color: var(--check-bg); }
 .ask-opt.chosen .ask-optlabel { font-weight: 600; }
-.ask-optlabel { flex: 0 0 auto; }
-.ask-optdesc { color: var(--dim); font-size: 0.9em; overflow-wrap: anywhere; }
-/* a free-text "Other" answer: the user's verbatim words, readable (not dimmed) */
-.ask-answer-text { flex: 1 1 auto; min-width: 0; color: var(--fg); font-style: italic; overflow-wrap: anywhere; }
+.ask-optlabel { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }   /* flex props serve the live rows below; inert in the inline answered row */
+.ask-optdesc { color: var(--dim); font-size: 0.9em; overflow-wrap: anywhere; flex: 1 1 14em; min-width: 0; }
+.ask-opt .ask-optdesc { display: block; }   /* answered card: the description under the label, not beside */
+/* a free-text "Other" answer: the user's verbatim words, readable (not dimmed), on their own line
+   under the "Other" label (same hanging indent as a description) */
+.ask-answer-text { display: block; min-width: 0; color: var(--fg); font-style: italic; overflow-wrap: anywhere; }
 
 /* an ANSWERED AskUserQuestion → the blue "your reply" box: right-aligned + blue-washed like a sent
    message (the #2b6cef user blue), still mirroring the dialog (question + options, chosen highlighted)
@@ -1243,11 +1239,11 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 .ask-live .ask-qtext { margin-bottom: 7px; }
 .ask-live-opt {
-  display: flex; gap: 9px; align-items: baseline;
+  display: flex; flex-wrap: wrap; gap: 2px 9px; align-items: baseline;   /* wrap: same phone clipping as .ask-opt */
   border-radius: 5px; padding: 5px 9px; color: var(--fg); cursor: pointer;
 }
 .ask-live-opt.focus { background: rgba(255, 255, 255, 0.10); box-shadow: inset 2px 0 0 var(--st-awaiting-bg); }
-.ask-live-opt .ask-optlabel { flex: 0 0 auto; font-weight: 600; }
+.ask-live-opt .ask-optlabel { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 /* The focused option's side-by-side TUI preview box, reproduced verbatim (the user
    2026-06-13). Monospace + preserved whitespace so the box-drawing/ASCII aligns;
    never wraps (wrapping would shear the layout) — scroll sideways when wider than
@@ -1276,13 +1272,13 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* dim, matching an option description's weight */
 .ask-custom-hint-text { flex: 1 1 auto; min-width: 0; color: var(--dim); font-size: 0.92em; }
 .ask-live-unknown .ask-custom-hint-text { padding: 4px 9px 2px; }
-.ask-check { display: flex; gap: 9px; align-items: baseline; padding: 4px 9px; border-radius: 5px; cursor: pointer; }
+.ask-check { display: flex; flex-wrap: wrap; gap: 2px 9px; align-items: baseline; padding: 4px 9px; border-radius: 5px; cursor: pointer; }
 .ask-check:hover { background: rgba(255, 255, 255, 0.06); }
 /* keyboard focus highlight — same treatment as the single card's .ask-live-opt.focus (the user 2026-06-22) */
 .ask-check.focus { background: rgba(255, 255, 255, 0.10); box-shadow: inset 2px 0 0 var(--st-awaiting-bg); }
 .ask-live-multi:focus, .ask-live:focus { outline: none; }
 .ask-check input { margin: 0; flex: 0 0 auto; cursor: pointer; accent-color: var(--check-bg); }
-.ask-check .ask-optlabel { flex: 0 0 auto; font-weight: 600; }
+.ask-check .ask-optlabel { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 /* submit-review chosen line + action buttons (multi submit / cancel) */
 .ask-chosen { color: var(--fg); margin: 2px 0 4px; overflow-wrap: anywhere; }
 /* multi-question review: one q→a pair per question */

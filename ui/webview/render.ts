@@ -5719,11 +5719,12 @@ function isCoarsePointer(): boolean {
 // The composer's resting placeholder — mirrors chatBody()'s skeleton. Restored whenever no free-text
 // picker is active. (Kept here, not read from the DOM, so an "answering" placeholder never leaks back
 // as the default after a picker resolves.) On a phone (coarse pointer) Enter makes a NEWLINE and the Send
-// button sends, so the ⏎/⇧⏎ hint is both wrong there and too long for the one-line box (it wrapped and got
-// clipped) — drop it on mobile (the user 2026-07-15).
+// button sends, so the ⏎/⇧⏎ hint is wrong there — and the box is a ONE-line Signal-style pill flanked by
+// the two buttons (the user 2026-07-30), so even the "/" hint wrapped and got clipped: mobile keeps just
+// the core prompt, and slash-command discovery stays a desktop hint.
 function composerRestingPlaceholder(): string {
   return isCoarsePointer()
-    ? "Message this session…  (type / for commands)"
+    ? "Message this session…"
     : "Message this session…  (⏎ send · ⇧⏎ newline · type / for commands)";
 }
 
