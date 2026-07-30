@@ -406,8 +406,10 @@ class DriftWordingUI(unittest.TestCase):
 
     def test_tooltip_carries_the_shas_and_date(self):
         js = km._LANDING_REMOTES_JS
-        self.assertIn("running '+(t.kernelSha||'?')", js)
-        self.assertIn("this machine is at '+(t.localSha||'?')", js)
+        # since 2026-07-30 each side is named by RELEASE and commit together (buildWord), not the sha
+        # alone — the tag is the one number both machines already agree on
+        self.assertIn("running '+(buildWord(t.kernelVer,t.kernelSha)||'?')", js)
+        self.assertIn("this machine is at '+(buildWord(t.localVer,t.localSha)||'?')", js)
         self.assertIn("t.kernelDate", js)
 
     def test_popover_js_parses(self):

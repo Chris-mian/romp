@@ -321,6 +321,41 @@ def _kernel_sha():
     return _SHA or None
 
 
+_VER = None                                  # lazily-resolved release tag the running code descends from
+
+
+def _kernel_ver():
+    """The RELEASE this kernel's code descends from — the nearest tag behind HEAD ('v0.2.0'), plus a '+'
+    when HEAD has moved past it. A bare sha means nothing without your own sha to compare it to (the
+    user 2026-07-30), and on a fleet that is exactly the reading you can't do in your head; a tag is a
+    number both machines already agree on. `git describe --tags --abbrev=0` names the tag; the VERSION
+    file is the fallback for a clone with no tags fetched. Resolved once, like _kernel_sha."""
+    global _VER
+    if _VER is None:
+        tag = ""
+        try:
+            r = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--abbrev=0"],
+                               capture_output=True, text=True, timeout=2)
+            tag = (r.stdout.strip() or "") if r.returncode == 0 else ""
+            if tag:
+                # exact-match tells a tagged release apart from "somewhere after it", so a machine sitting
+                # 27 commits past v0.2.0 never reports itself as v0.2.0 flat
+                e = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--exact-match"],
+                                   capture_output=True, text=True, timeout=2)
+                if e.returncode != 0:
+                    tag += "+"
+        except Exception:
+            tag = ""
+        if not tag:
+            try:
+                v = (ROOT / "VERSION").read_text().strip()
+                tag = ("v" + v) if v and not v.startswith("v") else v
+            except OSError:
+                tag = ""
+        _VER = tag
+    return _VER or None
+
+
 def _version_info():
     """What this kernel is running — code sha + per-bundle build mtimes + pid/uptime. Lets the feed's
     settings gear / `romp version` / a curl tell at a glance whether the browser is on a stale bundle
@@ -335,7 +370,7 @@ def _version_info():
                 pass
     except OSError:
         pass
-    return {"kernel_sha": _kernel_sha(), "pid": os.getpid(), "started": int(_STARTED),
+    return {"kernel_sha": _kernel_sha(), "kernel_ver": _kernel_ver(), "pid": os.getpid(), "started": int(_STARTED),
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
@@ -5311,6 +5346,7 @@ def checkin_set(host, on):
         except Exception:
             pass
     _tunnel_wake.set()
+    _known_note(host, share=bool(on))      # …and REMEMBER it, so a detach + re-attach keeps publishing
     _remotes_save()
     with _remotes_lock:
         return _remote_public(_remotes[host]) if host in _remotes else None
@@ -5643,6 +5679,10 @@ def _remote_public(r):
             "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
             "trust": r.get("trust") or "directed",   # per-host federation trust: trusted|directed|isolated
             "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
+            # The RELEASE each side descends from (the user 2026-07-30): a sha alone says nothing without
+            # your own sha in your head, and the whole point of the row is a comparison. "" when the remote
+            # kernel predates the field — the row then shows the sha alone rather than guessing a version.
+            "kernelVer": r.get("kernel_ver") or "", "localVer": (_kernel_ver() or ""),
             "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
             "kernelDate": drift["date"],
             # fastForward: a push here would only ADD commits (the remote's is an ancestor of ours) — the
@@ -5760,9 +5800,16 @@ def attach_remote(host, kernel_port=None):
                  # A host you attached BEFORE keeps the level you chose then — re-attaching a box you
                  # deliberately marked `trusted` must not silently drop it back to directed.
                  "trust": known_trust(host) or "directed",
+                 # …and the same for "Share my sessions there" (the user 2026-07-30, whose box kept
+                 # coming back unchecked): detach pops the row, so without this memory a re-attach
+                 # rebuilt it with the publish turned off. The reverse-forward ports go with it —
+                 # the tunnel argv needs them at spawn, and checkin_set is not what runs here.
+                 "checkin": known_share(host),
                  # phase the browser popover surfaces: authorizing (ssh + token) → connecting
                  # (tunnel up, waiting for the port) → up. See _LANDING_REMOTES_JS's LBL map.
                  "status": "authorizing", "detail": "", "sids": []}
+            if r["checkin"]:
+                r["rk_port"], r["rb_port"] = _free_port(), _free_port()
             _remotes[host] = r
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
@@ -5864,7 +5911,8 @@ def _known_load():
             if isinstance(row, dict) and row.get("host"):
                 _known[row["host"]] = {"host": row["host"],
                                        "lastAttachedAt": row.get("lastAttachedAt") or 0,
-                                       "trust": row.get("trust") or "directed"}
+                                       "trust": row.get("trust") or "directed",
+                                       "share": bool(row.get("share"))}
 
 
 def _known_save():
@@ -5876,17 +5924,25 @@ def _known_save():
         sys.stderr.write("known-hosts save: %s\n" % traceback.format_exc())
 
 
-def _known_note(host, trust=None):
+def _known_note(host, trust=None, share=None):
     """Record (or refresh) a host you attached. Called on attach and whenever its trust changes, so the
-    remembered entry always carries the level you last chose for it."""
+    remembered entry always carries the level you last chose for it.
+
+    `share` is the same memory for "Share my sessions there" (check-in), added 2026-07-30 because that
+    box kept coming back unchecked. Detach POPS the live row, so the flag lived nowhere else and a
+    re-attach rebuilt the row without it — the identical disease trust had before known_trust, and it
+    reads exactly the same way from the outside: a setting you deliberately turned on, silently off
+    again later. None means "don't touch" (an attach that only refreshes trust must not clear it)."""
     host = (host or "").strip()
     if not host:
         return
     with _known_lock:
-        e = _known.setdefault(host, {"host": host, "lastAttachedAt": 0, "trust": "directed"})
+        e = _known.setdefault(host, {"host": host, "lastAttachedAt": 0, "trust": "directed", "share": False})
         e["lastAttachedAt"] = int(time.time())
         if trust:
             e["trust"] = trust
+        if share is not None:
+            e["share"] = bool(share)
     _known_save()
 
 
@@ -5895,6 +5951,14 @@ def known_trust(host):
     with _known_lock:
         e = _known.get((host or "").strip())
     return (e or {}).get("trust")
+
+
+def known_share(host):
+    """Whether "Share my sessions there" was on for this host last time it was attached. Restored by
+    attach_remote, so re-attaching a machine you publish yourself to keeps publishing."""
+    with _known_lock:
+        e = _known.get((host or "").strip())
+    return bool((e or {}).get("share"))
 
 
 def known_forget(host):
@@ -5925,7 +5989,10 @@ def detach_remote(host):
     with _remotes_lock:
         r = _remotes.pop(host, None)
     if r:
-        _known_note(host, r.get("trust"))          # remember it (and its level) on the way out
+        # Remember it, its level AND its publish flag on the way out — this is the moment the live row
+        # (the only place `checkin` lived) is destroyed, so a row carried in from remotes.json and never
+        # re-toggled this process is captured here rather than lost.
+        _known_note(host, r.get("trust"), share=bool(r.get("checkin")))
     if r and r.get("proc"):
         try:
             r["proc"].terminate()
@@ -6014,10 +6081,12 @@ def _remote_forward(r, path, body):
 
 
 def _poll_remote_version(r):
-    """GET the remote kernel's /version THROUGH the -L tunnel and return its `kernel_sha` (the git short-sha
-    the remote is running), or None on any failure. Same transport as _poll_remote_sids — /version is
-    auth-exempt on the remote, but we pass the token anyway. Lets the local kernel tell when a remote is
-    running OLDER code than this one (the user 2026-07-04: keep remotes up to date + prompt to update)."""
+    """GET the remote kernel's /version THROUGH the -L tunnel and return {"sha", "ver"} — the git short-sha
+    and the release tag the remote is running — or None on any failure. Same transport as _poll_remote_sids
+    — /version is auth-exempt on the remote, but we pass the token anyway. Lets the local kernel tell when a
+    remote is running OLDER code than this one (the user 2026-07-04: keep remotes up to date + prompt to
+    update), and name that build in terms both machines share (the user 2026-07-30). `ver` is "" against an
+    older kernel that predates the tag — the row falls back to the sha alone rather than inventing one."""
     import urllib.parse
     try:
         c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=4)
@@ -6028,7 +6097,9 @@ def _poll_remote_version(r):
         c.close()
         if resp.status != 200:
             return None
-        return (json.loads(data.decode("utf-8")) or {}).get("kernel_sha") or None
+        j = json.loads(data.decode("utf-8")) or {}
+        sha = j.get("kernel_sha") or None
+        return {"sha": sha, "ver": str(j.get("kernel_ver") or "")} if sha else None
     except Exception:
         return None
 
@@ -6168,6 +6239,43 @@ def _set_auto_push(host, phase, detail=""):
             _auto_push.pop(host, None)
 
 
+# ── automatic syncs → the dashboard's Log (the user 2026-07-30) ──────────────────────────────────────────
+# romp moves commits between machines on its own, and the only trace was the network panel's live phase
+# line, which disappears the instant the sync ends. So a push that landed and a push that failed while you
+# were looking at something else were equally invisible after the fact. SUCCESSES are logged too, on
+# purpose: what is wanted is a record of what romp did to your machines, not another alarm.
+#
+# The Log is a browser-side store the kernel cannot write to, so this is a RING the feed payload carries
+# and badge-mirror.ts turns into entries — the same route SDK problems take. Signed per occurrence (this
+# kernel's start + the ring's own sequence), so re-renders and reloads never re-log.
+_SYNC_NOTICES = []
+_SYNC_LOCK = threading.Lock()
+_SYNC_SEQ = 0
+SYNC_RING = 40
+
+
+def _sync_notice(text, ok=True):
+    global _SYNC_SEQ
+    with _SYNC_LOCK:
+        _SYNC_SEQ += 1
+        _SYNC_NOTICES.append({"seq": _SYNC_SEQ, "t": time.time(), "text": str(text), "ok": bool(ok)})
+        del _SYNC_NOTICES[:-SYNC_RING]
+
+
+def _sync_notice_count():
+    """The view-cache key: it moves only when a sync actually finished, so an outcome reaches the payload
+    on its own event rather than whenever the next build happens to run."""
+    with _SYNC_LOCK:
+        return _SYNC_SEQ
+
+
+def _sync_notice_rows(limit=20, cap=300):
+    with _SYNC_LOCK:
+        rows = list(_SYNC_NOTICES[-limit:])
+    return [{"sig": "sync|%d|%d" % (int(_STARTED), r["seq"]), "t": float(r["t"]),
+             "text": r["text"][:cap], "ok": bool(r["ok"])} for r in rows]
+
+
 def _auto_push_remote(host):
     """Run ONE automatic update of `host` in the background, publishing phase as it goes. Never called for a
     non-fast-forward (see _is_fast_forward). Failures are kept VISIBLE on the row rather than swallowed
@@ -6181,8 +6289,11 @@ def _auto_push_remote(host):
         # The remote is restarting into the new build; the supervisor's own /version poll clears outOfDate
         # when it comes back, which is what ends this phase. No timer decides it — the next poll does.
         _set_auto_push(host, "waiting", "pushed; waiting for it to restart")
+        _sync_notice("pushed this machine's build (%s) to %s; it is restarting into it"
+                     % (_kernel_ver() or _local_head(short=True) or "HEAD", host))
     else:
         _set_auto_push(host, "failed", detail or "push failed")
+        _sync_notice("could not push this machine's build to %s: %s" % (host, detail or "push failed"), ok=False)
     return ok
 
 
@@ -6198,6 +6309,10 @@ def _auto_pull_remote(host):
     except Exception as e:
         ok, detail = False, str(e)
     _set_auto_push(host, "pulled" if ok else "failed", detail or ("" if ok else "pull failed"))
+    if ok:
+        _sync_notice("pulled %s's newer commits into this machine — restart romp to run them" % host)
+    else:
+        _sync_notice("could not pull %s's commits: %s" % (host, detail or "pull failed"), ok=False)
     return ok
 
 
@@ -6213,6 +6328,10 @@ def _auto_ask_peer(host):
         ok, detail = False, str(e)
     _set_auto_push(host, "waiting" if ok else "failed",
                    detail or ("asked; waiting for it to restart" if ok else "the ask failed"))
+    if ok:
+        _sync_notice("asked %s to fast-forward itself onto this machine's build; it is restarting" % host)
+    else:
+        _sync_notice("could not get %s to update itself: %s" % (host, detail or "the ask failed"), ok=False)
     return ok
 
 
@@ -6878,7 +6997,8 @@ def _tunnel_supervisor():
                     continue
                 up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
                 sids = _poll_remote_sids(r) if up else None
-                rsha = _poll_remote_version(r) if up else None   # the code the remote is running (drift check)
+                rver = _poll_remote_version(r) if up else None   # the code the remote is running (drift check)
+                rsha = (rver or {}).get("sha")
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
@@ -6940,6 +7060,7 @@ def _tunnel_supervisor():
                         r["sids"] = sids
                     if rsha is not None:
                         r["kernel_sha"] = rsha
+                        r["kernel_ver"] = (rver or {}).get("ver") or ""
                     auto_check = (st == "up")
                     peer_up = (st == "up")
                     peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
@@ -12928,6 +13049,9 @@ def build_feed(now, tmux=None):
             "clearNotices": _boundary_clear_notices(alive),
             # SDK-backend failures → the same bell, one entry per occurrence (the user 2026-07-28)
             "sdkNotices": _sdk_problem_rows(),
+            # …and what romp's automatic fleet sync DID, successes included (the user 2026-07-30): the
+            # network panel's phase line is live-only, so an unwatched push left no record either way
+            "syncNotices": _sync_notice_rows(),
             # This machine's own name, so a card can say which SIDE of a federated exchange it is (the
             # user 2026-07-29: held mail should read sender-host:session -> recipient-host:session). A
             # local sid carries no host prefix, so the receiving end has no other way to name itself.
@@ -15231,6 +15355,7 @@ def _fleet_view_sig(now, tmux):
     sig["__judge__"] = _judge_gen[0]
     sig["__bucket__"] = now // 5
     sig["__sdkp__"] = _sdk_problem_count()   # a fresh SDK failure is its own event → rebuild now, don't wait
+    sig["__syncn__"] = _sync_notice_count()  # …and so is a finished automatic sync
     for p, k in ((jd.STATE / "colormap", "__cmap__"), (jd.STATE / "session-flags.json", "__flags__"),
                  (jd.STATE / "session-order.json", "__order__"),
                  (jd.STATE / "notify-cards.json", "__ncards__")):   # per-card bell arming → the card's menu state
@@ -16106,9 +16231,9 @@ el.classList.toggle('has',n>0||(kindOn('conn')&&liveDown()));
 var t=el.querySelector('.rerr-n');if(t)t.textContent=n<=0?'!':(n>9?'+':String(n));});
 if(!back.hidden)renderList();}
 // each entry leads with the chip its card wears in the feed, so the vocabulary matches across surfaces
-var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','sdk','locate','cleared','undelivered'];
+var KINDS=['conn','limit','judge','warn','stalled','nudge','retry','apierror','sdk','sync','locate','cleared','undelivered'];
 var KINDLBL={conn:'offline',limit:'limit',judge:'judge',warn:'warning',stalled:'stalled',
-nudge:'follow-up failed',retry:'retrying',apierror:'api error',sdk:'sdk',
+nudge:'follow-up failed',retry:'retrying',apierror:'api error',sdk:'sdk',sync:'fleet sync',
 locate:'jump failed',cleared:'cleared',undelivered:'not sent'};
 // what each kind MEANS (the user 2026-07-28: the tooltip should explain the badge, not just say
 // show/hide) — worn by the filter toggles AND every entry's chip
@@ -16121,6 +16246,7 @@ nudge:"romp's one automatic follow-up on a stalled thread didn't resolve it; the
 retry:"a session is inside an API-error retry storm; auto-retry is already working on it",
 apierror:"a session stopped on an API error (rate limit, spend cap, or prompt too long) and its card is blocked",
 sdk:"romp's SDK backend, the machinery that actually runs your sessions, hit an error: a session thread that died, a stream that dropped, a setting the CLI refused. The session usually recovers on its own, and the full traceback is in the kernel log under ~/.local/state/romp",
+sync:"romp moved commits between your machines by itself \u2014 a push to a remote, a pull from one, or an ask that a peer fast-forward itself. Successes are logged as well as failures, so this is the record of what romp did to your machines; the network panel shows a sync while it is still running",
 locate:"a click that should have jumped to a message in the chat couldn't find it. Usually the chat is missing part of its history; reload the pane if it keeps happening",
 cleared:"a /clear in a session dropped still-open cards at the boundary; Undo clear on the feed restores them",
 undelivered:"something you sent never reached a session — the kernel it was addressed to has no session by that id, which on a board showing more than one machine means the pane addressed the wrong one. Nothing was delivered. Your text is kept verbatim in undelivered.jsonl under ~/.local/state/romp"};
@@ -16482,13 +16608,29 @@ function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel'
 // HOW a host's build differs from this machine's, in words. ONE definition, worn by the panel row and
 // by the rail's hover (the user 2026-07-29, who wanted the count without opening the panel) — two
 // spellings of the same drift would eventually disagree, and the number is the whole point of it.
-function driftWord(t){var bb=t.behindBy,ab=t.aheadBy;
-if(typeof bb!=='number'||typeof ab!=='number')return 'different build';
 // git's own shorthand (the user 2026-07-29): the counts read at a glance as arrows, and a diverged host
-// shows BOTH rather than collapsing to one word that hides how much is on each side.
+// shows BOTH rather than collapsing to one word that hides how much is on each side. '' when either count
+// is unknown (the remote's commit isn't in this repo at all) — the caller says so in words instead.
+function driftArrows(t){var bb=t.behindBy,ab=t.aheadBy;
+if(typeof bb!=='number'||typeof ab!=='number')return '';
 var up=ab>0?('\\u2191'+ab):'',down=bb>0?('\\u2193'+bb):'';
-if(up&&down)return 'diverged '+up+' '+down;
-return up||down||'different build';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
+return (up&&down)?(up+' '+down):(up||down);}
+function driftWord(t){var a=driftArrows(t);
+if(!a)return 'different build';
+return (t.aheadBy>0&&t.behindBy>0)?('diverged '+a):a;}
+// WHAT a host is running, in the two names that mean something together: the release it descends from
+// and the commit (the user 2026-07-30 — a bare sha says nothing unless you happen to know your own).
+// Either half alone if that is all there is; a kernel older than the version field reports no tag.
+function buildWord(v,s){v=v||'';s=s||'';return v?(s?(v+' '+s):v):s;}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
+// ONE loader for the whole panel (the user 2026-07-30, who wanted the motion wherever work is actually
+// happening, not only on a connecting row). The repo's loading rule spelled small: the romp swirl glyph,
+// reverse-spun. Anything in this panel that is WAITING on work — a connecting tunnel, a sync mid-flight,
+// a trust change crossing the link — wears this, so "in progress" never renders as a word that could
+// equally be stuck. Settled states (failed, pulled, connected) never do.
+function spin(){return '<img class=rnet-spin src=/media/romp-swirl-glyph.svg alt="">';}
+// Which auto-sync phases are still RUNNING. 'waiting' counts: the remote is restarting into the build we
+// just handed it, and what ends that phase is it coming back — work in flight, not a resting state.
+function apBusy(p){return p==='pushing'||p==='pulling'||p==='asking'||p==='waiting';}
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
 function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
 // One host's contribution to the glyph (the user 2026-07-29): 'ok' connected and on this build, 'warn'
@@ -16533,6 +16675,11 @@ el.addEventListener('animationend',function(){el.classList.remove('rn-drop');},{
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
 _auto=!!(d&&d.autoUpdate);
+// This machine's own release + commit, so the host rows below have something to be read against.
+var me=document.getElementById('rnet-me'),lc=(d&&d.local)||{};
+if(me){var mb=buildWord(lc.ver,lc.sha);
+me.textContent=mb?((lc.host||'this machine')+' \\u00b7 '+mb):'';
+me.title=mb?'The romp build this machine is running \\u2014 the release its code descends from, and its commit. Every host below is named the same way, so the two read against each other.':'';}
 if(autoCb&&!autoCb.disabled)autoCb.checked=_auto;   // mirror the kernel; never clobber a write in flight
 // An automatic push in flight counts as BUSY: the icon marches while romp works in the background, which is
 // the whole point of replacing the modal (the user 2026-07-24 — animate the icon so you can see it happening).
@@ -16603,12 +16750,15 @@ var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status
 var stl=!!t.stale;
 var sw=stl?(t.lastOk?('last confirmed '+new Date(t.lastOk*1000).toLocaleTimeString()):'never confirmed since this kernel started'):'';
 var sq=stl?(' \\u2014 '+sw+'; not re-checked while '+(LBL[t.status]||t.status)+'.'):'';
-var ver='';
-if(t.outOfDate){var w=driftWord(t);
-var tt='running '+(t.kernelSha||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(t.localSha||'?')+(w==='diverged'?' (each has commits the other lacks)':'')
+// The build reads as a NAME plus a distance: "v0.2.0+ 682d232 (↓3)" — the release and commit it is on,
+// then how far that sits from here in git's arrows (the user 2026-07-30). A remote whose commit this repo
+// has never seen has no distance to report, so it says "different build" where the arrows would go.
+var ver='',bw=buildWord(t.kernelVer,t.kernelSha);
+if(t.outOfDate){var w=driftWord(t),ar=driftArrows(t);
+var tt='running '+(buildWord(t.kernelVer,t.kernelSha)||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(buildWord(t.localVer,t.localSha)||'?')+((t.aheadBy>0&&t.behindBy>0)?' (each has commits the other lacks)':'')
 +(t.checkinPeer?(t.askPull?' No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds.':' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.'):'');
-ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+w+'</span>';}
-else if(t.kernelSha){ver=' \\u00b7 <span class=\"rnet-sha'+(stl?' rnet-stale':'')+'\" title=\"'+(stl?'same build as this machine when last reached.'+sq:'same build as this machine')+'\">'+(stl?'last known: ':'')+t.kernelSha+'</span>';}
+ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+(bw?bw+' ':'')+(ar?'('+ar+')':w)+'</span>';}
+else if(bw){ver=' \\u00b7 <span class=\"rnet-sha'+(stl?' rnet-stale':'')+'\" title=\"'+(stl?'same build as this machine when last reached.'+sq:'same build as this machine')+'\">'+(stl?'last known: ':'')+bw+'</span>';}
 // A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
 // flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
 var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling'||t.autoPush.phase==='asking');
@@ -16647,7 +16797,7 @@ var keep=(pmode&&!t.checkinPeer)?'<label class=rnet-keep title=\"Publish this ma
 var tpd=pendLvl(_pendTrust,t.host,t.trust||'directed');
 var tcur=tpd||t.trust||'directed';
 var trust='<span class=rnet-set><span class=rnet-lbl>Their mail</span><select class=\"rnet-trust'+(tpd?' rnet-applying':'')+'\"'+(tpd?' disabled':'')+' data-t=\"'+t.host+'\" title=\"What happens to postal mail from '+t.host+'. trusted: delivered straight to your sessions. directed: held for your approval. isolated: none, dashboard only.\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(tpd?'<span class=rnet-pend>applying\\u2026</span>':'')+'</span>';
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(tcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(tpd?'<span class=rnet-pend>'+spin()+'applying\\u2026</span>':'')+'</span>';
 // The OTHER direction of the pair (how that host holds mail FROM this machine, declared by its bus on
 // the last exchange). Trust is receiver-evaluated on purpose, so a half-open pair is legal — but it
 // used to be invisible until mail quarantined over there (the user 2026-07-26). A mismatch offers
@@ -16657,7 +16807,7 @@ var theirs=tiers[t.host]||'';
 if(theirs){var mm=theirs!==tcur;
 var mpd=pendLvl(_pendMirror,t.host,theirs);   // confirmed by the peer's next tier gossip, not the POST
 trust+='<span class=\"rnet-back'+(mm&&!mpd?' rnet-mismatch':'')+(stl?' rnet-stale':'')+'\" title=\"How '+t.host+' holds mail from this machine, as its bus declared on the last exchange. Each side owns its own gate.'+sq+'\">'+t.host+' holds yours: '+(stl?'last known ':'')+theirs+'</span>';
-if(mpd){trust+='<button class=rnet-mirror disabled title=\"Set on '+t.host+'; waiting for its bus to confirm on the next exchange.\">Matching\\u2026</button>';}
+if(mpd){trust+='<button class=rnet-mirror disabled title=\"Set on '+t.host+'; waiting for its bus to confirm on the next exchange.\">'+spin()+'Matching\\u2026</button>';}
 else if(mm){trust+='<button class=rnet-mirror data-m=\"'+t.host+'\" data-lvl=\"'+tcur+'\" title=\"Set '+t.host+'\\u2019s level for this machine to '+tcur+' too. This is your admin access (the tunnel + that machine\\u2019s own token) acting on its kernel \\u2014 a peer can never set your trust, and this never lets one.\">Match ('+tcur+')</button>';}}
 // Line 1 is what this host is doing right now plus the acts you perform on it; line 2 is the pair of
 // settings you set once and leave. They shared a single flat row before, which gave Detach the same
@@ -16666,7 +16816,7 @@ row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||
 // A host mid-attach gets the romp loader inline (the user 2026-07-29): the swirl glyph spinning beside
 // the status word, so "connecting" reads as something HAPPENING rather than a label that might be stuck.
 // The repo's loading rule spelled small: same glyph, same reverse spin as the composer's slash spinner.
-'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(busyStatus(t.status)?'<img class=rnet-spin src=/media/romp-swirl-glyph.svg alt="">':'')+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(busyStatus(t.status)?spin():'')+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
 retry+pull+ask+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
@@ -16674,7 +16824,12 @@ item.appendChild(row);
 // stays put and red (fail loudly, CLAUDE.md) rather than vanishing into a silently-stale remote.
 if(t.autoPush){var ap=document.createElement('div');
 ap.className='rnet-ap'+(t.autoPush.phase==='failed'?' bad':'');
-ap.textContent=(t.autoPush.phase==='failed'?'auto-update failed \\u2014 ':'auto-update: ')+(t.autoPush.detail||t.autoPush.phase);
+// A sync IN FLIGHT gets the loader (the user 2026-07-30): "pushing this machine's build over SSH" held
+// still for thirty seconds is indistinguishable from a line that wedged. innerHTML only for the glyph;
+// the phase text is set as a text node, since it carries a remote's own error string.
+ap.innerHTML=apBusy(t.autoPush.phase)?spin():'';
+ap.appendChild(document.createTextNode(
+(t.autoPush.phase==='failed'?'auto-update failed \\u2014 ':'auto-update: ')+(t.autoPush.detail||t.autoPush.phase)));
 ap.title=t.autoPush.phase==='failed'?'romp tried to update this host automatically and could not. The manual Push button is back; it will not retry by itself until either machine\\u2019s commit moves.':'romp is updating this host in the background.';
 item.appendChild(ap);}
 var r2=document.createElement('div');r2.className='rnet-row2';r2.innerHTML=trust+keep;
@@ -16693,7 +16848,7 @@ var kcur=kpd||k.trust||'directed';
 // delivery, so the level applies to this host's mail even when it arrives relayed through a hub —
 // no tunnel required to set it (the user 2026-07-25).
 var ktrust='<select class=\"rnet-trust'+(kpd?' rnet-applying':'')+'\"'+(kpd?' disabled':'')+' data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
-['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(kpd?'<span class=rnet-pend>applying\\u2026</span>':'');
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(kpd?'<span class=rnet-pend>'+spin()+'applying\\u2026</span>':'');
 kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
 '<span class=nm><b>'+k.host+'</b> <span class=st title=\"Not attached; the trust level applies to its mail by origin, and re-attaching keeps it.\">not attached</span></span>'+ktrust+
 '<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
@@ -16709,7 +16864,7 @@ via.forEach(function(v){var vr=document.createElement('div');vr.className='rnet-
 var vpd=pendLvl(_pendTrust,v.host,v.trust||'directed');
 var vcur=vpd||v.trust||'directed';
 var vtrust='<select class=\"rnet-trust'+(vpd?' rnet-applying':'')+'\"'+(vpd?' disabled':'')+' data-t=\"'+v.host+'\" title=\"What happens to postal mail from '+v.host+' (it arrives relayed through '+v.via+'; trust is judged by its true origin): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
-['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>'+(vpd?'<span class=rnet-pend>applying\\u2026</span>':'');
+['trusted','directed','isolated'].map(function(w){return '<option value='+w+(vcur===w?' selected':'')+'>'+TRUSTW[w]+'</option>';}).join('')+'</select>'+(vpd?'<span class=rnet-pend>'+spin()+'applying\\u2026</span>':'');
 vr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #7a6a3a\" title=\"No direct tunnel; reachable one hop through '+v.via+'.\"></span>'+
 '<span class=nm><b>'+v.host+'</b> <span class=st title=\"Its sessions are gossiped one hop by '+v.via+'; attach it directly for full control.\">via '+v.via+' \\u00b7 '+(v.agents||0)+' session'+((v.agents||0)===1?'':'s')+'</span></span>'+vtrust;
 list.appendChild(vr);});}
@@ -17293,6 +17448,11 @@ def _landing():
             ".rnet-known{opacity:0.62}"
             ".rnet-known:hover{opacity:1}"
             ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
+            # THIS machine's release + commit, sitting above the host list at the same muted weight the
+            # host rows' own build text wears — it is the baseline they are read against, not a heading.
+            # Empty outside a git checkout, and it then costs no vertical room at all.
+            ".rnet-mybuild{color:#6e7681;font-size:11.5px;font-variant-numeric:tabular-nums;margin:-6px 0 10px}"
+            ".rnet-mybuild:empty{display:none}"
             # the fleet-restart report (the user 2026-07-29): shown once when the page comes back, and
             # weighted toward the hosts it could NOT do — those are the ones needing a decision.
             "#rfleet-back{position:fixed;inset:0;z-index:220;display:flex;align-items:center;justify-content:center;"
@@ -17523,6 +17683,10 @@ def _landing():
             ".rerr-chip.k-conn{color:#ff6b6b;border-color:rgba(255,107,107,0.6)}"
             ".rerr-chip.k-limit,.rerr-chip.k-judge,.rerr-chip.k-locate{color:#e0a030;border-color:rgba(224,160,48,0.6)}"
             ".rerr-chip.k-cleared{color:#9aa0a6;border-color:rgba(154,160,166,0.6)}"   # not an error — quiet gray
+            # a fleet sync is romp reporting WORK, not trouble: accent chrome, the same light blue every
+            # other "romp is doing something" cue wears. A failed sync still wears the sync chip; its own
+            # text says it could not, and the network panel keeps the red on the row itself.
+            ".rerr-chip.k-sync{color:var(--accent);border-color:rgba(156,210,255,0.6)}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             # the notification popover (hidden until the bell is clicked; backdrop click closes). No
@@ -17638,6 +17802,10 @@ def _landing():
             # to what is in ~/.ssh/config.
             "<div class=rnet-gist>Another machine's romp sessions, in your tabs and timeline."
             "<button id=rnet-more class=rnet-more aria-expanded=false>How it works</button></div>"
+            # This machine's own release + commit, so every host row below has something to be read
+            # against (the user 2026-07-30). Filled by the panel's own /tunnels poll; empty outside a
+            # git checkout, in which case it takes up no room.
+            "<div class=rnet-mybuild id=rnet-me></div>"
             # The fold carries the REAL explanation (the user 2026-07-23): what the connection is worth in
             # security terms, and what each per-host setting means and when to reach for it. Those settings
             # are a boundary, not a preference, and a dropdown reading "directed" cannot say so by itself.
@@ -17980,6 +18148,12 @@ class Handler(BaseHTTPRequestHandler):
                                                    "remoteHolds": _bus_remote_holds(),   # quarantine holds on OTHER machines (direct peers + one relay hop)
                                                    "autoUpdate": _auto_update_remotes_on(),   # the popover checkbox reflects the KERNEL, not this tab
                                                    "peerTiers": _bus_peer_tiers(),   # host → how IT holds OUR mail (both-direction display)
+                                                   # THIS machine's build, top-level so the panel can name it with
+                                                   # no hosts attached: a remote's sha is unreadable without your
+                                                   # own beside it (the user 2026-07-30), which is the comparison
+                                                   # every other line in the panel is implicitly asking you to make.
+                                                   "local": {"ver": _kernel_ver() or "", "sha": _kernel_sha() or "",
+                                                             "host": _self_host()},
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
