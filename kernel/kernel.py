@@ -4006,15 +4006,19 @@ def _drive(msg, client):
     return True
 
 
-def _reveal_or_confirm(sid, focus_msg):
+def _reveal_or_confirm(sid, focus_msg, client=None):
     """Bring the chat to `sid`. LIVE → the focus message. DEAD → never silently reveal; pop the chat's
     confirmRevive modal (Revive / View read-only), bringing the chat forward (the user 2026-06-17: dead
     = timeline-only, reopen on demand). Routing the prompt through _reveal_chat means a feed/timeline tap
-    lands the modal in the chat, which owns it — even though the tap came from another pane."""
+    lands the modal in the chat, which owns it — even though the tap came from another pane.
+
+    Where a CLIENT is in scope (every WS op that calls this), the reveal is aimed at that dashboard
+    alone: a jump into a transcript is one viewer's navigation, and broadcasting it dragged every open
+    dashboard to the same turn (the user 2026-07-29). No client → the old broadcast."""
     if sid and sid not in _tmux_sessions():
-        _reveal_chat({"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
+        _reveal_chat_for(client, {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
     else:
-        _reveal_chat(focus_msg)
+        _reveal_chat_for(client, focus_msg)
 
 
 def _folder_opener():
@@ -14360,6 +14364,32 @@ def _reveal_chat(focus_msg):
     _send_to_app("shell", {"type": "reveal", "pane": "chat"})
 
 
+def _send_to_view(app, msg, wid):
+    """Push to the clients of `app` belonging to ONE dashboard — the one whose `wid` this is. Which tab a
+    viewer is looking at, and where in a transcript they jumped, is theirs alone: broadcasting it made two
+    open dashboards yank each other around (the user 2026-07-29). An EMPTY wid falls back to the broadcast,
+    so a client that reports none (an older build, a surface that supplies no id) keeps today's behaviour
+    rather than silently receiving nothing."""
+    if not wid:
+        return _send_to_app(app, msg)
+    s = json.dumps(msg)
+    with _clients_lock:
+        targets = [c for c in _clients if c["app"] == app and (c.get("wid") or "") == wid]
+    for c in targets:
+        try:
+            c["send"](s)
+        except Exception:
+            c["alive"] = False
+
+
+def _reveal_chat_for(client, focus_msg):
+    """_reveal_chat, aimed at the dashboard that asked. Use this wherever a WS op is being handled: the
+    client IS the asker, so its wid names the one window that should follow the click."""
+    wid = (client or {}).get("wid") or ""
+    _send_to_view("chat", focus_msg, wid)
+    _send_to_view("shell", {"type": "reveal", "pane": "chat"}, wid)
+
+
 def _focus_kind(anchor):
     """showOnTimeline's `anchor` → the chat focus land-on intent: "prompt" = the user's typed MESSAGE
     (a user turn), "work"/absent = the work that was done (the assistant reply turn). Used only to pick the
@@ -15385,7 +15415,14 @@ def _shim(app, v=0):
     # "newer build" prompt, not just the dashboard landing's /version poll (the user 2026-07-13: a standalone
     # pane sat silent through rebuilds).
     return """
-(function(){var queue=[],ws=null,everConnected=false;var wid=new URLSearchParams(location.search).get("wid")||"";
+(function(){var queue=[],ws=null,everConnected=false;
+// This pane's DASHBOARD id. ?wid= when the host supplies one (the VS Code extension builds its own pane
+// URLs); otherwise the shell's per-tab id from sessionStorage, which is scoped to the browsing context and
+// shared with same-origin iframes — so every pane of one window agrees, a second window differs, and no
+// iframe has to reload to learn it. It rides the WS connect so the kernel can aim a per-viewer message
+// (a focus, a jump) at the dashboard that asked instead of at every one that is open (the user 2026-07-29).
+var wid=new URLSearchParams(location.search).get("wid")||"";
+try{if(!wid)wid=window.sessionStorage.getItem("romp:wid")||"";}catch(e){}
 var APP="%s";var LOADEDV=%d;var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 var connT=0;   // when the current socket's connect() attempt started — the progress watchdog's reference point
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
@@ -16237,6 +16274,11 @@ _LANDING_SETTINGS_JS = """
 if(m.romp==='settings')document.body.classList.toggle('settings-open',!!m.on);
 // the /chat iframe's new-session picker asks the shell to lift it full-window (see body.picker-open CSS)
 if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);});
+// One id per dashboard (per browser tab/window), minted here so every pane in it reports the same one.
+// sessionStorage, deliberately: it survives a reload (the panes keep their identity) and a second window
+// gets its own, which is what makes "the dashboard that asked" a thing the kernel can address.
+try{if(!sessionStorage.getItem('romp:wid'))sessionStorage.setItem('romp:wid',
+  (crypto.randomUUID?crypto.randomUUID():String(Math.random()).slice(2)));}catch(e){}
 // the rail's ⛭ opens the feed iframe's settings modal (the feed owns the modal); the CSS lifts the iframe
 // full-window while body.settings-open, so it works even when the feed pane is toggled off (the user 2026-06-25).
 var gear=document.getElementById('rail-gear');
@@ -18564,7 +18606,7 @@ class Handler(BaseHTTPRequestHandler):
                         client["send"](json.dumps({"type": "warn", "text": derr}))
                 elif nm in live:                 # already running → just (re)open it, don't re-spawn
                     _set_hidden_tab(live[nm], False)
-                    _reveal_chat({"type": "focus", "id": live[nm]})
+                    _reveal_chat_for(client, {"type": "focus", "id": live[nm]})
                     _mark_views_dirty()          # pusher ships the tab; never a synchronous fleet build here
                 elif msg.get("backend") == "sdk":   # non-tmux: drive via the Agent SDK
                     # _sdk_ready(), not _sdk(): the backend object exists even with the dependency
@@ -18601,7 +18643,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
             if sid:
                 _set_hidden_tab(sid, False); _push_all()
-                _reveal_chat({"type": "focus", "id": sid})
+                _reveal_chat_for(client, {"type": "focus", "id": sid})
         elif msg and msg.get("type") == "openAll":
             for s in _alive_sessions(int(time.time()), _tmux_sessions()):
                 _set_hidden_tab(s["sid"], False)
@@ -18637,12 +18679,12 @@ class Handler(BaseHTTPRequestHandler):
             _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
             _set_hidden_tab(msg["id"], False)    # gets a (struck) read-only tab now, without resuming it
             _push_all()
-            _reveal_chat({"type": "focus", "id": msg["id"]})
+            _reveal_chat_for(client, {"type": "focus", "id": msg["id"]})
         elif msg and msg.get("type") == "deepLink" and msg.get("session"):
             _reveal_or_confirm(msg["session"], {"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
-                          "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
+                          "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")}, client)
         elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
-            _reveal_or_confirm(msg["sid"], _show_on_timeline_focus(msg))
+            _reveal_or_confirm(msg["sid"], _show_on_timeline_focus(msg), client)
         elif msg and msg.get("type") == "expand" and msg.get("itemId"):
             _request_feed_detail(str(msg["itemId"]), bool(msg.get("generate")))
         elif msg and msg.get("type") == "hoverHighlight":
