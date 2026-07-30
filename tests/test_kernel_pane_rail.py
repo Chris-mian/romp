@@ -132,8 +132,8 @@ class PaneRailTest(unittest.TestCase):
         # host (the user 2026-07-29). ONE definition of the wording, worn by the panel row and the
         # tooltip alike — two spellings of the same drift would eventually disagree.
         self.assertIn("function driftWord(t){", self.html)
-        self.assertIn("'behind '+bb+' commit'", self.html)
-        self.assertIn("'ahead '+ab+' commit'", self.html)
+        self.assertIn("down=bb>0?(", self.html)   # git-style arrows since 2026-07-29
+        self.assertIn("up=ab>0?(", self.html)
         self.assertIn("var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):''", self.html)
         self.assertIn("+dw+", self.html, "the per-host tooltip line carries it")
         # the panel row reads the same function rather than re-deriving the words
