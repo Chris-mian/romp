@@ -4987,6 +4987,55 @@ def _tunnel_backoff(fails):
     if fails >= TUNNEL_LONG_AFTER:
         return TUNNEL_BACKOFF_LONG
     return min(TUNNEL_BACKOFF_MAX, TUNNEL_BACKOFF_BASE * (2 ** min(fails, 5)))
+
+
+# ── a tunnel that connects and then dies is still a failing tunnel (the user 2026-07-30) ──────────────────
+# Two separate defects, one flap. A remote spent an afternoon cycling connect -> 30s of traffic -> torn down
+# -> reconnect, roughly twice a minute, while ssh worked every time and the far kernel answered in 5ms.
+#
+# TEARDOWN took ONE missed poll. A single 4-second timeout condemned a link that had been carrying traffic
+# milliseconds earlier — one sample, no confirmation, and the verdict was to destroy the connection. A miss
+# is now COUNTED, and the tunnel goes only when STALE_MISSES consecutive polls come back with nothing. Any
+# answer at all resets the count, so this is a run of confirming events, not a grace period: a genuinely
+# dead path still dies within a few seconds, and a single hiccup costs nothing.
+#
+# BACKOFF never engaged. It counted failed DIALS, and every dial here succeeded — the row sat at fails=0
+# forever, so the ladder built for exactly this ("keep trying, waiting longer each time") was bypassed by
+# the one failure mode that needed it most. A teardown now advances the ladder like any other failure, and
+# what CLEARS it is a run of STABLE_POLLS answered polls rather than the mere fact of connecting. A tunnel
+# that comes up and dies half a minute later never reaches that run, so it backs off; a healthy one clears
+# in well under a minute and a later drop starts from the bottom rung again.
+STALE_MISSES = 3     # consecutive silent polls before a live-looking tunnel is declared dead
+STABLE_POLLS = 8     # consecutive answered polls before a connection counts as established
+
+
+def _note_poll(r, answered):
+    """Record one end-to-end poll against a tunnel row, and say whether it has now MISSED enough in a row
+    to be considered dead. Pure bookkeeping on the row; the caller owns the teardown."""
+    if answered:
+        r["misses"] = 0
+        r["ok_polls"] = int(r.get("ok_polls") or 0) + 1
+        return False
+    r["ok_polls"] = 0
+    r["misses"] = int(r.get("misses") or 0) + 1
+    return r["misses"] >= STALE_MISSES
+
+
+def _tunnel_established(r):
+    """Whether this connection has answered enough consecutive polls to count as established — the event
+    that clears the backoff ladder. Merely being dialed is NOT it: that is what let a connect-then-die
+    loop run at full speed forever."""
+    return int(r.get("ok_polls") or 0) >= STABLE_POLLS
+
+
+def _note_tunnel_teardown(r, now):
+    """A connection we had to tear down is a FAILURE of the same kind a refused dial is, so it advances
+    the ladder and schedules the next attempt on it."""
+    r["ok_polls"] = 0
+    r["misses"] = 0
+    r["fails"] = int(r.get("fails") or 0) + 1
+    r["next_try"] = now + _tunnel_backoff(r["fails"])
+    return r["fails"]
 BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "25302"))      # this laptop's postal bus (reverse-forwarded)
 SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
 SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
@@ -5719,7 +5768,9 @@ _remotes_saved_sig = None   # signature of the last blob written — lets the su
 
 _NOT_SAVED = ("proc",       # the live Popen
               "usage",      # a remote's rate-limit snapshot: re-polled a minute after any boot, and
-              "_usage_at")  # persisting it would rewrite this 0600 credential file every minute forever
+              "_usage_at",  # persisting it would rewrite this 0600 credential file every minute forever
+              "misses",     # the poll run counters: they describe THIS connection, and a fresh boot
+              "ok_polls")   # dials from scratch, so carrying them across would judge a link that is gone
 
 
 def _remotes_rows_for_save():
@@ -7076,6 +7127,9 @@ def _tunnel_supervisor():
                         # the reverse forward IS the liveness: answering → up; port open but silent →
                         # no-kernel; closed → down (the mobile left; its next handshake heals the row)
                         st = "up" if (up and sids is not None) else ("no-kernel" if up else "down")
+                        # same run bookkeeping (no teardown — this side owns no ssh to tear down), so a
+                        # checked-in peer still reaches "established" and clears its ladder
+                        _note_poll(r, st == "up")
                     else:
                         st = _tunnel_status(_tunnel_proc_alive(r), up, sids is not None)
                         # A LIVE ssh is not proof of a live tunnel (the user 2026-07-29). ssh answers the
@@ -7089,17 +7143,25 @@ def _tunnel_supervisor():
                         # that REFUSED is a real no-kernel and must be left alone, while one that never
                         # answered at all means the path is gone. Kill it and let the branch above re-dial —
                         # once, on the transition, never on a timer.
-                        if st == "no-kernel" and r.get("_probe") == "timeout":
+                        silent = (st == "no-kernel" and r.get("_probe") == "timeout")
+                        if _note_poll(r, not silent):
                             _tunnel_log(r["host"], "stale-tunnel",
                                         pid=(r["proc"].pid if r.get("proc") else 0),
+                                        misses=int(r.get("misses") or 0),
                                         note="local forward accepts but nothing answered through it")
                             try:
                                 r["proc"].terminate()
                             except Exception:
                                 pass
                             st = "down"
-                            r["detail"] = ("the link to %s stopped carrying traffic — romp is dialing "
-                                           "again") % r["host"]
+                            # …and this counts as a FAILURE, so the next dial waits. Without it the row
+                            # sat at fails=0 through an afternoon of connect-and-die and never backed off.
+                            n = _note_tunnel_teardown(r, now)
+                            r["detail"] = ("the link to %s keeps dropping after it connects — romp is "
+                                           "waiting %ds before dialing again") % (r["host"], _tunnel_backoff(n))
+                        elif silent:
+                            # a miss, but not yet a run of them: say so and leave the link alone
+                            st = r.get("status") or st
                     if not (st == "down" and r.get("status") == "error") and not r.get("booting"):
                         # Every status CHANGE on the record, so an outage leaves a timeline instead of a
                         # single end-state to reason backwards from: when it flipped, what the end-to-end
@@ -7112,8 +7174,13 @@ def _tunnel_supervisor():
                         r["status"] = st                   # keep a richer spawn-error label over plain 'down';
                         #                                    a Start in flight (`booting`) owns the row's phase
                     if st == "up":
-                        r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff, so a
-                        r.pop("gave_up", None)             #   later drop starts its ladder from 15s again
+                        # Clearing the ladder is earned by a RUN of answered polls, not by the mere fact of
+                        # connecting (the user 2026-07-30): a tunnel that comes up and dies thirty seconds
+                        # later used to reset `fails` on every single cycle, which is precisely why it
+                        # flapped at full speed for hours instead of backing off.
+                        if _tunnel_established(r):
+                            r["fails"], r["next_try"] = 0, 0   # healthy end-to-end → clear the backoff, so a
+                            r.pop("gave_up", None)             #   later drop starts its ladder from 15s again
                         r["last_ok"] = time.time()         # the moment the cached sha/tier below were TRUE,
                         #                                    so a later down row can date what it remembers
                         if r.get("detail"):

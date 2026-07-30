@@ -82,8 +82,11 @@ test("the manager publishes reachability off the KERNEL's tunnel health, and onl
 test("the mark goes on the HOST token, never on the session name", () => {
   // a struck WHOLE name already means a dead session; this session may be perfectly alive
   assert.match(read("host-prefix.ts"), /h\.className = off \? "host-prefix off" : "host-prefix"/);
-  assert.match(CSS, /\.host-prefix\.off \{ text-decoration: line-through; opacity: 0\.75; \}/);
-  assert.match(FEEDCSS, /\.host-prefix\.off \{ text-decoration: line-through/, "the feed page loads only feed.css");
+  // (2026-07-30: the cue became the STALE treatment — dim italic, dotted underline — because
+  // strikethrough claimed the session was gone when it is the LINK that is down. See host-offline-ux.)
+  assert.match(CSS, /\.host-prefix\.off \{[\s\S]*?text-decoration: underline dotted 1px/);
+  assert.match(FEEDCSS, /\.host-prefix\.off \{[\s\S]*?text-decoration: underline dotted 1px/,
+    "the feed page loads only feed.css");
 });
 
 test("the tab dims as a whole and carries the why on hover", () => {

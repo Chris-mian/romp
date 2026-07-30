@@ -5247,6 +5247,7 @@ function showActive() {
   // tint the whole-window border with the active session's identity color
   if (s.color && s.color.bg) document.body.style.setProperty("--active-accent", s.color.bg);
   else document.body.style.removeProperty("--active-accent");
+  syncHostOfflineFoot();   // the tab we just switched to may sit on an unreachable host
   touchMru(activeId!); // record activation order so close returns to the previous tab
   const v = ensureView(activeId!);
   // Bound the switch. A view the user scrolled to the top of has had its window expanded to the WHOLE
@@ -5398,6 +5399,29 @@ function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y
 // messages were jumping the view "backwards"; the compact path FULL-REBUILDS on append, clearing the DOM and
 // resetting scrollTop). Pass atBottom=false so the rebuild keeps winStart, then restore ANCHOR-relative
 // (captureScrollAnchor) — the raw scrollTop only as the eviction fallback.
+// A disconnected host's transcript SAYS SO where it ends (the user 2026-07-30). The tab mark is
+// peripheral once you are reading — you notice it after the fact, if at all — so the note goes at the
+// bottom of the conversation, which is where the eye already lands and where "nothing more is coming"
+// belongs. Deliberately NOT a top banner: one lived there for a few hours on 2026-07-29 and covered the
+// session tab strip, hiding the sessions in order to announce that a machine had gone away.
+//
+// A sibling of the view element, never a child: syncView counts v.el's children to track what it has
+// rendered, so a foot node inside it would read as transcript.
+function syncHostOfflineFoot(): void {
+  const content = document.getElementById("content");
+  if (!content) return;
+  const existing = document.getElementById("host-offline-foot");
+  if (!activeId || !hostIsDown(activeId)) { existing?.remove(); return; }
+  const host = String(activeId).slice(0, String(activeId).indexOf(":"));
+  const text = host + " is disconnected — this is the last romp got from it. Reconnecting.";
+  if (existing) { if (existing.textContent !== text) existing.textContent = text; return; }
+  const note = el("div", "tx-hostoff");
+  note.id = "host-offline-foot";
+  note.textContent = text;
+  note.title = hostDownNote(activeId);   // the one place that note is worded — host-prefix.ts
+  content.appendChild(note);
+}
+
 function appendActive() {
   const content = document.getElementById("content");
   if (!content || !activeId) { showActive(); return; }
@@ -5406,6 +5430,7 @@ function appendActive() {
   const before = content.scrollTop;
   const anchor = !stick && v ? captureScrollAnchor(content, v) : null;
   syncView(activeId, stick);
+  syncHostOfflineFoot();                 // before the scroll maths: it changes scrollHeight
   updateStatusline();
   if (stick) content.scrollTop = content.scrollHeight;
   else if (!(v && restoreScrollAnchor(content, v, anchor))) content.scrollTop = before;
@@ -7482,6 +7507,15 @@ function setupComposer() {
       // and flush it the instant the real one lands (adoptProvisional). The dashed optimistic bubble goes
       // up now, which is the honest reading — romp has your message, it has not been delivered — and it
       // carries over to the real tab rather than being redrawn there.
+      // A session on an unreachable host cannot receive this: the kernel that owns it is the far end of a
+      // link that is down. Refuse BEFORE the box is cleared, so the message stays exactly where you typed
+      // it (the user 2026-07-30) — silently accepting it would clear the composer and deliver nothing.
+      if (hostIsDown(sid)) {
+        const host = String(sid).slice(0, String(sid).indexOf(":"));
+        warnToast(host + " is disconnected, so this wasn't sent. It's still in the box — romp is "
+          + "reconnecting, and you can send it then.");
+        return;
+      }
       if (isProvisionalId(sid)) {
         provisionalQueue.push(text);
         registerOptimistic(sid, text);

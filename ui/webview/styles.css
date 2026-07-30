@@ -2044,9 +2044,24 @@ body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
    would lose the thread — but the "host:" token says the link is down, so nobody reads a frozen transcript
    thinking it is live. Struck + dimmed, the strike on the HOST only: a struck WHOLE name already means a
    dead session, and this session may be perfectly alive on a machine we simply cannot reach. */
-.host-prefix.off { text-decoration: line-through; opacity: 0.75; }
+/* An unreachable host's prefix reads as STALE, not as gone (the user 2026-07-30). Strikethrough said
+   "cancelled/dead", which is the wrong claim: the session is fine, it is the LINK that is down and what
+   you are looking at is the last state romp got. This is the same dim-italic dotted-underline the network
+   panel already uses for a remembered-not-live value (.rnet-stale), so one vocabulary covers every
+   surface. A CSS cue and a title, never a glyph. */
+.host-prefix.off {
+  opacity: 0.75; font-style: italic;
+  text-decoration: underline dotted 1px; text-underline-offset: 2px;
+}
+/* The end of a disconnected host's transcript (the user 2026-07-30): where the conversation stops, a
+   line saying that is where it stops BECAUSE the link is down, not because nothing more happened. Quiet
+   and dim — it is a footnote on the reading, not an alarm — and it wears the same dotted-underline stale
+   vocabulary as the host token above it. */
+.tx-hostoff {
+  color: var(--dim); text-align: center; padding: 14px 28px 22px; font-size: 0.86em; font-style: italic;
+}
 /* the tab of a session on an unreachable host: dimmed as a whole, so "not connected" is glanceable and
-   the struck "host:" inside it is the detail one look further in. */
+   the marked "host:" inside it is the detail one look further in. */
 .tab.host-off { opacity: 0.62; }
 .tab.host-off:hover, .tab.host-off.active { opacity: 1; }
 
