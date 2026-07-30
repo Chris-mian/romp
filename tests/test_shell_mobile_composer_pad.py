@@ -38,10 +38,11 @@ class MobileComposerPadding(unittest.TestCase):
         self.assertIsNone(re.search(r"#composer-(send|attach)[^{]*\{[^}]*\bright:", STYLES))
         self.assertIsNone(re.search(r"#composer-(send|attach)[^{]*\{[^}]*position: absolute", STYLES))
 
-    def test_the_buttons_are_in_flow_flex_circles(self):
+    def test_the_buttons_are_in_flow_flex_rounded_squares(self):
         self.assertIn(
             "#composer-attach, #composer-send {\n"
-            "  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%;", STYLES)
+            "  flex: 0 0 auto; width: calc(1.4 * var(--fs) + 18px); "
+            "height: calc(1.4 * var(--fs) + 18px); border-radius: 10px;", STYLES)
 
 
 if __name__ == "__main__":
