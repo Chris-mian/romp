@@ -16484,8 +16484,11 @@ function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel'
 // spellings of the same drift would eventually disagree, and the number is the whole point of it.
 function driftWord(t){var bb=t.behindBy,ab=t.aheadBy;
 if(typeof bb!=='number'||typeof ab!=='number')return 'different build';
-return (bb>0&&ab>0)?'diverged':(ab>0)?'ahead '+ab+' commit'+(ab===1?'':'s')
-:(bb>0)?'behind '+bb+' commit'+(bb===1?'':'s'):'different build';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
+// git's own shorthand (the user 2026-07-29): the counts read at a glance as arrows, and a diverged host
+// shows BOTH rather than collapsing to one word that hides how much is on each side.
+var up=ab>0?('\\u2191'+ab):'',down=bb>0?('\\u2193'+bb):'';
+if(up&&down)return 'diverged '+up+' '+down;
+return up||down||'different build';}   // mid-attach (authorizing/connecting); no-kernel is SETTLED (no marching dashes)
 // the mobile bottom bar's Net button mirrors the rail icon's connected/busy classes (it shows the same glyph)
 function mnet(){return document.querySelector('#mtabs .mact[data-act=net]');}
 // One host's contribution to the glyph (the user 2026-07-29): 'ok' connected and on this build, 'warn'

@@ -171,7 +171,7 @@ class RemotesPanelRender(unittest.TestCase):
     # ---- remembered vs live (the user 2026-07-28) -------------------------------------------------
     # kernelSha, the drift counts and the peer's mail tier are all answers from the LAST SUCCESSFUL
     # poll — only an `up` row is polled. The panel drew them as current regardless, so a row could say
-    # "disconnected" and "behind 2 commits" and name the peer's mail tier all at once: three claims,
+    # "disconnected" and a drift count and name the peer's mail tier all at once: three claims,
     # two of which it had no way to know. The values stay (a blank row is worse); they must be MARKED.
 
     def _drifted(self, status="up", stale=False, last_ok=0, tiers=None):
@@ -187,7 +187,7 @@ class RemotesPanelRender(unittest.TestCase):
         # The control: an `up` row DID just poll, so its drift is fact and wears no hedge.
         out = self._run(tunnels=self._drifted(status="up", stale=False))
         html = out.get("html", "")
-        self.assertIn("behind 2 commits", html)
+        self.assertIn("\u21932", html)   # git-style arrows (2026-07-29)
         self.assertNotIn("last known", html)
         self.assertNotIn("rnet-stale", html)
 
@@ -195,7 +195,7 @@ class RemotesPanelRender(unittest.TestCase):
         out = self._run(tunnels=self._drifted(status="down", stale=True, last_ok=1785272930))
         html = out.get("html", "")
         self.assertIn("disconnected", html, "the row still reports its live state")
-        self.assertIn("last known: behind 2 commits", html,
+        self.assertIn("last known: \u21932", html,
                       "a drift count from an unreachable host must read as memory, not as a finding")
         self.assertIn("rnet-stale", html, "and must carry the muted cue that overrides the accent")
         self.assertIn("last confirmed", html, "hover says WHEN it was true (progressive disclosure)")
