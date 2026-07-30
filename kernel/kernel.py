@@ -1822,12 +1822,16 @@ def _mark_nudge_failed(gid, ev_t=None):
     # block): the anti-loop gate keeps this arm from ever re-firing, and a genuinely still-stalled goal
     # re-arms on the next GENUINE ended turn, judged against the post-verdict world. The verdict's
     # FILING time (`at`; ev_t for legacy rows) is the event — same discipline as _nudge_fire_list's
-    # arm-time guard, applied at the eval end of the race.
+    # arm-time guard, applied at the eval end of the race. Rows the nudge pipeline itself wrote never
+    # count (jd.nudge_pipeline_row, the user 2026-07-30): placing the reply always files its own
+    # "reopened (nudge)" row after the response turn, and reading that as a fresh ruling mooted EVERY
+    # placed-but-unresolved reply — the ladder's escalation rung went dead and cards parked in Working
+    # with no chip, no block, and no reviver.
     _ev = int(ev_t or now)
     try:
         _nd0 = jd.load_goals(gid.rsplit(":", 1)[0]).get("nodes", {}).get(gid)
         if _nd0 is not None and any((e.get("at") or e.get("ev_t") or 0) > _ev
-                                    and e.get("src") != "nudge"
+                                    and not jd.nudge_pipeline_row(e)
                                     for e in _nd0.get("log") or []):
             nudged[gid] = dict(rec, moot=True)
             d["nudged"] = nudged

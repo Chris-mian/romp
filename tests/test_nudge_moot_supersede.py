@@ -18,6 +18,18 @@ the machinery stands down —
   non-nudge verdict was filed after the RESPONSE turn.
 A moot record keeps the anti-loop gate (lastTurnId pins the arm), and a genuinely still-stalled goal
 re-arms on the next GENUINE ended turn, judged against the post-verdict world.
+
+AND (the user 2026-07-30, the day after the guard shipped): only rows REAL judges filed supersede.
+Placing a nudge reply always runs _reopen(by="nudge") on the target — filing a "reopened (nudge)" row
+(src planner) whose arrival necessarily postdates the response turn — so the guard as first shipped
+read the pipeline's own unseal as a fresh ruling and mooted EVERY placed-but-unresolved reply. The
+audited card (synthetic here): correctly blocked-on-you ("the one remaining step is a live deploy,
+which needs your credentials"), the reply-placement's reopen lifted the block, the planner resolved
+only a sibling question card and left the goal working, and the evaluator stood down moot on that
+same reopen row — no chip, no needs-you block, the anti-loop arm pinned, the card parked in Working
+with no reviver until the user happened to message the session. jd.nudge_pipeline_row names the
+machinery's own rows (src=="nudge" plus _reopen(by="nudge")'s two why strings) and the moot scan
+skips them.
 """
 import json
 import os
@@ -138,6 +150,42 @@ class NudgeFailedMootWhenSuperseded(unittest.TestCase):
         self._write_store([{"ev_t": RESP_T + 5, "src": "nudge", "kind": "block",
                             "why": "procedural", "at": RESP_T + 10}])
         self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "failed")
+
+    def test_the_reply_placements_own_reopen_does_not_moot(self):
+        # THE 2026-07-30 WEDGE: placing the reply files _reopen(by="nudge")'s row (src planner, so the
+        # bare src=="nudge" exclusion missed it) after the response turn — that row is the pipeline
+        # talking to itself, not a judge ruling on newer evidence, and reading it as one mooted every
+        # placed-but-unresolved reply. The goal had been CORRECTLY blocked-on-you; the unseal lifted
+        # the block, the planner left the goal working, and moot then killed the re-block — Working
+        # forever, no reviver.
+        self._write_store([{"ev_t": RESP_T - 60, "src": "closer", "kind": "block",
+                            "why": "the one remaining step is a live deploy, which needs your credentials",
+                            "at": RESP_T - 50},
+                           {"ev_t": RESP_T, "src": "planner", "kind": "reopen",
+                            "why": "reopened (nudge)", "at": RESP_T + 9}])
+        self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "failed")
+        store = km.jd.load_goals(SID)
+        self.assertTrue(store["nodes"][G1]["blocked"],
+                        "the escalation re-blocks: an unresolved nudge on an idle session IS needs-you")
+        self.assertTrue(km._auto_nudge_data()["nudged"][G1].get("failed"),
+                        "the record settles failed (chip + block), not moot (silence)")
+
+    def test_the_reply_placements_ancestor_unblock_does_not_moot(self):
+        # _reopen(by="nudge")'s companion row on blocked ancestors — same machinery, same exclusion
+        self._write_store([{"ev_t": RESP_T, "src": "planner", "kind": "unblock",
+                            "why": "unblocked by reopen (nudge)", "at": RESP_T + 9}])
+        self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "failed")
+
+    def test_a_genuine_verdict_alongside_the_pipelines_reopen_still_moots(self):
+        # the exclusion is SURGICAL: a real judge row after the response supersedes exactly as before,
+        # however many pipeline rows sit next to it
+        self._write_store([{"ev_t": RESP_T, "src": "planner", "kind": "reopen",
+                            "why": "reopened (nudge)", "at": RESP_T + 9},
+                           {"ev_t": RESP_T + 2, "src": "unblocker", "kind": "unblock",
+                            "why": "answered in passing", "at": RESP_T + 30}])
+        self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "moot")
+        store = km.jd.load_goals(SID)
+        self.assertFalse(store["nodes"][G1]["blocked"])
 
     def test_a_moot_record_is_settled_and_never_reevaluated(self):
         self._write_store([{"ev_t": RESP_T - 10, "src": "unblocker", "kind": "unblock",
