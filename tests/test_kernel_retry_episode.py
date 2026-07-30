@@ -59,6 +59,12 @@ class RetryPerEpisode(unittest.TestCase):
         km._name_of = self._saved_name_of
         km._auto_retried.clear()
         km._auto_retried.update(saved)
+        km._auto_retry_state.clear()
+
+    def _elapse(self):
+        """Let the backoff window pass (the ladder itself is covered by test_api_retry_backoff.py). These
+        tests are about EPISODE identity, so they step over the wait rather than sleeping through it."""
+        km._auto_retry_state.pop(SID, None)
 
     def _auto(self):
         return km._drive({"type": "apiRetry", "id": SID}, {"send": lambda s: None})
@@ -77,6 +83,9 @@ class RetryPerEpisode(unittest.TestCase):
         self._auto()
         self.aerr = dict(self.aerr, uuid="err-2")   # the attempt ran and failed again → new record
         self._auto()
+        self.assertEqual(len(self.be.sent), 1, "the backoff holds the new episode until its rung is due")
+        self._elapse()
+        self._auto()
         self.assertEqual(len(self.be.sent), 2)
 
     def test_recovered_session_gets_no_auto_retry(self):
@@ -87,7 +96,7 @@ class RetryPerEpisode(unittest.TestCase):
     def test_manual_always_fires_and_owns_the_episode(self):
         self._auto()
         self._manual()                               # user override fires even though the episode is stamped
-        self.assertEqual(len(self.be.sent), 2)
+        self.assertEqual(len(self.be.sent), 2, "…and even inside the backoff window (2026-07-29)")
         self._auto()                                 # …but the auto loop won't stack behind the manual one
         self.assertEqual(len(self.be.sent), 2)
 

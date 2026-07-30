@@ -183,7 +183,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; retrySuppressed?: boolean; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -2594,7 +2594,19 @@ function apiRetryTick(): void {
     sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed && !s.status.apiSpendLimit) blocked.add(id); });
     apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered / suppressed → stop
     blocked.forEach((id) => {
-      if (!apiRetryNext.has(id)) apiRetryNext.set(id, now + API_RETRY_MS);
+      // The kernel owns the cadence now (the user 2026-07-29): it backs each outage's attempts off up to
+      // half an hour, and publishes when the next may fire. While that deadline stands, this tick does
+      // not ask — asking anyway would be harmless (the kernel refuses) but it would also mean every open
+      // dashboard hammering the gate, and the countdown below would be describing a schedule that isn't
+      // the real one. With no deadline published (a fresh block, an older kernel) the local 10s tick
+      // stands in, so the first attempt is still prompt.
+      const kernelNext = sessions.get(id)?.status.retryNextAt;
+      if (kernelNext) {
+        apiRetryNext.set(id, kernelNext * 1000);
+        if (now < kernelNext * 1000) return;
+      } else if (!apiRetryNext.has(id)) {
+        apiRetryNext.set(id, now + API_RETRY_MS);
+      }
       if (now >= (apiRetryNext.get(id) as number)) {
         if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id });
         apiRetryNext.set(id, now + API_RETRY_MS);                                          // reset the countdown
@@ -2614,7 +2626,14 @@ function apiRetryTick(): void {
       cd.textContent = "auto-retry stopped for this session — send a message to resume";
     } else {
       const at = activeId ? apiRetryNext.get(activeId) : undefined;
-      cd.textContent = at ? `retrying in ${Math.max(0, Math.ceil((at - now) / 1000))}s` : "retrying soon…";
+      const tries = active?.status.retryTries || 0;
+      if (!at) { cd.textContent = "retrying soon…"; } else {
+        const left = Math.max(0, Math.ceil((at - now) / 1000));
+        // "in 1750s" is not a readable wait; past a minute it reads in minutes, and the attempt count
+        // explains why the gap has grown (each failure steps the backoff up) rather than looking stuck
+        const when = left >= 90 ? `${Math.round(left / 60)}m` : `${left}s`;
+        cd.textContent = `retrying in ${when}` + (tries > 1 ? ` · ${tries} tries so far` : "");
+      }
     }
   }
 }
