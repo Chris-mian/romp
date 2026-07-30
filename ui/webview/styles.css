@@ -522,12 +522,14 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   animation: slash-spin 2.4s linear infinite; }
 @keyframes slash-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .slash-spin { animation: none; } }
-/* The two buttons are the SAME circle (the user 2026-07-30: the 07-29 wide send read as a bar on a
-   phone, nothing like the round send messengers put there, and the pair's aspect ratios didn't match).
-   In-flow flex items now, not corner overlays — so no offset arithmetic couples them to the composer's
-   padding any more, and a peer's padding change can't strand them outside the box. */
+/* The two buttons are the SAME rounded square, exactly as tall as the one-line message box beside them
+   (the user 2026-07-30, round 2: the first cut's circles sat taller than the resting box, and a rounded
+   rectangle reads better than a full circle). The size is the input's own min-height calc written
+   against var(--fs) — em here would key on the BUTTON's larger font and drift — so the pair tracks the
+   resting box height by construction. In-flow flex items, not corner overlays: no offset arithmetic
+   couples them to the composer's padding, and a peer's padding change can't strand them outside the box. */
 #composer-attach, #composer-send {
-  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%;
+  flex: 0 0 auto; width: calc(1.4 * var(--fs) + 18px); height: calc(1.4 * var(--fs) + 18px); border-radius: 10px;
   padding: 0; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: none;
@@ -556,12 +558,16 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 #composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
 #composer-input::placeholder { color: var(--dim); }
-/* TOUCH (the user 2026-07-30): the same row, thumb-sized — 44px circles (the tap target a finger
-   expects), send FILLED with the accent like a messenger's round send, the paperclip on a faint chip
-   fill so both read as buttons. The resting box stays ONE line, like Signal's; the mobile placeholder
-   is shortened to fit it (composerRestingPlaceholder). */
+/* A box grown past the height cap scrolls — and the scrollbar's TRACK paints square into the rounded
+   right corners (the user 2026-07-30, on a multi-line box). A thin bar on a transparent track keeps the
+   corners round; the thumb alone floats inside the box. */
+#composer-input { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.3) transparent; }
+/* TOUCH (the user 2026-07-30): the same row, thumb-sized — rounded squares matching the 40px one-line
+   box (down from 44px circles, round 2: they read oversized), send FILLED with the accent like a
+   messenger's send, the paperclip on a faint chip fill so both read as buttons. The resting box stays
+   ONE line, like Signal's; the mobile placeholder is shortened to fit it (composerRestingPlaceholder). */
 @media (pointer: coarse) {
-  #composer-attach, #composer-send { width: 44px; height: 44px; }
+  #composer-attach, #composer-send { width: 40px; height: 40px; border-radius: 12px; }
   #composer-attach { font-size: 19px; background: rgba(255, 255, 255, 0.07); }
   #composer-send { font-size: 21px; }
   /* hover is included on purpose: a touch device can leave a sticky :hover that would otherwise
