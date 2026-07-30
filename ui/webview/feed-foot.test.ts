@@ -31,11 +31,12 @@ test("the docked footer leaves the list a proper scroll container with no float 
   assert.match(CSS, /#feed-list \{[^}]*padding: 12px;/);          // no reserved band for a float anymore
 });
 
-test("when the feed stacks (narrow), the columns read Blocked → Completed → Working (the user 2026-07-08)", () => {
+test("when the feed stacks (narrow), the columns read Completed → Blocked → Working (the user 2026-07-30)", () => {
   // the side-by-side DOM order stays Working/Blocked/Completed; a container query stacks them and `order`
-  // re-sequences ONLY the stacked case: needs-you first, then done, then still-running.
+  // re-sequences ONLY the stacked case: done first (moved up from the middle, superseding the 2026-07-08
+  // Blocked-first order), then needs-you, then still-running.
   assert.match(CSS, /@container \(max-width: 540px\) \{[\s\S]*?\.feed-cols \{ flex-direction: column; \}/);
-  assert.match(CSS, /\.feed-col\.col-needsInput \{ order: 1; \}/);
-  assert.match(CSS, /\.feed-col\.col-completed\s+\{ order: 2; \}/);
+  assert.match(CSS, /\.feed-col\.col-completed\s+\{ order: 1; \}/);
+  assert.match(CSS, /\.feed-col\.col-needsInput \{ order: 2; \}/);
   assert.match(CSS, /\.feed-col\.col-asks\s+\{ order: 3; \}/);
 });
