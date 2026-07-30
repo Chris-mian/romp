@@ -31,7 +31,12 @@ test("a missing folder warns and names where it would go", () => {
   const said = dirStatusLine(st({ exists: false, isDir: false, canCreate: true, missing: 2 }));
   assert.equal(said.cls, "warn");
   assert.match(said.text, /no such folder yet/);
-  assert.match(said.text, /Starting will create it$/, "it says what happens next, not just what is wrong");
+  // it NAMES the folder it would make, and how much of the chain (the user 2026-07-29)
+  assert.match(said.text, /Starting will create ~\/GitRepos\/api and the 1 folder above it$/);
+  const one = dirStatusLine(st({ exists: false, isDir: false, canCreate: true, missing: 1 }));
+  assert.match(one.text, /Starting will create ~\/GitRepos\/api$/, "one folder needs no arithmetic");
+  const three = dirStatusLine(st({ exists: false, isDir: false, canCreate: true, missing: 3 }));
+  assert.match(three.text, /and the 2 folders above it$/, "plural when it is more than one");
 });
 
 test("a file where a folder was typed is an error, not an offer", () => {
