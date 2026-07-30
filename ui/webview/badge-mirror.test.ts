@@ -15,23 +15,31 @@ const base = (over: Partial<BadgeItem>): BadgeItem =>
 test("every trouble chip becomes one entry, in the session's name", () => {
   const items = [base({
     warns: [{ kind: "distill", t: 100, msg: "the summarizer gave up" }],
-    stalled: { why: "reviver not retiring", since: 200, note: "romp is holding this" },
     nudgeFailed: true,
     retrying: { since: 300 },
     blocked: { state: "apiError", status: 529 },
   })];
   const { notices } = badgeNotices(items, new Set());
-  assert.deepEqual(notices.map((n) => n.kind), ["warn", "stalled", "nudge", "retry", "apierror"]);
+  assert.deepEqual(notices.map((n) => n.kind), ["warn", "nudge", "retry", "apierror"]);
   assert.ok(notices.every((n) => n.text.startsWith("api — ")), "each entry names the session");
   // every notice carries its jump target so the bell entry can lead back to the card (2026-07-28)
   assert.ok(notices.every((n) => n.sid === "TESTSID" && n.itemId === "TESTSID:g1"));
   assert.match(notices[0].text, /warning: the summarizer gave up/);
-  assert.match(notices[1].text, /stalled: romp is holding this/, "the staller's note beats the mechanical why");
-  assert.match(notices[4].text, /API error 529/);
+  assert.match(notices[3].text, /API error 529/);
+});
+
+test("a stalled hold mints NO log entry — the card chip is its only surface", () => {
+  // The user 2026-07-29: the log filled with "stalled" rows for holds that resolved in seconds
+  // (the judge ruled, or the nudge fired and worked) — the mechanism doing its job, not a problem.
+  // A stall that defeats the nudge escalates to nudgeFailed, which does log.
+  const it = { ...base({}), stalled: { why: "reviver not retiring", since: 200, note: "romp is holding this" } };
+  const { notices, active } = badgeNotices([it], new Set());
+  assert.equal(notices.length, 0);
+  assert.equal(active.size, 0, "no sig either — nothing for the seen-set to hold");
 });
 
 test("a seen signature stays quiet; the SAME badge next push logs nothing", () => {
-  const items = [base({ stalled: { why: "w", since: 200 } })];
+  const items = [base({ warns: [{ kind: "distill", t: 200, msg: "w" }] })];
   const first = badgeNotices(items, new Set());
   assert.equal(first.notices.length, 1);
   const second = badgeNotices(items, new Set(first.active));
@@ -39,9 +47,9 @@ test("a seen signature stays quiet; the SAME badge next push logs nothing", () =
 });
 
 test("a NEW episode (different since/t) is a new entry; a cleared badge leaves the active set", () => {
-  const s1 = badgeNotices([base({ stalled: { why: "w", since: 200 } })], new Set());
-  const s2 = badgeNotices([base({ stalled: { why: "w", since: 999 } })], new Set(s1.active));
-  assert.equal(s2.notices.length, 1, "a fresh stall episode logs again");
+  const s1 = badgeNotices([base({ warns: [{ kind: "distill", t: 200, msg: "w" }] })], new Set());
+  const s2 = badgeNotices([base({ warns: [{ kind: "distill", t: 999, msg: "w" }] })], new Set(s1.active));
+  assert.equal(s2.notices.length, 1, "a fresh warn episode logs again");
   const gone = badgeNotices([base({})], new Set(s2.active));
   assert.equal(gone.active.size, 0, "no badge → no active sigs → the next occurrence re-logs");
 });

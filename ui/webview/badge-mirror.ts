@@ -1,8 +1,15 @@
 // Card trouble badges mirror into the shell's notification bell (the user 2026-07-27): anything that
-// shows as a problem chip on a card — a judge warning, a stalled hold, a failed follow-up, an
-// API-error block, a retry storm — ALSO logs one entry in the bell, so problems are findable in one
-// place after the fact. The chip on the card stays exactly as it was; the bell entry is the durable
-// copy of the moment it appeared.
+// shows as a problem chip on a card — a judge warning, a failed follow-up, an API-error block, a
+// retry storm — ALSO logs one entry in the bell, so problems are findable in one place after the
+// fact. The chip on the card stays exactly as it was; the bell entry is the durable copy of the
+// moment it appeared.
+//
+// DELIBERATELY NOT MIRRORED: the stalled hold. A stall is romp's nudge gate waiting out one of its
+// own revivers (a judge call mid-flight, a reply still being judged), and almost every episode ends
+// in seconds — the judge rules, or the auto-nudge fires and the session picks the work back up.
+// That is the machinery working, not a problem, and mirroring it filled the log with "stalled" rows
+// for holds nobody ever saw on a card (the user 2026-07-29). The chip on the card is the live
+// surface; a stall that actually defeats the nudge escalates to nudgeFailed, which logs below.
 //
 // Pure: the caller passes the previously-notified signature set and gets back fresh notices + the
 // now-active set. A signature keys the EPISODE (card + kind + the badge's own since/t), the same
@@ -14,7 +21,6 @@ import { apiErrorReason } from "./api-error-reason";
 
 export interface BadgeItem {
   itemId: string; sid: string; name: string; text: string;
-  stalled?: { why: string; since: number; note?: string | null } | null;
   nudgeFailed?: boolean;
   retrying?: { since?: number | null; count?: number; max?: number | null; status?: number | string | null; networkDown?: boolean | null; rateLimitType?: string | null } | null;
   warns?: { kind: string; t: number; msg: string }[] | null;
@@ -36,10 +42,6 @@ export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: 
     };
     for (const w of it.warns ?? []) {
       add("w|" + it.itemId + "|" + w.t + "|" + w.kind, "warn", it.name + " — warning: " + cap(w.msg, 100));
-    }
-    if (it.stalled) {
-      add("s|" + it.itemId + "|" + it.stalled.since, "stalled",
-        it.name + " — stalled: " + cap(it.stalled.note || it.stalled.why, 100));
     }
     if (it.nudgeFailed) {
       add("n|" + it.itemId, "nudge", it.name + " — follow-up failed on “" + cap(it.text, 50) + "”");
