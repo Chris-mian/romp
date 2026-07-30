@@ -96,7 +96,11 @@ test("a chosen completion walks INTO the folder; it never starts the session", (
 
 test("a missing directory raises the create-or-edit choice, and Create re-sends the SAME create", () => {
   assert.match(RENDER, /else if \(m\.type === "createDirMissing" && m\.name\) onCreateDirMissing\(m\)/);
-  assert.match(RENDER, /hideOpeningModal\(\);\s*\/\/ the cue would otherwise spin/);
+  // (2026-07-30: the cue became a provisional TAB, so the folder question retires it and holds what was
+  // typed for the retry — "Create it and start" re-sends the same create, so the text is still that
+  // session's, not the fallback tab's.)
+  assert.match(RENDER, /const held = dropProvisional\(\);/);
+  assert.match(RENDER, /pendingCarry = \[\.\.\.held\.queued, held\.draft\]\.filter\(Boolean\)/);
   assert.match(RENDER, /\{ label: "Create it and start", value: "create" \}, \{ label: "Edit the path", value: "edit" \}/);
   assert.match(RENDER, /if \(v === "create"\) \{ startCreate\(req, true\); return; \}/);
   assert.match(RENDER, /\.\.\.\(mkdir \? \{ mkdir: true \} : \{\}\)/, "mkdir rides the same message");

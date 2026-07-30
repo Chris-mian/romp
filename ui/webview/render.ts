@@ -20,6 +20,7 @@ import { delegate } from "./actions";
 import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
+import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional } from "./provisional";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
@@ -3768,54 +3769,103 @@ function tabInAdjacentRow(id: string, dir: number): string | null {
 let pickMode = false;
 let pickAllowNew = false;
 
-// "Opening session…" modal — shown the instant the user creates a session and
-// dismissed when its tab actually arrives (the kernel spawn → tmux → first
-// transcript poll has a visible delay; this is the "something is happening" cue).
+// The session you just created gets its TAB AND COMPOSER IMMEDIATELY, and starts behind them (the user
+// 2026-07-30). This replaced an "Opening session…" modal that covered the pane while the kernel resolved
+// the directory, spawned tmux or connected the SDK, and the first transcript poll came back — seconds you
+// could do nothing with, watching three dots. See ./provisional.ts for why the id carries no colon.
+//
+// `pendingNewSession` is the NAME the created session will arrive under; it is the only join available,
+// since the kernel mints the id. The provisional tab carries a working chip (romp genuinely is starting
+// it), a live composer, and anything typed into it, held until the real session lands.
 let pendingNewSession: string | null = null;
-let openingTimer: ReturnType<typeof setTimeout> | undefined;
-function showOpeningModal(name: string) {
-  hideOpeningModal();
-  pendingNewSession = name;
-  const overlay = el("div", "picker-overlay opening-overlay");
-  overlay.id = "opening";
-  overlay.style.display = "flex";
-  const box = el("div", "picker-box opening-box");
-  // ✕ to abort (the user 2026-07-14): a spawn sometimes fails and the cue would otherwise hang for the
-  // full 30s backstop. The ✕ / Esc / backdrop all drop the modal AND cancel the pending spawn.
-  const cancel = el("button", "opening-cancel");
-  cancel.textContent = "✕";
-  cancel.title = "Cancel — stop waiting and abort this session";
-  cancel.addEventListener("click", (e) => { e.stopPropagation(); cancelOpening(); });
-  const title = el("div", "opening-title"); title.textContent = "Opening session";
-  const nm = el("div", "opening-name"); nm.textContent = name;
-  const dots = el("div", "opening-dots"); dots.append(el("span"), el("span"), el("span"));
-  box.append(cancel, title, nm, dots);
-  overlay.appendChild(box);
-  // Backdrop click / Esc cancel too — mirrors showConfirm, so a hung spawn never traps the user. The key
-  // handler is stored on the node and removed in hideOpeningModal (no leaked listeners across opens).
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) cancelOpening(); });
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); cancelOpening(); } };
-  (overlay as any)._key = onKey;
-  document.addEventListener("keydown", onKey, true);
-  document.body.appendChild(overlay);
-  // safety net: never strand the modal if the session never materializes (spawn failed)
-  openingTimer = setTimeout(hideOpeningModal, 30000);
+let provisionalId: string | null = null;
+const provisionalQueue: string[] = [];
+let provisionalTimer: ReturnType<typeof setTimeout> | undefined;
+// Text typed into a provisional tab whose create had to ask something first, waiting for the retry's tab.
+let pendingCarry = "";
+// The backstop, for a create that fails with nothing said. Every failure the kernel CAN name arrives as a
+// warn / createDirMissing and lands the dialog at once; this covers a spawn that dies silently. It is
+// deliberately long — the point is that it is no longer what you wait on, the way the old 30s cue was.
+const PROVISIONAL_WAIT_MS = 90_000;
+
+function openProvisional(req: CreateReq): void {
+  dropProvisional();                       // never two at once: a second create supersedes the first
+  const display = provisionalName(req.host, req.name);
+  pendingNewSession = display;
+  const id = mintProvisionalId(Date.now().toString(36) + Math.random().toString(36).slice(2));
+  provisionalId = id;
+  sessions.set(id, { id, name: display, color: null, events: [],
+                     status: { state: "working", sinceEpoch: Math.floor(Date.now() / 1000) } });
+  order.push(id);                          // a tab the kernel does not know yet survives reconcileTabOrder
+  renderTabs();
+  setActive(id);
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  // text carried over from a create that had to ask something first (the folder question): it was typed
+  // for THIS session, so it comes back into the box the retry opens rather than being stranded on
+  // whichever tab happened to be underneath.
+  if (ta && pendingCarry) { ta.value = pendingCarry; growComposer(ta); }
+  pendingCarry = "";
+  ta?.focus();                             // the whole point: you can start typing NOW
+  provisionalTimer = setTimeout(
+    () => failProvisional("romp asked to start it, but nothing came back."), PROVISIONAL_WAIT_MS);
 }
-function hideOpeningModal() {
+
+/** Retire the provisional tab and hand back whatever was typed into it, so nothing is ever just dropped. */
+function dropProvisional(): { queued: string[]; draft: string } {
+  const id = provisionalId;
+  provisionalId = null;
   pendingNewSession = null;
-  if (openingTimer) { clearTimeout(openingTimer); openingTimer = undefined; }
-  const o = document.getElementById("opening");
-  if (o) {
-    const k = (o as any)._key;
-    if (k) document.removeEventListener("keydown", k, true);
-    o.remove();
+  if (provisionalTimer) { clearTimeout(provisionalTimer); provisionalTimer = undefined; }
+  const queued = provisionalQueue.slice();
+  provisionalQueue.length = 0;
+  let draft = "";
+  if (id) {
+    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    draft = (activeId === id && ta) ? ta.value : (drafts.get(id) ?? "");
+    pendingSent.delete(id);                // the optimistic bubbles belong to a tab that is going away
+    dismissSession(id);                    // drops it from sessions/order/views and reselects
+  }
+  return { queued, draft };
+}
+
+// The real session arrived: move everything the provisional tab was holding onto it and focus it. The
+// queued messages send FOR REAL here — they were never sent before, because there was no session to send
+// them to; the dashed bubbles you saw were this client saying "received", not the kernel.
+function adoptProvisional(realId: string): void {
+  const { queued, draft } = dropProvisional();
+  if (draft) drafts.set(realId, draft);    // set BEFORE the switch — setActive fills the box from drafts
+  setActive(realId);
+  for (const text of queued) {
+    vscodeApi?.postMessage({ type: "sendMessage", id: realId, text });
+    registerOptimistic(realId, text);      // …and the bubble carries over to the tab that now owns it
+  }
+  if (draft) { persistDrafts(); const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; if (ta) growComposer(ta); }
+}
+
+// A create that FAILED. The kernel's own words are the message wherever it gave any (a bad name, an
+// unreadable parent, the SDK setup hint) — a dialog naming the reason beats the old cue, which simply
+// stopped after thirty seconds and left you to work out that nothing had happened. Whatever was typed
+// comes back in the box, because losing it would be the one unrecoverable part of this.
+function failProvisional(why: string): void {
+  if (!provisionalId) return;
+  const name = pendingNewSession || "that session";
+  const { queued, draft } = dropProvisional();
+  const held = [...queued, draft].filter(Boolean).join("\n\n");
+  showConfirm("Couldn't start " + name,
+    why + (held ? "\n\nWhat you typed is back in the message box." : ""),
+    [{ label: "OK", value: "ok" }], () => { /* nothing to undo — the tab is already gone */ });
+  if (held) {
+    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    if (ta) { ta.value = held; growComposer(ta); }
+    if (activeId) { drafts.set(activeId, held); persistDrafts(); }
   }
 }
-// The ✕ / Esc / backdrop on the "Opening…" cue: drop the modal AND tell the kernel to abort the pending
-// spawn, so a slow-but-successful open doesn't leave behind an orphan session the user meant to cancel.
-function cancelOpening() {
-  const name = pendingNewSession;                  // hideOpeningModal nulls it — capture first
-  hideOpeningModal();
+
+// The ✕ on a provisional tab: tell the kernel to abort the pending spawn too, so a slow-but-successful
+// create doesn't leave behind an orphan session the user meant to cancel.
+function cancelProvisional(): void {
+  const name = pendingNewSession;
+  dropProvisional();
   if (name && vscodeApi) vscodeApi.postMessage({ type: "cancelCreate", name });
 }
 
@@ -4044,12 +4094,17 @@ function startCreate(req: CreateReq, mkdir = false): void {
   rememberDir(req.host, req.dir);   // what you used on that machine is the right prefill for it next time
   if (vscodeApi) vscodeApi.postMessage({ type: "createSession", ...req, ...(mkdir ? { mkdir: true } : {}) });
   closePicker();
-  // a remote session's tab arrives host-prefixed — register the prefixed name so the cue dismisses
-  showOpeningModal(req.host ? req.host + ":" + req.name : req.name);
+  // …and the tab is THERE, with a live composer, before the kernel has answered. A remote session's tab
+  // arrives host-prefixed, so that is the name the provisional one is matched against on arrival.
+  openProvisional(req);
 }
 
 function onCreateDirMissing(m: any): void {
-  hideOpeningModal();                    // the cue would otherwise spin over a dialog it hides
+  // The folder question supersedes the provisional tab: this create is not going to land as asked. Keep
+  // what was typed — "Create it and start" re-sends the very same create, so the text belongs to the
+  // session that is about to exist, not to whatever tab we happen to fall back to.
+  const held = dropProvisional();
+  pendingCarry = [...held.queued, held.draft].filter(Boolean).join("\n\n");
   const req = lastCreate;
   showConfirm("That folder isn't there",
     createDirPrompt(String(m.name), (m.status || null) as DirStatus | null, String(m.dir || "")),
@@ -4776,7 +4831,18 @@ function syncView(id: string, atBottom?: boolean): View {
     const only = v.el.childNodes.length === 1 ? (v.el.firstChild as HTMLElement) : null;
     if (!only || !only.classList?.contains("tx-empty")) {
       while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
-      const ph = el("div", "tx-empty"); ph.textContent = "No messages yet."; v.el.appendChild(ph);
+      const ph = el("div", "tx-empty"); v.el.appendChild(ph);
+      // A PROVISIONAL tab is not empty, it is STARTING — so it wears the romp loader (the repo's rule for
+      // any wait), not the placeholder that tells you to send something. The composer below it is live
+      // either way: anything typed here is held and flushed when the session lands.
+      if (isProvisionalId(id)) {
+        ph.classList.add("tx-starting");
+        const sw = el("img", "tx-starting-swirl") as HTMLImageElement;
+        sw.src = mediaSrc("romp-swirl-glyph.svg"); sw.alt = ""; sw.onerror = () => sw.remove();
+        const wm = el("div", "tx-starting-msg");
+        wm.textContent = "Starting " + s.name + "… you can type now; romp sends it when it's up.";
+        ph.append(sw, wm);
+      } else ph.textContent = "No messages yet.";
     }
     v.rendered = 0; v.stale = false; v.winStart = 0; v.winEnd = 0;
     return v;
@@ -6946,11 +7012,11 @@ function upsert(msg: any) {
     renderBgTasks();
   }
   // A non-active session's view is left to sync lazily when it's next shown.
-  // The session the user just created has arrived → drop the "Opening…" cue and
-  // focus its fresh tab (the whole point of opening it).
-  if (!existed && pendingNewSession && msg.name === pendingNewSession) {
-    hideOpeningModal();
-    setActive(msg.id);
+  // The session the user just created has ARRIVED: the provisional tab hands over its queued messages
+  // and its draft to the real one, and this is where those messages actually reach the kernel — until
+  // now there was no session to send them to.
+  if (adoptsProvisional(existed, msg.name, pendingNewSession)) {
+    adoptProvisional(msg.id);
   }
   schedulePrebuild(); // startup + new content: build the off-screen tabs in idle so they open instantly
 }
@@ -7109,6 +7175,9 @@ function statusOnly(msg: any) {
 // The ✕'s own path: remember the close (see closingTabs), then drop the tab now. (dismissSession is ALSO how
 // a session dying on its own arrives — that one must not be recorded as a close of ours.)
 function closeTabLocally(id: string): void {
+  // A provisional tab has no session to close — closing it means "never mind", so it cancels the spawn
+  // the kernel may still be running, the way the old cue's ✕ did.
+  if (isProvisionalId(id)) { cancelProvisional(); return; }
   closingTabs.set(id, Date.now());
   dismissSession(id);
 }
@@ -7201,7 +7270,12 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
-  else if (m.type === "warn" && typeof m.text === "string" && m.text) warnToast(m.text);
+  else if (m.type === "warn" && typeof m.text === "string" && m.text) {
+    // A warn arriving while a create is in flight IS that create's verdict (a name the kernel won't take,
+    // an unreadable parent, the SDK setup hint). It gets a dialog naming the reason and takes the
+    // provisional tab down with it; a toast would slide past the one moment it needed to be read.
+    if (provisionalId) failProvisional(m.text); else warnToast(m.text);
+  }
   // `err` is the LOUD channel, deliberately distinct from `warn` (the user 2026-07-29): a warn toast fades
   // after 12s, which is right for "that name has a bad character" and wrong for "the message you just typed
   // was never sent." This one takes the confirm modal — it has to be dismissed — and hands the text back,
@@ -7404,6 +7478,17 @@ function setupComposer() {
     const sid = activeId;   // the session this send (and any confirm below) was armed for
     const deliver = () => {
       if (activeId !== sid) return;   // a confirm outlived a tab switch — never send into the wrong session
+      // A PROVISIONAL tab has no session behind it yet, so there is nothing to send to: hold the message
+      // and flush it the instant the real one lands (adoptProvisional). The dashed optimistic bubble goes
+      // up now, which is the honest reading — romp has your message, it has not been delivered — and it
+      // carries over to the real tab rather than being redrawn there.
+      if (isProvisionalId(sid)) {
+        provisionalQueue.push(text);
+        registerOptimistic(sid, text);
+        drafts.delete(sid); draftStartedAt.delete(sid); persistDrafts();
+        ta.value = ""; composerManualH = null; ta.style.height = "";
+        return;
+      }
       lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
       // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
       // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,

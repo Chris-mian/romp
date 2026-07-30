@@ -15,7 +15,9 @@ const FEDERATION = ui("webview", "federation.ts");
 const STYLES = ui("webview", "styles.css");
 
 test("render handles kernel warn messages with a toast", () => {
-  assert.match(RENDER, /m\.type === "warn" && typeof m\.text === "string" && m\.text\) warnToast\(m\.text\)/);
+  // (2026-07-30: a warn arriving while a create is in flight IS that create's verdict, so it takes the
+  // dialog and retires the provisional tab. Every other warn still gets the toast.)
+  assert.match(RENDER, /if \(provisionalId\) failProvisional\(m\.text\); else warnToast\(m\.text\);/);
   assert.match(RENDER, /function warnToast\(msg: string\)/);
 });
 
