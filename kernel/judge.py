@@ -3369,11 +3369,17 @@ def append_episode_settle(sid, head, t, settled):
 
 
 def episode_floor(sid):
-    """The current episode's start time for `sid`, or None if no episode was ever recorded. The
-    placement fuzzy-match scope (see _placed_key): evidence recorded before this instant belongs to
-    a conversation the agent can no longer see."""
-    row = episode_last(sid)
-    return row.get("t") if row else None
+    """The current episode's start time for `sid`, or None until a /clear BOUNDARY is recorded. Both
+    consumers — the _placed_key fuzzy-match scope and the planner's pre-episode retirement — reason
+    about evidence from a conversation the agent can no longer see, and only a /clear creates one:
+    the log's row 0 is a SEED (whatever episode was current at first observation), never a boundary.
+    The seed's t must not serve as a floor (the user 2026-07-30): a session spawned WITH its prompt
+    stamps that founding segment at the send moment, but the CLI boots for a second or more before
+    writing the transcript head that becomes the seed's t — so the session's first ask read as
+    pre-episode and was retired, zero cards ever minted, across nine spawned-with-prompt sessions
+    in the guard's first three days."""
+    rows = episode_rows(sid)
+    return rows[-1].get("t") if len(rows) >= 2 else None
 
 
 _discover_lock = threading.Lock()
@@ -5079,7 +5085,9 @@ def _plan_session(fsid, path, now):
             # filed done-verdicts on three-day-old cards, resurfacing them as freshly completed. The
             # boundary settle usually hides this (verdicts on cleared nodes stay dark), but the planner
             # must not depend on it. RETIRE, not skip, for the same reason as the moot branch below —
-            # an un-retired unit wedges auto-nudge's `_unplanned` gate forever.
+            # an un-retired unit wedges auto-nudge's `_unplanned` gate forever. The floor is None until
+            # a /clear boundary exists (episode_floor): a founding prompt stamped at its send moment,
+            # before the CLI writes the transcript head, must never read as pre-episode (2026-07-30).
             store["placements"][key] = None
             retired = True
             continue
