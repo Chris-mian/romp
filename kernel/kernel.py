@@ -11512,9 +11512,17 @@ def _clear_wrap_body(gids, nodes):
     """The ONE-round wrap-up directive for a clear of still-OPEN card(s) — the safety net for the
     July-22 lost-prototype post-mortem (a card cleared 3 minutes after its build started; the only copy
     was uncommitted worktree edits, which evaporated). The user clears cards they distrust, so some
-    clears catch real work: the message tells the session to STOP, park any unfinished work where it
-    won't be lost, and surface AT MOST one final keep-or-discard decision — like a file-delete confirm,
-    routed once through the agent (the user 2026-07-24). The ask names no branch or commit (the user
+    clears catch real work: the message tells the session to STOP and park any unfinished work where it
+    won't be lost (the user 2026-07-24).
+
+    It ASKS FOR NOTHING (the user 2026-07-29). It used to demand one keep-or-discard reply, which made
+    every clear cost a second decision: a clear most often means "acknowledged, I am done with this", and
+    a mandatory question turned each one into another blocked card to clear. The reply is the session's to
+    make now, on two grounds only: something here still needs the user, or the clear looks premature. A
+    clear that was simply the user finishing with a thread ends there, silently. That discretion is
+    deliberate, since a clear is sometimes a mistake and the session holds the context to say so.
+
+    The parking ask names no branch or commit (the user
     2026-07-26: not every session is coding in git) — an agent in a repo parks on a branch anyway, and
     one writing a doc saves the draft. Deliberately NOT a nudge status check, and it carries
     NO romp-goal-id markers: a goal-id would make the follow-up judge reopen the cleared goal and file
@@ -11537,12 +11545,11 @@ def _clear_wrap_body(gids, nodes):
         if why:
             quote.append(("   " + why) if len(gids) > 1 else why)
     one = len(gids) == 1
-    them = "it" if one else "them"
-    body = ("I'm dropping %s. Stop work on %s and don't pick %s back up.\n\n"
-            "If you have unfinished work on %s, save it somewhere it won't be lost, then reply "
-            "once: what you saved, where it is, and whether I should throw it away or have you "
-            "finish it. If there's nothing pending, say so in one line. Just the one reply."
-            % ("this one" if one else "these", them, them, them if one else "any of them"))
+    body = ("I'm done with %s, so you can stop here.\n\n"
+            "If you have work in progress%s, save it somewhere it won't be lost. No need to reply. "
+            "If %s still needs a decision from me, or I've stopped you too early, say so in one line."
+            % ("this one" if one else "these", "" if one else " on any of them",
+               "it" if one else "one of them"))
     msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
     tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
             "relevant to your work — ignore them --><!-- romp-injected --><!-- romp-clear-wrap -->")

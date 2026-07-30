@@ -99,14 +99,22 @@ class ClearWrapBody(unittest.TestCase):
         out = km._clear_wrap_body([G_OPEN], _nodes())
         self.assertIn("> Build the sticky timestamp", out)
         self.assertIn("> Prototype the floating stamp.", out, "the planner's why rides as context")
-        self.assertIn("I'm dropping this one", out)
-        self.assertIn("Stop work on it", out)
+        # It reads as DONE, not as an abandonment order (the user 2026-07-29): a clear most often means
+        # "acknowledged, I am finished with this", and the old "stop work, don't pick it back up" framing
+        # made an ordinary acknowledgement sound like a rebuke.
+        self.assertIn("I'm done with this one", out)
+        self.assertIn("you can stop here", out)
         self.assertIn("save it somewhere it won't be lost", out,
                       "loss-proofing without naming git — not every session is coding (the user "
                       "2026-07-26); an agent in a repo still reads this as 'commit to a branch'")
-        self.assertIn("reply once", out, "exactly one keep-or-discard round")
-        self.assertIn("throw it away or have you finish it", out, "the decision the reply must carry")
-        self.assertIn("Just the one reply", out)
+        # …and it ASKS FOR NOTHING. A mandatory reply made every clear cost a second decision, which is
+        # the loop this removes: silence is the expected answer.
+        self.assertIn("No need to reply", out)
+        self.assertNotIn("reply once", out)
+        self.assertNotIn("Just the one reply", out)
+        # the session keeps the discretion to speak up, on two grounds only
+        self.assertIn("still needs a decision from me", out)
+        self.assertIn("stopped you too early", out)
 
     def test_bundle_numbers_the_goals(self):
         nodes = _nodes()
@@ -114,9 +122,10 @@ class ClearWrapBody(unittest.TestCase):
         out = km._clear_wrap_body([G_OPEN, SID + ":g9"], nodes)
         self.assertIn("> 1. Build the sticky timestamp", out)
         self.assertIn("> 2. Write the migration guide", out)
-        self.assertIn("I'm dropping these", out)
-        self.assertIn("Stop work on them", out)
-        self.assertIn("unfinished work on any of them", out)
+        self.assertIn("I'm done with these", out)
+        self.assertIn("you can stop here", out)
+        self.assertIn("work in progress on any of them", out)
+        self.assertIn("If one of them still needs a decision", out)
 
     def test_it_reads_as_a_human_ask_not_a_system_notice(self):
         # the user 2026-07-24: the session has no idea romp is tracking it, so the message must not
@@ -246,8 +255,15 @@ class JudgeSide(unittest.TestCase):
         import inspect
         src = inspect.getsource(jd.plan_units)
         self.assertIn("one-time wrap-up of goals the user just", src)
-        self.assertIn("mint exactly **one** new top-level goal", src)
         self.assertIn("re-create or reopen the cleared goals themselves", src)
+        # the DEFAULT is now to file nothing, matching a wrap-up that asks for no reply (2026-07-29):
+        # a session that merely stops, or reports what it parked, must not mint anything
+        self.assertIn("the DEFAULT is to **skip**", src)
+        self.assertIn("or reports what", src)
+        # …and a card is minted only when the session raises something that genuinely needs the user
+        self.assertIn("**one** new top-level goal, blocked on the user", src)
+        self.assertIn("an explicit question it is", src)
+        self.assertIn("the dismissal looks premature", src)
 
 
 if __name__ == "__main__":
