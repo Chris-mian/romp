@@ -9,13 +9,16 @@ that cut turn as "the response didn't resolve this" and filed a needs-you block 
 presenting the already-answered decision brief. The user re-answered a question they had answered
 five minutes earlier.
 
-The discipline, at both ends of the race: a verdict FILED (`at`; ev_t for legacy rows) after the
-evidence the nudge machinery is acting on means the judges have already ruled on a newer world, so
-the machinery stands down —
-- fire time: _nudge_fire_list drops a goal whose diary gained a verdict after the ARM turn, even if
-  the goal reads plain 'working' in the fresh store (the freshly-unblocked case above);
+The discipline, at both ends of the race: a verdict the judges based on a newer world than the one
+the nudge machinery is acting on means they have already ruled, so the machinery stands down —
+- fire time: _nudge_fire_list drops a goal whose diary gained a verdict about EVIDENCE (ev_t) newer
+  than the ARM turn, even if the goal reads plain 'working' in the fresh store (the freshly-unblocked
+  case above). Evidence time, NOT filing time: rulings about the arm turn itself always FILE after
+  it, so the original `at` comparison read the arm's own audit as a moved story and silently gagged
+  every goal that audit touched (the same-trigger wedge, tests/test_awaiting_same_trigger_wedge.py);
 - eval time: _mark_nudge_failed retires the record as `moot` (no failed chip, no block) when a
-  non-nudge verdict was filed after the RESPONSE turn.
+  non-nudge verdict was FILED (`at`) after the RESPONSE turn — there the question really is "did a
+  judge look after the reply", and moot (stand down) is the safe direction.
 A moot record keeps the anti-loop gate (lastTurnId pins the arm), and a genuinely still-stalled goal
 re-arms on the next GENUINE ended turn, judged against the post-verdict world.
 
@@ -66,14 +69,16 @@ def _store(nodes, status=None):
 class FireListArmOrdering(unittest.TestCase):
     """_nudge_fire_list's arm_t guard: the stall inference is stale once the judges filed anything newer."""
 
-    def test_a_verdict_filed_after_the_arm_drops_the_fire(self):
-        # the audited shape: unblocked moments ago → plain 'working' in the fresh store, but the
-        # unblock's filing postdates the arm — the "it looks stalled" read predates the answer
+    def test_a_verdict_on_newer_evidence_drops_the_fire(self):
+        # the audited shape: the user's ANSWER opened a turn after the arm and the unblock rode it
+        # (ev_t = the answer's trigger) → plain 'working' in the fresh store, but the "it looks
+        # stalled" read predates the answer
         log = [{"ev_t": ARM_T, "src": "planner", "kind": "block", "why": "open the PR, or hold it?", "at": ARM_T + 5},
-               {"ev_t": ARM_T, "src": "unblocker", "kind": "unblock", "why": "answered in the thread", "at": ARM_T + 300}]
+               {"ev_t": ARM_T + 290, "src": "unblocker", "kind": "unblock", "why": "answered in the thread",
+                "at": ARM_T + 300}]
         fresh = _store({G1: _node(G1, "ship the notes-api", log=log)})
         self.assertEqual(km._nudge_fire_list(fresh, [(G1, 1, False)], arm_t=ARM_T), [],
-                         "the judges ruled after the arm — the status check would ask about a moved story")
+                         "the judges ruled on the answer's turn — the status check would ask about a moved story")
 
     def test_old_history_before_the_arm_still_fires(self):
         log = [{"ev_t": ARM_T - 900, "src": "planner", "kind": "block", "why": "?", "at": ARM_T - 890},
@@ -82,7 +87,7 @@ class FireListArmOrdering(unittest.TestCase):
         self.assertEqual([f[0] for f in km._nudge_fire_list(fresh, [(G1, 1, False)], arm_t=ARM_T)], [G1],
                          "a diary that predates the arm is exactly the stalled case — the nudge stands")
 
-    def test_a_legacy_row_without_at_falls_back_to_ev_t(self):
+    def test_a_row_without_at_still_counts_on_ev_t(self):
         log = [{"ev_t": ARM_T + 60, "src": "closer", "kind": "block", "why": "?"}]   # no `at` (older writer)
         fresh = _store({G1: _node(G1, "ship the notes-api", log=log)})
         self.assertEqual(km._nudge_fire_list(fresh, [(G1, 1, False)], arm_t=ARM_T), [])

@@ -2949,23 +2949,32 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None):
     tick's snapshot — completed, blocked, cleared, or status-rolled — gets no status check: the answer
     already landed. Pure and store-shaped for tests.
 
-    arm_t = the ended turn the stall was armed on. A goal whose diary gained a verdict FILED after that
-    turn is also dropped, even if it reads plain 'working' now (the user 2026-07-29): the judges have
-    already ruled on evidence at least as new as the stall's, so the "it looks stalled" inference is
-    stale by construction. The audited case: a card blocked on a question, the user answered, the
-    unblocker lifted the block — and five seconds later the nudge status-checked the freshly-unblocked
-    goal off its pre-answer arm; the response turn then got cut by a restart and the failed-nudge path
-    converted the mess into a false needs-you block. The verdict's FILING (`at`; ev_t for legacy
-    entries) is the event: filed after the arm → the story moved → no fire. The next GENUINE ended
-    turn re-arms and may nudge afresh, judged against the post-verdict world."""
+    arm_t = the ended turn the stall was armed on. A goal whose diary gained a verdict about EVIDENCE
+    newer than that turn is also dropped, even if it reads plain 'working' now (the user 2026-07-29):
+    the judges have ruled on a turn the stall inference never saw, so "it looks stalled" is stale by
+    construction. The audited case: a card blocked on a question, the user answered, the unblocker
+    lifted the block off the answer's own (still-open) turn — and five seconds later the nudge
+    status-checked the freshly-unblocked goal off its pre-answer arm; the response turn then got cut
+    by a restart and the failed-nudge path converted the mess into a false needs-you block. The
+    verdict's ev_t — the trigger of the turn it ruled on (`at` for a row missing one) — is the event:
+    evidence newer than the arm → the story moved → no fire. The next GENUINE ended turn re-arms and
+    may nudge afresh, judged against the post-verdict world.
+
+    NOT the row's FILING time (the user 2026-07-30, the day after the guard shipped on `at`): rulings
+    ABOUT the arm turn always FILE after it — the closer/planner audit a turn once it ends — so the
+    `at` comparison read the arm turn's own audit as "a newer world" and dropped the goal EVERY tick,
+    silently: no fire, no deferral, no failed-nudge escalation (the arm can't move while the session
+    idles), for any goal that audit touched. A ruling about the arm turn that leaves the goal working
+    IS the closer-gate's considered 'working' verdict — the definition of nudgeable, not staleness;
+    one that resolves the goal is caught by the status re-read below either way."""
     nodes, status = fresh.get("nodes", {}) or {}, fresh.get("status", {}) or {}
     keep = []
     for f in to_fire:
         if f[0] not in nodes:
             continue                                 # gone from the fresh store: cleared + compacted mid-tick
         nd = nodes[f[0]]
-        if arm_t and any((e.get("at") or e.get("ev_t") or 0) > arm_t for e in nd.get("log") or []):
-            continue                                 # a verdict landed AFTER the arm — the stall read is stale
+        if arm_t and any((e.get("ev_t") or e.get("at") or 0) > arm_t for e in nd.get("log") or []):
+            continue                                 # a ruling on EVIDENCE newer than the arm — the stall read is stale
         if status.get(f[0], "working") == "working" and not nd.get("cleared") \
                 and not nd.get("nodeComplete") and not nd.get("blocked"):
             keep.append(f)
