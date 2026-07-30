@@ -4203,6 +4203,23 @@ def _reopen(store, gid, by="?", now=None, msg=False):
         stack.extend(kids.get(c, []))                  # none → open; a rolled-away block resurfaces) rules
 
 
+def nudge_pipeline_row(e):
+    """True for a diary row the NUDGE PIPELINE ITSELF wrote: the procedural src=="nudge" block, and the
+    reply-placement's own unseal — _reopen(by="nudge") files "reopened (nudge)" on the target and
+    "unblocked by reopen (nudge)" on its ancestors, on EVERY placed reply (may_apply gates reopen on
+    view-cleared only). The moot supersede guard (kernel _mark_nudge_failed) must not read these as "a
+    real judge ruled on newer evidence": the reopen's filing time always postdates the response turn,
+    so counting it mooted every placed-but-unresolved nudge reply — the escalation ladder's terminal
+    rung went dead the day the guard shipped. The audited card (the user 2026-07-30) sat correctly
+    blocked-on-you, the reply-placement's reopen lifted the block, the planner resolved only a sibling
+    question and left the goal working, and the evaluator then stood down moot on the strength of that
+    same reopen row: no chip, no block, the anti-loop arm pinned, the card parked in Working with no
+    reviver left. Matched on the exact why strings _reopen writes, so rows already on disk are
+    recognized too."""
+    return e.get("src") == "nudge" or (e.get("why") or "") in (
+        "reopened (nudge)", "unblocked by reopen (nudge)")
+
+
 def optimistic_followup(fsid, gid, text="", now=None):
     """OPTIMISTIC reopen for a feed follow-up (the user 2026-06-17): the instant the user submits a
     follow-up on a card, reopen its goal so the board shows it back at WORKING with a 'Followed up' chip
