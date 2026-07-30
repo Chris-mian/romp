@@ -221,12 +221,15 @@ class ErrorCenterExecutes(unittest.TestCase):
         # 'not sent' joined on 2026-07-29: an op the kernel can't deliver (no session by that id — on a
         # multi-machine board, the pane addressed the wrong kernel) used to vanish into a tmux send at a
         # pane that wasn't there, losing whatever had been typed with nothing anywhere to show for it.
+        # 'fleet sync' joined on 2026-07-30: romp moves commits between machines on its own, and the
+        # network panel's phase line is live-only — so an unwatched push left no record either way,
+        # the success least of all. It is the one kind here that logs wins as well as failures.
         a = self.out["filterBar"]
-        self.assertEqual(a["n"], 12)
+        self.assertEqual(a["n"], 13)
         self.assertEqual(a["first"], "offline")
         self.assertEqual(a["labels"],
                          "offline|limit|judge|warning|stalled|follow-up failed|retrying|api error|"
-                         "sdk|jump failed|cleared|not sent")
+                         "sdk|fleet sync|jump failed|cleared|not sent")
 
     def test_muting_a_kind_hides_counts_and_live_cue_but_keeps_the_entries(self):
         a = self.out["afterMute"]

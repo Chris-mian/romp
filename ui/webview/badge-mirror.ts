@@ -108,3 +108,27 @@ export function sdkProblemNotices(rows: SdkNoticeRow[], seen: Set<string>): { no
   }
   return { notices, active };
 }
+
+// Automatic fleet syncs (the kernel's syncNotices payload — the ring _auto_push_remote / _auto_pull_remote
+// / _auto_ask_peer write their outcome to). The user asked for these on 2026-07-30: romp moves commits
+// between machines on its own, and until now the only trace was a phase line in the network panel that
+// disappeared the moment the sync finished — so a push that landed, and a push that failed while you were
+// looking elsewhere, both ended up equally invisible. SUCCESSES log too, deliberately: the point is a
+// record of what romp did to your machines, not just an alarm.
+//
+// The Log is a browser-side store the kernel cannot write to, which is why this rides the payload and
+// mirrors here rather than being appended server-side. Same episode-identity contract as the SDK ring:
+// the kernel signs each occurrence (its start + the ring's sequence).
+export interface SyncNoticeRow { sig: string; t: number; text: string; ok?: boolean }
+
+export function syncNotices(rows: SyncNoticeRow[], seen: Set<string>): { notices: BadgeNotice[]; active: Set<string> } {
+  const notices: BadgeNotice[] = [];
+  const active = new Set<string>();
+  for (const r of rows ?? []) {
+    if (!r || !r.sig || !r.text) continue;
+    active.add(r.sig);
+    if (seen.has(r.sig)) continue;
+    notices.push({ kind: "sync", text: cap(r.text, 240), sig: r.sig, sid: "", itemId: "" });
+  }
+  return { notices, active };
+}

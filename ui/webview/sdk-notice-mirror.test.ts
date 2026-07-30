@@ -50,10 +50,11 @@ test("a very long problem is capped so one entry can't swallow the list", () => 
 });
 
 test("the feed mirrors sdkNotices through the same seen-set and bell bridge", () => {
-  assert.match(FEED, /import \{ badgeNotices, clearBoundaryNotices, sdkProblemNotices,/);
-  assert.match(FEED, /function mirrorBadges\(items: AskItem\[\], clears: ClearNoticeRow\[\], sdk: SdkNoticeRow\[\]\): void/);
+  // (the fleet-sync ring joined the same wrapper on 2026-07-30, so these pins now name four sources)
+  assert.match(FEED, /import \{ badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,/);
+  assert.match(FEED, /function mirrorBadges\(items: AskItem\[\], clears: ClearNoticeRow\[\], sdk: SdkNoticeRow\[\], sync: SyncNoticeRow\[\]\): void/);
   assert.match(FEED, /const sdkProblems = sdkProblemNotices\(sdk, seenSet\);/);
-  assert.match(FEED, /\[\.\.\.badges\.notices, \.\.\.boundary\.notices, \.\.\.sdkProblems\.notices\]/);
-  assert.match(FEED, /new Set\(\[\.\.\.badges\.active, \.\.\.boundary\.active, \.\.\.sdkProblems\.active\]\)/);
+  assert.match(FEED, /\[\.\.\.badges\.notices, \.\.\.boundary\.notices, \.\.\.sdkProblems\.notices, \.\.\.syncs\.notices\]/);
+  assert.match(FEED, /new Set\(\[\.\.\.badges\.active, \.\.\.boundary\.active, \.\.\.sdkProblems\.active, \.\.\.syncs\.active\]\)/);
   assert.match(FEED, /Array\.isArray\(m\.sdkNotices\) \? m\.sdkNotices : \[\]/);
 });

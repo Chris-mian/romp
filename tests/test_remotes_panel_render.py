@@ -178,6 +178,9 @@ class RemotesPanelRender(unittest.TestCase):
         tn = json.loads(json.dumps(TUNNELS))
         tn["tunnels"][0].update({"status": status, "outOfDate": True, "behindBy": 2, "aheadBy": 0,
                                  "kernelSha": "abc1234", "localSha": "def5678",
+                                 # the release each side descends from, added 2026-07-30 — the row names
+                                 # the BUILD (tag + commit) and puts the distance in parens after it
+                                 "kernelVer": "v0.1.3", "localVer": "v0.2.0",
                                  "stale": stale, "lastOk": last_ok})
         if tiers is not None:
             tn["peerTiers"] = tiers
@@ -187,7 +190,8 @@ class RemotesPanelRender(unittest.TestCase):
         # The control: an `up` row DID just poll, so its drift is fact and wears no hedge.
         out = self._run(tunnels=self._drifted(status="up", stale=False))
         html = out.get("html", "")
-        self.assertIn("\u21932", html)   # git-style arrows (2026-07-29)
+        self.assertIn("(\u21932)", html)   # git-style arrows (2026-07-29), in parens after the build (2026-07-30)
+        self.assertIn("v0.1.3 abc1234", html, "the build it is actually on, named so a human can read it")
         self.assertNotIn("last known", html)
         self.assertNotIn("rnet-stale", html)
 
@@ -195,7 +199,7 @@ class RemotesPanelRender(unittest.TestCase):
         out = self._run(tunnels=self._drifted(status="down", stale=True, last_ok=1785272930))
         html = out.get("html", "")
         self.assertIn("disconnected", html, "the row still reports its live state")
-        self.assertIn("last known: \u21932", html,
+        self.assertIn("last known: v0.1.3 abc1234 (\u21932)", html,
                       "a drift count from an unreachable host must read as memory, not as a finding")
         self.assertIn("rnet-stale", html, "and must carry the muted cue that overrides the accent")
         self.assertIn("last confirmed", html, "hover says WHEN it was true (progressive disclosure)")
