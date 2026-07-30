@@ -18733,7 +18733,10 @@ class Handler(BaseHTTPRequestHandler):
             # path on a remote machine lists THAT machine's disk (the user 2026-07-28). reqId is echoed so
             # a slow answer that lands after a newer keystroke is dropped by the client, not rendered.
             _val = str(msg.get("value") or "")
-            _reply(client, dict({"type": "dirCompletions", "reqId": msg.get("reqId"),
+            # `host` rides back so the client can tell WHICH machine answered (the user 2026-07-29, whose
+            # field kept showing the previous host's verdict after switching). federation stamps a remote
+            # reply with its own host; a local kernel answers "" and matches the local selection.
+            _reply(client, dict({"type": "dirCompletions", "reqId": msg.get("reqId"), "host": "",
                                  "value": _val, "status": _dir_status(_val)},
                                 **_dir_completions(_val)))
         elif msg and msg.get("type") == "browseDir":
