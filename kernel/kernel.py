@@ -2538,7 +2538,9 @@ def _revivers_pending(sid, store, turns, gid):
             # (29 live records, median age 45h, when caught). A call in flight for THIS fsid is the
             # event-true signal that a verdict for this store may be about to land; the small window
             # between that call returning and its save is covered by the fire path's last-moment store
-            # re-read (_nudge_fire_list).
+            # re-read (_nudge_fire_list). This reason defers the nudge but NEVER presents as a stall
+            # (the user 2026-07-31): romp reviewing the session is romp working the card, and the
+            # Analyzing… swirl already says so — see jd.stall_why_stands.
             return jd.WHY_JUDGING
         if nd.get("followupPending"):
             return "your reply to the card is still being judged"
@@ -2602,7 +2604,8 @@ def _nudge_deferred_ok(gid, reason, now, sid=None):
     second observation is the event; nothing here consults a clock (the backstop above is the one
     deliberate exception). `sid` rides the record so the stall readers can live-verify a session-scoped
     reason (jd.stall_why_stands) — the record freezes whenever the gate walk stops running for its
-    session, and a frozen claim must be verifiable or it is not presented."""
+    session, and a frozen claim must be verifiable or it is not presented. (No reason currently
+    verifies against it: the judging hold, which did, never presents at all since 2026-07-31.)"""
     d = _auto_nudge_data()
     dd = dict(d.get("deferred") or {})
     if not reason:
@@ -2639,18 +2642,20 @@ def _stalled_goals():
     is NOT here: that one is visibly in flight, and it escalates to a real block through _mark_nudge_failed,
     which carries its own decision brief.
 
-    LIVE-VERIFIED at read time (2026-07-25): a deferral record only pops when the gate walk re-runs, and the
-    walk stops the moment its session leaves idle-and-due — so a record freezes with whatever reason it last
-    held (records were found frozen for DAYS presenting "mid-flight" in the present tense). A reason whose
-    truth is checkable right now must check out, or the record is skipped (it still pops normally on the
-    next gate walk); reasons whose truth lives in the stores pass through — their own passes reconcile them."""
+    A hold on romp's OWN review (jd.WHY_JUDGING) is screened out entirely (the user 2026-07-31): that is
+    romp working the card, not a stall — the Analyzing… swirl carries it (spin-caption.ts), and a yellow
+    chip there drew the eye to a state nobody needs to act on. Reasons whose truth is checkable right now
+    must check out, or the record is skipped (it still pops normally on the next gate walk — a deferral
+    record only pops when the gate walk re-runs, and the walk stops the moment its session leaves
+    idle-and-due, so a record freezes with whatever reason it last held); reasons whose truth lives in
+    the stores pass through — their own passes reconcile them."""
     out = {}
     for gid, rec in (_auto_nudge_data().get("deferred") or {}).items():
         why, at = _deferral_why(rec), _deferral_at(rec)
         if not (why and at and _deferral_seen(rec) >= _STALL_SEEN):
             continue
         if not jd.stall_why_stands(why, rec.get("sid") if isinstance(rec, dict) else None):
-            continue                                     # frozen judging claim, live-false (or legacy/unverifiable)
+            continue                                     # a judging hold (presents as Analyzing, never a stall)
         if why.startswith("the judge tiers are paused") and not _retry_paused_on():
             continue                                     # tiers resumed while the record was frozen
         out[gid] = {"why": why, "since": at}

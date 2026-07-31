@@ -55,18 +55,17 @@ class StalledFacts(unittest.TestCase):
         self._write({GID: NOW})
         self.assertEqual(jd.stalled_facts(FSID), {})
 
-    def test_a_judging_claim_is_live_verified(self):
-        # 2026-07-25: a deferral record freezes when the gate walk stops running for its session, so a
-        # judging claim is presented only while active_runs shows a call for this session RIGHT NOW —
-        # a frozen present-tense claim that is live-false must not reach the staller or the due-anchor.
+    def test_a_judging_hold_never_presents(self):
+        # The user 2026-07-31 (superseding the 2026-07-25 live-verify): a goal held because romp's own
+        # review is mid-flight is a goal romp is WORKING — the Analyzing… swirl carries that story, and a
+        # stalled chip there drew the eye to a state nobody needs to act on. So the staller never sees
+        # these, even while active_runs genuinely shows the call in flight.
         self._write({GID: {"at": NOW, "why": jd.WHY_JUDGING, "seen": jd.STALL_SEEN, "sid": FSID}})
         saved = jd.active_runs
         try:
             jd.active_runs = lambda: [{"judge": "closer", "fsid": FSID, "sent": 1.0}]
-            self.assertEqual(jd.stalled_facts(FSID)[GID]["why"], jd.WHY_JUDGING)
-            jd.active_runs = lambda: ()
             self.assertEqual(jd.stalled_facts(FSID), {},
-                             "the call retired but the record froze → never presented")
+                             "romp reviewing is romp working — never a stall, however live the call")
         finally:
             jd.active_runs = saved
 

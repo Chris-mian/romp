@@ -246,11 +246,15 @@ STALLER_ON = os.environ.get("ROMP_STALLER", "1") != "0"   # the stall note (2026
 STALL_SEEN = 2
 # The nudge gate's "the judge itself could still move this card" reason — same one-definition rule as
 # STALL_SEEN: the kernel mints it (_revivers_pending) and both stall readers (kernel _stalled_goals,
-# stalled_facts below) verify it through stall_why_stands. The LEGACY string is the pre-2026-07-25 GLOBAL
-# form, deferred on ANY judge activity anywhere — but the producer opens a fleet-wide pass every ~3s, so
-# that was cadence, not a reviver: adjacent gate ticks routinely both landed inside (different) routine
-# passes, the string-keyed seen counter read them as one non-retiring wedge, and false "stalled" cards
-# minted fleet-wide. A legacy record names no session, so its claim is unverifiable and never stands.
+# stalled_facts below) screen it out through stall_why_stands. Neither string EVER presents as a stall
+# (the user 2026-07-31): a goal held only because romp's own review is mid-flight is a goal romp is
+# WORKING, and the card already says so — the Analyzing… swirl (spin-caption.ts) covers exactly this
+# beat, its tip naming the nudge hold. The hold itself stays real in the gate (with its backstop); only
+# the yellow chip is retired, so "stalled" keeps meaning "nothing romp does is moving this". The LEGACY
+# string is the pre-2026-07-25 GLOBAL form, deferred on ANY judge activity anywhere — but the producer
+# opens a fleet-wide pass every ~3s, so that was cadence, not a reviver, and false "stalled" cards
+# minted fleet-wide. Screening both strings also ends the frozen-record problem the 2026-07-25
+# live-verify existed for: a record that freezes holding a judging claim now simply says nothing.
 WHY_JUDGING = "romp's own review of this session is mid-flight"
 _WHY_JUDGING_LEGACY = "a judge pass is mid-flight"
 # The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
@@ -7560,19 +7564,16 @@ def stall_llm(goal_text, work_text, holding):
 
 
 def stall_why_stands(why, fsid):
-    """True when a recorded stall reason still holds RIGHT NOW. A deferral record is a cache of the gate's
-    last run, and the gate only re-runs (and pops it) while its session stays idle-and-due — a session that
-    resumes work, or goes awaiting, freezes the record with whatever reason it last held, and by 2026-07-25
-    the live file held records frozen for days presenting a present-tense claim. The judging reason is
-    live-verifiable (active_runs IS the authority for "is a judge call on this session in flight"), so both
-    stall readers verify it here instead of presenting the frozen claim; a legacy global record named no
-    session and can never be verified, so it never stands. Other reasons pass through: their truth lives in
-    stores this predicate can't reach, and their own passes reconcile the records that carry them."""
-    if why == WHY_JUDGING:
-        return bool(fsid) and any(r.get("fsid") == fsid for r in active_runs())
-    if why == _WHY_JUDGING_LEGACY:
-        return False
-    return True
+    """True when a recorded stall reason is one the card should PRESENT. The judging reasons never are
+    (the user 2026-07-31, superseding the 2026-07-25 live-verify): a goal the gate holds because romp's
+    own review is mid-flight is a goal romp is actively working, and calling that "stalled" drew the
+    user's eye to a state nobody needs to act on — the Analyzing… swirl already tells that story, with
+    the nudge hold in its tip (spin-caption.ts). The hold itself is untouched; this predicate only
+    decides what the stall surfaces say. Other reasons pass through: their truth lives in stores this
+    predicate can't reach, and their own passes reconcile the records that carry them. `fsid` is the
+    record's session, kept for the next reason that needs live verification against it (the retired
+    judging branch checked active_runs here)."""
+    return why not in (WHY_JUDGING, _WHY_JUDGING_LEGACY)
 
 
 def stalled_facts(fsid):
