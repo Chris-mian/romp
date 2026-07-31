@@ -418,6 +418,12 @@ const sessionColors = new Map<string, string>();
 // background-task box still lists the processes there).
 let bgServicesMap: Record<string, string[]> = {};
 const openBgSvc = new Set<string>();   // sids with the chip's process list expanded — survives re-renders
+// COLLAPSED threads (the user 2026-07-31): grouped mode's session header carries a caret, and folding one
+// leaves the header alone in every column that thread appears in, with a count of what is folded away.
+// Keyed by SID, not by column-run, for the reason the request turns on: cards that do not exist yet must
+// arrive collapsed too, and a card's column is not knowable when you fold the thread. Persisted across
+// reloads with the rest of the disclosure state, and deliberately NOT pruned when the cards go away.
+const collapsedThreads = new Set<string>();
 // names of sessions idle-but-AWAITING background work (the user 2026-07-13): the same dot in straw —
 // matching the chat chip's Awaiting color — so a held session reads differently from a working one.
 let awaitingSet = new Set<string>();
@@ -1011,12 +1017,14 @@ const cardTreeExpanded = new Set<string>();
   for (const k of st.nodes) collapsedNodes.add(k);
   for (const k of st.logs) nodeLogOpen.add(k);
   for (const k of st.asks) expandedAsks.add(k);
+  for (const k of st.threads) collapsedThreads.add(k);
 })();
 
 function currentViewState(): FeedViewState {
   const sec: Record<string, string> = {};
   secChoice.forEach((v, k) => { sec[k] = v; });
-  return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen], asks: [...expandedAsks] };
+  return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen],
+           asks: [...expandedAsks], threads: [...collapsedThreads] };
 }
 
 // Written at the END of every render rather than from each toggle handler: the feed re-renders on every
@@ -1042,6 +1050,7 @@ function pruneViewStateTo(live: Set<string>): void {
   keep(collapsedNodes, kept.nodes);
   keep(nodeLogOpen, kept.logs);
   keep(expandedAsks, kept.asks);
+  keep(collapsedThreads, kept.threads);   // pass-through: a thread stays collapsed with no cards on the board
 }
 
 // Fill + wire the card's THREE mutually-exclusive sections — Background, Summary, Sub-goals (the user
@@ -2665,7 +2674,8 @@ type Entry =
   | { kind: "group"; t: number; group: AskGroup }
   // a SESSION HEADER row in grouped mode (the user 2026-07-13): the session's name + working dot on the
   // column backdrop, heading that session's run of cards. Only emitted for runs that exist.
-  | { kind: "sess"; t: number; sid: string; name: string; color: { bg: string; fg: string } | null; live: boolean };
+  // `folded` = how many of this run's cards the header is standing in for (0 when the thread is expanded)
+  | { kind: "sess"; t: number; sid: string; name: string; color: { bg: string; fg: string } | null; live: boolean; folded: number };
 
 // Grouped-mode session headers, one reused element per (column, sid) — same keyed-incremental treatment as
 // cards so re-renders never rebuild a header mid-press. Pruned when a reconcile drops them from the DOM.
@@ -2679,8 +2689,16 @@ function makeSessHead(): HTMLElement {
   // vocabulary, dim by default. Click expands the process list (keyed expand, survives re-renders).
   const svc = el("button", "fask-secbtn feed-sess-svcbtn"); svc.style.display = "none";
   const svcList = el("div", "feed-sess-svclist"); svcList.style.display = "none";
-  h.append(nm, svc, svcList);
-  (h as any)._name = nm; (h as any)._svc = svc; (h as any)._svcList = svcList;
+  // FOLD control (the user 2026-07-31), immediately right of the name where they asked for it. A caret is
+  // the universal collapse affordance and costs one glyph, where a word chip would repeat on every header;
+  // it is the same typographic vocabulary as the sub-goal triangles, never an emoji. Always drawn rather
+  // than shown on hover: a hover-only control is invisible on the phone, which is where the feed is read
+  // most. The count beside it is what keeps the folded row from dead-ending — you can see what is under it.
+  const fold = el("button", "feed-sess-fold");
+  const cnt = el("span", "feed-sess-foldn"); cnt.style.display = "none";
+  h.append(nm, fold, cnt, svc, svcList);
+  (h as any)._name = nm; (h as any)._fold = fold; (h as any)._foldn = cnt;
+  (h as any)._svc = svc; (h as any)._svcList = svcList;
   return h;
 }
 function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
@@ -2690,6 +2708,21 @@ function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
   nm.classList.toggle("dead", !e.live);
   nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(e.sid, e.live, e.name); };
   setWorkDot(nm, dotFor(e.name));   // the working/awaiting dot rides the header, not the cards
+  // the fold caret + the "n cards" stand-in for what it hides
+  const fold = (h as any)._fold as HTMLElement, foldn = (h as any)._foldn as HTMLElement;
+  const shut = collapsedThreads.has(e.sid);
+  h.classList.toggle("folded", shut);
+  fold.textContent = shut ? "▸" : "▾";           // ▸ folded / ▾ open
+  fold.title = shut ? "show this session's cards" : "collapse this session to its name — new cards stay folded too";
+  fold.setAttribute("aria-expanded", shut ? "false" : "true");
+  fold.setAttribute("aria-label", (shut ? "expand " : "collapse ") + e.name);
+  foldn.style.display = shut && e.folded ? "" : "none";
+  foldn.textContent = e.folded === 1 ? "1 card" : e.folded + " cards";
+  fold.onclick = (ev) => {
+    ev.stopPropagation();   // the fold IS the acknowledgement: local state + an immediate re-render
+    if (collapsedThreads.has(e.sid)) collapsedThreads.delete(e.sid); else collapsedThreads.add(e.sid);
+    render();
+  };
   const svc = (h as any)._svc as HTMLElement, svcList = (h as any)._svcList as HTMLElement;
   const procs = e.live ? bgServicesMap[e.name] || [] : [];
   const open = procs.length > 0 && openBgSvc.has(e.sid);
@@ -3073,13 +3106,18 @@ function render() {
       buckets[k].sort((x, y) => rk(x) - rk(y));
       const withHeads: Entry[] = [];
       let cur: string | null = null;
+      let head: (Entry & { kind: "sess" }) | null = null;
       for (const e of buckets[k]) {
         const s = eSid(e);
         if (s !== cur) {
           cur = s;
           const src: any = e.kind === "ask" ? e.ask : e.kind === "group" ? e.group : e;
-          withHeads.push({ kind: "sess", t: e.t, sid: s, name: src.name, color: src.color || null, live: !!src.live });
+          head = { kind: "sess", t: e.t, sid: s, name: src.name, color: src.color || null, live: !!src.live, folded: 0 };
+          withHeads.push(head);
         }
+        // A COLLAPSED thread contributes its header and nothing else — the run's cards are counted onto the
+        // header instead of rendered, so the folded row still says how much is under it.
+        if (collapsedThreads.has(s)) { if (head) head.folded++; continue; }
         withHeads.push(e);
       }
       buckets[k] = withHeads;
@@ -3109,7 +3147,10 @@ function render() {
   // the count chip shows the number only when there ARE cards; an empty column shows nothing — not "0"
   // (the user 2026-06-25). Empty string collapses the chip (it has no padding/background of its own).
   const setCount = (elc: HTMLElement, n: number) => { elc.textContent = n ? String(n) : ""; elc.style.display = n ? "" : "none"; };
-  const nCards = (es: Entry[]) => es.filter((e) => e.kind !== "sess").length;   // headers aren't cards
+  // Headers aren't cards — but a FOLDED header stands in for its run, so its cards count. The column chip
+  // reports what is on the board, never what you happen to have open: folding a thread must not read as
+  // work having left the column (the user 2026-07-31).
+  const nCards = (es: Entry[]) => es.reduce((n, e) => n + (e.kind === "sess" ? e.folded : 1), 0);
   setCount(cols.asksCount, nCards(buckets.asks));
   setCount(cols.needsInputCount, nCards(buckets.needsInput));
   setCount(cols.completedCount, nCards(buckets.completed));
@@ -3588,6 +3629,19 @@ function applyExtHover() {
 // reflow, or a second click on the same card would re-add a class it already has and CSS would replay
 // nothing — the "clicked again and it didn't flash" bug this shape avoids.
 function revealCards(keys: Set<string>) {
+  // A target inside a FOLDED thread has no element to scroll to, and a jump that lands on nothing is the
+  // silent no-op a collapse must never cause (the user 2026-07-31). Unfold the owning thread(s) and render
+  // before looking: the navigation wins over the disclosure, and the thread stays open afterwards so you
+  // can see where you were taken.
+  if (collapsedThreads.size) {
+    let opened = false;
+    for (const a of asks) {
+      if (collapsedThreads.has(a.sid) && extHoverMatches("a:" + a.itemId, keys)) {
+        collapsedThreads.delete(a.sid); opened = true;
+      }
+    }
+    if (opened) render();
+  }
   const hits = Array.from(document.querySelectorAll<HTMLElement>("[data-key]"))
     .filter((c) => extHoverMatches(c.dataset.key, keys));
   if (!hits.length) return;

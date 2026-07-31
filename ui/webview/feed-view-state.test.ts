@@ -20,6 +20,7 @@ function sample(): FeedViewState {
     nodes: ["card-a:n3"],
     logs: ["card-b:n4"],
     asks: ["card-a"],
+    threads: [],   // the card-prune tests below assert on CARD state; the thread exemption has its own
   };
 }
 
@@ -60,6 +61,7 @@ test("an itemId containing a colon is not mis-attributed by the prune", () => {
   // its FIRST colon would read this card as "blocked" and prune state that is very much live.
   const s: FeedViewState = {
     v: 1, sec: { "blocked:sess-7": "bg" }, tree: ["blocked:sess-7:n1"], nodes: [], logs: [], asks: [],
+    threads: [],
   };
   const pruned = pruneViewState(s, new Set(["blocked:sess-7"]));
   assert.deepEqual(pruned.sec, { "blocked:sess-7": "bg" }, "the colon-bearing id survives");
@@ -90,11 +92,38 @@ test("the cap is a backstop that trims cheap state first and section choices las
     nodes: Array.from({ length: 10 }, (_, i) => `a:n${i}`),
     logs: Array.from({ length: 10 }, (_, i) => `a:l${i}`),
     asks: ["a"],
+    threads: ["sid-1"],
   };
   const capped = capViewState(big, 20);
   assert.equal(viewStateSize(capped), 20);
   assert.deepEqual(capped.sec, { a: "bg", b: "summary" }, "the per-card section is what you notice losing — trimmed last");
   assert.equal(capped.logs.length, 0, "per-node log expands are cheapest to re-open — trimmed first");
+  assert.deepEqual(capped.threads, ["sid-1"], "a folded thread is one entry per session and outlives the cheap state");
+});
+
+// ── collapsed THREADS (the user 2026-07-31) ───────────────────────────────────────────────────────────
+test("a folded thread SURVIVES the card prune — that is the whole point of it", () => {
+  // Every other entry describes a card, so a vanished card makes its entry meaningless. A folded thread
+  // describes a SESSION: it has to hold while that session has no cards on the board, or clearing the last
+  // card would silently re-expand the thread and the next card would arrive unfolded.
+  const s: FeedViewState = {
+    v: 1, sec: { "card-a": "bg" }, tree: [], nodes: [], logs: [], asks: [], threads: ["sid-quiet"],
+  };
+  const pruned = pruneViewState(s, new Set<string>());   // no live cards at all
+  assert.deepEqual(pruned.threads, ["sid-quiet"]);
+  assert.deepEqual(pruned.sec, {}, "…while the card state is still pruned as before");
+});
+
+test("a stored blob from before threads existed reads as nothing folded, not as corrupt", () => {
+  const old = JSON.stringify({ v: 1, sec: { a: "bg" }, tree: [], nodes: [], logs: [], asks: ["a"] });
+  const s = parseViewState(old);
+  assert.deepEqual(s.threads, []);
+  assert.deepEqual(s.sec, { a: "bg" }, "the sections the user had open survive the upgrade");
+});
+
+test("a folded thread round-trips through serialize/parse", () => {
+  const s = { ...sample(), threads: ["sid-1", "sid-2"] };
+  assert.deepEqual(parseViewState(serializeViewState(s)).threads, ["sid-1", "sid-2"]);
 });
 
 test("a state under the cap is returned untouched", () => {
@@ -103,10 +132,11 @@ test("a state under the cap is returned untouched", () => {
 });
 
 // ── wiring pins (no jsdom for feed.ts; repo convention) ──────────────────────────────────────────────
-test("feed.ts hydrates the five disclosure collections on load", () => {
+test("feed.ts hydrates every disclosure collection on load", () => {
   assert.match(FEED, /function hydrateViewState\(\)/);
   assert.match(FEED, /parseViewState\(localStorage\.getItem\(VIEW_STATE_KEY\)\)/);
-  for (const c of ["secChoice.set", "cardTreeExpanded.add", "collapsedNodes.add", "nodeLogOpen.add", "expandedAsks.add"]) {
+  for (const c of ["secChoice.set", "cardTreeExpanded.add", "collapsedNodes.add", "nodeLogOpen.add",
+                   "expandedAsks.add", "collapsedThreads.add"]) {
     assert.ok(FEED.includes(c), `hydrate restores ${c}`);
   }
 });
