@@ -15949,16 +15949,28 @@ function realTab(id){return tabs.querySelector('.tab[data-id="'+id+'"]');}
 function hide(){list.classList.remove('open');}
 function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),function(t){
 var lab=t.querySelector('.tab-label');
-return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),
+return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
 working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),active:t.classList.contains('active')};});}
+// A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
+// federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
+// metadata (host-prefix.ts: dim, italic, never bold, a step smaller), and textContent threw that span
+// away, so the mobile picker painted the host in the session's identity colour at full weight (the user
+// 2026-07-30). Cloning keeps ONE definition of the treatment: the span brings its own class, and
+// styles.css (which this page loads) does the rest — including the disconnected-host cue.
+// slice FIRST: childNodes is a LIVE NodeList, so appending straight off it removes each node from the
+// clone as we go and the walk skips every second one — which dropped the session name and left a row
+// reading just "host:" (caught in a browser; a source-pinned test cannot see it).
+function fillName(elm,s){elm.textContent='';
+if(s.lab&&s.lab.childNodes.length)[].slice.call(s.lab.cloneNode(true).childNodes).forEach(function(n){elm.appendChild(n);});
+else elm.textContent=s.name;}
 function sync(){var ts=read(),act=null;
 for(var i=0;i<ts.length;i++){if(ts[i].active){act=ts[i];break;}}
 if(!act&&ts.length)act=ts[0];
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
-if(act){nm.textContent=act.name;
+if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
 else{nm.textContent='no sessions';cur.classList.remove('colored');}
@@ -15968,7 +15980,7 @@ ts.forEach(function(s){var row=document.createElement('div');row.className='mrow
 // tab's own dot — gold when working, green (awaitbg) when idle-waiting-on-bg-work, none otherwise.
 if(s.working){var wd=document.createElement('span');wd.className='workdot';row.appendChild(wd);}
 else if(s.awaitbg){var wd=document.createElement('span');wd.className='workdot await';row.appendChild(wd);}
-var lbl=document.createElement('span');lbl.className='nm';lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;
+var lbl=document.createElement('span');lbl.className='nm';fillName(lbl,s);if(s.bg)lbl.style.color=s.bg;
 row.appendChild(lbl);
 // End-session x: clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog (Close tab /
 // End session / Cancel) + endSession/closeTab plumbing — the mobile picker's only way to end a session
@@ -16832,16 +16844,18 @@ function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error'&&s!=='no-kernel'
 // HOW a host's build differs from this machine's, in words. ONE definition, worn by the panel row and
 // by the rail's hover (the user 2026-07-29, who wanted the count without opening the panel) — two
 // spellings of the same drift would eventually disagree, and the number is the whole point of it.
-// git's own shorthand (the user 2026-07-29): the counts read at a glance as arrows, and a diverged host
-// shows BOTH rather than collapsing to one word that hides how much is on each side. '' when either count
-// is unknown (the remote's commit isn't in this repo at all) — the caller says so in words instead.
-function driftArrows(t){var bb=t.behindBy,ab=t.aheadBy;
+// Drift says AHEAD and BEHIND in words (the user 2026-07-30, replacing the 07-29 arrows): an arrow only
+// reads as a direction if you already know which way romp points it, and this is the one place a reader
+// is deciding whether to push or pull. The count stays — it is the whole point — and a diverged host
+// shows BOTH sides rather than collapsing to one word that hides how much sits on each. '' when either
+// count is unknown (the remote's commit isn't in this repo at all): the caller says so in words instead.
+function driftCounts(t){var bb=t.behindBy,ab=t.aheadBy;
 if(typeof bb!=='number'||typeof ab!=='number')return '';
-var up=ab>0?('\\u2191'+ab):'',down=bb>0?('\\u2193'+bb):'';
-return (up&&down)?(up+' '+down):(up||down);}
-function driftWord(t){var a=driftArrows(t);
+var up=ab>0?('ahead '+ab):'',down=bb>0?('behind '+bb):'';
+return (up&&down)?(up+', '+down):(up||down);}
+function driftWord(t){var a=driftCounts(t);
 if(!a)return 'different build';
-return (t.aheadBy>0&&t.behindBy>0)?('diverged '+a):a;}
+return (t.aheadBy>0&&t.behindBy>0)?('diverged: '+a):a;}
 // WHAT a host is running, in the two names that mean something together: the release it descends from
 // and the commit (the user 2026-07-30 — a bare sha says nothing unless you happen to know your own).
 // Either half alone if that is all there is; a kernel older than the version field reports no tag.
@@ -16974,11 +16988,11 @@ var dot=t.status==='up'?'background:var(--accent)':(t.status==='error'||t.status
 var stl=!!t.stale;
 var sw=stl?(t.lastOk?('last confirmed '+new Date(t.lastOk*1000).toLocaleTimeString()):'never confirmed since this kernel started'):'';
 var sq=stl?(' \\u2014 '+sw+'; not re-checked while '+(LBL[t.status]||t.status)+'.'):'';
-// The build reads as a NAME plus a distance: "v0.2.0+ 682d232 (↓3)" — the release and commit it is on,
-// then how far that sits from here in git's arrows (the user 2026-07-30). A remote whose commit this repo
-// has never seen has no distance to report, so it says "different build" where the arrows would go.
+// The build reads as a NAME plus a distance: "v0.2.0+ 682d232 (behind 3)" — the release and commit it is
+// on, then how far that sits from here, said in words (the user 2026-07-30). A remote whose commit this
+// repo has never seen has no distance to report, so it says "different build" where the count would go.
 var ver='',bw=buildWord(t.kernelVer,t.kernelSha);
-if(t.outOfDate){var w=driftWord(t),ar=driftArrows(t);
+if(t.outOfDate){var w=driftWord(t),ar=driftCounts(t);
 var tt='running '+(buildWord(t.kernelVer,t.kernelSha)||'?')+(t.kernelDate?' from '+t.kernelDate:'')+'; this machine is at '+(buildWord(t.localVer,t.localSha)||'?')+((t.aheadBy>0&&t.behindBy>0)?' (each has commits the other lacks)':'')
 +(t.checkinPeer?(t.askPull?' No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds.':' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.'):'');
 ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+(bw?bw+' ':'')+(ar?'('+ar+')':w)+'</span>';}
