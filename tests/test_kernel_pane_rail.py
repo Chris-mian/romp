@@ -132,14 +132,14 @@ class PaneRailTest(unittest.TestCase):
         # host (the user 2026-07-29). ONE definition of the wording, worn by the panel row and the
         # tooltip alike — two spellings of the same drift would eventually disagree.
         self.assertIn("function driftWord(t){", self.html)
-        self.assertIn("down=bb>0?(", self.html)   # git-style arrows since 2026-07-29
-        self.assertIn("up=ab>0?(", self.html)
+        self.assertIn("down=bb>0?('behind '+bb):''", self.html)   # said in words since 2026-07-30
+        self.assertIn("up=ab>0?('ahead '+ab):''", self.html)
         self.assertIn("var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):''", self.html)
         self.assertIn("+dw+", self.html, "the per-host tooltip line carries it")
         # the panel row reads the same functions rather than re-deriving the words. Since 2026-07-30 it
         # leads with the BUILD (release + commit) and puts the distance in parentheses after it — a bare
-        # sha meant nothing without the reader's own sha memorised — so it takes the arrows directly.
-        self.assertIn("if(t.outOfDate){var w=driftWord(t),ar=driftArrows(t);", self.html)
+        # sha meant nothing without the reader's own sha memorised — so it takes the counts directly.
+        self.assertIn("if(t.outOfDate){var w=driftWord(t),ar=driftCounts(t);", self.html)
         self.assertIn("function buildWord(v,s)", self.html)
 
     def test_network_icon_lights_accent_when_a_remote_is_connected(self):

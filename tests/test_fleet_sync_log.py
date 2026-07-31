@@ -122,11 +122,15 @@ class VersionTag(unittest.TestCase):
         self.assertIn("rnet-me", js, "the panel says what THIS machine is on")
         self.assertIn("rnet-mybuild", km._landing())
 
-    def test_the_drift_still_reads_as_gits_arrows(self):
+    def test_the_drift_says_ahead_and_behind_in_words(self):
+        # an arrow only reads as a direction if you already know which way romp points it, and this is
+        # where a reader decides whether to push or pull (the user 2026-07-30, replacing the arrows)
         js = km._LANDING_REMOTES_JS
-        self.assertIn("up=ab>0?(", js)
-        self.assertIn("down=bb>0?(", js)
-        self.assertIn("function driftArrows(t)", js)
+        self.assertIn("up=ab>0?('ahead '+ab):''", js)
+        self.assertIn("down=bb>0?('behind '+bb):''", js)
+        self.assertIn("function driftCounts(t)", js)
+        self.assertNotIn("\\u2191", js, "no arrow spelling may survive alongside the words")
+        self.assertNotIn("\\u2193", js)
 
 
 class SpinWhileWorking(unittest.TestCase):

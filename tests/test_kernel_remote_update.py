@@ -399,9 +399,9 @@ class DriftWordingUI(unittest.TestCase):
 
     def test_row_names_how_the_remote_differs(self):
         js = km._LANDING_REMOTES_JS
-        self.assertIn("down=bb>0?(", js)   # git-style arrows since 2026-07-29
-        self.assertIn("up=ab>0?(", js)
-        self.assertIn("'diverged'", js)
+        self.assertIn("down=bb>0?('behind '+bb):''", js)   # said in words since 2026-07-30
+        self.assertIn("up=ab>0?('ahead '+ab):''", js)
+        self.assertIn("'diverged: '", js)
         self.assertIn("'different build'", js, "an unknown sha says so instead of guessing")
 
     def test_tooltip_carries_the_shas_and_date(self):

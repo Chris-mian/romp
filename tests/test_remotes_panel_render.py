@@ -190,7 +190,7 @@ class RemotesPanelRender(unittest.TestCase):
         # The control: an `up` row DID just poll, so its drift is fact and wears no hedge.
         out = self._run(tunnels=self._drifted(status="up", stale=False))
         html = out.get("html", "")
-        self.assertIn("(\u21932)", html)   # git-style arrows (2026-07-29), in parens after the build (2026-07-30)
+        self.assertIn("(behind 2)", html)   # said in words (2026-07-30), in parens after the build
         self.assertIn("v0.1.3 abc1234", html, "the build it is actually on, named so a human can read it")
         self.assertNotIn("last known", html)
         self.assertNotIn("rnet-stale", html)
@@ -199,7 +199,7 @@ class RemotesPanelRender(unittest.TestCase):
         out = self._run(tunnels=self._drifted(status="down", stale=True, last_ok=1785272930))
         html = out.get("html", "")
         self.assertIn("disconnected", html, "the row still reports its live state")
-        self.assertIn("last known: v0.1.3 abc1234 (\u21932)", html,
+        self.assertIn("last known: v0.1.3 abc1234 (behind 2)", html,
                       "a drift count from an unreachable host must read as memory, not as a finding")
         self.assertIn("rnet-stale", html, "and must carry the muted cue that overrides the accent")
         self.assertIn("last confirmed", html, "hover says WHEN it was true (progressive disclosure)")

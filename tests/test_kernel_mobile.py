@@ -253,6 +253,28 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("--chip-bg", js)                    # reads each session's identity color
         self.assertIn("#mcur.colored", css)               # the current button wears that color
 
+    def test_a_remote_sessions_host_prefix_stays_quiet_metadata(self):
+        # the user 2026-07-30, on a phone: "host:name" came through the picker painted whole in the
+        # session's identity colour at full weight, where desktop renders the "host:" as quiet metadata
+        # (host-prefix.ts: dim, italic, never bold, a step smaller). The cause was textContent flattening
+        # the desktop label — which already carries a <span class="host-prefix"> — so the fix CLONES the
+        # label's child nodes instead of re-deriving the split, keeping ONE definition of the treatment.
+        js = km._CHAT_MOBILE_JS
+        self.assertIn("function fillName(elm,s){", js)
+        self.assertIn("s.lab.cloneNode(true).childNodes", js, "the nodes are cloned, not flattened")
+        # ...and the clone's childNodes are SLICED before the walk: appending straight off that live
+        # NodeList removes each node as it goes and skips every second one, which dropped the session
+        # name and left a row reading just "host:" (caught in a browser, not by a source pin)
+        self.assertIn("[].slice.call(s.lab.cloneNode(true).childNodes).forEach(", js)
+        self.assertIn("lab:lab,", js, "read() carries the label element through")
+        self.assertIn("fillName(nm,act);", js, "the current-session button too, not just the rows")
+        self.assertNotIn("nm.textContent=act.name", js)
+        self.assertNotIn("lbl.textContent=s.name", js)
+        # the treatment itself is NOT re-declared here: the cloned span brings its class, and the chat
+        # page loads the sheet that styles it (a second spelling would eventually disagree with desktop)
+        self.assertNotIn("host-prefix", km._CHAT_MOBILE_CSS)
+        self.assertIn("<link href=/dist/styles.css", km._chat_page())
+
     def test_picker_rows_match_desktop_colored_name_plus_status_dot(self):
         # the user 2026-07-22: on mobile the picker painted a per-session identity DOT (grey #666 when the
         # session had no color, and confusingly the identity color when it did) — desktop has no such dot.
@@ -260,7 +282,7 @@ class ChatSessionPicker(unittest.TestCase):
         # label), and the dot MIRRORS the tab's own status dot — gold when working, GREEN when awaitingBg
         # (idle-waiting-on-bg-work, the .tab-dot.await), none otherwise.
         js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
-        self.assertIn("lbl.textContent=s.name;if(s.bg)lbl.style.color=s.bg;", js)   # identity color on the NAME
+        self.assertIn("fillName(lbl,s);if(s.bg)lbl.style.color=s.bg;", js)   # identity color on the NAME
         self.assertIn("if(s.working){var wd=document.createElement('span');wd.className='workdot';", js)  # gold dot when working
         # awaitingBg is read off the desktop tab's own green dot (no tab-working class on an awaiting tab)
         self.assertIn("awaitbg:!!t.querySelector('.tab-dot.await')", js)
