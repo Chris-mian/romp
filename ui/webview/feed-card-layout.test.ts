@@ -111,9 +111,12 @@ test("the footer action row WRAPS its buttons so they can NEVER run off the card
   // the section toggles GROUP left and wrap together (the user 2026-07-08) — no longer spread to opposite
   // edges; the old `margin-left:auto` on a trailing secbtn is gone.
   assert.doesNotMatch(CSS, /\.fask-row3 \.fask-secbtn ~ \.fask-secbtn \{ margin-left: auto; \}/);
-  // the title fills the full card width (block row1 + inline title, the user 2026-07-08) and the time trails
-  // it INLINE right after the last word — no reserved column, no empty space top-right.
-  assert.match(CSS, /\.fask-row1 \{ display: block; \}/);
+  // the title fills the full card width (flow-root row1 + inline title, the user 2026-07-08) and the time
+  // trails it INLINE right after the last word — no reserved column, no empty space top-right. flow-root,
+  // not block (the user 2026-07-31): row1 must CONTAIN its grouped-mode Clear float, else a Clear that
+  // drops off a full time line overlays row 3 and hangs misaligned beside the Background/Summary toggles.
+  assert.match(CSS, /\.fask-row1 \{ display: flow-root; \}/);
+  assert.doesNotMatch(CSS, /\.fask-row1 \{ display: block; \}/, "a plain block gains no height from the float");
   assert.match(CSS, /\.fask-row1 \.fcard-title \{ display: inline; \}/);
   assert.match(CSS, /\.fask-row1 \.ftime \{ margin-left: 8px; \}/);
 });
