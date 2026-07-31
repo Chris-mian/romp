@@ -12671,6 +12671,33 @@ def build_feed(now, tmux=None):
             _qmemo[nid] = res
             return res
 
+        # The rejudging latch's CLEAR bound (the user 2026-07-31): the block a top card surfaces may
+        # live on a DESCENDANT (blocked rolls up, _closure_blocked above), and the unblocker stamps
+        # blockCheckT on the node it EXAMINES — the blocked child — never on the top. The latch used
+        # to read the top's own watermark, which for a child-held block stays None forever: every
+        # plain reply dropped the card to Working (plain_user_t > 0 is always true) and every landing
+        # turn advanced disp_t past the reply and lifted it back to Needs-You — the same strobe the
+        # watermark bound fixed for top-level blocks (PR #144), reintroduced one level down. The
+        # audited card flipped seconds-apart pairs at every conversational turn for half an hour.
+        # The bound is therefore the OLDEST watermark among the subtree's OPEN blocked nodes (the
+        # exact closure _closure_blocked walks, same done/cleared gates): the card returns to
+        # Needs-You only once EVERY block it is surfacing has been re-examined with evidence
+        # covering the reply. None when the walk finds no open block (a stale rollup) — the caller
+        # falls back to the top's own watermark, the pre-existing semantics.
+        _bcmemo = {}
+        def _block_check_floor(nid):
+            if nid in _bcmemo:
+                return _bcmemo[nid]
+            nd = nodes.get(nid)
+            if not nd or nd.get("cleared") or (_closure_done(nid) and nid not in agent_open):
+                _bcmemo[nid] = None
+                return None
+            vals = [int(nd.get("blockCheckT") or 0)] if nd.get("blocked") else []
+            vals += [v for v in (_block_check_floor(c) for c in children.get(nid, [])) if v is not None]
+            res = min(vals) if vals else None
+            _bcmemo[nid] = res
+            return res
+
         def flatten(nid, out, ancestor_done=False):  # AskTreeNode flat list, root first; nest via children ids
             nd = nodes[nid]
             kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
@@ -12925,10 +12952,14 @@ def build_feed(now, tmux=None):
             # (which reads the still-blocked store). The latch arms only off the PARSE's plain-reply turn
             # (a real transcript atom, never the echo), and the watermark clear is judge-driven, so the
             # stranded-echo failure stays impossible.
+            # The watermark that bounds the latch is the one covering THE BLOCK THE CARD SURFACES —
+            # a descendant's, when the block rolled up (_block_check_floor above; the user 2026-07-31).
+            _bct = _block_check_floor(nid)
             rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
                              and not nodes[nid].get("followupPending")
                              and plain_user_t > disp_t
-                             and plain_user_t > (nodes[nid].get("blockCheckT") or 0))
+                             and plain_user_t > (_bct if _bct is not None
+                                                 else (nodes[nid].get("blockCheckT") or 0)))
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
             # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
             # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely

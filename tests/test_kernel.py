@@ -4467,6 +4467,52 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._last_plain_user_turn_t = saved
 
+    def _child_blocked_store(self, **child_extra):
+        # a top umbrella whose BLOCK lives on a DESCENDANT: blocked rolls up (the card reads blocked)
+        # but the unblocker examines — and stamps blockCheckT on — the child, never the top.
+        top, sub = "%s:gT" % SID, "%s:gS" % SID
+        tn = {"id": top, "text": "umbrella", "parentId": None, "nodeComplete": False,
+              "blocked": False, "cleared": False, "trail": [], "t": NOW - 200, "mt": NOW - 200}
+        sn = {"id": sub, "text": "the actual ask", "parentId": top, "nodeComplete": False,
+              "blocked": True, "blockWhy": "need your call", "cleared": False,
+              "trail": [], "t": NOW - 100, "mt": NOW - 100}
+        sn.update(child_extra)
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": sub,
+            "nodes": {top: tn, sub: sn}, "placements": {}, "status": {top: "blocked"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        return top
+
+    def test_feed_rejudging_watermark_covers_a_descendant_block(self):
+        # REGRESSION (the user 2026-07-31): the latch's clear bound read the TOP node's blockCheckT,
+        # but when the block lives on a child (blocked rolls up), the unblocker stamps the CHILD's
+        # watermark — the top's stays None forever, so the latch armed on every plain reply and no
+        # judge look could ever release it: the card strobed Working↔Needs-You at every turn of an
+        # active conversation (the audited card flipped in seconds-apart pairs for half an hour).
+        # The bound is now the OLDEST watermark among the subtree's OPEN blocked nodes.
+        top = self._child_blocked_store()
+        saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
+        try:
+            km._last_plain_user_turn_t = lambda turns: NOW - 10     # a plain reply AFTER the child's block
+            km._session_working = lambda turns: False
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+            self.assertTrue(card["rejudging"], "reply not yet examined → the latch arms off the CHILD's block")
+            self.assertEqual(card["column"], "working")
+            # the unblocker examines THE CHILD with evidence covering the reply → released, exactly once
+            top = self._child_blocked_store(blockCheckT=NOW - 5)
+            card_ruled = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+            self.assertFalse(card_ruled["rejudging"],
+                             "the CHILD's watermark passed the reply → released (the top's own None must not pin the latch)")
+            self.assertEqual(card_ruled["column"], "needs_input")
+            # an examine that PRE-dates the reply keeps the latch armed — the judge hasn't seen the reply
+            top = self._child_blocked_store(blockCheckT=NOW - 20)
+            card_stale = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+            self.assertTrue(card_stale["rejudging"], "examined before the reply → still the judge's move")
+            self.assertEqual(card_stale["column"], "working")
+        finally:
+            km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
+
     def _store_with_status(self, st):
         # one top goal in a given rolled-up status — used to simulate the judge rewriting the store mid-pass
         g = "%s:gP" % SID
