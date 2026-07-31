@@ -12,6 +12,7 @@ restart itself is a no-op), invented tokens.
 """
 import json
 import os
+import time
 import threading
 import unittest
 import urllib.request
@@ -63,7 +64,14 @@ class RestartAudit(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=10) as r:
             body = json.loads(r.read())
         self.assertTrue(body.get("restarting"))
-        recs = _read_audit()
+        # the route ACKS FIRST and audits the manager hop after — poll briefly so the assertion
+        # doesn't race the handler thread (CI hit this; the ack/restart order is the designed one)
+        recs = []
+        for _ in range(200):
+            recs = _read_audit()
+            if any(r.get("action") == "kernel-asks-manager-restart-all" for r in recs):
+                break
+            time.sleep(0.01)
         route = [r for r in recs if r.get("action") == "http-restart"]
         self.assertEqual(len(route), 1, "the HTTP door must write exactly one audit line: %r" % recs)
         self.assertEqual(route[0].get("addr"), "127.0.0.1")
