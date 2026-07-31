@@ -14733,7 +14733,13 @@ def _heartbeat():
 def _reveal_chat(focus_msg):
     """A cross-pane action that brings the chat forward (a feed/timeline session tap): focus the chat
     clients AND tell the mobile shell (app=shell) to switch to its Chat tab. On desktop the shell
-    ignores the reveal (all three panes are visible at once), so this is a no-op there."""
+    ignores the reveal (all three panes are visible at once), so this is a no-op there.
+
+    The shell half only ever reaches THIS kernel's own dashboards: a federated dashboard opens a socket
+    per host for each PANE, never for the shell, so a click on a remote host's session routes to that
+    host's kernel and its reveal lands nowhere. The chat pane therefore asks for the switch itself when
+    it takes a focus (render.ts revealSelfPane) — which covers every kernel, local included, and makes
+    this line a harmless duplicate rather than the only mover."""
     _send_to_app("chat", focus_msg)
     _send_to_app("shell", {"type": "reveal", "pane": "chat"})
 
@@ -19319,6 +19325,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "expected websocket", "text/plain")
         q = parse_qs(urlparse(self.path).query)
         app = (q.get("app") or ["chat"])[0]
+        wid = (q.get("wid") or [""])[0]         # which DASHBOARD this pane belongs to → _send_to_view aims at one
         active = (q.get("active") or [""])[0]   # the tab this client is looking at → _push builds it FIRST
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
@@ -19332,7 +19339,7 @@ class Handler(BaseHTTPRequestHandler):
         # push/heartbeat loops (see _ws_sender). Pongs still ride self.wfile — they are ≤125-byte control
         # frames answered on this client's own handler thread, and both paths serialise on the same `lock`.
         q = queue.Queue()
-        client = {"app": app, "alive": True, "qbytes": 0, "qlock": threading.Lock()}
+        client = {"app": app, "wid": wid, "alive": True, "qbytes": 0, "qlock": threading.Lock()}
         client["send"] = _mk_ws_send(q, self.connection, client)
         threading.Thread(target=_ws_sender, args=(q, self.connection, lock, client),
                          daemon=True, name="ws-send").start()

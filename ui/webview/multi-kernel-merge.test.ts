@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prefixId, hostOf, bareId, prefixInbound, routeOutbound, mergeHostOrder, mergeHostFeeds,
          prefixTimelineData, mergeHostTimelines, mergeHostBars, stitchMessages,
-         FederationManager } from "./federation";
+         FederationManager, pickWid } from "./federation";
 
 const U = "11111111-2222-3333-4444-555555555555";
 const V = "99999999-8888-7777-6666-555555555555";
@@ -421,4 +421,17 @@ test("manager: merged timeline emits HOLD until the local lanes snapshot arrives
   } finally {
     if (hadWindow) g.window = prevWindow; else delete g.window;
   }
+});
+
+// ── pickWid: which DASHBOARD a federated socket belongs to ────────────────────────────────────────────
+// The remote dial has to name the viewer the same way the pane's local socket does, or the remote kernel
+// treats every federated window as one anonymous client and broadcasts what it means for one of them.
+test("pickWid prefers the host-supplied ?wid=, then the shell's per-tab id", () => {
+  assert.equal(pickWid("?app=chat&wid=from-host", "from-storage"), "from-host");
+  assert.equal(pickWid("?app=chat", "from-storage"), "from-storage");
+  assert.equal(pickWid("", ""), "", "neither → empty, and the kernel falls back to broadcasting");
+});
+
+test("pickWid survives a malformed query instead of throwing the connect away", () => {
+  assert.equal(pickWid("%", "from-storage"), "from-storage");
 });

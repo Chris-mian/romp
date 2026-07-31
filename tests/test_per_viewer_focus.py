@@ -79,6 +79,49 @@ class Wiring(unittest.TestCase):
         self.assertIn("if not wid:\n        return _send_to_app(app, msg)",
                       inspect.getsource(km._send_to_view))
 
+    def test_the_socket_actually_puts_the_reported_wid_ON_the_client(self):
+        # The half that was missing (found 2026-07-30): the shell minted the id, the panes sent it and
+        # _send_to_view filtered on it, but the WS handler never read it off the query — so every client
+        # carried no wid, every wid resolved to "", and the targeted send fell through to the broadcast
+        # it was written to replace. The tests above all hand-build clients WITH a wid, so none saw it.
+        src = inspect.getsource(km.Handler)
+        self.assertIn('wid = (q.get("wid") or [""])[0]', src, "the connect query is where a dashboard names itself")
+        self.assertIn('client = {"app": app, "wid": wid,', src, "…and it has to reach the client dict")
+
+    def test_a_federated_pane_names_its_dashboard_to_the_REMOTE_kernel_too(self):
+        # A remote kernel sees one anonymous client per federated pane unless the wid rides the relay
+        # dial, so its per-viewer sends would broadcast and one window's jump would move every other.
+        fed = open(os.path.join(os.path.dirname(HERE), "ui", "webview", "federation.ts"), encoding="utf-8").read()
+        self.assertIn("&wid=${encodeURIComponent(w)}", fed)
+        # the relay forwards the whole query verbatim (only `token` is rewritten), so the wid survives
+        self.assertIn('q["token"] = [rtok]', inspect.getsource(km.Handler._remote_ws))
+
+
+class RemoteRevealReachesTheShell(unittest.TestCase):
+    """A remote host's session must jump the same way a local one does (the user 2026-07-30, on a phone).
+
+    On mobile ONE pane is on screen, so a jump is invisible unless the shell switches to Chat. The kernel
+    sends that switch to its app=shell clients — but a federated dashboard opens a socket per host for
+    each PANE and never for the shell, so a click on a remote card routes to that host's kernel and its
+    reveal reaches nobody: the distilled summaries of remote sessions read as dead text. The chat pane
+    knows it took the focus whichever kernel sent it, so it asks the shell for itself.
+    """
+
+    def setUp(self):
+        self.render = open(os.path.join(os.path.dirname(HERE), "ui", "webview", "render.ts"), encoding="utf-8").read()
+
+    def test_the_chat_pane_asks_the_shell_to_come_forward_when_it_takes_a_focus(self):
+        self.assertIn('window.parent.postMessage({ romp: "reveal", pane: "chat" }, "*")', self.render)
+        self.assertIn('else if (m.type === "focus") {\n    revealSelfPane();', self.render)
+
+    def test_the_dead_session_prompt_comes_forward_too(self):
+        # confirmRevive is DRAWN in the chat pane — a modal on a pane you can't see is no modal at all
+        self.assertIn('else if (m.type === "confirmRevive" && m.id) {\n    revealSelfPane();', self.render)
+
+    def test_the_mobile_shell_switches_tabs_on_that_window_message(self):
+        # the receiving half already existed (the Fleet pill posts the same shape); this pins the contract
+        self.assertIn("if(m.romp==='reveal'&&m.pane)show(m.pane);", km._LANDING_MOBILE_JS)
+
 
 if __name__ == "__main__":
     unittest.main()

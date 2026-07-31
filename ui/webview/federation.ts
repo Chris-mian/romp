@@ -34,6 +34,23 @@ export function bareId(id: string): string {
   return i > 0 ? id.slice(i + 1) : id;
 }
 
+/** This dashboard's window id, resolved exactly as the pane shim resolves it (the kernel's `_shim`): the
+ *  host's `?wid=` when it supplies one, else the shell's per-tab sessionStorage id, which same-origin
+ *  iframes share. It rides every REMOTE connect too, so a remote kernel can aim a per-viewer message at
+ *  the dashboard that asked. "" when neither exists — the kernel falls back to broadcasting, which is the
+ *  pre-wid behaviour, so an older shell or a storage-blocked context degrades to what it did before. */
+export function pickWid(search: string, stored: string): string {
+  let q = "";
+  try { q = new URLSearchParams(search || "").get("wid") || ""; } catch (e) { /* malformed query */ }
+  return q || stored || "";
+}
+
+function dashboardWid(): string {
+  let stored = "";
+  try { stored = window.sessionStorage.getItem("romp:wid") || ""; } catch (e) { /* storage blocked */ }
+  return pickWid(location.search, stored);
+}
+
 // The shapes a kernel→browser message can carry a session id in. Kept generic (by field name, not by
 // message type) so a new message type that reuses these field names is covered automatically:
 const SCALAR_ID = ["id", "sid"]; //               a single session id
@@ -539,7 +556,13 @@ export class FederationManager {
     // Same-origin also means the local auth cookie rides the upgrade; the ?token (the remote
     // kernel's credential, from /tunnels) is re-checked and rewritten by the relay either way.
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    const url = `${proto}${location.host}/remote/${encodeURIComponent(host)}/ws?app=${encodeURIComponent(this.app)}&token=${encodeURIComponent(token)}`;
+    // …carrying this dashboard's `wid`, exactly as the pane's own local socket does. Without it a remote
+    // kernel sees every federated viewer as one anonymous client and BROADCASTS its per-viewer messages,
+    // so one dashboard's jump to a remote session yanked every other open dashboard to that tab — the
+    // very cross-window yank the local path fixed (the user 2026-07-29).
+    const w = dashboardWid();
+    const url = `${proto}${location.host}/remote/${encodeURIComponent(host)}/ws?app=${encodeURIComponent(this.app)}&token=${encodeURIComponent(token)}`
+      + (w ? `&wid=${encodeURIComponent(w)}` : "");
     const conn: Conn = { host, ws: null, url, closed: false, live };
     this.conns.set(host, conn);
     this.ensureHost(host);
