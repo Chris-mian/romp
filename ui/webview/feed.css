@@ -1078,17 +1078,22 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
 /* the bell BUTTON (the user 2026-07-28, round 4): inline in row1's metadata cluster, right after the
-   timestamp, and display:none until the card is hovered or it's armed — an off bell costs ZERO space
-   (round 3's float reserved a first-line notch even while invisible, wrapping titles early; the user
-   wants compact). Materializing on hover lands in the slack after "Nm ago", so nothing shifts. Off =
-   slashed dim bell; armed (.on) = accent bell, always visible. Accent = mechanics chrome, never a
-   status colour. */
+   timestamp — shown only once the card is hovered or it's armed. Off = slashed dim bell; armed (.on) =
+   accent bell, always visible. Accent = mechanics chrome, never a status colour.
+   Round 5 (the user 2026-07-31): it hides with VISIBILITY, not display, so its slot is reserved whether
+   or not the pointer is over the card. display:none made the bell cost zero space, but then hovering
+   materialized 22px into the tail of the last line and re-wrapped the title, shoving everything below
+   the card down — layout moving because the mouse moved. Reserving the slot costs at worst one wrapped
+   word, paid identically in both states, and it is nothing like round 3's float (which notched every
+   card's FIRST line): the reservation sits at the metadata cluster's tail, after "Nm ago". There is no
+   whitespace text node between the title, the time and the bell, so the three have no break opportunity
+   between them and the reserved bell can never wrap onto a line of its own. */
 .fask-bellbtn {
-  display: none; vertical-align: -4px; margin: 0 0 0 5px;
+  display: inline-flex; visibility: hidden; vertical-align: -4px; margin: 0 0 0 5px;
   align-items: center; justify-content: center;
   width: 17px; height: 17px; padding: 0; border: 0; border-radius: 4px;
   background: transparent; color: var(--dim); cursor: pointer; opacity: 0.55;
 }
-.fitem.ask:hover .fask-bellbtn { display: inline-flex; }
+.fitem.ask:hover .fask-bellbtn { visibility: visible; }
 .fitem.ask .fask-bellbtn:hover { opacity: 1; background: rgba(255, 255, 255, 0.10); }
-.fask-bellbtn.on { display: inline-flex; opacity: 0.85; color: var(--accent); }
+.fask-bellbtn.on { visibility: visible; opacity: 0.85; color: var(--accent); }

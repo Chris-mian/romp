@@ -767,13 +767,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
   row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
-  // the bell BUTTON (the user 2026-07-28, round 4): INLINE in row1's metadata cluster, right after
-  // the timestamp — and display:none until the card is hovered or it's armed, so an off bell costs
-  // ZERO space (round 3's float reserved a ~26px notch on the title's first line even while
-  // invisible, wrapping titles a word early and growing cards — the user wants compact). When it
-  // does show, it materializes into the slack after "Nm ago" (the last line's tail), the one spot
-  // that never shoves the title. In-flow, so it still cannot overlap the floated Clear. Session-level
-  // arming shows on the lane/tab instead, so an armed SESSION doesn't stamp every card.
+  // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
+  // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
+  // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
+  // not the pointer is over the card (the user 2026-07-31): round 4's display:none made an off bell
+  // cost zero space, but then hovering materialized it into that line and re-wrapped the title,
+  // moving everything below it — layout must not shift because the mouse moved. Session-level arming
+  // shows on the lane/tab instead, so an armed SESSION doesn't stamp every card.
   const bellBtn = el("button", "fask-bellbtn");
   bellBtn.onclick = (ev: Event) => {
     ev.stopPropagation();                            // never open the modal under the toggle
