@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { usageColor, fmtReset, usageWindows, STRIP_PANES } from "./strip";
+import { usageColor, fmtAgo, fmtReset, usageWindows, STRIP_PANES } from "./strip";
 
 test("usageColor mirrors the rail's green/amber/red ramp", () => {
   assert.equal(usageColor(0), "#54B204");
@@ -38,9 +38,21 @@ test("usageWindows keeps only reported windows, clamps, and computes pace", () =
   assert.equal(ws[1].elapsedPct, 0);
 });
 
-test("a window that reset since the last report reads 0, not stale", () => {
+test("a window that reset since the last report is UNKNOWN — never a confident 0 (the user 2026-07-31)", () => {
+  // a remote whose kernel had no live session to ask sat on a days-old snapshot, and the rail drew
+  // 0% beside a live account's real bars — indistinguishable from a genuinely idle account. The
+  // last-known reading survives (drawn faded), the readout is "?", and the title dates the gap.
   const ws = usageWindows({ fiveHour: { pct: 91, resetsAt: 50 } }, 100);
-  assert.equal(ws[0].pct, 0);
+  assert.equal(ws[0].unknown, true);
+  assert.equal(ws[0].pct, 91, "the last-known reading survives for the faded fill");
+  assert.equal(ws[0].elapsedPct, null, "pace means nothing against a window that already ended");
+  assert.match(ws[0].title, /window reset .* — current usage unknown \(last known 91%\)/);
+});
+
+test("a live window is not unknown, and fmtAgo dates a gap", () => {
+  const ws = usageWindows({ fiveHour: { pct: 20, resetsAt: 200 } }, 100);
+  assert.equal(ws[0].unknown, false);
+  assert.equal(fmtAgo(100, 100 + 90060), "1d 1h 1m ago");
 });
 
 test("no usage → no windows (the strip stays quiet, never fakes bars)", () => {

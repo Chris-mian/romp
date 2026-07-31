@@ -100,6 +100,27 @@ class RailUsage(unittest.TestCase):
         self.assertIn("mkUsageBar('fable', 'Fable 5', 7 * 86400)", tv)
         self.assertIn("apply('fable', usage.fable, 'Fable 5 (7d)')", tv)
 
+    def test_a_rolled_window_reads_unknown_not_zero(self):
+        # the user 2026-07-31: a second account's bars sat at a confident 0% because that machine's
+        # kernel had no live session to ask, so its snapshot predated its own reset — an unreadable
+        # window drawn as an empty one. A reading whose window has already reset describes a window
+        # nobody is in any more: it is UNKNOWN. The last-known fill stays but FADES, the readout is
+        # '?', the elapsed (pace) bar is withheld, and the tooltip dates the gap.
+        self.assertIn("var rolled=!!(seg.resetsAt&&nowS>seg.resetsAt),pct=Math.max(0,Math.min(100,seg.pct||0));",
+                      self.html, "the reading survives the roll — it is last-known, not zeroed")
+        self.assertIn("(rolled?'?':pct+'%')", self.html, "the readout says unknown, never 0%")
+        self.assertIn("var tp=(!rolled&&seg.resetsAt&&w[1])", self.html,
+                      "no pace bar against a window that already ended")
+        self.assertIn(".ru-unk .ru-fill{opacity:.3}", self.html, "the last-known bars fade")
+        self.assertIn("window reset '+esc(v.ago)", self.html, "the tooltip dates how stale the reading is")
+        self.assertIn("current usage unknown", self.html)
+        # the STANDALONE timeline copy (Obsidian) says the same thing — one rule, every surface
+        tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
+        self.assertIn("const rolled = !!(seg.resetsAt && nowS > seg.resetsAt);", tv)
+        self.assertIn("b.usage.txt.textContent = rolled ? '?' : pct + '%';", tv)
+        self.assertIn("b.usage.fill.style.opacity = rolled ? '0.3' : '';", tv)
+        self.assertIn("current usage unknown (last known ", tv)
+
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
         # only when embedded (window.parent !== window) — standalone/Obsidian keeps drawing them locally
