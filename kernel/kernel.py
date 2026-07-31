@@ -6956,12 +6956,29 @@ def _fleet_restart_run():
         _atomic_write(FLEET_REPORT, json.dumps(report))
     except OSError:
         sys.stderr.write("fleet-restart: could not write the report: %s\n" % traceback.format_exc())
-    _restart_this_kernel()
+    _restart_this_kernel("fleet-restart: the local half of the fleet Restart")
 
 
-def _restart_this_kernel():
+def _audit_restart_request(action, **kw):
+    """One line in restart-audit.jsonl — the same file the CLI path (bin/romp) and service install
+    write, so ONE log answers "who restarted the kernel?" whatever door the request came through
+    (the user 2026-07-31: a run of anonymous SIGTERM restarts blinked every dashboard for an hour
+    and nothing on disk could name the caller — the HTTP door and the manager hop were silent).
+    Best-effort and never raises: auditing must not be able to break the restart itself."""
+    try:
+        rec = {"t": int(time.time()), "action": action}
+        rec.update({k: v for k, v in kw.items() if v})
+        with open(jd.STATE / "restart-audit.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def _restart_this_kernel(reason=""):
     """Ask the manager to restart-all (it SIGTERMs this kernel; its exit handler spawns a fresh one).
-    Standalone (no manager) → nothing to restart, which is not an error."""
+    Standalone (no manager) → nothing to restart, which is not an error. `reason` lands in
+    restart-audit.jsonl so the manager hop is never an anonymous SIGTERM (see _audit_restart_request)."""
+    _audit_restart_request("kernel-asks-manager-restart-all", reason=reason, pid=os.getpid())
     mport = os.environ.get("ROMP_MANAGER_PORT")
     if not mport:
         return
@@ -18548,12 +18565,20 @@ class Handler(BaseHTTPRequestHandler):
                     _fleet = json.loads(raw_body or b"{}").get("fleet", True)
                 except Exception:
                     pass
+                # WHO ASKED, on the record (the user 2026-07-31): a restart blinks every dashboard, and
+                # a run of them traced to this route was unattributable — the CLI path audits itself
+                # (bin/romp → restart-audit.jsonl) but the HTTP door was silent. Same file, so one log
+                # tells the whole story.
+                _audit_restart_request("http-restart", fleet=bool(_fleet),
+                                       addr=str(self.client_address[0]),
+                                       origin=str(self.headers.get("Origin") or ""),
+                                       ua=str(self.headers.get("User-Agent") or ""))
                 self._send(200, json.dumps({"ok": True, "restarting": True, "boot": _BOOT_ID,
                                             "fleet": bool(_fleet)}), "application/json")
                 if _fleet and _remotes:
                     threading.Thread(target=_fleet_restart_run, daemon=True).start()
                 else:
-                    _restart_this_kernel()
+                    _restart_this_kernel("http /restart (local-only)")
                 return
             if u.path == "/fleet-restart":
                 # What the last fleet restart did, read back by the page AFTER it reloads (the restart
