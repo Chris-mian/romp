@@ -78,6 +78,16 @@ test("the SETTLE GAP (turn done, verdict pending) spins on a working card", () =
     "judging only speaks for a card sitting in Working");
 });
 
+test("the SETTLE GAP tip carries the nudge hold the retired judging-stall chip used to tell", () => {
+  // The user 2026-07-31: a goal held only because romp's own review is mid-flight is romp WORKING the
+  // card, so the yellow Stalled chip no longer minted for it (jd.stall_why_stands screens WHY_JUDGING).
+  // The story moved here, one hover deep — the tip must keep saying the hold exists and is not a stall,
+  // or dropping the chip becomes dropping the information.
+  const tip = spinFor({ judging: true, column: "working" }, false, false).tip;
+  assert.match(tip, /[Nn]udges hold off/, "the hold is named");
+  assert.match(tip, /not stuck/, "…and read as romp working, not a wedge");
+});
+
 test("DISTILLING names which line is being written", () => {
   assert.equal(spinFor({}, true, true).tip, "Writing the key takeaway…");
   assert.equal(spinFor({}, true, false).tip, "Writing the decision brief…");

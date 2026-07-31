@@ -108,10 +108,14 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // SETTLE GAP (the user 2026-07-13) — the session FINISHED its turn but the closer's verdict hasn't
     // landed, so the card would sit inertly in Working ("the session is done, why is its card still
     // working?"). The swirl says what's actually happening; it hands off to the column move (and then
-    // Distilling…) when the verdict files the work.
+    // Distilling…) when the verdict files the work. The tip also carries the story the retired
+    // judging-stall chip used to tell (the user 2026-07-31): auto-nudges hold off while the review
+    // runs, and that hold is romp working the card, not a stall — so it lives here, one hover deep,
+    // instead of as a yellow chip pulling the eye to a state nobody needs to act on.
     return {
       caption: "Analyzing…",
-      tip: "This stretch of work finished; the judge is deciding whether it completed or blocked this goal.",
+      tip: "This stretch of work finished; the judge is deciding whether it completed or blocked this goal. "
+         + "Nudges hold off while the review runs — romp is working this card, not stuck on it.",
       awaitingBg: false,
     };
   }

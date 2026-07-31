@@ -301,19 +301,18 @@ class StalledGoals(Base):
         self.assertEqual(len(writes), 1,
                          "the run count stops at the threshold — a wedge is not a file write per tick")
 
-    def test_a_judging_stall_shows_only_while_the_call_is_in_flight(self):
-        # LIVE-VERIFIED (2026-07-25): a deferral record only pops when the gate walk re-runs, and the walk
-        # stops the moment its session leaves idle-and-due — so a record freezes with its last reason.
-        # Records frozen for DAYS were found presenting "mid-flight" in the present tense. The judging
-        # claim is checkable against active_runs right now, so a frozen copy must check out to be shown.
-        km._nudge_deferred_ok(GID, jd.WHY_JUDGING, NOW, SID)
+    def test_a_judging_hold_defers_the_nudge_but_never_presents_as_a_stall(self):
+        # The user 2026-07-31 (superseding the 2026-07-25 live-verify): a goal held because romp's own
+        # review is mid-flight is a goal romp is WORKING — the Analyzing… swirl carries that story
+        # (spin-caption.ts, tip naming the hold), and a yellow chip there drew the eye to a state nobody
+        # needs to act on. The GATE half is untouched: the deferral still holds the nudge (backstop and
+        # all); only the presentation is gone, however live the call.
+        self.assertFalse(km._nudge_deferred_ok(GID, jd.WHY_JUDGING, NOW, SID),
+                         "the hold itself is real — the nudge stays deferred")
         km._nudge_deferred_ok(GID, jd.WHY_JUDGING, NOW + 30, SID)
         jd.active_runs = lambda: [{"judge": "closer", "fsid": SID, "sent": 1.0}]
-        self.assertEqual(km._stalled_goals()[GID]["why"], jd.WHY_JUDGING,
-                         "a genuinely wedged per-session judging shows as the stall it is")
-        jd.active_runs = lambda: ()
         self.assertEqual(km._stalled_goals(), {},
-                         "the call retired but the record froze → the claim is live-false, never shown")
+                         "romp reviewing is romp working — never a stall chip, even mid-flight")
 
     def test_a_legacy_global_pass_record_is_never_presented(self):
         # pre-2026-07-25 records carried the global "a judge pass is mid-flight" and named no session —
@@ -334,13 +333,12 @@ class StalledGoals(Base):
 
     def test_the_stands_predicate_is_shared_with_the_judge_reader(self):
         # stalled_facts (judge side, feeds the staller and the distill due-anchor) filters through the SAME
-        # jd.stall_why_stands, so the two stall surfaces can never disagree about a live-false claim.
-        jd.active_runs = lambda: ()
-        self.assertFalse(jd.stall_why_stands(jd.WHY_JUDGING, SID))
+        # jd.stall_why_stands, so the two stall surfaces can never disagree about which reasons present.
         jd.active_runs = lambda: [{"judge": "closer", "fsid": SID, "sent": 1.0}]
-        self.assertTrue(jd.stall_why_stands(jd.WHY_JUDGING, SID))
-        self.assertFalse(jd.stall_why_stands(jd.WHY_JUDGING, None),
-                         "a judging claim with no session is unverifiable and never stands")
+        self.assertFalse(jd.stall_why_stands(jd.WHY_JUDGING, SID),
+                         "a judging hold is romp working, never presented — even with the call live")
+        self.assertFalse(jd.stall_why_stands("a judge pass is mid-flight", None),
+                         "the legacy global form is screened the same way")
         self.assertTrue(jd.stall_why_stands("the agent's to-do sync is due", None),
                         "store-backed reasons pass through — their own passes reconcile them")
 
