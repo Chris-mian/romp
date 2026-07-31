@@ -11,6 +11,9 @@
 // local kernel is just connection #0 with the empty-string host key, so its messages pass through
 // unprefixed and the single-kernel path is byte-for-byte unchanged.
 
+import { applyViewOrder, applyViewOrderTo, pruneViewOrder, readViewOrder, writeViewOrder,
+         VIEW_ORDER_KEY, VIEW_ORDER_EVENT } from "./view-order";
+
 export const SEP = ":";
 export const LOCAL = ""; // the local kernel's host key — no prefix, so the single-kernel path is untouched
 
@@ -243,10 +246,16 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   return [{ host: LOCAL, msg }];
 }
 
-/** Merge per-host tab orders into ONE list for the merged strip: each host's order VERBATIM (the kernel is
- *  authoritative within a host — never re-sort across hosts), concatenated in `hostSeq` order (local first,
- *  then attach order). Values are already prefixed by prefixInbound. Deduped; non-strings dropped. */
-export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostSeq: readonly string[]): string[] {
+/** Merge per-host tab orders into ONE list for the merged strip: each host's order verbatim, concatenated in
+ *  `hostSeq` order (local first, then attach order), and then arranged by the VIEWER's own order (the user
+ *  2026-07-31 — see ./view-order for why that moved out of the kernel). Values are already prefixed by
+ *  prefixInbound. Deduped; non-strings dropped.
+ *
+ *  The concatenation is the SEED, not the answer: it decides where a session the viewer has never arranged
+ *  goes, and nothing more. With no arrangement stored, `applyViewOrder` is the identity and this returns the
+ *  host-blocked concatenation that shipped before — the single-kernel path is untouched either way. */
+export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostSeq: readonly string[],
+                               view: readonly string[] = []): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const h of hostSeq) {
@@ -257,7 +266,7 @@ export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostS
       }
     }
   }
-  return out;
+  return applyViewOrder(out, view);
 }
 
 /** Merge per-host feed snapshots into ONE payload. The `feed` message is a WHOLE-feed snapshot that the
@@ -266,7 +275,8 @@ export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostS
  *  back and forth ("repeatedly reloading"). Concatenate the arrays (items/asks/working) in hostSeq order
  *  (local first); keep the scalar chrome fields (now, dismissedCount, flags) from the LOCAL host, since the
  *  dashboard's own controls are local-authoritative. Ids are already prefixed by prefixInbound. */
-export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[]): any {
+export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[],
+                               view: readonly string[] = []): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], order: [] };
   // `ledgers` drives the FLEET pane (it rides the same feed message). Only include it once at least one host
@@ -289,6 +299,9 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
     if (typeof f.dismissedCount === "number") { anyDismissed = true; dismissed += f.dismissedCount; }
     if (f.canUndoClear) canUndo = true;
   }
+  // the grouped feed ranks its session runs off `order`, so it takes the viewer's arrangement like the tab
+  // strip does — the two surfaces have to agree or the feed's groups and the tabs read in different orders.
+  merged.order = applyViewOrder(merged.order, view);
   if (anyLedgers) merged.ledgers = ledgers;
   else delete merged.ledgers;
   if (anyDismissed) merged.dismissedCount = dismissed;
@@ -336,7 +349,8 @@ export function stitchMessages(messages: any[], sessions: readonly any[]): any[]
  *  union; the marks arrays concatenate, with cross-host connectors stitched onto the merged lanes.
  *  Scalar chrome (now/usage/focus/hover/cmapGrad…) stays LOCAL — the browser's own kernel is the
  *  clock + chrome authority, same as the feed merge. */
-export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[]): any {
+export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[],
+                                   view: readonly string[] = []): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [] };
   for (const h of hostSeq) {
@@ -346,6 +360,9 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
     if (d.turns && typeof d.turns === "object") Object.assign(merged.turns, d.turns);
     for (const k of ["messages", "judging"]) if (Array.isArray(d[k])) merged[k].push(...d[k]);
   }
+  // lanes are the third surface reading this order (chat strip, feed groups, timeline lanes): arrange them
+  // the same way, before the message stitch, which pairs postal arrows against the lane list.
+  merged.sessions = applyViewOrderTo(merged.sessions, view, (x: any) => String((x && x.id) || ""));
   merged.messages = stitchMessages(merged.messages, merged.sessions);
   return merged;
 }
@@ -412,6 +429,16 @@ export class FederationManager {
       down: () => [...this.downHosts],
       lastSeen: (h: string) => this.lastSeen[h] || 0,
     };
+    // A drag in ANY pane rewrites the arrangement; every other pane hears it through `storage` (which fires
+    // only in other same-origin contexts) and this one through the writer's own CustomEvent. Both land here,
+    // and re-emitting all three merged payloads is what moves the tabs, lanes and feed groups together.
+    const reorder = () => { this.emitMergedOrder(); this.emitMergedFeed(); this.emitMergedTimeline(false); };
+    w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_KEY) reorder(); });
+    w.addEventListener(VIEW_ORDER_EVENT, reorder);
+    // The kernel-served timeline page boots from an inline script that cannot import this module, so the
+    // one implementation of the write is published here for it (its VS Code twin imports it directly).
+    w.__rompWriteOrder = (order: unknown) =>
+      writeViewOrder(Array.isArray(order) ? order.filter((x: unknown): x is string => typeof x === "string") : []);
     this.poll();
     setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
   }
@@ -451,8 +478,15 @@ export class FederationManager {
     window.dispatchEvent(new MessageEvent("message", { data: m }));
   }
 
+  // The viewer's own session order, re-read per emit. It is a handful of strings out of localStorage and
+  // it must never be cached: another PANE of this dashboard writes the same key when you drag a tab there,
+  // and the storage event below re-emits — reading fresh is what makes all three surfaces agree.
+  private view(): string[] {
+    return readViewOrder();
+  }
+
   private emitMergedFeed(): void {
-    window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq) }));
+    window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view()) }));
   }
 
   private emitMergedTimeline(bars: boolean): void {
@@ -464,15 +498,31 @@ export class FederationManager {
     if (!(LOCAL in this.perHostTl)) return;
     const data = bars
       // the bars message carries no lanes — hand the merged lane list in for the connector stitch
-      ? mergeHostBars(this.perHostTlBars, this.hostSeq, mergeHostTimelines(this.perHostTl, this.hostSeq).sessions)
-      : { type: "data", data: mergeHostTimelines(this.perHostTl, this.hostSeq) };
+      ? mergeHostBars(this.perHostTlBars, this.hostSeq, mergeHostTimelines(this.perHostTl, this.hostSeq, this.view()).sessions)
+      : { type: "data", data: mergeHostTimelines(this.perHostTl, this.hostSeq, this.view()) };
     window.dispatchEvent(new MessageEvent("message", { data }));
   }
 
   private emitMergedOrder(): void {
-    const order = mergeHostOrder(this.perHostOrder, this.hostSeq);
+    this.gcView();
+    const order = mergeHostOrder(this.perHostOrder, this.hostSeq, this.view());
     const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
     window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs } }));
+  }
+
+  // Self-clean the stored arrangement, event-based: a host that has just reported its sessions is telling
+  // us exactly which of its ids still exist, so any of ITS ids missing from that report is gone for good and
+  // can be dropped. A host that is detached or unreachable reports nothing and is left entirely alone —
+  // pruning against a tunnel blip would flatten every remote session's placement and stack them all at the
+  // end of the strip when the host came back. Rewritten only when it actually changes.
+  private gcView(): void {
+    const reporting = new Set(Object.keys(this.perHostOrder));
+    if (!reporting.size) return;
+    const live = new Set<string>();
+    for (const h of reporting) for (const id of this.perHostOrder[h] || []) live.add(id);
+    const cur = this.view();
+    const kept = pruneViewOrder(cur, hostOf, reporting, live);
+    if (kept.length !== cur.length) writeViewOrder(kept);
   }
 
   private lastClearHost = LOCAL; // where the most recent askClear routed — undoClear follows it
