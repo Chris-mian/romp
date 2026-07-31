@@ -3869,6 +3869,19 @@ function cancelProvisional(): void {
   if (name && vscodeApi) vscodeApi.postMessage({ type: "cancelCreate", name });
 }
 
+// Bring this pane FORWARD in the shell. On mobile only one pane is on screen at a time, so a jump the
+// chat just took is invisible unless the shell switches to the chat tab; on desktop all panes are up at
+// once and the shell ignores it. The kernel asks for that switch itself — but only of ITS OWN shell
+// clients, and the shell socket is local-only, so a click on a REMOTE host's card routes to that host's
+// kernel and its reveal reaches nobody: on a phone, a remote session's distilled summary looked like dead
+// text (the user 2026-07-30). The pane knows it took the focus whichever kernel sent it, so it asks for
+// itself, and the local path keeps its (now duplicate, idempotent) kernel-side reveal.
+function revealSelfPane(): void {
+  try {
+    if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "reveal", pane: "chat" }, "*");
+  } catch (e) { /* standalone page — no shell to ask */ }
+}
+
 // Full-screen bridge (the user 2026-07-05): the picker is rendered inside the /chat iframe, so its
 // position:fixed;inset:0 only covered the chat PANE — on a short pane the session list couldn't scroll.
 // Mirror the settings bridge: tell the shell to lift #f-chat over the whole window (body.picker-open) while
@@ -7273,6 +7286,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "update") update(m);
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") {
+    revealSelfPane();   // every focus is someone jumping HERE — on mobile, come forward (incl. from a remote kernel)
     if (revivePending && m.id === revivePending) clearReviveLoader();   // the revive landed — the loader's success event
     // `live` (the user 2026-07-08): land on the LIVE TAIL. A blocked card's picker/permission prompt IS the
     // live bottom of the chat, so its feed chip drops the user right on it. Stick the target view to bottom so
@@ -7385,6 +7399,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       });
   }
   else if (m.type === "confirmRevive" && m.id) {
+    revealSelfPane();   // the dead-session prompt is drawn in THIS pane — useless if the pane isn't showing
     const nm = String(m.name || "");
     showConfirm(`“${nm}” is closed — revive it?`,
       "Revive restarts the session and resumes its conversation. Read-only just shows the transcript.",
