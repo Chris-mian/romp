@@ -1233,21 +1233,39 @@ class TimelinePanel {
       const b = this._usageBars[key]; if (!b) return;
       if (!seg) { b.group.style.display = 'none'; return; }
       b.group.style.display = 'inline-flex';
-      const rolled = seg.resetsAt && nowS > seg.resetsAt;            // window reset since the last report
-      const pct = rolled ? 0 : seg.pct;
+      // A ROLLED window (its reset passed since this reading was taken) is UNKNOWN, not 0 — the reading
+      // describes a window that has already ended (the user 2026-07-31: a machine with no live session to
+      // ask sits on a stale snapshot, and a confident 0% is indistinguishable from a genuinely idle
+      // account). Last-known fill stays, FADED, and the readout is '?'; the title dates the gap.
+      const rolled = !!(seg.resetsAt && nowS > seg.resetsAt);
+      const pct = Math.max(0, Math.min(100, seg.pct || 0));
       b.usage.fill.style.width = pct + '%';
       b.usage.fill.style.background = pct >= 90 ? '#c0392b' : (pct >= 70 ? '#e0b020' : '#54B204');
-      b.usage.txt.textContent = pct + '%';
-      // TIME through the window: 0% at the window start (resets_at − winSec), 100% at the reset.
+      b.usage.fill.style.opacity = rolled ? '0.3' : '';
+      b.usage.txt.textContent = rolled ? '?' : pct + '%';
+      // TIME through the window: 0% at the window start (resets_at − winSec), 100% at the reset. Meaningless
+      // once the window has rolled — that pace would describe a window nobody is in any more.
       let timePct = null;
-      if (seg.resetsAt && b.winSec) timePct = Math.max(0, Math.min(100, Math.round((nowS - (seg.resetsAt - b.winSec)) / b.winSec * 100)));
+      if (!rolled && seg.resetsAt && b.winSec) timePct = Math.max(0, Math.min(100, Math.round((nowS - (seg.resetsAt - b.winSec)) / b.winSec * 100)));
       b.time.row.style.display = (timePct == null) ? 'none' : 'inline-flex';
       if (timePct != null) { b.time.fill.style.width = timePct + '%'; b.time.txt.textContent = timePct + '%'; }
-      b.group.setAttribute('title', name + ' — usage ' + pct + '%' + (timePct != null ? ' · ' + timePct + '% through the window' : '') + (seg.resetsAt ? ' · resets in ' + this._fmtReset(seg.resetsAt) : ''));
+      b.group.setAttribute('title', rolled
+        ? name + ' — window reset ' + this._fmtAgo(seg.resetsAt) + ' and no reading has arrived since; current usage unknown (last known ' + pct + '%)'
+        : name + ' — usage ' + pct + '%' + (timePct != null ? ' · ' + timePct + '% through the window' : '') + (seg.resetsAt ? ' · resets in ' + this._fmtReset(seg.resetsAt) : ''));
     };
     apply('fiveHour', usage.fiveHour, 'Session (5h)');
     apply('sevenDay', usage.sevenDay, 'Weekly');
     apply('fable', usage.fable, 'Fable 5 (7d)');
+  }
+  // Compact "2d 3h 14m ago" for a reset that has already passed — how stale an UNKNOWN window's
+  // last reading is (the '?' bars above).
+  _fmtAgo(epoch) {
+    const nowS = (typeof Date !== 'undefined' && Date.now) ? Math.floor(Date.now() / 1000) : 0;
+    let dt = Math.max(0, nowS - epoch);
+    const d = Math.floor(dt / 86400); dt -= d * 86400;
+    const h = Math.floor(dt / 3600); dt -= h * 3600;
+    const m = Math.floor(dt / 60);
+    return ((d ? d + 'd ' : '') + ((h || d) ? h + 'h ' : '') + m + 'm').trim() + ' ago';
   }
   // Compact "2d 3h 14m" countdown to a reset epoch, for the usage-bar hover title.
   _fmtReset(epoch) {

@@ -16644,20 +16644,24 @@ function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
 // One account's windows, as markup + the tooltip detail for them. Pure: the caller decides where it goes.
 function winsHTML(u,det){var nowS=Math.floor(Date.now()/1000),html='';
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
-var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
+// A ROLLED window (its reset passed since the last report) is UNKNOWN, not 0 (the user 2026-07-31: a
+// remote whose kernel had no live session to ask sat on a days-old snapshot, and the rail drew a
+// confident 0% beside a live account's real bars). Last-known fill drawn FADED + a '?' readout, so
+// unknown and genuinely-empty can never be confused; the tooltip dates the gap.
+var rolled=!!(seg.resetsAt&&nowS>seg.resetsAt),pct=Math.max(0,Math.min(100,seg.pct||0));
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
-var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
-det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
+var tp=(!rolled&&seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
+det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtAgo(seg.resetsAt):null),reset:(!rolled&&seg.resetsAt)?fmtR(seg.resetsAt):null};
 // Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks \u2014 the
 // used-% bar (colormap colour) ON TOP of the elapsed-% bar (slate) so you can compare pace at a glance (used
 // ahead of elapsed = burning too fast) \u2014 then the used-% readout. All inline (label \u00b7 bars \u00b7 %).
-html+='<div class=ru-w data-w="'+w[0]+'">'
+html+='<div class="ru-w'+(rolled?' ru-unk':'')+'" data-w="'+w[0]+'">'
 +'<div class=ru-name>'+w[4]+'</div>'
 +'<div class=ru-bars>'
 +'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+col+'"></i></div>'
 +'<div class=ru-track><i class=ru-fill style="width:'+(tp||0)+'%;background:#6b7a8c"></i></div>'
 +'</div>'
-+'<div class=ru-pct>'+pct+'%</div></div>';});
++'<div class=ru-pct>'+(rolled?'?':pct+'%')+'</div></div>';});
 return html;}
 // ONE SET PER CLAUDE ACCOUNT (the user 2026-07-30). These windows are ACCOUNT-wide, so a fleet signed into
 // one login has one allowance and drawing it per host would repeat the same number \u2014 that is the common
@@ -16684,9 +16688,9 @@ var rest=ROWS.filter(function(r){return r.host;});
 renderRows([{host:'',acct:(u&&u.acct)||'',usage:u}].concat(rest),SELF);}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
-function barRows(d){return '<div class=ru-tip-row><span class=ru-tip-k>used</span>'
+function barRows(d){return '<div class="ru-tip-row'+(d.unk?' ru-unk':'')+'"><span class=ru-tip-k>used</span>'
 +'<span class=ru-tip-track><i style="width:'+d.pct+'%;background:'+d.col+'"></i></span>'
-+'<span class=ru-tip-v>'+d.pct+'%</span></div>'
++'<span class=ru-tip-v>'+(d.unk?'?':d.pct+'%')+'</span></div>'
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
@@ -16698,7 +16702,8 @@ if(!keys.length)return '';
 return (many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'')
 +keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
-+(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':'')+'</div>'+barRows(v)+'</div>';}).join('')
++(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+' \u2014 no reading since; current usage unknown</span>'
+:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('')
 +(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
@@ -17802,6 +17807,9 @@ def _landing():
             ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
             ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
             ".ru-fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;transition:width .3s ease}"
+            # UNKNOWN (the user 2026-07-31): a rolled window's last-known bars fade and read '?' — never a confident 0%
+            ".ru-unk .ru-fill{opacity:.3}.ru-unk .ru-pct,.ru-tip-row.ru-unk .ru-tip-v{color:#8a97a6}"
+            ".ru-tip-row.ru-unk i{opacity:.3}"
             ".ru-pct{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)

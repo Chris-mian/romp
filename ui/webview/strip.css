@@ -47,6 +47,10 @@
 .ru-track { position: relative; width: auto; height: 5px; background: rgba(255, 255, 255, 0.12);
   border-radius: 3px; overflow: hidden; flex: 0 0 auto; display: block; }
 .ru-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 3px; transition: width .3s ease; }
+/* UNKNOWN (the user 2026-07-31): the window reset since the last report, so the reading no longer
+   describes the present — last-known bars fade and the readout is "?", never a confident 0%. */
+.ru-w.ru-unk .ru-fill { opacity: 0.3; }
+.ru-w.ru-unk .ru-pct { color: #8a97a6; }
 .ru-pct { font: 600 10px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #cfe6ff;
   font-variant-numeric: tabular-nums; white-space: nowrap; }
 

@@ -20,8 +20,9 @@ export type UsageWindow = {
   key: string;
   label: string;        // the rail's expanded label
   short: string;        // the compressed tag a narrow strip swaps in ("5h" / "7d" / "F5")
-  pct: number;          // used % of the limit
+  pct: number;          // used % of the limit (the LAST-KNOWN reading when unknown — drawn faded)
   elapsedPct: number | null;  // % of the window elapsed (pace comparison)
+  unknown: boolean;     // the window reset since the last report — the reading no longer describes the present
   title: string;        // hover detail
 };
 
@@ -35,6 +36,14 @@ const WINS: Array<[string, number, string, string]> = [
 // The rail's usage color ramp: green under 70%, amber under 90%, red at 90+.
 export function usageColor(pct: number): string {
   return pct >= 90 ? "#c0392b" : pct >= 70 ? "#e0b020" : "#54B204";
+}
+
+export function fmtAgo(ep: number, nowS: number): string {
+  const dt = Math.max(0, nowS - ep);
+  const d = Math.floor(dt / 86400);
+  const h = Math.floor((dt % 86400) / 3600);
+  const m = Math.floor((dt % 3600) / 60);
+  return ((d ? `${d}d ` : "") + (h || d ? `${h}h ` : "") + `${m}m`).trim() + " ago";
 }
 
 export function fmtReset(resetsAt: number, nowS: number): string {
@@ -52,17 +61,24 @@ export function usageWindows(usage: any, nowS: number): UsageWindow[] {
   for (const [key, span, label, short] of WINS) {
     const seg = usage && usage[key];
     if (!seg || typeof seg.pct !== "number") continue;
-    const rolled = seg.resetsAt && nowS > seg.resetsAt;   // the window reset since the last report
-    const pct = rolled ? 0 : Math.max(0, Math.min(100, seg.pct));
+    const rolled = !!(seg.resetsAt && nowS > seg.resetsAt);   // the window reset since the last report
+    // A rolled window's reading no longer describes the PRESENT window — that is UNKNOWN, not 0
+    // (the user 2026-07-31: a remote whose kernel had no live session to ask sat on a days-old
+    // snapshot, and the rail drew a confident 0% beside a live account's real bars). The last-known
+    // fill still draws — FADED, with a "?" readout — so unknown and genuinely-empty can never be
+    // confused. Same fail-loudly rule as every other stale source.
+    const pct = Math.max(0, Math.min(100, seg.pct));
     let elapsedPct: number | null = null;
-    if (seg.resetsAt && span) {
+    if (!rolled && seg.resetsAt && span) {
       elapsedPct = Math.max(0, Math.min(100, Math.round(((nowS - (seg.resetsAt - span)) / span) * 100)));
     }
     out.push({
-      key, label, short, pct, elapsedPct,
-      title: `${label} — used ${pct}%`
-        + (elapsedPct != null ? ` · ${elapsedPct}% through the window` : "")
-        + (seg.resetsAt ? ` · resets in ${fmtReset(seg.resetsAt, nowS)}` : ""),
+      key, label, short, pct, elapsedPct, unknown: rolled,
+      title: rolled
+        ? `${label} — window reset ${fmtAgo(seg.resetsAt, nowS)} and no reading has arrived since — current usage unknown (last known ${pct}%)`
+        : `${label} — used ${pct}%`
+          + (elapsedPct != null ? ` · ${elapsedPct}% through the window` : "")
+          + (seg.resetsAt ? ` · resets in ${fmtReset(seg.resetsAt, nowS)}` : ""),
     });
   }
   return out;
@@ -177,7 +193,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
     usageWrap.textContent = "";
     for (const w of usageWindows(usage, nowS)) {
       const box = document.createElement("span");
-      box.className = "ru-w";
+      box.className = "ru-w" + (w.unknown ? " ru-unk" : "");
       box.title = w.title;
       // Both the expanded label and the compressed tag render; the [data-tier]
       // ladder in strip.css shows exactly one (or neither at the narrowest tier),
@@ -207,7 +223,7 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
       if (w.elapsedPct != null) bars.appendChild(mkTrack(w.elapsedPct, "#6b7a8c"));
       const pct = document.createElement("span");
       pct.className = "ru-pct";
-      pct.textContent = `${w.pct}%`;
+      pct.textContent = w.unknown ? "?" : `${w.pct}%`;   // unknown ≠ 0 — the fade + ? say "no current reading"
       box.append(name, bars, pct);
       usageWrap.appendChild(box);
     }
