@@ -783,6 +783,19 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #feed-clearall { order: 10; margin-left: auto; }   /* accent hover like every action button */
 #feed-undoclear { order: 11; }                     /* restorative — far right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
+
+/* Undo clear, WORKING (the user 2026-07-31): when the cleared batch isn't in this page's cache the
+   restore is a full kernel round-trip and the button read dead for a beat. Accent border + three
+   pulsing accent dots say "on it" — WITHOUT disabling: each further click keeps popping older
+   batches. Cleared by the next feed payload (feed.ts clearUndoBusy — event-based, timeout backstop). */
+#feed-undoclear.undo-busy { border-color: var(--accent); }
+#feed-undoclear .undo-dots { display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: 1px; }
+#feed-undoclear .undo-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: undo-dot 1s ease-in-out infinite; }
+#feed-undoclear .undo-dots i:nth-child(2) { animation-delay: 0.18s; }
+#feed-undoclear .undo-dots i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes undo-dot { 0%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #feed-undoclear .undo-dots i { animation: none; opacity: 0.8; } }
 /* the "Newest first" / "Collapsed" MODE toggles: pressed (.on) wears the accent language (blue text + border
    + faint wash), the same selected-state look the card section toggles use (the user 2026-07-07) */
 #feed-foot .feed-modetoggle.on { color: var(--accent); border-color: var(--accent);
@@ -992,6 +1005,16 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }
 .path-thumb:hover { border-color: var(--accent); }
 .path-thumb-img { display: block; max-width: 220px; max-height: 140px; object-fit: contain; }
+
+/* the preview's LOADING cue (the user 2026-07-31): the mini romp swirl holds a mentioned image's spot
+   until its load event lands (preview.ts withLoadCue) — a remote file rides the ssh tunnel, and the
+   picture used to pop in with nothing saying it was on the way. First load of a URL only, so re-renders
+   never re-flash it. Both sheets carry it (each page loads only its own — the .romp-acted precedent). */
+.path-load-spin { display: block; width: 20px; height: 20px; margin: 8px 10px;
+  animation: path-load-spin 2.4s linear infinite; }   /* the calm mini-swirl spin, same as the awaiting glyphs */
+@keyframes path-load-spin { to { transform: rotate(-360deg); } }
+.path-img-loading { display: none; }   /* the <img> takes the spot the instant it has pixels */
+@media (prefers-reduced-motion: reduce) { .path-load-spin { animation: none; } }
 .path-thumb.pdf { padding: 5px 9px; cursor: pointer; }
 .path-thumb-tag { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); flex: 0 0 auto; }
 .path-thumb-name { font-size: 0.72em; color: var(--fg); overflow: hidden; text-overflow: ellipsis;

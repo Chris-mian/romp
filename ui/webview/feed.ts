@@ -2781,10 +2781,31 @@ function makeUndoClearBtn(): HTMLElement {
       render();
     } else {
       pendingCleared.clear();   // nothing cached (e.g. cleared in another session) → fall back to the round-trip
+      // WORKING cue (the user 2026-07-31): with nothing in this page's cache the restore is a full
+      // kernel round-trip and the button read dead for a beat (the optimistic branch above needs no
+      // cue — its card appears instantly). Three pulsing accent dots + an accent border say "on it"
+      // WITHOUT disabling: each further click keeps popping older batches. Cleared by the NEXT feed
+      // payload (the push undoClear triggers — the event this cue is waiting for), with a timeout
+      // backstop so a lost push can never trap it.
+      b.classList.add("undo-busy");
+      if (!b.querySelector(".undo-dots")) {
+        const d = el("span", "undo-dots");
+        d.append(el("i"), el("i"), el("i"));
+        b.appendChild(d);
+      }
+      window.clearTimeout(undoBusyBackstop);
+      undoBusyBackstop = window.setTimeout(clearUndoBusy, 6000);
     }
     vscodeApi?.postMessage({ type: "undoClear" });
   };
   return b;
+}
+
+let undoBusyBackstop = 0;
+function clearUndoBusy(): void {
+  window.clearTimeout(undoBusyBackstop);
+  const b = document.getElementById("feed-undoclear");
+  if (b) { b.classList.remove("undo-busy"); b.querySelector(".undo-dots")?.remove(); }
 }
 
 // Clear-all + UndoClear live in #feed-foot — a footer bar in normal flow BELOW the scrolling card
@@ -3429,6 +3450,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
       Array.isArray(m.syncNotices) ? m.syncNotices : []);   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
+    clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
     if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
     render();

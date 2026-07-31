@@ -7,6 +7,7 @@
 // kernel origin from an <img>, so callers gate on canPreview() and keep the plain click-to-open link.
 
 import { hostOf, bareId } from "./host-prefix";
+import { mediaSrc } from "./media";
 
 // Extensions the kernel's _PREVIEW_MIME serves — keep the two lists in step (tests pin both).
 const IMG_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
@@ -25,6 +26,30 @@ export function previewKind(path: string): PreviewKind | null {
 // resolves nowhere — callers keep the existing openFile behavior there.
 export function canPreview(): boolean {
   return location.protocol === "http:" || location.protocol === "https:";
+}
+
+// LOADING CUE (the user 2026-07-31): a remote image's bytes arrive over the ssh tunnel, so for a
+// beat the message showed only the path text and the picture "popped in" with nothing saying it was
+// on the way. Per the loading-state rule the first thing up is the romp swirl: a mini spinning glyph
+// holds the image's spot until its `load` event lands (event-based; an error still removes the whole
+// box, spinner included — no backstop needed because the cue dies with its box either way). Memoized
+// per URL for this page life: chat re-renders rebuild these elements constantly, and re-flashing a
+// spinner over bytes the browser just painted would itself be flicker — only a URL's FIRST load spins.
+const loadedOnce = new Set<string>();
+function withLoadCue(box: HTMLElement, img: HTMLImageElement, url: string): void {
+  if (loadedOnce.has(url)) return;
+  const spin = document.createElement("img");
+  spin.className = "path-load-spin";
+  spin.src = mediaSrc("romp-swirl-glyph.svg");
+  spin.alt = "loading preview…";
+  spin.title = "loading preview…";
+  box.appendChild(spin);
+  img.classList.add("path-img-loading");
+  img.addEventListener("load", () => {
+    loadedOnce.add(url);
+    spin.remove();
+    img.classList.remove("path-img-loading");
+  });
 }
 
 // The kernel serves the bytes; sid lets it resolve a relative path against THAT session's cwd
@@ -109,10 +134,12 @@ export function previewThumb(path: string, sid?: string | null): HTMLElement | n
   } else {
     const img = document.createElement("img");
     img.className = "path-thumb-img";
-    img.src = fileUrl(path, sid);
+    const url = fileUrl(path, sid);
+    img.src = url;
     img.alt = path;
     img.loading = "lazy";
     img.onerror = () => box.remove();
+    withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (first load only)
     box.appendChild(img);
   }
   box.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
@@ -153,11 +180,13 @@ export function previewFull(path: string, sid?: string | null): HTMLElement | nu
   } else {
     const img = document.createElement("img");
     img.className = "path-full-img";
-    img.src = fileUrl(path, sid);
+    const url = fileUrl(path, sid);
+    img.src = url;
     img.alt = path;
     img.loading = "lazy";
     img.onerror = () => box.remove();
     img.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
+    withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (first load only)
     box.appendChild(img);
   }
   return box;

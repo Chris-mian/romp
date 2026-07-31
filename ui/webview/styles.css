@@ -1997,6 +1997,16 @@ body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
   border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }
 .path-thumb:hover { border-color: var(--accent); }
 .path-thumb-img { display: block; max-width: 220px; max-height: 140px; object-fit: contain; }
+
+/* the preview's LOADING cue (the user 2026-07-31): the mini romp swirl holds a mentioned image's spot
+   until its load event lands (preview.ts withLoadCue) — a remote file rides the ssh tunnel, and the
+   picture used to pop in with nothing saying it was on the way. First load of a URL only, so re-renders
+   never re-flash it. Both sheets carry it (each page loads only its own — the .romp-acted precedent). */
+.path-load-spin { display: block; width: 20px; height: 20px; margin: 8px 10px;
+  animation: path-load-spin 2.4s linear infinite; }   /* the calm mini-swirl spin, same as the awaiting glyphs */
+@keyframes path-load-spin { to { transform: rotate(-360deg); } }
+.path-img-loading { display: none; }   /* the <img> takes the spot the instant it has pixels */
+@media (prefers-reduced-motion: reduce) { .path-load-spin { animation: none; } }
 .path-thumb.pdf { padding: 5px 9px; cursor: pointer; }
 .path-thumb-tag { font-size: 0.74em; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); flex: 0 0 auto; }
 .path-thumb-name { font-size: 0.74em; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
