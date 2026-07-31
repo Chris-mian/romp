@@ -22,8 +22,11 @@ test("preview.ts: kind classification, kernel /file URL, and self-removing thumb
   assert.match(KERNEL, /_PREVIEW_MIME = dict\(_IMG_MIME, \*\*\{"\.pdf": "application\/pdf"\}\)/,
                "kernel allowlist = image mimes + pdf; the client mirrors it");
   assert.match(PREVIEW, /if \(ext === "pdf"\) return "pdf";/);
-  // bytes come from the kernel's /file endpoint, path percent-encoded, sid for cwd-relative resolution
-  assert.match(PREVIEW, /"\/file\?path=" \+ encodeURIComponent\(path\) \+ \(sid \? "&sid=" \+ encodeURIComponent\(sid\) : ""\)/);
+  // bytes come from the kernel's /file endpoint, path percent-encoded, sid for cwd-relative
+  // resolution — routed through the /remote/<host>/file relay when the sid wears a host prefix
+  // (a federated session's file lives on the remote disk; behavior pinned in preview-remote.test.ts)
+  assert.match(PREVIEW, /base \+ "\?path=" \+ encodeURIComponent\(path\) \+ \(bare \? "&sid=" \+ encodeURIComponent\(bare\) : ""\)/);
+  assert.match(PREVIEW, /"\/remote\/" \+ encodeURIComponent\(host\) \+ "\/file"/);
   // web dashboard only: the VS Code webview can't reach the kernel origin from an <img>
   assert.match(PREVIEW, /location\.protocol === "http:" \|\| location\.protocol === "https:"/);
   // a thumb the kernel can't serve REMOVES ITSELF (no dead chips): img onerror, pdf HEAD probe

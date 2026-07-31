@@ -18301,6 +18301,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, b"", "text/plain")
             if u.path == "/file":
                 return self._file_preview(q, head=True)
+            if u.path.startswith("/remote/") and u.path.endswith("/file"):
+                # a remote PDF chip's existence probe — same relay as the GET route
+                return self._remote_file(unquote(u.path[len("/remote/"):-len("/file")]), u.query, head=True)
             return self._send(404, b"", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -18351,6 +18354,10 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/remote/") and p.endswith("/ws"):
                 # federated dashboard, viewed off this machine: relay to the attached host's kernel
                 return self._remote_ws(unquote(p[len("/remote/"):-len("/ws")]), u.query)
+            if p.startswith("/remote/") and p.endswith("/file"):
+                # preview bytes for a REMOTE session's mentioned path: relay /file to the kernel
+                # that can actually read the disk the path names (see _remote_file)
+                return self._remote_file(unquote(p[len("/remote/"):-len("/file")]), u.query)
             if p == "/analytics":                             # token-usage analytics (the settings modal's chart)
                 try:
                     w = int((q.get("window") or ["86400"])[0])
@@ -19473,6 +19480,55 @@ class Handler(BaseHTTPRequestHandler):
                 up.close()                       # ours alone — safe to close fully
             except OSError:
                 pass
+
+    def _remote_file(self, host, query, head=False):
+        """GET/HEAD /remote/<host>/file — relay ONE preview request to an attached host's kernel
+        through this kernel's own ssh -L tunnel. A remote session's chat mentions paths on the
+        REMOTE machine's disk, but a preview <img> can only dial the origin that served the page —
+        so its /file hit THIS kernel, read the local disk, 404'd, and every mentioned plot or
+        screenshot on a federated session silently hid itself (the user 2026-07-31). Same shape as
+        the /remote/…/ws splice above: the local auth gate has already run, the remote's own token
+        is rewritten into the forwarded query (so the browser only ever needs its local credential,
+        and the per-host trust boundary is unchanged — THAT kernel still runs its own allowlist,
+        size cap and path resolution), and this kernel reads nothing but the reply it mirrors.
+        Deliberately /file only — a preview relay, not a general proxy."""
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, b"" if head else ("no attached host %r" % host), "text/plain")
+        q = parse_qs(query or "")
+        if rtok:
+            q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=15)
+        try:
+            conn.request("HEAD" if head else "GET", "/file?" + urlencode(q, doseq=True))
+            resp = conn.getresponse()
+            body = b"" if head else resp.read(_PREVIEW_MAX_BYTES + 1)
+            status, ctype = resp.status, resp.getheader("Content-Type") or "application/octet-stream"
+            clen = resp.getheader("Content-Length")
+        except (OSError, http.client.HTTPException):
+            return self._send(502, b"" if head else ("tunnel to %s is not answering" % host), "text/plain")
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        if len(body) > _PREVIEW_MAX_BYTES:       # backstop only — the remote's own cap 413s long before this
+            return self._send(413, b"" if head else "too large to preview", "text/plain")
+        if head:
+            # mirror _file_preview's HEAD: the remote's verdict + real length, no body
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            if clen is not None:
+                self.send_header("Content-Length", clen)
+            self.send_header("Cache-Control", "no-cache")
+            if getattr(self, "_cors_origin", None):
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            return
+        return self._send(status, body, ctype, cache="no-cache")
 
     def _push_one(self, client):
         _push([client], connect=True)             # full state to a fresh client (its per-client dedup is empty);

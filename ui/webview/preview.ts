@@ -6,6 +6,8 @@
 // (event-based; no stale placeholders). Web dashboard only: the VS Code webview sandbox can't reach the
 // kernel origin from an <img>, so callers gate on canPreview() and keep the plain click-to-open link.
 
+import { hostOf, bareId } from "./federation";
+
 // Extensions the kernel's _PREVIEW_MIME serves — keep the two lists in step (tests pin both).
 const IMG_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 
@@ -26,9 +28,17 @@ export function canPreview(): boolean {
 }
 
 // The kernel serves the bytes; sid lets it resolve a relative path against THAT session's cwd
-// (same resolution as click-to-open — kernel _resolve_open_path).
+// (same resolution as click-to-open — kernel _resolve_open_path). A FEDERATED session's file lives
+// on the REMOTE machine's disk, so a host-prefixed sid (`gpu1:‹uuid›` — see federation.ts) routes
+// through this kernel's /remote/<host>/file relay, the HTTP twin of the /remote/<host>/ws splice,
+// with the bare sid the remote kernel actually knows (the user 2026-07-31: mentioned plots on a
+// remote session's chat never rendered — /file read the LOCAL disk and 404'd). Still a same-origin
+// URL, so it works wherever the dashboard is viewed from (the phone over `tailscale serve` included).
 export function fileUrl(path: string, sid?: string | null): string {
-  return "/file?path=" + encodeURIComponent(path) + (sid ? "&sid=" + encodeURIComponent(sid) : "");
+  const host = sid ? hostOf(sid) : "";
+  const base = host ? "/remote/" + encodeURIComponent(host) + "/file" : "/file";
+  const bare = sid ? bareId(sid) : "";
+  return base + "?path=" + encodeURIComponent(path) + (bare ? "&sid=" + encodeURIComponent(bare) : "");
 }
 
 // Full-view lightbox: dark backdrop, the image at natural-but-capped size or the PDF in the browser's
