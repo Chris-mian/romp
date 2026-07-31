@@ -228,9 +228,12 @@ let lastFeedEvent = "init";                            // the input change the n
 let lastPayloadBuildId = 0;
 function auditShownColumns(list: AskItem[]) {
   const seen = new Set<string>();
+  const firstRender = shownCol.size === 0;             // a fresh pane "appears" everything — not a delta
+  const appeared: string[] = [];
   for (const a of list) {
     seen.add(a.itemId);
     const prev = shownCol.get(a.itemId);
+    if (prev === undefined) appeared.push(a.itemId);
     if (prev !== undefined && prev !== a.column) {
       vscodeApi?.postMessage({ type: "clientDiag", surface: "feed", what: "colflip",
         data: { id: a.itemId, from: prev, to: a.column, ev: lastFeedEvent,
@@ -238,7 +241,17 @@ function auditShownColumns(list: AskItem[]) {
     }
     shownCol.set(a.itemId, a.column);
   }
-  for (const id of Array.from(shownCol.keys())) if (!seen.has(id)) shownCol.delete(id);
+  const gone: string[] = [];
+  for (const id of Array.from(shownCol.keys())) if (!seen.has(id)) { gone.push(id); shownCol.delete(id); }
+  // ITEM-SET TRIPWIRE (the user 2026-07-31, cards blinking in and out): the colflip trail above only
+  // records column CHANGES, so a card leaving/re-entering the render entirely — the observed flicker —
+  // was invisible to every log. Same breadcrumb channel; ids only, no card text. `ev` names the input
+  // change this render reflects, so a blink is attributed to the layer that dropped the card (a host
+  // payload, a filter, a fold) instead of re-guessed from pixels.
+  if (!firstRender && (appeared.length || gone.length)) {
+    vscodeApi?.postMessage({ type: "clientDiag", surface: "feed", what: "itemset",
+      data: { appeared, gone, total: list.length, ev: lastFeedEvent, buildId: lastPayloadBuildId } });
+  }
 }
 function clearFollowMove(itemId: string, why = "") {
   const t = pendingFollowMove.get(itemId); if (t) clearTimeout(t);

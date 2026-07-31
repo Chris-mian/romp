@@ -485,7 +485,22 @@ export class FederationManager {
     return readViewOrder();
   }
 
+  private lastFeedCounts = "";   // last per-host ask-count signature — breadcrumb only on change
+
   private emitMergedFeed(): void {
+    // MERGE-INPUT TRIPWIRE (the user 2026-07-31): one breadcrumb whenever any host's contribution to
+    // the merged feed CHANGES SIZE — so a card blinking out is attributable to the host snapshot that
+    // shrank (a kernel push without it / a detach) vs. the render layer (the feed pane's own tripwire).
+    const counts: Record<string, number> = {};
+    for (const h of this.hostSeq) {
+      const f = this.perHostFeed[h];
+      if (f) counts[h || "local"] = Array.isArray(f.asks) ? f.asks.length : -1;   // -1 = a feed msg with NO asks array
+    }
+    const sig = JSON.stringify(counts);
+    if (sig !== this.lastFeedCounts) {
+      this.lastFeedCounts = sig;
+      this.diag("feedmerge", { counts });
+    }
     window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view()) }));
   }
 
@@ -619,6 +634,15 @@ export class FederationManager {
     this.connect(conn);
   }
 
+  // HOST-CONNECTION TRIPWIRE (the user 2026-07-31, remote cards blinking in and out): every remote
+  // socket open/close and every detach lands one breadcrumb in the same client-diag journal the
+  // feed's tripwires write, so a blink is attributed to the connection layer (a drop, a /tunnels
+  // flap) or ruled out of it — instead of re-guessed from pixels. Rides the LOCAL kernel socket.
+  private diag(what: string, data: any): void {
+    const s = (window as any).__rompLocalSend;
+    if (typeof s === "function") s({ type: "clientDiag", surface: "federation", what, data });
+  }
+
   private connect(conn: Conn): void {
     if (conn.closed || !conn.live) return;
     if (conn.ws && (conn.ws.readyState === 0 || conn.ws.readyState === 1)) return; // already connecting/open
@@ -630,6 +654,7 @@ export class FederationManager {
       return;
     }
     conn.ws = ws;
+    ws.onopen = () => this.diag("hostconn", { host: conn.host, ev: "open" });
     ws.onmessage = (ev: MessageEvent) => {
       let msg: any;
       try {
@@ -640,7 +665,8 @@ export class FederationManager {
       if (msg && msg.type === "ka") return;
       this.inbound(conn.host, msg);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
+      this.diag("hostconn", { host: conn.host, ev: "close", code: ev.code, clean: ev.wasClean, detached: conn.closed });
       if (!conn.closed) setTimeout(() => this.connect(conn), 2000); // reconnect a dropped remote
     };
     ws.onerror = () => {
@@ -653,6 +679,7 @@ export class FederationManager {
   private closeRemote(host: string): void {
     const c = this.conns.get(host);
     if (!c) return;
+    this.diag("hostconn", { host, ev: "detach" });   // /tunnels no longer lists it → its cards drop NOW
     c.closed = true;
     try {
       c.ws && c.ws.close();

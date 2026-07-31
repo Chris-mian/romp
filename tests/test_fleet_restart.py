@@ -117,7 +117,7 @@ class ReportSurvivesTheRestart(unittest.TestCase):
     def test_the_run_writes_every_host_then_restarts_this_machine_last(self):
         src = inspect.getsource(km._fleet_restart_run)
         self.assertIn("_atomic_write(FLEET_REPORT", src)
-        self.assertLess(src.index("_atomic_write(FLEET_REPORT"), src.index("_restart_this_kernel()"),
+        self.assertLess(src.index("_atomic_write(FLEET_REPORT"), src.index("_restart_this_kernel("),
                         "the report must be on disk BEFORE this process is taken down")
         self.assertIn("except Exception as e:", src)   # one bad host never strands the rest of the fleet
 
@@ -126,7 +126,7 @@ class ReportSurvivesTheRestart(unittest.TestCase):
                                             "_restart_this_kernel", "_local_head", "_local_branch")}
         km._fleet_restart_plan = lambda r: ("restart", "already on this build")
         km._restart_remote_kernel = lambda h: (_ for _ in ()).throw(RuntimeError("ssh exploded"))
-        km._restart_this_kernel = lambda: None
+        km._restart_this_kernel = lambda reason="": None   # audits its reason since 2026-07-31
         km._local_head = lambda short=False: "abc1234"
         km._local_branch = lambda: "main"
         km._remotes.clear()
@@ -162,7 +162,7 @@ class ReportSurvivesTheRestart(unittest.TestCase):
     def test_a_kernel_with_no_remotes_restarts_exactly_as_before(self):
         src = inspect.getsource(km.Handler)
         self.assertIn("if _fleet and _remotes:", src)
-        self.assertIn("else:\n                    _restart_this_kernel()", src)
+        self.assertIn("else:\n                    _restart_this_kernel(\"http /restart (local-only)\")", src)
 
 
 class GlyphSaysTheFleetState(unittest.TestCase):

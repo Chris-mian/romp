@@ -440,6 +440,10 @@ function startManager() {
       return json(200, Object.assign({ ok: true }, ensureKernel(port)));
     }
     if (req.method === 'POST' && url.pathname === '/restart-all') {
+      // Every restart request is logged WITH its source (the user 2026-07-31): a run of anonymous
+      // SIGTERM respawns blinked every dashboard for an hour, and this handler — the one door every
+      // programmatic restart walks through — recorded nothing. The immediate path used to be silent.
+      log(`restart-all requested (${url.searchParams.get('when') === 'quiet' ? 'deferred to quiet window' : 'IMMEDIATE'}) from ${req.socket.remoteAddress || '?'}`);
       if (url.searchParams.get('when') === 'quiet') {            // deploy path: land at the next quiet window
         return json(202, { ok: true, deferred: true, coalesced: queueQuietRestart('all') });
       }
@@ -448,6 +452,7 @@ function startManager() {
       return json(200, { ok: true, restarted: r.ids, managerRestart: r.self });
     }
     if (req.method === 'POST' && url.pathname === '/restart') {
+      log(`restart '${kid}' requested (${url.searchParams.get('when') === 'quiet' ? 'deferred to quiet window' : 'IMMEDIATE'}) from ${req.socket.remoteAddress || '?'}`);
       if (url.searchParams.get('when') === 'quiet') {
         if (!kernels.has(kid)) return json(404, { ok: false, error: `no kernel '${kid}'` });
         return json(202, { ok: true, deferred: true, coalesced: queueQuietRestart(kid) });
