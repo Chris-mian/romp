@@ -4,6 +4,28 @@
 // starts with the same prefix, the "host:" part is METADATA, not part of the name — and it renders as
 // such (quiet gray, never bold, italic, a step smaller) instead of wearing the session's identity
 // color at full weight (the user 2026-07-11). One helper + one .host-prefix class for every surface.
+/** The host a federation-prefixed id belongs to, or "" (local) for a bare id. Session ids are UUIDs
+ *  (no colon), so a colon unambiguously marks the host prefix. Lives HERE — the side-effect-free
+ *  helper module — because importing federation.ts BOOTS a FederationManager (its module tail
+ *  bootstraps one on load, by design: it is its own script, loaded once per page). preview.ts
+ *  importing it for these two helpers bundled a SECOND manager into the feed/chat pages, and the
+ *  twin — hearing only the remote sockets, never the shim's local frames — emitted remote-only merged
+ *  feeds in alternation with the real manager's complete ones: every LOCAL card blinked out and
+ *  right back, remote cards persisting (the user 2026-07-31, screen recording). Import federation.ts
+ *  from nothing; federation-single-instance.test.ts enforces it. */
+export function hostOf(id: string): string {
+  if (typeof id !== "string") return "";
+  const i = id.indexOf(":");
+  return i > 0 ? id.slice(0, i) : "";
+}
+
+/** The bare session id with any `host:` prefix removed. */
+export function bareId(id: string): string {
+  if (typeof id !== "string") return id;
+  const i = id.indexOf(":");
+  return i > 0 ? id.slice(i + 1) : id;
+}
+
 export function hostPrefix(name: string | null | undefined, sid: string | null | undefined): { host: string; rest: string } | null {
   if (!sid || !name) return null;
   const i = sid.indexOf(":");

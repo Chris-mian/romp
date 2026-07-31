@@ -6,7 +6,7 @@
 // (event-based; no stale placeholders). Web dashboard only: the VS Code webview sandbox can't reach the
 // kernel origin from an <img>, so callers gate on canPreview() and keep the plain click-to-open link.
 
-import { hostOf, bareId } from "./federation";
+import { hostOf, bareId } from "./host-prefix";
 
 // Extensions the kernel's _PREVIEW_MIME serves — keep the two lists in step (tests pin both).
 const IMG_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);

@@ -13,6 +13,7 @@
 
 import { applyViewOrder, applyViewOrderTo, pruneViewOrder, readViewOrder, writeViewOrder,
          VIEW_ORDER_KEY, VIEW_ORDER_EVENT } from "./view-order";
+import { hostOf, bareId } from "./host-prefix";
 
 export const SEP = ":";
 export const LOCAL = ""; // the local kernel's host key — no prefix, so the single-kernel path is untouched
@@ -22,20 +23,12 @@ export function prefixId(host: string, id: string): string {
   return host ? host + SEP + id : id;
 }
 
-/** The host a prefixed id belongs to, or "" (local) for a bare id. Session ids are UUIDs (no colon),
- *  so a colon unambiguously marks the host prefix. */
-export function hostOf(id: string): string {
-  if (typeof id !== "string") return "";
-  const i = id.indexOf(SEP);
-  return i > 0 ? id.slice(0, i) : "";
-}
-
-/** The bare session id with any `host:` prefix removed. */
-export function bareId(id: string): string {
-  if (typeof id !== "string") return id;
-  const i = id.indexOf(SEP);
-  return i > 0 ? id.slice(i + 1) : id;
-}
+// hostOf/bareId live in host-prefix.ts (the side-effect-free helper module) so that OTHER modules can
+// read a host prefix WITHOUT importing this file — importing federation.ts boots a FederationManager
+// (the module-tail bootstrap below), and a second copy bundled into a pane emitted remote-only merged
+// feeds in alternation with the real manager's (the user 2026-07-31: every local card blinking).
+// Re-exported here so this module's own consumers (the merge tests) keep one import surface.
+export { hostOf, bareId };
 
 /** This dashboard's window id, resolved exactly as the pane shim resolves it (the kernel's `_shim`): the
  *  host's `?wid=` when it supplies one, else the shell's per-tab sessionStorage id, which same-origin
