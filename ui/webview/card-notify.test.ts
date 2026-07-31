@@ -11,21 +11,28 @@ import * as path from "node:path";
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("the bell rides row1's metadata cluster inline, after the time — an off bell costs ZERO space (round 4)", () => {
+test("the bell rides row1's metadata cluster inline, after the time (never the corner, never a float)", () => {
   // round 2's absolute corner overlapped grouped-mode Clear; round 3's float fixed the overlap but
-  // reserved a first-line notch even while invisible, wrapping titles early (the user wants compact).
-  // Inline after the timestamp + display:none until hovered/armed = no reserved space at all, and the
-  // materialization lands in the last line's slack, in-flow, so it still can't overlap the floats.
+  // reserved a first-line notch on every card, wrapping titles early. Inline after the timestamp puts it
+  // in the last line's tail, in-flow, so it can neither overlap the floats nor shove the title.
   assert.match(SRC, /const bellBtn = el\("button", "fask-bellbtn"\);/);
   assert.match(SRC, /row1\.append\(bellBtn\);/);
-  assert.match(CSS, /\.fask-bellbtn \{\s*\n\s*display: none;/);
   assert.doesNotMatch(CSS, /\.fask-bellbtn \{\s*\n\s*float: right;/, "the title-notch float is gone");
   assert.doesNotMatch(CSS, /\.fask-bellbtn \{\s*\n\s*position: absolute/, "the overlapping absolute corner is gone");
 });
 
+test("hovering a card moves NOTHING: the bell's slot is reserved in both states (the user 2026-07-31)", () => {
+  // round 4 hid it with display:none, so hovering materialized 22px into the last line, re-wrapped the
+  // title and pushed everything below the card down — layout moving because the mouse moved. visibility
+  // keeps the box and its margin in flow at rest, so revealing it changes pixels and not one line box.
+  assert.match(CSS, /\.fask-bellbtn \{\s*\n\s*display: inline-flex; visibility: hidden;/);
+  assert.doesNotMatch(CSS, /\.fask-bellbtn \{\s*\n\s*display: none;/, "display:none un-reserves the slot");
+  assert.doesNotMatch(CSS, /\.fitem\.ask:hover \.fask-bellbtn \{ display:/, "hover may change visibility, never the box");
+});
+
 test("off = shown only on card hover (dim, slashed); armed (.on) = accent, always visible (mechanics, not status)", () => {
-  assert.match(CSS, /\.fitem\.ask:hover \.fask-bellbtn \{ display: inline-flex; \}/);
-  assert.match(CSS, /\.fask-bellbtn\.on \{ display: inline-flex; opacity: 0\.85; color: var\(--accent\); \}/);
+  assert.match(CSS, /\.fitem\.ask:hover \.fask-bellbtn \{ visibility: visible; \}/);
+  assert.match(CSS, /\.fask-bellbtn\.on \{ visibility: visible; opacity: 0\.85; color: var\(--accent\); \}/);
 });
 
 test("the bell click toggles without opening the modal, off the FRESHEST payload copy", () => {
