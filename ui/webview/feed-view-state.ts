@@ -24,6 +24,10 @@ export interface FeedViewState {
   nodes: string[];               // "askId:nodeId" — COLLAPSED modal tree nodes (inverted sense, see feed.ts)
   logs: string[];                // "askId:nodeId" — expanded per-node log stories
   asks: string[];                // expanded ask itemIds
+  // COLLAPSED session sids (inverted sense, like `nodes`): in grouped mode the thread shows its header
+  // alone. Keyed by SESSION, not by card, because the point is that cards which do not exist yet inherit
+  // it — see the prune exemption below.
+  threads: string[];
 }
 
 export const VIEW_STATE_KEY = "romp:feedview";
@@ -32,7 +36,7 @@ export const VIEW_STATE_KEY = "romp:feedview";
 export const VIEW_STATE_CAP = 4000;
 
 export function emptyViewState(): FeedViewState {
-  return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [] };
+  return { v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [] };
 }
 
 /** Parse a stored blob. ANY malformed/foreign/old-version value reads as empty rather than throwing — a
@@ -47,7 +51,10 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
     if (o.sec && typeof o.sec === "object") {
       for (const [k, v] of Object.entries(o.sec as Record<string, unknown>)) if (typeof v === "string") sec[k] = v;
     }
-    return { v: 1, sec, tree: arr(o.tree), nodes: arr(o.nodes), logs: arr(o.logs), asks: arr(o.asks) };
+    // `threads` post-dates v1 blobs, so a stored entry without it reads as "nothing collapsed" rather
+    // than as corrupt — no version bump, and yesterday's saved sections survive the upgrade.
+    return { v: 1, sec, tree: arr(o.tree), nodes: arr(o.nodes), logs: arr(o.logs), asks: arr(o.asks),
+             threads: arr(o.threads) };
   } catch {
     return emptyViewState();
   }
@@ -83,25 +90,36 @@ export function keyIsLive(key: string, liveIds: Set<string>): boolean {
  *  ids, never a view-filtered subset (`#only=` hides cards without ending them; pruning against the filtered
  *  list would silently discard the hidden cards' state). Call only once a payload has actually arrived: an
  *  empty live set legitimately means "no cards", and pruning against it before the first push would wipe
- *  everything the user just restored. */
+ *  everything the user just restored.
+ *
+ *  `threads` is EXEMPT, deliberately. Every other entry describes a card, so a card that is gone makes its
+ *  entry meaningless; a collapsed thread describes a SESSION, and its whole purpose is to hold while that
+ *  session has no cards on the board so the next one arrives collapsed too. Pruning it against the live set
+ *  would silently re-expand a thread the moment its last card cleared — exactly the "collapse it and it
+ *  stays collapsed" the feature is for. It is bounded by the cap instead. */
 export function pruneViewState(s: FeedViewState, liveIds: Set<string>): FeedViewState {
   const sec: Record<string, string> = {};
   for (const [k, v] of Object.entries(s.sec)) if (keyIsLive(k, liveIds)) sec[k] = v;
   const keep = (xs: string[]) => xs.filter((k) => keyIsLive(k, liveIds));
-  return capViewState({ v: 1, sec, tree: keep(s.tree), nodes: keep(s.nodes), logs: keep(s.logs), asks: keep(s.asks) });
+  return capViewState({ v: 1, sec, tree: keep(s.tree), nodes: keep(s.nodes), logs: keep(s.logs),
+                        asks: keep(s.asks), threads: s.threads });
 }
 
 export function viewStateSize(s: FeedViewState): number {
-  return Object.keys(s.sec).length + s.tree.length + s.nodes.length + s.logs.length + s.asks.length;
+  return Object.keys(s.sec).length + s.tree.length + s.nodes.length + s.logs.length + s.asks.length
+    + s.threads.length;
 }
 
 /** Backstop trim. Order is deliberate: the per-card SECTION choice is the state the user notices losing, so
- *  it is trimmed last; the per-node tree/log expansions are cheap to re-open and go first. */
+ *  it is trimmed last; the per-node tree/log expansions are cheap to re-open and go first. Collapsed
+ *  THREADS sit just above sec — they are few (one per session, not per card) and the most durable choice
+ *  here, so they are the last thing to give before the sections do. */
 export function capViewState(s: FeedViewState, cap: number = VIEW_STATE_CAP): FeedViewState {
   let over = viewStateSize(s) - cap;
   if (over <= 0) return s;
-  const out: FeedViewState = { ...s, tree: [...s.tree], nodes: [...s.nodes], logs: [...s.logs], asks: [...s.asks] };
-  for (const f of ["logs", "nodes", "tree", "asks"] as const) {
+  const out: FeedViewState = { ...s, tree: [...s.tree], nodes: [...s.nodes], logs: [...s.logs],
+                               asks: [...s.asks], threads: [...s.threads] };
+  for (const f of ["logs", "nodes", "tree", "asks", "threads"] as const) {
     if (over <= 0) break;
     const drop = Math.min(over, out[f].length);
     out[f] = out[f].slice(drop);
