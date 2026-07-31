@@ -12,6 +12,8 @@
 // headlessly; timeline-main.ts is the thin entry that wires it to the real
 // window.
 
+import { writeViewOrder } from "./view-order";
+
 export type Post = (m: Record<string, unknown>) => void;
 
 // The 3 Obsidian DOM helpers TimelinePanel expects on every element.
@@ -72,7 +74,11 @@ export function openExternalMessage(url: string): Record<string, unknown> {
 export function bridgeFunctions(post: Post): Record<string, (...a: any[]) => void> {
   return {
     __rompTimelineOpenExternal: (url: string) => post(openExternalMessage(String(url))),
-    __rompTimelineWriteOrder: (order: unknown) => post({ type: "writeOrder", order }),
+    // A lane drag writes the VIEWER's arrangement (the user 2026-07-31), the same store the chat strip
+    // writes — not the kernel's session-order.json, which is only the arrival-order seed now. Sending it
+    // to a kernel could never interleave hosts anyway: each one can only record its own sids.
+    __rompTimelineWriteOrder: (order: unknown) =>
+      writeViewOrder(Array.isArray(order) ? order.filter((x): x is string => typeof x === "string") : []),
     __rompTimelineCompact: (name: string) => post({ type: "compact", name }),
     __rompTimelineSendCommand: (name: string, cmd: string) => post({ type: "sendCommand", name, cmd }),
     __rompTimelineSetFlag: (id: string, flag: string, value: unknown) => post({ type: "setSessionFlag", id, flag, value: !!value }),

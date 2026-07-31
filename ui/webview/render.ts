@@ -20,6 +20,7 @@ import { delegate } from "./actions";
 import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
+import { writeViewOrder } from "./view-order";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional } from "./provisional";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
@@ -3061,10 +3062,16 @@ function fadedColor(hex: string): string {
 // (./tab-order). This replaced a parallel client sort (effIdx + a firstSeen tiebreaker) that diverged from
 // the kernel and made tabs jump on ordinary activity — invisible to the kernel's own (passing) order tests.
 
-// Persist the current full tab order to the shared store (host writes session-order.json → the timeline reads
-// the same file). Called only after a drag — the one client action that changes the order.
+// Persist the current full tab order. Called only after a drag — the one client action that changes it.
+//
+// This writes to THIS BROWSER, not to the kernel (the user 2026-07-31): order is a property of how you are
+// looking at the fleet, so arranging tabs on the laptop has no business moving them on the desktop — and
+// only a browser-side list can interleave hosts at all, since no single kernel can record an order over
+// sids it does not know about. Each kernel keeps its own list as the arrival-order SEED; ./view-order
+// layers this over it, and federation re-emits the tab strip, the timeline lanes and the feed's groups
+// together so all three surfaces read the same way.
 function commitTabOrder() {
-  if (vscodeApi) vscodeApi.postMessage({ type: "reorderTabs", order: order.slice() });
+  writeViewOrder(order.slice());
 }
 // Settle the just-closed tabs against the kernel's authoritative list. Gone from it → the close landed, stop
 // suppressing. STILL in it past the backstop → it didn't land; say so plainly (a session left open while its

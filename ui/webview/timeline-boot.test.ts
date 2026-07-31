@@ -81,7 +81,6 @@ test("openExternalMessage hands other URLs (and junk) to the host as openLink", 
 test("bridges post the same kernel ops as the web boot", () => {
   const { sent, post } = posts();
   const b = bridgeFunctions(post);
-  b.__rompTimelineWriteOrder(["a", "b"]);
   b.__rompTimelineCompact("sess");
   b.__rompTimelineSendCommand("sess", "/model");
   b.__rompTimelineSetFlag("id1", "eye", 1);
@@ -89,7 +88,6 @@ test("bridges post the same kernel ops as the web boot", () => {
   b.__rompTimelineHover("s1", ["g1"], 5, 9);
   b.__rompTimelineHover();
   assert.deepEqual(sent, [
-    { type: "writeOrder", order: ["a", "b"] },
     { type: "compact", name: "sess" },
     { type: "sendCommand", name: "sess", cmd: "/model" },
     { type: "setSessionFlag", id: "id1", flag: "eye", value: true },
@@ -97,6 +95,16 @@ test("bridges post the same kernel ops as the web boot", () => {
     { type: "timelineHover", sid: "s1", segIds: ["g1"], t0: 5, t1: 9 },
     { type: "timelineHover", off: true },
   ]);
+});
+
+test("a lane drag posts NOTHING to a kernel — it arranges this browser's own view", () => {
+  // Order moved out of the kernel (the user 2026-07-31, ./view-order): a kernel can only record an order
+  // over its OWN sids, which is exactly why hosts could never interleave. The drag writes localStorage and
+  // federation re-emits; sending a `writeOrder` op alongside would put the kernel back in charge of a
+  // per-viewer choice and make a drag here move the tabs on another machine.
+  const { sent, post } = posts();
+  bridgeFunctions(post).__rompTimelineWriteOrder(["a", "TESTHOST:b"]);
+  assert.deepEqual(sent, []);
 });
 
 test("installDomHelpers supplies the 3 Obsidian helpers", () => {
