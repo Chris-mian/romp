@@ -602,6 +602,50 @@ class Compaction(unittest.TestCase):
         self.assertIn("u1", uuids, "the pre-compaction original survives")
         self.assertIn("u3", uuids, "genuine new work survives")
 
+    def test_a_repeat_of_an_old_message_is_not_a_replay(self):
+        """THE BUG (the user 2026-08-01): a message they sent, answered by the session, absent from the chat.
+
+        The replay guard keyed on TEXT ALONE, so once a session had compacted, the second time anyone said
+        a thing they had said before — "Now?", "retry", "[Request interrupted by user]", a romp notice —
+        it was read as restored context and dropped, however many days apart. The reply still rendered,
+        which is what made it look like the chat had lost a message rather than dropped one on purpose.
+        A repeat AFTER work resumed is a message the person actually sent."""
+        with tempfile.TemporaryDirectory() as td:
+            recs = [uline(T0, "Now?", "u1", ps="typed"),
+                    aline(T0 + 30, "not yet", "a1", "u1", stop="end_turn"),
+                    compact_line(T0 + 500, "c1", logical_parent="a1"),
+                    compact_summary_line(T0 + 505, "cs1", parent="c1"),
+                    aline(T0 + 600, "carrying on", "a2", "cs1", stop="end_turn"),
+                    uline(T0 + 90000, "Now?", "u2", "a2", ps="sdk"),        # the SAME word, a day later
+                    aline(T0 + 90030, "333/358 done", "a3", "u2", stop="end_turn")]
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            out = em.parse_session(str(p), rompuuid=SID, dir="/TESTDIR", candidate_files=[str(p)],
+                                   postal_log=[], now=NOW)
+        uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
+        self.assertIn("u2", uuids, "the repeat is a real message and must render")
+        self.assertIn("u1", uuids, "…and so does the original")
+        self.assertIn("a3", uuids, "the reply was never in doubt — which is what made the loss confusing")
+
+    def test_a_verbatim_rewrite_at_the_same_second_is_still_deduped(self):
+        # the other measured replay shape: the SAME record written twice (resume/compaction re-splice),
+        # identical text at an identical timestamp — deduped wherever it lands, restore burst or not.
+        with tempfile.TemporaryDirectory() as td:
+            recs = [uline(T0, "do task X", "u1", ps="typed"),
+                    aline(T0 + 30, "did X", "a1", "u1", stop="end_turn"),
+                    compact_line(T0 + 500, "c1", logical_parent="a1"),
+                    compact_summary_line(T0 + 505, "cs1", parent="c1"),
+                    aline(T0 + 600, "carrying on", "a2", "cs1", stop="end_turn"),
+                    uline(T0, "do task X", "u2", "a2", ps="sdk"),          # same text AND same second as u1
+                    aline(T0 + 700, "again", "a3", "u2", stop="end_turn")]
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            out = em.parse_session(str(p), rompuuid=SID, dir="/TESTDIR", candidate_files=[str(p)],
+                                   postal_log=[], now=NOW)
+        uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
+        self.assertNotIn("u2", uuids, "a verbatim re-write is the same record, not a second message")
+        self.assertIn("u1", uuids)
+
     def test_pre_compaction_turn_survives_via_logical_parent(self):
         out = run_scenario("compaction_atom")
         uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]

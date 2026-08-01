@@ -79,7 +79,8 @@ RECORDS = [
     aline(T0 + 4020, "Resuming after compaction.", "a5", "cb1"),
 ]
 
-# The pinned derivation, recorded under PLACEMENTS_V = 6 (2026-07-22; the LAST id — a text-less segment
+# The pinned derivation, recorded under PLACEMENTS_V = 7 (2026-08-01; the derivation itself is unchanged
+# since v6 — v7 seals for a GROWN atom set, the replay-guard scoping. The LAST id — a text-less segment
 # — moved off the shared sha1('') hash da39a3ee onto its anchor atom's uuid, so text-less seams no longer
 # alias each other; the four text-bearing ids above are unchanged, they still key on content).
 EXPECTED_SEG_IDS = [
@@ -111,7 +112,7 @@ class PlacementIdentityCanary(unittest.TestCase):
         # without a bump) should both fail loudly.
         # v6 (2026-07-22, the uuid-anchored text-less seg id) shifted the LAST pinned id off da39a3ee;
         # text-bearing ids are unchanged. Pins and version re-recorded together.
-        self.assertEqual(jd.PLACEMENTS_V, 6, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=6 — "
+        self.assertEqual(jd.PLACEMENTS_V, 7, "EXPECTED_SEG_IDS was pinned under PLACEMENTS_V=7 — "
                          "re-pin the ids and this version together, in the same commit")
 
 

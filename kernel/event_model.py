@@ -545,6 +545,7 @@ class FileAdapter:
         # already-done (even CLEARED) goal. Identify replays in CHRONOLOGICAL order (the main emit loop below
         # is leaf-first) so we keep the ORIGINAL and drop the later replay — then placements dedup still holds.
         replay_uuids, _seen_text, _compacted = set(), set(), False
+        _seen_exact, _restoring = set(), False   # (second, text) ever seen; inside a restore burst?
         summaries, last_boundary = {}, None   # boundary_uuid -> the compaction SUMMARY text (the isCompactSummary
         #   user record that FOLLOWS each compact_boundary — Claude's "what it kept"; captured here to attach to
         #   the boundary atom, so the chat can show it in a collapsible box, the user 2026-07-07).
@@ -555,7 +556,10 @@ class FileAdapter:
                 continue
             if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
                 _compacted = True
+                _restoring = True          # the restore burst starts here and ends at the next assistant
                 last_boundary = u
+            elif r.get("type") == "assistant":
+                _restoring = False         # work resumed → anything later is new, not restored context
             elif r.get("type") == "user" and r.get("isCompactSummary") is True:
                 stext = _text_of(_content(r.get("message")))
                 if last_boundary and stext:            # attach to the boundary just seen; cap for transport
@@ -564,7 +568,31 @@ class FileAdapter:
             elif r.get("type") == "user" and not r.get("isMeta"):
                 txt = _text_of(_content(r.get("message")))
                 if txt:
-                    replay_uuids.add(u) if (_compacted and txt in _seen_text) else _seen_text.add(txt)
+                    # A REPLAY is one of two measured shapes, and neither is "this text was said before"
+                    # (the user 2026-08-01). Text alone identified something else entirely: any message a
+                    # person ever repeats. Once a session had compacted, the SECOND "Now?", "retry",
+                    # "[Request interrupted by user]" or romp notice was read as a replay of the first and
+                    # dropped from the chat outright, however many days apart — the live case was a
+                    # one-word question whose ANSWER rendered while the question itself did not, in a
+                    # session that had compacted two days earlier. Over 22 compacted transcripts, 179
+                    # duplicate texts differ in timestamp (genuine repeats, all being eaten) against 90
+                    # that share one. So:
+                    #   * a VERBATIM re-write — same text at the same SECOND — is the same record written
+                    #     twice (resume/compaction re-splice; the absorbed-send dedupe below has keyed on
+                    #     exactly this pair all along, and its comment records x2 as common, x24 once);
+                    #   * a RESTORED TAIL — duplicate text inside the burst that follows a boundary, before
+                    #     any assistant work resumes — is the shape this guard was written for.
+                    # Outside those, a repeat is a message the person actually sent, and it renders.
+                    # The exact-pair case needs NO compaction gate: a re-write carries the original's
+                    # timestamp, so this chronological walk meets it right beside the original — before
+                    # the boundary that produced it — and gating on _compacted would never fire. It is
+                    # the same record either way. Only the restore-burst case is compaction-scoped.
+                    key = (int(parse_z(r.get("timestamp")) or 0), txt)
+                    if key in _seen_exact or (_compacted and _restoring and txt in _seen_text):
+                        replay_uuids.add(u)
+                    else:
+                        _seen_exact.add(key)
+                        _seen_text.add(txt)
         # Skill tool_use block ids: the anchor for the NEW skill-instructions shape (2026-07-10). Newer
         # CLIs inject the payload as an isMeta user record whose sourceToolUseID names the invoking Skill
         # tool_use — the text no longer starts with the "Base directory for this skill:" preamble
