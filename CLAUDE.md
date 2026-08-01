@@ -1,10 +1,10 @@
 # romp — repo instructions
 
 ## Philosophy
-The bottleneck in AI coding is human attention. romp lets one person direct a
-whole fleet of agents by spending that attention where it counts and surfacing
-only what is worth acting on, so they keep the focus and flow that good work needs
-while running many agents at once. Every feature should serve that aim:
+The bottleneck in AI coding is human attention. romp lets one person direct many
+agents by spending that attention where it counts and surfacing only what is
+worth acting on, so they keep the focus and flow that good work needs while
+running them all in parallel. Every feature should serve that aim:
 - **Spend attention, don't drain it.** A feature should take load off the user's
   working memory, not add to it. Glanceable by default; mechanics one click away.
 - **Make re-engagement cheap.** Speak in the user's terms, the outcome and the
@@ -17,6 +17,20 @@ while running many agents at once. Every feature should serve that aim:
   user never needs to see.
 - **Never lose the thread.** Context persists, dead sessions revive with their
   history, nothing important silently drops, so stepping away is safe.
+
+## Vocabulary — do not use the word "fleet" (user rule, 2026-08-01)
+"Fleet" is not the user's word and they don't like it. Don't reach for it in new
+prose, code, identifiers, commit messages, UI copy, docs, or anything else you
+write for them. Say the plain thing: **sessions**, "the sessions you're
+running", "your sessions" — and "across every session" where you'd have written
+"fleet-wide".
+
+The word is still all over the existing repo — a UI pane named Fleet
+(`ui/webview/fleet.ts`, `fleet-pane.css`, `#fleet-list`), plus docs, plans and
+tests. That backlog is deliberately NOT a rename-on-sight task: a sweep like
+that is its own change, and it needs the user's call on what the pane is called
+instead. This rule governs what you ADD. Rephrasing a line you were already
+editing is welcome; renaming identifiers is not, until that call is made.
 
 ## Privacy — no real session data or personal identifiers in this repo
 This repo may go public; assume every commit is permanent and world-readable.
