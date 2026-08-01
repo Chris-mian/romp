@@ -7984,7 +7984,13 @@ def _session_awaiting(sid, path, idle, stamp=False):
     # scopes it itself. This is what carries a genuinely-awaiting session's rail chip + timeline lane across a
     # restart, the same read the feed card floors to per goal via _goal_awaiting_stamp.
     if live is not None and stamp:
-        return _session_stamp_cached(sid)
+        # Source 1.75 — the blocked-yield's OWNED dispatch, the same evidence the feed card uses to put
+        # this session's card in Working (the user 2026-08-01: the card said "waiting on a background
+        # task: <GPU batch>" while every session surface read READY). LIVE evidence, so it outranks the
+        # durable stamp below. Same stamp=True gate: the session-scoped surfaces want one summary answer,
+        # while the FEED keeps scoping per goal — a session-wide _await_ok would floor every sibling card
+        # to awaiting, which is exactly what that gate has always prevented.
+        return _owned_yield_why(sid, path) or _session_stamp_cached(sid)
     return None
 
 
@@ -8170,6 +8176,67 @@ def _bg_owner_tops(fsid, path, tasks):
         rec["since"] = max(rec["since"], int(t.get("t") or 0))
         rec["descs"].append(t["desc"] or "background task")
     return out
+
+
+def _owned_yield_why(sid, path):
+    """The SESSION-level twin of the feed card's BLOCKED-YIELD (the user 2026-08-01): a top goal whose
+    rolled-up state is blocked, but whose own thread DISPATCHED a live background task AFTER that block,
+    so the card yields blocked → awaiting (build_feed's `_owned_why`). Returns that why, else None.
+
+    Why this exists as its own source: the card and the session surfaces were reading different
+    evidence and disagreeing out loud. A GPU batch dispatched from a blocked thread put the card in
+    Working saying "waiting on a background task: <desc>", while the timeline lane, rail chip and chat
+    chip all read plain READY — the session looked idle-with-nothing-happening next to its own card
+    saying otherwise. Neither of the session-level sources could see it: the live set counts only
+    launches the judge has NOT placed (a placed one is a SERVICE unless a stamp affirms it, the
+    mkdocs-serve rule), and the durable ⏳ stamps here sat on nodes the judge had since marked done,
+    which the stamp reader skips as rolled-up display state. The card's own rule was the only one
+    looking at the right thing.
+
+    Deliberately as NARROW as that card rule: it needs a live BLOCK that a dispatch from the same
+    subtree has outrun. A service under a working goal — the case the 2026-07-24 split exists to keep
+    quiet — has no block to outrun and stays furniture."""
+    tasks = _bg_live_norm(sid, path)
+    if not tasks:
+        return None
+    owned = _bg_owner_tops(sid, path, tasks)
+    if not owned:
+        return None
+    try:
+        store = jd.load_goals(sid)
+        nodes = store.get("nodes", {})
+        status = store.get("status", {}) or {}
+    except Exception:
+        return None
+    kids = {}
+    for nid, nd in nodes.items():
+        kids.setdefault(nd.get("parentId"), []).append(nid)
+
+    def _sub(top):                                  # the top's subtree (cycle-guarded, like _subtree)
+        out, stack, seen = [], [top], set()
+        while stack:
+            x = stack.pop()
+            if x in seen or x not in nodes:
+                continue
+            seen.add(x)
+            out.append(x)
+            stack.extend(kids.get(x, []))
+        return out
+
+    best = None
+    for top, own in owned.items():
+        if top not in nodes or status.get(top) != "blocked":
+            continue                                # only a BLOCKED top can yield — see the docstring
+        blk = max([nodes[x].get("mt", nodes[x].get("t", 0)) for x in _sub(top)
+                   if nodes[x].get("blocked") and not nodes[x].get("nodeComplete")
+                   and not nodes[x].get("cleared")] or [0])
+        if not blk or int(own.get("since") or 0) < blk:
+            continue                                # the dispatch predates the block → proves nothing
+        cand = (int(own["since"]), (own.get("descs") or [None])[0])
+        best = cand if best is None else max(best, cand)
+    if best is None:
+        return None
+    return "waiting on a background task%s" % ((": " + best[1]) if best[1] else "")
 
 
 def _states_awaiting_overlay(sid):
@@ -12810,6 +12877,7 @@ def build_feed(now, tmux=None):
                 api_top = f
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
+        had_awaiting = False                         # …and does any of them read AWAITING? → the session's straw dot (below)
         # The live background-task set, once per session: OWNERSHIP for the blocked-yield below (any live
         # task counts there — the yield keys on the dispatch event, not on classification), and the
         # judge-classified SERVICES for the neutral per-session chip (the user 2026-07-24). Idle-gated
@@ -13036,6 +13104,7 @@ def build_feed(now, tmux=None):
                                         or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
+            had_awaiting = had_awaiting or col == "awaiting"   # the FLAVOR, not the column: awaiting rides Working
             # distillState (the user 2026-07-21): which distilled line the CARD should show — keyed on the
             # GENUINE resolution state, NOT the transient `column`. recheck/rejudging drop a still-blocked
             # card to Working the moment its session takes a turn (de-urgent smoothing), and `column`, keyed
@@ -13178,6 +13247,15 @@ def build_feed(now, tmux=None):
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
         # already covers it (no working card); replaced by the real card once the planner places it.
+        # THE INVARIANT (the user 2026-08-01): a card sitting in Working must be explained by something —
+        # an actively working session, a judgment in flight, an awaiting, or an error. A session whose only
+        # explanation is "one of my cards is awaiting" was reading READY at the session level while that
+        # very card said "waiting on a background task", because this dot lit ONLY from the session-wide
+        # sources (`sess_awaiting_why`), which deliberately ignore a judge-placed launch. The cards are the
+        # per-goal answer this build already computed — so take it from them. Scoped to the session's own
+        # verdicts, so no sibling card is floored by it (what the session-wide _await_ok would have done).
+        if had_awaiting and not who_working and name not in awaiting:
+            awaiting.append(name)
         if not had_working and perm_top is None and ps:   # cache-only: the live-prompt placeholder needs the parse → after the warm
             # perm_top excluded: a live-blocked focus card no longer counts as "working" (it reports needs_input
             # now), so without this guard a session whose ONLY card is the picker-blocked one would ALSO get a

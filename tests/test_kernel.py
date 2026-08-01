@@ -529,6 +529,40 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["column"], "working", "awaiting is a flavor of working, not a new column")
         self.assertEqual((card["awaiting"] or {}).get("why"), why, "the badge carries the stamp's why")
 
+    def test_an_awaiting_card_lights_its_session_dot(self):
+        """THE INVARIANT (the user 2026-08-01): a card sitting in Working must be explained — an active
+        session, a judgment in flight, an awaiting, or an error. A session whose card read "waiting on a
+        background task" showed READY at the session level, because this dot lit only from the SESSION-wide
+        sources, which deliberately ignore a judge-placed launch (the service split) and skip stamps on
+        rolled-up nodes. The cards are the per-goal answer the same build already computed, so the dot
+        comes from them: any card in the awaiting flavour lights its session."""
+        top = SID + ":gaw2"
+        why = "a batch it launched; results get filed when it lands"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "Run the batch", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0,
+                            "awaitingWhy": why, "awaitingAt": T0 + 40,
+                            "log": [{"ev_t": T0 + 40, "src": "closer", "kind": "awaiting", "why": why, "at": 1}]}},
+            "placements": {}, "status": {top: "working"}}))
+        feed = km.build_feed(NOW)
+        card = next(a for a in feed["asks"] if a["itemId"] == top)
+        self.assertEqual((card["awaiting"] or {}).get("why"), why, "the card is awaiting…")
+        self.assertIn("testsess", feed["awaiting"], "…so its session reads awaiting, never a bare READY")
+        self.assertNotIn("testsess", feed["working"], "an idle session is not 'working' — awaiting is its own read")
+
+    def test_a_plain_working_card_does_not_light_the_awaiting_dot(self):
+        """The other half of the invariant: the dot follows the CARDS, so an ordinary working goal with
+        nothing dispatched leaves it dark (no session-wide floor, no borrowed awaiting)."""
+        top = SID + ":gplain"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "Ordinary work", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}},
+            "placements": {}, "status": {top: "working"}}))
+        feed = km.build_feed(NOW)
+        self.assertNotIn("testsess", feed["awaiting"])
+
     def test_judge_awaiting_stamp_suppresses_the_stalled_chip(self):
         """The false-'stalled' chain, reproduced end to end: a failed-nudge record exists, the live
         awaiting sources are dark, but the goal store carries the judge's stamp — the card must wear
