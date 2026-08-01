@@ -1239,9 +1239,13 @@ class TimelinePanel {
       // account). Last-known fill stays, FADED, and the readout is '?'; the title dates the gap.
       const rolled = !!(seg.resetsAt && nowS > seg.resetsAt);
       const pct = Math.max(0, Math.min(100, seg.pct || 0));
+      // No BAR at all when the window is unknown (the user 2026-07-31, round 2): a fill of any length —
+      // even faded — asserts a value we do not have. The track is hidden and the readout is '?'; the
+      // last-known number stays in the hover title, said in words.
+      const track = b.usage.fill.parentElement;
+      if (track) track.style.display = rolled ? 'none' : '';
       b.usage.fill.style.width = pct + '%';
       b.usage.fill.style.background = pct >= 90 ? '#c0392b' : (pct >= 70 ? '#e0b020' : '#54B204');
-      b.usage.fill.style.opacity = rolled ? '0.3' : '';
       b.usage.txt.textContent = rolled ? '?' : pct + '%';
       // TIME through the window: 0% at the window start (resets_at − winSec), 100% at the reset. Meaningless
       // once the window has rolled — that pace would describe a window nobody is in any more.

@@ -146,3 +146,16 @@ test("both bundles init the strip; the web pages never opt in", () => {
   const kernel = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
   assert.ok(!kernel.includes("__rompShowStrip"), "the web shell keeps its own rail — no strip opt-in kernel-side");
 });
+
+test("an unknown window draws NO bars — just a '?' in their slot (the user 2026-07-31, round 2)", () => {
+  // a faded last-known fill still asserts a value we do not have: the length itself is the lie. The
+  // mark takes the bars' slot (so rows stay aligned, and it survives the narrow tiers where the %
+  // readout is hidden), and the % readout is dropped — the "?" IS the readout.
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  const css = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.css"), "utf8");
+  assert.match(src, /if \(w\.unknown\) \{[\s\S]{0,700}q\.className = "ru-qmark";\s*\n\s*q\.textContent = "\?";/);
+  assert.match(src, /bars\.appendChild\(q\);\s*\n\s*box\.append\(name, bars\);/, "no .ru-pct on an unknown row");
+  assert.doesNotMatch(css, /\.ru-w\.ru-unk \.ru-fill \{ opacity: 0\.3; \}/, "the faded fill is gone");
+  assert.match(css, /\.ru-qmark \{ display: flex; align-items: center; justify-content: center; width: 100%;/);
+});
