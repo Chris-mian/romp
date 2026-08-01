@@ -14,17 +14,21 @@ export interface ApiErrorFacts {
   rateLimitType?: string | null;
   spendLimit?: boolean | null;
   tooLong?: boolean | null;
+  modelLimit?: boolean | null;
 }
 
 // The plain-words reason, or "" when the facts don't identify one (callers then fall back to the bare
 // status, which is still better than inventing a cause we can't support).
 export function apiErrorReason(f: ApiErrorFacts): string {
-  // The two ON-YOU cases first: they are the only ones the user can actually act on, and both outrank a
+  // The ON-YOU cases first: they are the only ones the user can actually act on, and each outranks a
   // status code (a spend cap also arrives as a 4xx, which would otherwise read as a plain rate limit).
   // Wording is the established one these badges already used — folding them in here is about having ONE
   // place that decides what a failure means, not about renaming failures that already read clearly.
   if (f.spendLimit) return "spend limit reached";
   if (f.tooLong) return "prompt too long (needs compaction)";
+  // A MODEL's own allowance, not the account's: "rate limited" would send the user off to wait when the
+  // fix is one model switch away (the user 2026-08-01).
+  if (f.modelLimit) return "this model is out of allowance — switch model or add credits";
   if (f.networkDown) return "this machine is offline";
   if (f.rateLimitType) return `rate limited (${f.rateLimitType})`;
   const s = Number(f.status);

@@ -24,7 +24,7 @@ export interface BadgeItem {
   nudgeFailed?: boolean;
   retrying?: { since?: number | null; count?: number; max?: number | null; status?: number | string | null; networkDown?: boolean | null; rateLimitType?: string | null } | null;
   warns?: { kind: string; t: number; msg: string }[] | null;
-  blocked?: { state: string; status?: number; text?: string; tooLong?: boolean; spendLimit?: boolean } | null;
+  blocked?: { state: string; status?: number; text?: string; tooLong?: boolean; spendLimit?: boolean; modelLimit?: boolean } | null;
 }
 // sid + itemId ride along so a bell entry can JUMP back to the card it was minted from (the user
 // 2026-07-28): the shell posts them back as {romp:'revealCard'} and the feed scrolls + pulses the card.
@@ -58,11 +58,12 @@ export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: 
     // only the API-error block is an ERROR; a permission ask / picker is ordinary Needs-you traffic
     if (it.blocked && it.blocked.state === "apiError") {
       const b = it.blocked;
-      // spendLimit / tooLong already read as plain words; apiErrorReason covers them too, so the whole
-      // verdict comes from one place and the bell can't describe a failure differently than the chat does.
+      // spendLimit / tooLong / modelLimit already read as plain words; apiErrorReason covers them too, so the
+      // whole verdict comes from one place and the bell can't describe a failure differently than the chat does.
+      const onYou = b.spendLimit || b.tooLong || b.modelLimit;
       const what = apiErrorReason(b) || "API error" + (b.status ? " " + b.status : "");
-      add("e|" + it.itemId + "|" + (b.status || "") + "|" + (b.spendLimit ? "sl" : b.tooLong ? "tl" : ""),
-        "apierror", it.name + " — " + (b.status && !b.spendLimit && !b.tooLong ? "API error " + b.status + ": " : "") + what);
+      add("e|" + it.itemId + "|" + (b.status || "") + "|" + (b.spendLimit ? "sl" : b.tooLong ? "tl" : b.modelLimit ? "ml" : ""),
+        "apierror", it.name + " — " + (b.status && !onYou ? "API error " + b.status + ": " : "") + what);
     }
   }
   return { notices, active };

@@ -1,7 +1,9 @@
 """API errors (the user 2026-06-29): a TRANSIENT API error is not blocking — its card stays in Working with the
 ⚠ chip and auto-retry recovers it. BUT an ON-YOU error floors the focus card to needs-input and gets the
-alarm-red tab: "prompt is too long" (compact needed) or a monthly spend cap (raise it, the user 2026-07-14) —
-the spend cap ALSO stops auto-retry entirely (no reset to wait out). Source pins on _api_error + build_feed."""
+alarm-red tab: "prompt is too long" (compact needed), a monthly spend cap (raise it, the user 2026-07-14), or a
+spent MODEL allowance (switch model / add credits, the user 2026-08-01) — the spend cap ALSO stops auto-retry
+entirely (no reset to wait out). Source pins on _api_error + build_feed. The model-limit case has its own
+behavioural file, tests/test_kernel_model_limit.py."""
 import inspect
 import os
 import unittest
@@ -23,7 +25,8 @@ class ApiErrorWorking(unittest.TestCase):
         src = inspect.getsource(km.build_feed)
         # api_block fires for an ON-YOU api_top — "prompt too long" (compact) OR a monthly spend cap (raise it,
         # the user 2026-07-14); a transient error does NOT move the card (it auto-retries in Working).
-        self.assertIn('api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit"))))', src)
+        self.assertIn('api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")', src)
+        self.assertIn('or aerr.get("modelLimit"))))', src)
         self.assertIn('column = ("needs_input" if (api_block or nid == perm_top', src)   # stalled_floor retired 2026-07-07
         self.assertIn('or (col == "blocked" and not recheck and not rejudging))', src)
 

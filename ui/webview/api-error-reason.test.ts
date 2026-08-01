@@ -24,6 +24,14 @@ test("the on-you cases outrank the status code, because only they are actionable
   assert.match(apiErrorReason({ status: 400, tooLong: true }), /prompt too long/i);
 });
 
+test("a spent MODEL allowance names the fix, not a wait (the user 2026-08-01)", () => {
+  // it arrives as a 429, which by status alone reads "rate limited — the account's quota" and sends the
+  // user off to wait out a window when the account is fine and one model switch unblocks the session
+  const s = apiErrorReason({ status: 429, modelLimit: true });
+  assert.match(s, /switch model|add credits/i);
+  assert.doesNotMatch(s, /rate limited/i);
+});
+
 test("a dead network and a busy API are told apart", () => {
   assert.match(apiErrorReason({ status: 529, networkDown: true }), /offline/i);
   assert.doesNotMatch(apiErrorReason({ status: 529, networkDown: true }), /overloaded/i);

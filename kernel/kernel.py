@@ -8699,6 +8699,26 @@ def _is_spend_limit(text):
             or ("spending" in low and "limit" in low))
 
 
+# A MODEL-SCOPED allowance is exhausted (the user 2026-08-01): "You've reached your Fable 5 limit. Run
+# /usage-credits to continue or switch models with /model". This is on YOU like the two above — the account
+# keeps serving every OTHER model, so nothing clears it but switching model, buying credits, or waiting out
+# a window that can be hours away. Until this landed it fell through as a TRANSIENT error, which is the
+# worst of both: the card stayed in Working, the auto-nudge was suppressed (a session sitting on an API
+# error is deliberately not "orphaned"), the badge said "stopped on an API error — Retry to resume" when
+# Retry could not possibly work, and the auto-retry ladder re-failed for 80 minutes while the user's
+# message sat unanswered in the transcript. romp had the fact the whole time: usage.json carried the
+# model's window at 100%. Matched on the CLI's own REMEDY phrasing — it is the only error that offers
+# "switch models" or the credits top-up — so an account-wide 5h/weekly error (no such remedy, a real
+# countdown, _auto_pause_on_limit's job) still keeps its retry-and-wait path.
+#
+# Deliberately NOT a global retry-pause: that was tried for fable=100% on 2026-07-03 and was pathological
+# (the account keeps serving, so _auto_resume_retry cleared the pause every tick and this re-engaged it —
+# a flap that starved the judges). Per-session, on the card, which is where a model-scoped limit belongs.
+def _is_model_limit(text):
+    low = (text or "").lower()
+    return "limit" in low and ("/usage-credits" in low or "switch models" in low)
+
+
 def _spend_dialog_showing(pane):
     """Is the CLI's spend-cap MODAL currently up in this pane capture? When a tmux session hits the
     monthly cap MID-TURN the CLI drops into an interactive menu ("What do you want to do? / Adjust
@@ -8756,7 +8776,11 @@ def _api_error(path):
                                "tooLong": "too long" in text.lower(),
                                # a spend cap is on YOU (raise it), like tooLong — but ALSO stops the
                                # auto-retry entirely (no reset to wait out); see _auto_pause_on_spend_limit
-                               "spendLimit": _is_spend_limit(text)}
+                               "spendLimit": _is_spend_limit(text),
+                               # a model's own allowance is spent — on YOU too (switch model / add
+                               # credits), and the auto-retry keeps running only because the window does
+                               # eventually reset; see _is_model_limit
+                               "modelLimit": _is_model_limit(text)}
                     elif (isinstance(c, list) and any(isinstance(b, dict)
                             and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                             or (isinstance(c, str) and c.strip()):
@@ -11523,6 +11547,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
                   # the client's apiRetryTick skips it, and the global pause it engages stops the loop too
                   "apiSpendLimit": bool(aerr and aerr.get("spendLimit")),
+                  # a model-scoped allowance is spent — on-you like the two above (red tab), and the
+                  # client's retry-all skips it: nothing retries into it until the model changes or its
+                  # window resets, and an amber "retrying" tab said the opposite (the user 2026-08-01)
+                  "apiModelLimit": bool(aerr and aerr.get("modelLimit")),
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -13054,7 +13082,12 @@ def build_feed(now, tmux=None):
             # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
             # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
-            api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit"))))
+            # A MODEL-scoped usage limit joins them (the user 2026-08-01): the session cannot run another
+            # turn until you switch model or top up, so leaving the card in Working left a working card on
+            # a session nothing could move — not nudged (the api-error gate suppresses it), not blocked,
+            # not awaiting, for 80 minutes.
+            api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
+                                                          or aerr.get("modelLimit"))))
             # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
             # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
             # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
@@ -13216,8 +13249,12 @@ def build_feed(now, tmux=None):
                              "status": aerr.get("status"),
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
                              "spendLimit": bool(aerr.get("spendLimit")),
+                             "modelLimit": bool(aerr.get("modelLimit")),
                              "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
                                       else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
+                                      # the CLI's own text names the model and the two remedies; the card
+                                      # states them, because "Retry to resume" is false here (the user 2026-08-01)
+                                      else "this session's model is out of allowance — switch its model or add credits to continue" if aerr.get("modelLimit")
                                       else "this session stopped on an API error — Retry to resume")} if nid == api_top
                             else {"state": perm_state,
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
