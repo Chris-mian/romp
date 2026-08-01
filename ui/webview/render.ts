@@ -185,7 +185,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -2534,7 +2534,9 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   // menu is up, then sends Esc — cancel, never a billing change). An SDK spend-cap card names the fix
   // (raise the cap) with no dead button at all.
   const st = activeId ? sessions.get(activeId)?.status : undefined;
-  const spendCap = !!st?.apiSpendLimit;
+  // A spent MODEL allowance gets no Retry either (the user 2026-08-01): "retry" re-fails until the model
+  // changes or its own window resets, so the card names the fix instead of offering a button that cannot work.
+  const spendCap = !!st?.apiSpendLimit || !!st?.apiModelLimit;
   if (!spendCap) {
     const retry = el("button", "apierror-retry") as HTMLButtonElement;
     retry.textContent = "Retry now";
@@ -2628,7 +2630,9 @@ function apiRetryTick(): void {
     // one: romp won't re-fire "retry" into it until a successful turn re-arms it (the user 2026-07-06). A monthly
     // spend cap (apiSpendLimit) is left out too (the user 2026-07-14): retrying can't fix a billing cap, so it's
     // never auto-retried — the card asks you to raise it instead (the global pause it engages also gates this).
-    sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed && !s.status.apiSpendLimit) blocked.add(id); });
+    // A spent MODEL allowance (apiModelLimit) is out for the same reason: every retry re-fails until the
+    // user switches model or tops up, and the card says exactly that (the user 2026-08-01).
+    sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed && !s.status.apiSpendLimit && !s.status.apiModelLimit) blocked.add(id); });
     apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered / suppressed → stop
     blocked.forEach((id) => {
       // The kernel owns the cadence now (the user 2026-07-29): it backs each outage's attempts off up to
@@ -3375,10 +3379,10 @@ function renderTabs() {
     }
     const st = s.status.state;
     if (st === "working") tab.classList.add("tab-working");
-    // "blocked" is an API error. An on-YOU one — "prompt is too long" (compact) or a monthly spend cap (raise it,
-    // the user 2026-07-14) — is alarm-red dashed; a TRANSIENT API error is auto-retrying and needs no attention → the
+    // "blocked" is an API error. An on-YOU one — "prompt is too long" (compact), a monthly spend cap (raise it,
+    // the user 2026-07-14), or a spent model allowance (switch model, the user 2026-08-01) — is alarm-red dashed; a TRANSIENT API error is auto-retrying and needs no attention → the
     // amber retrying treatment, not red (the user 2026-06-29).
-    else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit) ? "tab-blocked" : "tab-retrying");
+    else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit || s.status.apiModelLimit) ? "tab-blocked" : "tab-retrying");
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
     else if (st === "compacting" || st === "clearing") tab.classList.add("tab-compacting");   // both: a context op in flight

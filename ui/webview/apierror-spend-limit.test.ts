@@ -18,11 +18,12 @@ test("Status carries the per-session apiSpendLimit flag", () => {
 });
 
 test("the auto-retry tick SKIPS a spend-capped thread (retrying can't fix a billing cap)", () => {
-  assert.match(R, /!s\.status\.retrySuppressed && !s\.status\.apiSpendLimit/);
+  // a spent MODEL allowance is skipped by the same rule (the user 2026-08-01)
+  assert.match(R, /!s\.status\.retrySuppressed && !s\.status\.apiSpendLimit && !s\.status\.apiModelLimit/);
 });
 
 test("a spend cap paints the tab alarm-red (on-you), not amber retrying", () => {
-  assert.match(R, /\(s\.status\.apiTooLong \|\| s\.status\.apiSpendLimit\) \? "tab-blocked" : "tab-retrying"/);
+  assert.match(R, /\(s\.status\.apiTooLong \|\| s\.status\.apiSpendLimit \|\| s\.status\.apiModelLimit\) \? "tab-blocked" : "tab-retrying"/);
 });
 
 test("the paused line names the spend cap and points at the settings page (no fake countdown)", () => {
@@ -36,7 +37,15 @@ test("the globalRetryPaused push reason is threaded into the client", () => {
 
 test("the feed card badges a spend cap and HIDES Retry (a useless click there)", () => {
   assert.match(F, /const spendLimit = !!\(it\.blocked && it\.blocked\.spendLimit\)/);
-  assert.match(F, /a\._apiRetry\.style\.display = \(isApiErr && !spendLimit\) \? "" : "none"/);
+  assert.match(F, /a\._apiRetry\.style\.display = \(isApiErr && !spendLimit && !modelLimit\) \? "" : "none"/);
   assert.match(F, /spendLimit \? "⚠ Spend limit"/);
   assert.match(F, /spendLimit\?: boolean/);
+});
+
+// A spent MODEL allowance is the same shape and gets the same treatment (the user 2026-08-01): Retry
+// re-fails until the model changes or its window resets, so the button goes and the badge names the fix.
+test("the feed card badges a spent model allowance and HIDES Retry too", () => {
+  assert.match(F, /const modelLimit = !!\(it\.blocked && it\.blocked\.modelLimit\)/);
+  assert.match(F, /modelLimit \? "⚠ Model limit"/);
+  assert.match(F, /modelLimit\?: boolean/);
 });

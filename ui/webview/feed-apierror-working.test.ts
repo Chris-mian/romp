@@ -21,6 +21,6 @@ test("the apiError chip + Retry still show (they key on blocked.state, not the c
   assert.match(FEED, /a\._apiBadge\.style\.display = isApiErr \? "" : "none";/);
   // Retry shows for a transient/on-you-compactable error but is HIDDEN for a spend cap (retrying can't lift a
   // billing limit) — the user 2026-07-14; the spend-cap wiring is pinned in apierror-spend-limit.test.ts.
-  assert.match(FEED, /a\._apiRetry\.style\.display = \(isApiErr && !spendLimit\) \? "" : "none";/);
+  assert.match(FEED, /a\._apiRetry\.style\.display = \(isApiErr && !spendLimit && !modelLimit\) \? "" : "none";/);
 });
 
