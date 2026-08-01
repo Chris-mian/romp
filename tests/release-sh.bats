@@ -57,6 +57,9 @@ case "\$1 \$2" in
   # Auto-merge really lands the branch on origin/main, so the script's post-merge
   # fast-forward has something to pull and VERSION genuinely changes on main. Simulating
   # the merge as a no-op would let the bump path "pass" while proving nothing.
+  # `gh pr create` prints the PR URL; the script reads the NUMBER off its tail and addresses
+  # every later call by that number (a fork-headed branch is unresolvable by name — see below).
+  "pr create")  echo "https://github.com/romp-on/romp/pull/4242" ;;
   "pr merge")   if [ "\${STUB_PR_STATE:-MERGED}" = "MERGED" ]; then
                     git -C "$REPO" push -q origin HEAD:main
                 fi ;;
@@ -105,6 +108,14 @@ STUB
     [[ "$output" == *"0.1.0 → 0.2.0"* ]]
     grep -q "pr create" "$GH_LOG"
     grep -q "pr merge" "$GH_LOG"
+    # BY NUMBER, never by branch name (the user 2026-08-01): every PR here is fork-headed, because
+    # rulesets block branch pushes upstream — and `gh pr merge <branch> --repo <upstream>` cannot
+    # resolve a branch that lives on the fork. It failed with "no pull requests found for branch
+    # release-0.3.0" one step after opening the PR, leaving VERSION merged but UNTAGGED: the exact
+    # half-finished release this script exists to prevent.
+    grep -q "pr merge 4242 " "$GH_LOG"
+    grep -q "pr view 4242 " "$GH_LOG"
+    ! grep -qE "pr (merge|view) release-" "$GH_LOG"
     run git -C "$REPO" tag -l
     [ "$output" = "v0.2.0" ]
 }
