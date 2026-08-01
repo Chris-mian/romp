@@ -34,7 +34,7 @@ class DisconnectBanner(unittest.TestCase):
         # (test_pane_loader_reconnect.py owns that half)
         # …and ARMS the retire (freshPending) so the prompt clears itself when the resync frame lands
         # (the user 2026-08-01) — see test_the_connection_prompt_retires_when_the_resync_lands
-        self.assertIn('if(wasReconn){raiseStale();freshPending=true;'
+        self.assertIn('if(wasReconn){armStale();freshPending=true;'
                       'try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}', js)
         self.assertNotIn("if(everConnected){location.reload();return;}", js,
                          "the silent auto-reload-on-reconnect is replaced by a reload PROMPT")
@@ -47,10 +47,11 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn('window.parent.postMessage({romp:"wsStale"}', js, "embedded pane hands off to the shell banner")
         self.assertIn("function selfStale()", js, "standalone page (no shell) gets its own reload bar")
         self.assertIn("romp-stale-self", js)
-        # visibility fast-path: a foregrounded tab whose socket is dead/quiet prompts at once (not after the
-        # throttled 5s watchdog), and forces a reconnect to resync.
+        # visibility fast-path: a foregrounded tab whose socket is dead/quiet ARMS the prompt at once (not
+        # after the throttled 5s watchdog), and forces a reconnect to resync — which disarms it again if the
+        # resync lands inside the arming window (the user 2026-08-01).
         self.assertIn('document.addEventListener("visibilitychange"', js)
-        self.assertIn("Date.now()-lastRecv>STALE_MS){raiseStale();", js)
+        self.assertIn("Date.now()-lastRecv>STALE_MS){armStale();freshPending=true;", js)
 
     def test_shim_reconnect_loop_cannot_die(self):
         # The retry chain used to hang entirely off onclose, and the watchdog only ever closed OPEN
@@ -103,6 +104,14 @@ class DisconnectBanner(unittest.TestCase):
         auto-reload — the reload prompt still stands whenever the resync genuinely never arrives."""
         js = km._shim("feed", 7777)
         self.assertIn("freshPending=true", js, "a reconnect arms the retire")
+        # …and the prompt is ARMED, not shown (the user 2026-08-01): raising it at once made it flash up
+        # and straight back down on nearly every dashboard open, since the resync lands within a beat.
+        self.assertIn("staleTimer=setTimeout(function(){staleTimer=0;raiseStale();},1000)", js,
+                      "a one-second arming window, not an immediate raise")
+        self.assertIn("if(wasReconn){armStale();", js, "the reconnect ARMS it")
+        self.assertNotIn("if(wasReconn){raiseStale();", js, "…and never raises it outright")
+        self.assertIn("if(staleTimer){clearTimeout(staleTimer);staleTimer=0;}", js,
+                      "a resync inside the window disarms it, so it never appears at all")
         self.assertIn("if(freshPending){freshPending=false;clearStale();}", js,
                       "the first real frame after it fires the retire")
         # keepalives must NOT count as a resync — the ka branch returns before the retire line
@@ -114,6 +123,13 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("m.romp==='wsFresh'", km._STALE_JS)
         self.assertIn("connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');",
                       km._STALE_JS)
+
+    def test_the_foregrounded_tab_path_arms_the_same_way(self):
+        # a tab foregrounded onto a dead socket forces a reconnect and used to prompt immediately; that
+        # reconnect resyncs like any other, so it arms the same window and disarms on the same frame
+        js = km._shim("chat", 7777)
+        self.assertIn("Date.now()-lastRecv>STALE_MS){armStale();freshPending=true;", js)
+        self.assertNotIn("STALE_MS){raiseStale();", js)
 
     def test_a_standalone_page_retires_only_its_connection_bar(self):
         # the shell-less case (feed/timeline opened directly) self-injects the same prompt; the retire must

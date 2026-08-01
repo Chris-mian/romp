@@ -15960,9 +15960,20 @@ function selfStale(){selfBar("romp lost the live connection, so what you see may
 // the kernel's connect-time push has landed, which IS the resync the banner offers a reload for. Fires on
 // the first non-keepalive frame after a reconnect — the event, not a timer. A BUILD prompt is untouched:
 // new code is not delivered by a resync, so only a reload can answer that one.
-function clearStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsFresh"},"*");}catch(e){}}
+function clearStale(){if(staleTimer){clearTimeout(staleTimer);staleTimer=0;}   // armed but never shown → nothing to see
+if(window.parent!==window){try{window.parent.postMessage({romp:"wsFresh"},"*");}catch(e){}}
 else{var b=document.getElementById("romp-stale-self");if(b&&b.dataset.kind==="conn")b.remove();}}
 function raiseStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
+// ARM it rather than show it (the user 2026-08-01): the resync almost always lands within a beat of the
+// reconnect, so raising immediately made the prompt FLASH up and straight back down on nearly every
+// dashboard open — visual noise for a problem that fixed itself. A short arming window lets the common
+// case pass in silence, and clearStale below disarms it the moment the resync frame arrives.
+// Why a timer here, against the standing preference for events: the prompt asserts "your view MAY be
+// stale", and the only proof it is NOT is the resync landing — an event we key on. The only proof it IS
+// is that resync FAILING to arrive, which has no event to key on at all. So the window is exactly the
+// unavoidable minimum, and the event still wins whenever it exists.
+var staleTimer=0;
+function armStale(){if(staleTimer)return;staleTimer=setTimeout(function(){staleTimer=0;raiseStale();},1000);}
 // BUILD drift (the user 2026-07-13): the keepalive carries the kernel's current dist token (dv); a page whose
 // baked LOADEDV is older is running outdated code against newer kernel state — prompt a reload (never auto).
 // In the dashboard the raise routes to the shell's #rstale banner (build:1 → its BUILDMSG); standalone pages
@@ -15982,7 +15993,7 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 // socket dropped (the pane's romp loader) needs the socket's RETURN as its event to come back down. The
 // first connect deliberately doesn't fire it — nothing is waiting on it, and the loader must stay up until
 // real content lands.
-ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){raiseStale();freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
+ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){armStale();freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}   // keepalive: stamped lastRecv above; carries the build token (drift → reload banner); nothing for the bundle to render
 // the first REAL frame after a reconnect is the kernel's connect-time push — the resync itself, so the
@@ -16014,7 +16025,7 @@ if(ws.readyState===3&&Date.now()-connT>8000){connect();}},5000);
 // foregrounded, if the socket isn't open or has gone quiet past the watchdog window, treat the view as stale —
 // prompt at once AND force a reconnect (which resyncs live), rather than leaving the user on a frozen frame.
 document.addEventListener("visibilitychange",function(){if(document.visibilityState!=="visible"||!everConnected)return;
-if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){raiseStale();
+if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){armStale();freshPending=true;
 try{if(ws&&ws.readyState<=1)ws.close();}catch(e){}   // OPEN or stuck-CONNECTING both die here → onclose retries
 if(!ws||ws.readyState===3)connect();}});})();
 """ % (app, int(v), app, app)
