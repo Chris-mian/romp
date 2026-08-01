@@ -147,15 +147,26 @@ if [ "$current" != "$target" ]; then
         git add VERSION
         git commit -qm "VERSION $target" || die "nothing to commit for the version bump."
         git push -q -u "$publish" "$branch" || die "could not push $branch to $publish."
-        "$GH" pr create --repo "$UPSTREAM" --title "VERSION $target" \
-            --body "Version bump for \`$tag\`, opened by scripts/release.sh." \
+        # Address the PR by NUMBER, taken from the URL `gh pr create` prints (the user 2026-08-01).
+        # `gh pr merge <branch>` resolves the branch WITHIN --repo, and the branch lives on the FORK
+        # (rulesets block branch pushes upstream, so every PR here is fork-headed) — so it answered
+        # "no pull requests found for branch release-0.3.0" and the release died one step after
+        # opening the PR, leaving VERSION merged-but-untagged, exactly the half-finished state this
+        # script exists to prevent. A number is unambiguous in any repo.
+        pr_url="$("$GH" pr create --repo "$UPSTREAM" --title "VERSION $target" \
+            --body "Version bump for \`$tag\`, opened by scripts/release.sh.")" \
             || die "could not open the version PR."
-        "$GH" pr merge --repo "$UPSTREAM" --auto --merge "$branch" \
-            || die "could not arm auto-merge on the version PR."
+        pr="${pr_url##*/}"
+        case "$pr" in
+            ''|*[!0-9]*) die "could not read the PR number from '$pr_url'." ;;
+        esac
+        say "opened PR #$pr."
+        "$GH" pr merge "$pr" --repo "$UPSTREAM" --auto --merge \
+            || die "could not arm auto-merge on PR #$pr."
         say "waiting for the version PR to land on $REF (its CI is the first gate)..."
         state=""
         for _ in $(seq 1 120); do
-            state="$("$GH" pr view "$branch" --repo "$UPSTREAM" --json state -q .state 2>/dev/null || true)"
+            state="$("$GH" pr view "$pr" --repo "$UPSTREAM" --json state -q .state 2>/dev/null || true)"
             if [ "$state" = "MERGED" ]; then break; fi
             if [ "$state" = "CLOSED" ]; then die "the version PR was closed without merging."; fi
             if [ "$POLL" = "0" ]; then break; fi
