@@ -265,6 +265,14 @@ STALL_SEEN = 2
 # live-verify existed for: a record that freezes holding a judging claim now simply says nothing.
 WHY_JUDGING = "romp's own review of this session is mid-flight"
 _WHY_JUDGING_LEGACY = "a judge pass is mid-flight"
+# The fire list's own hold (2026-08-01), minted by the kernel under the same one-definition rule and
+# screened the same way: a judge has ruled on a turn romp has not yet seen END, so the "it looks stalled"
+# read describes a world one turn old and the fire stands down until that turn lands. Like the judging
+# hold it is a beat romp is working through — it clears on the turn's own end event — so it must never
+# paint a chip. It carries a why (and the backstop every deferral record rides) purely so the hold is
+# INSPECTABLE: this drop used to leave NO record anywhere, which is how a card sat in Working for half an
+# hour with nothing to read (see the kernel's _nudge_fire_list).
+WHY_TURN_IN_FLIGHT = "a judge has ruled on a turn that hasn't finished yet"
 # The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
 # only ever sees OPEN tops, so related goals that finish before they get
 # grouped land as separate cards. The consolidator groups related ALL-COMPLETED sibling tops under a
@@ -7573,7 +7581,8 @@ def stall_llm(goal_text, work_text, holding):
 
 def stall_why_stands(why, fsid):
     """True when a recorded stall reason is one the card should PRESENT. The judging reasons never are
-    (the user 2026-07-31, superseding the 2026-07-25 live-verify): a goal the gate holds because romp's
+    (the user 2026-07-31, superseding the 2026-07-25 live-verify), nor is the fire list's turn-in-flight
+    hold (2026-08-01, same argument — see WHY_TURN_IN_FLIGHT): a goal the gate holds because romp's
     own review is mid-flight is a goal romp is actively working, and calling that "stalled" drew the
     user's eye to a state nobody needs to act on — the Analyzing… swirl already tells that story, with
     the nudge hold in its tip (spin-caption.ts). The hold itself is untouched; this predicate only
@@ -7581,7 +7590,7 @@ def stall_why_stands(why, fsid):
     predicate can't reach, and their own passes reconcile the records that carry them. `fsid` is the
     record's session, kept for the next reason that needs live verification against it (the retired
     judging branch checked active_runs here)."""
-    return why not in (WHY_JUDGING, _WHY_JUDGING_LEGACY)
+    return why not in (WHY_JUDGING, _WHY_JUDGING_LEGACY, WHY_TURN_IN_FLIGHT)
 
 
 def stalled_facts(fsid):
