@@ -2794,6 +2794,10 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     arm = next((tn for tn in reversed(turns) if tn.get("ended") and not _turn_romp_injected(tn)), None)
     arm_id = arm.get("id") if arm else None          # None (romp-only history) → never FIRE; an already-
     #                                                  nudged goal still takes its nudge-failed stamp below
+    # The newest turn romp has SEEN END — the yardstick the fire list judges "newer evidence" against, and
+    # deliberately NOT the arm: a romp-injected turn can never become the arm, so a verdict about one is
+    # newer than the arm FOREVER (see _nudge_fire_list's deadlock note).
+    seen = next((tn for tn in reversed(turns) if tn.get("ended")), None)
     store = jd.load_goals(sid)
     # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
     # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
@@ -2917,8 +2921,14 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         # asked. The verdict's LANDING is the event; re-reading the store at send time keys on it and
         # closes the race to the file write itself. An unreadable re-read fires on the tick's snapshot,
         # as before — never silently drops the nudge.
+        # A goal the fire list HOLDS is deferred, never dropped (the user 2026-08-01): it takes a deferral
+        # record like every other reviver, so the hold is inspectable and inherits the 6h backstop. The
+        # silent drop is what let the arm deadlock below hide — no fire, no record, nothing to read.
         try:
-            to_fire = _nudge_fire_list(jd.load_goals(sid), to_fire, arm_t=arm.get("t") or 0)
+            held = []
+            to_fire = _nudge_fire_list(jd.load_goals(sid), to_fire, arm_t=arm.get("t") or 0,
+                                       seen_t=(seen.get("t") or 0) if seen else 0, held=held)
+            to_fire += [f for f in held if _nudge_deferred_ok(f[0], jd.WHY_TURN_IN_FLIGHT, now, sid)]
         except Exception:
             pass
     if len(to_fire) == 1:
@@ -2931,6 +2941,8 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         Sessions.backend_for(sid).send(sid, _nudge_bundle_body(
             [f[0] for f in to_fire], nodes, {f[0] for f in to_fire if f[2]}))
     for gid, count, stalled in to_fire:
+        _nudge_deferred_ok(gid, "", now, sid)        # the hold is over — drop any deferral record so a stale
+        #                                              why can never outlive the wait it described
         _mark_auto_nudged(gid, arm_id, count, len(arm.get("atoms") or []), at=now)   # {count, lastTurnId, armAtoms, at} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
         _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
         nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
@@ -2948,7 +2960,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     return fired
 
 
-def _nudge_fire_list(fresh, to_fire, arm_t=None):
+def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
     """The subset of this tick's due nudges still worth sending, judged against a FRESH store read
     (the closer-race guard — see the call site). A goal the judges moved off plain 'working' since the
     tick's snapshot — completed, blocked, cleared, or status-rolled — gets no status check: the answer
@@ -2971,18 +2983,42 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None):
     silently: no fire, no deferral, no failed-nudge escalation (the arm can't move while the session
     idles), for any goal that audit touched. A ruling about the arm turn that leaves the goal working
     IS the closer-gate's considered 'working' verdict — the definition of nudgeable, not staleness;
-    one that resolves the goal is caught by the status re-read below either way."""
+    one that resolves the goal is caught by the status re-read below either way.
+
+    seen_t = the newest turn romp has watched END, which is the yardstick the guard actually wants; the
+    arm is only its floor. They differ exactly when a ROMP-INJECTED turn ended after the arm — and since
+    an injected turn can never BE the arm (that is the whole point of the arm), a verdict about one is
+    newer than the arm permanently, and keying on the arm alone deadlocked (the user 2026-08-01): a
+    kernel restart cut a session mid-turn, the resume notice romp injected opened the next turn, the
+    session answered in it, the unblocker ruled the card's question answered off that turn — and the
+    goal, back to plain 'working' on an idle session, was dropped by this guard on every tick for as
+    long as the session stayed idle. Nothing could break it: the arm moves only on a GENUINE ended
+    turn, and the only thing that would have produced one was the nudge itself. The card sat in
+    Working with no nudge, no block, no ⏳, nothing being judged, until the user noticed by eye.
+    Once a turn has ENDED, a verdict about it that leaves the goal working is the considered verdict —
+    the same reasoning the 2026-07-30 fix made for the arm turn, which is just this turn's floor.
+
+    `held` (optional list) collects the goals dropped for newer evidence, so the caller can record the
+    hold as a DEFERRAL instead of a silent drop — every other nudge hold leaves a why and rides the 6h
+    backstop, and this one leaving nothing is what made the deadlock unreadable from the state dir."""
     nodes, status = fresh.get("nodes", {}) or {}, fresh.get("status", {}) or {}
+    cut = max(arm_t or 0, seen_t or 0)
     keep = []
     for f in to_fire:
         if f[0] not in nodes:
             continue                                 # gone from the fresh store: cleared + compacted mid-tick
         nd = nodes[f[0]]
-        if arm_t and any((e.get("ev_t") or e.get("at") or 0) > arm_t for e in nd.get("log") or []):
-            continue                                 # a ruling on EVIDENCE newer than the arm — the stall read is stale
-        if status.get(f[0], "working") == "working" and not nd.get("cleared") \
-                and not nd.get("nodeComplete") and not nd.get("blocked"):
-            keep.append(f)
+        if status.get(f[0], "working") != "working" or nd.get("cleared") \
+                or nd.get("nodeComplete") or nd.get("blocked"):
+            continue                                 # the judges resolved it since the tick's snapshot: no
+            #                                          status check, and nothing to hold either — a RESOLVED
+            #                                          goal must never reach `held`, or the backstop below
+            #                                          would eventually nudge a card that is already done
+        if cut and any((e.get("ev_t") or e.get("at") or 0) > cut for e in nd.get("log") or []):
+            if held is not None:                     # a ruling on EVIDENCE from a turn romp hasn't seen end —
+                held.append(f)                       # the stall read is a world old; hold it, don't lose it
+            continue
+        keep.append(f)
     return keep
 
 
