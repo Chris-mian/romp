@@ -108,17 +108,24 @@ class RailUsage(unittest.TestCase):
         # '?', the elapsed (pace) bar is withheld, and the tooltip dates the gap.
         self.assertIn("var rolled=!!(seg.resetsAt&&nowS>seg.resetsAt),pct=Math.max(0,Math.min(100,seg.pct||0));",
                       self.html, "the reading survives the roll — it is last-known, not zeroed")
-        self.assertIn("(rolled?'?':pct+'%')", self.html, "the readout says unknown, never 0%")
         self.assertIn("var tp=(!rolled&&seg.resetsAt&&w[1])", self.html,
                       "no pace bar against a window that already ended")
-        self.assertIn(".ru-unk .ru-fill{opacity:.3}", self.html, "the last-known bars fade")
+        # NO BARS at all (round 2): a fill of any length asserts a value we do not have, so the bars'
+        # slot holds only a '?'. The last-known number survives in the tooltip, labelled as such.
+        self.assertIn("rolled?'<div class=ru-bars><div class=ru-qmark>?</div></div>'", self.html,
+                      "an unknown window draws a '?' where its bars would be")
+        self.assertIn(".ru-qmark{width:54px", self.html, "the mark takes the bars' width, so rows stay aligned")
+        self.assertNotIn(".ru-unk .ru-fill{opacity:.3}", self.html, "no faded fill on the face any more")
+        self.assertIn("<span class=ru-tip-k>last known</span>", self.html,
+                      "the hover is the ONE place the stale number appears, and it says what it is")
         self.assertIn("window reset '+esc(v.ago)", self.html, "the tooltip dates how stale the reading is")
         self.assertIn("current usage unknown", self.html)
         # the STANDALONE timeline copy (Obsidian) says the same thing — one rule, every surface
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
         self.assertIn("const rolled = !!(seg.resetsAt && nowS > seg.resetsAt);", tv)
         self.assertIn("b.usage.txt.textContent = rolled ? '?' : pct + '%';", tv)
-        self.assertIn("b.usage.fill.style.opacity = rolled ? '0.3' : '';", tv)
+        self.assertIn("if (track) track.style.display = rolled ? 'none' : '';", tv,
+                      "the bar itself is hidden, not faded")
         self.assertIn("current usage unknown (last known ", tv)
 
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):

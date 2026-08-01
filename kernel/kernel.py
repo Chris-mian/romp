@@ -16655,13 +16655,18 @@ det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtA
 // Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks \u2014 the
 // used-% bar (colormap colour) ON TOP of the elapsed-% bar (slate) so you can compare pace at a glance (used
 // ahead of elapsed = burning too fast) \u2014 then the used-% readout. All inline (label \u00b7 bars \u00b7 %).
+// An UNKNOWN window draws NO BARS (the user 2026-07-31, round 2): a faded last-known fill still
+// asserts a value we do not have \u2014 the length itself is the lie. Its slot holds a single '?' so the
+// rows stay aligned, and the last-known number moves to the hover, labelled as such.
 html+='<div class="ru-w'+(rolled?' ru-unk':'')+'" data-w="'+w[0]+'">'
 +'<div class=ru-name>'+w[4]+'</div>'
-+'<div class=ru-bars>'
++(rolled?'<div class=ru-bars><div class=ru-qmark>?</div></div>'
+:('<div class=ru-bars>'
 +'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+col+'"></i></div>'
 +'<div class=ru-track><i class=ru-fill style="width:'+(tp||0)+'%;background:#6b7a8c"></i></div>'
 +'</div>'
-+'<div class=ru-pct>'+(rolled?'?':pct+'%')+'</div></div>';});
++'<div class=ru-pct>'+pct+'%</div>'))
++'</div>';});
 return html;}
 // ONE SET PER CLAUDE ACCOUNT (the user 2026-07-30). These windows are ACCOUNT-wide, so a fleet signed into
 // one login has one allowance and drawing it per host would repeat the same number \u2014 that is the common
@@ -16688,9 +16693,13 @@ var rest=ROWS.filter(function(r){return r.host;});
 renderRows([{host:'',acct:(u&&u.acct)||'',usage:u}].concat(rest),SELF);}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
-function barRows(d){return '<div class="ru-tip-row'+(d.unk?' ru-unk':'')+'"><span class=ru-tip-k>used</span>'
-+'<span class=ru-tip-track><i style="width:'+d.pct+'%;background:'+d.col+'"></i></span>'
-+'<span class=ru-tip-v>'+(d.unk?'?':d.pct+'%')+'</span></div>'
+function barRows(d){return (d.unk
+? '<div class="ru-tip-row ru-unk"><span class=ru-tip-k>last known</span>'
+ +'<span class=ru-tip-track><i style="width:'+d.pct+'%;background:'+d.col+'"></i></span>'
+ +'<span class=ru-tip-v>'+d.pct+'%</span></div>'
+: '<div class=ru-tip-row><span class=ru-tip-k>used</span>'
+ +'<span class=ru-tip-track><i style="width:'+d.pct+'%;background:'+d.col+'"></i></span>'
+ +'<span class=ru-tip-v>'+d.pct+'%</span></div>')
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
@@ -17807,9 +17816,12 @@ def _landing():
             ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
             ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
             ".ru-fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;transition:width .3s ease}"
-            # UNKNOWN (the user 2026-07-31): a rolled window's last-known bars fade and read '?' — never a confident 0%
-            ".ru-unk .ru-fill{opacity:.3}.ru-unk .ru-pct,.ru-tip-row.ru-unk .ru-tip-v{color:#8a97a6}"
-            ".ru-tip-row.ru-unk i{opacity:.3}"
+            # UNKNOWN (the user 2026-07-31): a rolled window draws NO bars at all — a fill of any length
+            # asserts a value we do not have — only a '?' in the bars' slot. The last-known reading survives
+            # in the tooltip, labelled "last known" and faded, which is honest because it says what it is.
+            ".ru-qmark{width:54px;display:flex;align-items:center;justify-content:center;"
+            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a97a6}"
+            ".ru-tip-row.ru-unk i{opacity:.3}.ru-tip-row.ru-unk .ru-tip-k,.ru-tip-row.ru-unk .ru-tip-v{color:#8a97a6}"
             ".ru-pct{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)

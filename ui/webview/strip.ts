@@ -219,12 +219,25 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
         track.appendChild(fill);
         return track;
       };
-      bars.appendChild(mkTrack(w.pct, usageColor(w.pct)));
-      if (w.elapsedPct != null) bars.appendChild(mkTrack(w.elapsedPct, "#6b7a8c"));
-      const pct = document.createElement("span");
-      pct.className = "ru-pct";
-      pct.textContent = w.unknown ? "?" : `${w.pct}%`;   // unknown ≠ 0 — the fade + ? say "no current reading"
-      box.append(name, bars, pct);
+      if (w.unknown) {
+        // NO BARS AT ALL for an unknown window (the user 2026-07-31, round 2): a faded last-known fill
+        // still draws a value, and we do not have one — the length itself is the lie. The bars' slot
+        // holds a single "?" instead, keeping the row's alignment; the last-known number stays in the
+        // hover, explicitly labelled. The % readout is dropped too — the "?" IS the readout, and it
+        // survives the narrow tiers, where .ru-pct is hidden but the bars slot is always drawn.
+        const q = document.createElement("span");
+        q.className = "ru-qmark";
+        q.textContent = "?";
+        bars.appendChild(q);
+        box.append(name, bars);
+      } else {
+        bars.appendChild(mkTrack(w.pct, usageColor(w.pct)));
+        if (w.elapsedPct != null) bars.appendChild(mkTrack(w.elapsedPct, "#6b7a8c"));
+        const pct = document.createElement("span");
+        pct.className = "ru-pct";
+        pct.textContent = `${w.pct}%`;
+        box.append(name, bars, pct);
+      }
       usageWrap.appendChild(box);
     }
     fit();
