@@ -139,7 +139,7 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          model actually wrote. Closer / grouper / consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 6                         # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 7                         # placements-identity schema version (plan P2, the user 2026-07-06).
 #                                          v2 (2026-07-09): a 07-07/07-08 change to segment-text derivation
 #                                          stepped the text hash without this bump — dormant segments' old-hash
 #                                          placements stopped matching, and every restart/touch replayed them as
@@ -172,6 +172,14 @@ PLACEMENTS_V = 6                         # placements-identity schema version (p
 #                                          unplaced units SEALED (placements[key]=None) so dormant history can't
 #                                          replay as fresh work — the 2026-07-06 replay storm (4cdbe44 → 199118f),
 #                                          made structural. Mirrors the caption cache's v4→v5 bump.
+#                                          v7 (2026-08-01): the post-compaction replay guard keyed on TEXT
+#                                          ALONE, so in any session that had ever compacted, the second time
+#                                          anyone repeated a phrase — "Now?", "retry", a romp notice — it was
+#                                          dropped as restored context. Scoping it to verbatim (same second)
+#                                          re-writes and to the restore burst itself GROWS the atom set of
+#                                          every compacted transcript (one live session: 5825 → 5850 atoms,
+#                                          25 messages recovered). Exactly v3's shape — a bigger atom set,
+#                                          not a shifted hash — so it takes the same seal.
 PLAN_SESSIONS = None                     # per-pass session cap — REMOVED (the user 2026-06-30): the fairness
                                          # caps were a recurring source of confusing starvation bugs (a goal/
                                          # nudge stuck behind a full per-pass window), never clearly needed.
