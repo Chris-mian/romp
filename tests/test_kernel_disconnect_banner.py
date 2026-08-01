@@ -32,7 +32,10 @@ class DisconnectBanner(unittest.TestCase):
         # socket resyncs live. The old auto-reload-on-reopen is gone.
         # the reconnect ALSO fires romp:wsup, which is what takes the pane loader back down
         # (test_pane_loader_reconnect.py owns that half)
-        self.assertIn('if(wasReconn){raiseStale();try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}', js)
+        # …and ARMS the retire (freshPending) so the prompt clears itself when the resync frame lands
+        # (the user 2026-08-01) — see test_the_connection_prompt_retires_when_the_resync_lands
+        self.assertIn('if(wasReconn){raiseStale();freshPending=true;'
+                      'try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}', js)
         self.assertNotIn("if(everConnected){location.reload();return;}", js,
                          "the silent auto-reload-on-reconnect is replaced by a reload PROMPT")
         self.assertNotIn("ws.onclose=function(){setTimeout(function(){location.reload();},1500);};", js,
@@ -89,6 +92,37 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("if(m.build){buildStale=true;show(BUILDMSG);}else{connStale=true;show(CONNMSG);}", km._STALE_JS)
         self.assertIn("!connStale&&!buildStale", km._STALE_JS, "the poll's clear respects both latches")
         self.assertIn("connStale=false;buildStale=false;", km._STALE_JS, "Dismiss clears both")
+
+    def test_the_connection_prompt_retires_when_the_resync_lands(self):
+        """The prompt must go away on its own once what it warns about is over (the user 2026-08-01).
+
+        It popped on nearly every dashboard open — a pane whose socket dropped-and-reconnected raises it —
+        and then sat there offering a reload for staleness the kernel's connect-time push had already
+        healed in the background. So the retire keys on that push: the FIRST non-keepalive frame after a
+        reconnect IS the resync, and it clears the prompt. An event, not a timer, and not a silent
+        auto-reload — the reload prompt still stands whenever the resync genuinely never arrives."""
+        js = km._shim("feed", 7777)
+        self.assertIn("freshPending=true", js, "a reconnect arms the retire")
+        self.assertIn("if(freshPending){freshPending=false;clearStale();}", js,
+                      "the first real frame after it fires the retire")
+        # keepalives must NOT count as a resync — the ka branch returns before the retire line
+        self.assertLess(js.index('msg.type==="ka"'), js.index("if(freshPending)"),
+                        "the keepalive early-return sits ahead of the retire")
+        self.assertIn('window.parent.postMessage({romp:"wsFresh"}', js, "embedded pane tells the shell")
+        # …and the shell drops the connection prompt on it, while a BUILD prompt survives (a resync
+        # delivers state, never new code — only a reload answers that one)
+        self.assertIn("m.romp==='wsFresh'", km._STALE_JS)
+        self.assertIn("connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');",
+                      km._STALE_JS)
+
+    def test_a_standalone_page_retires_only_its_connection_bar(self):
+        # the shell-less case (feed/timeline opened directly) self-injects the same prompt; the retire must
+        # remove ONLY the connection one, so a build-drift bar is never cleared by a mere resync
+        js = km._shim("timeline", 7777)
+        self.assertIn('b.dataset.kind=kind||"conn"', js, "the self-injected bar records which prompt it is")
+        self.assertIn('selfBar("romp lost the live connection, so what you see may be stale.","conn")', js)
+        self.assertIn('selfBar("A newer romp build is available.","build")', js)
+        self.assertIn('if(b&&b.dataset.kind==="conn")b.remove();', js, "only the conn bar retires")
 
     def test_timeline_page_uses_the_shared_shim(self):
         # The timeline used to hand-roll its own WebSocket in _TIMELINE_BOOT (a copy of _shim's

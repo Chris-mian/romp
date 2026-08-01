@@ -107,9 +107,10 @@ class BuildDriftBanner(unittest.TestCase):
         js = km._shim("chat", 7)
         self.assertIn('window.parent.postMessage({romp:"wsStale",build:1}', js,
                       "embedded pane routes build drift to the shell banner, tagged so it words it as a BUILD")
-        self.assertIn('selfBar("A newer romp build is available.")', js,
+        self.assertIn('selfBar("A newer romp build is available.","build")', js,
                       "standalone page self-injects the same reload bar")
-        self.assertIn("var buildRaised=false;", js)   # latched: one prompt per page life
+        self.assertIn("var buildRaised=false,freshPending=false;", js)   # latched: one prompt per page life
+        #                                    (freshPending rides along: the CONN prompt's self-retire, 2026-08-01)
 
     def test_every_pane_page_passes_its_version_to_the_shim(self):
         for app in ("chat", "feed", "fleet", "timeline"):

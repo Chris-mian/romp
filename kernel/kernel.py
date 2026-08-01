@@ -15946,24 +15946,31 @@ function netState(s){try{if(window.parent!==window)window.parent.postMessage({ro
 // auto-reloading (foisted, jarring) or leaving them staring at stale content. In the dashboard the pane rides
 // in an iframe, so hand it to the shell's ONE #rstale reload banner; a standalone page (feed/timeline opened
 // directly) has no shell, so self-inject a minimal top bar with the same Reload action.
-function selfBar(t){try{if(document.getElementById("romp-stale-self"))return;
-var b=document.createElement("div");b.id="romp-stale-self";
+function selfBar(t,kind){try{if(document.getElementById("romp-stale-self"))return;
+var b=document.createElement("div");b.id="romp-stale-self";b.dataset.kind=kind||"conn";
 b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 var m=document.createElement("span");m.textContent=t;b.appendChild(m);
 var r=document.createElement("button");r.textContent="Reload";
 r.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";
 r.onclick=function(){location.reload();};b.appendChild(r);
 (document.body||document.documentElement).appendChild(b);}catch(e){}}
-function selfStale(){selfBar("romp lost the live connection, so what you see may be stale.");}
+function selfStale(){selfBar("romp lost the live connection, so what you see may be stale.","conn");}
+// …and RETIRE that prompt the moment the thing it warns about is demonstrably over (the user 2026-08-01,
+// for whom it popped on nearly every dashboard open and then just sat there): the socket reconnected AND
+// the kernel's connect-time push has landed, which IS the resync the banner offers a reload for. Fires on
+// the first non-keepalive frame after a reconnect — the event, not a timer. A BUILD prompt is untouched:
+// new code is not delivered by a resync, so only a reload can answer that one.
+function clearStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsFresh"},"*");}catch(e){}}
+else{var b=document.getElementById("romp-stale-self");if(b&&b.dataset.kind==="conn")b.remove();}}
 function raiseStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
 // BUILD drift (the user 2026-07-13): the keepalive carries the kernel's current dist token (dv); a page whose
 // baked LOADEDV is older is running outdated code against newer kernel state — prompt a reload (never auto).
 // In the dashboard the raise routes to the shell's #rstale banner (build:1 → its BUILDMSG); standalone pages
 // self-inject the same bar. Latched: one prompt per page life, cleared only by the reload it asks for.
-var buildRaised=false;
+var buildRaised=false,freshPending=false;   // freshPending: a reconnect is awaiting its resync frame
 function raiseBuild(){if(buildRaised)return;buildRaised=true;
 if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale",build:1},"*");}catch(e){}}
-else selfBar("A newer romp build is available.");}
+else selfBar("A newer romp build is available.","build");}
 function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // one live attempt at a time — a lost timer + the watchdog can both call in
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
@@ -15975,9 +15982,12 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 // socket dropped (the pane's romp loader) needs the socket's RETURN as its event to come back down. The
 // first connect deliberately doesn't fire it — nothing is waiting on it, and the loader must stay up until
 // real content lands.
-ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){raiseStale();try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
+ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){raiseStale();freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}   // keepalive: stamped lastRecv above; carries the build token (drift → reload banner); nothing for the bundle to render
+// the first REAL frame after a reconnect is the kernel's connect-time push — the resync itself, so the
+// "what you see may be stale" prompt is answered and retires (see clearStale). Keepalives return above.
+if(freshPending){freshPending=false;clearStale();}
 if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
 // onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29, who wanted the swirling loader on
 // kernel restart), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
@@ -17449,8 +17459,13 @@ _STALE_JS = (
     # the prompt out from under it; Dismiss (or a reload) clears it. A pane's BUILD-drift raise (the shim's
     # keepalive dv check, the user 2026-07-13) rides the same channel with build:1 → the BUILDMSG wording;
     # buildStale latches it identically so the poll (whose own token may be current) can't clear it.
+    # {romp:'wsFresh'} — the reconnected pane's resync LANDED (its first non-keepalive frame), so the
+    # connection prompt is moot and retires itself; the user saw it on nearly every dashboard open, offering
+    # a reload for a staleness that had already healed in the background. A latched BUILD prompt survives
+    # (and re-asserts its wording): a resync delivers state, never new code, so only a reload answers it.
     "window.addEventListener('message',function(e){var m=e&&e.data;"
-    "if(m&&m.romp==='wsStale'){if(m.build){buildStale=true;show(BUILDMSG);}else{connStale=true;show(CONNMSG);}}});"
+    "if(m&&m.romp==='wsStale'){if(m.build){buildStale=true;show(BUILDMSG);}else{connStale=true;show(CONNMSG);}}"
+    "else if(m&&m.romp==='wsFresh'){connStale=false;if(buildStale)show(BUILDMSG);else box.classList.remove('show');}});"
     "rl.onclick=function(){location.reload();};"
     "dm.onclick=function(){dismissed=served;connStale=false;buildStale=false;box.classList.remove('show');};"
     "check();setInterval(check,30000);})();")
