@@ -1139,8 +1139,21 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
     _srows = _load_states(states)
-    atoms += synthesize_orphans(_srows, atoms)   # salvaged replies FIRST: they are real atoms the turn
+    orphans = synthesize_orphans(_srows, atoms)  # salvaged replies FIRST: they are real atoms the turn
     #                                              grouping must absorb (idle spans overlay afterwards)
+    # A salvaged reply has NO position in the transcript graph — that absence is the very thing the
+    # marker exists to paper over — so the leaf_override walk cannot drop it the way it drops the
+    # abandoned chain. Unfiltered, deleting a message left its reply standing alone in the chat: the
+    # prompt vanished (it was on the chain) while the answer stayed (it was re-synthesized from
+    # states/), which reads as though the delete half-worked (the user 2026-08-01). Filter on the CUT
+    # RECORD's own timestamp — an exact event, not a window — since time is the only ordering a
+    # graph-less atom has. Idle spans are deliberately NOT filtered: they describe the session's
+    # working state NOW (an open span runs to `now`), not conversation content.
+    if leaf_override and leaf_override in adapter.by_uuid:
+        cut_t = parse_z(adapter.by_uuid[leaf_override].get("timestamp"))
+        if cut_t:
+            orphans = [a for a in orphans if a["t"] <= cut_t]
+    atoms += orphans
     atoms += synthesize_idle(_srows, atoms, now)
     turns = segment_turns(atoms, rompuuid)
     for turn in turns:

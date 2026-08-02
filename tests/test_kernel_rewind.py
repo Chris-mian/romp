@@ -197,6 +197,43 @@ class ParseCut(unittest.TestCase):
         self.assertIn("second ask", texts(full))
         self.assertIn("first reply", texts(cut))   # everything up to the cut point survives
 
+    def test_a_salvaged_reply_in_the_abandoned_tail_drops_with_the_cut(self):
+        """Deleting a message must take its REPLY with it even when that reply survives only as an
+        orphanReply marker. A salvaged reply has no position in the transcript graph — that absence
+        is exactly what the marker papers over — so the leaf_override walk cannot drop it the way it
+        drops the abandoned chain. Unfiltered, the prompt vanished (it was on the chain) while the
+        answer stayed standing alone (it was re-synthesized from states/), which reads as a delete
+        that only half worked (the user 2026-08-01)."""
+        recs = [
+            _rec("user", "u1", None, "first ask", timestamp="2026-07-16T10:00:00Z"),
+            _rec("assistant", "a1", "u1", "first reply", timestamp="2026-07-16T10:00:10Z"),
+            _rec("user", "u2", "a1", "second ask", timestamp="2026-07-16T10:00:20Z"),
+        ]
+        p = self._transcript(recs)
+        ep = lambda z: km.em.parse_z(z)
+        markers = [   # one on each side of the cut point (a1, 10:00:10)
+            {"t": ep("2026-07-16T10:00:05Z"), "orphanReply": {"uuid": "o-early", "text": "kept salvage"}},
+            {"t": ep("2026-07-16T10:00:30Z"), "orphanReply": {"uuid": "o-late", "text": "doomed salvage"}},
+        ]
+        texts = lambda s: json.dumps([a.get("message") for t in s["turns"] for a in t["atoms"]])
+        full = km.em.parse_session(p, states=markers)
+        self.assertIn("doomed salvage", texts(full))     # with no delete pending, the salvage shows
+        self.assertIn("kept salvage", texts(full))
+        cut = km.em.parse_session(p, states=markers, leaf_override="a1")
+        self.assertNotIn("second ask", texts(cut))       # the deleted prompt goes, as before
+        self.assertNotIn("doomed salvage", texts(cut))   # and now its salvaged reply goes WITH it
+        self.assertIn("kept salvage", texts(cut))        # a salvage from BEFORE the cut is untouched
+        self.assertIn("first reply", texts(cut))
+
+    def test_the_cut_never_filters_idle_spans(self):
+        """Idle atoms describe the session's working state NOW (an open span runs to `now`), not
+        conversation content — filtering them on the cut's timestamp would blank the live working
+        indicator for any session sitting on a pending delete."""
+        src = inspect.getsource(km.em.parse_session)
+        cut_block = src[src.index("if leaf_override and leaf_override in adapter.by_uuid"):]
+        self.assertNotIn("synthesize_idle", cut_block.split("atoms += orphans")[0])
+        self.assertIn("orphans = [a for a in orphans if a[\"t\"] <= cut_t]", src)
+
     def test_kernel_parse_keys_the_cache_on_the_cut(self):
         # arming and clearing both change the parse with NO file change — the cut must ride the key
         src = inspect.getsource(km._parse)
