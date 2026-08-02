@@ -425,6 +425,15 @@ export class FederationManager {
     // A drag in ANY pane rewrites the arrangement; every other pane hears it through `storage` (which fires
     // only in other same-origin contexts) and this one through the writer's own CustomEvent. Both land here,
     // and re-emitting all three merged payloads is what moves the tabs, lanes and feed groups together.
+    // ...and it RE-EMITS ONLY: reacting to an arrangement by rewriting it is what made a drag fail to
+    // stick. gcView (below) drops ids the reporting hosts no longer list, judged against THIS context's
+    // session lists — so any pane holding a stale list (a dashboard window whose socket died, a surface
+    // that never got the newest session's push) answered another pane's drag by pruning the very tab
+    // that had just moved, and the writer obeyed the write-back. On the audited drag the strip permuted
+    // correctly and reverted in the same second, twice per attempt, so the tab looked like it never
+    // moved at all — and it was always the NEWEST tab, the one a stale list is most likely to be missing
+    // (the user 2026-08-02). A view arrangement is not new information about what exists; only a host's
+    // own report is, so only an inbound tabOrder push may gc (see emitMergedOrder's `gc`).
     const reorder = () => { this.emitMergedOrder(); this.emitMergedFeed(); this.emitMergedTimeline(false); };
     w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_KEY) reorder(); });
     w.addEventListener(VIEW_ORDER_EVENT, reorder);
@@ -446,7 +455,7 @@ export class FederationManager {
       this.perHostOrder[host] = Array.isArray(m.order) ? m.order.filter((x: any) => typeof x === "string") : [];
       this.perHostTabs[host] = Array.isArray(m.tabs) ? m.tabs : [];
       this.ensureHost(host);
-      this.emitMergedOrder();
+      this.emitMergedOrder(true);   // a host just reported its sessions → the one moment gc has fresh evidence
       return;
     }
     if (m && m.type === "feed") {
@@ -511,8 +520,12 @@ export class FederationManager {
     window.dispatchEvent(new MessageEvent("message", { data }));
   }
 
-  private emitMergedOrder(): void {
-    this.gcView();
+  // `gc` is the caller's answer to "did a host just tell me what it has?" — true only on an inbound
+  // tabOrder push, which carries a fresh, complete list for that host. Every other caller (a drag
+  // landing here through the storage / CustomEvent path) re-emits without touching the stored
+  // arrangement, so no pane can prune away what another pane just arranged.
+  private emitMergedOrder(gc = false): void {
+    if (gc) this.gcView();
     const order = mergeHostOrder(this.perHostOrder, this.hostSeq, this.view());
     const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
     window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs } }));

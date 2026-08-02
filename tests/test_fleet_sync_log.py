@@ -133,6 +133,46 @@ class VersionTag(unittest.TestCase):
         self.assertNotIn("\\u2193", js)
 
 
+class OneCommitOneVersion(unittest.TestCase):
+    """Two machines on the SAME commit read as two different releases in the network panel (the user
+    2026-08-02: this machine v0.3.0 at 4a0beaa, the host beside it v0.2.0+ at 4a0beaa). The release is a
+    property of the code, so that pairing cannot both be true — and the sha said which reading was the
+    artifact: `romp update` pushes COMMITS over ssh, never tags, so the far clone was naming the release
+    off whatever older tag it had ever fetched."""
+
+    def test_the_release_is_read_off_the_committed_tree_not_the_local_tags(self):
+        body = inspect.getsource(km._kernel_ver).split('"""')[2]   # past the docstring, which says why
+        self.assertIn('"VERSION"', body, "the release name has to travel with the commit")
+        self.assertNotIn("describe", body,
+                         "tags are refs; a pushed commit arrives without them, so describing is a "
+                         "per-clone answer to a per-commit question")
+
+    def test_the_version_matches_the_file_every_machine_gets(self):
+        v = km._kernel_ver()
+        if v is None:
+            return                      # not a git checkout / no VERSION file — nothing to agree on
+        root = os.path.dirname(HERE)
+        with open(os.path.join(root, "VERSION")) as f:
+            want = "v" + f.read().strip()
+        self.assertEqual(v.rstrip("+"), want, "the number both machines can see in their own tree")
+
+    def test_a_host_on_this_commit_wears_this_machines_release(self):
+        row = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 51000, "token": "tok",
+               "status": "up", "sids": [], "kernel_sha": (km._local_head(short=True) or "abc1234"),
+               "kernel_ver": "v0.1.0+", "proc": None}
+        pub = km._remote_public(row)
+        self.assertFalse(pub["outOfDate"], "same commit — nothing to push")
+        self.assertEqual(pub["kernelVer"], pub["localVer"],
+                         "one commit cannot be two releases; the stale tag graph doesn't get a vote")
+
+    def test_a_host_on_another_commit_keeps_its_own_release(self):
+        row = {"host": "TESTHOST", "kernel_port": 29855, "local_port": 51000, "token": "tok",
+               "status": "up", "sids": [], "kernel_sha": "0000000", "kernel_ver": "v0.1.0", "proc": None}
+        pub = km._remote_public(row)
+        self.assertEqual(pub["kernelVer"], "v0.1.0",
+                         "a genuinely different build must still say what IT is running")
+
+
 class SpinWhileWorking(unittest.TestCase):
     """The romp loader shows wherever the panel is WAITING on work (the user 2026-07-30)."""
 
