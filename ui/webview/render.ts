@@ -380,6 +380,12 @@ let pendingAnchorIntent: string | null = null; // kind the uuid anchor must hono
 let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
 let pendingAnchorKind: string | null = null; // intent for the time fallback: "user" = land on the user's own turn
 let anchorPendingOlder = false; // scrollToAnchor kicked off a loadOlder fetch for an anchor past the resident tail → don't toast "couldn't locate"; chatHead re-lands when the chunk arrives (the user 2026-06-27)
+// KEEP-OFFSET landing (the user 2026-08-02). A scroll-back loadOlder re-anchors on the row the reader was
+// on — that is POSITION PRESERVATION, not a deep-link: the row must come back at the SAME on-screen offset,
+// with no top-align and no flash. Non-null ⇒ resolve pendingAnchor by id as usual (which renders the window
+// around it), then restore it to this y instead of calling landOn. Sticks with pendingAnchor across
+// render-pass retries, like pendingAnchorIntent.
+let pendingAnchorKeepY: number | null = null;
 // Landing diagnostics (the user's ask, 2026-06-10): record HOW each deep-link
 // landing resolved — exact pointer / refused wrong-kind pointer / time-nearby
 // / gave up. The trail is posted to the host (→ ~/.local/state/romp/
@@ -4750,8 +4756,12 @@ function scrollToAnchor(uuid: string): boolean {
       // run on every push re-render (0.5–3s), so a mid-fetch attempt used to fall through to
       // "pointer-not-rendered" and toast a false "couldn't locate" while the chunk that would land it was
       // still on the wire. Re-point the arrival re-land at THIS uuid and keep waiting.
+      // …and the arrival becomes a DEEP-LINK land, so drop any keep-offset a scroll-back fetch left behind:
+      // in the short-circuit branch the in-flight fetch may well BE a requestOlder, whose stale offset would
+      // otherwise silently demote this click to a position restore.
       if (fetchOlderForAnchor(activeId, uuid) || loadingOlder.has(activeId)) {
         pendingOlderAnchor.set(activeId, uuid);
+        pendingOlderKeepY.delete(activeId);
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false;
       }
     }
@@ -4771,6 +4781,21 @@ function scrollToAnchor(uuid: string): boolean {
     pendingAnchor = null; pendingAnchorIntent = null; landTrail.push("pointer-wrong-kind"); return false;
   }
   pendingAnchor = null; pendingAnchorIntent = null;
+  // POSITION PRESERVATION, not a jump (the user 2026-08-02): a scroll-back loadOlder re-anchors on the row
+  // the reader was already on, so it must land back at its captured offset — never top-aligned and flashed
+  // like a deep-link. Routing it through landOn was what yanked a reader off the summary they had just
+  // jumped to and onto the head of the resident tail (an old Bash card); see chatHead.
+  if (pendingAnchorKeepY != null) {
+    const keepY = pendingAnchorKeepY;
+    pendingAnchorKeepY = null;
+    landTrail.push("pointer-keep-offset");
+    const content = document.getElementById("content");
+    if (content) {
+      const yNow = target.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
+      content.scrollTop = yNow - keepY;
+    }
+    return true;
+  }
   landTrail.push("pointer-exact");
   landOn(target);
   return true;
@@ -5409,7 +5434,7 @@ function landActive(content: HTMLElement | null, v: View): void {
   }
   sizeSpacers(v);  // the view is now VISIBLE (display set in showActive), so the spacers get a real height
                    // measurement — a tab pre-built while display:none could only fall back until now
-  const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
+  const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind, keep: pendingAnchorKeepY != null };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
   // BY-ID landing ONLY (the user 2026-06-20, who wanted to shrink the 29%, then remove the time fallback). TIER 1, by id:
@@ -5420,15 +5445,19 @@ function landActive(content: HTMLElement | null, v: View): void {
   // unanchorable — so they honest-fail with a toast rather than a clock-nearest guess (which often landed on
   // an unrelated turn anyway — the 'retry'-message bug). The old time tier-2 (scrollToNearestT) is GONE: the
   // last time-based navigation removed, per "no time heuristics". WORK/REPLY intent never had a tier-2 either.
-  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null;
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
   if (att.anchor || att.t != null) {
     vscodeApi?.postMessage({
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
+      keep: att.keep || undefined,
     });
-    if (!scrolled && !anchorPendingOlder) {
+    // A keep-offset restore is NOT a user navigation — nobody asked to locate anything, so a failed one must
+    // not raise "couldn't locate this in the transcript" at a reader who only scrolled. It still gets its
+    // audit row above (trail + keep), which is where a lost position is diagnosed from.
+    if (!scrolled && !anchorPendingOlder && !att.keep) {
       landToast("couldn't locate this in the transcript");  // fetching older history → chatHead re-lands, no false "couldn't locate"
       // …and file it in the error center. The toast is transient and the locate-audit.jsonl row is invisible
       // from the UI, so a failed jump left NOTHING the user could point at afterwards — it read as the click
@@ -7224,24 +7253,37 @@ function chatTail(msg: any) {
 // anchor on the row the user was at, so the older content appears ABOVE without the view jumping.
 const loadingOlder = new Set<string>();                 // sessions with a loadOlder in flight
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
+// sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and
+// the arrival is POSITION PRESERVATION; ABSENT ⇒ it was a deep-link (fetchOlderForAnchor) and the arrival is a
+// real jump that top-aligns + flashes. The two were indistinguishable before, so every scroll-back arrival
+// jumped (the user 2026-08-02).
+const pendingOlderKeepY = new Map<string, number>();
 function chatHead(msg: any) {
   loadingOlder.delete(msg.id);
   hideLoadingPill();
+  const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
   const s = sessions.get(msg.id);
-  if (!s) { pendingOlderAnchor.delete(msg.id); return; }
+  if (!s) { forget(msg.id); return; }
   const before = msg.before | 0, from = msg.from | 0;
-  if (before !== (s.headFrom ?? 0)) { pendingOlderAnchor.delete(msg.id); return; }   // stale / overlapping → ignore
+  if (before !== (s.headFrom ?? 0)) { forget(msg.id); return; }   // stale / overlapping → ignore
   const older = (msg.events || []) as ChatEvent[];
   if (older.length) s.events = older.concat(s.events);
   s.headFrom = from;
   const v = views.get(msg.id);
-  if (msg.id !== activeId) { pendingOlderAnchor.delete(msg.id); if (v) v.stale = true; return; }
+  if (msg.id !== activeId) { forget(msg.id); if (v) v.stale = true; return; }
   // re-anchor: reset the active view so it re-windows around the saved row (now further down s.events), and
-  // land on it (deep-link path) — the prepended older content sits above, off-screen, ready to scroll into.
+  // put that row back where it was — the prepended older content sits above, off-screen, ready to scroll into.
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; }
   const anchorUuid = pendingOlderAnchor.get(msg.id);
-  pendingOlderAnchor.delete(msg.id);
-  if (anchorUuid) { pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; }
+  const keepY = pendingOlderKeepY.get(msg.id);
+  forget(msg.id);
+  // A DEEP-LINK STILL WAITING TO LAND WINS (the user 2026-08-02). A scroll-back re-anchor is about where the
+  // reader was; a pending deep-link is about where they asked to GO. Letting the arrival overwrite it sent
+  // the click somewhere the user never named.
+  if (anchorUuid && !pendingAnchor) {
+    pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+    pendingAnchorKeepY = keepY ?? null;
+  }
   showActive();
 }
 
@@ -7253,20 +7295,36 @@ function fetchOlderForAnchor(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || (s.headFrom ?? 0) <= 0 || loadingOlder.has(sid)) return false;
   pendingOlderAnchor.set(sid, uuid);
+  pendingOlderKeepY.delete(sid);   // a DEEP-LINK: land it properly (top-align + flash), not offset-preserved
   loadingOlder.add(sid);
   showLoadingPill();
   vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.headFrom });
   return true;
 }
 
-// Ask the kernel for the chunk of history just before the resident tail. Anchors on the current top row so
-// chatHead can land the user back on it after prepending.
-function requestOlder(sid: string, v: View, _content: HTMLElement): void {
+// Ask the kernel for the chunk of history just before the resident tail. Anchors on the row the reader is
+// actually LOOKING AT — the first turn still visible at the viewport top, with its on-screen offset — so
+// chatHead can put it back exactly there once the older chunk is prepended above it.
+//
+// It used to anchor on `v.el.querySelector(".turn[data-uuid]")`: the first turn in the DOM, which after a
+// deep-link is a whole window-radius above what the reader is reading. Paired with chatHead landing it as a
+// deep-link (top-align + flash), that produced the reported bug (the user 2026-08-02): click a card's
+// distilled summary → it lands pointer-exact → landOn top-aligns it, which (when the summary sits within
+// WINDOW_RADIUS of the resident head and older history is still on the server) trips this very fetch → the
+// arrival yanks the reader off the summary and onto the head of the resident tail, an unrelated old Bash
+// card. Clicking the summary a second time then "worked" because the chunk was resident by then. Same
+// mechanism when the reader merely scrolls up after the click. Anchor on the reader's own row, restore it to
+// its own offset, and the fetch becomes invisible again — which is all it was ever supposed to be.
+function requestOlder(sid: string, v: View, content: HTMLElement): void {
   const s = sessions.get(sid);
   if (!s || (s.headFrom ?? 0) <= 0 || loadingOlder.has(sid)) return;
-  const firstTurn = v.el.querySelector(".turn[data-uuid]") as HTMLElement | null;
-  const anchor = firstTurn?.dataset.uuid || (s.events[0] as { uuid?: string } | undefined)?.uuid;
-  if (anchor) pendingOlderAnchor.set(sid, anchor);
+  const keep = captureScrollAnchor(content, v);
+  const anchor = keep?.uuid
+    || (v.el.querySelector(".turn[data-uuid]") as HTMLElement | null)?.dataset.uuid
+    || (s.events[0] as { uuid?: string } | undefined)?.uuid;
+  // keepY on EITHER branch: this arrival must never jump. With no capture (nothing visible at the viewport
+  // top) 0 restores the fallback row to the top, which is where it already is.
+  if (anchor) { pendingOlderAnchor.set(sid, anchor); pendingOlderKeepY.set(sid, keep?.y ?? 0); }
   loadingOlder.add(sid);
   showLoadingPill();
   vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.headFrom });
