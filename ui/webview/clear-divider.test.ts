@@ -42,7 +42,8 @@ test("the pre-clear history lazy-loads once per boundary and renders through the
   assert.match(RENDER, /else if \(m\.type === "chatEpisode"\) chatEpisode\(m\);/);
   assert.match(RENDER, /episodeCache\.set\(key, got\)/);
   // the folded episode reuses renderEvent — the SAME renderers as the live transcript, not a text dump
-  assert.match(RENDER, /wrap\.appendChild\(renderEvent\(e\)\)/);
+  // (it passes the chained prior epoch, so the fold's rail marks day boundaries the same way too)
+  assert.match(RENDER, /wrap\.appendChild\(renderEvent\(e, prior\)\)/);
   // a bounded render says what it cut (no silent truncation)
   assert.match(RENDER, /earlier event.*of the cleared conversation not shown/);
 });

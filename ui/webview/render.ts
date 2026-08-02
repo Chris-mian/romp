@@ -400,8 +400,10 @@ let landTrail: string[] = [];
 // avgTurnH), so content.scrollHeight stays honest and stick-to-bottom never snaps
 // (the failure mode of the reverted content-visibility approach). winStart === 0
 // ⇒ no spacer, whole transcript rendered (short sessions, compact mode).
-// Invariant: turn children === (len − winStart); view.rendered === len (events
-// accounted), so DOM childNodes === (winStart>0 ? 1 : 0) + (len − winStart).
+// Invariant: view.rendered === len (every event accounted for). Note the DOM child
+// count is NOT len − winStart + spacer: a unit may own more than one node (the day
+// divider that opens a new day precedes its turn), so anything mapping DOM back to
+// units reads data-unit off the node rather than counting children.
 interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; }
 const views = new Map<string, View>();
 
@@ -1384,21 +1386,35 @@ function eventEpoch(ev: ChatEvent): number | null {
 // Nothing re-reveals a suppressed marker: a stamp marks a time CHANGE and nothing else
 // (the user 2026-07-23) — see paintRailSticky for why the rail no longer needs repeats.
 function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
-  const { text, day, hm, date } = markerLabel(epoch, prevEpoch, Date.now());
+  const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
-  if (day) m.classList.add("day");
   m.dataset.hm = hm;
-  if (text) {
-    if (day && date) {
-      // Two lines: the date floats on its own row ABOVE, the time stays on the dot's row —
-      // a combined "Yesterday · 21:24" overruns the 58px gutter and collides with the dot.
-      const dd = el("span", "tm-date"); dd.textContent = date; m.appendChild(dd);
-      const tt = el("span", "tm-time"); tt.textContent = hm; m.appendChild(tt);
-    } else {
-      m.textContent = text;
-    }
-  }
+  // The gutter shows the TIME and nothing else. The date rides a full-width day divider
+  // instead (dayDividerFor below) — no date word has to fit 47px of rail any more.
+  if (text) m.textContent = day ? hm : text;
   return m;
+}
+
+// The day boundary itself: a hairline rule across the prose column with the date on it
+// ("Yesterday" / "Mon" / "Jun 3"), emitted as a SIBLING immediately before the first turn
+// of a new (non-today) day. Returns null on every other turn.
+//
+// Why it is not in the rail (the user 2026-08-01): the date used to stack on its own row
+// inside the .time-marker, but the gutter is only 47px wide and "Yesterday" measures 52.6px
+// bold, so its "Y" was clipped by the pane's overflow. Nothing that has to FIT a fixed 47px
+// is safe — `--fs` follows --vscode-chat-font-size, so a bigger chat font re-clips whatever
+// just barely fit at 13px. Out here the label has the whole column and can never be cut off.
+//
+// It must be a SIBLING, never the turn's first child: .dot and .time-marker are absolutely
+// positioned against the TURN's top edge, so a divider inside it would shove the message down
+// and leave the dot stranded up beside the rule.
+function dayDividerFor(epoch: number, prevEpoch: number | null): HTMLElement | null {
+  const { day, date } = markerLabel(epoch, prevEpoch, Date.now());
+  if (!day || !date) return null;
+  const d = el("div", "day-divider");
+  const lbl = el("span", "day-divider-label"); lbl.textContent = date;
+  d.appendChild(lbl);
+  return d;
 }
 
 // STICKY rail stamp (the user 2026-07-22). A stamp can only sit at a TURN boundary, so a single message
@@ -2053,8 +2069,18 @@ function fillClearBody(body: HTMLElement, got: { events: ChatEvent[]; truncated?
     body.appendChild(n);
   }
   const wrap = el("div", "clear-episode");
+  let prevEp: number | null = null;
   for (const e of got.events) {
-    try { wrap.appendChild(renderEvent(e)); }
+    try {
+      const ep = eventEpoch(e);
+      const prior = prevEp;   // the PREVIOUS event's epoch — chained, so the fold divides days
+      if (ep != null) {       // rather than re-stamping the full date on every turn in it
+        const dv = dayDividerFor(ep, prior);
+        if (dv) wrap.appendChild(dv);
+        prevEp = ep;
+      }
+      wrap.appendChild(renderEvent(e, prior));
+    }
     catch { /* one malformed historical event must not blank the whole fold */ }
   }
   body.appendChild(wrap);
@@ -4906,13 +4932,25 @@ function syncView(id: string, atBottom?: boolean): View {
   }
   // Normal mode, append AT the tail (unit === event, top spacer only): the cheap incremental hot path —
   // append the new turns + re-check a trailing window, tagging data-unit so the scroll↔unit map stays valid.
-  const hasSpacer = (v.winStart ?? 0) > 0 ? 1 : 0;
   let from = Math.min(v.rendered, Math.max(0, len - TAIL_RECHECK));
   from = Math.max(from, v.winStart ?? 0);
-  const keep = hasSpacer + (from - (v.winStart ?? 0));
-  while (v.el.childNodes.length > keep) v.el.removeChild(v.el.lastChild as ChildNode);
+  // Drop every node from unit `from` onward, then re-render that span. Trim by DATA-UNIT, never by
+  // child COUNT: a unit can put more than one node in the thread (a day divider precedes the turn
+  // that opens a new day), so `keep = spacer + (from - winStart)` counted one node per unit and the
+  // extra dividers made it delete that many live turns off the tail, which then never came back.
+  // Reading the unit off the node is exact however many nodes a unit owns; the top spacer carries no
+  // data-unit, so it stops the walk on its own.
+  const unitOf = (n: ChildNode): number =>
+    n instanceof HTMLElement && n.dataset.unit != null ? Number(n.dataset.unit) : -1;
+  while (v.el.lastChild && unitOf(v.el.lastChild) >= from) v.el.removeChild(v.el.lastChild);
   for (let i = from; i < len; i++) {
-    const node = renderEvent(s.events[i], prevTimedEpoch(s.events, i), turnWorkedSecs(s.events, i, working));
+    const prev = prevTimedEpoch(s.events, i);
+    const ep = eventEpoch(s.events[i]);
+    if (ep != null) {   // a day boundary opens with its divider here too, or the tail append would drop it
+      const dv = dayDividerFor(ep, prev);
+      if (dv) { dv.dataset.unit = String(i); v.el.appendChild(dv); }
+    }
+    const node = renderEvent(s.events[i], prev, turnWorkedSecs(s.events, i, working));
     node.dataset.unit = String(i);   // unit === event in normal mode
     v.el.appendChild(node);
   }
@@ -4967,6 +5005,13 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
   const it = items[u];
   const tag = (node: HTMLElement): HTMLElement => { node.dataset.unit = String(u); return node; };
   const adv = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
+  // A new day opens with its divider, above whatever unit starts that day (tagged with the same
+  // data-unit so the scroll↔unit map still resolves every node it walks).
+  const dayOpen = eventEpoch(s.events[itemFirstEvent(it)]);
+  if (dayOpen != null) {
+    const dv = dayDividerFor(dayOpen, prevEpoch);
+    if (dv) v.el.appendChild(tag(dv));
+  }
   if (it.kind === "toolgroup") {
     const first = s.events[it.indices[0]];
     const key = toolGroupKey(first);

@@ -6,18 +6,22 @@ export const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export interface MarkerLabel {
-  text: string; // "" → suppressed (same minute as the previous timed turn)
-  day: boolean; // true → first turn of a past day; emphasise + show the date
+  text: string; // "" → suppressed (same minute as the previous timed turn). On a day marker this
+                // is still the combined "Yesterday · 11:03", but the rail renders only `hm` there
+                // and hands `date` to the divider, so here it mostly answers "is there a stamp?"
+  day: boolean; // true → first turn of a past day; opens a day divider carrying the date
   hm: string;   // the bare "HH:MM", ALWAYS — a suppressed turn still carries its time so the
                 // sticky rail stamp can name the time at the top of the view.
   date: string; // the date word ("Yesterday" / "Mon" / "Jun 3") on a day marker, else "".
-                // Named so the renderer can stack it on its OWN line above hm — a combined
-                // "Yesterday · 21:24" overruns the narrow rail gutter and hits the dot.
+                // Split out from `text` because the renderer puts it on a full-width DAY DIVIDER
+                // rather than in the rail (dayDividerFor in render.ts): the gutter is 47px wide
+                // and "Yesterday" measures 52.6px, so in the rail its leading "Y" was clipped.
 }
 
 // HH:MM for a turn, given the previous TIMED turn's epoch (or null) and "now".
 // Rules, in order:
-//   1. First turn of a past (non-today) day → "Yesterday · 11:03" / "Mon · …" / "Jun 3 · …", emphasised.
+//   1. First turn of a past (non-today) day → day: true, with the date word split into `date`.
+//      The rail shows just "11:03"; the date opens a divider above the turn (see dayDividerFor).
 //   2. Same minute AND same day as the previous timed turn → suppressed (""), so a run of
 //      same-minute events (11:03, 11:03, 11:03, 11:04) shows the stamp only when it changes.
 //   3. Otherwise → "HH:MM".
