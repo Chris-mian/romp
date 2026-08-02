@@ -155,9 +155,10 @@ class TheFoldReplaysTheVerdictAfterTheLift(unittest.TestCase):
 
 
 class TheNudgeIsNotHeldByTheLift(unittest.TestCase):
-    """The second half of the silence: _nudge_fire_list drops a goal whose diary holds evidence NEWER
-    than the last turn romp watched end, and records the hold under a why the stall surface screens. A
-    wall-clock lift is exactly such a row — so the card showed no nudge and no stalled chip either."""
+    """The second half of the silence: _nudge_fire_list holds a goal whose diary gained evidence NEWER
+    than the last turn romp watched end, under a why the stall surface screens — so the card showed no
+    nudge and no stalled chip either. The lift's stamp is one layer; the guard counting only JUDGE rows
+    is the other (test_nudge_hold_judge_rows.py), and the lift now clears both."""
 
     def _fresh(self, lift_ev):
         return {"nodes": {GID: {"id": GID, "log": [
@@ -172,10 +173,20 @@ class TheNudgeIsNotHeldByTheLift(unittest.TestCase):
         self.assertEqual([f[0] for f in keep], [GID])
         self.assertEqual(held, [], "nothing in the diary postdates the turn romp saw end")
 
-    def test_a_wall_clock_lift_holds_it_invisibly(self):
+    def test_not_even_a_wall_clock_lift_can_hold_it_now(self):
         held = []
         keep = km._nudge_fire_list(self._fresh(LIFT_WALL_T), [(GID, 0, True)],
                                    arm_t=CUT_T, seen_t=RESUME_T, held=held)
+        self.assertEqual([f[0] for f in keep], [GID],
+                         "a lift is romp's own bookkeeping, never a judge ruling on an unseen turn")
+        self.assertEqual(held, [])
+
+    def test_a_judge_ruling_on_an_unseen_turn_still_holds(self):
+        fresh = self._fresh(RESUME_T)
+        fresh["nodes"][GID]["log"].append(
+            {"ev_t": LIFT_WALL_T, "src": "closer", "kind": "awaiting", "at": FILED_T})
+        held = []
+        keep = km._nudge_fire_list(fresh, [(GID, 0, True)], arm_t=CUT_T, seen_t=RESUME_T, held=held)
         self.assertEqual(keep, [])
         self.assertEqual([f[0] for f in held], [GID])
         self.assertFalse(jd.stall_why_stands(jd.WHY_TURN_IN_FLIGHT, SID),
