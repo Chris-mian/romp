@@ -26,7 +26,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview } from "./preview";
-import { hostNameNodes, hostIsDown, hostDownNote } from "./host-prefix";
+import { hostNameNodes, hostPrefix, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
@@ -3659,26 +3659,40 @@ window.addEventListener("blur", () => dismissTabMenu());
 function startTabRename(tab: HTMLElement, label: HTMLElement, id: string) {
   const s = sessions.get(id);
   if (!s || tab.querySelector(".tab-rename")) return;
+  // A remote session displays as "host:name", where "host:" is METADATA this viewer added (see
+  // ./host-prefix) — the far kernel knows the session by the bare name alone. Seeding the editor with
+  // the whole display string handed the user the host to edit and sent it back on the other side of the
+  // rename, where the colon is not a legal session name and the write was refused (the user 2026-08-02).
+  // So the host stays put, rendered exactly as the label renders it and not editable, and the input
+  // holds the one part that is theirs to change.
+  const p = hostPrefix(s.name, id);
+  const base = p ? p.rest : s.name;
   const input = document.createElement("input") as HTMLInputElement;
   input.className = "tab-rename";
-  input.value = s.name;
+  input.value = base;
   input.spellcheck = false;
-  input.size = Math.max(s.name.length, 4);
+  input.size = Math.max(base.length, 4);
+  const fixed = p ? el("span", "host-prefix") : null;
+  if (fixed) fixed.textContent = p!.host;
   renameActive = true;
   tab.draggable = false;            // dragging would eat the text selection
   label.style.display = "none";
   label.after(input);
+  if (fixed) input.before(fixed);
   let finished = false;
   const done = (commit: boolean) => {
     if (finished) return;
     finished = true;
     const v = input.value.trim();
     input.remove();
+    fixed?.remove();
     label.style.display = "";
     tab.draggable = true;
     renameActive = false;
     if (renderPendingAfterRename) { renderPendingAfterRename = false; renderTabs(); }
-    if (commit && v && v !== s.name && vscodeApi) vscodeApi.postMessage({ type: "renameSession", id, name: v });
+    // The bare name, never the display string: the host prefix is this viewer's, and the kernel that
+    // owns the session is addressed by `id` (federation routes on the prefix there).
+    if (commit && v && v !== base && vscodeApi) vscodeApi.postMessage({ type: "renameSession", id, name: v });
   };
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();
