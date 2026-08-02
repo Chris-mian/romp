@@ -331,38 +331,48 @@ def _kernel_sha():
     return _SHA or None
 
 
-_VER = None                                  # lazily-resolved release tag the running code descends from
+_VER = None                                  # lazily-resolved release the running code descends from
 
 
 def _kernel_ver():
-    """The RELEASE this kernel's code descends from — the nearest tag behind HEAD ('v0.2.0'), plus a '+'
-    when HEAD has moved past it. A bare sha means nothing without your own sha to compare it to (the
-    user 2026-07-30), and on a fleet that is exactly the reading you can't do in your head; a tag is a
-    number both machines already agree on. `git describe --tags --abbrev=0` names the tag; the VERSION
-    file is the fallback for a clone with no tags fetched. Resolved once, like _kernel_sha."""
+    """The RELEASE this kernel's code descends from — 'v0.3.0', plus a '+' when HEAD has moved past the
+    commit that cut it. A bare sha means nothing without your own sha to compare it to (the user
+    2026-07-30), and across machines that is exactly the reading you can't do in your head; a release is
+    a number both machines already agree on. Resolved once, like _kernel_sha.
+
+    Derived ENTIRELY from the commit — the tracked VERSION file, and the commit that last wrote it — and
+    NOT from `git describe`, because tags are refs and refs do not travel with the code. `romp update`
+    ships COMMITS (`_update_remote` pushes HEAD to a scratch ref over ssh), so a machine romp has updated
+    holds the new commit and none of the new tags: describing there names whatever OLDER tag that clone
+    happens to have fetched. That is how two machines sitting on the SAME commit reported different
+    versions in the network panel — same code, two numbers, and no way to tell which was lying (the user
+    2026-08-02). The VERSION file and the history behind it are part of the tree that gets pushed, so
+    every machine at one commit now derives one answer.
+
+    The '+' means HEAD is past the release BUMP (the commit that last set VERSION), which is the release
+    boundary the commit graph actually carries; the tag naming that release is usually placed on or just
+    after it, so a machine sitting exactly on the tag reads 'v0.3.0+' rather than 'v0.3.0'. That is the
+    price of a number every machine agrees on, and the sha beside it says precisely where you are."""
     global _VER
     if _VER is None:
-        tag = ""
+        ver = ""
         try:
-            r = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--abbrev=0"],
-                               capture_output=True, text=True, timeout=2)
-            tag = (r.stdout.strip() or "") if r.returncode == 0 else ""
-            if tag:
-                # exact-match tells a tagged release apart from "somewhere after it", so a machine sitting
-                # 27 commits past v0.2.0 never reports itself as v0.2.0 flat
-                e = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--exact-match"],
-                                   capture_output=True, text=True, timeout=2)
-                if e.returncode != 0:
-                    tag += "+"
-        except Exception:
-            tag = ""
-        if not tag:
+            v = (ROOT / "VERSION").read_text().strip()
+            ver = ("v" + v) if v and not v.startswith("v") else v
+        except OSError:
+            ver = ""
+        if ver:
             try:
-                v = (ROOT / "VERSION").read_text().strip()
-                tag = ("v" + v) if v and not v.startswith("v") else v
-            except OSError:
-                tag = ""
-        _VER = tag
+                # the release-bump commit, reachable from HEAD → identical on every clone at this commit
+                b = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%H", "HEAD", "--", "VERSION"],
+                                   capture_output=True, text=True, timeout=2)
+                bump = (b.stdout.strip() or "") if b.returncode == 0 else ""
+                head = _local_head() or ""
+                if bump and head and bump != head:
+                    ver += "+"
+            except Exception:
+                pass
+        _VER = ver
     return _VER or None
 
 
@@ -5835,6 +5845,15 @@ def _remote_public(r):
     ood = _remote_out_of_date(r)
     drift = _behind_info(r.get("kernel_sha") or "") if ood else {"behind": 0, "ahead": 0, "date": ""}
     stale = (r.get("status") or "down") != "up"
+    # ONE commit, ONE version (the user 2026-08-02, reading "v0.3.0 4a0beaa" here and "v0.2.0+ 4a0beaa"
+    # for a host on that same commit). The release is a property of the CODE, so two machines at one
+    # commit cannot honestly be on two releases: the remote is simply naming it from a tag graph its
+    # clone never received (see _kernel_ver — tags don't travel with a pushed commit, and a remote
+    # running a kernel from before that fix keeps reporting the old way forever). When the shas agree,
+    # this machine's name for that commit is the one both rows wear.
+    ver = r.get("kernel_ver") or ""
+    if _shas_agree(r.get("kernel_sha"), _local_head(short=True)):
+        ver = _kernel_ver() or ver
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
             "busPort": r.get("bus_port") or 0,   # peer-bus mode: a restarted bus reseeds its peer table from this
             "checkin": bool(r.get("checkin")),           # we publish ourselves to this hub (stage 3)
@@ -5846,7 +5865,7 @@ def _remote_public(r):
             # The RELEASE each side descends from (the user 2026-07-30): a sha alone says nothing without
             # your own sha in your head, and the whole point of the row is a comparison. "" when the remote
             # kernel predates the field — the row then shows the sha alone rather than guessing a version.
-            "kernelVer": r.get("kernel_ver") or "", "localVer": (_kernel_ver() or ""),
+            "kernelVer": ver, "localVer": (_kernel_ver() or ""),
             "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
             "kernelDate": drift["date"],
             # fastForward: a push here would only ADD commits (the remote's is an ancestor of ours) — the
