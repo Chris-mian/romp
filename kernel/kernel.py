@@ -2997,6 +2997,15 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     return fired
 
 
+# Diary sources whose rows can never mean "a judge ruled on a turn romp hasn't seen end" — the one thing
+# _nudge_fire_list's hold is about. romp's own bookkeeping ("romp", "interrupt") and the user's own
+# gestures ("user", "agent") stamp WALL-CLOCK now rather than a segment trigger, so on an idle session
+# such a row outranks the last ended turn permanently. Every judge — planner, closer, unblocker, courier,
+# grouper, and any added later — is counted by default; this is a denylist on purpose, because a row
+# wrongly counted wedges the nudge silently while one wrongly skipped only nudges a beat early.
+NUDGE_HOLD_EXEMPT_SRC = ("user", "agent", "romp", "interrupt")
+
+
 def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
     """The subset of this tick's due nudges still worth sending, judged against a FRESH store read
     (the closer-race guard — see the call site). A goal the judges moved off plain 'working' since the
@@ -3035,6 +3044,15 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
     Once a turn has ENDED, a verdict about it that leaves the goal working is the considered verdict —
     the same reasoning the 2026-07-30 fix made for the arm turn, which is just this turn's floor.
 
+    Only a JUDGE's row counts (NUDGE_HOLD_EXEMPT_SRC): the hold's own why is "a judge has ruled on a
+    turn that hasn't finished yet", and romp's own bookkeeping — an interrupt lift, an awaiting stamp
+    retired once the dispatches came back — is not that. Those writers stamp WALL-CLOCK now, so on an
+    idle session their row is newer than the last ended turn by construction and can never be outrun:
+    the hold stands, and because the stall surface screens this why, the card says nothing at all. That
+    is one half of the 2026-08-01 silent card (the other half was the interrupt lift's stamp, fixed at
+    the writer). A user gesture is exempt for the same reason and one more: it is the event that RE-ARMS
+    the nudge, so treating it as grounds to withhold one inverts it.
+
     `held` (optional list) collects the goals dropped for newer evidence, so the caller can record the
     hold as a DEFERRAL instead of a silent drop — every other nudge hold leaves a why and rides the 6h
     backstop, and this one leaving nothing is what made the deadlock unreadable from the state dir."""
@@ -3051,7 +3069,9 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
             #                                          status check, and nothing to hold either — a RESOLVED
             #                                          goal must never reach `held`, or the backstop below
             #                                          would eventually nudge a card that is already done
-        if cut and any((e.get("ev_t") or e.get("at") or 0) > cut for e in nd.get("log") or []):
+        if cut and any(e.get("src") not in NUDGE_HOLD_EXEMPT_SRC
+                       and (e.get("ev_t") or e.get("at") or 0) > cut
+                       for e in nd.get("log") or []):
             if held is not None:                     # a ruling on EVIDENCE from a turn romp hasn't seen end —
                 held.append(f)                       # the stall read is a world old; hold it, don't lose it
             continue
