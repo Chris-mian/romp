@@ -1,8 +1,8 @@
 // Chat rail rendering (the user 2026-06-13/14). Two changes, both about the left rail:
 //   1. Tool outcome lives ONLY on the left dot now — green ✓ disc on success, red ✗ disc on
 //      error. The duplicate right-side in-head ✓/✗ (`.tool-status`) was removed.
-//   2. A day boundary's marker stacks the date on its OWN line above the time, so a combined
-//      "Yesterday · 21:24" no longer overruns the narrow gutter into the dot.
+//   2. A day boundary shows its date on a full-width divider above the day's first turn, NOT in
+//      the rail — the gutter is 47px and "Yesterday" measures 52.6px, so it used to be clipped.
 // The chat renderer has no jsdom harness, so — like the feed-*.test.ts files — pin at the source.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -20,9 +20,20 @@ test("the redundant right-side tool-status ✓/✗ is gone; the dot carries the 
   assert.match(CSS, /\.dot\.green::before \{[^}]*content: "✓"/);
 });
 
-test("a day marker stacks the date above the time so it can't overrun the gutter", () => {
-  assert.match(RENDER, /el\("span", "tm-date"\)/);
-  assert.match(RENDER, /el\("span", "tm-time"\)/);
-  // the date line floats on its own row above (absolute, bottom:100%)
-  assert.match(CSS, /\.time-marker\.day \.tm-date \{[^}]*position: absolute[^}]*bottom: 100%/);
+test("the date rides a day divider, not the 47px rail gutter it used to be clipped by", () => {
+  // the old stacked-in-the-gutter markup is GONE — that is what clipped "Yesterday"
+  assert.doesNotMatch(RENDER, /tm-date|tm-time/, "no date/time spans stacked inside the marker");
+  assert.doesNotMatch(CSS, /\.tm-date\b|\.tm-time\b/, "the stacked-marker rules are removed");
+  // the divider carries it instead, with room to spare
+  assert.match(RENDER, /el\("div", "day-divider"\)/);
+  assert.match(RENDER, /el\("span", "day-divider-label"\)/);
+  assert.match(CSS, /\.day-divider \{/);
+  // the label must never be told to fit a fixed width — that is the bug class being closed
+  assert.doesNotMatch(CSS, /\.day-divider-label \{[^}]*\bwidth:/);
+  assert.match(CSS, /\.day-divider-label \{[^}]*white-space: nowrap/);
+});
+
+test("the rail marker shows only the time on a day boundary", () => {
+  // `day ? hm : text` — never the combined "Yesterday · 21:24", which overran the gutter
+  assert.match(RENDER, /m\.textContent = day \? hm : text/);
 });
