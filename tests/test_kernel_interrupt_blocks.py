@@ -24,6 +24,8 @@ jd = kern.jd
 SID = "11111111-2222-3333-4444-777777777777"
 GID = SID + ":g1"
 NOW = int(time.time())
+STOP_T = NOW - 120        # transcript time of the stop itself
+REENGAGE_T = NOW - 60     # trigger of the turn the re-engagement opened
 
 
 def _seed(status="working"):
@@ -48,7 +50,7 @@ class InterruptBlocks(unittest.TestCase):
 
     def test_interrupt_blocks_the_focus_goal_via_the_diary(self):
         _seed()
-        gid = kern._record_interrupt_block(SID)
+        gid = kern._record_interrupt_block(SID, STOP_T)
         self.assertEqual(gid, GID)
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][GID], "blocked", "the stopped focus goal needs the user")
@@ -58,8 +60,8 @@ class InterruptBlocks(unittest.TestCase):
 
     def test_reengage_lifts_our_block_with_an_unblock_event(self):
         _seed()
-        kern._record_interrupt_block(SID)
-        kern._lift_interrupt_block(SID, GID)
+        kern._record_interrupt_block(SID, STOP_T)
+        kern._lift_interrupt_block(SID, GID, REENGAGE_T)
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][GID], "working", "the user spoke → the block lifts")
         kinds = [(e["src"], e["kind"]) for e in st["nodes"][GID]["log"]]
@@ -67,12 +69,12 @@ class InterruptBlocks(unittest.TestCase):
 
     def test_a_real_judge_block_recorded_since_stays(self):
         _seed()
-        kern._record_interrupt_block(SID)
+        kern._record_interrupt_block(SID, STOP_T)
         st = jd.load_goals(SID)
         jd.record_verdict(st, st["nodes"][GID], "closer", "block", NOW + 10, why="pick a name")
         jd.rollup_status(st, False)
         jd.save_goals(SID, st)
-        kern._lift_interrupt_block(SID, GID)
+        kern._lift_interrupt_block(SID, GID, REENGAGE_T)
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][GID], "blocked", "a genuine verdict owns the card; the lift is a no-op")
 
@@ -82,7 +84,7 @@ class InterruptBlocks(unittest.TestCase):
         store["nodes"][GID]["nodeComplete"] = True   # (a hand-flip alone would be reverted by the fold)
         jd.rollup_status(store, True)
         jd.save_goals(SID, store)
-        self.assertIsNone(kern._record_interrupt_block(SID))
+        self.assertIsNone(kern._record_interrupt_block(SID, STOP_T))
 
     def test_marker_bookkeeping(self):
         kern._set_intr_blocked(SID, GID)

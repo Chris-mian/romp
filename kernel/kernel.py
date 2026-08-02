@@ -169,21 +169,12 @@ def _interrupt_cause(nxt_atom):
     return None
 
 
-def _interrupt_suppresses_nudge(turns):
-    """True while the session's most recent USER action is a GENUINE user INTERRUPT: the user stopped
-    the agent and hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until
-    their NEXT message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never
-    a timer or merely "a newer turn ended"). Concretely: the newest genuine-stop interrupt record
-    outranks the newest genuine HUMAN prompt. A peer postal message or romp injection opening a turn in
-    between does NOT lift it — only the user speaking does. The interrupt record itself authors 'human',
-    so it's classified FIRST. Also drives the feed's "interrupted" badge: the card's quiet is user-chosen.
-
-    A MACHINE cut — a kernel restart or the session's own process dying mid-turn — mints the SAME stop
-    record, but romp (not the user) caused it and immediately queued a resume notice to CONTINUE the
-    work, so it must never suppress the nudge nor paint "you stopped this — romp won't follow up" (the
-    user 2026-07-14: restart-cut SDK sessions sat inertly in Working wearing that false badge, and
-    auto-nudge stayed off so a genuine RE-stall was never caught). Such a cut is identified by the romp
-    resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally."""
+def _interrupt_marks(turns):
+    """(newest genuine user STOP, newest genuine human PROMPT) on this thread, in transcript time —
+    the one place the two are tallied, so the predicate below and the interrupt block's EVIDENCE stamp
+    read the same events. A MACHINE cut (kernel restart / process death) mints the same stop record but
+    is romp's own, so it never counts as a stop (_interrupt_cause, via the resume notice that follows
+    it). The interrupt record itself authors 'human', so it's classified FIRST."""
     users = [a for turn in turns for a in (turn.get("atoms") or []) if a.get("type") == "user"]
     last_intr = last_human = 0
     for i, a in enumerate(users):
@@ -194,6 +185,25 @@ def _interrupt_suppresses_nudge(turns):
             last_intr = max(last_intr, t)
         elif a.get("author") == "human":
             last_human = max(last_human, t)
+    return last_intr, last_human
+
+
+def _interrupt_suppresses_nudge(turns):
+    """True while the session's most recent USER action is a GENUINE user INTERRUPT: the user stopped
+    the agent and hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until
+    their NEXT message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never
+    a timer or merely "a newer turn ended"). Concretely: the newest genuine-stop interrupt record
+    outranks the newest genuine HUMAN prompt. A peer postal message or romp injection opening a turn in
+    between does NOT lift it — only the user speaking does. Also drives the feed's "interrupted" badge:
+    the card's quiet is user-chosen.
+
+    A MACHINE cut — a kernel restart or the session's own process dying mid-turn — mints the SAME stop
+    record, but romp (not the user) caused it and immediately queued a resume notice to CONTINUE the
+    work, so it must never suppress the nudge nor paint "you stopped this — romp won't follow up" (the
+    user 2026-07-14: restart-cut SDK sessions sat inertly in Working wearing that false badge, and
+    auto-nudge stayed off so a genuine RE-stall was never caught). Such a cut is identified by the romp
+    resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally."""
+    last_intr, last_human = _interrupt_marks(turns)
     return last_intr > last_human
 
 
@@ -1883,42 +1893,64 @@ def _interrupt_focus_top(store):
     return None
 
 
-def _record_interrupt_block(sid):
+def _record_interrupt_block(sid, ev):
     """Interrupted → Blocked (the user 2026-07-07, extending the stalled rule): the user stopped the
     session mid-turn and nothing will move until they speak, so by definition the focus goal needs
     them. Record a block verdict (src "interrupt") in the goal's diary — the same normal ladder every
     block rides — and remember the gid in auto-nudge.json so the LIFT on re-engage is cheap (only
-    sessions we blocked get their store re-checked). Returns the gid blocked, or None."""
+    sessions we blocked get their store re-checked). Returns the gid blocked, or None.
+
+    `ev` = the STOP's own transcript time (_interrupt_marks), never wall-clock now: the diary is an
+    evidence-time ledger, and a wall-clock stamp on a store the judges also write is what deadlocked
+    the lift below."""
     store = jd.load_goals(sid)
     gid = _interrupt_focus_top(store)
     if not gid:
         return None
     nd = store["nodes"][gid]
     why = jd.INTERRUPT_BLOCK_WHY      # shared constant, PROCEDURAL (see judge.procedural_block_why)
-    now = int(time.time())
-    if not jd.record_verdict(store, nd, "interrupt", "block", now, why=why):
+    ev = int(ev or 0)
+    if not jd.record_verdict(store, nd, "interrupt", "block", ev, why=why):
         return None
-    nd["mt"] = now                                    # the event materialized blocked + blockWhy
-    jd.append_block(sid, gid, "interrupt", why, now)  # journal before the save it protects (a judge
-    #                                                   pass's stale save erases out-of-band rows)
+    nd["mt"] = max(nd.get("mt") or 0, ev)            # the event materialized blocked + blockWhy (never
+    #                                                  backwards: mt is a display stamp the brief keys on)
+    jd.append_block(sid, gid, "interrupt", why, ev)  # journal before the save it protects (a judge
+    #                                                  pass's stale save erases out-of-band rows)
     jd.rollup_status(store, False)
     jd.save_goals(sid, store)
     _mark_views_dirty()
     return gid
 
 
-def _lift_interrupt_block(sid, gid):
-    """The user re-engaged (their next message — the same event that re-arms auto-nudge): the interrupt
-    block is lifted with an explicit unblock event, so the diary stays the authority (an eventless flag
-    clear would be re-blocked by the next materialize). Only lifts a block WE placed (the diary's latest
-    block has src "interrupt") — a real judge verdict recorded since then owns the card and stays."""
+def _lift_interrupt_block(sid, gid, ev):
+    """The session re-engaged (the user's next message, or romp continuing a machine cut — the same
+    event that re-arms auto-nudge): the interrupt block is lifted with an explicit unblock event, so
+    the diary stays the authority (an eventless flag clear would be re-blocked by the next
+    materialize). Only lifts a block WE placed (the diary's latest block has src "interrupt") — a real
+    judge verdict recorded since then owns the card and stays.
+
+    `ev` = the EVIDENCE time of that re-engagement — the trigger of the turn it opened — and NOT
+    wall-clock now (the user 2026-08-01). Every judge verdict stamps the TRIGGER of the segment it
+    ruled on, so a lift stamped `now` while that segment is still running sorts after it forever: the
+    fold, which orders by ev_t, then replayed the lift AFTER the planner's and closer's block about
+    that very segment and erased both. The audited card: a restart cut a session mid-turn, romp's
+    resume notice opened the next turn, the lift fired 2m into it stamped `now`, the session finished
+    by asking the user a question — and the block the judges filed on it never took. The card sat in
+    Working on an idle session for six minutes with no block, no waiting chip, no nudge (that same row
+    read as "evidence newer than the last turn romp saw end", so _nudge_fire_list held the nudge under
+    a why the stall surface screens), until a peer's message opened a fresh turn whose verdict finally
+    outranked it. Floored at the block's own stamp so the lift can never sort BEFORE what it lifts —
+    the same guard rollup_status's moot-unblock uses."""
     store = jd.load_goals(sid)
     nd = store.get("nodes", {}).get(gid)
     if nd is None:
         return
-    lastblk = next((e.get("src") for e in reversed(nd.get("log") or []) if e.get("kind") == "block"), None)
+    log = nd.get("log") or []
+    lastblk = next((e.get("src") for e in reversed(log) if e.get("kind") == "block"), None)
     if lastblk == "interrupt" and nd.get("blocked"):
-        jd.record_verdict(store, nd, "user", "unblock", int(time.time()), why="you re-engaged")
+        ev = max(int(ev or 0), max((e.get("ev_t") or 0 for e in log if e.get("kind") == "block"),
+                                   default=0))
+        jd.record_verdict(store, nd, "user", "unblock", ev, why="you re-engaged")
         jd.rollup_status(store, False)
         jd.save_goals(sid, store)
         _mark_views_dirty()
@@ -1946,9 +1978,10 @@ def _interrupt_block_tick(now, tmux):
     it belongs in the Blocked (needs-you) column — never sitting quietly in Working. This flip used to
     live inside _auto_nudge_tick, so it only happened with auto-nudge ON; it is a needs-you rule, not a
     nudge feature, so it runs every push regardless of the toggle. A MACHINE cut (kernel restart /
-    process death) is NOT a user stop — _interrupt_suppresses_nudge already excludes it — so those are
-    continued, never blocked. On re-engage (the user's next message, or once a machine cut is no longer
-    the latest action) the block WE placed is lifted; a real judge verdict recorded since then stays."""
+    process death) is NOT a user stop — _interrupt_marks already excludes it — so those are continued,
+    never blocked. On re-engage (the user's next message, or once a machine cut is no longer the latest
+    action) the block WE placed is lifted; a real judge verdict recorded since then stays. Both writes
+    are stamped with the EVENT they are about, never wall-clock now — see _lift_interrupt_block."""
     changed = False
     for s in _alive_sessions(now, tmux):
         sid = s["sid"]
@@ -1963,16 +1996,20 @@ def _interrupt_block_tick(now, tmux):
             turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         except Exception:
             continue
-        block_it = bool(turns) and not _session_working(turns) and _interrupt_suppresses_nudge(turns)
+        stop_t, human_t = _interrupt_marks(turns)        # the two EVENTS this tick reasons about — and the
+        #                                                  evidence times both writes are stamped with
+        block_it = bool(turns) and not _session_working(turns) and stop_t > human_t
         if block_it:                                     # a GENUINE user stop → block the focus goal on them,
             if not _intr_blocked(sid):                   # once per interrupt episode (the intrBlocked marker)
-                g = _record_interrupt_block(sid)
+                g = _record_interrupt_block(sid, stop_t)
                 if g:
                     _set_intr_blocked(sid, g); changed = True
         else:                                            # working / re-engaged / machine cut → lift OUR block if any
             ib = _intr_blocked(sid)
             if ib:
-                _lift_interrupt_block(sid, ib)
+                # the re-engagement IS the newest turn's trigger — the same stamp the judges will put on
+                # every verdict about that turn, so their ruling outranks this lift on arrival order
+                _lift_interrupt_block(sid, ib, turns[-1].get("t") if turns else 0)
                 _set_intr_blocked(sid, None); changed = True
     if changed:                                          # a needs-you flip should reach the feed at once
         _push_all()
