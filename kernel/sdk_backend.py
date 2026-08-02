@@ -595,6 +595,23 @@ def append_awaiting(state_dir: Path, sid: str, awaiting: bool, why: str = "") ->
         f.write(json.dumps(rec) + "\n")
 
 
+# How far apart two readings of ONE rate-limit window's reset can sit and still be that window. The two
+# sources romp reads date the same window differently — RateLimitEvents carry the API response headers'
+# reset, the get_usage snapshot carries the /usage endpoint's — and on 2026-08-02 those were 10 minutes
+# apart for the 5h window. The windows themselves are 5 hours and 7 days wide, so a genuine roll moves the
+# stamp by hours at minimum: an hour of slack cannot swallow one, and it absorbs any skew between sources.
+WINDOW_SLACK = 3600
+
+
+def _same_window(a, b) -> bool:
+    """Whether two reset stamps name the SAME rate-limit window. Equality is the wrong test: the two
+    sources quantize the boundary differently, and reading their disagreement as a window ROLL is what
+    reset the bars to 0 seconds after an exact reading landed (see _record_rate_limit)."""
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return False
+    return abs(a - b) <= WINDOW_SLACK
+
+
 def last_state(state_dir: Path, sid: str) -> dict:
     p = Path(state_dir) / "states" / (sid + ".jsonl")
     try:
@@ -1365,6 +1382,12 @@ class SdkSession:
                 self.backend._update_reg(self.sid, **upd)
             except Exception as e:
                 self.backend._log("context refresh (%s): registry write failed: %s" % (self.name, e))
+        # A moved context % or model is news the panes should see now, not at the next backstop. (This
+        # poke had been separated from the `changed` it reads and left sitting in refresh_usage below,
+        # where the name is undefined — so every /usage click raised NameError instead, and a context
+        # change waited for the backstop.)
+        if changed:
+            self.backend._poke()
 
     async def _do_refresh_usage(self):
         """Pull the EXACT account-wide /usage snapshot from the CLI — the designed data behind the /usage
@@ -1378,23 +1401,37 @@ class SdkSession:
         if not self.client or self._usage_refreshing:
             return
         self._usage_refreshing = True
+        r = None
         try:
             q = getattr(self.client, "_query", None)
-            r = (await q._send_control_request({"subtype": "get_usage"})) if q else None
-        except Exception:
-            r = None
+            if q is None:
+                # The control channel is the ONLY source of an exact reading; without it the bars can
+                # only creep up from the sparse event stream, which is precisely the silently-wrong
+                # number this must not become.
+                self.backend._log("usage refresh (%s): no control channel on the SDK client — the rail "
+                                  "bars will fall back to the rate-limit event stream" % self.name,
+                                  problem=True)
+            else:
+                r = await q._send_control_request({"subtype": "get_usage"})
+        except Exception as e:
+            # LOUD (the user 2026-08-02, whose 5h bar read 18% against a real 45%). This used to swallow
+            # every failure, so a refresh that never landed was indistinguishable from one that did: the
+            # file kept its event-derived floor and the rail presented it as the reading.
+            self.backend._log("usage refresh (%s) failed: %s: %s" % (self.name, type(e).__name__, e))
         finally:
             self._usage_refreshing = False
         if isinstance(r, dict):
             self.backend._record_usage_snapshot(r)
 
     def refresh_usage(self):
-        """Thread-safe trigger for _do_refresh_usage (the kernel's /usage click path)."""
+        """Thread-safe trigger for _do_refresh_usage (the kernel's /usage click path). Returns whether the
+        refresh was actually scheduled, so the backend can move on to another session when this one has no
+        live loop to run it on."""
         if self.loop and self.client:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._do_refresh_usage()))
-        if changed:
-            self.backend._poke()
+            return True
+        return False
 
     async def _next_ask_action(self):
         fut = asyncio.get_running_loop().create_future()
@@ -2477,15 +2514,23 @@ class SdkBackend:
         return sum(1 for s in sessions if s.inflight and not s.ended)
 
     def refresh_usage(self):
-        """Best-effort: ask ONE live connected session for the exact /usage snapshot (get_usage control
-        request). The kernel's /usage click calls this so the NEXT read is fresh; per-turn-end refreshes
-        keep the file current the rest of the time."""
+        """Ask a live connected session for the exact /usage snapshot (get_usage control request). The
+        kernel's /usage click calls this so the NEXT read is fresh; per-turn-end refreshes keep the file
+        current the rest of the time.
+
+        Every candidate is tried until one accepts, not just the first (the user 2026-08-02): one session
+        whose loop has gone away is enough to make a click do nothing at all, and the rail then shows a
+        stale reading with no sign that the refresh never happened. Says so in the log when none can be
+        asked, rather than returning quietly."""
         with self._lock:
             sessions = list(self.sessions.values())
-        for s in sessions:
-            if s.client and s.loop and not s.ended:
-                s.refresh_usage()
+        live = [s for s in sessions if s.client and s.loop and not s.ended]
+        for s in live:
+            if s.refresh_usage():
                 return
+        if live:
+            self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
+                      "keep their last reading" % len(live), problem=True)
 
     def _record_usage_snapshot(self, r) -> None:
         """Fold a get_usage control-request snapshot into usage.json — EXACT utilization for every window,
@@ -2562,6 +2607,12 @@ class SdkBackend:
           from this backend's stale ACCUMULATOR replaying hours-old windows; the accumulator is gone — each
           event now touches only its own window — so that guard is obsolete, and across an account switch it
           was exactly what STUCK the bars: the old account's later reset beat the new account's live window.)
+          "Different window" is decided by _same_window, NOT by equality: romp's two sources date the SAME
+          window differently (the events read API response headers, the get_usage snapshot reads the /usage
+          endpoint), and on 2026-08-02 they sat 10 minutes apart on the 5h window. Under equality every
+          event after a snapshot read as a fresh roll and reset the bar to 0, so the exact 45% the snapshot
+          had just written was wiped within a second and the rail crept back up from zero on the rare
+          warning-band events — the user's bar read 18% against a real 45%.
         - `rejected` IS the limit: pct=100 even with utilization=None → the rail's limited banner + retry-pause
           engage (previously this event was dropped and romp missed the limit entirely).
         - `allowed` with unknown utilization in a brand-new window reads pct=0 (a window rolls with ~0 usage;
@@ -2600,10 +2651,16 @@ class SdkBackend:
                 cur = {}
             seg = cur.get(key) if isinstance(cur.get(key), dict) else None
             cur_ra = seg.get("resets_at") if seg and isinstance(seg.get("resets_at"), (int, float)) else None
-            if ra is not None and cur_ra != ra:
-                new = {"pct": pct if pct is not None else 0, "resets_at": ra}   # the event's window is the live one
+            if ra is not None and seg is None:
+                new = {"pct": pct if pct is not None else 0, "resets_at": ra}   # nothing on file to reconcile with
+            elif ra is not None and cur_ra is not None and not _same_window(ra, cur_ra):
+                new = {"pct": pct if pct is not None else 0, "resets_at": ra}   # a real roll: this window is new
             elif seg:
-                new = dict(seg)                       # same window (or the event carries no window identity)
+                # SAME window — either the event names no window, or its stamp is the same window said
+                # differently (see _same_window). Keep the file's stamp and let usage climb, never fall.
+                new = dict(seg)
+                if cur_ra is None and ra is not None:
+                    new["resets_at"] = ra             # the file simply had no stamp yet; adopt this one
                 if pct is not None:
                     new["pct"] = max(int(new.get("pct") or 0), pct)   # in-window usage only climbs
             elif pct is not None:

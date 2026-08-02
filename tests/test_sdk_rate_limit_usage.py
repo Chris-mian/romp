@@ -8,6 +8,7 @@ Agent SDK's DESIGNED source is the RateLimitEvent stream — each carries one wi
 test_sdk_backend.py for the status-aware merge). SdkBackend._record_rate_limit folds each event into the
 SAME usage.json shape, so the same kernel _usage() reader lights the bars for SDK sessions too. Synthetic
 fixtures (duck-typed info)."""
+import inspect
 import json
 import os
 import tempfile
@@ -85,6 +86,41 @@ class RecordRateLimit(unittest.TestCase):
         self.be._record_rate_limit(_info("five_hour", None, None))
         self.assertFalse((self.state / "usage.json").exists(), "nothing to say -> nothing written")
 
+    def test_a_differently_dated_reading_of_the_same_window_never_resets_the_bar(self):
+        # The bug (the user 2026-08-02: the 5h bar read 18% against a real 45%). romp has TWO sources for
+        # one window and they date its boundary differently — the get_usage snapshot carries the /usage
+        # endpoint's 23:00, the event stream carries the API headers' 23:10. Equality read that 10-minute
+        # gap as a fresh window and reset the exact reading to 0 within a second of it landing, leaving
+        # the rail to creep back up from zero on the rare events that carry a number at all.
+        exact = 1785711600                                   # what the get_usage snapshot wrote
+        (self.state / "usage.json").write_text(json.dumps({
+            "t": 1, "five_hour": {"pct": 45, "resets_at": exact}, "seven_day": None, "fable": None}))
+        self.be._record_rate_limit(_info("five_hour", None, exact + 600))   # the header's reading, no utilization
+        five = self._usage()["five_hour"]
+        self.assertEqual(five["pct"], 45, "an unknown utilization may never lower a known reading")
+        self.assertEqual(five["resets_at"], exact, "the exact boundary stands; the event only refines usage")
+
+    def test_a_real_roll_still_starts_the_next_window_at_zero(self):
+        # The slack must not swallow an actual roll: a 5h window's reset moves by hours, not minutes.
+        (self.state / "usage.json").write_text(json.dumps({
+            "t": 1, "five_hour": {"pct": 96, "resets_at": 1785711600}, "seven_day": None, "fable": None}))
+        self.be._record_rate_limit(_info("five_hour", None, 1785711600 + 5 * 3600))
+        five = self._usage()["five_hour"]
+        self.assertEqual(five["pct"], 0, "a rolled window starts empty")
+        self.assertEqual(five["resets_at"], 1785711600 + 5 * 3600)
+
+    def test_same_window_is_decided_with_slack_not_equality(self):
+        self.assertTrue(sb._same_window(1785711600, 1785712200), "10 minutes apart is one window, said twice")
+        self.assertTrue(sb._same_window(1785711600, 1785711600))
+        self.assertFalse(sb._same_window(1785711600, 1785711600 + 5 * 3600), "a 5h roll is a new window")
+        self.assertFalse(sb._same_window(None, 1785711600), "an absent stamp names no window")
+
+    def test_a_higher_reading_still_climbs_within_the_window(self):
+        (self.state / "usage.json").write_text(json.dumps({
+            "t": 1, "five_hour": {"pct": 45, "resets_at": 1785711600}, "seven_day": None, "fable": None}))
+        self.be._record_rate_limit(_info("five_hour", 0.61, 1785711600 + 600))
+        self.assertEqual(self._usage()["five_hour"]["pct"], 61, "in-window usage climbs on a known number")
+
     def test_the_kernel_usage_reader_lights_the_bars_from_what_the_sdk_wrote(self):
         # End-to-end: the SDK writer + the kernel reader agree on usage.json (no statusline in the loop).
         self.be._record_rate_limit(_info("five_hour", 0.10, 1782787200))
@@ -104,6 +140,68 @@ class RecordRateLimit(unittest.TestCase):
         self.assertEqual(u["fiveHour"]["pct"], 10)
         self.assertEqual(u["sevenDay"]["pct"], 11)
         self.assertEqual(u["fiveHour"]["resetsAt"], 1782787200)
+
+
+class ExactSnapshotRefresh(unittest.TestCase):
+    """The exact get_usage snapshot is the only source that carries a true percent for every window; the
+    event stream attaches one only in the warning band. So a refresh that never happens is not a small
+    loss — it is the difference between the real number and a floor that creeps up from zero. It may
+    never fail quietly (the user 2026-08-02)."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.logs = []
+        self.be = sb.SdkBackend(Path(self.td.name), "claude", lambda *a: None,
+                                log=lambda m: self.logs.append(m))
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _session(self, scheduled, **kw):
+        s = SimpleNamespace(client=object(), loop=object(), ended=False, **kw)
+        s.refresh_usage = lambda: scheduled
+        return s
+
+    def test_every_live_session_is_tried_not_just_the_first(self):
+        # One session whose loop has gone away used to be enough to make the click do nothing at all,
+        # while the rail went on presenting its last reading as current.
+        asked = []
+        dead = self._session(False)
+        live = self._session(True)
+        for s in (dead, live):
+            s.refresh_usage = (lambda s=s: (asked.append(s), s is live)[1])
+        self.be.sessions = {"a": dead, "b": live}
+        self.be.refresh_usage()
+        self.assertEqual(asked, [dead, live], "the refusal moves on to the next candidate")
+
+    def test_it_stops_at_the_first_session_that_takes_it(self):
+        asked = []
+        a, b = self._session(True), self._session(True)
+        for s in (a, b):
+            s.refresh_usage = (lambda s=s: (asked.append(s), True)[1])
+        self.be.sessions = {"a": a, "b": b}
+        self.be.refresh_usage()
+        self.assertEqual(asked, [a], "one snapshot is enough — these windows are account-wide")
+
+    def test_nobody_able_to_run_it_is_said_out_loud(self):
+        s = self._session(False)
+        self.be.sessions = {"a": s}
+        self.be.refresh_usage()
+        self.assertTrue(any("usage refresh" in m for m in self.logs),
+                        "a refresh that could not run must not look like one that did")
+
+    def test_a_failing_control_request_is_logged_rather_than_swallowed(self):
+        src = inspect.getsource(sb.SdkSession._do_refresh_usage)
+        self.assertNotIn("except Exception:\n            r = None", src,
+                         "the bare swallow is what made a dead refresh indistinguishable from a live one")
+        self.assertIn("_log(", src)
+
+    def test_the_context_refresh_keeps_its_own_poke(self):
+        # `changed` is computed by the context refresh; the poke that reads it had been left in
+        # refresh_usage, where the name is undefined — so /usage clicks raised NameError and a moved
+        # context % waited for the backstop instead of pushing.
+        self.assertIn("if changed:", inspect.getsource(sb.SdkSession._do_refresh_context))
+        self.assertNotIn("changed", inspect.getsource(sb.SdkSession.refresh_usage))
 
 
 if __name__ == "__main__":
