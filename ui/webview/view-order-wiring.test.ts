@@ -45,6 +45,18 @@ test("the timeline's lane drag writes the same store", () => {
   assert.doesNotMatch(BOOT, /type: "writeOrder"/);
 });
 
+test("a pane answers another pane's drag by re-emitting, never by rewriting the arrangement", () => {
+  // The audited failure (the user 2026-08-02): dragging the last tab up between two others permuted the
+  // strip and reverted it in the same second, twice per attempt, so it read as a drag that never took.
+  // Every revert arrived through the `storage` listener — another context answering the write by running
+  // its own gc, which prunes ids ITS session lists don't name and so dropped the tab that had just moved
+  // (the newest tab is the one a stale list is likeliest to be missing). An arrangement is not evidence
+  // about what exists; only a host's own report is, and that is the one caller allowed to gc.
+  assert.match(FED, /this\.emitMergedOrder\(true\);\s+\/\/ a host just reported/, "inbound tabOrder gc's");
+  assert.match(FED, /private emitMergedOrder\(gc = false\): void \{\s*\n\s*if \(gc\) this\.gcView\(\);/,
+    "every other caller — both drag paths included — re-emits without touching the stored order");
+});
+
 test("the stale arrangement self-cleans on the host's own report, not on a clock", () => {
   assert.match(FED, /const reporting = new Set\(Object\.keys\(this\.perHostOrder\)\);/);
   assert.match(FED, /if \(!reporting\.size\) return;/, "no report in hand → prune nothing");
