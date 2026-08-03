@@ -110,10 +110,15 @@ test("a session dying on its OWN is not recorded as a close of ours", () => {
 
 // ---- the wiring in render.ts -------------------------------------------------------------------------
 
-test("closeTabLocally records the close, then drops the tab", () => {
+test("closeTabLocally drops the tab, THEN records the close — in that order", () => {
   // (2026-07-30: a PROVISIONAL tab short-circuits above this — there is no session to close, so the ✕
   // means "never mind" and cancels the spawn instead. A real tab's path is unchanged.)
-  assert.match(RENDER, /if \(isProvisionalId\(id\)\) \{ cancelProvisional\(\); return; \}\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);\s*\n\s*dismissSession\(id\);/);
+  //
+  // The order is the whole mechanism (the user 2026-08-02, closed tabs lingering as the spinning swirl):
+  // this shipped as set-then-dismiss while dismissSession opened with closingTabs.delete(id), so the
+  // record was erased the instant it was written — the executed model above passed while the composed
+  // wiring was a no-op. Hence these pins hold the ORDER, and the next test holds dismissSession's hands.
+  assert.match(RENDER, /if \(isProvisionalId\(id\)\) \{ cancelProvisional\(\); return; \}\s*\n\s*dismissSession\(id\);\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);/);
   // declared beside tabMeta, NOT down by dismissSession: renderTabs reads it and can run before the module
   // finishes evaluating, which would make a `const` down there a temporal-dead-zone throw.
   assert.match(RENDER, /const tabMeta = new Map[\s\S]{0,900}?const closingTabs = new Map<string, number>\(\);/);
@@ -139,6 +144,16 @@ test("ackClosingTabs settles against the kernel's list on every tabOrder push", 
   assert.match(RENDER, /if \(!live\.has\(id\)\) \{ closingTabs\.delete\(id\); continue; \}/, "gone from the kernel = confirmed");
   assert.match(RENDER, /if \(now - ts < CLOSE_ACK_MS\) continue;/, "inside the window a slow kernel is not a failure");
   assert.match(RENDER, /warnToast\(`Couldn't close/);
-  // dismissSession clears it too, so the kernel's own `closed` event settles the close as well
-  assert.match(RENDER, /function dismissSession\(id: string\): void \{\s*\n\s*closingTabs\.delete\(id\);/);
+});
+
+test("dismissSession never touches the suppression — retiring belongs to ack, backstop, and reopen", () => {
+  // dismissSession is the shared drop path: the ✕ runs through it microseconds after recording the close,
+  // and under federation the kernel's `closed` event can predate stale merged frames that still list the
+  // id. A closingTabs.delete in its body is what disarmed the whole optimistic close (see above).
+  const body = RENDER.match(/function dismissSession\(id: string\): void \{[\s\S]*?\n\}/);
+  assert.ok(body, "dismissSession not found");
+  assert.doesNotMatch(body![0], /closingTabs\./, "dismissSession must not read or write closingTabs");
+  // …and the one legitimate early retire: an explicit reveal (reopen from the picker inside the ack
+  // window) must show the tab at once instead of waiting out the suppression
+  assert.match(RENDER, /m\.type === "focus"\) \{\s*\n\s*revealSelfPane\(\);.*\n\s*closingTabs\.delete\(m\.id\);/);
 });

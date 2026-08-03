@@ -7338,21 +7338,32 @@ function statusOnly(msg: any) {
   if (msg.id === activeId) updateStatusline();
 }
 
-// The ✕'s own path: remember the close (see closingTabs), then drop the tab now. (dismissSession is ALSO how
-// a session dying on its own arrives — that one must not be recorded as a close of ours.)
+// The ✕'s own path: drop the tab now, THEN remember the close (see closingTabs). The order matters and
+// regressed the whole mechanism once (the user 2026-08-02, closed tabs lingering as the spinning swirl):
+// dismissSession used to open with closingTabs.delete(id), so set-then-dismiss erased the record the
+// instant it was written — the suppression the optimistic close depends on never survived the click, the
+// next push re-added the id, and with the session already dropped it rendered as the loader placeholder
+// until the kernel caught up. (dismissSession is ALSO how a session dying on its own arrives — that one
+// must not be recorded as a close of ours, which is why the record is written HERE, not in there.)
 function closeTabLocally(id: string): void {
   // A provisional tab has no session to close — closing it means "never mind", so it cancels the spawn
   // the kernel may still be running, the way the old cue's ✕ did.
   if (isProvisionalId(id)) { cancelProvisional(); return; }
-  closingTabs.set(id, Date.now());
   dismissSession(id);
+  closingTabs.set(id, Date.now());
 }
 
 // Drop a session from the panel + reselect another tab, NOW (the user 2026-06-24): used both by the kernel's
 // `closed` event AND optimistically the instant you Close tab / End session — otherwise the reselect waited on
 // that round-trip while the tab bar already updated, leaving you on the CLOSED session's stale content.
+//
+// This deliberately does NOT touch closingTabs. Retiring the suppression belongs to its own events:
+// ackClosingTabs (a tabOrder push without the id = the kernel's confirm; the backstop past CLOSE_ACK_MS =
+// the loud failure) and an explicit focus (reopen). Retiring it here — including on the kernel's `closed`
+// event — is both the regression above (the ✕ path runs through here microseconds after recording the
+// close) and wrong under federation, where a `closed` ack can predate stale merged frames that still list
+// the id: the moment nothing suppresses it, the strip re-draws the swirl placeholder.
 function dismissSession(id: string): void {
-  closingTabs.delete(id);   // the kernel agreed (or the session died on its own) — nothing left to suppress
   sessions.delete(id);
   liveAsks.delete(id);
   ledgers.delete(id);
@@ -7415,6 +7426,8 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") {
     revealSelfPane();   // every focus is someone jumping HERE — on mobile, come forward (incl. from a remote kernel)
+    closingTabs.delete(m.id);   // an explicit reveal outranks a pending close-suppression: closing a tab and
+    //                             reopening it from the picker inside the ack window must show it at once
     if (revivePending && m.id === revivePending) clearReviveLoader();   // the revive landed — the loader's success event
     // `live` (the user 2026-07-08): land on the LIVE TAIL. A blocked card's picker/permission prompt IS the
     // live bottom of the chat, so its feed chip drops the user right on it. Stick the target view to bottom so
