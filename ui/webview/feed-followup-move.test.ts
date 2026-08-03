@@ -22,8 +22,11 @@ test("submitting a follow-up registers the optimistic move and re-renders the fe
 test("a predicted card is kept in Working at render, styled like the kernel's re-checked follow-up", () => {
   assert.match(FEED, /function applyFollowMove\(list: AskItem\[\]\)/);
   // a follow-up prediction wears the re-check styling; an "answer" flips the column only
-  // (the messageless plain move was removed with its button/drag, the user 2026-07-25)
-  assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ a\.recheck = true; a\.followupPending = true; \}/);
+  // (the messageless plain move was removed with its button/drag, the user 2026-07-25).
+  // Styled onto a COPY, never the payload object — the federated page serves the manager's cached
+  // frames by reference, and an in-place edit echoed back as a false kernel confirm
+  // (follow-move-cache-echo.test.ts, the user 2026-08-02)
+  assert.match(FEED, /if \(\(pendingMoveKind\.get\(a\.itemId\) \?\? "followup"\) === "followup"\) \{ c\.recheck = true; c\.followupPending = true; \}/);
   // applied at the top of render so EVERY render (push, modal close) reflects the prediction
   // (2026-07-27: render() prunes the age-provenance popover first — hiding it only when the hovered
   // stamp was torn out of the DOM — so the pin allows that line between the two.)
@@ -38,7 +41,7 @@ test("the optimistic move also bumps the card's sort key to now so it lands at t
   // the TOP, then the real work re-filed at ≈now dropped it to the bottom. Stamp now so it's at the bottom
   // from the instant of the flip; the kernel's followupAt keeps it there when this prediction clears.
   assert.match(FEED, /const nowSec = Math\.floor\(Date\.now\(\) \/ 1000\);/);
-  assert.match(FEED, /if \(a\.t < nowSec\) a\.t = nowSec;/);
+  assert.match(FEED, /if \(c\.t < nowSec\) c\.t = nowSec;/);
 });
 
 test("the kernel is authoritative: a confirming push clears the prediction, an unconfirmed one is left predicting", () => {

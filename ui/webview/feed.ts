@@ -321,16 +321,30 @@ function reconcileFollowMove(incoming: AskItem[], buildId: number) {
 }
 // Render-time: keep each still-unconfirmed predicted card in Working, styled like the kernel's own re-checked
 // follow-up (recheck + followupPending), so the optimistic card matches the authoritative one with no jump.
+//
+// COPY the card, never write into it (the user 2026-08-02, who watched a just-replied card bounce
+// working → blocked → working): on the federated page the ask objects in a payload ARE the
+// FederationManager's cached per-host frames, served by reference (mergeHostFeeds concatenates the cached
+// arrays and the merged frame arrives via a same-realm MessageEvent — no structured clone). An in-place
+// `a.column = "working"` therefore wrote the prediction INTO that cache, and the next merged re-emit —
+// fired by ANY host's frame, seconds later — handed the pane its own edit back as kernel truth, which
+// reconcileFollowMove took as the kernel's confirmation and dropped the prediction. The next local build
+// already in flight when the reply landed (honestly pre-reply) then bounced the card back to Blocked with
+// no prediction left to hold it. Replacing the list SLOT with a copy keeps the render identical while the
+// cached frame stays exactly what the kernel sent, so the prediction ends only on the real events.
 function applyFollowMove(list: AskItem[]) {
   if (!pendingFollowMove.size) return;
   // now, in the server's epoch-second unit (kernel is local). Bump the predicted card's sort key to now so
   // the INSTANT optimistic move lands at the BOTTOM of Working, matching where the kernel's authoritative
   // followupAt stamp keeps it once this prediction clears — no top-flash then lurch-down (the user 2026-07-03).
   const nowSec = Math.floor(Date.now() / 1000);
-  for (const a of list) if (pendingFollowMove.has(a.itemId) && a.column !== "working") {
-    a.column = "working";
-    if ((pendingMoveKind.get(a.itemId) ?? "followup") === "followup") { a.recheck = true; a.followupPending = true; }   // plain move / answer: no chip
-    if (a.t < nowSec) a.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (!pendingFollowMove.has(a.itemId) || a.column === "working") continue;
+    const c: AskItem = { ...a, column: "working" };
+    if ((pendingMoveKind.get(a.itemId) ?? "followup") === "followup") { c.recheck = true; c.followupPending = true; }   // plain move / answer: no chip
+    if (c.t < nowSec) c.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
+    list[i] = c;
   }
 }
 // (drag-to-Working and the modal's "Move to Working" button were REMOVED, the user 2026-07-25: a
