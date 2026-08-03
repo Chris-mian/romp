@@ -19415,6 +19415,11 @@ class Handler(BaseHTTPRequestHandler):
                        "ok": bool(msg.get("ok")), "sid": str(msg.get("id") or ""),
                        "anchor": msg.get("anchor"), "anchorT": msg.get("anchorT"),
                        "kind": msg.get("kind"),
+                       # keep=True ⇒ NOT a user navigation: a scroll-back loadOlder putting the reader's own
+                       # row back at its captured offset. The two were indistinguishable in the audit before,
+                       # so a scroll-restore row read as a second click the user never made (the user
+                       # 2026-08-02, diagnosing exactly such a pair of rows a second apart).
+                       "keep": bool(msg.get("keep")),
                        "trail": msg.get("trail") if isinstance(msg.get("trail"), list) else []}
                 with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec) + "\n")

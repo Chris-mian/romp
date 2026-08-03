@@ -95,8 +95,9 @@ test("the kind guard accepts a peer's postal card as a valid PROMPT target (reco
 });
 
 test("honest-fail fires whenever the deep-link can't resolve by id (the turn is genuinely gone)", () => {
-  // now gated on !anchorPendingOlder so it doesn't fire while we're fetching older history for the anchor
-  assert.match(RENDER, /if \(!scrolled && !anchorPendingOlder\) \{\s*\n\s*landToast\("couldn't locate this in the transcript"\)/);
+  // now gated on !anchorPendingOlder so it doesn't fire while we're fetching older history for the anchor —
+  // and on !att.keep, since a scroll-back position restore is nobody's navigation (chat-older-restore.test.ts)
+  assert.match(RENDER, /if \(!scrolled && !anchorPendingOlder && !att\.keep\) \{\s*\n\s*landToast\("couldn't locate this in the transcript"\)/);
   // 2026-07-28: the same failure ALSO files an error-center entry — a transient toast left nothing the
   // user could point at once it faded (the full bridge is pinned in chat-delta-resync.test.ts).
   assert.match(RENDER, /notifyShell\("locate",/);
@@ -109,7 +110,9 @@ test("a deep-link to an anchor OLDER than the resident tail fetches older histor
   assert.match(RENDER, /else if \(s && \(s\.headFrom \?\? 0\) > 0\) \{/, "older-than-tail branch in scrollToAnchor");
   // 2026-07-20: an in-flight fetch counts as pending too (loadingOlder), and the arrival re-land is
   // re-pointed at THIS uuid — a push re-render mid-fetch used to fall through to a false "couldn't locate"
-  assert.match(RENDER, /if \(fetchOlderForAnchor\(activeId, uuid\) \|\| loadingOlder\.has\(activeId\)\) \{\s*pendingOlderAnchor\.set\(activeId, uuid\);\s*pendingAnchor = uuid; anchorPendingOlder = true;/);
+  // 2026-08-02: …and it drops any keep-offset the in-flight fetch left, so a click can't be demoted to a
+  // scroll-back position restore (chat-older-restore.test.ts).
+  assert.match(RENDER, /if \(fetchOlderForAnchor\(activeId, uuid\) \|\| loadingOlder\.has\(activeId\)\) \{\s*pendingOlderAnchor\.set\(activeId, uuid\);\s*pendingOlderKeepY\.delete\(activeId\);\s*pendingAnchor = uuid; anchorPendingOlder = true;/);
   // the helper stashes the TARGET uuid (not the current top row) so chatHead lands on it
   assert.match(RENDER, /function fetchOlderForAnchor\(sid: string, uuid: string\): boolean/);
   assert.match(RENDER, /pendingOlderAnchor\.set\(sid, uuid\)/);
