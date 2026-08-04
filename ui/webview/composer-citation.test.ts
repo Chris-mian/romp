@@ -114,7 +114,7 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
   assert.match(RENDER, /const a = turnOf\(sel\.anchorNode\), f = turnOf\(sel\.focusNode\);/);
   assert.match(RENDER, /if \(!a \|\| !f\) return null;/);
   assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
-  assert.match(RENDER, /if \(!q\) \{ quoteSeedLive = false; return; \}\s*\/\/ never clear on collapse/);
+  assert.match(RENDER, /if \(!q\) return;\s*\n\s*seedTranscriptQuote\(activeId, q\.text, q\.uuid\);/);   // never clears chips, never touches the gesture
   // seeding NEVER focuses the composer — a focus steal would collapse the selection mid-drag
   const seeder = RENDER.split("function seedTranscriptQuote(")[1].split("\n}")[0];
   assert.doesNotMatch(seeder, /focusComposer/);
@@ -125,14 +125,14 @@ test("⌘-selecting another piece of text ADDS a context below the held ones (th
   // The deciding event is the mousedown that STARTS the selection gesture: plain → replace (the pre-stack
   // behavior), ⌘/Ctrl → add. Shift is deliberately left to the browser (it extends the live selection, and
   // the live gesture's chip follows), so a shift-mousedown neither resets the gesture nor re-reads the key.
-  assert.match(RENDER, /document\.addEventListener\("mousedown", \(e\) => \{\s*\n\s*if \(e\.shiftKey\) return;[\s\S]*?quoteAddHeld = e\.metaKey \|\| e\.ctrlKey;\s*\n\s*quoteSeedLive = false;\s*\n\}, true\);/);
-  // One gesture owns one chip: selectionchange fires dozens of times mid-drag, so the live gesture WRITES
-  // THROUGH to its own chip; only a new gesture appends (⌘) or replaces (plain). Without the write-through
-  // a single ⌘-drag would spray a chip per selectionchange event.
+  assert.match(RENDER, /document\.addEventListener\("mousedown", \(e\) => \{\s*\n\s*if \(e\.shiftKey\) return;[\s\S]*?quoteAddHeld = e\.metaKey \|\| e\.ctrlKey;\s*\n\s*quoteSeedIdx = null;\s*\n\}, true\);/);
+  // One gesture owns one chip BY INDEX: selectionchange fires dozens of times mid-drag, so the live
+  // gesture WRITES THROUGH to the chip it owns; only a new gesture appends (⌘) or replaces (plain).
+  // Without the write-through a single ⌘-drag would spray a chip per selectionchange event.
   const seeder = RENDER.split("function seedTranscriptQuote(")[1].split("\n}")[0];
-  assert.match(seeder, /if \(quoteSeedLive && list\.length\) list\[list\.length - 1\] = chip;/);
-  assert.match(seeder, /else if \(quoteAddHeld && list\.length\) list\.push\(chip\);/);
-  assert.match(seeder, /else list\.splice\(0, list\.length, chip\);/);
+  assert.match(seeder, /let idx = quoteSeedIdx != null && quoteSeedIdx < list\.length \? quoteSeedIdx : null;/);
+  assert.match(seeder, /if \(quoteAddHeld && list\.length\) idx = list\.length;/);
+  assert.match(seeder, /else \{ list\.length = 0; idx = 0; \}/);
   // flavors never mix: any quote seed drops a goal chip (the send routes goal XOR quotes)
   assert.match(seeder, /\.filter\(\(c\) => !c\.itemId\)/);
   // the second chip sits BELOW the first: the strip stacks (flex column), one chip per row
@@ -141,6 +141,20 @@ test("⌘-selecting another piece of text ADDS a context below the held ones (th
   assert.match(RENDER, /list\.splice\(idx == null \? list\.length - 1 : idx, 1\);/);
   // the persisted state restores a LIST, and still accepts the pre-stack single-object form
   assert.match(RENDER, /for \(const c of \(Array\.isArray\(v\) \? v : \[v\]\) as any\[\]\)/);
+});
+
+test("one ⌘-drag never lists the same context twice (the user 2026-08-04)", () => {
+  // The reported bug: a mid-drag selectionchange tick can momentarily fail to qualify (the cursor crossing
+  // the gap between two turns puts an endpoint outside any .turn). Ending the gesture on that tick made the
+  // next qualifying tick APPEND AGAIN — one ⌘-drag produced two copies of the same context. Plain select
+  // masked the identical flicker because its re-seed replaces. So:
+  // (1) a non-qualifying tick leaves the gesture alone — ONLY a mousedown ends it…
+  const listener = RENDER.split('document.addEventListener("selectionchange"')[1].split("});")[0];
+  assert.doesNotMatch(listener, /quoteSeedIdx/, "the selectionchange listener never touches the gesture");
+  // (2) …and identical text collapses regardless of the path that re-cited it (a repeated double-click,
+  // a drag re-traced after a transcript rebuild killed the selection) — the gesture's own chip survives.
+  const seeder = RENDER.split("function seedTranscriptQuote(")[1].split("\n}")[0];
+  assert.match(seeder, /if \(i !== idx && list\[i\]\.quote === chip\.quote\) \{\s*\n\s*list\.splice\(i, 1\);\s*\n\s*if \(i < idx\) idx--;/);
 });
 
 test("Enter with a live transcript selection drops into the message box with the quote as context (the user 2026-08-04)", () => {
