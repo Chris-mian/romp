@@ -3965,7 +3965,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode",
-              "endSession", "renameSession", "stopTask")
+              "endSession", "renameSession", "stopTask", "rewindFiles")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -4209,6 +4209,12 @@ def _drive(msg, client):
         if not be.stop_task(sid, str(msg["taskId"])):
             client["send"](json.dumps({"type": "warn",
                                        "text": "Couldn't stop that background task — it may have already finished."}))
+        _push_soon()
+    elif t == "rewindFiles" and msg.get("uuid"):
+        # the SDK's file-checkpoint restore — the workspace, not the conversation. LOUD on refusal.
+        if not be.rewind_files(sid, str(msg["uuid"])):
+            client["send"](json.dumps({"type": "warn",
+                                       "text": "Couldn't restore files — this session's backend doesn't support it or isn't connected."}))
         _push_soon()
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)

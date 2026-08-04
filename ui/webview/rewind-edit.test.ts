@@ -111,3 +111,15 @@ test("kernel: rewindSend validates against the transcript and the SDK backend ap
   assert.match(KERNEL, /def _rewind_target\(path, sid, user_uuid\):/);
   assert.match(BACKEND, /kw\["extra_args"\] = \{"resume-session-at": sess\._rewind_to\}/);
 });
+
+test("a restore-files affordance rides each editable bubble — workspace only, armed like delete (the user 2026-08-04)", () => {
+  // the SDK's file-checkpoint rewind: files go back to before this message, the conversation stays
+  assert.match(RENDER, /const rf = el\("button", "msg-restorefiles"\) as HTMLButtonElement;/);
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "rewindFiles", id: editSid, uuid \}\);/);
+  // two-click arm, disarmed on blur/pointerleave — every miss fails toward "not restored"
+  assert.match(RENDER, /if \(!rf\.classList\.contains\("armed"\)\) \{ rf\.classList\.add\("armed"\); rf\.textContent = "revert files\?"; return; \}/);
+  assert.match(RENDER, /rf\.addEventListener\("blur", rfDisarm\);/);
+  assert.match(RENDER, /rf\.addEventListener\("pointerleave", rfDisarm\);/);
+  // acknowledged immediately on fire; a re-render resets the label
+  assert.match(RENDER, /rf\.disabled = true; rf\.textContent = "restoring…";/);
+});

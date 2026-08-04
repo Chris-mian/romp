@@ -1366,10 +1366,57 @@ class StopTask(unittest.TestCase):
     def test_kernel_op_warns_on_refusal(self):
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
             src = f.read()
-        self.assertIn('"stopTask")', src.replace("\n", " ")[:200000] if False else src[src.index("ID_OPS"):src.index("ID_OPS")+700],
+        self.assertIn('"stopTask"', src[src.index("ID_OPS"):src.index("ID_OPS") + 700],
                       "stopTask routes by session id like every session op")
         self.assertIn('elif t == "stopTask" and msg.get("taskId"):', src)
         self.assertIn("Couldn't stop that background task", src, "a refusal warns the user — never a silent no-op")
+
+
+class RewindFiles(unittest.TestCase):
+    """The bubble's restore-files affordance rides the SDK's designed rewind_files control request (the
+    user 2026-08-04): the WORKSPACE goes back to its state before a user message; the conversation is
+    untouched (edit/delete cover that). Checkpointing is enabled on every session so the checkpoints
+    exist. A refusal returns False so the kernel warns — never a silent no-op; tmux inherits the ABC's
+    False. No SDK import needed here (dispatch is deferred), so this runs in every venv."""
+
+    def _sess(self):
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        return be, sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": d})
+
+    def test_dispatches_on_the_loop_when_connected(self):
+        _, sess = self._sess()
+        dispatched = []
+        sess.loop = type("L", (), {"call_soon_threadsafe": staticmethod(lambda cb: dispatched.append(cb))})()
+        sess.client = object()
+        self.assertTrue(sess.request_rewind_files("aaaa-uuid"))
+        self.assertEqual(len(dispatched), 1, "the control request is scheduled on the loop thread")
+
+    def test_refuses_without_a_client_or_uuid(self):
+        _, sess = self._sess()
+        self.assertFalse(sess.request_rewind_files("aaaa-uuid"), "no connected client → False → kernel warns")
+        sess.loop = object(); sess.client = object()
+        self.assertFalse(sess.request_rewind_files(""), "no uuid → refuse, never a blind restore")
+
+    def test_backend_routes_by_sid_and_tmux_defaults_false(self):
+        be, _ = self._sess()
+        self.assertFalse(be.rewind_files("no-such-sid", "aaaa-uuid"))
+        spec_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                     "kernel", "session_backend.py")).read()
+        self.assertIn("def rewind_files(self, sid: str, uuid: str) -> bool:", spec_src)
+        self.assertIn("return False", spec_src.split("def rewind_files", 1)[1][:600],
+                      "the ABC default is False — tmux has no such control")
+
+    def test_checkpointing_is_on_and_the_kernel_op_warns_on_refusal(self):
+        base = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+        sdk_src = open(os.path.join(base, "kernel", "sdk_backend.py")).read()
+        self.assertIn("enable_file_checkpointing=True", sdk_src,
+                      "every session checkpoints, so any user message is a restore point")
+        with open(os.path.join(base, "bin", "romp-kernel")) as f:
+            src = f.read()
+        self.assertIn('"rewindFiles")', src[src.index("ID_OPS"):src.index("ID_OPS") + 700])
+        self.assertIn('elif t == "rewindFiles" and msg.get("uuid"):', src)
+        self.assertIn("Couldn't restore files", src, "a refusal warns the user — never a silent no-op")
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
