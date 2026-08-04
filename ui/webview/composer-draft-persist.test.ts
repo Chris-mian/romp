@@ -12,7 +12,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 
 test("drafts are persisted to and reloaded from the webview's saved state", () => {
   // persist: mirror the Map into setState, alongside (not replacing) whatever else is saved — plus citations
-  assert.match(RENDER, /function persistDrafts\(\): void \{[\s\S]*setState\?\.\(\{ \.\.\.\(vscodeApi\.getState\?\.\(\) \|\| \{\}\), drafts: Object\.fromEntries\(drafts\),[\s\S]*citations: Object\.fromEntries\(composerCitations\) \}\)/);
+  assert.match(RENDER, /function persistDrafts\(\): void \{[\s\S]*setState\?\.\(\{ \.\.\.\(vscodeApi\.getState\?\.\(\) \|\| \{\}\), drafts: Object\.fromEntries\(drafts\),[\s\S]*citations: Object\.fromEntries\(composerCitations\),[\s\S]*files: Object\.fromEntries\(composerFiles\) \}\)/);
   // reload: hydrate the Map from saved state at startup (string values only)
   assert.match(RENDER, /const saved = \(\(vscodeApi\?\.getState\?\.\(\) \|\| \{\}\) as any\)\.drafts;/);
   assert.match(RENDER, /for \(const \[k, v\] of Object\.entries\(saved\)\) if \(typeof v === "string"\) drafts\.set\(k, v\);/);
@@ -38,5 +38,5 @@ test("every draft mutation keeps the persisted copy in sync (switch / send / clo
   // sending clears the draft (and ends its start-stamp) → persist
   assert.match(RENDER, /drafts\.delete\(activeId\); draftStartedAt\.delete\(activeId\); persistDrafts\(\);\s*\/\/ sent/);
   // closing a tab drops its draft AND its citation AND its edit pill → persist (the user 2026-08-04)
-  assert.match(RENDER, /drafts\.delete\(id\); composerCitations\.delete\(id\); composerEdits\.delete\(id\); persistDrafts\(\);/);
+  assert.match(RENDER, /drafts\.delete\(id\); composerCitations\.delete\(id\); composerEdits\.delete\(id\); composerFiles\.delete\(id\); persistDrafts\(\);/);
 });

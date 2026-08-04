@@ -25,7 +25,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional 
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
-import { previewKind, previewFull, canPreview } from "./preview";
+import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
 import { hostNameNodes, hostPrefix, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
@@ -6839,6 +6839,14 @@ const drafts = new Map<string, string>();
 interface Citation { itemId?: string; title: string; quote?: string; uuid?: string | null; src?: string }   // src = a VS Code editor highlight's origin, workspace-relative file:lines (the user 2026-07-13)
 const composerCitations = new Map<string, Citation[]>();
 
+// FILE ATTACHMENTS for the composer (the user 2026-08-04): a file dragged, pasted, or picked into the
+// chat box becomes a little THUMBNAIL in a strip above the textarea — not a raw path string dumped into
+// the text. Per session like drafts, and with the DRAFT lifecycle (survive tab switch + reload, cleared
+// on send), unlike citations (a "reply right now" intent that a tab switch abandons). On send the paths
+// ride the outgoing text as a trailing line, quoted when they contain spaces — the same thing the old
+// insert-at-cursor produced, now legible while you compose.
+const composerFiles = new Map<string, string[]>();   // sid -> attachment paths, in drop order
+
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
 // only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
 // that remembers the active tab — and reload it at startup. restoreActiveDraftOnce() drops the active tab's
@@ -6847,12 +6855,19 @@ const composerCitations = new Map<string, Citation[]>();
 function persistDrafts(): void {
   try {
     vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts),
-                            citations: Object.fromEntries(composerCitations) });
+                            citations: Object.fromEntries(composerCitations),
+                            files: Object.fromEntries(composerFiles) });
   } catch { /* ignore */ }
 }
 try {
   const saved = ((vscodeApi?.getState?.() || {}) as any).drafts;
   if (saved && typeof saved === "object") for (const [k, v] of Object.entries(saved)) if (typeof v === "string") drafts.set(k, v);
+  const savedFiles = ((vscodeApi?.getState?.() || {}) as any).files;
+  if (savedFiles && typeof savedFiles === "object")
+    for (const [k, v] of Object.entries(savedFiles)) {
+      const paths = (Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string" && !!x);
+      if (paths.length) composerFiles.set(k, paths);
+    }
   const savedCites = ((vscodeApi?.getState?.() || {}) as any).citations;
   if (savedCites && typeof savedCites === "object")
     for (const [k, v] of Object.entries(savedCites)) {
@@ -6948,6 +6963,77 @@ function renderComposerChips(id: string | null): void {
     chip.appendChild(x);
     strip.appendChild(chip);
   });
+}
+
+// The attachment strip: one little thumbnail per dropped/pasted/picked file, above the textarea (the
+// user 2026-08-04). An image shows its pixels — same-origin /file bytes on the web dashboard, the host
+// imgRequest data-URL flow in the VS Code webview (the sandbox can't reach the kernel origin) — and any
+// other file wears a compact ext + name chip. Click opens the file (the same openFile the path links
+// use); the ✕ removes just that attachment. Rendered per session, like the citation chips beside it.
+function renderComposerFiles(id: string | null): void {
+  const strip = document.getElementById("composer-files");
+  if (!strip) return;
+  strip.replaceChildren();
+  const paths = id ? composerFiles.get(id) : undefined;
+  if (!paths || !paths.length) { strip.style.display = "none"; return; }
+  strip.style.display = "flex";
+  paths.forEach((p, i) => {
+    const box = el("span", "composer-file");
+    box.title = p + " — click opens it · ✕ removes";
+    if (previewKind(p) === "img") {
+      if (canPreview()) {
+        const img = document.createElement("img");
+        img.className = "composer-file-img";
+        img.src = fileUrl(p, id);
+        img.alt = p;
+        img.onerror = () => { img.replaceWith(composerFileDoc(p)); };   // unservable → fall to the ext chip
+        box.appendChild(img);
+      } else {
+        const w = buildPathImg(p);                 // VS Code: host-read data URL fills in; chip until then
+        w.classList.add("composer-file-hostimg");
+        box.appendChild(w);
+      }
+    } else {
+      box.appendChild(composerFileDoc(p));
+    }
+    box.addEventListener("click", () => { vscodeApi?.postMessage({ type: "openFile", path: p, id: id || undefined }); });
+    const x = el("button", "composer-file-x");
+    x.setAttribute("aria-label", "Remove attachment");
+    x.textContent = "\u2715";
+    x.addEventListener("click", (e) => { e.stopPropagation(); if (id) removeComposerFile(id, i); });
+    box.appendChild(x);
+    strip.appendChild(box);
+  });
+}
+
+// A non-image attachment's face: the extension in a small badge + the basename, both text (no glyph).
+function composerFileDoc(p: string): HTMLElement {
+  const chip = el("span", "composer-file-doc");
+  const dot = p.lastIndexOf(".");
+  const ext = el("span", "composer-file-ext");
+  ext.textContent = (dot > 0 ? p.slice(dot + 1) : "file").slice(0, 5).toUpperCase();
+  const nm = el("span", "composer-file-name");
+  nm.textContent = p.split("/").pop() || p;
+  chip.append(ext, nm);
+  return chip;
+}
+
+function addComposerFile(id: string | null, path: string): void {
+  if (!id || !path) return;
+  const list = composerFiles.get(id) || [];
+  if (!list.includes(path)) list.push(path);       // the same file dropped twice attaches once
+  composerFiles.set(id, list);
+  persistDrafts();
+  if (id === activeId) renderComposerFiles(id);
+}
+
+function removeComposerFile(id: string, idx: number): void {
+  const list = composerFiles.get(id);
+  if (!list || idx < 0 || idx >= list.length) return;
+  list.splice(idx, 1);
+  if (!list.length) composerFiles.delete(id);
+  persistDrafts();
+  if (id === activeId) renderComposerFiles(id);
 }
 
 // Audit popover — the EXACT wrapped body romp will send the model for this citation, fetched from the kernel's
@@ -7181,7 +7267,8 @@ function restoreActiveDraftOnce(): void {
   if (!ta || !activeId) return;            // wait until the active tab is established after load
   draftsRestored = true;
   if (!ta.value) { const d = drafts.get(activeId); if (d) { ta.value = d; growComposer(ta); } }
-  renderComposerChips(activeId);   // a citation persisted across the reload → show its chip again
+  renderComposerChips(activeId);   // a citation persisted across the reload
+  renderComposerFiles(activeId);   // attachments persisted across the reload → thumbnails again → show its chip again
 }
 
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
@@ -7207,6 +7294,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     ta.value = drafts.get(id) ?? "";
     growComposer(ta);
     renderComposerChips(id);   // the entering tab's own citation chip (if any)
+    renderComposerFiles(id);   // …and its attachment thumbnails (draft lifecycle: they survive the switch)
     persistDrafts();   // the leaving tab's draft was just stashed → keep the persisted copy in sync
   }
   pendingAnchor = anchor ?? null;
@@ -7541,7 +7629,7 @@ function dismissSession(id: string): void {
   // closed session was ACTIVE: the shared chip strip above the composer still shows its chip until
   // someone repaints it, and that stale chip's ✕ targets the dead id (whose map entry is gone), so the
   // click early-returns and the chip can't even be dismissed — hence the repaint below.
-  drafts.delete(id); composerCitations.delete(id); composerEdits.delete(id); persistDrafts();
+  drafts.delete(id); composerCitations.delete(id); composerEdits.delete(id); composerFiles.delete(id); persistDrafts();
   const v = views.get(id);
   if (v) { v.el.remove(); views.delete(id); }
   const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
@@ -7552,6 +7640,7 @@ function dismissSession(id: string): void {
     const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     if (ta) { ta.value = (activeId && drafts.get(activeId)) || ""; growComposer(ta); }
     renderComposerChips(activeId);   // the strip was showing the CLOSED session's chip — swap in the new active tab's (usually none)
+    renderComposerFiles(activeId);   // same for its attachment thumbnails
     showActive();
   }
 }
@@ -7744,7 +7833,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
-  else if (m.type === "droppedPath" && typeof m.path === "string") insertComposerText(m.path);
+  else if (m.type === "droppedPath" && typeof m.path === "string") addComposerFile(activeId, m.path);   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
   // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
   else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim() && activeId)
@@ -7802,16 +7891,25 @@ function setupComposer() {
   // Send the composer's text to the active session — the single path shared by ⏎ and the explicit send
   // button (the user 2026-06-17). Trims, remembers for a Ctrl+C restore, clears the box.
   const sendComposer = () => {
-    const text = ta.value.trim();
-    if (!text || !activeId) return;
+    const typed = ta.value.trim();
+    if (!activeId) return;
+    const attached = composerFiles.get(activeId) || [];
+    if (!typed && !attached.length) return;
+    // Attachment thumbnails ride the send as a trailing line of paths — quoted when they contain spaces,
+    // the way a person would type them (the user 2026-08-04). Not for a picker answer or an edit: a
+    // picker wants exactly the typed words, and an edit replaces a PAST message — the strip keeps its
+    // files for the next normal send in both cases.
+    const text = attached.length
+      ? (typed ? typed + "\n" : "") + attached.map((p) => (/\s/.test(p) ? '"' + p + '"' : p)).join(" ")
+      : typed;
     // A live picker with a free-text path is up → the composer IS its "add your own" field now (the user
     // 2026-07-09): route the typed text to the picker instead of sending a normal message. "custom" fills the
     // AskUserQuestion Type-something slot (single submits, multi adds a checked row + you Submit); "text"
     // answers a raw free-text prompt. A picker WITHOUT free text (permission Allow/Deny, plan review) returns
     // null here, so the box keeps its normal send — the controls just stay in view alongside it.
-    const askRoute = composerAnswersAsk();
+    const askRoute = typed ? composerAnswersAsk() : null;
     if (askRoute) {
-      if (askRoute === "custom") addCustomLiveAsk(text); else sendTextLiveAsk(text);
+      if (askRoute === "custom") addCustomLiveAsk(typed); else sendTextLiveAsk(typed);
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();
       ta.value = ""; composerManualH = null; ta.style.height = "";
       return;
@@ -7821,8 +7919,9 @@ function setupComposer() {
     // pending-rewind overlay shows the outcome in place until the kernel's rewound payload arrives.
     const editing = composerEdits.get(activeId);
     if (editing) {
-      vscodeApi?.postMessage({ type: "rewindSend", id: activeId, uuid: editing.uuid, text });
-      pendingRewind.set(activeId, { uuid: editing.uuid, text, ts: Date.now() });
+      if (!typed) return;   // an edit sends the typed words; attachments wait for the next normal send
+      vscodeApi?.postMessage({ type: "rewindSend", id: activeId, uuid: editing.uuid, text: typed });
+      pendingRewind.set(activeId, { uuid: editing.uuid, text: typed, ts: Date.now() });
       composerEdits.delete(activeId);
       renderComposerChips(activeId);
       const s = sessions.get(activeId);
@@ -7850,6 +7949,7 @@ function setupComposer() {
       if (isProvisionalId(sid)) {
         provisionalQueue.push(text);
         registerOptimistic(sid, text);
+        if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
         drafts.delete(sid); draftStartedAt.delete(sid); persistDrafts();
         ta.value = ""; composerManualH = null; ta.style.height = "";
         return;
@@ -7876,6 +7976,7 @@ function setupComposer() {
         // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       }
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
+      if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }   // the strip emptied into this message
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
       ta.value = "";
       composerManualH = null;   // a drag-expanded box snaps back to one line after a send (the user 2026-07-07)
@@ -8135,12 +8236,12 @@ function setupComposer() {
     const dt = e.dataTransfer;
     if (!dt) return;
     const uris = (dt.getData("text/uri-list") || "").split(/\r?\n/).filter((u) => u && !u.startsWith("#"));
-    const fromUri = (u: string) => insertComposerText(decodeURIComponent(u.replace(/^file:\/\//, "")));
+    const fromUri = (u: string) => addComposerFile(activeId, decodeURIComponent(u.replace(/^file:\/\//, "")));
     const files = Array.from(dt.files || []);
     if (!files.length) { for (const u of uris) if (u.startsWith("file://")) fromUri(u); return; }
     files.forEach((f, i) => {
       const p = (f as any).path as string | undefined;
-      if (p) { insertComposerText(p); return; }
+      if (p) { addComposerFile(activeId, p); return; }
       if (uris[i] && uris[i].startsWith("file://")) { fromUri(uris[i]); return; }
       shipFileToHost(f);
     });
@@ -8155,7 +8256,7 @@ function setupComposer() {
     e.preventDefault();
     files.forEach((f) => {
       const p = (f as any).path as string | undefined;
-      if (p) insertComposerText(p);
+      if (p) addComposerFile(activeId, p);
       else shipFileToHost(f);
     });
   });
@@ -8163,16 +8264,16 @@ function setupComposer() {
 
   // The bulletproof path: 📎 asks the host to run a native open dialog (no
   // workbench drop overlay to fight) and the picked path comes back as
-  // droppedPath → insertComposerText. Mousedown (not click) so the textarea
-  // keeps focus and the path lands at the existing cursor.
+  // droppedPath → an attachment thumbnail (the user 2026-08-04; it used to insert
+  // the raw path at the cursor). Mousedown (not click) so the textarea keeps focus.
   //
   // TOUCH devices (phone/tablet on the web dashboard) can't use the host dialog:
   // it pops on the DESKTOP running the kernel, not the phone. So 📎 instead opens
   // the phone's own photo picker (a hidden <input type=file accept=image/*>), and
   // the chosen image's bytes ship to the host (shipFileToHost → dropFile), which
   // saves them under ~/.local/state/romp/drops/ and posts the saved path back
-  // (droppedPath) for insertion — a screenshot reaches the session with no
-  // AirDrop/path gymnastics (the user 2026-06-17).
+  // (droppedPath), landing as an attachment thumbnail — a screenshot reaches the
+  // session with no AirDrop/path gymnastics (the user 2026-06-17).
   const attach = document.getElementById("composer-attach") as HTMLButtonElement | null;
   const isTouch = isCoarsePointer;
   const filePicker = document.createElement("input");
@@ -8196,7 +8297,7 @@ function setupComposer() {
 
 // No filesystem path available for a dropped/pasted file → ship the bytes to
 // the host, which saves them under ~/.local/state/romp/drops/ and posts back
-// {type:"droppedPath", path} for insertion.
+// {type:"droppedPath", path} — which lands as an attachment thumbnail.
 function shipFileToHost(f: File) {
   if (f.size > 50 * 1024 * 1024) return;   // too big to ship over postMessage
   const reader = new FileReader();
@@ -8205,21 +8306,6 @@ function shipFileToHost(f: File) {
     if (b64 && vscodeApi) vscodeApi.postMessage({ type: "dropFile", name: f.name || "pasted.png", b64 });
   };
   reader.readAsDataURL(f);
-}
-
-// Insert text into the composer at the cursor, with whitespace separation on
-// both sides so a dropped path never fuses with surrounding words.
-function insertComposerText(text: string) {
-  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-  if (!ta || !text) return;
-  const s = ta.selectionStart ?? ta.value.length, epos = ta.selectionEnd ?? ta.value.length;
-  const before = ta.value.slice(0, s), after = ta.value.slice(epos);
-  const sep = before && !/\s$/.test(before) ? " " : "";
-  ta.value = before + sep + text + (after && !/^\s/.test(after) ? " " : "") + after;
-  const pos = (before + sep + text).length;
-  ta.selectionStart = ta.selectionEnd = Math.min(pos, ta.value.length);
-  growComposer(ta);
-  ta.focus();
 }
 
 // ---- settings: the gear + modal live on the TIMELINE now (the user 2026-06-14). The chat just
