@@ -57,7 +57,15 @@ const webview = {
   // Leave media url()s verbatim — they're served from vscode-extension/media at runtime (kernel
   // /media or VS Code localResourceRoot), NOT bundled. `../media/x.png` is correct relative
   // to the emitted dist/feed.css; esbuild must not try to resolve it against the source tree.
-  external: ["*.png", "*.svg"],
+  // .woff/.ttf stay external too: KaTeX's @font-face lists woff2 first and every current
+  // engine takes it, so those fallback urls are never fetched and bundling them would
+  // triple the font payload for nothing.
+  external: ["*.png", "*.svg", "*.woff", "*.ttf"],
+  // KaTeX fonts (referenced by katex.min.css, @imported from styles.css) are copied to
+  // dist/fonts/ and the css urls rewritten relative to dist — served by the kernel's /dist/
+  // route and the VS Code webview's dist resource root alike.
+  loader: { ".woff2": "file" },
+  assetNames: "fonts/[name]-[hash]",
   sourcemap: !production,
   minify: production,
   logLevel: "info",

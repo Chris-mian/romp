@@ -3,6 +3,15 @@
    pulled from the shipped Claude Code CSS; the status chips use the romp
    dashboard's badge colors. */
 
+/* KaTeX layout classes for TeX math in chat markdown (ui/webview/math.ts). esbuild inlines
+   this @import and emits the fonts it references to dist/fonts/ (woff2 only: every current
+   engine takes woff2 first, so the .woff/.ttf fallback urls are deliberately left external
+   and never fetched). */
+@import "katex/dist/katex.min.css";
+
+/* A wide display formula scrolls inside its own box instead of stretching the bubble. */
+.katex-display { overflow-x: auto; overflow-y: hidden; }
+
 :root {
   /* Chat reading-column width. 100% = fill the pane and grow with it (the user 2026-06-15);
      set a px value (e.g. 980px) to re-cap for prose readability. Shared by the transcript,
