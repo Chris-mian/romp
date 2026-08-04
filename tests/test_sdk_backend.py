@@ -1325,6 +1325,54 @@ class PermissionAndPlanRoundTrip(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class StopTask(unittest.TestCase):
+    """The bg-task box's Stop button rides the SDK's designed stop_task control request (the user
+    2026-08-04). The box shows tasks by TOOL-USE id (the kernel's transcript scan); the control request
+    takes the CLI's lifecycle task id (_bg_tasks' key) — request_stop_task resolves either form. A
+    refusal returns False so the kernel can WARN, never a silent no-op; tmux inherits the ABC's False
+    (its box never shows live tasks)."""
+
+    def _sess(self):
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        return sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": d})
+
+    def test_resolves_the_tool_use_id_to_the_lifecycle_task_id(self):
+        sess = self._sess()
+        sess._bg_tasks["task-1"] = {"desc": "sweep", "type": "bash", "since": 1, "toolUseId": "toolu_9", "lastTool": ""}
+        dispatched = []
+        sess.loop = type("L", (), {"call_soon_threadsafe": staticmethod(lambda cb: dispatched.append(cb))})()
+        sess.client = object()
+        self.assertTrue(sess.request_stop_task("toolu_9"), "the box's tool-use id resolves")
+        self.assertTrue(sess.request_stop_task("task-1"), "the lifecycle id itself is accepted too")
+        self.assertEqual(len(dispatched), 2, "the control request is scheduled on the loop thread")
+
+    def test_unknown_task_or_dead_client_refuses(self):
+        sess = self._sess()
+        self.assertFalse(sess.request_stop_task("toolu_missing"), "unknown/terminal task → False → kernel warns")
+        sess._bg_tasks["task-1"] = {"toolUseId": "toolu_9"}
+        self.assertFalse(sess.request_stop_task("toolu_9"), "no connected client → False, never a crash")
+
+    def test_backend_routes_by_sid_and_tmux_defaults_false(self):
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        self.assertFalse(be.stop_task("no-such-sid", "toolu_9"))
+        import importlib.util as _u
+        spec_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                     "kernel", "session_backend.py")).read()
+        self.assertIn("def stop_task(self, sid: str, task_id: str) -> bool:", spec_src)
+        self.assertIn("return False", spec_src.split("def stop_task", 1)[1][:600],
+                      "the ABC default is False — tmux has no such control")
+
+    def test_kernel_op_warns_on_refusal(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
+            src = f.read()
+        self.assertIn('"stopTask")', src.replace("\n", " ")[:200000] if False else src[src.index("ID_OPS"):src.index("ID_OPS")+700],
+                      "stopTask routes by session id like every session op")
+        self.assertIn('elif t == "stopTask" and msg.get("taskId"):', src)
+        self.assertIn("Couldn't stop that background task", src, "a refusal warns the user — never a silent no-op")
+
+
 class OptionsAssembly(unittest.TestCase):
     """_options must use the SDK's DESIGNED option fields, not the extra_args CLI-flag escape hatch (the user
     2026-06-24: implement things the way the SDK designed them). The romp harness prompt is appended via
