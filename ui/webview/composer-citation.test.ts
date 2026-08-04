@@ -106,15 +106,40 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
   // two flavors on one Citation: a goal chip (itemId) or a quote chip (quote [+ the turn's uuid])
   assert.match(RENDER, /interface Citation \{ itemId\?: string; title: string; quote\?: string; uuid\?: string \| null; src\?: string \}/);
   // event-based on selectionchange; BOTH endpoints must sit inside transcript turns, so composer/tab
-  // selections never seed; a collapse never clears (clicking into the composer must not eat the chip)
-  assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
-  assert.match(RENDER, /if \(!sel \|\| !sel\.rangeCount \|\| sel\.isCollapsed\) return;\s*\/\/ never clear on collapse/);
+  // selections never seed; a collapse never clears (clicking into the composer must not eat the chip).
+  // The qualification lives in transcriptSelection(), shared with the Enter-to-reply shortcut so the
+  // two can never disagree on what counts as a transcript selection.
+  assert.match(RENDER, /function transcriptSelection\(\): \{ text: string; uuid: string \| null \} \| null/);
+  assert.match(RENDER, /if \(!sel \|\| !sel\.rangeCount \|\| sel\.isCollapsed\) return null;/);
   assert.match(RENDER, /const a = turnOf\(sel\.anchorNode\), f = turnOf\(sel\.focusNode\);/);
-  assert.match(RENDER, /if \(!a \|\| !f\) return;/);
+  assert.match(RENDER, /if \(!a \|\| !f\) return null;/);
+  assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
+  assert.match(RENDER, /if \(!q\) return;\s*\/\/ never clear on collapse/);
   // seeding NEVER focuses the composer — a focus steal would collapse the selection mid-drag
   const seeder = RENDER.split("function setQuoteCitation(")[1].split("\n}")[0];
   assert.doesNotMatch(seeder, /focusComposer/);
   assert.match(seeder, /quote: quote\.slice\(0, QUOTE_CAP\)/);
+});
+
+test("Enter with a live transcript selection drops into the message box with the quote as context (the user 2026-08-04)", () => {
+  // the window Enter handler checks the selection BEFORE the bare-area gate: the mousedown that made the
+  // selection may have landed focus on a fold head or a button, which the ae===body gate below refuses —
+  // and re-seeding at Enter makes the chip exactly what's selected at that moment
+  assert.match(RENDER, /const q = transcriptSelection\(\);\s*\n\s*if \(q && activeId\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*setQuoteCitation\(activeId, q\.text, q\.uuid\);\s*\n\s*focusComposer\(\);\s*\n\s*return;/);
+  // the bare-area fallback (Enter with no selection — the user 2026-06-26) survives untouched below it
+  assert.match(RENDER, /if \(ae && ae !== document\.body\) return;\s*\n\s*if \(focusComposerOrAsk\(\)\) e\.preventDefault\(\);/);
+});
+
+test("closing a session clears its composer reply context — chip, draft, and edit pill (the user 2026-08-04)", () => {
+  const body = RENDER.match(/function dismissSession\(id: string\): void \{[\s\S]*?\n\}/);
+  assert.ok(body, "dismissSession not found");
+  // the maps: the draft, the citation chip, and any pending edit mode all die with the session
+  assert.match(body![0], /drafts\.delete\(id\); composerCitations\.delete\(id\); composerEdits\.delete\(id\); persistDrafts\(\);/);
+  // …and when the CLOSED session was the active one, the shared chip strip is repainted for the newly
+  // selected tab. Without this the dead session's chip lingered in the strip — and its ✕, bound to the
+  // dead id whose map entry is already gone, early-returned in removeCitation, so the stale chip could
+  // not even be dismissed by hand.
+  assert.match(body![0], /renderComposerChips\(activeId\);[\s\S]*?showActive\(\);/);
 });
 
 test("a quote chip sends a plain message wrapped by quoteReplyBody — never askFollowUp (no goal to reopen)", () => {

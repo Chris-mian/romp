@@ -3828,6 +3828,20 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     content.scrollBy({ top: e.key === "ArrowDown" ? NAV_SCROLL_STEP : -NAV_SCROLL_STEP });
   } else if (e.key === "Enter") {
+    // A live transcript selection outranks everything below (the user 2026-08-04): the selection already
+    // seeded the reply chip (selectionchange), and Enter is the natural "now type the reply" — so drop
+    // straight into the message box with that context attached, even when the mousedown that made the
+    // selection happened to land focus on a fold head or button (which the bare-area gate below would
+    // refuse). Re-seeding here is what makes the chip exactly what's selected at the moment of Enter.
+    // Focusing the box collapses the selection, and the chip survives — a collapse never clears it.
+    // A focused tab and the live-ask card still win: both preventDefault before this bubbles to window.
+    const q = transcriptSelection();
+    if (q && activeId) {
+      e.preventDefault();
+      setQuoteCitation(activeId, q.text, q.uuid);
+      focusComposer();
+      return;
+    }
     // Enter from the bare chat AREA → drop the cursor into the message box, so after clicking in the
     // transcript to read/select you can just hit Enter to type (the user 2026-06-26). Gated on
     // activeElement being the body (no focused control), so it never steals Enter from a focused tab
@@ -6984,19 +6998,27 @@ function setQuoteCitation(id: string, quote: string, uuid: string | null, src?: 
   persistDrafts();
   if (id === activeId) renderComposerChips(id);
 }
-document.addEventListener("selectionchange", () => {
-  if (!activeId) return;
+// The current selection when (and only when) it qualifies as transcript text — both endpoints inside
+// `.turn` elements, non-collapsed, non-empty. Shared by the selectionchange seeding below and the
+// Enter-to-reply shortcut (window keydown), so the two can never disagree on what counts.
+function transcriptSelection(): { text: string; uuid: string | null } | null {
   const sel = window.getSelection();
-  if (!sel || !sel.rangeCount || sel.isCollapsed) return;   // never clear on collapse
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
   const turnOf = (n: Node | null) => {
     const e = n instanceof Element ? n : n?.parentElement;
     return e?.closest?.(".turn") ?? null;
   };
   const a = turnOf(sel.anchorNode), f = turnOf(sel.focusNode);
-  if (!a || !f) return;                                     // both endpoints must be transcript turns
+  if (!a || !f) return null;                                // both endpoints must be transcript turns
   const text = sel.toString().trim();
-  if (!text) return;
-  setQuoteCitation(activeId, text, a.getAttribute("data-uuid"));
+  if (!text) return null;
+  return { text, uuid: a.getAttribute("data-uuid") };
+}
+document.addEventListener("selectionchange", () => {
+  if (!activeId) return;
+  const q = transcriptSelection();
+  if (!q) return;                                           // never clear on collapse
+  setQuoteCitation(activeId, q.text, q.uuid);
 });
 
 // Dismiss the citation — via the chip ✕ or Backspace at the very start of an empty composer (so it deletes
@@ -7406,7 +7428,12 @@ function dismissSession(id: string): void {
   sessions.delete(id);
   liveAsks.delete(id);
   ledgers.delete(id);
-  drafts.delete(id); composerCitations.delete(id); persistDrafts();
+  // ALL of the closed session's composer context goes with it — the draft, the reply-context citation
+  // chip, and any pending edit pill (the user 2026-08-04). Deleting from the maps is not enough when the
+  // closed session was ACTIVE: the shared chip strip above the composer still shows its chip until
+  // someone repaints it, and that stale chip's ✕ targets the dead id (whose map entry is gone), so the
+  // click early-returns and the chip can't even be dismissed — hence the repaint below.
+  drafts.delete(id); composerCitations.delete(id); composerEdits.delete(id); persistDrafts();
   const v = views.get(id);
   if (v) { v.el.remove(); views.delete(id); }
   const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
@@ -7416,6 +7443,7 @@ function dismissSession(id: string): void {
     activeId = mru[0] || null; // MRU: return to the previously-active tab, not the positional neighbor
     const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     if (ta) { ta.value = (activeId && drafts.get(activeId)) || ""; growComposer(ta); }
+    renderComposerChips(activeId);   // the strip was showing the CLOSED session's chip — swap in the new active tab's (usually none)
     showActive();
   }
 }
