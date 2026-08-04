@@ -3581,9 +3581,14 @@ function quoteSelectionIntoComposer(text: string) {
   if (activeId) {
     drafts.set(activeId, ta.value);
     // the selection that opened this menu ALSO seeded the auto quote-chip (selectionchange, the user
-    // 2026-07-13) — the quote now lives IN the composer text, so drop the chip or the send would quote twice
-    const c = composerCitations.get(activeId);
-    if (c?.quote) { composerCitations.delete(activeId); renderComposerChips(activeId); }
+    // 2026-07-13) — the quote now lives IN the composer text, so drop that chip or the send would quote it
+    // twice. Only the NEWEST chip (the one this selection's gesture made) — earlier stacked contexts stay.
+    const list = composerCitations.get(activeId);
+    if (list?.length && list[list.length - 1].quote) {
+      list.pop();
+      if (!list.length) composerCitations.delete(activeId);
+      renderComposerChips(activeId);
+    }
     persistDrafts();
   }
 }
@@ -3838,7 +3843,7 @@ window.addEventListener("keydown", (e) => {
     const q = transcriptSelection();
     if (q && activeId) {
       e.preventDefault();
-      setQuoteCitation(activeId, q.text, q.uuid);
+      seedTranscriptQuote(activeId, q.text, q.uuid);
       focusComposer();
       return;
     }
@@ -6803,14 +6808,19 @@ const drafts = new Map<string, string>();
 // A CITATION seeded into the composer when you click a feed card's summary or a sub-goal into the chat (the
 // user 2026-07-01): a dismissible chip that says "you're following up on THIS". It rides the message out as a
 // romp follow-up (via askFollowUp on send), so the goal's context travels along and the goal reopens
-// (done→working, unless cleared). One per session's composer — clicking another card REPLACES it (matches the
-// singular "one of those little boxes"). Keyed by session id like drafts, so it belongs to its tab.
+// (done→working, unless cleared). Keyed by session id like drafts, so it belongs to its tab.
 // TWO flavors (the user 2026-07-13): a GOAL citation (itemId — the card-click case above) and a QUOTE
 // citation (quote [+ the containing turn's uuid] — highlighting transcript text seeds it). A quote chip has
 // no goal to reopen: the send wraps the highlighted text into a plain message (quoteReplyBody) so the agent
-// knows exactly which part is being replied to. Same chip, same dismissal, last seed wins.
+// knows exactly which part is being replied to.
+// The value is a LIST (the user 2026-08-04): quote chips can STACK. ⌘-selecting (Ctrl off-mac) another piece
+// of text ADDS a context below the ones already held — ⌘ because that is the platform's "add a separate item
+// to a selection", while Shift keeps its native browser meaning (extend the live selection, whose chip just
+// follows). A plain select still replaces, as before. Flavors never mix: the send routes goal XOR quotes, so
+// a goal chip always rides alone — any quote seed drops it, and a goal seed (feed card click) drops the
+// quotes. Each chip keeps its own ✕; Backspace-at-start eats the newest first.
 interface Citation { itemId?: string; title: string; quote?: string; uuid?: string | null; src?: string }   // src = a VS Code editor highlight's origin, workspace-relative file:lines (the user 2026-07-13)
-const composerCitations = new Map<string, Citation>();
+const composerCitations = new Map<string, Citation[]>();
 
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
 // only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
@@ -6829,12 +6839,16 @@ try {
   const savedCites = ((vscodeApi?.getState?.() || {}) as any).citations;
   if (savedCites && typeof savedCites === "object")
     for (const [k, v] of Object.entries(savedCites)) {
-      const c = v as any;   // either flavor restores: a goal chip (itemId) or a quote chip (quote [+ uuid])
-      if (c && typeof c.title === "string" && (typeof c.itemId === "string" || typeof c.quote === "string"))
-        composerCitations.set(k, { itemId: typeof c.itemId === "string" ? c.itemId : undefined, title: c.title,
-                                   quote: typeof c.quote === "string" ? c.quote : undefined,
-                                   uuid: typeof c.uuid === "string" ? c.uuid : null,
-                                   src: typeof c.src === "string" ? c.src : undefined });
+      // each value is a LIST of chips; a pre-stack state (before 2026-08-04) stored a single object — wrap it
+      const list: Citation[] = [];
+      for (const c of (Array.isArray(v) ? v : [v]) as any[]) {   // either flavor restores: goal (itemId) or quote (quote [+ uuid])
+        if (c && typeof c.title === "string" && (typeof c.itemId === "string" || typeof c.quote === "string"))
+          list.push({ itemId: typeof c.itemId === "string" ? c.itemId : undefined, title: c.title,
+                      quote: typeof c.quote === "string" ? c.quote : undefined,
+                      uuid: typeof c.uuid === "string" ? c.uuid : null,
+                      src: typeof c.src === "string" ? c.src : undefined });
+      }
+      if (list.length) composerCitations.set(k, list);
     }
 } catch { /* ignore */ }
 
@@ -6898,22 +6912,25 @@ function renderComposerChips(id: string | null): void {
     strip.appendChild(chip);
     return;
   }
-  const cite = id ? composerCitations.get(id) : undefined;
-  if (!cite) { strip.style.display = "none"; return; }
+  const cites = id ? composerCitations.get(id) : undefined;
+  if (!cites || !cites.length) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
-  const chip = el("div", "composer-chip");
-  chip.title = cite.quote
-    ? "replying to the highlighted text — click to preview the message · ✕ to remove"
-    : "click to see exactly what romp will send the model · ✕ to remove";
-  chip.style.cursor = "pointer";
-  chip.addEventListener("click", () => { if (id) openCitePreview(id, chip); });
-  // a quote chip wears the typographic quote mark; a goal chip keeps the follow-up arrow
-  const mark = el("span", "composer-chip-mark"); mark.textContent = cite.quote ? "“" : "↩"; chip.appendChild(mark);
-  const label = el("span", "composer-chip-label"); label.textContent = cite.title; chip.appendChild(label);
-  const x = el("button", "composer-chip-x"); x.setAttribute("aria-label", "Remove citation"); x.textContent = "✕";
-  x.addEventListener("click", (e) => { e.stopPropagation(); if (id) removeCitation(id); });   // stop → don't open the preview
-  chip.appendChild(x);
-  strip.appendChild(chip);
+  // one chip per held context, in the order they were added — the strip stacks them (flex column)
+  cites.forEach((cite, i) => {
+    const chip = el("div", "composer-chip");
+    chip.title = cite.quote
+      ? "replying to the highlighted text — click to preview the message · ✕ to remove"
+      : "click to see exactly what romp will send the model · ✕ to remove";
+    chip.style.cursor = "pointer";
+    chip.addEventListener("click", () => { if (id) openCitePreview(id, chip); });
+    // a quote chip wears the typographic quote mark; a goal chip keeps the follow-up arrow
+    const mark = el("span", "composer-chip-mark"); mark.textContent = cite.quote ? "“" : "↩"; chip.appendChild(mark);
+    const label = el("span", "composer-chip-label"); label.textContent = cite.title; chip.appendChild(label);
+    const x = el("button", "composer-chip-x"); x.setAttribute("aria-label", "Remove citation"); x.textContent = "✕";
+    x.addEventListener("click", (e) => { e.stopPropagation(); if (id) removeCitation(id, i); });   // stop → don't open the preview
+    chip.appendChild(x);
+    strip.appendChild(chip);
+  });
 }
 
 // Audit popover — the EXACT wrapped body romp will send the model for this citation, fetched from the kernel's
@@ -6931,8 +6948,8 @@ function citePreviewOutside(e: MouseEvent): void {
   if (citePreviewEl && !citePreviewEl.contains(e.target as Node)) closeCitePreview();
 }
 function openCitePreview(id: string, anchor: HTMLElement): void {
-  const cite = composerCitations.get(id);
-  if (!cite) return;
+  const cites = composerCitations.get(id);
+  if (!cites || !cites.length) return;
   if (citePreviewEl) { closeCitePreview(); return; }   // second click on the chip toggles it closed
   const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   const draft = (ta?.value || "").trim();
@@ -6948,14 +6965,16 @@ function openCitePreview(id: string, anchor: HTMLElement): void {
   pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
   document.addEventListener("keydown", citePreviewKey, true);
   document.addEventListener("mousedown", citePreviewOutside, true);
-  if (!cite.itemId) {
-    // a QUOTE chip's body is composed CLIENT-side (quoteReplyBody IS the send path — no kernel wrap, so
-    // nothing to fetch and nothing to drift). Same popover, same clamp-after-content.
-    body.textContent = quoteReplyBody(cite.quote || "", draft || "(your message)", cite.src);
+  const goalId = cites.find((c) => c.itemId)?.itemId;
+  if (!goalId) {
+    // QUOTE chips compose CLIENT-side (quoteReplyBody IS the send path — no kernel wrap, so nothing to
+    // fetch and nothing to drift). The preview is the WHOLE outgoing message — every stacked quote in
+    // order, whichever chip was clicked. Same popover, same clamp-after-content.
+    body.textContent = quoteReplyBody(cites.filter((c) => c.quote), draft || "(your message)");
     pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
     return;
   }
-  const url = kernelUrl("/followup-preview?itemId=" + encodeURIComponent(cite.itemId) + "&text=" + encodeURIComponent(draft));
+  const url = kernelUrl("/followup-preview?itemId=" + encodeURIComponent(goalId) + "&text=" + encodeURIComponent(draft));
   fetch(url, { cache: "no-store" }).then((r) => r.json()).then((d) => {
     if (citePreviewEl !== pop) return;   // closed while loading
     body.textContent = (d && typeof d.body === "string" && d.body) ? d.body : "(no context — this goal may have been cleared)";
@@ -6964,22 +6983,27 @@ function openCitePreview(id: string, anchor: HTMLElement): void {
   }).catch(() => { if (citePreviewEl === pop) body.textContent = "(couldn't load the preview)"; });
 }
 
-// Seed the citation for a session (from a feed card click that landed in the chat), replacing any prior one.
+// Seed the citation for a session (from a feed card click that landed in the chat), replacing everything
+// held — a goal chip rides alone, quote chips included (flavors never mix; the send routes goal XOR quotes).
 function setCitation(id: string, cite: Citation): void {
-  composerCitations.set(id, cite);
+  composerCitations.set(id, [cite]);
   persistDrafts();
   if (id === activeId) { renderComposerChips(id); focusComposer(); }
 }
 
-// The outgoing body for a QUOTE citation (the user 2026-07-13): the highlighted text rides ahead of the
+// The outgoing body for QUOTE citations (the user 2026-07-13): the highlighted text rides ahead of the
 // typed message as a markdown quote block, so the agent knows exactly which part is being replied to.
-// Also what the chip's audit preview shows — one function, no drift. `src` (the VS Code editor flavor,
-// same day) names where the highlight came from — a workspace-relative file:lines — so the lead-in points
-// the agent at the code, not the conversation.
-function quoteReplyBody(quote: string, text: string, src?: string | null): string {
-  const q = quote.split("\n").map((l) => "> " + l).join("\n");
-  const lead = src ? "Replying to this highlighted code (" + src + "):" : "Replying to this part of the conversation:";
-  return lead + "\n" + q + "\n\n" + text;
+// Also what the chip's audit preview shows — one function, no drift. Stacked chips (the user 2026-08-04)
+// become one section each, in the order they sit in the strip. `src` (the VS Code editor flavor,
+// 2026-07-13) names where a highlight came from — a workspace-relative file:lines — so that section's
+// lead-in points the agent at the code, not the conversation.
+function quoteReplyBody(cites: { quote?: string; src?: string | null }[], text: string): string {
+  const sections = cites.map((c) => {
+    const q = (c.quote || "").split("\n").map((l) => "> " + l).join("\n");
+    const lead = c.src ? "Replying to this highlighted code (" + c.src + "):" : "Replying to this part of the conversation:";
+    return lead + "\n" + q;
+  });
+  return sections.join("\n\n") + "\n\n" + text;
 }
 
 // HIGHLIGHT-TO-REPLY (the user 2026-07-13): selecting text in the chat transcript seeds the composer chip
@@ -6990,11 +7014,52 @@ function quoteReplyBody(quote: string, text: string, src?: string | null): strin
 // ✕ / Backspace-at-start. Unlike setCitation this never focuses the composer: stealing focus mid-drag
 // would collapse the very selection being made (the focusCardUnlessTyping lesson).
 const QUOTE_CAP = 4000;   // a selection can be huge; the send stays bounded
-function setQuoteCitation(id: string, quote: string, uuid: string | null, src?: string): void {
+function mkQuoteCitation(quote: string, uuid: string | null, src?: string): Citation {
   const snip = quote.replace(/\s+/g, " ").trim();
   // an editor highlight leads its chip with where it came from (file:lines), then the snippet
   const title = (src ? src + " — " + snip : snip).slice(0, 140);
-  composerCitations.set(id, { title, quote: quote.slice(0, QUOTE_CAP), uuid, src: src || undefined });
+  return { title, quote: quote.slice(0, QUOTE_CAP), uuid, src: src || undefined };
+}
+
+// One selection GESTURE owns one chip (the user 2026-08-04). selectionchange fires dozens of times as a
+// drag grows, so appending per event would spray chips — instead the live gesture WRITES THROUGH to the
+// chip it made (quoteSeedLive), and only a NEW gesture decides replace-vs-add. The deciding event is the
+// mousedown that starts the gesture: plain → this selection becomes the whole context (the pre-stack
+// behavior); ⌘ (Ctrl off-mac) held → the chips already held stay and the new one lands below them. A
+// shift-mousedown EXTENDS the live selection (the browser's own semantics), so it neither resets the
+// gesture nor re-reads the modifier — the existing chip just follows the bigger selection. Keyboard
+// extension (shift+arrows) fires no mousedown and rides the same write-through; a collapse (or a
+// selection leaving the transcript) ends the gesture but never clears chips.
+let quoteAddHeld = false;    // ⌘/Ctrl was down at the gesture-starting mousedown
+let quoteSeedLive = false;   // a gesture's chip is live — subsequent selectionchanges update it in place
+document.addEventListener("mousedown", (e) => {
+  if (e.shiftKey) return;                     // shift = extend the live selection: same gesture, same chip
+  quoteAddHeld = e.metaKey || e.ctrlKey;
+  quoteSeedLive = false;
+}, true);
+
+// Gesture-aware seed for TRANSCRIPT selections (the selectionchange listener + the Enter-to-reply shortcut).
+function seedTranscriptQuote(id: string, quote: string, uuid: string | null): void {
+  const chip = mkQuoteCitation(quote, uuid);
+  // a quote seed drops a goal chip (flavors never mix — the send routes goal XOR quotes)
+  const list = (composerCitations.get(id) || []).filter((c) => !c.itemId);
+  if (quoteSeedLive && list.length) list[list.length - 1] = chip;   // the live gesture adjusts its own chip
+  else if (quoteAddHeld && list.length) list.push(chip);            // ⌘-select: add a context below the held ones
+  else list.splice(0, list.length, chip);                           // plain select: this is the context now
+  composerCitations.set(id, list);
+  quoteSeedLive = true;
+  persistDrafts();
+  if (id === activeId) renderComposerChips(id);
+}
+
+// The EDITOR's highlight owns ONE chip — update it in place, append below if absent. A cursor move in the
+// editor must adjust its own context, never wipe transcript quotes stacked beside it (the user 2026-08-04).
+function seedEditorQuote(id: string, quote: string, src?: string): void {
+  const chip = mkQuoteCitation(quote, null, src);
+  const list = (composerCitations.get(id) || []).filter((c) => !c.itemId);   // flavors never mix
+  const i = list.findIndex((c) => !!c.src);
+  if (i >= 0) list[i] = chip; else list.push(chip);
+  composerCitations.set(id, list);
   persistDrafts();
   if (id === activeId) renderComposerChips(id);
 }
@@ -7017,15 +7082,18 @@ function transcriptSelection(): { text: string; uuid: string | null } | null {
 document.addEventListener("selectionchange", () => {
   if (!activeId) return;
   const q = transcriptSelection();
-  if (!q) return;                                           // never clear on collapse
-  setQuoteCitation(activeId, q.text, q.uuid);
+  if (!q) { quoteSeedLive = false; return; }                // never clear on collapse — the gesture just ends
+  seedTranscriptQuote(activeId, q.text, q.uuid);
 });
 
-// Dismiss the citation — via the chip ✕ or Backspace at the very start of an empty composer (so it deletes
-// "like a character", as the user asked). Re-focuses the box so typing continues uninterrupted.
-function removeCitation(id: string): void {
-  if (!composerCitations.has(id)) return;
-  composerCitations.delete(id);
+// Dismiss a citation — via its chip's ✕ (that exact chip, by index) or Backspace at the very start of an
+// empty composer (no index → the NEWEST chip goes first, so repeated presses eat the stack bottom-up,
+// each "like a character" as the user asked). Re-focuses the box so typing continues uninterrupted.
+function removeCitation(id: string, idx?: number): void {
+  const list = composerCitations.get(id);
+  if (!list || !list.length) return;
+  list.splice(idx == null ? list.length - 1 : idx, 1);
+  if (!list.length) composerCitations.delete(id);
   persistDrafts();
   if (id === activeId) { renderComposerChips(id); focusComposer(); }
 }
@@ -7043,11 +7111,12 @@ function focusComposer(): void {
 // never focuses the composer — the user is in the editor, and yanking focus to the chat would be wrong.
 function clearEditorCitation(id: string | null): void {
   if (!id) return;
-  const cite = composerCitations.get(id);
-  if (!cite || !cite.src) return;                          // not an editor-highlight chip → leave it
+  const list = composerCitations.get(id);
+  const kept = list ? list.filter((c) => !c.src) : [];
+  if (!list || kept.length === list.length) return;        // no editor-highlight chip → leave the rest alone
   const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (id === activeId && ta && ta.value.trim()) return;    // a reply is in progress → keep the context
-  composerCitations.delete(id);
+  if (kept.length) composerCitations.set(id, kept); else composerCitations.delete(id);
   persistDrafts();
   if (id === activeId) renderComposerChips(id);            // rebuild the strip WITHOUT stealing focus
 }
@@ -7061,8 +7130,12 @@ function dropCitationByItem(itemId: string, itemIds?: string[]): void {
   const gone = new Set(itemIds && itemIds.length ? itemIds : [itemId]);
   gone.add(itemId);
   let changed = false;
-  for (const [sid, c] of composerCitations) {
-    if (c.itemId && gone.has(c.itemId)) { composerCitations.delete(sid); changed = true; if (sid === activeId) renderComposerChips(sid); }   // quote chips cite no goal — a card clear never drops them
+  for (const [sid, list] of composerCitations) {
+    const kept = list.filter((c) => !(c.itemId && gone.has(c.itemId)));   // quote chips cite no goal — a card clear never drops them
+    if (kept.length === list.length) continue;
+    if (kept.length) composerCitations.set(sid, kept); else composerCitations.delete(sid);
+    changed = true;
+    if (sid === activeId) renderComposerChips(sid);
   }
   if (changed) persistDrafts();
 }
@@ -7640,7 +7713,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
   // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
   else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim() && activeId)
-    setQuoteCitation(activeId, m.text, null, typeof m.src === "string" ? m.src : undefined);
+    seedEditorQuote(activeId, m.text, typeof m.src === "string" ? m.src : undefined);
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
   else if (m.type === "closed") dismissSession(m.id);   // a session died on its own (or the kernel confirms our close)
@@ -7758,14 +7831,16 @@ function setupComposer() {
       // LOCAL kernel, which owns no such session and dropped it into tmux by uuid — nothing sent, no error,
       // the card flashing to Working and back. The kernel keeps deriving its sid from itemId, so this is inert
       // locally; every other card op (askClear/cardNotify/showOnTimeline) already carries the sid the same way.
-      const cite = composerCitations.get(activeId);
+      const cites = composerCitations.get(activeId);
+      const goalCite = cites?.find((c) => c.itemId);   // a goal chip rides alone (flavors never mix)
+      const quoteCites = cites ? cites.filter((c) => c.quote) : [];
       if (vscodeApi) {
-        if (cite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text, sid: activeId });
-        else if (cite?.quote) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(cite.quote, text, cite.src) });
+        if (goalCite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid: activeId });
+        else if (quoteCites.length) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(quoteCites, text) });
         else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
         // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       }
-      if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
+      if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
       ta.value = "";
       composerManualH = null;   // a drag-expanded box snaps back to one line after a send (the user 2026-07-07)
