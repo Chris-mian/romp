@@ -476,7 +476,24 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* ── citation chip strip (the user 2026-07-01) ── a click on a feed card summary / sub-goal seeds a
    dismissible pill here, ABOVE the textarea: "you're following up on THIS". Accent-blue, with an ✕ to
    dismiss (Backspace-at-start dismisses too). Reads as attached context, not typed text. */
-#composer-chips { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 0 6px 2px; }   /* full-width block of its own, above the compose row; stacked chips each take a row (the user 2026-08-04) */
+#composer-chips { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 0 6px 2px; }
+/* attachment thumbnails (the user 2026-08-04): dropped/pasted/picked files sit as little previews above
+   the box until send — a row that wraps, unlike the stacked context chips below it */
+#composer-files { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 0 6px 2px; }
+.composer-file { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.composer-file-img { display: block; height: 46px; max-width: 96px; object-fit: cover; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.composer-file-hostimg img { display: block; height: 46px; max-width: 96px; object-fit: cover; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+.composer-file-doc { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.composer-file-ext { font-size: 0.74em; font-weight: 600; color: var(--accent); letter-spacing: 0.04em; }
+.composer-file-name { font-size: 0.86em; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-file-x { position: absolute; top: -6px; right: -6px; width: 16px; height: 16px; line-height: 14px; padding: 0;
+  border-radius: 50%; border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); background: var(--bg, #1e1e1e);
+  color: var(--fg); font-size: 10px; cursor: pointer; display: none; }
+.composer-file:hover .composer-file-x { display: block; }   /* the tab-close idiom: no clutter until hover */
+.composer-file-x:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }   /* full-width block of its own, above the compose row; stacked chips each take a row (the user 2026-08-04) */
 .composer-chip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   background: color-mix(in srgb, var(--accent) 18%, transparent);

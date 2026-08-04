@@ -71,7 +71,7 @@ test("a typed composer message routes to the active picker (custom fills Type-so
   // AskUserQuestion with a Type-something slot → "custom"; a raw unknown prompt → "text"; else null (normal send)
   assert.match(RENDER, /ask\.options\.some\(\(o\) => isTypeSomething\(o\.label\)\)\) return "custom";/);
   // sendComposer consults it FIRST and routes instead of sending a normal message
-  assert.match(RENDER, /const askRoute = composerAnswersAsk\(\);\s*\n\s*if \(askRoute\) \{\s*\n\s*if \(askRoute === "custom"\) addCustomLiveAsk\(text\); else sendTextLiveAsk\(text\);/);
+  assert.match(RENDER, /const askRoute = typed \? composerAnswersAsk\(\) : null;\s*\n\s*if \(askRoute\) \{\s*\n\s*if \(askRoute === "custom"\) addCustomLiveAsk\(typed\); else sendTextLiveAsk\(typed\);/);
 });
 
 test("the composer shows it's in answer mode + the card never steals focus from a typing composer", () => {

@@ -25,8 +25,8 @@ test("the edit affordance renders only on bubbles the backend can address", () =
 });
 
 test("sending in edit mode posts rewindSend and never a plain sendMessage", () => {
-  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "rewindSend", id: activeId, uuid: editing\.uuid, text \}\);/);
-  assert.match(RENDER, /pendingRewind\.set\(activeId, \{ uuid: editing\.uuid, text, ts: Date\.now\(\) \}\);/);
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "rewindSend", id: activeId, uuid: editing\.uuid, text: typed \}\);/);
+  assert.match(RENDER, /pendingRewind\.set\(activeId, \{ uuid: editing\.uuid, text: typed, ts: Date\.now\(\) \}\);/);
   // the edit branch returns BEFORE the sendMessage path (and registers no tail-appended optimistic bubble)
   const editBranch = RENDER.indexOf('type: "rewindSend"');
   const plainSend = RENDER.indexOf('else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });');
