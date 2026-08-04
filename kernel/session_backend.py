@@ -115,6 +115,12 @@ class SessionBackend(ABC):
     @abstractmethod
     def set_effort(self, sid: str, value: str) -> bool: ...
 
+    def stop_task(self, sid: str, task_id: str) -> bool:
+        """Stop ONE background task (the SDK's designed stop_task control request). SDK-only control:
+        the chat's bg-task box only ever shows live tasks for SDK sessions (the CLI's task lifecycle
+        stream), so this default False just means "no such control here" (tmux)."""
+        return False
+
     # ── lifecycle ────────────────────────────────────────────────────────────────────────────────
     @abstractmethod
     def spawn(self, name: str, cwd: str, bg: str = "", fg: str = "", sid: str | None = None) -> str | None:

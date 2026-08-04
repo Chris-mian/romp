@@ -3965,7 +3965,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode",
-              "endSession", "renameSession")
+              "endSession", "renameSession", "stopTask")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -4203,6 +4203,13 @@ def _drive(msg, client):
         _set_effort_or_park(be, sid, str(msg["value"])); _push_soon()   # tmux: /effort; SDK: reconnect with --effort; mid-compaction → parked
     elif t == "setMode" and msg.get("value"):
         be.set_mode(sid, str(msg["value"])); _push_soon()
+    elif t == "stopTask" and msg.get("taskId"):
+        # the SDK's designed stop_task control request, addressed by the id the bg-task box shows.
+        # LOUD on refusal (fail loudly, never degrade silently): unknown task / dead client / tmux
+        if not be.stop_task(sid, str(msg["taskId"])):
+            client["send"](json.dumps({"type": "warn",
+                                       "text": "Couldn't stop that background task — it may have already finished."}))
+        _push_soon()
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
         be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()

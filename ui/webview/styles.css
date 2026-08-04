@@ -416,6 +416,10 @@ body { display: flex; flex-direction: column; }
   padding: 7px 11px; cursor: pointer; user-select: none; font-size: 12px; }
 .bg-fold-head.open { border-bottom: 1px solid var(--box-border); }
 .bg-fold-head:hover { background: rgba(255, 255, 255, 0.04); }
+.bg-stop { flex: 0 0 auto; font-size: 0.74em; padding: 1px 8px; border-radius: 9px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); background: transparent; color: var(--fg); }
+.bg-stop:hover { border-color: var(--accent); color: var(--accent); }
+.bg-stop:disabled { opacity: 0.55; cursor: default; }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }

@@ -40,3 +40,16 @@ test("status dots are SOLID — the pulsating yellow animation is gone", () => {
   assert.doesNotMatch(CSS, /@keyframes bg-pulse/);
   assert.match(CSS, /\.bg-dot \{[^}]*background: var\(--bgt\);/);   // just the solid status tint
 });
+
+test("each RUNNING task row has a Stop button riding the stable delegate (the user 2026-08-04)", () => {
+  // the button posts the SDK's designed stop_task control request, keyed by the id the box shows;
+  // gated on status so a finished row never grows a dead control
+  assert.match(RENDER, /if \(\(t\.status \|\| "running"\) === "running"\) \{/);
+  assert.match(RENDER, /stop\.dataset\.act = "bg-stop"; stop\.dataset\.id = t\.id;/);
+  // click-safe: handled on the SAME delegate as the fold toggles, never a per-render listener…
+  assert.match(RENDER, /"bg-stop": \(el\) => \{/);
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "stopTask", id: activeId, taskId: id \}\);/);
+  // …and the click acknowledges IMMEDIATELY, before any round-trip; the row's disappearance (the task's
+  // own terminal lifecycle event) is the real confirmation, and a re-render restores a live task's button
+  assert.match(RENDER, /btn\.disabled = true; btn\.textContent = "Stopping…";/);
+});

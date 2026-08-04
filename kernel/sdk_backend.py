@@ -2175,6 +2175,28 @@ class SdkSession:
                 self.backend._log("background tasks (%s): registry mirror write failed: %s" % (self.name, e))
             self.backend._poke()
 
+    def request_stop_task(self, tool_use_id: str) -> bool:
+        """Stop ONE background task by the id the chat box shows (its tool-use id). Resolved to the
+        CLI's lifecycle task id (the _bg_tasks key — what the SDK's stop_task control request takes);
+        either id form is accepted. False when the task is unknown/already terminal or the client
+        isn't connected — the kernel warns the user then, never a silent no-op."""
+        with self._sub_lock:
+            tid = next((k for k, v in self._bg_tasks.items()
+                        if k == tool_use_id or v.get("toolUseId") == tool_use_id), "")
+        if not tid or not (self.loop and self.client):
+            return False
+        self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._do_stop_task(tid)))
+        return True
+
+    async def _do_stop_task(self, tid):
+        # loud on failure, like every stop (the interrupt lesson): a stop that vanishes without a trace
+        # is the bug; the task's own terminal lifecycle event is what clears it from the box
+        try:
+            await self.client.stop_task(tid)
+        except Exception as e:
+            self.backend._log("stop_task (%s): control request failed for %s: %s" % (self.name, tid, e))
+        self.backend._poke()
+
     def _live_bg_tasks(self) -> list:
         """The background tasks running RIGHT NOW: [{"desc","type","since","toolUseId","lastTool"}], oldest
         first. Copied under the lock, like _live_subagents."""
@@ -3309,6 +3331,10 @@ class SdkBackend:
             s.perm_mode = mode      # snapshot reflects it immediately (clears the picker's meta-pending)
             s.set_mode_live(mode)
         return True
+
+    def stop_task(self, sid: str, task_id: str) -> bool:
+        s = self.sessions.get(sid)
+        return bool(s and s.request_stop_task(task_id))
 
     def set_effort(self, sid: str, value: str) -> bool:
         """Change the reasoning effort. effort is a connect-time CLI flag (--effort) with no SDK runtime

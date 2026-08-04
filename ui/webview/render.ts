@@ -5956,6 +5956,16 @@ function renderBgTasks() {
     rh.appendChild(el("span", "bg-dot"));
     const sum = el("span", "bg-sum"); sum.textContent = t.summary || "Background task"; rh.appendChild(sum);
     const st = el("span", "bg-status"); st.textContent = t.status || "running"; rh.appendChild(st);
+    if ((t.status || "running") === "running") {
+      // Stop this ONE task (the SDK's stop_task control request — the user 2026-08-04). Rides the same
+      // stable delegate as the fold toggles (click-safe across re-renders); the click acknowledges by
+      // disabling + relabeling ITSELF, and the row's disappearance (the task's own terminal lifecycle
+      // event) is the real confirmation — a task still running at the next render gets a fresh button.
+      const stop = el("button", "bg-stop");
+      stop.dataset.act = "bg-stop"; stop.dataset.id = t.id;
+      stop.textContent = "Stop"; stop.title = "stop this background task";
+      rh.appendChild(stop);
+    }
     const rc = el("span", "bg-caret"); rc.textContent = tOpen ? "▾" : "▸"; rh.appendChild(rc);
     row.appendChild(rh);
     if (tOpen) {
@@ -8347,6 +8357,12 @@ setupSettings();
       const id = el.dataset.id; if (!id) return;
       if (bgExpanded.has(id)) bgExpanded.delete(id); else bgExpanded.add(id);
       renderBgTasks();
+    },
+    "bg-stop": (el) => {   // stop this ONE task; the row disappears on its terminal lifecycle event
+      const id = el.dataset.id; if (!id || !activeId) return;
+      const btn = el as HTMLButtonElement;
+      btn.disabled = true; btn.textContent = "Stopping…";   // immediate acknowledgement, before the round-trip
+      vscodeApi?.postMessage({ type: "stopTask", id: activeId, taskId: id });
     },
   });
 })();
