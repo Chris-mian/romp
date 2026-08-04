@@ -55,7 +55,8 @@ class JudgeSettings(unittest.TestCase):
     # ---- ONE source: the kernel owns MODEL_CHOICES / EFFORT_CHOICES; no per-surface hardcoding ----
     def test_model_choices_are_the_single_source(self):
         self.assertEqual([m["value"] for m in km.MODEL_CHOICES], ["fable", "opus", "sonnet", "haiku"])
-        self.assertEqual([e["value"] for e in km.EFFORT_CHOICES], ["low", "medium", "high", "xhigh", "max"])
+        self.assertEqual([e["value"] for e in km.EFFORT_CHOICES],
+                         ["low", "medium", "high", "xhigh", "max", "ultracode"])   # ultracode tops the ladder (the user 2026-08-04)
         # the judge no longer keeps its own model list — it trusts the kernel-validated STATE value
         self.assertNotIn("JUDGE_MODELS", dir(jd), "the judge holds no model list (kernel is the single source)")
 

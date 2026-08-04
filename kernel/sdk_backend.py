@@ -70,7 +70,7 @@ def pick_identity_color(sid: str, state_dir=None) -> tuple[str, str]:
 # and the init message does NOT echo it back, so romp sets it explicitly and tracks it (otherwise the picker
 # can't show a true value). "high" suits agentic coding; the user changes it per session via the picker.
 DEFAULT_EFFORT = "high"
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")   # ultracode = xhigh + workflow orchestration (per session)
 # Cap on a SINGLE stdout JSON message from the CLI. The SDK default is 1 MB, and one message routinely
 # exceeds that in a coding session (a big file Read, a large Bash/grep result, a base64 image echoed in a
 # tool_result). When it does, the SDK transport raises "JSON message exceeded maximum buffer size", which
@@ -951,6 +951,24 @@ def list_regs(state_dir: Path) -> list[dict]:
 # changes still persist per-session (the reg, restored on resume); this is only the seed for new sessions.
 # Stored OUTSIDE sdk/ so list_regs' sdk/*.json glob never mistakes it for a session.
 # ---------------------------------------------------------------------------
+
+ULTRACODE_SETTINGS = "sdk-ultracode.json"   # the --settings payload for sessions whose effort is "ultracode"
+
+
+def ultracode_settings_path(state_dir) -> str:
+    """The settings file handed to the CLI (options.settings — the flag-settings layer, the CLI's
+    documented per-session hook for the `ultracode` key) when a session's effort is "ultracode". The
+    SDK's typed EffortLevel has no such value: ultracode IS xhigh plus standing dynamic-workflow
+    orchestration, so the typed field carries "xhigh" and this key switches the orchestration on.
+    Rewritten on every use (constant content, atomic enough for a one-key file)."""
+    p = os.path.join(str(state_dir), ULTRACODE_SETTINGS)
+    try:
+        with open(p, "w") as f:
+            f.write('{"ultracode": true}\n')
+    except OSError:
+        pass
+    return p
+
 
 def _defaults_path(state_dir: Path) -> Path:
     return Path(state_dir) / "sdk-defaults.json"
@@ -2755,7 +2773,9 @@ class SdkBackend:
                    "SubagentStop": [HookMatcher(matcher=None, hooks=[sess._subagent_stop_hook])]},    #   count/types
             permission_mode=sess.mode,
             include_partial_messages=False,
-            effort=sess.effort or DEFAULT_EFFORT,   # connect-time --effort (no runtime control); a change reconnects
+            # connect-time --effort (no runtime control); a change reconnects. "ultracode" is not a typed
+            # EffortLevel — it rides as xhigh + the `ultracode` settings key (added below).
+            effort=("xhigh" if (sess.effort or DEFAULT_EFFORT) == "ultracode" else (sess.effort or DEFAULT_EFFORT)),
             max_buffer_size=SDK_MAX_BUFFER,   # a >1MB stdout message would crash the receive loop → kill any live picker
         )
         # romp's harness prompt is APPENDED via the SDK's DESIGNED system_prompt field — the Claude Code preset
@@ -2799,6 +2819,8 @@ class SdkBackend:
                       % sess.name)
         if self.mcp_config:
             kw["mcp_servers"] = self.mcp_config
+        if (sess.effort or "") == "ultracode":
+            kw["settings"] = ultracode_settings_path(self.state_dir)   # the `ultracode` settings key, per session
         return ClaudeAgentOptions(**kw)
 
     # ---- lifecycle (kernel-thread API) ----
@@ -3300,7 +3322,8 @@ class SdkBackend:
         reg["effort"] = value
         reg["effortPending"] = True   # the reconnect that applies it hasn't completed yet → dots + "Reloading session…"
         write_reg(self.state_dir, sid, reg)
-        write_sdk_default(self.state_dir, effort=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
+        if value != "ultracode":   # ultracode is per-session by design (the CLI: "this session only") — never a seed
+            write_sdk_default(self.state_dir, effort=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.effort = value        # picker label reflects it now; the reconnect makes it real

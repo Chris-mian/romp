@@ -1355,6 +1355,43 @@ class OptionsAssembly(unittest.TestCase):
         opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
         self.assertIsNone(opts.system_prompt, "no harness prompt → leave the CLI's default system prompt")
 
+    def test_ultracode_maps_to_xhigh_plus_the_settings_key(self):
+        # "ultracode" (the user 2026-08-04) is not a typed EffortLevel: the CLI's documented per-session
+        # hook is the `ultracode` settings key (--settings / flag-settings layer), and ultracode IS xhigh
+        # plus standing workflow orchestration — so the typed field carries xhigh and the key rides a
+        # settings file. Never through extra_args.
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sess = self._sess(be)
+        sess.effort = "ultracode"
+        opts = be._options(sess, _sdk.ClaudeAgentOptions)
+        self.assertEqual(opts.effort, "xhigh", "the typed field carries the effort half of ultracode")
+        self.assertTrue(opts.settings and opts.settings.endswith(sb.ULTRACODE_SETTINGS))
+        with open(opts.settings) as f:
+            self.assertEqual(json.load(f), {"ultracode": True})
+        self.assertNotIn("effort", opts.extra_args or {})
+
+    def test_plain_efforts_pass_through_with_no_settings_file(self):
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sess = self._sess(be)
+        sess.effort = "max"
+        opts = be._options(sess, _sdk.ClaudeAgentOptions)
+        self.assertEqual(opts.effort, "max")
+        self.assertIsNone(opts.settings, "no ultracode → no flag-settings file")
+
+    def test_ultracode_is_a_choice_everywhere_but_never_the_seeded_default(self):
+        self.assertIn("ultracode", sb.EFFORT_LEVELS, "the SDK backend accepts the pick")
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
+            self.assertIn('("low", "medium", "high", "xhigh", "max", "ultracode")', f.read(),
+                          "the effort dropdown (kernel EFFORT_CHOICES) offers ultracode")
+        # per-session by design (the CLI: "this session only") — picking it must not seed NEW sessions
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-555555555555"
+        sb.write_reg(self.d, sid, {"sid": sid, "name": "n", "cwd": self.d})
+        self.assertTrue(be.set_effort(sid, "ultracode"))
+        self.assertNotEqual(sb.read_sdk_defaults(self.d).get("effort"), "ultracode",
+                            "ultracode never becomes the default for the next new session")
+        self.assertEqual(sb.read_reg(self.d, sid)["effort"], "ultracode", "but THIS session keeps it")
+
     def test_raises_max_buffer_size_well_above_the_1mb_default(self):
         # A single >1MB stdout message (a big Read / grep result / echoed image) would otherwise crash the
         # receive loop → tear down the client → close stdin → the CLI rejects any PENDING picker with "Tool

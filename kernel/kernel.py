@@ -562,7 +562,11 @@ def _write_palette_mirror():
 # model literals. The judge accepts only a value from here (setJudgeModel/setIndexModel validate against it).
 MODEL_CHOICES = [{"value": "fable", "label": "Fable"}, {"value": "opus", "label": "Opus"},
                  {"value": "sonnet", "label": "Sonnet"}, {"value": "haiku", "label": "Haiku"}]
-EFFORT_CHOICES = [{"value": v, "label": v} for v in ("low", "medium", "high", "xhigh", "max")]
+# "ultracode" tops the ladder (the user 2026-08-04): the CLI's own /effort offers it — xhigh effort plus
+# standing dynamic-workflow orchestration, per session. tmux delivers the literal "/effort ultracode"; the
+# SDK backend maps it to effort=xhigh + the `ultracode` settings key (the CLI's documented per-session
+# hook), since the SDK's typed EffortLevel has no such value. See sdk_backend ultracode_settings_path.
+EFFORT_CHOICES = [{"value": v, "label": v} for v in ("low", "medium", "high", "xhigh", "max", "ultracode")]
 _MODEL_VALUES = {m["value"] for m in MODEL_CHOICES}
 _EFFORT_VALUES = {e["value"] for e in EFFORT_CHOICES}
 
