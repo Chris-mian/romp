@@ -759,6 +759,20 @@ class FileAdapter:
                                                  "post_tokens": cm.get("postTokens") or cm.get("post_tokens")},
                             "summary": summaries.get(u),   # the compaction SUMMARY captured in the pre-pass (or None)
                             "_seq": seq})
+            elif t == "system" and r.get("subtype") == "model_refusal_fallback":
+                # The model's safeguards flagged the prompt and the CLI silently retried the turn on a
+                # fallback model. That is CONVERSATION state, not harness bookkeeping — the reply that
+                # follows came from a different model, and the user must see the swap where it happened
+                # (the user 2026-08-03, after a fable→opus swap mid-turn was invisible in the chat).
+                # The record's timestamp is the retry start, so the atom sorts BEFORE the fallback
+                # model's reply. Non-opener (not a user atom), so it folds into the running turn.
+                out.append({"type": "system", "subtype": "model_refusal_fallback", "uuid": u,
+                            "session_id": rompuuid, "t": ts, "fsid": fsid,
+                            "parentUuid": self.parent_of.get(u),
+                            "content": r.get("content") or "",          # the CLI's full explanation
+                            "fallback_from": r.get("originalModel") or "",
+                            "fallback_to": r.get("fallbackModel") or "",
+                            "_seq": seq})
             # other system subtypes (turn_duration, stop_hook_summary, local_command,
             # away_summary) are harness bookkeeping, not conversational messages -> skipped.
         out += self._absorbed(kept, rompuuid, postal_index)

@@ -11320,6 +11320,13 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                 events.append({"kind": "compact", "uuid": a.get("uuid"), "ts": ts,
                                "trigger": cmeta.get("trigger"), "preTokens": cmeta.get("pre_tokens"),
                                "postTokens": cmeta.get("post_tokens"), "summary": a.get("summary")})
+            elif a["type"] == "system" and a.get("subtype") == "model_refusal_fallback":
+                # Safeguards flagged the prompt and the CLI retried the turn on a fallback model — the
+                # reply that follows came from a DIFFERENT model, and the swap must be visible in the
+                # chat, never silent (the user 2026-08-03). Raw model ids; the client prettifies.
+                events.append({"kind": "modelFallback", "uuid": a.get("uuid"), "ts": ts,
+                               "from": a.get("fallback_from") or "", "to": a.get("fallback_to") or "",
+                               "md": a.get("content") or ""})
     _flush_recoveries(tail_cap_t)                       # a recovery on the still-open tail turn (t past the last atom) → bottom of the flow
     #                                                     (tail_cap_t: an episode render stops at its /clear — later notes belong to the next episode)
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
