@@ -73,8 +73,8 @@ type TaskOutputs = Record<string, { command: string; output: string }>;
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[] }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[] }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -920,12 +920,29 @@ const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|
 // `skipThumbs`: paths this turn ALREADY renders as full in-bubble images (a pasted screenshot's
 // ev.images) — they stay clickable links but are excluded from the mentioned-path thumbnail strip,
 // otherwise the same picture renders twice (the user 2026-07-10).
-function linkifyFileUris(root: HTMLElement, skipThumbs?: string[]): void {
+// `spacePaths` (the user 2026-08-04): backticked filenames WITH SPACES that the KERNEL verified exist
+// (build_session's _space_paths — resolved like a click, existence-checked). The token regex below can
+// never span a space — in prose that boundary is what keeps ordinary text unlinked — so a note titled
+// `Moving from correlation to causal components.md` linkified only its last word. For exactly these
+// verified spans, the whole inline-code content becomes ONE link; the filesystem is the authority, so a
+// backticked command like `uv run pytest tests/x.py` (no such file) is never mislinked.
+function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[]): void {
+  const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
+  if (spacePaths && spacePaths.length) {
+    const verified = new Set(spacePaths);
+    for (const code of Array.from(root.querySelectorAll("code"))) {
+      if (code.closest("a, .file-uri-link, pre")) continue;    // already linked, or a fenced block
+      const tok = (code.textContent || "").trim();
+      if (!verified.has(tok)) continue;
+      const link = openPathLink(tok, tok, true);
+      code.replaceChildren(link);                              // the <code> chrome stays; its content is the link
+      if (previewKind(tok) && !previewable.includes(tok) && !(skipThumbs && skipThumbs.includes(tok))) previewable.push(tok);
+    }
+  }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
   let n: Node | null;
   while ((n = walker.nextNode())) nodes.push(n as Text);
-  const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
   for (const tn of nodes) {
     if (tn.parentElement?.closest("a, .file-uri-link, pre")) continue;   // already a link, or a fenced code block
     const inCode = !!tn.parentElement?.closest("code");                  // inline code — where bare filenames may link
@@ -1627,7 +1644,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths);
+          linkifyFileUris(full, imgPaths, ev.spacePaths);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
           // toggle rides the stable document.body delegate (data-act), NOT a per-render listener —
@@ -1640,7 +1657,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         }
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
-        linkifyFileUris(bubble, imgPaths);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths);   // bare file:// URLs in a message → clickable (open in the host's default app)
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
@@ -1760,7 +1777,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body);   // bare file:// URLs in the reply → clickable (open in the host's default app)
+    linkifyFileUris(body, undefined, ev.spacePaths);   // bare file:// URLs + verified spaced filenames → clickable
     turn.appendChild(body);
     return turn;
   }

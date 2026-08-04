@@ -11214,6 +11214,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                         if prompt or reminders or imgs:
                             ev = {"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
                                   "human": author == "human" or bool(imgs), "reminders": reminders}
+                            sp = _space_paths(prompt, sid, a.get("uuid"))
+                            if sp:
+                                ev["spacePaths"] = sp   # backticked filenames WITH spaces, filesystem-verified → whole-span links
                             if reminders:                # join each task-notification to its command + output tail
                                 to = _task_outputs_for(reminders, sess["path"])
                                 if to:
@@ -11288,6 +11291,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                                            "uuid": a.get("uuid"), "ts": ts})
                             continue
                         ev = {"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts}
+                        sp = _space_paths(txt, sid, a.get("uuid"))
+                        if sp:
+                            ev["spacePaths"] = sp   # backticked filenames WITH spaces, filesystem-verified → whole-span links
                         if _interrupt_settle(events, txt, a):   # the null settle-reply closing an interrupted
                             ev["interruptSettle"] = True        # turn → rendered as seam marker, not a bubble
                         events.append(ev)
@@ -15502,6 +15508,44 @@ def _feed_artifacts(paths, sid):
         except Exception:
             continue
     return out or None
+
+
+# Inline-code spans that name an EXISTING file despite containing spaces (the user 2026-08-04: a note
+# titled `Moving from correlation to causal components.md` linkified only its last word). The client's
+# token linkifier can never span a space — in prose that boundary is exactly what keeps ordinary text
+# unlinked — but backticks DELIMIT the name, and the FILESYSTEM is the authority on whether the span is
+# a file or something else in backticks: `uv run pytest tests/test_x.py` resolves to no file, so it
+# never whole-links, while a vault note with spaces does. Resolution mirrors a click
+# (_resolve_open_path: ~ expanded, relative → the session's cwd). Checked ONCE per message (keyed by
+# its uuid) — build_session runs per push, and per-push stats would be waste; a file created after its
+# mention simply links from the next message that names it.
+_SPACE_PATH_CACHE = {}                       # (sid, uuid) -> tuple of verified span texts
+_CODE_SPAN_RE = re.compile(r"`([^`\n]{1,300})`")
+
+
+def _space_paths(md, sid, uuid):
+    """Backtick spans in `md` that contain a space AND resolve to a real file for this session — the
+    client whole-links exactly these (spacePaths on the chat event). None when there are none, so the
+    common message adds no payload."""
+    if not uuid or not md or "`" not in md:
+        return None
+    key = (sid, uuid)
+    hit = _SPACE_PATH_CACHE.get(key)
+    if hit is None:
+        out = []
+        for m in _CODE_SPAN_RE.finditer(md):
+            tok = m.group(1).strip()
+            if " " not in tok:
+                continue                     # space-free spans are the client token linkifier's job
+            # cheap pre-filter (an extension at the end, or an anchored start) — existence is the real gate
+            if not (re.search(r"\.[A-Za-z0-9]{1,8}$", tok) or tok.startswith(("/", "~/", "./", "../"))):
+                continue
+            if tok not in out and os.path.isfile(_resolve_open_path(tok, sid)):
+                out.append(tok)
+        if len(_SPACE_PATH_CACHE) > 50000:   # runaway backstop; one entry per rendered message
+            _SPACE_PATH_CACHE.clear()
+        _SPACE_PATH_CACHE[key] = hit = tuple(out)
+    return list(hit) or None
 
 
 def _open_file(p, sid=None):
