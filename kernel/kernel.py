@@ -16604,10 +16604,15 @@ def _chat_body():
             '<div id="footer">'
             '<div id="composer-resize" title="Drag to resize the message box"></div>'   # drag the divider to grow/shrink the message box (the user 2026-07-07)
             '<div id="statusline" class="statusline"></div>'
-            '<div id="composer"><div id="composer-chips" style="display:none"></div>'   # click-to-cite chip strip (the user 2026-07-01)
+            # composer-files MUST mirror vscode-extension/src/page-skeleton.ts (pinned by
+            # ui/webview/composer-files.test.ts): the attachment strip renders by id, and this page IS the
+            # web dashboard's skeleton — when only the extension skeleton grew the div, a file dropped on
+            # the web surface attached invisibly, showing nothing at all (the user 2026-08-04)
+            '<div id="composer"><div id="composer-files" style="display:none"></div>'
+            '<div id="composer-chips" style="display:none"></div>'   # click-to-cite chip strip (the user 2026-07-01)
             '<textarea id="composer-input" rows="1" '
             'placeholder="Message this session…"></textarea>'
-            '<button id="composer-attach" title="Attach a file — inserts its path">'
+            '<button id="composer-attach" title="Attach a file">'
             '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
             'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
             '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66'

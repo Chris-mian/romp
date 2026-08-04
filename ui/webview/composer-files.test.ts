@@ -12,11 +12,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
 
-test("the composer has an attachment strip, its own row above the chips", () => {
+test("the composer has an attachment strip, its own row above the chips — on BOTH skeletons", () => {
   assert.match(SKELETON, /<div id="composer-files" style="display:none"><\/div><div id="composer-chips"/);
+  // the WEB dashboard's page skeleton is the kernel's own HTML, not page-skeleton.ts — when only the
+  // extension skeleton grew this div, a file dropped on the web surface attached invisibly, showing
+  // nothing at all (the user 2026-08-04). The two skeletons must carry the strip in step.
+  assert.match(KERNEL, /<div id="composer"><div id="composer-files" style="display:none"><\/div>'/);
+  assert.match(KERNEL, /<div id="composer-chips" style="display:none"><\/div>'/);
   assert.match(CSS, /#composer-files \{ flex: 1 1 100%; display: flex; flex-wrap: wrap/);
   assert.match(CSS, /\.composer-file-img \{ display: block; height: 46px/);
   // the ✕ rides the tab-close idiom: hidden until hover, no clutter on a quiet strip
@@ -42,8 +48,10 @@ test("an image thumbnail renders per surface; other files wear an ext + name chi
   assert.match(fn, /if \(canPreview\(\)\) \{/);
   assert.match(fn, /img\.src = fileUrl\(p, id\);/);
   assert.match(fn, /const w = buildPathImg\(p\);/);
-  // an unservable path falls to the doc chip rather than a broken image
-  assert.match(fn, /img\.onerror = \(\) => \{ img\.replaceWith\(composerFileDoc\(p\)\); \};/);
+  // name first, pixels when ready (the user 2026-08-04): the ext + name chip renders immediately and
+  // the image swaps in on its own load event — a slow fetch never shows a blank box, a 404 keeps the chip
+  assert.match(fn, /const doc = composerFileDoc\(p\);\s*\n\s*box\.appendChild\(doc\);/);
+  assert.match(fn, /img\.addEventListener\("load", \(\) => doc\.replaceWith\(img\)\);/);
   // non-image: extension badge + basename, both TEXT (no glyphs)
   assert.match(RENDER, /ext\.textContent = \(dot > 0 \? p\.slice\(dot \+ 1\) : "file"\)\.slice\(0, 5\)\.toUpperCase\(\);/);
   assert.match(RENDER, /nm\.textContent = p\.split\("\/"\)\.pop\(\) \|\| p;/);
