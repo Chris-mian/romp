@@ -2199,6 +2199,11 @@ class SdkSession:
                 "interrupting": bool(self._interrupted),   # a user interrupt is IN FLIGHT: set at dispatch,
                 #   cleared EXACTLY when the aborted turn's ResultMessage settles → the kernel holds the chip +
                 #   feed badge on 'interrupting' across that whole window, no dependence on the flickering tail
+                "snapT": time.time(),   # when THIS snapshot was taken. The kernel's push loop snapshots every
+                #   backend once, then builds for a while; a stop clicked mid-loop postdates the snapshot, so
+                #   its interrupting:False is pre-click evidence and must not settle the click (the user
+                #   2026-08-04: Interrupting… fell back to Working, then Ready — the stale snapshot popped
+                #   the click stamp). _interrupting compares this against the click time.
                 "subagents": subs,   # live Task subagents (count + types) → lane affordance; [] when none
                 "bgTasks": self._live_bg_tasks()}   # live background tasks (task lifecycle stream) → an idle
                 #   session waiting on a timer/watcher reads AWAITING, why = the task's description; [] when none

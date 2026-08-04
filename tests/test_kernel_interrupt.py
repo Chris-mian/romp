@@ -184,6 +184,43 @@ class InterruptingSdkFlag(unittest.TestCase):
         # chip — only a user-initiated stop (which stamps _interrupt_clicked) reads as 'interrupting'
         self.assertFalse(km._interrupting(SID, {"turns": [{"atoms": []}]}, NOW, {"interrupting": True}))
 
+    def test_a_pre_click_snapshot_cannot_settle_the_click(self):
+        # THE 2026-08-04 FLAP: the push loop snapshots every backend once, then builds for a while — a stop
+        # clicked mid-loop reaches _interrupting with a snapshot taken BEFORE the click, whose
+        # interrupting:False is pre-click evidence. It used to pop the stamp and eat the whole in-flight
+        # window: the chip read Interrupting…, fell to Working until the real settle, then Ready (later
+        # builds saw the flag True but no stamp, which deliberately paints nothing). A stale snapshot must
+        # stand down to the transcript path instead — no stop record yet → still interrupting, stamp kept.
+        km._interrupt_clicked[SID] = NOW - 2
+        stale = {"interrupting": False, "snapT": NOW - 5}   # snapshotted 3s before the click
+        self.assertTrue(km._interrupting(SID, {"turns": [{"atoms": []}]}, NOW, stale),
+                        "a snapshot older than the click carries no verdict on it")
+        self.assertIn(SID, km._interrupt_clicked, "the stamp survives the stale snapshot")
+
+    def test_a_fresh_snapshot_still_settles(self):
+        # the guard is scoped to STALE snapshots only: one taken after the click keeps its authority
+        km._interrupt_clicked[SID] = NOW - 2
+        fresh = {"interrupting": False, "snapT": NOW - 1}
+        self.assertFalse(km._interrupting(SID, {"turns": [{"atoms": []}]}, NOW, fresh),
+                         "a post-click snapshot's False flag is the settle event, as designed")
+        self.assertNotIn(SID, km._interrupt_clicked)
+
+    def test_a_stale_snapshot_with_a_landed_stop_record_still_settles(self):
+        # standing down means falling to the TRANSCRIPT path, not returning True unconditionally — the
+        # CLI's stop record at/after the click settles it even while the snapshot lags
+        km._interrupt_clicked[SID] = NOW - 2
+        intr = {"type": "user", "t": NOW - 1,
+                "message": {"role": "user", "content": "[Request interrupted by user]"}}
+        stale = {"interrupting": False, "snapT": NOW - 5}
+        self.assertFalse(km._interrupting(SID, {"turns": [{"atoms": [intr]}]}, NOW, stale))
+        self.assertNotIn(SID, km._interrupt_clicked)
+
+    def test_the_sdk_snapshot_carries_its_capture_time(self):
+        # the guard needs snapT on every SDK snapshot — pin the field at source (kernel/sdk_backend.py)
+        with open(os.path.join(os.path.dirname(BIN), "kernel", "sdk_backend.py")) as f:
+            src = f.read()
+        self.assertIn('"snapT": time.time()', src, "snapshot() stamps when it was taken")
+
 
 class FeedCardInterruptingBadge(unittest.TestCase):
     """The feed CARD wears a steady 'interrupting…' badge while a stop is in flight, then swaps to the
