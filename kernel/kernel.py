@@ -11111,10 +11111,18 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                 _tx = _atom_md(_a).strip()
                 if _tx:
                     _disk_texts.add(_tx)
+    # Replies the disk kept on ANY branch of the transcript graph (parse-side landed_text_uuids),
+    # including branches a chat-delete rollback abandoned. A marker for one of those is not a loss:
+    # session["turns"] can't dedup it (the record left the kept path with the fork), and without
+    # this uuid check the marker re-emitted the deleted exchange's reply as a ghost bubble once the
+    # rollback was consumed (the user 2026-08-03).
+    _landed_uuids = set(parsed.get("landedTextUuids") or ())
     def _flush_recoveries(upto):
         nonlocal _ri, _ei, _oi, _gi
         while _oi < len(orphans) and (upto is None or orphans[_oi]["t"] <= upto):
             _o = orphans[_oi]; _oi += 1
+            if _o["uuid"] and _o["uuid"] in _landed_uuids:
+                continue                                   # landed on SOME branch — maybe an abandoned one
             _ot = _o["text"].strip()
             if _ot in _disk_texts or any(dt.startswith(_ot) or _ot.startswith(dt) for dt in _disk_texts):
                 continue                                   # the transcript kept this reply → don't double it
