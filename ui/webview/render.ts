@@ -7040,19 +7040,22 @@ function mkQuoteCitation(quote: string, uuid: string | null, src?: string): Cita
 
 // One selection GESTURE owns one chip (the user 2026-08-04). selectionchange fires dozens of times as a
 // drag grows, so appending per event would spray chips — instead the live gesture WRITES THROUGH to the
-// chip it made (quoteSeedLive), and only a NEW gesture decides replace-vs-add. The deciding event is the
+// chip it owns (quoteSeedIdx), and only a NEW gesture decides replace-vs-add. The deciding event is the
 // mousedown that starts the gesture: plain → this selection becomes the whole context (the pre-stack
 // behavior); ⌘ (Ctrl off-mac) held → the chips already held stay and the new one lands below them. A
 // shift-mousedown EXTENDS the live selection (the browser's own semantics), so it neither resets the
 // gesture nor re-reads the modifier — the existing chip just follows the bigger selection. Keyboard
-// extension (shift+arrows) fires no mousedown and rides the same write-through; a collapse (or a
-// selection leaving the transcript) ends the gesture but never clears chips.
-let quoteAddHeld = false;    // ⌘/Ctrl was down at the gesture-starting mousedown
-let quoteSeedLive = false;   // a gesture's chip is live — subsequent selectionchanges update it in place
+// extension (shift+arrows) fires no mousedown and rides the same write-through.
+// ONLY a mousedown ends a gesture. A mid-drag tick can momentarily fail to qualify (the cursor crossing
+// the gap between two turns puts an endpoint outside any .turn) — treating that as a gesture end made
+// the very next qualifying tick APPEND AGAIN, so one ⌘-drag listed the same context twice (the user
+// 2026-08-04). Plain select masked the same flicker, because its re-seed replaces.
+let quoteAddHeld = false;              // ⌘/Ctrl was down at the gesture-starting mousedown
+let quoteSeedIdx: number | null = null;   // index of the chip the live gesture owns — its write-through target
 document.addEventListener("mousedown", (e) => {
   if (e.shiftKey) return;                     // shift = extend the live selection: same gesture, same chip
   quoteAddHeld = e.metaKey || e.ctrlKey;
-  quoteSeedLive = false;
+  quoteSeedIdx = null;
 }, true);
 
 // Gesture-aware seed for TRANSCRIPT selections (the selectionchange listener + the Enter-to-reply shortcut).
@@ -7060,11 +7063,23 @@ function seedTranscriptQuote(id: string, quote: string, uuid: string | null): vo
   const chip = mkQuoteCitation(quote, uuid);
   // a quote seed drops a goal chip (flavors never mix — the send routes goal XOR quotes)
   const list = (composerCitations.get(id) || []).filter((c) => !c.itemId);
-  if (quoteSeedLive && list.length) list[list.length - 1] = chip;   // the live gesture adjusts its own chip
-  else if (quoteAddHeld && list.length) list.push(chip);            // ⌘-select: add a context below the held ones
-  else list.splice(0, list.length, chip);                           // plain select: this is the context now
+  let idx = quoteSeedIdx != null && quoteSeedIdx < list.length ? quoteSeedIdx : null;   // the live gesture's chip
+  if (idx == null) {
+    if (quoteAddHeld && list.length) idx = list.length;   // ⌘-select: add a context below the held ones
+    else { list.length = 0; idx = 0; }                    // plain select: this is the context now
+  }
+  list[idx] = chip;
+  // Identical text never lists twice (the user 2026-08-04): whatever path re-cites text already held —
+  // re-selecting the same sentence, a double-click repeated, a drag re-traced after a transcript rebuild
+  // killed the selection — the OTHER copy collapses and the gesture's own chip survives.
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (i !== idx && list[i].quote === chip.quote) {
+      list.splice(i, 1);
+      if (i < idx) idx--;
+    }
+  }
+  quoteSeedIdx = idx;
   composerCitations.set(id, list);
-  quoteSeedLive = true;
   persistDrafts();
   if (id === activeId) renderComposerChips(id);
 }
@@ -7099,7 +7114,10 @@ function transcriptSelection(): { text: string; uuid: string | null } | null {
 document.addEventListener("selectionchange", () => {
   if (!activeId) return;
   const q = transcriptSelection();
-  if (!q) { quoteSeedLive = false; return; }                // never clear on collapse — the gesture just ends
+  // Never clear chips on a collapse — and never touch the GESTURE either: a mid-drag tick can flicker
+  // non-qualifying (endpoint in the gap between turns), and ending the gesture there made the next tick
+  // append a second copy of the same context (the user 2026-08-04). Gestures end at the next mousedown.
+  if (!q) return;
   seedTranscriptQuote(activeId, q.text, q.uuid);
 });
 
