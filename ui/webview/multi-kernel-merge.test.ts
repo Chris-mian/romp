@@ -121,6 +121,29 @@ test("routeOutbound: a card op routes by its SID — an itemId alone can only go
   assert.equal(orphan[0].host, "", "no sid → local, whoever the card belongs to");
 });
 
+test("routeOutbound: showAskPath routes by sid — a remote card's hover glow reaches its own kernel", () => {
+  // The feed→timeline/chat highlight (the user 2026-08-03): hovering a remote session's card sent
+  // showAskPath with only the (bare, unroutable) itemId, so it always landed on the LOCAL kernel,
+  // which owns no such goal — nothing lit. The sid rides along purely as the routing key.
+  const routes = routeOutbound({ type: "showAskPath", itemId: U + ":g4", sid: "gpu1:" + U, locate: false });
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].host, "gpu1", "the sid picks the owning kernel");
+  assert.equal(routes[0].msg.sid, U, "sid stripped back to bare");
+  assert.equal(routes[0].msg.itemId, U + ":g4", "itemId was never prefixed, so it passes through as-is");
+  // a local card's hover (bare sid) keeps going local, exactly as before
+  assert.equal(routeOutbound({ type: "showAskPath", itemId: U + ":g4", sid: U, off: true })[0].host, "");
+});
+
+test("prefixInbound: glowTurns groups get sid-prefixed so the merged chat finds the remote pane", () => {
+  // The return leg of the same highlight: the owning kernel answers with glowTurns keyed by its own
+  // bare sids, but the merged chat page keys its views "host:sid" — unprefixed groups matched nothing.
+  const m = prefixInbound("gpu1", { type: "glowTurns", groups: [{ sid: U, uuids: ["a1", "b2"] }], mids: [] });
+  assert.equal(m.groups[0].sid, "gpu1:" + U);
+  assert.deepEqual(m.groups[0].uuids, ["a1", "b2"], "atom uuids are globally unique and stay bare");
+  const clear = prefixInbound("gpu1", { type: "glowTurns", groups: [], mids: [] });
+  assert.deepEqual(clear.groups, [], "an empty clear passes through");
+});
+
 test("routeOutbound: a global message (no session id) goes local", () => {
   const routes = routeOutbound({ type: "setColormap", name: "viridis" });
   assert.deepEqual(routes, [{ host: "", msg: { type: "setColormap", name: "viridis" } }]);

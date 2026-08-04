@@ -89,6 +89,13 @@ export function prefixInbound(host: string, msg: any): any {
       : it));
     out.host = host;
   }
+  // the cross-surface chat glow (glowTurns): its groups are keyed by sid, so a remote kernel's glow
+  // must arrive prefixed or the merged chat's views.get("host:sid") lookup misses and a remote
+  // session's rows never light (the user 2026-08-03 — feed-card hover; the timeline-bar hover took
+  // the same silent miss). The uuids stay bare: atom uuids are globally unique, like the hover ids.
+  if (out.type === "glowTurns" && Array.isArray(out.groups))
+    out.groups = out.groups.map((g: any) =>
+      (g && typeof g === "object" && typeof g.sid === "string" ? { ...g, sid: prefixId(host, g.sid) } : g));
   // timeline payloads: the lanes skeleton nests everything under `data`; the bars detail is top-level.
   if (out.type === "data" && out.data && typeof out.data === "object") out.data = prefixTimelineData(host, out.data);
   else if (out.type === "bars") return { ...out, ..._prefixTimelineDetail(host, out) };

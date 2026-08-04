@@ -31,8 +31,8 @@ test("a blocked/done node's mark+time deep-link to where it RESOLVED (node.mt), 
 });
 
 test("a tree-node hover lights the NODE's own segments via showAskPath(node.id)", () => {
-  assert.match(FEED, /mouseenter".*showAskPath", itemId: node\.id, locate: false/);
-  assert.match(FEED, /mouseleave".*showAskPath", itemId: it\.itemId, locate: false/, "leaving restores the card's full path");
+  assert.match(FEED, /mouseenter".*showAskPath", itemId: node\.id, sid: it\.sid, locate: false/);
+  assert.match(FEED, /mouseleave".*showAskPath", itemId: it\.itemId, sid: it\.sid, locate: false/, "leaving restores the card's full path");
 });
 
 test("the broken collectHoverIds path (emitted goal-node ids the timeline can't match) is gone", () => {
