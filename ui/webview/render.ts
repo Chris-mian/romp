@@ -181,6 +181,11 @@ type ChatEvent = (
   // and the synthesized /effort chip prunes on the next message — so this rail-anchored note marks WHEN the
   // new effort took effect, and stays. Kernel-interleaved by time, like `retried`. SDK-only.
   | { kind: "effortApplied"; effort: string; ts?: string; uuid?: string }
+  // The model's safeguards flagged the prompt and the CLI retried the turn on a fallback model (the
+  // transcript's system/model_refusal_fallback record). The reply that follows came from a DIFFERENT
+  // model — conversation state that must be apparent in the chat, never silent (the user 2026-08-03).
+  // from/to are raw model ids; md is the CLI's full explanation, one click away.
+  | { kind: "modelFallback"; from?: string; to?: string; md?: string; ts?: string; uuid?: string }
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
@@ -1790,6 +1795,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "retryGaveUp") return renderRetryGaveUp(ev);
   if (ev.kind === "apiErrorNote") return renderApiErrorNote(ev);
   if (ev.kind === "effortApplied") return renderEffortApplied(ev);
+  if (ev.kind === "modelFallback") return renderModelFallback(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -2362,6 +2368,33 @@ function renderEffortApplied(ev: Extract<ChatEvent, { kind: "effortApplied" }>):
   line.appendChild(txt);
   line.title = "reasoning effort is a connect-time setting; the session reconnected to apply it, and this marks when the new level took effect";
   turn.appendChild(line);
+  return turn;
+}
+
+// The durable "safeguards flagged → switched model" note (the user 2026-08-03: a mid-turn model swap
+// must be apparent in the chat, never silent). Slim rail line in the warning voice, placed where the
+// retry started — i.e. just above the fallback model's reply. The CLI's full explanation (why the
+// safeguards fired, the /feedback pointer) expands on click; fold state survives re-renders via the
+// record's uuid key.
+function renderModelFallback(ev: Extract<ChatEvent, { kind: "modelFallback" }>): HTMLElement {
+  const turn = el("div", "turn turn-retried turn-modelswap");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "retried-line modelswap-line");
+  const txt = el("span", "retried-text modelswap-text");
+  const from = ev.from ? prettyModel(ev.from) : "";
+  const to = ev.to ? prettyModel(ev.to) : "a fallback model";
+  txt.textContent = `${from || "The model"}'s safeguards flagged this message · switched to ${to}`;
+  line.appendChild(txt);
+  turn.appendChild(line);
+  if (ev.md) {
+    const body = el("div", "modelswap-body");
+    body.textContent = ev.md;
+    const key = ev.uuid ? "mswap:" + ev.uuid : undefined;
+    applyFold(body, "expanded", key);
+    line.title = "click for the full notice";
+    line.addEventListener("click", () => rememberFold(body, "expanded", key));
+    turn.appendChild(body);
+  }
   return turn;
 }
 

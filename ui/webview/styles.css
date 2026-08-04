@@ -874,6 +874,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* the FAILED twin — "API errors — gave up after N retries": same slim line, in the blocked/red voice,
    so a storm that produced nothing never reads like a recovery (the user 2026-07-25) */
 .gaveup-text { color: var(--st-blocked-bg); font-weight: 600; }
+/* the durable "safeguards flagged → switched model" note (the user 2026-08-03: a mid-turn model swap
+   must be apparent in the chat, never silent) — the retried note's slim rail treatment in the warning
+   voice; the CLI's full explanation expands below the line on click */
+.modelswap-text { color: var(--warn, #d7a23a); font-weight: 600; }
+.modelswap-line { cursor: pointer; }
+.modelswap-line:hover .modelswap-text { filter: brightness(1.15); }
+.modelswap-body { display: none; color: var(--dim); font-size: 0.9em; margin: 4px 0 2px;
+  white-space: pre-wrap; max-width: 72ch; }
+.modelswap-body.expanded { display: block; }
 /* the durable record of a died turn — the live card's chrome without its buttons; slightly dimmer body
    so history reads calmer than the ACTIVE blocked card while staying unmistakably an error */
 .apierror-note .apierror-body { color: var(--dim); }
