@@ -7698,6 +7698,34 @@ def _distill_due_t(store, nid, blocked):
     return best or nd.get("mt")
 
 
+def _done_owed(store, nid):
+    """True when a completed/confirming top owes a (re)distill: no summary yet, or the goal has
+    (re)resolved since the stamp (distilledMt != the newest done event, _distill_due_t)."""
+    nd = store["nodes"][nid]
+    if nd.get("summary") is None:
+        return True
+    _dmt = nd.get("distilledMt")
+    due = _distill_due_t(store, nid, False)
+    # A stamp equal to the goal's settle time is ALSO current: pre-07-24 stamps were the settle event,
+    # and re-keying the due on the done event must not re-enter every already-distilled card in the
+    # deployment at once (a re-distill storm). Match the settledAt cache OR any settle event in the
+    # diary (the stamp materializes from the event, so either form may be the one on disk) — but ONLY
+    # while no done event NEWER than the stamp exists (the user 2026-08-03, the re-completed setup
+    # card): done and settle share one ev_t when a session finishes and idles, so a new-era stamp also
+    # matches its own cycle's settle event in the APPEND-ONLY diary — a reopen adds events, it removes
+    # none. Matched unconditionally, this escape held the gate shut forever: a follow-up reopened and
+    # re-completed the goal, and the card kept its stale summary, still raising a decision the newer
+    # work had already answered. A due past the stamp is exactly the re-completion the gate exists to
+    # catch, so it always falls through to re-distill.
+    if _dmt is not None and (due is None or due <= _dmt) \
+            and (_dmt == nd.get("settledAt")
+                 or any(_dmt == (e.get("ev_t") or e.get("at") or 0)
+                        for e in (nd.get("log") or [])
+                        if e.get("kind") == "settle")):
+        return False
+    return _dmt != due
+
+
 def _distill_session(fsid, path, now):
     """Distill each newly-(re)resolved TOP goal of ONE session, COMPLETED and BLOCKED alike (the user
     2026-06-18). Gather the goal's full WORK history — the text of every segment in its trail and its whole
@@ -7725,26 +7753,8 @@ def _distill_session(fsid, path, now):
     # changes nothing; only a reopen→re-done moves the due and re-fires (the one-re-distill worst case the
     # user accepted).
     confirming = set(store.get("confirming") or ())
-
-    def _done_owed(nid):
-        if nodes[nid].get("summary") is None:
-            return True
-        _dmt = nodes[nid].get("distilledMt")
-        # A stamp equal to the goal's settle time is ALSO current: pre-07-24 stamps were the settle event,
-        # and re-keying the due on the done event must not re-enter every already-distilled card in the
-        # fleet at once (a deploy-wide re-distill storm). Match the settledAt cache OR any settle event in
-        # the diary (the stamp materializes from the event, so either form may be the one on disk). Self-
-        # retiring: new-era stamps are done-event times, and a reopen undoes the settle, so any later
-        # re-completion is judged by the done event alone.
-        if _dmt is not None and (_dmt == nodes[nid].get("settledAt")
-                                 or any(_dmt == (e.get("ev_t") or e.get("at") or 0)
-                                        for e in (nodes[nid].get("log") or [])
-                                        if e.get("kind") == "settle")):
-            return False
-        return _dmt != _distill_due_t(store, nid, False)
-
     todo = [nid for nid, st in status.items() if nodes.get(nid) and (
-            ((st == "completed" or nid in confirming) and _done_owed(nid)) or
+            ((st == "completed" or nid in confirming) and _done_owed(store, nid)) or
             (st == "blocked" and (nodes[nid].get("briefedMt") != _distill_due_t(store, nid, True)
                                   or nodes[nid].get("blockSummary") is None)))]
     # LIVE picker/permission floor (the user 2026-06-29): a session parked RIGHT NOW on a live prompt is

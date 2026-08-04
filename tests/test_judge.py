@@ -2158,6 +2158,60 @@ class PlanRollup(unittest.TestCase):
         self.assertEqual(s["status"][g["id"]], "completed", "and it rolls up to completed, not blocked")
 
 
+class DistillDoneGate(unittest.TestCase):
+    """_done_owed — the completed side's (re)distill gate, keyed on the newest done event vs distilledMt."""
+
+    def _mint(self, s, seg, t, text):
+        jd.apply_plan(s, seg, t, [{"do": "mint", "why": "x", "text": text}], jd.open_menu(s))
+
+    def _done(self, s, seg, t, n):
+        jd.apply_plan(s, seg, t, [{"do": "done", "why": "x", "goal": n}], jd.open_menu(s))
+
+    def _completed_and_distilled(self):
+        """One full episode: G1 minted, done, settled by session idle — so the settle event lands at the
+        session's latest activity, the done turn itself, and shares the done event's ev_t (the common
+        finish-then-idle shape) — then distilled, exactly as _distill_session stamps it."""
+        s = _store()
+        self._mint(s, "s1", T0, "G1")
+        self._done(s, "s2", T0 + 10, 1)
+        jd.rollup_status(s, session_closed=True)
+        g1 = s["placements"]["s1"]
+        self.assertEqual(s["status"][g1], "completed")
+        s["nodes"][g1]["summary"] = "first takeaway"
+        s["nodes"][g1]["distilledMt"] = jd._distill_due_t(s, g1, False)
+        return s, g1
+
+    def test_current_stamp_keeps_the_gate_closed(self):
+        s, g1 = self._completed_and_distilled()
+        self.assertFalse(jd._done_owed(s, g1), "distilled at the current done event → nothing owed")
+
+    def test_a_re_completion_reopens_the_gate_despite_the_diary_settle_match(self):
+        # The stale-summary bug (the user 2026-08-03): done and settle share one ev_t when a session
+        # finishes and idles, so a stamp taken then ALSO matches that cycle's settle event in the
+        # append-only diary. The pre-07-24 settle-time escape matched unconditionally, held the gate
+        # shut forever, and a follow-up that reopened and re-completed the goal never re-distilled —
+        # the card kept raising a decision the newer work had already answered.
+        s, g1 = self._completed_and_distilled()
+        jd._reopen(s, g1)                              # a follow-up reopens it...
+        self._done(s, "s3", T0 + 40, 1)                # ...and re-completes it
+        jd.rollup_status(s, session_closed=True)       # ...and the session idles again (re-settle)
+        self.assertTrue(jd._done_owed(s, g1),
+                        "a done event newer than the stamp owes a re-distill — the first cycle's settle "
+                        "event matching the stamp must not hold the gate shut")
+
+    def test_pre_re_key_settle_stamp_with_no_newer_done_stays_closed(self):
+        # pre-07-24 stamps were the SETTLE time, which can trail the done event; with no re-completion
+        # since, such a stamp is still current — no re-distill storm across every card on upgrade.
+        s, g1 = self._completed_and_distilled()
+        s["nodes"][g1]["distilledMt"] = s["nodes"][g1]["settledAt"]
+        self.assertFalse(jd._done_owed(s, g1), "a settle-time stamp with no newer done event is current")
+
+    def test_null_summary_is_always_owed(self):
+        s, g1 = self._completed_and_distilled()
+        s["nodes"][g1]["summary"] = None
+        self.assertTrue(jd._done_owed(s, g1), "no summary yet → owed regardless of stamps")
+
+
 class Courier(unittest.TestCase):
     def test_seg_peer_extracts_sender_and_msgid(self):
         seg = {"trigger": "u1", "atoms": [{"uuid": "u1", "type": "user", "author": {"peer": "SENDERSID"},
