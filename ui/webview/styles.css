@@ -476,7 +476,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* ── citation chip strip (the user 2026-07-01) ── a click on a feed card summary / sub-goal seeds a
    dismissible pill here, ABOVE the textarea: "you're following up on THIS". Accent-blue, with an ✕ to
    dismiss (Backspace-at-start dismisses too). Reads as attached context, not typed text. */
-#composer-chips { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px 2px; }   /* full-width row of its own, above the compose row */
+#composer-chips { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 0 6px 2px; }   /* full-width block of its own, above the compose row; stacked chips each take a row (the user 2026-08-04) */
 .composer-chip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
