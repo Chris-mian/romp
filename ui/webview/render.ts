@@ -1732,9 +1732,28 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         });
         del.addEventListener("blur", disarm);
         del.addEventListener("pointerleave", disarm);
+        // RESTORE-FILES affordance (the user 2026-08-04): put the WORKSPACE back the way it was just
+        // before this message — the SDK's file-checkpoint rewind (rewind_files). The conversation is
+        // untouched; edit/delete cover that. Same two-click arm as delete (destructive — every miss
+        // fails toward "not restored"); the kernel warns on a refusal (tmux, disconnected).
+        const rf = el("button", "msg-restorefiles") as HTMLButtonElement;
+        rf.type = "button";
+        rf.textContent = "restore files";
+        rf.title = "Restore files to their state just before this message — the conversation is untouched";
+        const rfDisarm = () => { rf.classList.remove("armed"); rf.textContent = "restore files"; };
+        rf.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!rf.classList.contains("armed")) { rf.classList.add("armed"); rf.textContent = "revert files?"; return; }
+          rfDisarm();
+          rf.disabled = true; rf.textContent = "restoring…";   // acknowledged; a re-render resets the label
+          vscodeApi?.postMessage({ type: "rewindFiles", id: editSid, uuid });
+        });
+        rf.addEventListener("blur", rfDisarm);
+        rf.addEventListener("pointerleave", rfDisarm);
         const acts = el("div", "msg-acts");   // one row under the bubble (the turn is a column flex)
         acts.appendChild(edit);
         acts.appendChild(del);
+        acts.appendChild(rf);
         turn.appendChild(acts);
       }
     }

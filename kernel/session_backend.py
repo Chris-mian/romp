@@ -121,6 +121,12 @@ class SessionBackend(ABC):
         stream), so this default False just means "no such control here" (tmux)."""
         return False
 
+    def rewind_files(self, sid: str, uuid: str) -> bool:
+        """Restore workspace files to their state before a user message (the SDK's rewind_files,
+        backed by file checkpointing). SDK-only control — the default False means "no such control
+        here" (tmux), and the kernel warns the user on a refusal."""
+        return False
+
     # ── lifecycle ────────────────────────────────────────────────────────────────────────────────
     @abstractmethod
     def spawn(self, name: str, cwd: str, bg: str = "", fg: str = "", sid: str | None = None) -> str | None:

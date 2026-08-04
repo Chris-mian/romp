@@ -46,8 +46,9 @@ test("the bare overlay dims the deleted bubble itself, not just the tail", () =>
 
 test("the delete button dresses like edit, with a destructive armed state", () => {
   assert.match(CSS, /\.msg-acts \{ display: flex; gap: 4px; align-self: flex-end; \}/);
-  assert.match(CSS, /\.turn-user:hover \.msg-del, \.msg-del:focus-visible \{ opacity: 0\.9; \}/);
-  assert.match(CSS, /\.msg-del\.armed \{ color: #ff6a6a; border-color: #ff6a6a;/);
+  // restore-files shares delete's dress (same reveal, same destructive armed red — the user 2026-08-04)
+  assert.match(CSS, /\.turn-user:hover \.msg-del, \.msg-del:focus-visible,\s*\n\.turn-user:hover \.msg-restorefiles, \.msg-restorefiles:focus-visible \{ opacity: 0\.9; \}/);
+  assert.match(CSS, /\.msg-del\.armed, \.msg-restorefiles\.armed \{ color: #ff6a6a; border-color: #ff6a6a;/);
 });
 
 // Executed replica of the BARE keep/retire decision: dim from the deleted bubble (idx, not idx+1),

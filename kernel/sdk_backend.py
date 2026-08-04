@@ -2197,6 +2197,26 @@ class SdkSession:
             self.backend._log("stop_task (%s): control request failed for %s: %s" % (self.name, tid, e))
         self.backend._poke()
 
+    def request_rewind_files(self, uuid: str) -> bool:
+        """Restore the workspace's files to their state just before the given user message — the SDK's
+        designed rewind_files control request (enable_file_checkpointing is on for every session). The
+        CONVERSATION is untouched; the chat's edit/delete rewinds cover that. False when the client
+        isn't connected — the kernel warns then, never a silent no-op."""
+        if not (uuid and self.loop and self.client):
+            return False
+        self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._do_rewind_files(uuid)))
+        return True
+
+    async def _do_rewind_files(self, uuid):
+        # loud on failure (a restore that vanishes without a trace is the bug): the common refusal is a
+        # message from before checkpointing was enabled — the CLI rejects it and the log says why
+        try:
+            await self.client.rewind_files(uuid)
+            self.backend._log("rewind_files (%s): workspace restored to before %s" % (self.name, uuid))
+        except Exception as e:
+            self.backend._log("rewind_files (%s): control request failed for %s: %s" % (self.name, uuid, e))
+        self.backend._poke()
+
     def _live_bg_tasks(self) -> list:
         """The background tasks running RIGHT NOW: [{"desc","type","since","toolUseId","lastTool"}], oldest
         first. Copied under the lock, like _live_subagents."""
@@ -2794,6 +2814,11 @@ class SdkBackend:
                    "SubagentStart": [HookMatcher(matcher=None, hooks=[sess._subagent_start_hook])],  # live subagent
                    "SubagentStop": [HookMatcher(matcher=None, hooks=[sess._subagent_stop_hook])]},    #   count/types
             permission_mode=sess.mode,
+            # File-checkpoint rewind (the user 2026-08-04): the CLI backs files up before modifying them,
+            # so rewind_files() can put the workspace back to its state at any user message. The uuid a
+            # restore takes comes from the TRANSCRIPT (romp's own parse) — the replay-user-messages extra
+            # flag exists only for SDK consumers with no transcript access, so it stays off.
+            enable_file_checkpointing=True,
             include_partial_messages=False,
             # connect-time --effort (no runtime control); a change reconnects. "ultracode" is not a typed
             # EffortLevel — it rides as xhigh + the `ultracode` settings key (added below).
@@ -3335,6 +3360,10 @@ class SdkBackend:
     def stop_task(self, sid: str, task_id: str) -> bool:
         s = self.sessions.get(sid)
         return bool(s and s.request_stop_task(task_id))
+
+    def rewind_files(self, sid: str, uuid: str) -> bool:
+        s = self.sessions.get(sid)
+        return bool(s and s.request_rewind_files(uuid))
 
     def set_effort(self, sid: str, value: str) -> bool:
         """Change the reasoning effort. effort is a connect-time CLI flag (--effort) with no SDK runtime
