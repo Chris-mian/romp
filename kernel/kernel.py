@@ -9945,7 +9945,15 @@ def _interrupting(sid, session, now, tm):
     if t0 is None:
         return False
     inflight = (tm or {}).get("interrupting")     # SDK exposes True/False; tmux has no such key → None
-    if inflight is not None:
+    # A snapshot TAKEN BEFORE the click carries no verdict on it (the user 2026-08-04): the push loop
+    # snapshots every backend once and then builds for a while, so a stop clicked mid-loop reaches this
+    # function with a PRE-click interrupting:False — which used to pop the stamp and eat the whole
+    # in-flight window (the chip read Interrupting…, fell to Working until the real settle, then Ready;
+    # later builds saw the flag True but no stamp, which deliberately paints nothing). Evidence older
+    # than the click stands down: fall through to the transcript path below, and the next FRESH snapshot
+    # settles it properly. A snapshot without snapT (tmux, older fixtures) is treated as current.
+    snap_t = (tm or {}).get("snapT")
+    if inflight is not None and not (snap_t is not None and snap_t < t0):
         if not inflight or now - t0 > 120:
             _interrupt_clicked.pop(sid, None)
             return False
