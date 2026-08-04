@@ -437,6 +437,22 @@ class FileAdapter:
             guard += 1
         return active
 
+    def landed_text_uuids(self):
+        """Uuids whose record carries NON-EMPTY assistant text — on ANY branch, kept or dropped.
+        The orphan salvage dedups against this rather than the kept path alone: a reply that
+        LANDED and was then abandoned by a chat-delete rollback (its branch forks away once the
+        CLI relaunches with --resume-session-at) is not a loss, and its orphanReply marker must
+        never resurrect it. The parse_session leaf_override filter covers only the ARMED window;
+        after the rollback is CONSUMED the abandoned reply left the kept path and its marker
+        re-fired forever — a durable ghost bubble, visible to the judges too (the user
+        2026-08-03). Text-bearing only, so a TEXTLESS twin record (the fable+AskUserQuestion
+        empty-thinking case) still does not eat its marker's salvage."""
+        out = set()
+        for u, r in self.by_uuid.items():
+            if r.get("type") == "assistant" and _text_of(_content(r.get("message"))).strip():
+                out.add(u)
+        return out
+
     def kept_uuids(self, active):
         """The active leaf-ancestors PLUS any line on a BROKEN chain (its parentUuid points
         at a uuid that exists in NO transcript — corruption / a partial write). The two
@@ -783,7 +799,7 @@ def synthesize_idle(states, atoms, now):
     return out
 
 
-def synthesize_orphans(states, atoms):
+def synthesize_orphans(states, atoms, landed_text_uuids=None):
     """Salvaged assistant replies from orphanReply markers in states/<sid>.jsonl — text that STREAMED
     live but the transcript never kept (an API-errored try; the SDK backend persists it at settle,
     see its append_orphan_reply). The kernel's chat build has interleaved these since 2026-07-21, but
@@ -795,7 +811,14 @@ def synthesize_orphans(states, atoms):
     text against what the disk kept (a retry that re-replied never doubles) and against earlier
     markers (settles can re-orphan the same reply). A marker carrying the CLI's own error text
     ("API Error: …") is skipped: markers written before the backend tagged error settles isApiError
-    hold that noise, and it must not resurface as work."""
+    hold that noise, and it must not resurface as work.
+
+    landed_text_uuids (FileAdapter.landed_text_uuids): text-bearing assistant uuids on ANY branch
+    of the transcript graph, kept or dropped. A marker whose uuid landed SOMEWHERE is never a loss
+    — when its record is off the kept path, that is a rollback's deliberate abandonment, and
+    resurrecting it un-deletes the tail the user rolled back (the ghost-reply bug, the user
+    2026-08-03: the deleted message vanished but its reply came back once the rollback was
+    consumed, since the atoms-only dedup below can no longer see the abandoned record)."""
     if not atoms:
         return []
     # TEXT-BEARING uuids only (the user 2026-07-28): a marker whose uuid the disk knows solely as a
@@ -826,6 +849,8 @@ def synthesize_orphans(states, atoms):
             # units at all once skipped — so this drops no real work and needs no PLACEMENTS_V bump.
             continue
         u = orq.get("uuid") or ""
+        if u and landed_text_uuids is not None and u in landed_text_uuids:
+            continue   # the disk kept this reply on SOME branch — possibly one a rollback abandoned
         if u and u in seen_uuids:
             continue
         if any(dt.startswith(txt) or txt.startswith(dt) for dt in disk_texts):
@@ -1139,7 +1164,9 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
     _srows = _load_states(states)
-    orphans = synthesize_orphans(_srows, atoms)  # salvaged replies FIRST: they are real atoms the turn
+    landed = adapter.landed_text_uuids()         # replies the disk kept on ANY branch — never a loss
+    orphans = synthesize_orphans(_srows, atoms, landed_text_uuids=landed)
+    #                                            # salvaged replies FIRST: they are real atoms the turn
     #                                              grouping must absorb (idle spans overlay afterwards)
     # A salvaged reply has NO position in the transcript graph — that absence is the very thing the
     # marker exists to paper over — so the leaf_override walk cannot drop it the way it drops the
@@ -1164,7 +1191,11 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
         turn.clear()
         turn.update(turn_keys)
     return {"rompUuid": rompuuid, "name": name or rompuuid, "dir": dir,
-            "color": color, "leafFsid": leaf_path.stem, "turns": turns}
+            "color": color, "leafFsid": leaf_path.stem, "turns": turns,
+            # for the kernel chat build's own marker interleave: its dedup reads the KEPT turns
+            # only, so without this a marker whose reply landed on an abandoned branch would
+            # ghost back through that second door (sorted → deterministic payloads).
+            "landedTextUuids": sorted(landed)}
 
 
 def task_store_plan(fsid):

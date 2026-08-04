@@ -86,6 +86,23 @@ class SynthesizeOrphans(unittest.TestCase):
         self.assertEqual([g["uuid"] for g in got], ["a5"])
         self.assertEqual(got[0]["message"]["content"][0]["text"], "the explanation before the picker")
 
+    def test_a_reply_landed_on_an_abandoned_branch_never_resurrects(self):
+        """The rollback ghost (the user 2026-08-03): the reply LANDED, then a chat delete forked the
+        spine past it — off the kept path it leaves `atoms`, but it is not a loss, and once the
+        rollback is consumed the leaf_override filter no longer applies. landed_text_uuids carries
+        every text-bearing uuid on ANY branch, and a marker whose uuid is in it must stay dead."""
+        atoms = [_atom("u1", 100, "the ask", typ="user")]
+        got = em.synthesize_orphans([_marker(160, "a9", "the abandoned reply")], atoms,
+                                    landed_text_uuids={"a9"})
+        self.assertEqual(got, [])
+
+    def test_landed_elsewhere_does_not_suppress_a_genuine_loss(self):
+        atoms = [_atom("u1", 100, "the ask", typ="user")]
+        got = em.synthesize_orphans([_marker(160, "a9", "the lost reply")], atoms,
+                                    landed_text_uuids={"zz"})
+        self.assertEqual([g["uuid"] for g in got], ["a9"],
+                         "only the marker's OWN uuid landing suppresses it")
+
 
 def iso(t):
     return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
