@@ -7184,16 +7184,24 @@ function seedEditorQuote(id: string, quote: string, src?: string): void {
 // The current selection when (and only when) it qualifies as transcript text — both endpoints inside
 // `.turn` elements, non-collapsed, non-empty. Shared by the selectionchange seeding below and the
 // Enter-to-reply shortcut (window keydown), so the two can never disagree on what counts.
+// A ⌘-multi-select holds SEVERAL ranges — the browser's own discontiguous selection keeps the earlier
+// highlight live while a new one is dragged. The chip being built belongs to the range the user is
+// ACTIVELY dragging — the newest — so this reads THAT range alone, never sel.toString(), which
+// concatenates every range and merged two discontiguous sections into one chip (the user 2026-08-04).
+// The earlier ranges already own their chips from their own gestures. Endpoints come from the range's
+// own containers (anchor/focus describe only the last-modified range, and flip on a backwards drag).
 function transcriptSelection(): { text: string; uuid: string | null } | null {
   const sel = window.getSelection();
-  if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+  if (!sel || !sel.rangeCount) return null;
+  const r = sel.getRangeAt(sel.rangeCount - 1);
+  if (r.collapsed) return null;                             // the ACTIVE range must be a real span
   const turnOf = (n: Node | null) => {
     const e = n instanceof Element ? n : n?.parentElement;
     return e?.closest?.(".turn") ?? null;
   };
-  const a = turnOf(sel.anchorNode), f = turnOf(sel.focusNode);
+  const a = turnOf(r.startContainer), f = turnOf(r.endContainer);
   if (!a || !f) return null;                                // both endpoints must be transcript turns
-  const text = sel.toString().trim();
+  const text = r.toString().trim();
   if (!text) return null;
   return { text, uuid: a.getAttribute("data-uuid") };
 }

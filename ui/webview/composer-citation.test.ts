@@ -110,8 +110,8 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
   // The qualification lives in transcriptSelection(), shared with the Enter-to-reply shortcut so the
   // two can never disagree on what counts as a transcript selection.
   assert.match(RENDER, /function transcriptSelection\(\): \{ text: string; uuid: string \| null \} \| null/);
-  assert.match(RENDER, /if \(!sel \|\| !sel\.rangeCount \|\| sel\.isCollapsed\) return null;/);
-  assert.match(RENDER, /const a = turnOf\(sel\.anchorNode\), f = turnOf\(sel\.focusNode\);/);
+  assert.match(RENDER, /if \(!sel \|\| !sel\.rangeCount\) return null;/);
+  assert.match(RENDER, /const a = turnOf\(r\.startContainer\), f = turnOf\(r\.endContainer\);/);
   assert.match(RENDER, /if \(!a \|\| !f\) return null;/);
   assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
   assert.match(RENDER, /if \(!q\) return;\s*\n\s*seedTranscriptQuote\(activeId, q\.text, q\.uuid\);/);   // never clears chips, never touches the gesture
@@ -141,6 +141,20 @@ test("⌘-selecting another piece of text ADDS a context below the held ones (th
   assert.match(RENDER, /list\.splice\(idx == null \? list\.length - 1 : idx, 1\);/);
   // the persisted state restores a LIST, and still accepts the pre-stack single-object form
   assert.match(RENDER, /for \(const c of \(Array\.isArray\(v\) \? v : \[v\]\) as any\[\]\)/);
+});
+
+test("discontiguous ⌘-ranges become separate chips — the seed reads the ACTIVE range, never sel.toString() (the user 2026-08-04)", () => {
+  // The browser's own discontiguous selection keeps the earlier highlight live as its own range while a
+  // new one is dragged; sel.toString() CONCATENATES every range, so seeding from it merged two sections
+  // into one chip. The seed reads the newest range alone — the earlier ranges already own their chips
+  // from their own gestures — with endpoints from the range's containers (anchor/focus describe only the
+  // last-modified range, and flip on a backwards drag).
+  assert.match(RENDER, /const r = sel\.getRangeAt\(sel\.rangeCount - 1\);/);
+  assert.match(RENDER, /if \(r\.collapsed\) return null;/);
+  assert.match(RENDER, /const text = r\.toString\(\)\.trim\(\);/);
+  const fn = RENDER.split("function transcriptSelection(")[1].split("\n}")[0];
+  assert.doesNotMatch(fn, /sel\.toString/, "the concatenating read is gone");
+  assert.doesNotMatch(fn, /sel\.anchorNode|sel\.focusNode/, "endpoints come from the active range");
 });
 
 test("one ⌘-drag never lists the same context twice (the user 2026-08-04)", () => {
