@@ -31,6 +31,7 @@ import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from ".
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
+import { mathBlock, mathInline } from "./math";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -54,6 +55,11 @@ marked.use({
     },
   },
 } as Parameters<typeof marked.use>[0]);
+
+// TeX math ($..$, $$..$$, \(..\), \[..\]) rendered via KaTeX. All delimiter heuristics (the
+// $-vs-shell/price disambiguation) live in math.ts; the output is plain spans + inline styles
+// (output: "html"), which DOMPurify's html profile in md() passes through unchanged.
+marked.use({ extensions: [mathBlock, mathInline] });
 
 // One answered (or pending) question on an AskUserQuestion turn: the prompt + its options, plus the
 // user's answer TEXT per question (`chosen`). Answer text may name an option label OR be free-text
