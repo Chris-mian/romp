@@ -6982,12 +6982,16 @@ function renderComposerFiles(id: string | null): void {
     box.title = p + " — click opens it · ✕ removes";
     if (previewKind(p) === "img") {
       if (canPreview()) {
+        // Name first, pixels when ready (the user 2026-08-04): the ext + name chip goes up IMMEDIATELY
+        // and the image swaps in on its own load event — a slow /file fetch never leaves a blank box,
+        // and a 404 simply keeps the chip (event-based on load/error, nothing timed).
+        const doc = composerFileDoc(p);
+        box.appendChild(doc);
         const img = document.createElement("img");
         img.className = "composer-file-img";
-        img.src = fileUrl(p, id);
         img.alt = p;
-        img.onerror = () => { img.replaceWith(composerFileDoc(p)); };   // unservable → fall to the ext chip
-        box.appendChild(img);
+        img.addEventListener("load", () => doc.replaceWith(img));
+        img.src = fileUrl(p, id);
       } else {
         const w = buildPathImg(p);                 // VS Code: host-read data URL fills in; chip until then
         w.classList.add("composer-file-hostimg");
