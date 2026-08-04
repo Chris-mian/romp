@@ -20,7 +20,7 @@ test("the shell's paneFocus arms card nav; blur/Escape disarms it", () => {
 test("the card cursor reuses the mouse-hover highlight path (applyFocus + showAskPath)", () => {
   assert.match(FEED, /function kbSelectCard\(el: HTMLElement \| null\): void \{/);
   assert.match(FEED, /hoverAskId = id; applyFocus\(\);/, "the SAME white .focused ring the hover shows");
-  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "showAskPath", itemId: id, locate: false \}\);/, "same lit timeline journey");
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "showAskPath", itemId: id, sid: sidOfItem\(id\), locate: false \}\);/, "same lit timeline journey");
 });
 
 test("Enter descends into a card; arrows step its elements; Enter activates via a real click", () => {

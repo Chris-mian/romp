@@ -14,6 +14,17 @@ test("every askClear send carries the card's sid (routes a remote clear to its k
   for (const s of sends) assert.match(s, /sid: (it|m|mem)\.sid/, `askClear send missing sid: ${s}`);
 });
 
+test("every showAskPath send carries a sid (a remote card's hover highlight routes to its kernel)", () => {
+  // The cross-surface hover glow (the user 2026-08-03): showAskPath carried only the itemId, which
+  // federation cannot route on (it is bare on both sides), so a remote card's hover landed on the
+  // local kernel and the timeline/chat highlight never lit. Every send now names the owning sid —
+  // from the item in scope where one is at hand, else resolved by sidOfItem (the pin-restore and
+  // keyboard paths hold only an itemId).
+  const sends = FEED.match(/type: "showAskPath"[^}]*/g) || [];
+  assert.ok(sends.length >= 16, `found ${sends.length} showAskPath sends — expected the 16 known sites`);
+  for (const s of sends) assert.match(s, /sid: (it\.sid|m\.sid|sidOfItem\()/, `showAskPath send missing sid: ${s}`);
+});
+
 test("askFollowUp carries sid too (remote follow-ups); the expand/detail channel died with FeedItem", () => {
   assert.doesNotMatch(FEED, /type: "expand"/);
   assert.match(FEED, /type: "askFollowUp"[^}]*sid: fbSid/);

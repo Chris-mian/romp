@@ -937,7 +937,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
       hoverAskId = it.itemId; applyFocus();
-      vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, locate: false });
+      vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, locate: false });
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
@@ -945,8 +945,8 @@ function makeAskCard(it: AskItem): HTMLElement {
     if (hoverAskId === it.itemId) {
       hoverAskId = null; applyFocus();
       const pin = focusAnchorId(pinnedAskId);
-      if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, locate: false });   // back to the pin (ask or group)
-      else vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, off: true });      // clear
+      if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, sid: sidOfItem(pin), locate: false });   // back to the pin (ask or group)
+      else vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, off: true });      // clear
     }
   });
   // card BODY single click → open the modal; double click → pin/unpin (locks the
@@ -959,7 +959,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     pending = window.setTimeout(() => {
       pending = undefined;
       fullscreenAskId = it.itemId;
-      vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, locate: false });
+      vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, locate: false });
       render();
     }, 220);
   });
@@ -970,8 +970,8 @@ function makeAskCard(it: AskItem): HTMLElement {
     applyFocus();
     // double-click = PIN + jump the TIMELINE to the painted DAG (the user's
     // ruling: hover/single-click only highlight; only a double pans)
-    if (pinnedAskId === it.itemId) vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, locate: false, jump: true });
-    else if (!pinnedAskId && hoverAskId !== it.itemId) vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, off: true });
+    if (pinnedAskId === it.itemId) vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, locate: false, jump: true });
+    else if (!pinnedAskId && hoverAskId !== it.itemId) vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, off: true });
   });
 
   // right-click → the per-card bell menu (the user 2026-07-28). Reads the FRESH item off the card
@@ -1700,6 +1700,15 @@ function focusAnchorId(key: string | null): string | null {
   return key;
 }
 
+// The session that owns a feed itemId — every showAskPath must carry it: federation's routeOutbound
+// keys on `sid` (an itemId alone can only go local), so without it a remote card's hover landed on
+// the LOCAL kernel, which knows nothing of that goal, and the timeline/chat highlight never lit
+// (the user 2026-08-03). Same contract as the askClear sid fix (2026-07-02).
+function sidOfItem(itemId: string | null): string | undefined {
+  if (!itemId) return undefined;
+  return asks.find((a) => a.itemId === itemId)?.sid;
+}
+
 // Liveness ANOMALY (the user's simplification, 2026-06-11): ring a card only when
 // its computed liveness DISAGREES with the column it's filed in — agreement is
 // the normal case and carries no information.
@@ -1773,7 +1782,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   card.append(main);
 
   const m0 = () => ((card as any)._g as AskGroup | undefined)?.members?.[0];
-  title.onclick = (ev) => { ev.stopPropagation(); const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId }); };
+  title.onclick = (ev) => { ev.stopPropagation(); const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid }); };
   name.onclick = (ev) => { ev.stopPropagation(); const cur = (card as any)._g as AskGroup; if (cur?.sid) openOrReviveSession(cur.sid, cur.live, cur.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
@@ -1793,7 +1802,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
       hoverAskId = fkey; applyFocus();
-      const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, locate: false });
+      const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, locate: false });
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
@@ -1801,8 +1810,8 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     if (hoverAskId === fkey) {
       hoverAskId = null; applyFocus();
       const pin = focusAnchorId(pinnedAskId);
-      if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, locate: false });
-      else { const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, off: true }); }
+      if (pin) vscodeApi?.postMessage({ type: "showAskPath", itemId: pin, sid: sidOfItem(pin), locate: false });
+      else { const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, off: true }); }
     }
   });
   // body single-click → modal; double-click → pin/unpin (debounced ~220ms).
@@ -1812,7 +1821,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     pending = window.setTimeout(() => {
       pending = undefined;
       fullscreenAskId = fkey;
-      const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, locate: false });
+      const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, locate: false });
       render();
     }, 220);
   });
@@ -1822,8 +1831,8 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     applyFocus();
     const m = m0();
     // double-click = PIN + jump the TIMELINE (same contract as single cards)
-    if (pinnedAskId === fkey && m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, locate: false, jump: true });
-    else if (!pinnedAskId && hoverAskId !== fkey && m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, off: true });
+    if (pinnedAskId === fkey && m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, locate: false, jump: true });
+    else if (!pinnedAskId && hoverAskId !== fkey && m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, off: true });
   });
 
   const a = card as any;
@@ -2349,8 +2358,8 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // emitted the goal-node id through hoverHighlight, which the timeline matches against SEGMENT ids,
   // so a sub-node hover never lit anything — the user 2026-06-16.)
   if (!repeat) {
-    line.addEventListener("mouseenter", () => vscodeApi?.postMessage({ type: "showAskPath", itemId: node.id, locate: false }));
-    line.addEventListener("mouseleave", () => vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, locate: false }));
+    line.addEventListener("mouseenter", () => vscodeApi?.postMessage({ type: "showAskPath", itemId: node.id, sid: it.sid, locate: false }));
+    line.addEventListener("mouseleave", () => vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, locate: false }));
   }
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
@@ -3300,7 +3309,7 @@ function kbSelectCard(el: HTMLElement | null): void {
   const id = el ? kbHoverId(el) : null;
   hoverAskId = id; applyFocus();                       // the SAME white .focused ring the mouse hover shows
   if (el) el.scrollIntoView({ block: "nearest" });
-  if (id && !id.startsWith("g:")) vscodeApi?.postMessage({ type: "showAskPath", itemId: id, locate: false });   // same lit timeline journey
+  if (id && !id.startsWith("g:")) vscodeApi?.postMessage({ type: "showAskPath", itemId: id, sid: sidOfItem(id), locate: false });   // same lit timeline journey
 }
 function kbEnterCards(): void {
   kbMode = "cards";
