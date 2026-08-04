@@ -53,7 +53,7 @@ class ModelColors(unittest.TestCase):
         mx = km._effort_color("max", self.stops)
         self.assertGreater(self._lum(mx), self._lum(lo))
         # ordered low < medium < high < xhigh < max
-        vals = [self._lum(km._effort_color(e, self.stops)) for e in ("low", "medium", "high", "xhigh", "max")]
+        vals = [self._lum(km._effort_color(e, self.stops)) for e in ("low", "medium", "high", "xhigh", "max", "ultracode")]
         self.assertEqual(vals, sorted(vals))
 
     def test_effort_case_insensitive_unknown_is_none(self):
@@ -65,7 +65,7 @@ class ModelColors(unittest.TestCase):
         # the most/least capable and the extreme efforts hit the map's endpoints exactly
         self.assertEqual(km._model_color("fable", self.stops), list(km.cm.ramp(1.0, self.stops)))
         self.assertEqual(km._model_color("haiku", self.stops), list(km.cm.ramp(0.0, self.stops)))
-        self.assertEqual(km._effort_color("max", self.stops), list(km.cm.ramp(1.0, self.stops)))
+        self.assertEqual(km._effort_color("ultracode", self.stops), list(km.cm.ramp(1.0, self.stops)))   # the ladder's new top (the user 2026-08-04)
         self.assertEqual(km._effort_color("low", self.stops), list(km.cm.ramp(0.0, self.stops)))
 
     def test_build_session_status_carries_model_and_effort_colors(self):
