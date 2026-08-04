@@ -1324,7 +1324,6 @@ class PermissionAndPlanRoundTrip(unittest.TestCase):
         self.assertEqual(res.behavior, "deny")
 
 
-@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class StopTask(unittest.TestCase):
     """The bg-task box's Stop button rides the SDK's designed stop_task control request (the user
     2026-08-04). The box shows tasks by TOOL-USE id (the kernel's transcript scan); the control request
@@ -1373,6 +1372,7 @@ class StopTask(unittest.TestCase):
         self.assertIn("Couldn't stop that background task", src, "a refusal warns the user — never a silent no-op")
 
 
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class OptionsAssembly(unittest.TestCase):
     """_options must use the SDK's DESIGNED option fields, not the extra_args CLI-flag escape hatch (the user
     2026-06-24: implement things the way the SDK designed them). The romp harness prompt is appended via
