@@ -1418,6 +1418,8 @@ class SdkSession:
         context refresh) and on demand from the kernel's /usage click. Guarded: one in flight."""
         if not self.client or self._usage_refreshing:
             return
+        if self.backend.api_key_auth:
+            return   # API-key auth has no /usage windows and get_usage only times out — nothing to poll
         self._usage_refreshing = True
         r = None
         try:
@@ -1765,6 +1767,10 @@ class SdkSession:
             d = msg.data if isinstance(msg.data, dict) else {}
             self._learn_model(pretty_model(d.get("model")))
             self.perm_mode = d.get("permissionMode") or self.perm_mode
+            # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
+            # the field is absent on a subscription login). An auth flip is the deciding event for the
+            # rail's /usage bars — see _note_auth_source.
+            self.backend._note_auth_source(self.name, d.get("apiKeySource"))
             fsid = d.get("session_id")
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
@@ -2328,6 +2334,7 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
+        self.api_key_auth = False                 # last init's apiKeySource, truthy = API-key auth (no /usage windows)
         # Backend PROBLEMS, kept in a bounded ring so the dashboard can show them (see _log): until
         # 2026-07-28 every SDK failure went to the kernel log alone, which nobody tails, so a session
         # whose stream died or whose model switch was refused just looked odd with no way to find out.
@@ -2596,6 +2603,32 @@ class SdkBackend:
         if live:
             self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
                       "keep their last reading" % len(live), problem=True)
+
+    def _note_auth_source(self, name, source) -> None:
+        """An init message named HOW its CLI authenticates. API-key auth (apiKeySource e.g.
+        'ANTHROPIC_API_KEY'; absent on a subscription login — both verified live 2026-08-04) has NO
+        subscription windows, and get_usage just TIMES OUT there — no snapshot ever arrives to correct
+        usage.json, so after logging out the rail bars showed the last subscription reading forever,
+        frozen (the user 2026-08-04). The auth flip is the deciding event: flipping TO an API key drops
+        the stale windows (bars disappear, _usage() returns None on a window-less file) and gates the
+        pointless get_usage polls off; flipping BACK resumes them, and the next real snapshot repaints.
+        Logged raw each flip, so every host's kernel log self-documents its auth mode."""
+        was = self.api_key_auth
+        self.api_key_auth = bool(source)
+        if self.api_key_auth == was:
+            return
+        self._log("auth (%s): apiKeySource=%r — %s" % (name, source,
+                  "API-key auth: dropping stale /usage windows; usage polls off" if self.api_key_auth
+                  else "subscription auth: usage polls resume"))
+        if not self.api_key_auth:
+            return                                # bars repaint from the next real snapshot on their own
+        with self._rl_lock:
+            try:
+                tmp = self.state_dir / "usage.json.tmp"
+                tmp.write_text(json.dumps({"t": int(time.time()), "apiKey": True}))
+                os.replace(tmp, self.state_dir / "usage.json")
+            except Exception as e:
+                self._log("auth (%s): could not drop stale usage windows: %s" % (name, e))
 
     def _record_usage_snapshot(self, r) -> None:
         """Fold a get_usage control-request snapshot into usage.json — EXACT utilization for every window,
