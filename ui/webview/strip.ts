@@ -102,7 +102,7 @@ export function fmtTok(n: number): string {
 export const SPEND_WINS: Array<[string, string, string]> = [
   ["fiveHour", "5 hours", "5h"],
   ["sevenDay", "7 days", "7d"],
-  ["month", "This month", "mo"],
+  ["month", "Month", "mo"],
 ];
 export function spendWindows(usage: any, nowS: number): UsageWindow[] {
   const sp = usage && usage.apiKey && usage.spend;
@@ -122,7 +122,9 @@ export function spendWindows(usage: any, nowS: number): UsageWindow[] {
     const turns = seg.turns || 0;
     out.push({
       key, label, short, pct, elapsedPct, unknown: false,
-      readout: "$" + (seg.usd < 100 ? seg.usd.toFixed(2) : String(Math.round(seg.usd))),
+      // dollars AND tokens stay VISIBLE (the user 2026-08-05 — the hover-only split hid them again)
+      readout: "$" + (seg.usd < 100 ? seg.usd.toFixed(2) : String(Math.round(seg.usd)))
+        + " · " + fmtTok(seg.tok || 0) + " tok",
       title: label + " — $" + seg.usd.toFixed(2) + " · " + fmtTok(seg.tok || 0) + " tokens · "
         + turns + " turn" + (turns === 1 ? "" : "s")
         + (budget != null ? " · " + pct + "% of the $" + budget + " budget"
