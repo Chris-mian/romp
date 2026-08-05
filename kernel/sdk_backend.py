@@ -1909,7 +1909,8 @@ class SdkSession:
             if m and "claude" in m.lower():
                 self._learn_model(pretty_model(m))
         elif isinstance(msg, ResultMessage):
-            self.backend._record_spend(getattr(msg, "total_cost_usd", None))   # the rail's spend readout under API-key auth
+            self.backend._record_spend(getattr(msg, "total_cost_usd", None),
+                                       getattr(msg, "usage", None))   # the rail's spend + token readout under API-key auth
             self.retrying = False
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self.retry_info = None
@@ -2605,14 +2606,20 @@ class SdkBackend:
             self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
                       "keep their last reading" % len(live), problem=True)
 
-    def _record_spend(self, cost) -> None:
-        """Accumulate a turn's total_cost_usd into spend.json, keyed by LOCAL date — the rail's spend
-        readout where the subscription bars sat, under API-key auth (the user 2026-08-04). Recorded on
-        every result regardless of auth (subscription results report a computed cost too; the DISPLAY is
-        gated on the auth mode, the record is not — flipping auth mid-day keeps the number honest).
-        Pruned to the last 90 days; atomic like every state write."""
+    def _record_spend(self, cost, usage=None) -> None:
+        """Accumulate a turn's total_cost_usd AND its token counts into spend.json, keyed by LOCAL date —
+        the rail's spend readout where the subscription bars sat, under API-key auth (the user
+        2026-08-04; tokens added the same day, who wanted them beside the dollars). Recorded on every
+        result regardless of auth (subscription results report a computed cost too; the DISPLAY is gated
+        on the auth mode, the record is not — flipping auth mid-day keeps the number honest). Token
+        fields mirror the ResultMessage usage dict: input/output plus the two cache flavors, kept
+        separately so the tooltip can break them down. Pruned to the last 90 days; atomic."""
         if not isinstance(cost, (int, float)) or cost <= 0:
             return
+        u = usage if isinstance(usage, dict) else {}
+        def _tok(k):
+            v = u.get(k)
+            return int(v) if isinstance(v, (int, float)) else 0
         day = time.strftime("%Y-%m-%d")
         with self._rl_lock:
             p = self.state_dir / "spend.json"
@@ -2623,7 +2630,11 @@ class SdkBackend:
                 days = {}
             e = days.get(day) if isinstance(days.get(day), dict) else {}
             days[day] = {"usd": round(float(e.get("usd") or 0) + float(cost), 6),
-                         "turns": int(e.get("turns") or 0) + 1}
+                         "turns": int(e.get("turns") or 0) + 1,
+                         "tokIn": int(e.get("tokIn") or 0) + _tok("input_tokens"),
+                         "tokOut": int(e.get("tokOut") or 0) + _tok("output_tokens"),
+                         "tokCacheR": int(e.get("tokCacheR") or 0) + _tok("cache_read_input_tokens"),
+                         "tokCacheW": int(e.get("tokCacheW") or 0) + _tok("cache_creation_input_tokens")}
             for k in sorted(days)[:-90]:
                 days.pop(k, None)
             try:

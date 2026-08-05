@@ -59,7 +59,9 @@ class RailUsage(unittest.TestCase):
         self.assertIn("ru-fill style=\"width:'+pct+'%;background:'+col", self.html, "the used-% bar")
         self.assertIn("ru-fill style=\"width:'+(tp||0)+'%;background:#6b7a8c", self.html, "the elapsed-% bar below it")
         # order within a window: label, then the bars, then % — all inline
-        one = self.html[self.html.index("<div class=ru-name>"):]
+        # anchor past the spend chip (it wears ru-name/ru-pct too, with no bars — the user 2026-08-04):
+        # the slice must start at a WINDOW row, whose label is built from the WINS table
+        one = self.html[self.html.index("<div class=ru-name>'+w"):]
         self.assertLess(one.index("ru-name"), one.index("ru-bars"))
         self.assertLess(one.index("ru-bars"), one.index("ru-pct"))
         # expanded labels use the 5th WINS field (plenty of horizontal room)

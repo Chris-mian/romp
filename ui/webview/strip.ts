@@ -188,18 +188,42 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
     fit();
   }
 
-  // API-key auth: no subscription windows exist — the rail shows SPEND where the bars sat (the user
-  // 2026-08-04): today's accumulated per-result cost from the kernel's spend.json. The web landing
-  // carries the same branch (kernel.py hasSpend/spendHTML); the two copies must stay in step.
+  // API-key auth: no subscription windows exist — the rail shows SPEND + TOKENS where the bars sat
+  // (the user 2026-08-04): today's accumulated per-result cost and usage from the kernel's spend.json.
+  // The web landing carries the same branch (kernel.py hasSpend/spendHTML); the two copies must stay
+  // in step. Dressed ENTIRELY in the rail's own classes — ru-w row, ru-name label (full/short tier
+  // spans), ru-pct readout — same fonts and compression tiers as the bars it replaces, no minted
+  // styles (the consistent-fonts rule; the user 2026-08-04, whose first cut wore a one-off 11px).
+  function fmtTok(n: number): string {
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+    return String(n);
+  }
   function spendChip(usage: any): HTMLElement | null {
     const sp = usage && usage.apiKey && usage.spend;
     if (!sp || typeof sp.usd !== "number") return null;
     const box = document.createElement("div");
-    box.className = "ru-spend";
+    box.className = "ru-w ru-spend";
+    const name = document.createElement("div");
+    name.className = "ru-name";
+    const full = document.createElement("span");
+    full.className = "ru-name-full";
+    full.textContent = "API today";
+    const short = document.createElement("span");
+    short.className = "ru-name-short";
+    short.textContent = "API";
+    name.append(full, short);
+    const val = document.createElement("div");
+    val.className = "ru-pct";
+    val.textContent = "$" + sp.usd.toFixed(2) + " · " + fmtTok(sp.tok || 0) + " tok";
     const n = sp.turns || 0;
-    box.textContent = "API $" + sp.usd.toFixed(2) + " today";
     box.title = "API-key billing — $" + sp.usd.toFixed(2) + " across " + n + " turn" + (n === 1 ? "" : "s")
-      + " today. No subscription windows on this account.";
+      + " today · " + fmtTok(sp.tok || 0) + " tokens"
+      + (sp.tokIn != null ? " (" + fmtTok(sp.tokIn) + " in, " + fmtTok(sp.tokOut || 0) + " out, "
+         + fmtTok((sp.tokCacheR || 0) + (sp.tokCacheW || 0)) + " cache)" : "")
+      + ". No subscription windows on this account.";
+    box.append(name, val);
     return box;
   }
 
