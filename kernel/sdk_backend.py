@@ -2220,6 +2220,37 @@ class SdkSession:
             self.backend._log("stop_task (%s): control request failed for %s: %s" % (self.name, tid, e))
         self.backend._poke()
 
+    # ---- MCP servers (the SDK's designed control requests) ----
+    # `/mcp` in a romp session hits the CLI's INTERACTIVE panel, which an SDK-driven session cannot
+    # render — the CLI just says "use a terminal" (the user 2026-08-05). The SDK exposes the same facts
+    # and actions as control requests, so romp serves its own panel from them: get_mcp_status for the
+    # list, toggle_mcp_server / reconnect_mcp_server for the two repairs. Each runs ON the session's
+    # loop and blocks the calling (kernel) thread only for a bounded wait.
+    def _call_on_loop(self, coro_fn, what, timeout=20.0):
+        """Run a client coroutine on this session's loop and return its result. (None, reason) on any
+        failure — the kernel surfaces the reason; never a silent empty panel."""
+        if not (self.loop and self.client):
+            return None, "this session's CLI isn't connected"
+        try:
+            fut = asyncio.run_coroutine_threadsafe(coro_fn(), self.loop)
+            return fut.result(timeout), ""
+        except Exception as e:
+            self.backend._log("%s (%s) failed: %s: %s" % (what, self.name, type(e).__name__, e))
+            return None, "%s: %s" % (type(e).__name__, e)
+
+    def mcp_status(self):
+        r, err = self._call_on_loop(lambda: self.client.get_mcp_status(), "mcp status")
+        servers = (r or {}).get("mcpServers") if isinstance(r, dict) else None
+        return (servers if isinstance(servers, list) else []), err
+
+    def mcp_toggle(self, name: str, enabled: bool):
+        _r, err = self._call_on_loop(lambda: self.client.toggle_mcp_server(name, enabled), "mcp toggle")
+        return err
+
+    def mcp_reconnect(self, name: str):
+        _r, err = self._call_on_loop(lambda: self.client.reconnect_mcp_server(name), "mcp reconnect")
+        return err
+
     def request_rewind_files(self, uuid: str) -> bool:
         """Restore the workspace's files to their state just before the given user message — the SDK's
         designed rewind_files control request (enable_file_checkpointing is on for every session). The
@@ -3457,6 +3488,18 @@ class SdkBackend:
     def stop_task(self, sid: str, task_id: str) -> bool:
         s = self.sessions.get(sid)
         return bool(s and s.request_stop_task(task_id))
+
+    def mcp_status(self, sid: str):
+        s = self.sessions.get(sid)
+        return s.mcp_status() if s else ([], "romp has no live SDK session for this tab")
+
+    def mcp_action(self, sid: str, name: str, action: str, enabled: bool = True) -> str:
+        s = self.sessions.get(sid)
+        if not s:
+            return "romp has no live SDK session for this tab"
+        if action == "reconnect":
+            return s.mcp_reconnect(name)
+        return s.mcp_toggle(name, enabled)
 
     def rewind_files(self, sid: str, uuid: str) -> bool:
         s = self.sessions.get(sid)

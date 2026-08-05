@@ -4553,6 +4553,79 @@ function showConfirm(title: string, detail: string, buttons: Array<{ label: stri
   document.addEventListener("keydown", onKey, true);
   (actions.firstElementChild as HTMLElement | null)?.focus();
 }
+// THE MCP PANEL (the user 2026-08-05). `/mcp` in a romp session used to be a dead end: the CLI's own
+// panel is an interactive TUI an SDK-driven session cannot render, so it replied "use a terminal". The
+// SDK exposes the same facts and repairs as control requests (get_mcp_status / toggle_mcp_server /
+// reconnect_mcp_server), so this renders them: one row per server with its status dot, tool count, the
+// error when it failed, and the two actions. Every action refetches — the panel only ever shows the
+// CLI's own status, never an optimistic guess. Reuses the confirm overlay's chrome (no new styles).
+let mcpPanelSid: string | null = null;
+function openMcpPanel(sid: string): void {
+  mcpPanelSid = sid;
+  document.getElementById("mcp-panel")?.remove();
+  const overlay = el("div", "picker-overlay confirm-overlay"); overlay.id = "mcp-panel";
+  const box = el("div", "picker-box confirm-box mcp-box");
+  const h = el("div", "confirm-title"); h.textContent = "MCP servers";
+  const body = el("div", "confirm-detail mcp-list");
+  body.textContent = "Loading…";
+  const actions = el("div", "confirm-actions");
+  const closeBtn = el("button", "picker-action confirm-btn"); closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => { mcpPanelSid = null; overlay.remove(); document.removeEventListener("keydown", onKey, true); });
+  actions.appendChild(closeBtn);
+  box.append(h, body, actions);
+  overlay.appendChild(box);
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); closeBtn.click(); } };
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeBtn.click(); });
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(overlay);
+  loadMcpPanel(sid, body);
+}
+
+function loadMcpPanel(sid: string, body: HTMLElement): void {
+  fetch(kernelUrl("/mcp?sid=" + encodeURIComponent(sid)), { cache: "no-store" })
+    .then((r) => r.json())
+    .then((d) => {
+      if (mcpPanelSid !== sid) return;   // panel closed (or reopened for another tab) while loading
+      body.textContent = "";
+      const servers: any[] = Array.isArray(d?.servers) ? d.servers : [];
+      // FAIL LOUDLY: a refusal (tmux session, disconnected CLI) is named, never an empty list that
+      // reads as "no servers configured".
+      if (d?.error) {
+        const e = el("div", "mcp-err"); e.textContent = String(d.error); body.appendChild(e);
+      }
+      if (!servers.length) {
+        if (!d?.error) { const n = el("div", "mcp-none"); n.textContent = "No MCP servers configured for this session."; body.appendChild(n); }
+        return;
+      }
+      for (const srv of servers) {
+        const row = el("div", "mcp-row");
+        const dot = el("span", "mcp-dot mcp-" + String(srv.status || "unknown"));
+        const name = el("span", "mcp-name"); name.textContent = String(srv.name || "?");
+        const st = el("span", "mcp-status"); st.textContent = String(srv.status || "unknown");
+        const tools = Array.isArray(srv.tools) ? srv.tools.length : null;
+        const meta = el("span", "mcp-meta");
+        meta.textContent = [tools != null ? tools + " tool" + (tools === 1 ? "" : "s") : "",
+                            srv.scope ? String(srv.scope) : ""].filter(Boolean).join(" · ");
+        row.append(dot, name, st, meta);
+        const disabled = String(srv.status) === "disabled";
+        const act = (action: string, enabled: boolean, label: string, busy: string) => {
+          const b = el("button", "mcp-act") as HTMLButtonElement;
+          b.textContent = label;
+          b.addEventListener("click", () => {
+            b.disabled = true; b.textContent = busy;   // acknowledge before the round-trip
+            vscodeApi?.postMessage({ type: "mcpAction", id: sid, server: srv.name, action, enabled });
+          });
+          row.appendChild(b);
+        };
+        if (!disabled) act("reconnect", true, "Reconnect", "Reconnecting…");
+        act("toggle", disabled, disabled ? "Enable" : "Disable", disabled ? "Enabling…" : "Disabling…");
+        if (srv.error) { const er = el("div", "mcp-err"); er.textContent = String(srv.error); row.appendChild(er); }
+        body.appendChild(row);
+      }
+    })
+    .catch((e) => { if (mcpPanelSid === sid) body.textContent = "Couldn't load MCP status: " + e; });
+}
+
 function closeConfirm(value: string | null) {
   const o = document.getElementById("confirm");
   if (o) {
@@ -7753,6 +7826,11 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "dropCitationsAll") {
     if (composerCitations.size) { composerCitations.clear(); persistDrafts(); renderComposerChips(activeId); }
   }
+  else if (m.type === "mcpResult") {
+    if (m.error) warnToast("MCP " + (m.server || "server") + ": " + m.error);
+    const body = document.querySelector("#mcp-panel .mcp-list") as HTMLElement | null;
+    if (body && mcpPanelSid) loadMcpPanel(mcpPanelSid, body);   // refetch — never an optimistic row
+  }
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "warn" && typeof m.text === "string" && m.text) {
@@ -8030,6 +8108,16 @@ function setupComposer() {
     // session's open cards with it. The composer sees the command BEFORE it runs — the one
     // interception point — so open cards put an explicit confirm between Enter and the drop
     // (the user 2026-07-27). Cancel keeps the text in the box; no open cards → no modal.
+    // `/mcp` NEVER reaches the CLI (the user 2026-08-05): its own panel is an interactive TUI an
+    // SDK session can't render, so the CLI answers "use a terminal". romp shows the same facts from
+    // the SDK's control requests instead — status, enable/disable, reconnect. Intercepted here, the
+    // one point that sees a command before it runs (the /clear precedent below).
+    if (/^\/mcp\s*$/.test(text)) {
+      ta.value = ""; composerManualH = null; ta.style.height = "";
+      drafts.delete(sid); persistDrafts();
+      openMcpPanel(sid);
+      return;
+    }
     const dropDetail = isClearCmd(text) ? clearConfirmDetail(openTopTitles(ledgers.get(sid)?.tree)) : null;
     if (dropDetail) {
       showConfirm("Clear this conversation?", dropDetail,

@@ -2133,3 +2133,24 @@ body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
    and hid the sessions to announce that one machine had gone away. The drop now flashes the rail's
    network glyph — .rn-drop / @keyframes rnet-drop, in the shell the kernel serves — and the steady state
    stays on .tab.host-off and .host-prefix.off above, which cost no space to begin with.) */
+
+/* the MCP panel (the user 2026-08-05): rows inside the confirm overlay's chrome — no new fonts, the
+   sizes come from .confirm-detail; only layout and the status tint are new */
+.mcp-box { min-width: 420px; max-width: 620px; }
+.mcp-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; text-align: left; }
+.mcp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+  background: var(--code-bg); border: 1px solid var(--box-border); }
+.mcp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+.mcp-connected { background: var(--st-ready-bg); }
+.mcp-failed, .mcp-needs-auth { background: #E5534B; }
+.mcp-pending { background: var(--st-working-bg); }
+.mcp-disabled { background: var(--dim); }
+.mcp-name { font-weight: 600; }
+.mcp-status, .mcp-meta { color: var(--dim); }
+.mcp-act { margin-left: auto; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--box-border); background: transparent; color: var(--fg); }
+.mcp-act + .mcp-act { margin-left: 0; }
+.mcp-act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.mcp-act:disabled { opacity: 0.55; cursor: default; }
+.mcp-err { flex: 1 1 100%; color: #E5534B; }
+.mcp-none { color: var(--dim); }
