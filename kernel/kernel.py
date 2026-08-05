@@ -13625,6 +13625,20 @@ def _usage():
                     "color": list(cm.ramp(pct / 100.0, stops))}   # used-% on the selected colormap
         return None
     five, seven, fable = seg(o.get("five_hour")), seg(o.get("seven_day")), seg(o.get("fable"))
+    # THE LOGIN THAT PRODUCED THESE WINDOWS MUST STILL BE SIGNED IN (the user 2026-08-04, who logged
+    # out and asked why the bars couldn't clear immediately — they always waited for the next reading,
+    # which after a logout NEVER comes: get_usage times out on API-key auth and RateLimitEvents stop).
+    # Both writers stamp `acct` (whose reading this was); the credential store is the authority on the
+    # CURRENT login and _claude_account() reads it mtime-cached, so the comparison is immediate and
+    # per-push: a logout empties the store, the stamp no longer matches, the bars drop that push. A
+    # LEGACY unstamped file keeps its bars either way — same-or-different is unknowable there, every
+    # new reading stamps, and a pre-upgrade fossil on a logged-out machine still clears via the #208
+    # auth flip on its next session init (deliberately NOT keyed on the live login here: that would
+    # couple every unstamped fixture and CI run to the machine's real credential file).
+    if five or seven or fable:
+        stamped = o.get("acct") or ""
+        if stamped and stamped != _claude_account():
+            five = seven = fable = None
     if not five and not seven and not fable:
         # No windows. An API-KEY account (the auth-flip marker _note_auth_source writes) shows SPEND
         # where the bars sat (the user 2026-08-04): today's accumulated per-result total_cost_usd,
