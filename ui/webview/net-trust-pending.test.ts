@@ -54,3 +54,26 @@ test("VS Code strip: same pending-trust treatment", () => {
   assert.match(STRIP, /pn\.textContent = "applying…"/, "a visible note, not just a disabled control");
   assert.match(STRIPCSS, /\.sn-trust\.sn-applying \{ border-color: var\(--accent, #9cd2ff\)/);
 });
+
+test("an engaged trust select DEFERS the rebuild — its open dropdown survives the connecting-phase polls (the user 2026-08-04)", () => {
+  // The bug: renderList rebuilds every row each poll, and while a host is CONNECTING the poll runs at
+  // 600ms — a native select's open dropdown dies with its DOM node, so the options dismissed the
+  // instant they opened. The popover now defers the rebuild while the select is engaged and flushes
+  // the newest snapshot on release (blur or a made choice) — the timeline's defer-don't-rebuild idiom.
+  assert.match(STRIP, /if \(trustEngaged\) \{ deferredRender = \(\) => renderList\(ts, known\); return; \}/);
+  // engaged on BOTH paths in (pointer opens the popup on mousedown; keyboard via focus)…
+  assert.match(STRIP, /trust\.addEventListener\("focus", \(\) => \{ trustEngaged = true; \}\);/);
+  assert.match(STRIP, /trust\.addEventListener\("mousedown", \(\) => \{ trustEngaged = true; \}\);/);
+  // …released by blur or by the choice landing, which flushes the newest deferred snapshot
+  assert.match(STRIP, /trust\.addEventListener\("blur", releaseTrust\);/);
+  assert.match(STRIP, /const flush = deferredRender;\s*\n\s*deferredRender = null;\s*\n\s*if \(flush\) flush\(\);/);
+  assert.match(STRIP, /releaseTrust\(\);   \/\/ the choice is made/);
+  // toggling the popover clears the latch — a hidden popover can never blur its way free
+  assert.match(STRIP, /trustEngaged = false; deferredRender = null;   \/\/ a toggled popover/);
+  // …and the WEB copy (kernel _LANDING_REMOTES_JS) carries the SAME fix — the two must stay in step
+  assert.match(KERNEL, /if\(trustEngaged\)\{deferredRender=function\(\)\{render\(ts,known,pmode,via,rholds,tiers\);\};return;\}/);
+  assert.match(KERNEL, /list\.addEventListener\('mousedown',function\(e\)\{if\(e\.target&&e\.target\.classList&&e\.target\.classList\.contains\('rnet-trust'\)\)trustEngaged=true;\},true\);/);
+  assert.match(KERNEL, /list\.addEventListener\('focusout',function\(e\)\{if\(e\.target&&e\.target\.classList&&e\.target\.classList\.contains\('rnet-trust'\)\)releaseTrust\(\);\}\);/);
+  assert.match(KERNEL, /rnet-applying'\);releaseTrust\(\);/);
+  assert.match(KERNEL, /function close\(\)\{back\.hidden=true;trustEngaged=false;deferredRender=null;\}/);
+});

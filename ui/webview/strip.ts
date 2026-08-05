@@ -357,7 +357,25 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   // event — no timer). A refused write deletes the entry, so the next render honestly reverts.
   const pendingTrust = new Map<string, string>();
 
+  // A native <select>'s open dropdown dies with its DOM node, and renderList rebuilds every row each
+  // poll — at the connecting-phase 600ms cadence (schedule below) the trust picker's options dismissed
+  // the instant they opened (the user 2026-08-04: click it and "it just immediately unclicks"; fine
+  // once the host is up, whose 3s cadence usually leaves room). So the popover DEFERS the rebuild while
+  // a trust select is engaged — focus/mousedown arms it, blur or a made choice releases — and flushes
+  // the newest deferred snapshot on release: the timeline's defer-don't-rebuild idiom (_pointerHeld),
+  // select-flavored. Event-based, no timers; reopening the popover resets the latch (a hidden popover
+  // can never blur its way free, and its select is gone anyway).
+  let trustEngaged = false;
+  let deferredRender: (() => void) | null = null;
+  const releaseTrust = () => {
+    trustEngaged = false;
+    const flush = deferredRender;
+    deferredRender = null;
+    if (flush) flush();
+  };
+
   function renderList(ts: any[], known: any[] = []) {
+    if (trustEngaged) { deferredRender = () => renderList(ts, known); return; }   // mid-pick — land it after
     list.textContent = "";
     button.classList.toggle("on", ts.some((t) => t.status === "up"));
     if (!ts.length && !known.length) {
@@ -429,6 +447,9 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         trust.appendChild(o);
       }
       if (pend) { trust.disabled = true; trust.classList.add("sn-applying"); }
+      trust.addEventListener("focus", () => { trustEngaged = true; });      // keyboard path
+      trust.addEventListener("mousedown", () => { trustEngaged = true; });  // pointer path, before the popup opens
+      trust.addEventListener("blur", releaseTrust);
       trust.addEventListener("change", () => {
         pendingTrust.set(t.host, trust.value);   // ack on the click; re-renders show the chosen level
         trust.disabled = true;
@@ -438,6 +459,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
           .then((rp) => rp.json())
           .then((d) => { if (!(d && d.ok)) pendingTrust.delete(t.host); schedule(600); })
           .catch(() => { pendingTrust.delete(t.host); schedule(600); });
+        releaseTrust();   // the choice is made — land any deferred snapshot now (pendingTrust keeps it painted)
       });
       r.appendChild(trust);
       if (pend) {
@@ -579,6 +601,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     pop.hidden = !open;
     button.classList.toggle("open", open);   // instant acknowledgment on the button itself
     if (!open) clearTimeout(timer);
+    trustEngaged = false; deferredRender = null;   // a toggled popover starts (or leaves) unengaged — no stale latch
   };
   button.addEventListener("click", (e) => {
     e.stopPropagation();
