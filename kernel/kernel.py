@@ -17211,8 +17211,8 @@ function showAdd(on){if(!addBox)return;addBox.hidden=!on;hint.hidden=!on;plus.hi
 if(on&&hostIn){hostIn.value=hostIn.value||mruHost();try{hostIn.focus();hostIn.select();}catch(e){}}}
 var _autoAdd=false;
 var _auto=false;   // "Automatically update" — mirrored from the KERNEL each refresh, never a local guess
-function open(){back.hidden=false;_autoAdd=false;showAdd(false);loadHosts();refresh();}
-function close(){back.hidden=true;}
+function open(){back.hidden=false;_autoAdd=false;showAdd(false);trustEngaged=false;deferredRender=null;loadHosts();refresh();}
+function close(){back.hidden=true;trustEngaged=false;deferredRender=null;}
 if(plus)plus.onclick=function(){showAdd(true);};
 // "How it works" — the gist reads by itself; the mechanics are one click under it.
 if(more)more.onclick=function(){var on=sub.hidden;sub.hidden=!on;more.setAttribute('aria-expanded',on?'true':'false');
@@ -17360,7 +17360,20 @@ schedule(3000);});}
 // as a free variable threw ReferenceError on EVERY render, after list.innerHTML='' had already cleared the
 // list and before any row was appended. The panel therefore showed an empty host list no matter how many
 // hosts were attached, and the bare catch swallowed the error (the user 2026-07-22). Take it as a param.
-function render(ts,known,pmode,via,rholds,tiers){list.innerHTML='';known=known||[];via=via||[];rholds=rholds||[];tiers=tiers||{};
+// A native <select>'s open dropdown dies with its DOM node, and render() rebuilds every row each poll —
+// at the connecting-phase 600ms cadence the trust picker's options dismissed the instant they opened
+// (the user 2026-08-04: click it and it immediately unclicks; fine once the host is up at the 3s
+// cadence). Defer the rebuild while a trust select is ENGAGED (focusin/mousedown on .rnet-trust) and
+// flush the newest snapshot on release (focusout, or the choice landing) — strip.ts carries the same
+// fix; the two copies must stay in step (net-trust-pending.test.ts pins both).
+var trustEngaged=false;var deferredRender=null;
+function releaseTrust(){trustEngaged=false;var f=deferredRender;deferredRender=null;if(f)f();}
+list.addEventListener('mousedown',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('rnet-trust'))trustEngaged=true;},true);
+list.addEventListener('focusin',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('rnet-trust'))trustEngaged=true;});
+list.addEventListener('focusout',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('rnet-trust'))releaseTrust();});
+function render(ts,known,pmode,via,rholds,tiers){
+if(trustEngaged){deferredRender=function(){render(ts,known,pmode,via,rholds,tiers);};return;}
+list.innerHTML='';known=known||[];via=via||[];rholds=rholds||[];tiers=tiers||{};
 // Attached rows win; a via/known row for an attached host would be a duplicate.
 var live={};ts.forEach(function(t){live[t.host]=1;});
 // "connect from" (attach-on-behalf, the user 2026-07-25): offer every CONNECTED host as a tunnel
@@ -17534,7 +17547,7 @@ list.appendChild(hr);});}
 // window repaints the chosen level + applying cue instead of the stale snapshot's old value. A
 // refused/failed write DELETES the pending entry, so the next render honestly reverts — plus the alert.
 list.querySelectorAll('select[data-t]').forEach(function(s){s.onchange=function(){var h=s.getAttribute('data-t');
-_pendTrust[h]=s.value;s.disabled=true;s.classList.add('rnet-applying');
+_pendTrust[h]=s.value;s.disabled=true;s.classList.add('rnet-applying');releaseTrust();
 fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){delete _pendTrust[h];alert('trust change on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
 refresh();}).catch(function(){delete _pendTrust[h];alert('trust change on '+h+' failed to reach the kernel.');refresh();});};});
