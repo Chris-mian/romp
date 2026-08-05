@@ -19,6 +19,7 @@ and the kernel degrades gracefully when the SDK is absent.
 from __future__ import annotations
 import asyncio
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -689,6 +690,20 @@ def write_name(state_dir: Path, sid: str, name: str, cwd: str, bg: str = "", fg:
 
 def _reg_path(state_dir: Path, sid: str) -> Path:
     return Path(state_dir) / "sdk" / (sid + ".json")
+
+
+def acct_digest() -> str:
+    """The signed-in Claude account as an opaque 12-hex digest, "" when logged out — duplicated tiny
+    from the kernel's _claude_account (same file, same field, same hash) so usage-window WRITES can
+    stamp whose reading they hold without a kernel import. The stamp is what lets the kernel drop bars
+    the INSTANT that login goes away (the user 2026-08-04), instead of waiting for a next reading that
+    never comes after a logout."""
+    try:
+        acct = ((json.loads(open(os.path.expanduser("~/.claude.json"), encoding="utf-8").read()) or {})
+                .get("oauthAccount") or {}).get("accountUuid")
+        return hashlib.sha256(str(acct).encode("utf-8")).hexdigest()[:12] if acct else ""
+    except Exception:
+        return ""
 
 
 def read_reg(state_dir: Path, sid: str) -> dict | None:
@@ -2704,6 +2719,7 @@ class SdkBackend:
             except Exception:
                 cur = {}
             data = {"t": int(time.time()),
+                    "acct": acct_digest(),   # whose reading this is — the kernel drops the bars the moment that login is gone
                     "five_hour": out.get("five_hour", cur.get("five_hour")),
                     "seven_day": out.get("seven_day", cur.get("seven_day")),
                     "fable": out.get("fable", cur.get("fable"))}
@@ -2799,7 +2815,8 @@ class SdkBackend:
             if new == seg:
                 return                                # no change → keep t honest (the tooltip's "updated … ago")
             cur[key] = new
-            data = {"t": int(time.time()), "five_hour": cur.get("five_hour"),
+            data = {"t": int(time.time()), "acct": acct_digest(),   # whose reading — see the snapshot writer
+                    "five_hour": cur.get("five_hour"),
                     "seven_day": cur.get("seven_day"), "fable": cur.get("fable")}
             try:
                 tmp = self.state_dir / "usage.json.tmp"
