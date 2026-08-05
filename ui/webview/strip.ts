@@ -188,9 +188,26 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
     fit();
   }
 
+  // API-key auth: no subscription windows exist — the rail shows SPEND where the bars sat (the user
+  // 2026-08-04): today's accumulated per-result cost from the kernel's spend.json. The web landing
+  // carries the same branch (kernel.py hasSpend/spendHTML); the two copies must stay in step.
+  function spendChip(usage: any): HTMLElement | null {
+    const sp = usage && usage.apiKey && usage.spend;
+    if (!sp || typeof sp.usd !== "number") return null;
+    const box = document.createElement("div");
+    box.className = "ru-spend";
+    const n = sp.turns || 0;
+    box.textContent = "API $" + sp.usd.toFixed(2) + " today";
+    box.title = "API-key billing — $" + sp.usd.toFixed(2) + " across " + n + " turn" + (n === 1 ? "" : "s")
+      + " today. No subscription windows on this account.";
+    return box;
+  }
+
   function render(usage: any) {
     const nowS = Math.floor(Date.now() / 1000);
     usageWrap.textContent = "";
+    const spend = spendChip(usage);
+    if (spend) usageWrap.appendChild(spend);   // API-key auth: the spend readout replaces the bars
     for (const w of usageWindows(usage, nowS)) {
       const box = document.createElement("span");
       box.className = "ru-w" + (w.unknown ? " ru-unk" : "");

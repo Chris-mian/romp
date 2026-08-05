@@ -13626,6 +13626,14 @@ def _usage():
         return None
     five, seven, fable = seg(o.get("five_hour")), seg(o.get("seven_day")), seg(o.get("fable"))
     if not five and not seven and not fable:
+        # No windows. An API-KEY account (the auth-flip marker _note_auth_source writes) shows SPEND
+        # where the bars sat (the user 2026-08-04): today's accumulated per-result total_cost_usd,
+        # from spend.json. A window-less file WITHOUT the marker stays None — nothing known, draw
+        # nothing (never a confident zero).
+        if o.get("apiKey"):
+            return {"apiKey": True, "spend": _spend_today(),
+                    "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
+                    "acct": _claude_account()}
         return None
     # LIMIT REACHED (the user 2026-07-01): a window at 100% whose reset is still in the future = the account is
     # rate-limited on it now. Drives the top banner + the auto retry-pause. A window past its resetsAt has rolled
@@ -13664,6 +13672,20 @@ def _judge_failures():
         val = None
     _jf_cache["fp"], _jf_cache["val"] = fp, val
     return val
+
+
+def _spend_today():
+    """Today's API spend from spend.json — {usd, turns, date} or None. The SDK backend accumulates each
+    result's total_cost_usd there (_record_spend); this is the rail's readout under API-key auth."""
+    try:
+        d = json.loads((jd.STATE / "spend.json").read_text())
+        day = time.strftime("%Y-%m-%d")
+        e = (d.get("days") or {}).get(day)
+        if isinstance(e, dict) and isinstance(e.get("usd"), (int, float)):
+            return {"usd": round(float(e["usd"]), 4), "turns": int(e.get("turns") or 0), "date": day}
+    except Exception:
+        pass
+    return None
 
 
 def _usage_for_client():
@@ -16978,6 +17000,12 @@ if(!on){_limPut('');}   // fully cleared -> forget the logged signature so a fut
 else if(sig!==_limGet()){_limPut(sig);var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
 if(window.__rompNotify)window.__rompNotify('limit',names.join(' and ')+' usage limit reached \u2014 retries paused until it resets');}}
 function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
+// API-key auth: no subscription windows exist — the rail shows SPEND where the bars sat (the user
+// 2026-08-04): today's accumulated per-result cost from the kernel's spend.json. strip.ts carries the
+// same branch; the two copies must stay in step (rail-spend pins).
+function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&typeof u.spend.usd==='number');}
+function spendHTML(u){var sp=u.spend,n=sp.turns||0;
+return '<div class=ru-spend title="API-key billing \u2014 $'+sp.usd.toFixed(2)+' across '+n+' turn'+(n===1?'':'s')+' today. No subscription windows on this account.">API $'+sp.usd.toFixed(2)+' today</div>';}
 // One account's windows, as markup + the tooltip detail for them. Pure: the caller decides where it goes.
 function winsHTML(u,det){var nowS=Math.floor(Date.now()/1000),html='';
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
@@ -17012,16 +17040,16 @@ return html;}
 // by account and each group gets its own bars, labelled with a host that is on it, in the quiet lowercase
 // italic `host:` the chat tabs already wear for a federated session \u2014 same idea, same treatment.
 function renderRows(rows,selfHost){ROWS=rows||[];LAST={};
-var live=ROWS.filter(function(r){return hasBars(r.usage);});
+var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 if(live.length===1){var det={};det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null;
-LAST=[{host:'',det:det}];el.innerHTML=winsHTML(live[0].usage,det);return;}
+LAST=[{host:'',det:det}];el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendHTML(live[0].usage);return;}
 var html='';LAST=[];
 live.forEach(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 var hn=r.host||selfHost||'this machine';
 LAST.push({host:hn,det:det});
 html+='<div class=ru-set title="The Claude account signed in on '+esc(hn)+'. Its allowance is separate from the others here, so each login gets its own bars.">'
-+'<span class=ru-host>'+esc(hn)+':</span>'+winsHTML(r.usage,det)+'</div>';});
++'<span class=ru-host>'+esc(hn)+':</span>'+(hasBars(r.usage)?winsHTML(r.usage,det):spendHTML(r.usage))+'</div>';});
 el.innerHTML=html;}
 // The single-payload path the timeline still posts (and the mobile panel's own fetch): treat it as this
 // machine's row, leaving any other account's bars alone.
@@ -18167,6 +18195,7 @@ def _landing():
             # the windows sit side-by-side. Full detail (elapsed %, reset countdown, age) stays in the hover panel.
             "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:16px}"
             ".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}"
+            ".ru-spend{color:#9aa7b4;font-size:11px;white-space:nowrap;cursor:default}"
             ".ru-name{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#9aa4ad;letter-spacing:.02em;white-space:nowrap}"
             ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
             ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
