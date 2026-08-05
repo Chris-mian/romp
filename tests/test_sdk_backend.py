@@ -1431,12 +1431,19 @@ class SpendRecord(unittest.TestCase):
     def _today(self):
         return time.strftime("%Y-%m-%d")
 
-    def test_accumulates_cost_and_turns_by_day(self):
-        self.be._record_spend(0.02)
-        self.be._record_spend(0.03)
+    def test_accumulates_cost_turns_and_tokens_by_day(self):
+        self.be._record_spend(0.02, {"input_tokens": 100, "output_tokens": 40,
+                                     "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 60})
+        self.be._record_spend(0.03, {"input_tokens": 10, "output_tokens": 5})
         d = json.loads(self.p.read_text())["days"][self._today()]
         self.assertAlmostEqual(d["usd"], 0.05)
         self.assertEqual(d["turns"], 2)
+        self.assertEqual((d["tokIn"], d["tokOut"], d["tokCacheR"], d["tokCacheW"]), (110, 45, 1000, 60))
+
+    def test_a_result_without_usage_still_records_cost(self):
+        self.be._record_spend(0.02)
+        d = json.loads(self.p.read_text())["days"][self._today()]
+        self.assertEqual((d["usd"], d["tokIn"], d["tokOut"]), (0.02, 0, 0))
 
     def test_ignores_missing_zero_and_junk_costs(self):
         for v in (None, 0, -1, "0.5"):
@@ -1454,8 +1461,9 @@ class SpendRecord(unittest.TestCase):
     def test_result_message_records_and_the_kernel_serves_it(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                                 "kernel", "sdk_backend.py")).read()
-        self.assertIn('self.backend._record_spend(getattr(msg, "total_cost_usd", None))', src,
+        self.assertIn('self.backend._record_spend(getattr(msg, "total_cost_usd", None),', src,
                       "every ResultMessage's cost is folded in at the settle")
+        self.assertIn('getattr(msg, "usage", None))', src, "…with its token counts")
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
             ksrc = f.read()
         self.assertIn('if o.get("apiKey"):', ksrc, "_usage serves the spend payload on the auth-flip marker")

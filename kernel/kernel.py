@@ -13634,7 +13634,7 @@ def _usage():
             # A fresh API-key kernel has no settled turn yet — an EMPTY slot (no bars, no chip) reads
             # as broken (the user 2026-08-04, post-restart). $0.00 is the honest zero here: the record
             # is per-result and the day genuinely holds none yet.
-            return {"apiKey": True, "spend": _spend_today() or {"usd": 0.0, "turns": 0, "date": time.strftime("%Y-%m-%d")},
+            return {"apiKey": True, "spend": _spend_today() or {"usd": 0.0, "turns": 0, "tok": 0, "date": time.strftime("%Y-%m-%d")},
                     "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                     "acct": _claude_account()}
         return None
@@ -13678,14 +13678,21 @@ def _judge_failures():
 
 
 def _spend_today():
-    """Today's API spend from spend.json — {usd, turns, date} or None. The SDK backend accumulates each
-    result's total_cost_usd there (_record_spend); this is the rail's readout under API-key auth."""
+    """Today's API spend from spend.json — {usd, turns, tok, tokIn, tokOut, tokCacheR, tokCacheW, date}
+    or None. The SDK backend accumulates each result's total_cost_usd + usage tokens there
+    (_record_spend); this is the rail's readout under API-key auth. `tok` is the visible total (input +
+    output + both cache flavors — everything the API processed); the split rides for the tooltip."""
     try:
         d = json.loads((jd.STATE / "spend.json").read_text())
         day = time.strftime("%Y-%m-%d")
         e = (d.get("days") or {}).get(day)
         if isinstance(e, dict) and isinstance(e.get("usd"), (int, float)):
-            return {"usd": round(float(e["usd"]), 4), "turns": int(e.get("turns") or 0), "date": day}
+            def ti(k):
+                return int(e.get(k) or 0)
+            return {"usd": round(float(e["usd"]), 4), "turns": int(e.get("turns") or 0),
+                    "tok": ti("tokIn") + ti("tokOut") + ti("tokCacheR") + ti("tokCacheW"),
+                    "tokIn": ti("tokIn"), "tokOut": ti("tokOut"),
+                    "tokCacheR": ti("tokCacheR"), "tokCacheW": ti("tokCacheW"), "date": day}
     except Exception:
         pass
     return None
@@ -17007,8 +17014,16 @@ function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
 // 2026-08-04): today's accumulated per-result cost from the kernel's spend.json. strip.ts carries the
 // same branch; the two copies must stay in step (rail-spend pins).
 function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&typeof u.spend.usd==='number');}
-function spendHTML(u){var sp=u.spend,n=sp.turns||0;
-return '<div class=ru-spend title="API-key billing \u2014 $'+sp.usd.toFixed(2)+' across '+n+' turn'+(n===1?'':'s')+' today. No subscription windows on this account.">API $'+sp.usd.toFixed(2)+' today</div>';}
+function fmtTok(n){if(n>=1e9)return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
+if(n>=1e6)return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
+if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
+// Dressed in the rail's OWN classes (ru-w row, ru-name label, ru-pct readout) \u2014 same fonts as the
+// bars it replaces, no minted styles (the consistent-fonts rule; the user 2026-08-04, whose first cut
+// wore a one-off 11px). Tokens beside the dollars, the in/out/cache split on the hover.
+function spendHTML(u){var sp=u.spend,n=sp.turns||0,tk=fmtTok(sp.tok||0);
+return '<div class="ru-w ru-spend" title="API-key billing \u2014 $'+sp.usd.toFixed(2)+' across '+n+' turn'+(n===1?'':'s')+' today \u00b7 '+tk+' tokens'+(sp.tokIn!=null?' ('+fmtTok(sp.tokIn)+' in, '+fmtTok(sp.tokOut||0)+' out, '+fmtTok((sp.tokCacheR||0)+(sp.tokCacheW||0))+' cache)':'')+'. No subscription windows on this account.">'
++'<div class=ru-name>API today</div>'
++'<div class=ru-pct>$'+sp.usd.toFixed(2)+' \u00b7 '+tk+' tok</div></div>';}
 // One account's windows, as markup + the tooltip detail for them. Pure: the caller decides where it goes.
 function winsHTML(u,det){var nowS=Math.floor(Date.now()/1000),html='';
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
@@ -18198,7 +18213,6 @@ def _landing():
             # the windows sit side-by-side. Full detail (elapsed %, reset countdown, age) stays in the hover panel.
             "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:16px}"
             ".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}"
-            ".ru-spend{color:#9aa7b4;font-size:11px;white-space:nowrap;cursor:default}"
             ".ru-name{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#9aa4ad;letter-spacing:.02em;white-space:nowrap}"
             ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
             ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
