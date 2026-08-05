@@ -1431,14 +1431,18 @@ class SpendRecord(unittest.TestCase):
     def _today(self):
         return time.strftime("%Y-%m-%d")
 
-    def test_accumulates_cost_turns_and_tokens_by_day(self):
+    def test_accumulates_cost_turns_and_tokens_by_day_and_hour(self):
         self.be._record_spend(0.02, {"input_tokens": 100, "output_tokens": 40,
                                      "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 60})
         self.be._record_spend(0.03, {"input_tokens": 10, "output_tokens": 5})
-        d = json.loads(self.p.read_text())["days"][self._today()]
+        o = json.loads(self.p.read_text())
+        d = o["days"][self._today()]
         self.assertAlmostEqual(d["usd"], 0.05)
         self.assertEqual(d["turns"], 2)
         self.assertEqual((d["tokIn"], d["tokOut"], d["tokCacheR"], d["tokCacheW"]), (110, 45, 1000, 60))
+        h = o["hours"][time.strftime("%Y-%m-%dT%H")]   # the rolling 5h/7d windows read these buckets
+        self.assertAlmostEqual(h["usd"], 0.05)
+        self.assertEqual(h["turns"], 2)
 
     def test_a_result_without_usage_still_records_cost(self):
         self.be._record_spend(0.02)
@@ -1467,8 +1471,8 @@ class SpendRecord(unittest.TestCase):
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
             ksrc = f.read()
         self.assertIn('if o.get("apiKey"):', ksrc, "_usage serves the spend payload on the auth-flip marker")
-        self.assertIn('"spend": _spend_today()', ksrc)
-        self.assertIn("def _spend_today():", ksrc)
+        self.assertIn('"spend": _spend_windows()', ksrc)
+        self.assertIn("def _spend_windows():", ksrc)
 
 
 class RewindFiles(unittest.TestCase):
