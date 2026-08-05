@@ -3965,7 +3965,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode",
-              "endSession", "renameSession", "stopTask", "rewindFiles")
+              "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -4209,6 +4209,14 @@ def _drive(msg, client):
         if not be.stop_task(sid, str(msg["taskId"])):
             client["send"](json.dumps({"type": "warn",
                                        "text": "Couldn't stop that background task — it may have already finished."}))
+        _push_soon()
+    elif t == "mcpAction" and msg.get("server"):
+        # enable / disable / reconnect ONE MCP server (SDK control requests). The panel refetches after,
+        # so the truth on screen is always the CLI's own status — never an optimistic guess.
+        err = be.mcp_action(sid, str(msg["server"]), str(msg.get("action") or "toggle"),
+                            bool(msg.get("enabled", True)))
+        client["send"](json.dumps({"type": "mcpResult", "id": sid, "server": str(msg["server"]),
+                                   "error": err or ""}))
         _push_soon()
     elif t == "rewindFiles" and msg.get("uuid"):
         # the SDK's file-checkpoint restore — the workspace, not the conversation. LOUD on refusal.
@@ -18933,6 +18941,15 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 return self._send(200, json.dumps({"rows": _fleet_usage(), "host": _self_host()}),
+                                  "application/json", cache="no-cache")
+            if p == "/mcp":                                   # the MCP panel's data (the user 2026-08-05): `/mcp`
+                # in a romp session hits the CLI's INTERACTIVE panel, which an SDK session can't render — it
+                # just says "use a terminal". These are the SAME facts via the SDK's designed control request
+                # (get_mcp_status), so romp renders its own panel. Fails LOUDLY: the reason rides `error`.
+                sid = (q.get("sid") or [""])[0]
+                be = Sessions.backend_for(sid) if sid else None
+                servers, err = be.mcp_status(sid) if be else ([], "unknown session")
+                return self._send(200, json.dumps({"servers": servers, "error": err}),
                                   "application/json", cache="no-cache")
             if p == "/followup-preview":                      # the EXACT wrapped body a citation chip will send (the
                 # user 2026-07-01): clicking the composer chip shows this so you can AUDIT what romp is telling the

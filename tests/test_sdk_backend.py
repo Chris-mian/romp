@@ -1517,7 +1517,7 @@ class RewindFiles(unittest.TestCase):
                       "every session checkpoints, so any user message is a restore point")
         with open(os.path.join(base, "bin", "romp-kernel")) as f:
             src = f.read()
-        self.assertIn('"rewindFiles")', src[src.index("ID_OPS"):src.index("ID_OPS") + 700])
+        self.assertIn('"rewindFiles"', src[src.index("ID_OPS"):src.index("ID_OPS") + 700])
         self.assertIn('elif t == "rewindFiles" and msg.get("uuid"):', src)
         self.assertIn("Couldn't restore files", src, "a refusal warns the user — never a silent no-op")
 
