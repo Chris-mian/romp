@@ -18,10 +18,11 @@ const BACKEND = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "ut
 test("the kernel serves spend on the auth-flip marker, never a confident zero", () => {
   // the payload rides the SAME _usage() path the bars used — no new wire/handler
   assert.ok(KERNEL.includes('if o.get("apiKey"):'), "gated on the #208 auth-flip marker");
-  assert.ok(KERNEL.includes('"spend": _spend_today()'));
+  // a fresh API-key kernel with no settled turn shows $0.00, never an empty slot that reads as broken
+  assert.ok(KERNEL.includes('"spend": _spend_today() or {"usd": 0.0, "turns": 0, "date": time.strftime("%Y-%m-%d")}'));
   assert.ok(KERNEL.includes("def _spend_today():"));
   // a window-less file WITHOUT the marker stays None — nothing known, draw nothing
-  assert.match(KERNEL, /if o\.get\("apiKey"\):[\s\S]{0,400}?return None/);
+  assert.match(KERNEL, /if o\.get\("apiKey"\):[\s\S]{0,800}?return None/);
   // the accumulator: every result's cost, by local date, pruned
   assert.ok(BACKEND.includes('self.backend._record_spend(getattr(msg, "total_cost_usd", None))'));
   assert.ok(BACKEND.includes("def _record_spend(self, cost) -> None:"));

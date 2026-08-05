@@ -13631,7 +13631,10 @@ def _usage():
         # from spend.json. A window-less file WITHOUT the marker stays None — nothing known, draw
         # nothing (never a confident zero).
         if o.get("apiKey"):
-            return {"apiKey": True, "spend": _spend_today(),
+            # A fresh API-key kernel has no settled turn yet — an EMPTY slot (no bars, no chip) reads
+            # as broken (the user 2026-08-04, post-restart). $0.00 is the honest zero here: the record
+            # is per-result and the day genuinely holds none yet.
+            return {"apiKey": True, "spend": _spend_today() or {"usd": 0.0, "turns": 0, "date": time.strftime("%Y-%m-%d")},
                     "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                     "acct": _claude_account()}
         return None
