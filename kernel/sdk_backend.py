@@ -1909,6 +1909,7 @@ class SdkSession:
             if m and "claude" in m.lower():
                 self._learn_model(pretty_model(m))
         elif isinstance(msg, ResultMessage):
+            self.backend._record_spend(getattr(msg, "total_cost_usd", None))   # the rail's spend readout under API-key auth
             self.retrying = False
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self.retry_info = None
@@ -2603,6 +2604,34 @@ class SdkBackend:
         if live:
             self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
                       "keep their last reading" % len(live), problem=True)
+
+    def _record_spend(self, cost) -> None:
+        """Accumulate a turn's total_cost_usd into spend.json, keyed by LOCAL date — the rail's spend
+        readout where the subscription bars sat, under API-key auth (the user 2026-08-04). Recorded on
+        every result regardless of auth (subscription results report a computed cost too; the DISPLAY is
+        gated on the auth mode, the record is not — flipping auth mid-day keeps the number honest).
+        Pruned to the last 90 days; atomic like every state write."""
+        if not isinstance(cost, (int, float)) or cost <= 0:
+            return
+        day = time.strftime("%Y-%m-%d")
+        with self._rl_lock:
+            p = self.state_dir / "spend.json"
+            try:
+                d = json.loads(p.read_text())
+                days = d.get("days") if isinstance(d, dict) and isinstance(d.get("days"), dict) else {}
+            except Exception:
+                days = {}
+            e = days.get(day) if isinstance(days.get(day), dict) else {}
+            days[day] = {"usd": round(float(e.get("usd") or 0) + float(cost), 6),
+                         "turns": int(e.get("turns") or 0) + 1}
+            for k in sorted(days)[:-90]:
+                days.pop(k, None)
+            try:
+                tmp = self.state_dir / "spend.json.tmp"
+                tmp.write_text(json.dumps({"days": days}))
+                os.replace(tmp, p)
+            except Exception as ex:
+                self._log("spend record failed: %s" % ex)
 
     def _note_auth_source(self, name, source) -> None:
         """An init message named HOW its CLI authenticates. API-key auth (apiKeySource e.g.

@@ -1418,6 +1418,51 @@ class ApiKeyAuthUsage(unittest.TestCase):
                       "get_usage is never polled on API-key auth — it only times out there")
 
 
+class SpendRecord(unittest.TestCase):
+    """Under API-key auth the rail shows SPEND where the subscription bars sat (the user 2026-08-04):
+    each ResultMessage's total_cost_usd accumulates into spend.json by LOCAL date. Recorded on every
+    result regardless of auth (display is gated, the record is not); pruned to 90 days."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.p = Path(self.d) / "spend.json"
+
+    def _today(self):
+        return time.strftime("%Y-%m-%d")
+
+    def test_accumulates_cost_and_turns_by_day(self):
+        self.be._record_spend(0.02)
+        self.be._record_spend(0.03)
+        d = json.loads(self.p.read_text())["days"][self._today()]
+        self.assertAlmostEqual(d["usd"], 0.05)
+        self.assertEqual(d["turns"], 2)
+
+    def test_ignores_missing_zero_and_junk_costs(self):
+        for v in (None, 0, -1, "0.5"):
+            self.be._record_spend(v)
+        self.assertFalse(self.p.exists(), "no real cost → no file, never a confident zero")
+
+    def test_prunes_to_ninety_days(self):
+        days = {"2020-01-%02d" % (i + 1) for i in range(25)}
+        self.p.write_text(json.dumps({"days": {k: {"usd": 1, "turns": 1} for k in days}}))
+        self.be._record_spend(0.01)
+        kept = json.loads(self.p.read_text())["days"]
+        self.assertLessEqual(len(kept), 90)
+        self.assertIn(self._today(), kept)
+
+    def test_result_message_records_and_the_kernel_serves_it(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                "kernel", "sdk_backend.py")).read()
+        self.assertIn('self.backend._record_spend(getattr(msg, "total_cost_usd", None))', src,
+                      "every ResultMessage's cost is folded in at the settle")
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
+            ksrc = f.read()
+        self.assertIn('if o.get("apiKey"):', ksrc, "_usage serves the spend payload on the auth-flip marker")
+        self.assertIn('"spend": _spend_today()', ksrc)
+        self.assertIn("def _spend_today():", ksrc)
+
+
 class RewindFiles(unittest.TestCase):
     """The bubble's restore-files affordance rides the SDK's designed rewind_files control request (the
     user 2026-08-04): the WORKSPACE goes back to its state before a user message; the conversation is

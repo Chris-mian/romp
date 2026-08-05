@@ -35,6 +35,7 @@ class _FakeBackend:
     def _turn_completed(self, sid): pass
     def retire_live_work(self, sid): pass
     def _poke(self): pass
+    def _record_spend(self, cost): pass   # the settle folds cost into spend.json; irrelevant to these transitions
     def _update_reg(self, *a, **k): pass
     def _forward(self, s, msg): pass
 
