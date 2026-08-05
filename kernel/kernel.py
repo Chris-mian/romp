@@ -13645,10 +13645,10 @@ def _usage():
         # from spend.json. A window-less file WITHOUT the marker stays None — nothing known, draw
         # nothing (never a confident zero).
         if o.get("apiKey"):
-            # A fresh API-key kernel has no settled turn yet — an EMPTY slot (no bars, no chip) reads
-            # as broken (the user 2026-08-04, post-restart). $0.00 is the honest zero here: the record
-            # is per-result and the day genuinely holds none yet.
-            return {"apiKey": True, "spend": _spend_today() or {"usd": 0.0, "turns": 0, "tok": 0, "date": time.strftime("%Y-%m-%d")},
+            # The spend WINDOWS mirror the subscription bars (5h / 7d / month) so the two auth modes
+            # read identically; _spend_windows always returns all three, zero-filled on a fresh kernel
+            # (an empty slot reads as broken — the user 2026-08-04, post-restart).
+            return {"apiKey": True, "spend": _spend_windows(),
                     "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                     "acct": _claude_account()}
         return None
@@ -13691,25 +13691,53 @@ def _judge_failures():
     return val
 
 
-def _spend_today():
-    """Today's API spend from spend.json — {usd, turns, tok, tokIn, tokOut, tokCacheR, tokCacheW, date}
-    or None. The SDK backend accumulates each result's total_cost_usd + usage tokens there
-    (_record_spend); this is the rail's readout under API-key auth. `tok` is the visible total (input +
-    output + both cache flavors — everything the API processed); the split rides for the tooltip."""
+def _spend_budgets():
+    """Optional per-window spend budgets (USD) from spend-budgets.json — e.g. {"fiveHour": 5,
+    "sevenDay": 40, "month": 150}, hand-set for now (a gear field is the natural follow-up). A budget is
+    what gives a window's bar its FILL: the fraction is spend-over-budget, and without a cap there is no
+    honest fraction to draw — the row shows plain dollars instead."""
+    try:
+        d = json.loads((jd.STATE / "spend-budgets.json").read_text())
+        return {k: float(d[k]) for k in ("fiveHour", "sevenDay", "month")
+                if isinstance(d.get(k), (int, float)) and d[k] > 0}
+    except Exception:
+        return {}
+
+
+def _spend_windows():
+    """API-mode usage windows MIRRORING the subscription bars (the user 2026-08-04, who wanted the two
+    auth modes to read identically at a glance): rolling 5h and 7d summed from spend.json's hour
+    buckets, month-to-date from its day buckets — each {usd, tok, turns}, plus `budget` where
+    spend-budgets.json names one. Always returns all three windows (zeros when nothing is recorded —
+    the day genuinely holds none; the honest-zero rule from the chip era)."""
     try:
         d = json.loads((jd.STATE / "spend.json").read_text())
-        day = time.strftime("%Y-%m-%d")
-        e = (d.get("days") or {}).get(day)
-        if isinstance(e, dict) and isinstance(e.get("usd"), (int, float)):
-            def ti(k):
-                return int(e.get(k) or 0)
-            return {"usd": round(float(e["usd"]), 4), "turns": int(e.get("turns") or 0),
-                    "tok": ti("tokIn") + ti("tokOut") + ti("tokCacheR") + ti("tokCacheW"),
-                    "tokIn": ti("tokIn"), "tokOut": ti("tokOut"),
-                    "tokCacheR": ti("tokCacheR"), "tokCacheW": ti("tokCacheW"), "date": day}
     except Exception:
-        pass
-    return None
+        d = {}
+    days = d.get("days") if isinstance(d.get("days"), dict) else {}
+    hours = d.get("hours") if isinstance(d.get("hours"), dict) else {}
+
+    def _sum(entries):
+        out = {"usd": 0.0, "tok": 0, "turns": 0}
+        for e in entries:
+            if isinstance(e, dict):
+                out["usd"] = round(out["usd"] + float(e.get("usd") or 0), 4)
+                out["turns"] += int(e.get("turns") or 0)
+                out["tok"] += sum(int(e.get(k) or 0) for k in ("tokIn", "tokOut", "tokCacheR", "tokCacheW"))
+        return out
+
+    now = time.time()
+
+    def _rolling(hrs):
+        keys = {time.strftime("%Y-%m-%dT%H", time.localtime(now - i * 3600)) for i in range(hrs + 1)}
+        return _sum(v for k, v in hours.items() if k in keys)
+
+    month = time.strftime("%Y-%m")
+    win = {"fiveHour": _rolling(5), "sevenDay": _rolling(7 * 24),
+           "month": _sum(v for k, v in days.items() if isinstance(k, str) and k.startswith(month))}
+    for k, v in _spend_budgets().items():
+        win[k]["budget"] = v
+    return win
 
 
 def _usage_for_client():
@@ -17027,17 +17055,34 @@ function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
 // API-key auth: no subscription windows exist — the rail shows SPEND where the bars sat (the user
 // 2026-08-04): today's accumulated per-result cost from the kernel's spend.json. strip.ts carries the
 // same branch; the two copies must stay in step (rail-spend pins).
-function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&typeof u.spend.usd==='number');}
+function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&u.spend.fiveHour);}
 function fmtTok(n){if(n>=1e9)return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
 if(n>=1e6)return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
 if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
-// Dressed in the rail's OWN classes (ru-w row, ru-name label, ru-pct readout) \u2014 same fonts as the
-// bars it replaces, no minted styles (the consistent-fonts rule; the user 2026-08-04, whose first cut
-// wore a one-off 11px). Tokens beside the dollars, the in/out/cache split on the hover.
-function spendHTML(u){var sp=u.spend,n=sp.turns||0,tk=fmtTok(sp.tok||0);
-return '<div class="ru-w ru-spend" title="API-key billing \u2014 $'+sp.usd.toFixed(2)+' across '+n+' turn'+(n===1?'':'s')+' today \u00b7 '+tk+' tokens'+(sp.tokIn!=null?' ('+fmtTok(sp.tokIn)+' in, '+fmtTok(sp.tokOut||0)+' out, '+fmtTok((sp.tokCacheR||0)+(sp.tokCacheW||0))+' cache)':'')+'. No subscription windows on this account.">'
-+'<div class=ru-name>API today</div>'
-+'<div class=ru-pct>$'+sp.usd.toFixed(2)+' \u00b7 '+tk+' tok</div></div>';}
+// API-key auth: SPEND windows mirror the subscription bars' grammar exactly \u2014 same rows, labels,
+// twin tracks \u2014 so flipping auth modes reads instantly (the user 2026-08-04). A row FILLS only when
+// spend-budgets.json names that window's budget (the fill is spend-over-budget; no cap, no honest
+// fraction \u2014 plain dollars in the readout slot instead). Rolling windows have no reset boundary, so
+// only month-to-date draws the elapsed track. strip.ts carries the same builder \u2014 kept in step.
+var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','This month']];
+function spendColor(p){return p>=90?'#c0392b':p>=70?'#e0b020':'#54B204';}
+function spendWinsHTML(u){var sp=u.spend||{},html='';
+SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
+var budget=(typeof seg.budget==='number'&&seg.budget>0)?seg.budget:null;
+var pct=budget!=null?Math.max(0,Math.min(100,Math.round(seg.usd/budget*100))):null;
+var el2=null;
+if(w[0]==='month'&&budget!=null){var dd=new Date(),dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate();
+el2=Math.max(0,Math.min(100,Math.round(((dd.getDate()-1+dd.getHours()/24)/dim)*100)));}
+var turns=seg.turns||0,readout='$'+(seg.usd<100?seg.usd.toFixed(2):String(Math.round(seg.usd)));
+html+='<div class="ru-w ru-spend" title="'+w[1]+' \u2014 $'+seg.usd.toFixed(2)+' \u00b7 '+fmtTok(seg.tok||0)+' tokens \u00b7 '+turns+' turn'+(turns===1?'':'s')+(budget!=null?' \u00b7 '+pct+'% of the $'+budget+' budget':' \u00b7 no budget set \u2014 dollars only, no fill (set one in spend-budgets.json)')+' \u00b7 API-key billing">'
++'<div class=ru-name>'+w[1]+'</div>'
++'<div class=ru-bars>'
++(pct!=null?'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+spendColor(pct)+'"></i></div>':'')
++(el2!=null?'<div class=ru-track><i class=ru-fill style="width:'+el2+'%;background:#6b7a8c"></i></div>':'')
++'</div>'
++'<div class=ru-pct>'+readout+'</div>'
++'</div>';});
+return html;}
 // One account's windows, as markup + the tooltip detail for them. Pure: the caller decides where it goes.
 function winsHTML(u,det){var nowS=Math.floor(Date.now()/1000),html='';
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
@@ -17075,13 +17120,13 @@ function renderRows(rows,selfHost){ROWS=rows||[];LAST={};
 var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 if(live.length===1){var det={};det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null;
-LAST=[{host:'',det:det}];el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendHTML(live[0].usage);return;}
+LAST=[{host:'',det:det}];el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendWinsHTML(live[0].usage);return;}
 var html='';LAST=[];
 live.forEach(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 var hn=r.host||selfHost||'this machine';
 LAST.push({host:hn,det:det});
 html+='<div class=ru-set title="The Claude account signed in on '+esc(hn)+'. Its allowance is separate from the others here, so each login gets its own bars.">'
-+'<span class=ru-host>'+esc(hn)+':</span>'+(hasBars(r.usage)?winsHTML(r.usage,det):spendHTML(r.usage))+'</div>';});
++'<span class=ru-host>'+esc(hn)+':</span>'+(hasBars(r.usage)?winsHTML(r.usage,det):spendWinsHTML(r.usage))+'</div>';});
 el.innerHTML=html;}
 // The single-payload path the timeline still posts (and the mobile panel's own fetch): treat it as this
 // machine's row, leaving any other account's bars alone.

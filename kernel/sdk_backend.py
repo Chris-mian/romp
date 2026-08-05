@@ -2636,25 +2636,32 @@ class SdkBackend:
             v = u.get(k)
             return int(v) if isinstance(v, (int, float)) else 0
         day = time.strftime("%Y-%m-%d")
+        hour = time.strftime("%Y-%m-%dT%H")
         with self._rl_lock:
             p = self.state_dir / "spend.json"
             try:
                 d = json.loads(p.read_text())
                 days = d.get("days") if isinstance(d, dict) and isinstance(d.get("days"), dict) else {}
+                hours = d.get("hours") if isinstance(d, dict) and isinstance(d.get("hours"), dict) else {}
             except Exception:
-                days = {}
-            e = days.get(day) if isinstance(days.get(day), dict) else {}
-            days[day] = {"usd": round(float(e.get("usd") or 0) + float(cost), 6),
-                         "turns": int(e.get("turns") or 0) + 1,
-                         "tokIn": int(e.get("tokIn") or 0) + _tok("input_tokens"),
-                         "tokOut": int(e.get("tokOut") or 0) + _tok("output_tokens"),
-                         "tokCacheR": int(e.get("tokCacheR") or 0) + _tok("cache_read_input_tokens"),
-                         "tokCacheW": int(e.get("tokCacheW") or 0) + _tok("cache_creation_input_tokens")}
-            for k in sorted(days)[:-90]:
-                days.pop(k, None)
+                days, hours = {}, {}
+
+            def _fold(buckets, key, keep):
+                e = buckets.get(key) if isinstance(buckets.get(key), dict) else {}
+                buckets[key] = {"usd": round(float(e.get("usd") or 0) + float(cost), 6),
+                                "turns": int(e.get("turns") or 0) + 1,
+                                "tokIn": int(e.get("tokIn") or 0) + _tok("input_tokens"),
+                                "tokOut": int(e.get("tokOut") or 0) + _tok("output_tokens"),
+                                "tokCacheR": int(e.get("tokCacheR") or 0) + _tok("cache_read_input_tokens"),
+                                "tokCacheW": int(e.get("tokCacheW") or 0) + _tok("cache_creation_input_tokens")}
+                for k in sorted(buckets)[:-keep]:
+                    buckets.pop(k, None)
+
+            _fold(days, day, 90)      # the daily ledger: month-to-date + history
+            _fold(hours, hour, 192)   # hour buckets, 8 days — the rolling 5h/7d windows read these
             try:
                 tmp = self.state_dir / "spend.json.tmp"
-                tmp.write_text(json.dumps({"days": days}))
+                tmp.write_text(json.dumps({"days": days, "hours": hours}))
                 os.replace(tmp, p)
             except Exception as ex:
                 self._log("spend record failed: %s" % ex)

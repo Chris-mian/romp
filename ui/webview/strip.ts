@@ -17,10 +17,11 @@
 import { kernelUrl } from "./media";
 
 export type UsageWindow = {
+  readout?: string;     // overrides the % readout (a spend row shows dollars)
   key: string;
   label: string;        // the rail's expanded label
   short: string;        // the compressed tag a narrow strip swaps in ("5h" / "7d" / "F5")
-  pct: number;          // used % of the limit (the LAST-KNOWN reading when unknown — drawn faded)
+  pct: number | null;   // used % of the limit / budget (LAST-KNOWN when unknown — drawn faded); null = no honest denominator (a spend row with no budget)
   elapsedPct: number | null;  // % of the window elapsed (pace comparison)
   unknown: boolean;     // the window reset since the last report — the reading no longer describes the present
   title: string;        // hover detail
@@ -79,6 +80,54 @@ export function usageWindows(usage: any, nowS: number): UsageWindow[] {
         : `${label} — used ${pct}%`
           + (elapsedPct != null ? ` · ${elapsedPct}% through the window` : "")
           + (seg.resetsAt ? ` · resets in ${fmtReset(seg.resetsAt, nowS)}` : ""),
+    });
+  }
+  return out;
+}
+
+export function fmtTok(n: number): string {
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(n);
+}
+
+// API-key auth: SPEND windows mirror the subscription bars' grammar exactly — same rows, same labels,
+// same twin tracks — so flipping between the two auth modes reads instantly (the user 2026-08-04, who
+// asked for "5 hours / week / month, visually similar"). A row FILLS only when spend-budgets.json names
+// that window's budget: the fill is spend-over-budget, and without a cap there is no honest fraction —
+// the row then carries plain dollars in the readout slot and no used-track. Rolling windows (5h/7d)
+// have no reset boundary, so only month-to-date draws the elapsed track. The web landing carries the
+// same builder (kernel.py spendWinsHTML); the two copies must stay in step.
+export const SPEND_WINS: Array<[string, string, string]> = [
+  ["fiveHour", "5 hours", "5h"],
+  ["sevenDay", "7 days", "7d"],
+  ["month", "This month", "mo"],
+];
+export function spendWindows(usage: any, nowS: number): UsageWindow[] {
+  const sp = usage && usage.apiKey && usage.spend;
+  if (!sp) return [];
+  const out: UsageWindow[] = [];
+  for (const [key, label, short] of SPEND_WINS) {
+    const seg = sp[key];
+    if (!seg || typeof seg.usd !== "number") continue;
+    const budget = typeof seg.budget === "number" && seg.budget > 0 ? seg.budget : null;
+    const pct = budget != null ? Math.max(0, Math.min(100, Math.round((seg.usd / budget) * 100))) : null;
+    let elapsedPct: number | null = null;
+    if (key === "month" && budget != null) {
+      const d = new Date(nowS * 1000);
+      const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      elapsedPct = Math.max(0, Math.min(100, Math.round(((d.getDate() - 1 + d.getHours() / 24) / dim) * 100)));
+    }
+    const turns = seg.turns || 0;
+    out.push({
+      key, label, short, pct, elapsedPct, unknown: false,
+      readout: "$" + (seg.usd < 100 ? seg.usd.toFixed(2) : String(Math.round(seg.usd))),
+      title: label + " — $" + seg.usd.toFixed(2) + " · " + fmtTok(seg.tok || 0) + " tokens · "
+        + turns + " turn" + (turns === 1 ? "" : "s")
+        + (budget != null ? " · " + pct + "% of the $" + budget + " budget"
+           : " · no budget set — dollars only, no fill (set one in spend-budgets.json)")
+        + " · API-key billing",
     });
   }
   return out;
@@ -188,51 +237,14 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
     fit();
   }
 
-  // API-key auth: no subscription windows exist — the rail shows SPEND + TOKENS where the bars sat
-  // (the user 2026-08-04): today's accumulated per-result cost and usage from the kernel's spend.json.
-  // The web landing carries the same branch (kernel.py hasSpend/spendHTML); the two copies must stay
-  // in step. Dressed ENTIRELY in the rail's own classes — ru-w row, ru-name label (full/short tier
-  // spans), ru-pct readout — same fonts and compression tiers as the bars it replaces, no minted
-  // styles (the consistent-fonts rule; the user 2026-08-04, whose first cut wore a one-off 11px).
-  function fmtTok(n: number): string {
-    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
-    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
-    return String(n);
-  }
-  function spendChip(usage: any): HTMLElement | null {
-    const sp = usage && usage.apiKey && usage.spend;
-    if (!sp || typeof sp.usd !== "number") return null;
-    const box = document.createElement("div");
-    box.className = "ru-w ru-spend";
-    const name = document.createElement("div");
-    name.className = "ru-name";
-    const full = document.createElement("span");
-    full.className = "ru-name-full";
-    full.textContent = "API today";
-    const short = document.createElement("span");
-    short.className = "ru-name-short";
-    short.textContent = "API";
-    name.append(full, short);
-    const val = document.createElement("div");
-    val.className = "ru-pct";
-    val.textContent = "$" + sp.usd.toFixed(2) + " · " + fmtTok(sp.tok || 0) + " tok";
-    const n = sp.turns || 0;
-    box.title = "API-key billing — $" + sp.usd.toFixed(2) + " across " + n + " turn" + (n === 1 ? "" : "s")
-      + " today · " + fmtTok(sp.tok || 0) + " tokens"
-      + (sp.tokIn != null ? " (" + fmtTok(sp.tokIn) + " in, " + fmtTok(sp.tokOut || 0) + " out, "
-         + fmtTok((sp.tokCacheR || 0) + (sp.tokCacheW || 0)) + " cache)" : "")
-      + ". No subscription windows on this account.";
-    box.append(name, val);
-    return box;
-  }
+
 
   function render(usage: any) {
     const nowS = Math.floor(Date.now() / 1000);
     usageWrap.textContent = "";
-    const spend = spendChip(usage);
-    if (spend) usageWrap.appendChild(spend);   // API-key auth: the spend readout replaces the bars
-    for (const w of usageWindows(usage, nowS)) {
+    // ONE loop, one row builder: subscription windows and API spend windows are the same element, so
+    // the two auth modes cannot drift apart visually (the user 2026-08-04)
+    for (const w of usageWindows(usage, nowS).concat(spendWindows(usage, nowS))) {
       const box = document.createElement("span");
       box.className = "ru-w" + (w.unknown ? " ru-unk" : "");
       box.title = w.title;
@@ -272,11 +284,11 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
         bars.appendChild(q);
         box.append(name, bars);
       } else {
-        bars.appendChild(mkTrack(w.pct, usageColor(w.pct)));
+        if (w.pct != null) bars.appendChild(mkTrack(w.pct, usageColor(w.pct)));   // no honest denominator → no fill
         if (w.elapsedPct != null) bars.appendChild(mkTrack(w.elapsedPct, "#6b7a8c"));
         const pct = document.createElement("span");
         pct.className = "ru-pct";
-        pct.textContent = `${w.pct}%`;
+        pct.textContent = w.readout ?? `${w.pct}%`;
         box.append(name, bars, pct);
       }
       usageWrap.appendChild(box);
