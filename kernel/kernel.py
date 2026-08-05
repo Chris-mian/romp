@@ -17064,7 +17064,7 @@ if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
 // spend-budgets.json names that window's budget (the fill is spend-over-budget; no cap, no honest
 // fraction \u2014 plain dollars in the readout slot instead). Rolling windows have no reset boundary, so
 // only month-to-date draws the elapsed track. strip.ts carries the same builder \u2014 kept in step.
-var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','This month']];
+var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
 function spendColor(p){return p>=90?'#c0392b':p>=70?'#e0b020':'#54B204';}
 function spendWinsHTML(u){var sp=u.spend||{},html='';
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
@@ -17073,7 +17073,7 @@ var pct=budget!=null?Math.max(0,Math.min(100,Math.round(seg.usd/budget*100))):nu
 var el2=null;
 if(w[0]==='month'&&budget!=null){var dd=new Date(),dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate();
 el2=Math.max(0,Math.min(100,Math.round(((dd.getDate()-1+dd.getHours()/24)/dim)*100)));}
-var turns=seg.turns||0,readout='$'+(seg.usd<100?seg.usd.toFixed(2):String(Math.round(seg.usd)));
+var turns=seg.turns||0,readout='$'+(seg.usd<100?seg.usd.toFixed(2):String(Math.round(seg.usd)))+' \u00b7 '+fmtTok(seg.tok||0)+' tok';
 html+='<div class="ru-w ru-spend" title="'+w[1]+' \u2014 $'+seg.usd.toFixed(2)+' \u00b7 '+fmtTok(seg.tok||0)+' tokens \u00b7 '+turns+' turn'+(turns===1?'':'s')+(budget!=null?' \u00b7 '+pct+'% of the $'+budget+' budget':' \u00b7 no budget set \u2014 dollars only, no fill (set one in spend-budgets.json)')+' \u00b7 API-key billing">'
 +'<div class=ru-name>'+w[1]+'</div>'
 +'<div class=ru-bars>'

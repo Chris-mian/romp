@@ -44,7 +44,10 @@ test("VS Code strip: ONE row builder for both auth modes — spend rows ride the
   assert.match(STRIP, /if \(key === "month" && budget != null\)/);
   // labels mirror the subscription table's two-tier form
   assert.match(STRIP, /\["fiveHour", "5 hours", "5h"\]/);
-  assert.match(STRIP, /\["month", "This month", "mo"\]/);
+  assert.match(STRIP, /\["month", "Month", "mo"\]/);
+  // dollars AND tokens stay visible in the readout (the user 2026-08-05); the split stays on hover
+  assert.match(STRIP, /\+ " · " \+ fmtTok\(seg\.tok \|\| 0\) \+ " tok"/);
+  assert.ok(KERNEL.includes("+' \\u00b7 '+fmtTok(seg.tok||0)+' tok'"), "web readout carries tokens too");
   // the old one-off chip is gone, and with it any minted style
   assert.doesNotMatch(STRIP, /spendChip/);
   assert.doesNotMatch(STRIPCSS, /\.ru-spend/);
@@ -52,7 +55,7 @@ test("VS Code strip: ONE row builder for both auth modes — spend rows ride the
 
 test("the web landing copy carries the SAME builder — the two rails stay in step", () => {
   assert.ok(KERNEL.includes("function spendWinsHTML(u)"));
-  assert.ok(KERNEL.includes("var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','This month']];"));
+  assert.ok(KERNEL.includes("var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];"));
   assert.ok(KERNEL.includes("function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&u.spend.fiveHour);}"));
   // same row markup as winsHTML: ru-w → ru-name → ru-bars (tracks) → ru-pct readout
   assert.ok(KERNEL.includes("+'<div class=ru-name>'+w[1]+'</div>'"));
