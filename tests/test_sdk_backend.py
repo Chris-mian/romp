@@ -1372,6 +1372,52 @@ class StopTask(unittest.TestCase):
         self.assertIn("Couldn't stop that background task", src, "a refusal warns the user — never a silent no-op")
 
 
+class ApiKeyAuthUsage(unittest.TestCase):
+    """Logging out to an API key froze the rail's /usage bars on the last subscription reading (the
+    user 2026-08-04): API-key auth has no subscription windows and get_usage only TIMES OUT there, so
+    no snapshot ever arrived to correct usage.json. The init message's apiKeySource (verified live:
+    'ANTHROPIC_API_KEY' on API-key auth, absent on a subscription login) is the deciding event —
+    flipping TO an API key drops the stale windows and gates the pointless polls off; flipping back
+    lets the next real snapshot repaint."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.p = Path(self.d) / "usage.json"
+        self.p.write_text(json.dumps({"t": 1785898746,
+                                      "five_hour": {"pct": 46, "resets_at": 1785907200},
+                                      "seven_day": {"pct": 21, "resets_at": 1786388400}}))
+
+    def test_flipping_to_api_key_drops_the_stale_windows(self):
+        self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
+        self.assertTrue(self.be.api_key_auth)
+        d = json.loads(self.p.read_text())
+        self.assertTrue(d.get("apiKey"))
+        for k in ("five_hour", "seven_day", "fable"):
+            self.assertNotIn(k, d, "stale subscription windows are gone → _usage() returns None → no bars")
+
+    def test_subscription_auth_leaves_the_file_alone(self):
+        before = self.p.read_text()
+        self.be._note_auth_source("n", None)
+        self.assertFalse(self.be.api_key_auth)
+        self.assertEqual(self.p.read_text(), before, "no flip, no write")
+
+    def test_flipping_back_keeps_the_file_for_the_next_snapshot(self):
+        self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
+        dropped = self.p.read_text()
+        self.be._note_auth_source("n", None)
+        self.assertFalse(self.be.api_key_auth)
+        self.assertEqual(self.p.read_text(), dropped, "bars repaint from the next REAL snapshot, not a guess")
+
+    def test_init_reads_the_field_and_the_poll_is_gated(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                "kernel", "sdk_backend.py")).read()
+        self.assertIn('self.backend._note_auth_source(self.name, d.get("apiKeySource"))', src,
+                      "the init message is the one in-band auth signal")
+        self.assertIn("if self.backend.api_key_auth:", src.split("async def _do_refresh_usage", 1)[1][:1600],
+                      "get_usage is never polled on API-key auth — it only times out there")
+
+
 class RewindFiles(unittest.TestCase):
     """The bubble's restore-files affordance rides the SDK's designed rewind_files control request (the
     user 2026-08-04): the WORKSPACE goes back to its state before a user message; the conversation is
