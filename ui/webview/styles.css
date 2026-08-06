@@ -1355,6 +1355,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .ask-warn { color: var(--st-awaiting-bg); font-weight: 700; margin-bottom: 9px; line-height: 1.4; }
 
 .compacting-line { color: var(--st-compacting-bg); font-weight: 600; }
+/* "Opening session" + three staggered pulsing dots (the user 2026-08-05) — the loader idiom's smallest
+   form: accent-colored, event-cleared (first payload / first record), same line style as compacting */
+.opening-line { color: var(--accent); }
+.opening-line-dots { display: inline-flex; gap: 3px; margin-left: 5px; vertical-align: baseline; }
+.opening-line-dots span { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: opening-line-pulse 1.2s ease-in-out infinite; }
+.opening-line-dots span:nth-child(2) { animation-delay: 0.2s; }
+.opening-line-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes opening-line-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 /* ---------- to-do checklist (Claude Code Task list, folded from TaskCreate/Update) ---------- */
 .turn-todo { padding-top: 6px; padding-bottom: 6px; }

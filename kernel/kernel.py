@@ -11704,6 +11704,12 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         # compaction stalls. After that, blocked is the strongest signal — the turn ended in an error, so it
         # beats the live tmux states (the session can't simultaneously be at a permission prompt mid-error).
         chip = _session_chip(sid, sess["path"], session, tm, now)   # THE shared derivation — identical to the timeline lane (the user 2026-07-03)
+        # A session whose transcript DOESN'T EXIST YET is OPENING, whatever the snapshot claims (the
+        # user 2026-08-05: a just-spawned tab said "Working" over a clock with no honest base). The
+        # transcript's first record is the deciding event: it lands, discover() sees it, and the normal
+        # derivation takes over. Never for an override render (a closed episode's path is historical).
+        if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]):
+            chip = "opening"
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API
         # error (auto-retrying → the tab renders amber/retrying, not alarm-red). chip stays "blocked" either way
