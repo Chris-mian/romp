@@ -13852,7 +13852,7 @@ def _postal_messages(now, alive_sids, id2name):
         if o.get("ev") == "sent" and o.get("id"):
             sent[o["id"]] = o
         elif o.get("ev") == "exec" and o.get("id"):
-            execd[o["id"]] = o.get("t")
+            execd[o["id"]] = (o.get("t"), o.get("dmid"))   # dmid: the recipient-side delivery mid (relayed mail)
         elif o.get("ev") == "unexec" and o.get("id"):    # a drain that CLAIMED the mail then rolled back
             execd.pop(o["id"], None)                     # (postal restore) — it never reached the recipient
     cutoff, out = now - TL_HORIZON, []
@@ -13864,12 +13864,16 @@ def _postal_messages(now, alive_sids, id2name):
         if not f or not t or (f not in alive_sids and t not in alive_sids) or f == t or not st or st < cutoff:
             continue
         ex = execd.get(mid)
-        out.append({"id": mid, "fromId": f, "toId": t,
-                    "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t, ""),
-                    "fromOrig": e.get("from", id2name.get(f, f)),
-                    "sent": st, "exec": ex if ex else st, "hasExec": ex is not None,
-                    "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
-                    "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)})
+        ex_t, ex_dmid = (ex if isinstance(ex, tuple) else (ex, None))
+        row = {"id": mid, "fromId": f, "toId": t,
+               "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t, ""),
+               "fromOrig": e.get("from", id2name.get(f, f)),
+               "sent": st, "exec": ex_t if ex_t else st, "hasExec": ex_t is not None,
+               "pending": ex_t is None and (now - st) < MSG_INFLIGHT_MAX,
+               "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)}
+        if ex_dmid:
+            row["dmid"] = ex_dmid   # lets the MERGED view join a relayed connector to the remote turn's mids
+        out.append(row)
     out.sort(key=lambda m: m["sent"])
     return out
 

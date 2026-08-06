@@ -307,7 +307,9 @@ def read_box(sid, consume):
         if consume:
             f.rename(mb / "cur" / f.name)
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "exec", "id": f.name})
-            _queue_read_receipt(meta)                # cross-host mail: the sender's host learns it was read
+            _queue_read_receipt(meta, dmid=f.name)   # cross-host mail: the sender's host learns it was read
+            #   dmid = THIS host's delivery mid — the id the recipient's transcript markers carry, so the
+            #   sender's timeline can join the connector to the true process turn (the user 2026-08-06)
     if consume:
         _mark_pending(sid)         # cleared the box -> drop the marker (no-op if more arrived)
     return out
@@ -350,7 +352,7 @@ def restore(sid, mid):
     _mark_pending(sid)                   # new/ is non-empty again -> raise the marker
     return True
 
-def _queue_read_receipt(meta, unread=False):
+def _queue_read_receipt(meta, unread=False, dmid=""):
     """Cross-host read backflow: mail delivered over the peer bus carries X-Peer-Mid/X-Peer-Via
     (see deliver); consuming it queues {mid, t} into the readbox for the DIRECT peer it arrived
     from, so the sender's host can finally log the exec its receipt view joins on. An `origin`
@@ -362,6 +364,8 @@ def _queue_read_receipt(meta, unread=False):
     if not pm or not via:
         return
     rec = {"mid": pm, "t": int(time.time())}
+    if dmid:
+        rec["dmid"] = dmid   # the recipient-side delivery mid — the sender's timeline joins turns on it
     if unread:
         rec["unread"] = True
     oh = meta.get("x-from-host", "")
@@ -1683,12 +1687,18 @@ def _read_arrived(host, r):
     if origin and origin != self_host():
         if PEERS.get(origin):                    # only toward a peer the kernel told us about
             fwd = {"mid": mid, "t": r.get("t")}
+            if r.get("dmid"):
+                fwd["dmid"] = r.get("dmid")
             if r.get("unread"):
                 fwd["unread"] = True
             readbox_put(origin, fwd)
         return
     ev = "unexec" if r.get("unread") else "exec"
-    _tl_append("messages.jsonl", {"t": int(r.get("t") or time.time()), "ev": ev, "id": mid})
+    row = {"t": int(r.get("t") or time.time()), "ev": ev, "id": mid}
+    d = str((r or {}).get("dmid") or "")
+    if _safe_id(d):
+        row["dmid"] = d   # the recipient's own delivery mid → the timeline's exact turn join (2026-08-06)
+    _tl_append("messages.jsonl", row)
 
 def _bounce_apply(host, b):
     """A peer refused one of our parked messages — return it to the SENDER as a bus-authored note,
