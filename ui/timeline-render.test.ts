@@ -695,3 +695,32 @@ test("a skeleton-only update preserves the bars from the last applyBars (no per-
   panel.update(next);
   assert.deepEqual(panel.data.turns, full.turns, "the prior bars survive a lanes-only update (carried over)");
 });
+
+// A message SENT before the visible window used to clamp its start to the left edge and hug the
+// sender's lane all the way to the crossing — reading as "sent at the window's start", a send time
+// that never existed (the user 2026-08-06: a connector spanning the whole window, "a timing issue
+// maybe?"). An off-window send now enters from the edge at the crossing track height: structurally a
+// SINGLE-corner path (track horizontal → one turn → arrival), where an in-window send keeps the full
+// elbow (two+ corners). The tooltip carries the true send time either way.
+test("an off-window send enters at track height — never a sender-lane hug from the left edge", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const d0 = synthData();
+  d0.sessions[0].color = "#f7768e";                                  // sender distinct, so its connector is findable
+  d0.messages = [
+    { id: "m-old", fromId: "S1", toId: "S2", from: "alpha", to: "beta",
+      sent: d0.now - 500_000, exec: d0.now - 30, pending: false, summary: "sent long before the window" },
+    { id: "m-new", fromId: "S2", toId: "S1", from: "beta", to: "alpha",
+      sent: d0.now - 40, exec: d0.now - 10, pending: false, summary: "sent inside the window" },
+  ];
+  panel.update(d0);
+  const paths: any[] = [];
+  (function walk(n: any) { for (const c of n.children || []) { if (c.tag === "path") paths.push(c); walk(c); } })(panel.svg);
+  const conns = paths.filter((p) => p._attrs && p._attrs.fill === "none" && p._attrs.opacity === 0.5);
+  const oldConn = conns.find((p) => p._attrs.stroke === "#f7768e");
+  const newConn = conns.find((p) => p._attrs.stroke === "#7aa2f7");
+  assert.ok(oldConn, "the off-window message still draws its connector");
+  assert.ok(newConn, "the in-window message draws too");
+  const corners = (d: string) => (String(d).match(/Q /g) || []).length;
+  assert.equal(corners(oldConn._attrs.d), 1, "off-window send: track entry + ONE corner up to the arrival");
+  assert.ok(corners(newConn._attrs.d) >= 2, "in-window send keeps the full elbow from its true send point");
+});

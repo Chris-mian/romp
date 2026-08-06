@@ -2991,10 +2991,16 @@ class TimelinePanel {
       if (vidx[mm.fromId] == null || vidx[mm.toId] == null) return;
       if (execAt(mm) < t0 || mm.sent > t1) return;
       const sLane = vidx[mm.fromId], rLane = vidx[mm.toId];
-      const xs = x(Math.max(mm.sent, t0)), ys = laneY(sLane), xe = x(execAt(mm)), ye = laneY(rLane), col = colorOf(mm.fromId);
+      const offL = mm.sent < t0;   // sent BEFORE the visible window — only the delivery is in view
+      const xs = x(offL ? t0 : mm.sent), ys = laneY(sLane), xe = x(execAt(mm)), ye = laneY(rLane), col = colorOf(mm.fromId);
       const dir = (ys < ye) ? 1 : -1, track = ye - dir * MSG_DROP;
       const xc = crossX(sLane, rLane, xs, xe, obstacles);
-      const pts = (xc > xs + 0.5) ? [{ x: xs, y: ys }, { x: xc, y: ys }, { x: xc, y: track }, { x: xe, y: track }, { x: xe, y: ye }]
+      // An off-window send used to CLAMP to the left edge and hug the sender's lane all the way to the
+      // crossing — which read as "sent at the window's start", a send time that never existed (the user
+      // 2026-08-06: "a timing issue maybe?"). Enter from the edge at the crossing track height instead,
+      // so an off-screen send reads as exactly that; the tooltip carries the true send time.
+      const pts = offL ? [{ x: xs, y: track }, { x: xe, y: track }, { x: xe, y: ye }]
+                : (xc > xs + 0.5) ? [{ x: xs, y: ys }, { x: xc, y: ys }, { x: xc, y: track }, { x: xe, y: track }, { x: xe, y: ye }]
                                   : [{ x: xs, y: ys }, { x: xs, y: track }, { x: xe, y: track }, { x: xe, y: ye }];
       const d = roundedPath(pts, CORNER);
       const lineAttr = { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0, opacity: mm.pending ? 0.4 : 0.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
