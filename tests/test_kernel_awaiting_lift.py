@@ -268,6 +268,49 @@ class AwaitingLift(unittest.TestCase):
                          "no journalled write time → the old anchor bound, unchanged")
         self.assertEqual(km._stamp_written_at({"awaitingAt": STAMP}), STAMP, "no log at all is safe")
 
+    # ---- the lift's EVIDENCE time (the user 2026-08-06): the stamp's anchor, never wall-clock ----
+    # The fold reads a node's diary in (ev_t, at) order, and a closer assert carries its audited TURN's
+    # trigger — always older than the moment a lift fires. So a lift stamped `now` outranked every assert
+    # the closer could still file on that segment, permanently: a session relaunched its watcher seconds
+    # after a lift, the closer re-asserted the wait three times over the next two minutes, and the fold
+    # discarded all three. The card sat in Working with no awaiting box and no spin (its session idle), its
+    # live watcher demoted to a background-process chip, and its nudge exemption gone.
+    def test_the_lift_is_stamped_at_the_anchor_not_wall_clock(self):
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed()
+        self._tick(now=BACK + 5000)
+        log = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())["nodes"][self.gid]["log"]
+        lift = [e for e in log if e.get("kind") == "awaiting" and e.get("lift")][0]
+        self.assertEqual(lift["ev_t"], STAMP,
+                         "the lift retracts the wait it LOOKED at, so it carries that stamp's anchor")
+        self.assertNotEqual(lift["ev_t"], BACK + 5000, "never the tick's wall clock")
+
+    def test_a_closer_reassert_filed_after_the_lift_restores_the_stamp(self):
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed()
+        self._tick()
+        self.assertIsNone(self._stamp(), "precondition: the returned dispatch lifted the wait")
+        # the session relaunches its watcher and the closer, auditing the SAME turn, says the wait is on
+        store = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())
+        nd = store["nodes"][self.gid]
+        again = "the relaunched watcher on the two open PRs; it deploys once they merge"
+        self.assertTrue(km.jd.record_verdict(store, nd, "closer", "awaiting", STAMP, why=again),
+                        "the closer's re-assert is allowed to land")
+        self.assertEqual(km.jd._fold_node(nd)["awaitingWhy"], again,
+                         "the newest RULING wins: an assert filed after the lift puts the stamp back")
+        self.assertEqual(km._goal_awaiting_stamp(store["nodes"], self.gid), again,
+                         "so the card wears its awaiting box again, and keeps its nudge exemption")
+
+    def test_the_lift_still_wins_when_nothing_is_filed_after_it(self):
+        # the ordinary case is unchanged: nobody re-asserts, so the retraction stands
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed(anchor=STAMP, written=STAMP + 10)
+        self._tick()
+        store = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())
+        nd = store["nodes"][self.gid]
+        self.assertIsNone(km.jd._fold_node(nd)["awaitingWhy"], "the wait is over and stays over")
+        self.assertIsNone(km._goal_awaiting_stamp(store["nodes"], self.gid))
+
     def test_running_only_scan_still_hides_returned_tasks(self):
         # the want_all split must not change the existing running-only view
         self._transcript([_launch("t1", LAUNCH), _launch("t2", LAUNCH + 5), _notification("t1", BACK)])
