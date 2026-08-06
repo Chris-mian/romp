@@ -42,9 +42,20 @@ test("the CSS keeps it neutral: dim chip, section-body sized list, no status col
   // un-bolds from the header's 600 so it reads as a label, not a second title
   assert.match(CSS, /\.feed-sess-svcbtn \{ font-weight: 400; \}/);
   // full-width line under the header (the header wraps), 0.86em like the other section bodies
-  assert.match(CSS, /\.feed-sess-svclist \{ flex-basis: 100%; font-weight: 400; font-size: 0\.86em; color: var\(--dim\); \}/);
+  assert.match(CSS, /\.feed-sess-svclist \{ flex-basis: 100%;[^}]*font-size: 0\.86em; color: var\(--dim\); \}/);
   assert.match(CSS, /\.feed-sess-head \{ display: flex; flex-wrap: wrap;/);
   // never the working/blocked status colors
   assert.doesNotMatch(CSS, /\.feed-sess-svc(btn|list|row)[^}]*st-working/);
   assert.doesNotMatch(CSS, /\.feed-sess-svc(btn|list|row)[^}]*#f66/);
+});
+
+test("the expanded list WRAPS inside the column instead of running on (the user 2026-08-06)", () => {
+  // A process description is a sentence. Truncating it dead-ends the one surface that exists to show it,
+  // and `white-space: nowrap` on the row did worse than truncate: the list is a FLEX item, whose default
+  // min-width:auto is its min-content size, so it could not shrink to the column — the line ran out past
+  // the column's edge and under the neighbouring one.
+  assert.match(CSS, /\.feed-sess-svclist \{[^}]*min-width: 0;/);
+  assert.doesNotMatch(CSS, /\.feed-sess-svcrow \{[^}]*white-space: nowrap/);
+  assert.doesNotMatch(CSS, /\.feed-sess-svcrow \{[^}]*text-overflow: ellipsis/);
+  assert.match(CSS, /\.feed-sess-svcrow \{[^}]*overflow-wrap: anywhere/);   // a long path/url breaks too
 });

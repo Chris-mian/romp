@@ -199,9 +199,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    the header's 600 so it reads as a label, not a second title. NO waiting/urgency framing anywhere. */
 .feed-sess-svcbtn { font-weight: 400; }
 /* the expanded process list: its own full-width line under the header (flex-basis:100%), section-body
-   sized (0.86em, matches .fask-awaiting) and dim — mechanics one click away, quiet by default. */
-.feed-sess-svclist { flex-basis: 100%; font-weight: 400; font-size: 0.86em; color: var(--dim); }
-.feed-sess-svcrow { padding: 1px 0 1px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   sized (0.86em, matches .fask-awaiting) and dim — mechanics one click away, quiet by default.
+   min-width:0 is what makes that line the HEADER's width: a flex item defaults to min-width:auto, i.e. its
+   min-CONTENT size, so a nowrap description could not shrink and ran straight out of the column and under
+   the next one (the user 2026-08-06). */
+.feed-sess-svclist { flex-basis: 100%; min-width: 0; font-weight: 400; font-size: 0.86em; color: var(--dim); }
+/* WRAPS, never truncates (the user 2026-08-06): this is the expanded level of the disclosure — the chip is
+   the compact form, so clicking it must show the whole description, and a service why is a sentence, not a
+   label. Wrapped lines keep the row's 10px indent, so the list still reads as one block under the header. */
+.feed-sess-svcrow { padding: 1px 0 1px 10px; overflow-wrap: anywhere; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 /* wraps: when the name + "↪ from <peer>" provenance + the reopened/Followed-up chips can't all fit on
