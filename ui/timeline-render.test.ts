@@ -704,13 +704,13 @@ test("a skeleton-only update preserves the bars from the last applyBars (no per-
 // elbow (two+ corners). The tooltip carries the true send time either way.
 test("an off-window send enters at track height — never a sender-lane hug from the left edge", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
-  const d0 = synthData();
+  const d0: any = synthData();   // messages: [] infers never[] — the synthetic payload is untyped by design
   d0.sessions[0].color = "#f7768e";                                  // sender distinct, so its connector is findable
   d0.messages = [
     { id: "m-old", fromId: "S1", toId: "S2", from: "alpha", to: "beta",
-      sent: d0.now - 500_000, exec: d0.now - 30, pending: false, summary: "sent long before the window" },
+      sent: d0.now - 500_000, exec: d0.now - 30, pending: false, summary: "sent long before the window" } as any,
     { id: "m-new", fromId: "S2", toId: "S1", from: "beta", to: "alpha",
-      sent: d0.now - 40, exec: d0.now - 10, pending: false, summary: "sent inside the window" },
+      sent: d0.now - 40, exec: d0.now - 10, pending: false, summary: "sent inside the window" } as any,
   ];
   panel.update(d0);
   const paths: any[] = [];
