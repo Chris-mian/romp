@@ -2366,6 +2366,24 @@ class TimelinePanel {
     // pending (queued / in-flight, not yet worked) it rides the live `now` edge (nowS); once processed
     // the data carries a FIXED past time so it can never equal now again (anti-"perpetual-just-landing").
     const execAt = (mm) => mm.pending ? nowS : mm.exec;
+    // RELAYED mail's exec refinement (the user 2026-08-06): a cross-host message's true process-start
+    // lives in the RECIPIENT's turns, which only meet the sender's connector HERE, in the merged view —
+    // the kernel's own binder (_bind_message_execs) never sees a remote lane's turns. The read receipt
+    // now carries the remote's delivery mid (dmid) — exactly what the recipient's transcript markers
+    // record — so the join is exact: the earliest bar on the recipient's lane whose mids carry the
+    // message's id or dmid, its start is the landing. Idempotent for local mail (the kernel already
+    // bound those to the same bar start), and a no-match leaves the receipt time as before.
+    if (data.messages && data.messages.length) {
+      const midStart = {};
+      Object.keys(data.turns || {}).forEach((sid) => (data.turns[sid] || []).forEach((b) => {
+        (b.mids || []).forEach((mid) => { const k = sid + '|' + mid; if (!(k in midStart) || b.start < midStart[k]) midStart[k] = b.start; });
+      }));
+      data.messages.forEach((mm) => {
+        const s1 = midStart[mm.toId + '|' + (mm.id || '')], s2 = midStart[mm.toId + '|' + (mm.dmid || '')];
+        const st = (s1 != null && s2 != null) ? Math.min(s1, s2) : (s1 != null ? s1 : s2);
+        if (st != null) { mm.exec = st; mm.pending = false; }
+      });
+    }
     const startAt = (t) => t.pending ? nowS : t.start;
     // LANE IDENTITY IS THE SID (data.turns + vidx + connectors all key by session.id, since two
     // live sessions can share a name and a rename keeps the id). `name` is display-only.
