@@ -195,7 +195,7 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
+type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
@@ -4583,7 +4583,9 @@ function openMcpPanel(sid: string): void {
 
 function loadMcpPanel(sid: string, body: HTMLElement): void {
   fetch(kernelUrl("/mcp?sid=" + encodeURIComponent(sid)), { cache: "no-store" })
-    .then((r) => r.json())
+    // a kernel from before this panel 404s here, and .json() on the error page read as a bare "parse
+    // error" (the user 2026-08-05) — name the actual situation instead
+    .then((r) => { if (!r.ok) throw new Error("this romp kernel predates the MCP panel — restart romp to update it"); return r.json(); })
     .then((d) => {
       if (mcpPanelSid !== sid) return;   // panel closed (or reopened for another tab) while loading
       body.textContent = "";
@@ -4623,7 +4625,7 @@ function loadMcpPanel(sid: string, body: HTMLElement): void {
         body.appendChild(row);
       }
     })
-    .catch((e) => { if (mcpPanelSid === sid) body.textContent = "Couldn't load MCP status: " + e; });
+    .catch((e) => { if (mcpPanelSid === sid) body.textContent = "Couldn't load MCP status: " + ((e && e.message) || e); });
 }
 
 function closeConfirm(value: string | null) {
@@ -6802,6 +6804,7 @@ const CHIP_LABEL: Record<ChipState, string> = {
   idle: "Idle", closed: "Closed", compacting: "Compacting", clearing: "Clearing", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
   interrupting: "Interrupting…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
+  opening: "Opening…",             // spawned, transcript not on disk yet — the first record clears it (the user 2026-08-05)
 };
 
 // A stop/interrupt button that lives beside the state badge in the statusline (the user 2026-06-19):
@@ -6837,10 +6840,30 @@ function stopButton(state?: ChipState): HTMLElement {
   return btn;
 }
 
+// The "Opening session" line + three staggered accent dots (the loading-state rule's small form): shown
+// while a tab has NO session payload yet AND while the kernel itself reports state "opening" (spawned,
+// transcript not on disk). Both clear on real events — the first payload, the first record.
+function openingLine(): HTMLElement {
+  const c = el("span", "compacting-line opening-line");
+  c.appendChild(document.createTextNode("Opening session"));
+  const dots = el("span", "opening-line-dots");
+  for (let i = 0; i < 3; i++) dots.appendChild(el("span"));
+  c.appendChild(dots);
+  return c;
+}
+
 function updateStatusline() {
   const sl = document.getElementById("statusline");
   const s = activeId ? sessions.get(activeId) : null;
-  if (!sl || !s) return;
+  if (!sl) return;
+  if (activeId && !s) {
+    // the tab is a loading placeholder (its session payload hasn't arrived) — the statusline said
+    // whatever the PREVIOUS tab said, or a spawn stub's "Working" over a broken clock (the user
+    // 2026-08-05, who wanted "opening" and animated dots until it's ready)
+    sl.replaceChildren(openingLine());
+    return;
+  }
+  if (!s) return;
   sl.replaceChildren();
   // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
   // states get the plain chip (no timer). Right: model + effort · ctx%, always.
@@ -6875,6 +6898,8 @@ function updateStatusline() {
     const c = el("span", "compacting-line");   // same in-progress line treatment as compacting (one style per info type)
     c.textContent = "⟳ Clearing conversation…";
     sl.appendChild(c);
+  } else if (s.status.state === "opening") {
+    sl.appendChild(openingLine());             // spawned, transcript not on disk yet — dots until the first record
   } else {
     const chip = el("span", `chip chip-${s.status.state}`);
     chip.textContent = CHIP_LABEL[s.status.state] ?? (s.status.state[0].toUpperCase() + s.status.state.slice(1).toLowerCase());
