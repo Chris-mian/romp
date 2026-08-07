@@ -2293,6 +2293,24 @@ def _last_awaiting_is_lift(nd):
     return bool(evs) and bool(evs[-1].get("lift"))
 
 
+def _lift_ev_t(nd, now):
+    """EVIDENCE time for a lift row: the ANCHOR of the stamp it retracts, never wall-clock `now`.
+
+    The fold orders a node's diary by (ev_t, at), and a closer's awaiting assert carries the audited TURN's
+    trigger — always older than the moment a lift fires. So a lift stamped `now` outranked every assert the
+    closer would ever file on that segment, and one lift silenced it permanently: the session relaunched its
+    watcher 24s after the lift, the closer re-asserted the wait three times over the next two minutes, and
+    the fold discarded all three. The card sat in Working with no awaiting box, no spin (its session idle),
+    its live watcher demoted to a neutral background-process chip, and its nudge exemption gone — so the
+    nudge fired into a session that was genuinely waiting (the user 2026-08-06).
+
+    Anchored at the stamp, the lift retracts exactly the wait it looked at and loses the (ev_t, at) tie to
+    anything filed AFTER it: a later assert on the same segment restores the stamp, which is the judge's
+    newest ruling winning, not a flap. This is the diary's standing evidence-time rule (see
+    judge.record_verdict) — a `now` row outranks the judges on the in-flight segment forever."""
+    return nd.get("awaitingAt") or now
+
+
 def _stamp_written_at(nd):
     """WHEN the awaiting stamp was written — the ownership horizon for the time-window fallback below.
 
@@ -2354,7 +2372,7 @@ def _lift_spent_awaiting(now, tmux):
                       and not _last_awaiting_is_lift(nd)]
             changed = False
             for nd in rolled:
-                if jd.record_verdict(store, nd, "romp", "awaiting", now, lift=True):
+                if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
                     changed = True
             if not stamped:
                 if changed:
@@ -2400,7 +2418,7 @@ def _lift_spent_awaiting(now, tmux):
                     continue
                 if any(t.get("id") in running for t in own):
                     continue                          # at least one is genuinely still out
-                if jd.record_verdict(store, nd, "romp", "awaiting", now, lift=True):
+                if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
                     changed = True
             if changed:
                 jd.rollup_status(store, False)
