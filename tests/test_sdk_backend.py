@@ -1468,6 +1468,22 @@ class ApiKeyAuthUsage(unittest.TestCase):
         self.assertFalse(self.be.api_key_auth)
         self.assertEqual(self.p.read_text(), before, "no flip, no write")
 
+    def test_the_string_none_is_a_subscription_login_not_an_api_key(self):
+        """The CLI has said "no API key" two ways: the field absent (verified 2026-08-04) and — since
+        about CLI 2.1.222 — the literal string 'none' (both hosts' journals, 2026-08-08). bool('none')
+        is True, so the old check misread every subscription init as an API-key flip: it wiped the
+        usage windows and gated the polls off, leaving the rail a lone event-derived five-hour bar at
+        0% that no /usage click could ever heal (the gate returns before the request)."""
+        before = self.p.read_text()
+        self.be._note_auth_source("n", "none")
+        self.assertFalse(self.be.api_key_auth, "'none' means NO api key — a subscription login")
+        self.assertEqual(self.p.read_text(), before, "no wipe: the windows on file stay")
+        # and it flips an API-key backend BACK, exactly like the absent field
+        self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
+        self.assertTrue(self.be.api_key_auth)
+        self.be._note_auth_source("n", "none")
+        self.assertFalse(self.be.api_key_auth, "'none' resumes usage polls after an API-key stretch")
+
     def test_flipping_back_keeps_the_file_for_the_next_snapshot(self):
         self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
         dropped = self.p.read_text()

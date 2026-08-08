@@ -2714,15 +2714,22 @@ class SdkBackend:
 
     def _note_auth_source(self, name, source) -> None:
         """An init message named HOW its CLI authenticates. API-key auth (apiKeySource e.g.
-        'ANTHROPIC_API_KEY'; absent on a subscription login — both verified live 2026-08-04) has NO
-        subscription windows, and get_usage just TIMES OUT there — no snapshot ever arrives to correct
-        usage.json, so after logging out the rail bars showed the last subscription reading forever,
-        frozen (the user 2026-08-04). The auth flip is the deciding event: flipping TO an API key drops
-        the stale windows (bars disappear, _usage() returns None on a window-less file) and gates the
-        pointless get_usage polls off; flipping BACK resumes them, and the next real snapshot repaints.
-        Logged raw each flip, so every host's kernel log self-documents its auth mode."""
+        'ANTHROPIC_API_KEY') has NO subscription windows, and get_usage just TIMES OUT there — no
+        snapshot ever arrives to correct usage.json, so after logging out the rail bars showed the
+        last subscription reading forever, frozen (the user 2026-08-04). The auth flip is the deciding
+        event: flipping TO an API key drops the stale windows (bars disappear, _usage() returns None on
+        a window-less file) and gates the pointless get_usage polls off; flipping BACK resumes them,
+        and the next real snapshot repaints. Logged raw each flip, so every host's kernel log
+        self-documents its auth mode.
+
+        A subscription login answers with the ABSENCE of an API key, and the CLI has said that two
+        ways: the field simply absent (verified live 2026-08-04), and — since about CLI 2.1.222 — the
+        literal string 'none' (two hosts' journals, 2026-08-08). A plain bool() read 'none' as truthy,
+        so every subscription machine was misclassified as API-key auth on every session init: windows
+        wiped, polls gated off, and the rail stuck on a lone event-derived bar that nothing could ever
+        heal — the /usage click included, because the gate returns before the request."""
         was = self.api_key_auth
-        self.api_key_auth = bool(source)
+        self.api_key_auth = bool(source) and str(source).strip().lower() != "none"
         if self.api_key_auth == was:
             return
         self._log("auth (%s): apiKeySource=%r — %s" % (name, source,
