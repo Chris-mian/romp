@@ -3559,7 +3559,7 @@ function renderTabs() {
     // double-click a tab to show/hide the ledger overview — same as the strip's caret
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
     // right-click → context menu; "Rename" edits the title in place
-    tab.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e, tab, label, id); });
+    tab.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e, id); });
     bar.appendChild(tab);
   }
   const add = el("div", "tab tab-add");
@@ -3677,12 +3677,15 @@ function ctxIcon(kind: "feed" | "mail" | "bell", off: boolean): HTMLElement {
   return span;
 }
 
-function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: string) {
+function showTabMenu(e: MouseEvent, id: string) {
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
   const rename = el("div", "ctx-item");
   rename.textContent = "Rename";
-  rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(tab, label, id); });
+  // id only, never the tab node under the cursor: the menu (on document.body) outlives kernel pushes,
+  // but the tab it was opened from does not — renderTabs() swaps the strip on every push, so a node
+  // captured here is usually DETACHED by the time Rename is clicked (the click-safety rule).
+  rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id); });
   menu.appendChild(rename);
   // Feed + Mail per-session toggles (the user 2026-06-26) — the same controls as the timeline lane's feed
   // checkbox + postal mailbox, here as icon + label + a faint "what it does" sub-line. State from the session.
@@ -3750,9 +3753,20 @@ window.addEventListener("blur", () => dismissTabMenu());
 // "Rename" (tab context menu): swap the tab's label for an inline input. Enter
 // or clicking away commits (the host renames the tmux session and confirms with
 // a "renamed" message — the label only changes once that lands), Esc cancels.
-function startTabRename(tab: HTMLElement, label: HTMLElement, id: string) {
+function startTabRename(id: string) {
   const s = sessions.get(id);
-  if (!s || tab.querySelector(".tab-rename")) return;
+  if (!s) return;
+  // Resolve the tab NOW, by id. The old signature took the nodes captured at menu-open time, and a
+  // kernel push while the menu sat open replaced the strip under it — so the first Rename click did all
+  // its work on a detached orphan (invisible input, focus() a no-op) and left renameActive stuck true,
+  // since only that orphan input's Enter/Esc/blur could clear it. The frozen strip is why a SECOND
+  // attempt always worked, and why committing it healed everything (the user 2026-08-08: "rename only
+  // takes on the second try"). A vanished tab (session closed mid-menu) bails out BEFORE the flag.
+  const bar = document.getElementById("tabs");
+  const tab = bar && Array.from(bar.children).find(
+    (t): t is HTMLElement => t instanceof HTMLElement && t.dataset.id === id);
+  const label = tab && tab.querySelector<HTMLElement>(".tab-label");
+  if (!tab || !label || tab.querySelector(".tab-rename")) return;
   // A remote session displays as "host:name", where "host:" is METADATA this viewer added (see
   // ./host-prefix) — the far kernel knows the session by the bare name alone. Seeding the editor with
   // the whole display string handed the user the host to edit and sent it back on the other side of the
