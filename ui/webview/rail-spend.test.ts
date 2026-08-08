@@ -18,17 +18,24 @@ const STRIPCSS = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.css"), 
 const BACKEND = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "utf8");
 
 test("the kernel serves spend WINDOWS on the auth-flip marker, zero-filled when fresh", () => {
-  assert.ok(KERNEL.includes('if o.get("apiKey"):'), "gated on the #208 auth-flip marker");
+  // the spend view arms on the legacy apiKey marker OR a login-less machine with recorded spend
+  // (per-session auth writes no marker any more — the user 2026-08-08)
+  assert.ok(KERNEL.includes('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):'));
   assert.ok(KERNEL.includes('"spend": _spend_windows()'));
   assert.ok(KERNEL.includes("def _spend_windows():"));
   assert.ok(KERNEL.includes("def _spend_budgets():"), "budgets give a window its fill denominator");
   // rolling 5h/7d read the HOUR buckets; month-to-date reads the day ledger
   assert.match(KERNEL, /"fiveHour": _rolling\(5\), "sevenDay": _rolling\(7 \* 24\)/);
   assert.ok(KERNEL.includes('k.startswith(month)'));
-  // a window-less file WITHOUT the marker stays None — nothing known, draw nothing
-  assert.match(KERNEL, /if o\.get\("apiKey"\):[\s\S]{0,800}?return None/);
-  // the accumulator: every result's cost + tokens, folded into BOTH bucket sets
-  assert.ok(BACKEND.includes('self.backend._record_spend(getattr(msg, "total_cost_usd", None),'));
+  // a window-less file on a logged-in machine stays None — nothing known, draw nothing
+  assert.match(KERNEL, /if o\.get\("apiKey"\) or [\s\S]{0,900}?return None/);
+  // the subscription payload carries the spend windows BESIDE the bars — the hover's token graph
+  // needs them for every account, not just spend-only ones (the user 2026-08-08)
+  assert.match(KERNEL, /"fiveHour": five, "sevenDay": seven, "fable": fable,[\s\S]{0,600}?"spend": _spend_windows\(\),/);
+  // the accumulator: total_cost_usd is CUMULATIVE per CLI process — fold the per-turn DELTA, and a
+  // shrunken total (an unwatched reset) folds whole, never negative (the user 2026-08-08)
+  assert.ok(BACKEND.includes("delta = total - self._last_cost_total if total >= self._last_cost_total else total"));
+  assert.ok(BACKEND.includes('self.backend._record_spend(delta, getattr(msg, "usage", None))'));
   assert.ok(BACKEND.includes("_fold(days, day, 90)"));
   assert.ok(BACKEND.includes("_fold(hours, hour, 192)"), "8 days of hour buckets feed the rolling windows");
 });
@@ -54,13 +61,42 @@ test("VS Code strip: ONE row builder for both auth modes — spend rows ride the
 });
 
 test("the web landing copy carries the SAME builder — the two rails stay in step", () => {
-  assert.ok(KERNEL.includes("function spendWinsHTML(u)"));
+  assert.ok(KERNEL.includes("function spendWinsHTML(u,det)"));
   assert.ok(KERNEL.includes("var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];"));
   assert.ok(KERNEL.includes("function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&u.spend.fiveHour);}"));
   // same row markup as winsHTML: ru-w → ru-name → ru-bars (tracks) → ru-pct readout
   assert.ok(KERNEL.includes("+'<div class=ru-name>'+w[1]+'</div>'"));
   assert.ok(KERNEL.includes("(pct!=null?'<div class=ru-track><i class=ru-fill style=\"width:'+pct+'%;background:'+spendColor(pct)+'\"></i></div>':'')"));
-  // both the single- and multi-account paths fall to the window rows
-  assert.ok(KERNEL.includes("el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendWinsHTML(live[0].usage);return;}"));
-  assert.ok(KERNEL.includes("(hasBars(r.usage)?winsHTML(r.usage,det):spendWinsHTML(r.usage))"));
+  // both the single- and multi-account paths fall to the window rows, and BOTH fill the hover detail
+  // (spendDet) so a bars account still gets the token graph
+  assert.ok(KERNEL.includes("if(hasBars(live[0].usage)){el.innerHTML=winsHTML(live[0].usage,det);spendDet(live[0].usage,det);}"));
+  assert.ok(KERNEL.includes("else el.innerHTML=spendWinsHTML(live[0].usage,det);"));
+  assert.ok(KERNEL.includes("if(hasBars(r.usage)){inner=winsHTML(r.usage,det);spendDet(r.usage,det);}"));
+  assert.ok(KERNEL.includes("else inner=spendWinsHTML(r.usage,det);"));
+});
+
+test("the rich tip is the ONE hover surface: no native titles, every account renders, cursor-anchored", () => {
+  // NO native title attributes anywhere on the rail (the user 2026-08-08, who got the browser's flat
+  // yellow box on top of the rich hover): the usage JS may mention titles only in comments
+  const usageJS = KERNEL.split("_LANDING_USAGE_JS = \"\"\"")[1].split('"""')[0];
+  for (const line of usageJS.split("\n")) {
+    const code = line.split("//")[0];
+    assert.ok(!/\btitle\s*=/.test(code) && !code.includes(".title="), `native title in usage JS: ${line.trim()}`);
+  }
+  // a SPEND-ONLY account used to return '' from setHTML, so a mixed hover showed only the
+  // subscription login (the user 2026-08-08) — now it renders its own section
+  assert.ok(usageJS.includes("if(!keys.length&&!sp)return '';"));
+  assert.ok(usageJS.includes("var spendOnly=!keys.length;"));
+  // the token graph: the three spend windows' volume on ONE shared auto-scale, in the tip's track idiom
+  assert.ok(usageJS.includes("function spendDet(u,det)"));
+  assert.ok(usageJS.includes("5h / 7d / month \\u00b7 one scale"));
+  assert.ok(usageJS.includes("var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});"));
+  // dollars ride the value column only where they are REAL billing (spend-only accounts)
+  assert.ok(usageJS.includes("+fmtTok(v.tok)+(spendOnly?' \\u00b7 $'"));
+  // the tip anchors ABOVE the rail, centered on the CURSOR — never pinned to the container edge
+  assert.ok(usageJS.includes("var x=(ev&&typeof ev.clientX==='number')?ev.clientX:(r.left+r.width/2);"));
+  assert.ok(usageJS.includes("x-tip.offsetWidth/2"));
+  assert.ok(usageJS.includes("r.top-tip.offsetHeight-8"));
+  // the click hint the native title used to carry lives in the tip's footer now
+  assert.ok(usageJS.includes("'<div class=ru-tip-age>click the bars to refresh</div>'"));
 });

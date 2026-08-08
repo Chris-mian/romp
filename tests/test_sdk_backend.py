@@ -1439,12 +1439,13 @@ class StopTask(unittest.TestCase):
 
 
 class ApiKeyAuthUsage(unittest.TestCase):
-    """Logging out to an API key froze the rail's /usage bars on the last subscription reading (the
-    user 2026-08-04): API-key auth has no subscription windows and get_usage only TIMES OUT there, so
-    no snapshot ever arrived to correct usage.json. The init message's apiKeySource (verified live:
-    'ANTHROPIC_API_KEY' on API-key auth, absent on a subscription login) is the deciding event —
-    flipping TO an API key drops the stale windows and gates the pointless polls off; flipping back
-    lets the next real snapshot repaint."""
+    """API-key auth is a PER-SESSION fact (the user 2026-08-08): with a real key in the service env,
+    only the sessions whose project approved it used it, while every other session rode the
+    subscription login — yet the old backend-global flag let whichever init arrived LAST speak for all
+    of them, wiping the login's windows and re-wiping on every keyed session's reconnect. The flag now
+    lives on the session: it gates that session's own get_usage polls and its RateLimitEvent records,
+    and NOTHING wipes usage.json — the login's lifecycle is tracked read-side (the acct stamp, plus
+    kernel _usage()'s no-login spend arm)."""
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -1453,51 +1454,64 @@ class ApiKeyAuthUsage(unittest.TestCase):
         self.p.write_text(json.dumps({"t": 1785898746,
                                       "five_hour": {"pct": 46, "resets_at": 1785907200},
                                       "seven_day": {"pct": 21, "resets_at": 1786388400}}))
+        self.s = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-000000000001",
+                                         "name": "n", "cwd": "/tmp"})
 
-    def test_flipping_to_api_key_drops_the_stale_windows(self):
-        self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
-        self.assertTrue(self.be.api_key_auth)
-        d = json.loads(self.p.read_text())
-        self.assertTrue(d.get("apiKey"))
-        for k in ("five_hour", "seven_day", "fable"):
-            self.assertNotIn(k, d, "stale subscription windows are gone → _usage() returns None → no bars")
-
-    def test_subscription_auth_leaves_the_file_alone(self):
+    def test_a_keyed_init_marks_only_its_own_session_and_never_wipes(self):
         before = self.p.read_text()
-        self.be._note_auth_source("n", None)
-        self.assertFalse(self.be.api_key_auth)
-        self.assertEqual(self.p.read_text(), before, "no flip, no write")
+        self.be._note_auth_source(self.s, "ANTHROPIC_API_KEY")
+        self.assertTrue(self.s.api_key_auth)
+        self.assertEqual(self.p.read_text(), before,
+                         "one keyed session never speaks for the login's windows — no wipe, ever")
+        other = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-000000000002",
+                                        "name": "m", "cwd": "/tmp"})
+        self.assertFalse(other.api_key_auth, "the flag is the session's, not the backend's")
 
     def test_the_string_none_is_a_subscription_login_not_an_api_key(self):
         """The CLI has said "no API key" two ways: the field absent (verified 2026-08-04) and — since
-        about CLI 2.1.222 — the literal string 'none' (both hosts' journals, 2026-08-08). bool('none')
-        is True, so the old check misread every subscription init as an API-key flip: it wiped the
-        usage windows and gated the polls off, leaving the rail a lone event-derived five-hour bar at
-        0% that no /usage click could ever heal (the gate returns before the request)."""
-        before = self.p.read_text()
-        self.be._note_auth_source("n", "none")
-        self.assertFalse(self.be.api_key_auth, "'none' means NO api key — a subscription login")
-        self.assertEqual(self.p.read_text(), before, "no wipe: the windows on file stay")
-        # and it flips an API-key backend BACK, exactly like the absent field
-        self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
-        self.assertTrue(self.be.api_key_auth)
-        self.be._note_auth_source("n", "none")
-        self.assertFalse(self.be.api_key_auth, "'none' resumes usage polls after an API-key stretch")
+        about CLI 2.1.222 — the literal string 'none' (both hosts' journals, 2026-08-08)."""
+        self.be._note_auth_source(self.s, "none")
+        self.assertFalse(self.s.api_key_auth, "'none' means NO api key — a subscription login")
+        self.be._note_auth_source(self.s, "ANTHROPIC_API_KEY")
+        self.assertTrue(self.s.api_key_auth)
+        self.be._note_auth_source(self.s, "none")
+        self.assertFalse(self.s.api_key_auth, "'none' flips a keyed session back, like the absent field")
 
-    def test_flipping_back_keeps_the_file_for_the_next_snapshot(self):
-        self.be._note_auth_source("n", "ANTHROPIC_API_KEY")
-        dropped = self.p.read_text()
-        self.be._note_auth_source("n", None)
-        self.assertFalse(self.be.api_key_auth)
-        self.assertEqual(self.p.read_text(), dropped, "bars repaint from the next REAL snapshot, not a guess")
+    def test_a_keyed_sessions_rate_limit_events_never_reach_the_login_windows(self):
+        # the key's limits are ANOTHER allowance — recording them contaminated the login's bars
+        calls = []
+        self.be._record_rate_limit = lambda info: calls.append(info)
+        class _RL:
+            rate_limit_info = {"kind": "five_hour"}
+        self.be._forward = lambda sess, msg: None
+        self.s.api_key_auth = True
+        self.s._on_message(_RL(), _AssistantMessage, _ResultMessage, type("S", (), {}))
+        self.assertEqual(calls, [], "a keyed session's events are ignored")
+        self.s.api_key_auth = False
+        self.s._on_message(_RL(), _AssistantMessage, _ResultMessage, type("S", (), {}))
+        self.assertEqual(len(calls), 1, "a subscription session's events record as ever")
 
-    def test_init_reads_the_field_and_the_poll_is_gated(self):
+    def test_refresh_skips_keyed_sessions_and_polls_a_subscription_one(self):
+        keyed = self.s
+        keyed.api_key_auth = True
+        keyed.client, keyed.loop, keyed.ended = object(), object(), False
+        sub = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-000000000003",
+                                      "name": "m", "cwd": "/tmp"})
+        sub.client, sub.loop, sub.ended = object(), object(), False
+        polled = []
+        keyed.refresh_usage = lambda: polled.append("keyed") or True
+        sub.refresh_usage = lambda: polled.append("sub") or True
+        self.be.sessions = {keyed.sid: keyed, sub.sid: sub}
+        self.be.refresh_usage()
+        self.assertEqual(polled, ["sub"], "the click heals off the login's session, never the keyed one")
+
+    def test_init_reads_the_field_and_the_poll_is_gated_per_session(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                                 "kernel", "sdk_backend.py")).read()
-        self.assertIn('self.backend._note_auth_source(self.name, d.get("apiKeySource"))', src,
-                      "the init message is the one in-band auth signal")
-        self.assertIn("if self.backend.api_key_auth:", src.split("async def _do_refresh_usage", 1)[1][:1600],
-                      "get_usage is never polled on API-key auth — it only times out there")
+        self.assertIn('self.backend._note_auth_source(self, d.get("apiKeySource"))', src,
+                      "the init message is the one in-band auth signal, handed the SESSION")
+        self.assertIn("if self.api_key_auth:", src.split("async def _do_refresh_usage", 1)[1][:1600],
+                      "get_usage is gated on the SESSION's own auth — it only times out on a keyed one")
 
 
 class SpendRecord(unittest.TestCase):
@@ -1547,14 +1561,49 @@ class SpendRecord(unittest.TestCase):
     def test_result_message_records_and_the_kernel_serves_it(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                                 "kernel", "sdk_backend.py")).read()
-        self.assertIn('self.backend._record_spend(getattr(msg, "total_cost_usd", None),', src,
-                      "every ResultMessage's cost is folded in at the settle")
-        self.assertIn('getattr(msg, "usage", None))', src, "…with its token counts")
+        self.assertIn('self.backend._record_spend(delta, getattr(msg, "usage", None))', src,
+                      "the settle folds THIS turn's DELTA — total_cost_usd is cumulative per process")
+        self.assertIn("self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero",
+                      src, "each connect resets the watermark with its new process")
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
             ksrc = f.read()
-        self.assertIn('if o.get("apiKey"):', ksrc, "_usage serves the spend payload on the auth-flip marker")
+        self.assertIn('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):',
+                      ksrc, "_usage serves spend on the legacy marker OR a login-less machine with recorded spend")
         self.assertIn('"spend": _spend_windows()', ksrc)
         self.assertIn("def _spend_windows():", ksrc)
+
+    def test_cumulative_process_totals_fold_as_per_turn_deltas(self):
+        """The CLI's total_cost_usd is CUMULATIVE per process (the result event's totalCostUSD counter):
+        folding the raw value re-added the whole session-so-far cost on every turn, compounding the
+        spend readout into fiction — one live hour bucket showed a single 'turn' worth the session's
+        entire total (the user 2026-08-08, who did not believe the bottom line). Fold deltas; reset the
+        watermark with each new CLI process; treat a shrunken total as a reset we missed."""
+        import asyncio
+        sid = "11111111-2222-3333-4444-bbbbbbbbbbbb"
+        s = sb.SdkSession(self.be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        self.be._forward = lambda sess, msg: None
+        self.be._turn_completed = lambda sid: None
+        async def _noop(): pass
+        s._do_refresh_context = _noop
+        s._do_refresh_usage = _noop
+        def _result(total):
+            r = _ResultMessage()
+            r.total_cost_usd = total
+            r.usage = {"input_tokens": 10}
+            return r
+        async def run(total):
+            s._on_message(_result(total), _AssistantMessage, _ResultMessage, type("S", (), {}))
+            await asyncio.sleep(0)
+        asyncio.run(run(1.0))     # first turn of the process: delta = the whole total
+        asyncio.run(run(2.5))     # second turn: delta = 1.5, NOT another 2.5
+        d = json.loads(self.p.read_text())["days"][self._today()]
+        self.assertAlmostEqual(d["usd"], 2.5, msg="two turns fold to the process total, never more")
+        self.assertEqual(d["turns"], 2)
+        s._last_cost_total = 0.0  # the connect reset: a fresh CLI process starts at zero
+        asyncio.run(run(0.8))
+        self.assertAlmostEqual(json.loads(self.p.read_text())["days"][self._today()]["usd"], 3.3)
+        asyncio.run(run(0.5))     # a total BELOW the watermark = a reset we missed → fold it whole
+        self.assertAlmostEqual(json.loads(self.p.read_text())["days"][self._today()]["usd"], 3.8)
 
 
 class RewindFiles(unittest.TestCase):

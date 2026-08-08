@@ -1111,6 +1111,15 @@ class SdkSession:
         #   by fast_mode_state on every init, so a refused toggle can't stick past the next connect.
         self.fast_reason = ""   # the init's fast_mode_disabled_reason — non-empty means /fast would refuse
         #   (org-gated / unsupported), so the chat hides the toggle instead of offering a dead control.
+        self.api_key_auth = False   # THIS session's init said it authenticates with an API key — a
+        #   PER-SESSION fact (the user 2026-08-08: one keyed session must not speak for the login's
+        #   windows). Gates this session's get_usage polls + its RateLimitEvent records; set by
+        #   _note_auth_source on every init.
+        self._last_cost_total = 0.0   # the CLI's totalCostUSD is CUMULATIVE per process (verified in
+        #   the bundle: the result event's total_cost_usd sits beside total_duration/lines counters),
+        #   so spend folds the DELTA between results — folding the raw value re-added the whole
+        #   session-so-far cost every turn (the user 2026-08-08, whose spend line was fiction). Reset
+        #   at each connect: a fresh CLI process starts its counter at zero.
         # Pending conversation REWIND (the chat's edit-message branch): the target record uuid +
         # the transcript leaf recorded at request time (the one-shot guard — see rewind_disposition).
         # Seeded from the reg so a kernel death mid-rewind re-applies it iff nothing landed since.
@@ -1439,8 +1448,9 @@ class SdkSession:
         context refresh) and on demand from the kernel's /usage click. Guarded: one in flight."""
         if not self.client or self._usage_refreshing:
             return
-        if self.backend.api_key_auth:
-            return   # API-key auth has no /usage windows and get_usage only times out — nothing to poll
+        if self.api_key_auth:
+            return   # THIS session bills an API key (per-session — see _note_auth_source): it has no
+            #          subscription windows and get_usage only times out — nothing to poll
         self._usage_refreshing = True
         r = None
         try:
@@ -1605,6 +1615,7 @@ class SdkSession:
                 async with ClaudeSDKClient(options=opts) as client:
                     connected = True
                     self.client = client
+                    self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero
                     # The CLI is demonstrably up, so any recorded launch failure is HISTORY — clear it
                     # here, at the proof, rather than on a timer. This is what lifts the usage-limit
                     # hold once the window resets: the next _ensure connects, the error record goes, and
@@ -1798,7 +1809,7 @@ class SdkSession:
             # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
             # the field is absent on a subscription login). An auth flip is the deciding event for the
             # rail's /usage bars — see _note_auth_source.
-            self.backend._note_auth_source(self.name, d.get("apiKeySource"))
+            self.backend._note_auth_source(self, d.get("apiKeySource"))
             fsid = d.get("session_id")
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
@@ -1937,8 +1948,15 @@ class SdkSession:
             if m and "claude" in m.lower():
                 self._learn_model(pretty_model(m))
         elif isinstance(msg, ResultMessage):
-            self.backend._record_spend(getattr(msg, "total_cost_usd", None),
-                                       getattr(msg, "usage", None))   # the rail's spend + token readout under API-key auth
+            # total_cost_usd is CUMULATIVE per CLI process (the result event's totalCostUSD counter, beside
+            # total_duration/lines) — fold only THIS turn's delta, or every result re-adds the whole
+            # session-so-far cost and the spend readout compounds into fiction (the user 2026-08-08). A
+            # total below the last seen means a counter we didn't watch reset — fold it whole, never negative.
+            total = getattr(msg, "total_cost_usd", None)
+            if isinstance(total, (int, float)) and total > 0:
+                delta = total - self._last_cost_total if total >= self._last_cost_total else total
+                self._last_cost_total = float(total)
+                self.backend._record_spend(delta, getattr(msg, "usage", None))   # the rail's spend + token readout
             self.retrying = False
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self.retry_info = None
@@ -1987,7 +2005,11 @@ class SdkSession:
             # (The 2026-07-01 TEMPORARY cadence instrumentation lived here; its 19h/452-event answer — events
             # arrive ~per-API-call but carry utilization ONLY in the allowed_warning band — is baked into
             # _record_rate_limit's status-aware merge, so the jsonl capture is gone.)
-            self.backend._record_rate_limit(msg.rate_limit_info)
+            # PER-SESSION auth gate (the user 2026-08-08): an API-keyed session's events describe the KEY's
+            # limits, not the login's subscription windows — writing them into usage.json contaminated the
+            # login's bars with another allowance's numbers.
+            if not self.api_key_auth:
+                self.backend._record_rate_limit(msg.rate_limit_info)
         # Forward the raw message to the kernel for live chat/event use.
         self.backend._forward(self, msg)
 
@@ -2403,7 +2425,6 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
-        self.api_key_auth = False                 # last init's apiKeySource, truthy = API-key auth (no /usage windows)
         # Backend PROBLEMS, kept in a bounded ring so the dashboard can show them (see _log): until
         # 2026-07-28 every SDK failure went to the kernel log alone, which nobody tails, so a session
         # whose stream died or whose model switch was refused just looked odd with no way to find out.
@@ -2662,10 +2683,11 @@ class SdkBackend:
         Every candidate is tried until one accepts, not just the first (the user 2026-08-02): one session
         whose loop has gone away is enough to make a click do nothing at all, and the rail then shows a
         stale reading with no sign that the refresh never happened. Says so in the log when none can be
-        asked, rather than returning quietly."""
+        asked, rather than returning quietly. API-keyed sessions are not candidates (per-session auth,
+        the user 2026-08-08): their get_usage only times out, and the windows belong to the login."""
         with self._lock:
             sessions = list(self.sessions.values())
-        live = [s for s in sessions if s.client and s.loop and not s.ended]
+        live = [s for s in sessions if s.client and s.loop and not s.ended and not s.api_key_auth]
         for s in live:
             if s.refresh_usage():
                 return
@@ -2718,38 +2740,30 @@ class SdkBackend:
             except Exception as ex:
                 self._log("spend record failed: %s" % ex)
 
-    def _note_auth_source(self, name, source) -> None:
-        """An init message named HOW its CLI authenticates. API-key auth (apiKeySource e.g.
-        'ANTHROPIC_API_KEY') has NO subscription windows, and get_usage just TIMES OUT there — no
-        snapshot ever arrives to correct usage.json, so after logging out the rail bars showed the
-        last subscription reading forever, frozen (the user 2026-08-04). The auth flip is the deciding
-        event: flipping TO an API key drops the stale windows (bars disappear, _usage() returns None on
-        a window-less file) and gates the pointless get_usage polls off; flipping BACK resumes them,
-        and the next real snapshot repaints. Logged raw each flip, so every host's kernel log
-        self-documents its auth mode.
+    def _note_auth_source(self, sess, source) -> None:
+        """An init message named HOW its CLI authenticates — a PER-SESSION fact, not a backend one (the
+        user 2026-08-08): with a real ANTHROPIC_API_KEY in the service env, only the sessions whose
+        project had approved the key used it, while every other session rode the subscription login —
+        yet the old backend-global flag let whichever init arrived LAST speak for all of them, wiping
+        the login's usage windows and re-wiping them on every keyed session's reconnect. The flag now
+        lives on the session: it gates that session's own get_usage polls (which only time out on
+        API-key auth) and its RateLimitEvents (which describe the KEY's limits, not the login's
+        windows) — see _do_refresh_usage, refresh_usage, and the _on_message rate-limit branch. The
+        subscription windows belong to the LOGIN, whose lifecycle the kernel already tracks read-side:
+        the acct stamp drops bars when the login changes, and a machine with NO login shows spend
+        (kernel _usage() keys that on the credential store now, not on a wipe marker written here).
 
         A subscription login answers with the ABSENCE of an API key, and the CLI has said that two
         ways: the field simply absent (verified live 2026-08-04), and — since about CLI 2.1.222 — the
-        literal string 'none' (two hosts' journals, 2026-08-08). A plain bool() read 'none' as truthy,
-        so every subscription machine was misclassified as API-key auth on every session init: windows
-        wiped, polls gated off, and the rail stuck on a lone event-derived bar that nothing could ever
-        heal — the /usage click included, because the gate returns before the request."""
-        was = self.api_key_auth
-        self.api_key_auth = bool(source) and str(source).strip().lower() != "none"
-        if self.api_key_auth == was:
+        literal string 'none' (two hosts' journals, 2026-08-08). Logged once per per-session change,
+        so every host's kernel log still self-documents who authenticates how."""
+        keyed = bool(source) and str(source).strip().lower() != "none"
+        if keyed == sess.api_key_auth:
             return
-        self._log("auth (%s): apiKeySource=%r — %s" % (name, source,
-                  "API-key auth: dropping stale /usage windows; usage polls off" if self.api_key_auth
-                  else "subscription auth: usage polls resume"))
-        if not self.api_key_auth:
-            return                                # bars repaint from the next real snapshot on their own
-        with self._rl_lock:
-            try:
-                tmp = self.state_dir / "usage.json.tmp"
-                tmp.write_text(json.dumps({"t": int(time.time()), "apiKey": True}))
-                os.replace(tmp, self.state_dir / "usage.json")
-            except Exception as e:
-                self._log("auth (%s): could not drop stale usage windows: %s" % (name, e))
+        sess.api_key_auth = keyed
+        self._log("auth (%s): apiKeySource=%r — %s" % (sess.name, source,
+                  "this session bills an API key: its usage polls and rate-limit events are ignored"
+                  if keyed else "subscription auth: this session's usage polls resume"))
 
     def _record_usage_snapshot(self, r) -> None:
         """Fold a get_usage control-request snapshot into usage.json — EXACT utilization for every window,

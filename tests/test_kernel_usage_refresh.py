@@ -63,10 +63,12 @@ class UsageRefreshWiring(unittest.TestCase):
 
     def test_rail_usage_widget_is_click_to_refresh(self):
         html = km._landing()
-        # the widget is a clickable, discoverable affordance
+        # the widget is a clickable, discoverable affordance — the click hint lives in the rich tip's
+        # footer, never a native title (the user 2026-08-08: the browser's flat box fought the tip)
         self.assertIn("id=rail-usage", html)
         self.assertIn("el.style.cursor='pointer'", html)
-        self.assertIn("Click to refresh usage", html)
+        self.assertIn("click the bars to refresh", html)
+        self.assertNotIn("Click to refresh usage", html)
         # a click fetches the on-demand endpoint and re-renders through the normal render() path.
         # (2026-07-30: /usage/fleet — /usage plus one row per OTHER Claude account signed in across the
         # fleet. It collapses to the single local row whenever every machine is on the same login.)
