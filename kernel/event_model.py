@@ -611,7 +611,7 @@ class FileAdapter:
             "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
             "absorbed": True,   # a mid-turn splice: the turn's FOLLOWING atoms are the interrupted
             #                     ask's continuing work, not provably a reply to this — judges must
-            #                     not read them as one (jd._seg_spliced / _strip_spliced_dones).
+            #                     not read them as one (jd._seg_spliced / _strip_unevidenced_dones).
             #                     Metadata only: the atom set and seg ids are unchanged (no
             #                     PLACEMENTS_V bump).
             "_seq": seq,
