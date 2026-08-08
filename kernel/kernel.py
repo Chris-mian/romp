@@ -17638,14 +17638,17 @@ function barRows(d){return (d.unk
 // per login \u2014 with the host heading it only when there IS more than one. A SPEND-ONLY account (an
 // API key / a login-less host) used to return '' here, so a mixed fleet's hover silently showed only
 // the subscription login (the user 2026-08-08) \u2014 its dollars now render as their own section.
+// EVERY string here must carry data the reader acts on (the user 2026-08-08, who found the tip overly
+// verbose): the host name alone heads a section (no "its own allowance" tail), the token rows label
+// themselves (no "5h / 7d / month" subtitle), and config hints live in the docs, not a hover.
 function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
 var sp=d._spend||null;
 if(!keys.length&&!sp)return '';
 var spendOnly=!keys.length;                       // no subscription windows \u2192 an API-key / no-login account
-var h=(many?'<div class=ru-tip-host>'+esc(e.host)+' \u2014 its own allowance</div>':'');
+var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
 h+=keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
-+(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+' \u2014 no reading since; current usage unknown</span>'
++(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
 :(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
 // The TOKEN GRAPH (the user 2026-08-08): the three spend windows' token volume on ONE shared scale \u2014
 // each bar auto-scales to the largest window, so 5h vs 7d vs month compares at a glance in the same
@@ -17653,21 +17656,18 @@ return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+es
 // spend-only account); a subscription login's nominal cost would read as a bill, so it stays tokens.
 if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
 if(ks.length){var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});
-h+='<div class=ru-tip-win><div class=ru-tip-name><span>'+(spendOnly?'API-key spend':'Tokens')+'</span>'
-+'<span class=ru-tip-reset>5h / 7d / month \u00b7 one scale</span></div>'
+h+='<div class=ru-tip-win><div class=ru-tip-name><span>'+(spendOnly?'API-key spend':'Tokens')+'</span></div>'
 +ks.map(function(k){var v=sp[k],wpct=v.tok>0?Math.max(2,Math.round(v.tok/mx*100)):0;
 return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
 +'<span class=ru-tip-track><i style="width:'+wpct+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+fmtTok(v.tok)+(spendOnly?' \u00b7 $'+(v.usd<100?v.usd.toFixed(2):String(Math.round(v.usd))):'')+'</span></div>';}).join('')
-+(spendOnly&&!ks.some(function(k){return sp[k].budget!=null;})
-?'<div class=ru-tip-age>no budget set \u2014 dollars only; name one in spend-budgets.json to fill the rail bars</div>':'')
 +'</div>';}}
 h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
 return h;}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
 var h=sets.map(function(e){return setHTML(e,many);}).join('');
-return h?h+'<div class=ru-tip-age>click the bars to refresh</div>':'';}
+return h?h+'<div class=ru-tip-age>click to refresh</div>':'';}
 // The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
 // container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
 function showTip(ev){var h=tipHTML();

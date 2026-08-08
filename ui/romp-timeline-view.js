@@ -1294,7 +1294,7 @@ class TimelinePanel {
       b.time.row.style.display = (timePct == null) ? 'none' : 'inline-flex';
       if (timePct != null) { b.time.fill.style.width = timePct + '%'; b.time.txt.textContent = timePct + '%'; }
       b.group.setAttribute('title', rolled
-        ? name + ' — window reset ' + this._fmtAgo(seg.resetsAt) + ' and no reading has arrived since; current usage unknown (last known ' + pct + '%)'
+        ? name + ' — window reset ' + this._fmtAgo(seg.resetsAt) + '; no reading since (last known ' + pct + '%)'
         : name + ' — usage ' + pct + '%' + (timePct != null ? ' · ' + timePct + '% through the window' : '') + (seg.resetsAt ? ' · resets in ' + this._fmtReset(seg.resetsAt) : ''));
     };
     apply('fiveHour', usage.fiveHour, 'Session (5h)');
