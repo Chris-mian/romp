@@ -15,10 +15,18 @@
 #rsettings { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start;
   justify-content: center; overflow: auto; padding: 6vh 16px; box-sizing: border-box; }   /* the one modal dim */
 #rsettings[hidden] { display: none; }
-/* while open: the feed goes transparent + hides its own content, so (in the web shell) the
-   full-window iframe shows the dashboard's panes through it — not the feed cards. */
+/* while open (web shell): the page's html goes transparent and the BODY is pinned to the feed pane's
+   old screen rect (--pane-* vars, gear.js placeLifted), still painting — so the dashboard shows through
+   the full-window iframe with the feed cards live and visible in place under the dim, not a black hole
+   where the pane was (the user 2026-08-08). #rsettings is a fixed child of an untransformed body, so the
+   backdrop still spans and dims the whole viewport. */
 .rs-modal-open { background: transparent; }
-body.rs-modal-open #feed-head, body.rs-modal-open #feed-list, body.rs-modal-open #feed-foot { visibility: hidden; }
+body.rs-lifted { position: fixed; left: var(--pane-x, 0); top: var(--pane-y, 0);
+  width: var(--pane-w, 100%); height: var(--pane-h, 100%); overflow: hidden;
+  background: var(--bg, #1e1e1e); }
+/* no measurable pane to stand in for (hidden pane, or a cross-origin parent like VS Code):
+   fall back to hiding the feed's own content so only the settings card draws */
+body.rs-pane-gone #feed-head, body.rs-pane-gone #feed-list, body.rs-pane-gone #feed-foot { visibility: hidden; }
 .rs-card { width: min(560px, 94%); max-height: 88vh; overflow: auto; background: #252526; border: 1px solid #3a3a3a;
   border-radius: 10px; padding: 16px 20px; font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ccc; box-shadow: 0 12px 36px #000000aa; }
 #rsettings .rs-h { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #e8eaed; }

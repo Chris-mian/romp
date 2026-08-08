@@ -34,7 +34,8 @@ var SHORTCUT_ROWS =
   '<div class=rs-key><span class=rs-key-combo><kbd>Esc</kbd></span><span class=rs-key-desc>Jump to the session tabs</span></div>' +
   '<div class=rs-key><span class=rs-key-combo><kbd>←</kbd> / <kbd>→</kbd></span><span class=rs-key-desc>Switch session (from the tabs)</span></div>' +
   '<div class=rs-key><span class=rs-key-combo><kbd>Ctrl</kbd> + <kbd>C</kbd></span><span class=rs-key-desc>Interrupt the session</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>O</kbd></span><span class=rs-key-desc>Open or create a session (quick switcher)</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>O</kbd></span><span class=rs-key-desc>Jump to a session (quick switcher)</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></span><span class=rs-key-desc>New session picker</span></div>' +
   '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>P</kbd></span><span class=rs-key-desc>Command palette (browser dashboard)</span></div>';
 
 // The modal markup — ported verbatim from the kernel's _gear_html; the model/
@@ -253,8 +254,31 @@ function initGear(post) {
   // The settings modal is full-WINDOW in the web shell — ask it to expand the
   // feed iframe while open (no-op elsewhere: VS Code's feed panel IS the window).
   function feedFull(on) { try { if (window.parent !== window) window.parent.postMessage({ romp: 'settings', on: !!on }, '*'); } catch (e) {} }
+  // While lifted, pin the BODY to the feed pane's old screen rect and keep painting (rs-lifted +
+  // --pane-* vars), so the feed stays exactly where it was — live and visible under the dim like every
+  // other pane — instead of leaving a black hole where its pane had been (the user 2026-08-08; same
+  // technique as the chat picker's placeLifted). A pane we can't measure (hidden pane, or a
+  // cross-origin parent like VS Code) falls back to hiding the feed's content (rs-pane-gone). The
+  // measurement retries a few frames: opening from a hidden feed pane, the shell's settings-open class
+  // (which forces the pane visible) lands only after the postMessage round-trip.
+  function paneRect() { try { var el = window.parent !== window ? window.parent.document.getElementById('feed-pane') : null;
+    return el ? el.getBoundingClientRect() : null; } catch (e) { return null; } }
+  function placeLifted(tries) {
+    if (p.hidden || !document.body.classList.contains('rs-lifted')) return;   // closed while retrying
+    var r = paneRect(), gone = !r || r.width < 40 || r.height < 40;
+    document.body.classList.toggle('rs-pane-gone', gone);
+    if (!gone) { var st = document.documentElement.style;
+      st.setProperty('--pane-x', r.left + 'px'); st.setProperty('--pane-y', r.top + 'px');
+      st.setProperty('--pane-w', r.width + 'px'); st.setProperty('--pane-h', r.height + 'px'); }
+    else if (tries > 0) requestAnimationFrame(function () { placeLifted(tries - 1); });
+  }
+  function onRsResize() { placeLifted(0); }   // panes track the window; follow them while open
   function setModalCls(on) { var de = document.documentElement, m = 'rs-modal-open';
-    if (on) { de.classList.add(m); document.body.classList.add(m); } else { de.classList.remove(m); document.body.classList.remove(m); } }
+    if (on) { de.classList.add(m); document.body.classList.add(m);
+      if (window.parent !== window) { document.body.classList.add('rs-lifted'); placeLifted(5); window.addEventListener('resize', onRsResize); } }
+    else { de.classList.remove(m); document.body.classList.remove(m);
+      document.body.classList.remove('rs-lifted'); document.body.classList.remove('rs-pane-gone');
+      window.removeEventListener('resize', onRsResize); } }
   function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
   function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
     p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (tc) tc.value = tabCtxMode(s.tabCtx); if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }

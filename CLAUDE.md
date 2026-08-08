@@ -218,13 +218,18 @@ never solid black, never a layout change). Shell-native panels (`#rnet-back`,
 `#rerr-back`, `#rpal-back`) get this for free: their backdrop composites over the
 real panes. A panel living INSIDE a pane iframe that must cover the whole window
 (settings, picker) is lifted by the shell (`body.settings-open` /
-`body.picker-open`) and must then make EVERY layer under its backdrop transparent:
-the step-aside class rides `documentElement` AND `body` (THEME_CSS paints both
-opaque), and the shell's lift rule sets the iframe ELEMENT's own
-`background:transparent` (the default `iframe{background:#1e1e1e}` otherwise turns
-the dim into a full-window black-out — the 2026-08-08 bug, twice). Small
-pane-local dialogs (confirm boxes, the feed's card modal) stay pane-local by
-design; this rule is for panels that present over the dashboard as a whole.
+`body.picker-open`) and must then keep every pixel behind its backdrop looking
+untouched: the page's `html` goes transparent AND the shell's lift rule sets the
+iframe ELEMENT's own `background:transparent` (the default
+`iframe{background:#1e1e1e}` otherwise turns the dim into a full-window black-out
+— the 2026-08-08 bug, twice); and the page's BODY is pinned to the pane's old
+screen rect and KEEPS PAINTING (`--pane-*` vars measured from the shell's pane
+div: `placeLifted()` in render.ts / gear.js), because hiding the content instead
+leaves a black hole where that pane was — the same bug's third form. Only an
+unmeasurable pane (hidden, or a cross-origin parent like VS Code) falls back to
+hiding its content (`.pane-gone` / `.rs-pane-gone`). Small pane-local dialogs
+(confirm boxes, the feed's card modal) stay pane-local by design; this rule is
+for panels that present over the dashboard as a whole.
 
 ### Font sizes: few, and consistent by information type (user rule, 2026-07-02)
 Do not multiply font sizes. Similar kinds of information wear the SAME size — labels

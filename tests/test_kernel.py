@@ -6225,16 +6225,22 @@ class ServeSecurity(unittest.TestCase):
     def test_settings_is_a_fullscreen_modal(self):
         # the user 2026-06-23: the gear's settings is a full-WINDOW modal (was a cramped 240px corner panel).
         # #rsettings is the backdrop + .rs-card the centered card. The gear lives in the feed iframe, so it
-        # asks the shell to lift the feed iframe over the whole window; the feed then goes TRANSPARENT and
-        # hides its own content (rs-modal-open), so the dimmed three-pane DASHBOARD shows through behind the
-        # card — not the feed cards blown up full-screen.
+        # asks the shell to lift the feed iframe over the whole window; the feed's html then goes TRANSPARENT
+        # and its BODY is pinned to the feed pane's old screen rect, still painting (rs-lifted + --pane-*
+        # vars) — so the dimmed dashboard shows through with the feed cards live and visible in place, not
+        # a black hole where the pane was (the user 2026-08-08). Only an unmeasurable pane (hidden, or a
+        # cross-origin parent like VS Code) hides the feed's content instead (rs-pane-gone).
         self.assertIn("#rsettings { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55);", _gear_css_src())   # the one modal dim (the user 2026-08-08)
         self.assertIn(".rs-card {", _gear_css_src())
-        self.assertIn(".rs-modal-open { background: transparent; }", _gear_css_src())            # feed iframe transparent while open
-        self.assertIn("body.rs-modal-open #feed-list", _gear_css_src())                     # feed cards hidden while open
+        self.assertIn(".rs-modal-open { background: transparent; }", _gear_css_src())            # the page's html steps aside
+        self.assertIn("body.rs-lifted { position: fixed; left: var(--pane-x, 0); top: var(--pane-y, 0);", _gear_css_src())
+        self.assertIn("body.rs-pane-gone #feed-head, body.rs-pane-gone #feed-list, body.rs-pane-gone #feed-foot { visibility: hidden; }",
+                      _gear_css_src())
         self.assertIn("<div id=rsettings hidden><div class=rs-card>", _gear_src())
         self.assertIn("feedFull(true)", _gear_src())              # open → ask the shell to go full-window
-        self.assertIn("setModalCls(true)", _gear_src())          # open → feed goes transparent + hides content
+        self.assertIn("setModalCls(true)", _gear_src())          # open → transparent html + body pinned in place
+        self.assertIn("placeLifted(5)", _gear_src())             # measure the pane rect (retrying while the shell reacts)
+        self.assertIn("getElementById('feed-pane')", _gear_src())
         self.assertIn("if (e.target === p) closeSettings()", _gear_src())   # backdrop click closes
         # shell side: the feed iframe lifts to cover the whole window (the panes show THROUGH the transparent
         # feed). background:transparent on the LIFTED IFRAME ELEMENT is load-bearing: the shell's default

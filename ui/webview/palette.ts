@@ -1,15 +1,35 @@
-// The command palette overlay (Cmd/Ctrl+P) — Obsidian's shape: a card centered near the top,
-// a type-ahead input, fuzzy-filtered rows with highlighted matches, arrows + Enter, Esc or a
-// backdrop click to close. It lives in the SHELL document, so like the network panel it
-// composites over the real panes: one centered card, the standard 0.55 dim, and the dashboard
-// unchanged behind it (the one modal treatment, the user 2026-08-08).
-import { commandList, PaletteCommand } from "./commands";
+// The quick-pick overlay behind BOTH shell hotkeys — Obsidian's shape: a card centered near
+// the top, a type-ahead input, fuzzy-filtered rows with highlighted matches, arrows + Enter,
+// Esc or a backdrop click to close. Cmd/Ctrl+P opens it over the command registry; Cmd/Ctrl+O
+// opens it over the sessions (the jump switcher — palette-main.ts builds those items). It
+// lives in the SHELL document, so like the network panel it composites over the real panes:
+// one centered card, the standard 0.55 dim, and the dashboard unchanged behind it (the one
+// modal treatment, the user 2026-08-08).
+import { commandList } from "./commands";
 import { fuzzyMatch, FuzzyHit, FuzzyRange } from "./fuzzy";
 
+// One row of a pick list. Commands map onto this 1:1; session rows add a color dot and a dim
+// directory tail. run() is the whole contract — the palette closes itself, then runs it.
+export type PickItem = {
+  title: string;   // what's shown and fuzzy-matched
+  kbd?: string;    // display-only hotkey chip ("⌘O")
+  dot?: string;    // CSS color for a leading session dot
+  dim?: string;    // dim tail after the title (a session's directory basename)
+  run: () => void;
+};
+
+export type PickSpec = {
+  placeholder: string;
+  items: PickItem[];
+  // Shift+Enter, when the mode has a secondary action (the switcher's "new session…").
+  // Rendered as a footer hint so the key is discoverable, Obsidian-style.
+  altEnter?: { label: string; run: () => void };
+};
+
 // The modal vocabulary the shell's panels share (#rnet-panel / #rerr-panel): #252526 card,
-// 1px #3a3a3a border, radius 10, 13px system-ui body, 11px chips. Injected as a <style> tag by
-// ensure() so the palette ships as ONE dist bundle with no separate <link> to plumb through
-// _landing. z-index 300: over every shell panel (net 200, log 210, restart report 220, usage 290).
+// 1px #3a3a3a border, radius 10, 13px system-ui body, 11px chips/dims. Injected as a <style>
+// tag by ensure() so the palette ships as ONE dist bundle with no separate <link> to plumb
+// through _landing. z-index 300: over every shell panel (net 200, log 210, report 220, usage 290).
 const CSS =
   "#rpal-back{position:fixed;inset:0;z-index:300;display:flex;align-items:flex-start;justify-content:center;" +
   "padding:14vh 16px 16px;background:rgba(0,0,0,0.55);box-sizing:border-box}" +
@@ -23,18 +43,29 @@ const CSS =
   "#rpal-list{flex:1 1 auto;overflow-y:auto;margin-top:6px}" +
   ".rpal-row{display:flex;align-items:center;gap:10px;padding:5px 10px;border-radius:6px;cursor:pointer}" +
   ".rpal-row.active{background:rgba(156,210,255,0.12)}" +   // accent-blue focus cue, not a status color
+  ".rpal-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%}" +
   ".rpal-title{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
   ".rpal-title b{color:var(--accent,#9cd2ff);font-weight:600}" +
+  ".rpal-dim{flex:0 1 auto;color:#9aa0a6;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
   ".rpal-kbd{flex:0 0 auto;color:#9aa0a6;font-size:11px;border:1px solid #3a3a3a;border-radius:4px;padding:0 5px}" +
-  ".rpal-empty{padding:8px 10px;color:#9aa0a6}";
+  ".rpal-empty{padding:8px 10px;color:#9aa0a6}" +
+  ".rpal-hint{flex:0 0 auto;padding:4px 10px 0;color:#9aa0a6;font-size:11px}";
 
-export type Palette = { open(): void; close(): void; toggle(): void; isOpen(): boolean };
+export type Palette = {
+  open(): void;                    // command mode, over the registry (Cmd+P)
+  openPick(spec: PickSpec): void;  // any mode — the session switcher passes its own items
+  close(): void;
+  toggle(): void;                  // command-mode toggle (Cmd+P)
+  isOpen(): boolean;
+};
 
 export function initPalette(opts?: { onClose?: () => void }, doc: Document = document): Palette {
   let back: HTMLElement | null = null;
   let input: HTMLInputElement;
   let list: HTMLElement;
-  let rows: { cmd: PaletteCommand; el: HTMLElement }[] = [];
+  let hint: HTMLElement;
+  let spec: PickSpec = { placeholder: "", items: [] };
+  let rows: { item: PickItem; el: HTMLElement }[] = [];
   let active = 0;
 
   // Built once, lazily; the palette is not subject to the dashboard's re-render pushes (the
@@ -51,12 +82,15 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
     panel.id = "rpal";
     input = doc.createElement("input");
     input.id = "rpal-in";
-    input.placeholder = "Type a command…";
     input.spellcheck = false;
     list = doc.createElement("div");
     list.id = "rpal-list";
+    hint = doc.createElement("div");
+    hint.className = "rpal-hint";
+    hint.hidden = true;
     panel.appendChild(input);
     panel.appendChild(list);
+    panel.appendChild(hint);
     back.appendChild(panel);
     doc.body.appendChild(back);
     input.addEventListener("input", () => render(input.value));
@@ -70,7 +104,7 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
     list.addEventListener("click", (e) => {
       const row = (e.target as HTMLElement).closest(".rpal-row");
       const hit = rows.find((r) => r.el === row);
-      if (hit) run(hit.cmd);
+      if (hit) run(hit.item);
     });
   }
 
@@ -89,32 +123,44 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
   }
 
   function render(query: string): void {
-    const hits = commandList()
-      .map((cmd) => ({ cmd, hit: fuzzyMatch(query, cmd.title) }))
-      .filter((x): x is { cmd: PaletteCommand; hit: FuzzyHit } => !!x.hit);
-    hits.sort((a, b) => b.hit.score - a.hit.score);   // stable sort: ties keep registration order
+    const hits = spec.items
+      .map((item) => ({ item, hit: fuzzyMatch(query, item.title) }))
+      .filter((x): x is { item: PickItem; hit: FuzzyHit } => !!x.hit);
+    hits.sort((a, b) => b.hit.score - a.hit.score);   // stable sort: ties keep the given order
     list.textContent = "";
     rows = [];
-    for (const { cmd, hit } of hits) {
+    for (const { item, hit } of hits) {
       const row = doc.createElement("div");
       row.className = "rpal-row";
+      if (item.dot) {
+        const d = doc.createElement("span");
+        d.className = "rpal-dot";
+        d.style.background = item.dot;
+        row.appendChild(d);
+      }
       const title = doc.createElement("span");
       title.className = "rpal-title";
-      title.appendChild(highlight(cmd.title, hit.ranges));
+      title.appendChild(highlight(item.title, hit.ranges));
       row.appendChild(title);
-      if (cmd.kbd) {
+      if (item.dim) {
+        const m = doc.createElement("span");
+        m.className = "rpal-dim";
+        m.textContent = item.dim;
+        row.appendChild(m);
+      }
+      if (item.kbd) {
         const k = doc.createElement("span");
         k.className = "rpal-kbd";
-        k.textContent = cmd.kbd;
+        k.textContent = item.kbd;
         row.appendChild(k);
       }
       list.appendChild(row);
-      rows.push({ cmd, el: row });
+      rows.push({ item, el: row });
     }
     if (!rows.length) {
       const empty = doc.createElement("div");
       empty.className = "rpal-empty";
-      empty.textContent = "No matching commands";
+      empty.textContent = "No matches";
       list.appendChild(empty);
     }
     setActive(0);
@@ -131,20 +177,36 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); if (rows.length) setActive((active + 1) % rows.length); }
     else if (e.key === "ArrowUp") { e.preventDefault(); if (rows.length) setActive((active - 1 + rows.length) % rows.length); }
-    else if (e.key === "Enter") { e.preventDefault(); const r = rows[active]; if (r) run(r.cmd); }
+    else if (e.key === "Enter" && e.shiftKey && spec.altEnter) {
+      e.preventDefault();
+      const alt = spec.altEnter;
+      close();   // close FIRST, same as run(): the secondary action opens its own surface
+      alt.run();
+    }
+    else if (e.key === "Enter") { e.preventDefault(); const r = rows[active]; if (r) run(r.item); }
   }
 
-  function run(cmd: PaletteCommand): void {
-    close();   // close FIRST: a command that opens its own modal must not land under the palette
-    cmd.run();
+  function run(item: PickItem): void {
+    close();   // close FIRST: an action that opens its own modal must not land under the palette
+    item.run();
   }
 
-  function open(): void {
+  function openPick(s: PickSpec): void {
     ensure();
+    spec = s;
+    input.placeholder = s.placeholder;
+    hint.hidden = !s.altEnter;
+    if (s.altEnter) hint.textContent = "↵ open · shift ↵ " + s.altEnter.label;
     back!.hidden = false;
     input.value = "";
     render("");
     input.focus();
+  }
+  function open(): void {
+    openPick({
+      placeholder: "Type a command…",
+      items: commandList().map((c) => ({ title: c.title, kbd: c.kbd, run: c.run })),
+    });
   }
   function close(): void {
     if (!back || back.hidden) return;
@@ -154,5 +216,5 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
   function isOpen(): boolean { return !!back && !back.hidden; }
   function toggle(): void { if (isOpen()) close(); else open(); }
 
-  return { open, close, toggle, isOpen };
+  return { open, openPick, close, toggle, isOpen };
 }

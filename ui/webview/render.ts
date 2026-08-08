@@ -3942,15 +3942,20 @@ window.addEventListener("keydown", (e) => {
     if (focusComposerOrAsk()) e.preventDefault();   // the picker card if one's up, else the message box
   }
 });
-// Cmd/Ctrl+O — toggle the session quick switcher (the picker), from anywhere in the page INCLUDING
-// the composer, the way Obsidian's quick switcher opens over the editor (the user 2026-08-08). The
-// page may claim this combo: preventDefault cancels the browser's own Cmd+O (open file) while this
-// tab has focus, and only there. Capture + stopPropagation so it wins over focused-control handlers —
-// and so the combined shell's per-pane capture handler (palette-main.ts, which relays the same combo
-// from the OTHER panes) never double-fires when focus is already in this document: window-capture
-// runs before document-capture, so this handler acts and stops the event first.
+// Cmd/Ctrl+O and Cmd/Ctrl+Shift+O — the in-PAGE fallback, from anywhere including the composer, the
+// way Obsidian's quick switcher opens over the editor (the user 2026-08-08). Inside the romp shell
+// this handler STANDS DOWN: the shell owns both combos (palette-main.ts — plain O is the session jump
+// switcher up in the shell document, Shift+O this picker), and its per-pane capture handler sees the
+// keystroke once this window-capture one declines to stop it. Standalone and in VS Code (no shell
+// handler on this document) both combos fall back to the picker here. preventDefault cancels the
+// browser's own Cmd+O (open file) while this tab has focus, and only there.
+function inRompShell(): boolean {
+  try { return !!(window.parent && window.parent !== window && window.parent.document.getElementById("chat-pane")); }
+  catch (e) { return false; }   // cross-origin parent (VS Code) — not the romp shell
+}
 window.addEventListener("keydown", (e) => {
-  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || (e.key || "").toLowerCase() !== "o") return;
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || (e.key || "").toLowerCase() !== "o") return;
+  if (inRompShell()) return;   // the shell's handler on this document takes it from here
   e.preventDefault(); e.stopPropagation();
   if (pickerVisible()) closePicker(); else openPicker();
 }, true);
@@ -4098,15 +4103,37 @@ function revealSelfPane(): void {
 // Mirror the settings bridge: tell the shell to lift #f-chat over the whole window (body.picker-open) while
 // the picker is up, so the overlay fills the screen and the list gets the full viewport height. Standalone
 // (no parent) is a no-op.
+//
+// While lifted, this page keeps PAINTING its content at the chat pane's old screen rect (--pane-* vars,
+// measured from the shell's pane div): the transcript stays exactly where it was, live and visible under
+// the overlay's dim like every other pane. The first cut hid the page's content instead, which left a
+// BLACK HOLE where the chat pane had been — the one region of the dashboard that changed behind the
+// centered modal (the user 2026-08-08). A pane we can't measure (hidden, or a cross-origin parent like
+// VS Code) falls back to that hiding via .pane-gone.
+function liftPaneRect(): DOMRect | null {
+  try {
+    const p = window.parent?.document?.getElementById("chat-pane");
+    return p ? p.getBoundingClientRect() : null;
+  } catch (e) { return null; }   // cross-origin parent (VS Code) — no shell pane to measure
+}
+function placeLifted(): void {
+  const r = liftPaneRect();
+  const gone = !r || r.width < 40 || r.height < 40;
+  document.body.classList.toggle("pane-gone", gone);
+  if (gone) return;
+  const st = document.documentElement.style;
+  st.setProperty("--pane-x", r!.left + "px");
+  st.setProperty("--pane-y", r!.top + "px");
+  st.setProperty("--pane-w", r!.width + "px");
+  st.setProperty("--pane-h", r!.height + "px");
+}
+function onLiftResize(): void { if (pickerVisible()) placeLifted(); }   // panes track the window; follow them
 function signalPickerOverlay(on: boolean) {
   try {
     if (window.parent && window.parent !== window) {
       window.parent.postMessage({ romp: "picker", on }, "*");
-      // …and get out of the way while lifted (the user 2026-07-29). The shell lifts this iframe over the
-      // whole window, and the iframe is OPAQUE, so the picker read as the chat pane blown up to full
-      // screen rather than as a dialog over the dashboard. Dropping this page's background and hiding
-      // its own content leaves only the picker drawn, so the timeline, feed and chat stay visible
-      // (dimmed by the picker's own backdrop) behind a modal that floats over all of them.
+      if (on) { placeLifted(); window.addEventListener("resize", onLiftResize); }
+      else window.removeEventListener("resize", onLiftResize);
       // The class rides documentElement AND body (like the gear's rs-modal-open): THEME_CSS paints
       // html and body separately, and an opaque html kept the lift a full black-out (the user 2026-08-08).
       document.documentElement.classList.toggle("picker-lifted", on);
@@ -7501,7 +7528,20 @@ function restoreActiveDraftOnce(): void {
   renderComposerFiles(activeId);   // attachments persisted across the reload → thumbnails again → show its chip again
 }
 
+// Most-recently-ACTIVATED session ids, current first — the recency the shell's session jump
+// switcher (Cmd/Ctrl+O, palette-main.ts) sorts by, read directly off this window (same-origin).
+// Session order elsewhere stays kernel-authoritative; this is only "what did I look at last".
+const sessionMru: string[] = [];
+(window as any).__rompMru = sessionMru;
+function noteMru(id: string): void {
+  const i = sessionMru.indexOf(id);
+  if (i >= 0) sessionMru.splice(i, 1);
+  sessionMru.unshift(id);
+  if (sessionMru.length > 50) sessionMru.pop();
+}
+
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
+  noteMru(id);
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
   pendingAnchorT = anchorT ?? null;
@@ -8020,11 +8060,18 @@ window.addEventListener("message", (e: MessageEvent) => {
       if (di) { di.value = m.path; di.focus(); }
     }
   }
-  // toggle:true is the hotkey form (Cmd/Ctrl+O relayed by the shell): a second press closes an open
-  // picker instead of re-opening it, so the key behaves like Obsidian's quick switcher.
+  // toggle:true is the hotkey form (Cmd/Ctrl+Shift+O relayed by the shell): a second press closes an
+  // open picker instead of re-opening it.
   else if (m.type === "openPicker") {
     if (m.toggle && pickerVisible()) closePicker();
     else openPicker(!!m.pick, m.prompt, !!m.allowNew);
+  }
+  // The shell's session jump switcher (Cmd/Ctrl+O) picked a session: an open tab activates like a
+  // feed jump (the `focus` path above); one without a tab opens through the host, the exact message
+  // a picker row sends.
+  else if (m.type === "jumpSession" && typeof m.id === "string") {
+    if (order.includes(m.id)) { revealSelfPane(); closingTabs.delete(m.id); setActive(m.id); }
+    else if (vscodeApi) vscodeApi.postMessage({ type: "openSession", id: m.id });
   }
   // The host asks US to confirm (in-page, no native dialogs): ending a live
   // session on tab-close, and reviving a dead one on open.

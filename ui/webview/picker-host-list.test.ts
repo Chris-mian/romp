@@ -72,18 +72,21 @@ test("a reachable host with no sessions says so, instead of looking like a faile
 });
 
 // ── the picker is a dialog over the dashboard, not the chat pane blown up (the user 2026-07-29) ──────
-// The shell lifts this iframe full-window so the session list gets the whole height, but the iframe is
-// opaque, so the picker read as the chat expanded to fill the screen. While lifted the page steps aside
-// and only the picker draws, leaving the timeline, feed and chat visible behind it.
-test("the page steps aside while the shell has it lifted", () => {
+// The shell lifts this iframe full-window so the session list gets the whole height. While lifted the
+// page pins its BODY to the chat pane's old screen rect and keeps painting (2026-08-08: hiding the
+// content instead left a black hole where the pane was), so the whole dashboard — the transcript
+// included — stays visible behind the dim. Details pinned in palette.test.ts.
+test("the page keeps painting in place while the shell has it lifted", () => {
   const STYLES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
   assert.match(RENDER, /document\.body\.classList\.toggle\("picker-lifted", on\);/);
   assert.match(RENDER, /window\.parent\.postMessage\(\{ romp: "picker", on \}, "\*"\);/, "the shell still lifts it");
-  assert.match(STYLES, /body\.picker-lifted \{ background: transparent !important; \}/);
-  assert.match(STYLES, /body\.picker-lifted > \* \{ visibility: hidden; \}/);
-  assert.match(STYLES, /body\.picker-lifted > #picker \{ visibility: visible; \}/);
+  assert.match(STYLES, /html\.picker-lifted \{ background: transparent !important; \}/);
+  assert.match(STYLES, /body\.picker-lifted \{\s*\n\s*position: fixed;/);
+  // only an unmeasurable pane (hidden / cross-origin parent) hides the content instead
+  assert.match(STYLES, /body\.picker-lifted\.pane-gone > \* \{ visibility: hidden; \}/);
+  assert.match(STYLES, /body\.picker-lifted\.pane-gone > #picker \{ visibility: visible; \}/);
   // visibility, not display: nothing reflows, so the chat is exactly where it was when the picker closes
-  assert.doesNotMatch(STYLES, /body\.picker-lifted > \* \{ display: none/);
+  assert.doesNotMatch(STYLES, /body\.picker-lifted\.pane-gone > \* \{ display: none/);
   // …and it centres like a modal instead of hugging the top edge
   assert.match(STYLES, /body\.picker-lifted > #picker \{ align-items: center;/);
   // two thirds of the window: the list is what you came to read
