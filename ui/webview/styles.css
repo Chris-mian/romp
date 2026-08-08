@@ -1760,16 +1760,26 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 @keyframes tx-starting-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .tx-starting-swirl { animation: none; } }
 
-/* LIFTED over the dashboard (the user 2026-07-29): while the shell has this iframe full-window, the page
-   itself steps aside — no background, and its own content hidden — so what remains on screen is the
-   picker alone, floating over the panes behind it. Without this the opaque chat page covered the
-   timeline and feed, which is why the picker read as the chat expanded to full screen instead of as a
-   dialog. `visibility` (not display) so nothing reflows: layout is untouched, and the chat is exactly
-   where it was when the picker closes. */
-html.picker-lifted { background: transparent !important; }   /* THEME_CSS paints html AND body — both must step aside */
-body.picker-lifted { background: transparent !important; }
-body.picker-lifted > * { visibility: hidden; }
-body.picker-lifted > #picker { visibility: visible; }
+/* LIFTED over the dashboard (the user 2026-07-29, reworked 2026-08-08): while the shell has this iframe
+   full-window, the page pins its BODY to the chat pane's old screen rect (--pane-* vars set by
+   placeLifted() from the shell's pane div) and keeps painting. The transcript therefore stays exactly
+   where it was — live and visible under the picker's dim like every other pane — and the html around the
+   body stays transparent, so the rest of the dashboard shows through the full-window iframe. (The first
+   cut hid the page's content instead, which left a black hole where the chat pane had been.) #picker is a
+   position:fixed child of the body, and the body has no transform, so the overlay still spans and dims
+   the WHOLE viewport. */
+html.picker-lifted { background: transparent !important; }   /* THEME_CSS paints html AND body — html must step aside */
+body.picker-lifted {
+  position: fixed;
+  left: var(--pane-x, 0); top: var(--pane-y, 0);
+  width: var(--pane-w, 100%); height: var(--pane-h, 100%);
+  overflow: hidden;
+  background: var(--bg);   /* the body now paints the chat exactly where the pane was */
+}
+/* No measurable pane to stand in for (the pane is hidden, or the parent is cross-origin — VS Code):
+   fall back to hiding the page's own content so only the picker draws. */
+body.picker-lifted.pane-gone > * { visibility: hidden; }
+body.picker-lifted.pane-gone > #picker { visibility: visible; }
 /* centred, like every other modal. Top-aligned made sense when this filled the screen and the list
    wanted every pixel of height; as a dialog over the dashboard it should sit in the middle. */
 body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
