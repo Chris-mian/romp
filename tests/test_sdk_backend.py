@@ -1561,10 +1561,12 @@ class SpendRecord(unittest.TestCase):
     def test_result_message_records_and_the_kernel_serves_it(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                                 "kernel", "sdk_backend.py")).read()
-        self.assertIn('self.backend._record_spend(delta, getattr(msg, "usage", None))', src,
-                      "the settle folds THIS turn's DELTA — total_cost_usd is cumulative per process")
+        self.assertIn("self.backend._record_spend(delta, turn_u)", src,
+                      "the settle folds THIS turn's DELTAS — cost AND tokens are cumulative per process")
         self.assertIn("self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero",
                       src, "each connect resets the watermark with its new process")
+        self.assertIn("self._last_usage_totals = {}  # …and its cumulative token counters", src,
+                      "the token watermarks reset with the same new process")
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "romp-kernel")) as f:
             ksrc = f.read()
         self.assertIn('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):',
@@ -1573,11 +1575,13 @@ class SpendRecord(unittest.TestCase):
         self.assertIn("def _spend_windows():", ksrc)
 
     def test_cumulative_process_totals_fold_as_per_turn_deltas(self):
-        """The CLI's total_cost_usd is CUMULATIVE per process (the result event's totalCostUSD counter):
-        folding the raw value re-added the whole session-so-far cost on every turn, compounding the
-        spend readout into fiction — one live hour bucket showed a single 'turn' worth the session's
-        entire total (the user 2026-08-08, who did not believe the bottom line). Fold deltas; reset the
-        watermark with each new CLI process; treat a shrunken total as a reset we missed."""
+        """The CLI's total_cost_usd AND its usage dict are CUMULATIVE per process (the result event
+        carries totalCostUSD beside `usage: this.totalUsage`): folding the raw values re-added the
+        whole session-so-far on every turn, compounding the readouts into fiction — the dollars first
+        (the user 2026-08-08, who did not believe the bottom line), then the tokens (same day, round
+        two: the hover's 5h/7d/month dollars-per-token ratios diverged wildly because each window
+        carried a different inflation factor). Fold deltas for both; reset the watermarks with each
+        new CLI process; treat a shrunken counter as a reset we missed."""
         import asyncio
         sid = "11111111-2222-3333-4444-bbbbbbbbbbbb"
         s = sb.SdkSession(self.be, {"sid": sid, "name": "n", "cwd": "/tmp"})
@@ -1586,24 +1590,30 @@ class SpendRecord(unittest.TestCase):
         async def _noop(): pass
         s._do_refresh_context = _noop
         s._do_refresh_usage = _noop
-        def _result(total):
+        def _result(total, tok_in):
             r = _ResultMessage()
             r.total_cost_usd = total
-            r.usage = {"input_tokens": 10}
+            r.usage = {"input_tokens": tok_in}
             return r
-        async def run(total):
-            s._on_message(_result(total), _AssistantMessage, _ResultMessage, type("S", (), {}))
+        async def run(total, tok_in):
+            s._on_message(_result(total, tok_in), _AssistantMessage, _ResultMessage, type("S", (), {}))
             await asyncio.sleep(0)
-        asyncio.run(run(1.0))     # first turn of the process: delta = the whole total
-        asyncio.run(run(2.5))     # second turn: delta = 1.5, NOT another 2.5
-        d = json.loads(self.p.read_text())["days"][self._today()]
+        def day():
+            return json.loads(self.p.read_text())["days"][self._today()]
+        asyncio.run(run(1.0, 100))   # first turn of the process: delta = the whole counter
+        asyncio.run(run(2.5, 140))   # second turn: deltas = 1.5 / 40 tokens, NOT another 2.5 / 140
+        d = day()
         self.assertAlmostEqual(d["usd"], 2.5, msg="two turns fold to the process total, never more")
+        self.assertEqual(d["tokIn"], 140, "tokens fold as deltas of the totalUsage counter too")
         self.assertEqual(d["turns"], 2)
-        s._last_cost_total = 0.0  # the connect reset: a fresh CLI process starts at zero
-        asyncio.run(run(0.8))
-        self.assertAlmostEqual(json.loads(self.p.read_text())["days"][self._today()]["usd"], 3.3)
-        asyncio.run(run(0.5))     # a total BELOW the watermark = a reset we missed → fold it whole
-        self.assertAlmostEqual(json.loads(self.p.read_text())["days"][self._today()]["usd"], 3.8)
+        s._last_cost_total = 0.0     # the connect reset: a fresh CLI process starts at zero…
+        s._last_usage_totals = {}    # …on both counters
+        asyncio.run(run(0.8, 30))
+        self.assertAlmostEqual(day()["usd"], 3.3)
+        self.assertEqual(day()["tokIn"], 170)
+        asyncio.run(run(0.5, 20))    # a counter BELOW the watermark = a reset we missed → fold it whole
+        self.assertAlmostEqual(day()["usd"], 3.8)
+        self.assertEqual(day()["tokIn"], 190)
 
 
 class RewindFiles(unittest.TestCase):
