@@ -62,9 +62,10 @@ test("creating a session opens the provisional tab instead of a modal", () => {
 });
 
 test("a send on a provisional tab is HELD, not posted to a session that doesn't exist", () => {
-  assert.match(RENDER, /if \(isProvisionalId\(sid\)\) \{\s*\n\s*provisionalQueue\.push\(text\);/);
   assert.match(RENDER, /provisionalQueue\.push\(text\);\s*\n\s*registerOptimistic\(sid, text\);/,
     "the dashed bubble goes up now — romp has it, it is not delivered");
+  // a FAILED tab has no pending spawn to queue onto: refuse loudly, the box keeps the only copy
+  assert.match(RENDER, /if \(sid !== provisionalId\) \{\s*\n\s*warnToast\("“" \+ \(sessions\.get\(sid\)\?\.name \|\| "this session"\)/);
 });
 
 test("adoption flushes the held messages FOR REAL and carries the draft across", () => {
@@ -77,11 +78,25 @@ test("adoption flushes the held messages FOR REAL and carries the draft across",
     "setActive reads the draft map, so the carry has to be in it first");
 });
 
-test("a failed create says so in a dialog, in the kernel's own words", () => {
+test("a failed create says so in a dialog, in the kernel's own words — ON the failed thread", () => {
   assert.match(RENDER, /if \(provisionalId\) failProvisional\(m\.text\); else warnToast\(m\.text\);/);
   assert.match(RENDER, /showConfirm\("Couldn't start " \+ name,/);
-  assert.match(RENDER, /What you typed is back in the message box\./,
+  assert.match(RENDER, /What you typed is in this tab's message box\./,
     "losing the text would be the one unrecoverable part");
+  // The failure JUMPS BACK to its own tab first, and the text goes into THAT tab's box (the user
+  // 2026-08-08, whose held text landed in the draft of an unrelated thread they happened to be
+  // reading). The tab stays — the dialog is on top of the thread it is about.
+  const fail = RENDER.slice(RENDER.indexOf("function failProvisional"), RENDER.indexOf("function cancelProvisional"));
+  assert.ok(fail.includes("setActive(id);"), "foreground the failed thread before saying anything");
+  assert.ok(fail.includes("drafts.set(id, held); persistDrafts();"), "the text belongs to the failed tab, no other");
+  assert.ok(fail.indexOf("setActive(id);") < fail.indexOf("showConfirm("), "jump first, dialog second");
+  assert.ok(!fail.includes("= dropProvisional()"), "the tab is NOT torn down — it holds the text");
+  assert.ok(fail.includes("failedProvisionals.add(id);"));
+  // the failed tab's transcript says what happened (the starting loader would be a lie)…
+  assert.match(RENDER, /This session couldn't start\. What you typed is kept in the box below/);
+  assert.match(RENDER, /const staleStart = !!only && only\.classList\?\.contains\("tx-starting"\) && failedProvisionals\.has\(id\);/);
+  // …and its composer stays LIVE despite the closed-tab treatment, so the text is editable/copyable
+  assert.match(RENDER, /const closed = s\.status\.state === "closed" && !failedProvisionals\.has\(activeId!\);/);
 });
 
 test("the silent-failure backstop is long, because it is no longer what you wait on", () => {
@@ -90,9 +105,11 @@ test("the silent-failure backstop is long, because it is no longer what you wait
   assert.ok(Number(m![1].replace(/_/g, "")) >= 60_000, "well past the old 30s cue");
 });
 
-test("closing a provisional tab aborts the pending spawn", () => {
-  assert.match(RENDER, /if \(isProvisionalId\(id\)\) \{ cancelProvisional\(\); return; \}/);
+test("closing a provisional tab aborts the pending spawn; a FAILED one is a plain local discard", () => {
+  assert.match(RENDER, /if \(id === provisionalId\) cancelProvisional\(\);\s*\n\s*else \{ failedProvisionals\.delete\(id\); dismissSession\(id\); \}/);
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "cancelCreate", name \}\)/);
+  // the kernel never knew a provisional id — the dead-tab ✕ must not post closeTab for one
+  assert.match(RENDER, /if \(!isProvisionalId\(id\)\) vscodeApi\.postMessage\(\{ type: "closeTab", id \}\);/);
 });
 
 test("the folder question retires the tab and holds what was typed for the retry", () => {
@@ -102,7 +119,7 @@ test("the folder question retires the tab and holds what was typed for the retry
 });
 
 test("a starting tab shows the romp loader, not the 'No messages yet' placeholder", () => {
-  assert.match(RENDER, /if \(isProvisionalId\(id\)\) \{\s*\n\s*ph\.classList\.add\("tx-starting"\);/);
+  assert.match(RENDER, /\} else if \(isProvisionalId\(id\)\) \{\s*\n\s*ph\.classList\.add\("tx-starting"\);/);
   assert.match(RENDER, /romp-swirl-glyph\.svg/);
   assert.match(RENDER, /"Starting " \+ s\.name \+ "… you can type now; romp sends it when it's up\."/);
   assert.match(CSS, /\.tx-starting-swirl \{[\s\S]*?animation: tx-starting-spin/);

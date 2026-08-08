@@ -4002,6 +4002,12 @@ const provisionalQueue: string[] = [];
 let provisionalTimer: ReturnType<typeof setTimeout> | undefined;
 // Text typed into a provisional tab whose create had to ask something first, waiting for the retry's tab.
 let pendingCarry = "";
+// Provisional tabs whose create FAILED (the user 2026-08-08): the tab — and whatever was typed into
+// it — STAYS, foregrounded, with the failure dialog on top. It used to be torn down and the held text
+// dumped into whichever tab happened to be active, polluting an unrelated thread's draft. The set keys
+// the failed transcript placeholder, the send refusal, and the composer's read-only exemption; the
+// tab's ✕ discards tab and text together (an explicit choice, local-only — the kernel never knew it).
+const failedProvisionals = new Set<string>();
 // The backstop, for a create that fails with nothing said. Every failure the kernel CAN name arrives as a
 // warn / createDirMissing and lands the dialog at once; this covers a spawn that dies silently. It is
 // deliberately long — the point is that it is no longer what you wait on, the way the old 30s cue was.
@@ -4063,21 +4069,39 @@ function adoptProvisional(realId: string): void {
 
 // A create that FAILED. The kernel's own words are the message wherever it gave any (a bad name, an
 // unreadable parent, the SDK setup hint) — a dialog naming the reason beats the old cue, which simply
-// stopped after thirty seconds and left you to work out that nothing had happened. Whatever was typed
-// comes back in the box, because losing it would be the one unrecoverable part of this.
+// stopped after thirty seconds and left you to work out that nothing had happened. The TAB STAYS and is
+// foregrounded first, with whatever was typed back in ITS box (the user 2026-08-08): tearing it down
+// restored the text into whichever tab happened to be active, so a failure that landed while you were
+// reading another thread silently rewrote that thread's draft.
 function failProvisional(why: string): void {
   if (!provisionalId) return;
+  const id = provisionalId;
   const name = pendingNewSession || "that session";
-  const { queued, draft } = dropProvisional();
+  // retire the create MACHINERY only — dropProvisional() would dismiss the tab too
+  provisionalId = null;
+  pendingNewSession = null;
+  if (provisionalTimer) { clearTimeout(provisionalTimer); provisionalTimer = undefined; }
+  const queued = provisionalQueue.slice();
+  provisionalQueue.length = 0;
+  const ta0 = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  const draft = (activeId === id && ta0) ? ta0.value : (drafts.get(id) ?? "");
   const held = [...queued, draft].filter(Boolean).join("\n\n");
-  showConfirm("Couldn't start " + name,
-    why + (held ? "\n\nWhat you typed is back in the message box." : ""),
-    [{ label: "OK", value: "ok" }], () => { /* nothing to undo — the tab is already gone */ });
+  pendingSent.delete(id);            // the dashed "received" bubbles fold into the held text instead
+  failedProvisionals.add(id);
+  const s = sessions.get(id);
+  // "closed" gives the tab the dead treatment (struck label, plain ✕) — but the composer stays LIVE
+  // for a failed provisional (the read-only exemption below), since the held text must stay editable
+  if (s) s.status = { state: "closed", sinceEpoch: Math.floor(Date.now() / 1000) };
+  setActive(id);                     // jump back to the failed thread BEFORE saying anything
   if (held) {
+    drafts.set(id, held); persistDrafts();
     const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
     if (ta) { ta.value = held; growComposer(ta); }
-    if (activeId) { drafts.set(activeId, held); persistDrafts(); }
   }
+  renderTabs();
+  showConfirm("Couldn't start " + name,
+    why + (held ? "\n\nWhat you typed is in this tab's message box." : ""),
+    [{ label: "OK", value: "ok" }], () => { /* the tab keeps the text until its ✕ discards both */ });
 }
 
 // The ✕ on a provisional tab: tell the kernel to abort the pending spawn too, so a slow-but-successful
@@ -5163,13 +5187,20 @@ function syncView(id: string, atBottom?: boolean): View {
   // (the user 2026-06-19). Idempotent: leaves an existing placeholder in place; the first real event clears it.
   if (s.events.length === 0) {
     const only = v.el.childNodes.length === 1 ? (v.el.firstChild as HTMLElement) : null;
-    if (!only || !only.classList?.contains("tx-empty")) {
+    // …and rebuild a placeholder whose STARTING loader outlived its create (the failure flips it to
+    // the couldn't-start notice below — the spinning loader would be a lie on a failed tab)
+    const staleStart = !!only && only.classList?.contains("tx-starting") && failedProvisionals.has(id);
+    if (!only || !only.classList?.contains("tx-empty") || staleStart) {
       while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
       const ph = el("div", "tx-empty"); v.el.appendChild(ph);
       // A PROVISIONAL tab is not empty, it is STARTING — so it wears the romp loader (the repo's rule for
       // any wait), not the placeholder that tells you to send something. The composer below it is live
-      // either way: anything typed here is held and flushed when the session lands.
-      if (isProvisionalId(id)) {
+      // either way: anything typed here is held and flushed when the session lands. A FAILED create's
+      // tab says what happened instead (the user 2026-08-08) — the loader would be a lie.
+      if (isProvisionalId(id) && failedProvisionals.has(id)) {
+        ph.textContent = "This session couldn't start. What you typed is kept in the box below; "
+          + "✕ on the tab discards both.";
+      } else if (isProvisionalId(id)) {
         ph.classList.add("tx-starting");
         const sw = el("img", "tx-starting-swirl") as HTMLImageElement;
         sw.src = mediaSrc("romp-swirl-glyph.svg"); sw.alt = ""; sw.onerror = () => sw.remove();
@@ -5591,7 +5622,9 @@ function showActive() {
   // while you're viewing it disables the box live; switching back to a live tab re-enables it.
   const composer = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (composer) {
-    const closed = s.status.state === "closed";
+    // a FAILED provisional wears the closed treatment on its tab, but its composer stays LIVE: it holds
+    // the only copy of what was typed, which must stay editable/copyable (the send path refuses loudly)
+    const closed = s.status.state === "closed" && !failedProvisionals.has(activeId!);
     composer.disabled = closed;
     composer.placeholder = closed ? "Session closed — read-only" : composerRestingPlaceholder();
     const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
@@ -7842,8 +7875,13 @@ function statusOnly(msg: any) {
 // must not be recorded as a close of ours, which is why the record is written HERE, not in there.)
 function closeTabLocally(id: string): void {
   // A provisional tab has no session to close — closing it means "never mind", so it cancels the spawn
-  // the kernel may still be running, the way the old cue's ✕ did.
-  if (isProvisionalId(id)) { cancelProvisional(); return; }
+  // the kernel may still be running, the way the old cue's ✕ did. A FAILED one has no spawn left either
+  // (and the kernel never knew the id): its ✕ is a plain local discard — tab, draft, and all.
+  if (isProvisionalId(id)) {
+    if (id === provisionalId) cancelProvisional();
+    else { failedProvisionals.delete(id); dismissSession(id); }
+    return;
+  }
   dismissSession(id);
   closingTabs.set(id, Date.now());
 }
@@ -8195,6 +8233,13 @@ function setupComposer() {
         return;
       }
       if (isProvisionalId(sid)) {
+        // a FAILED create's tab: there is no pending spawn to queue onto, and never a session to send
+        // to — refuse loudly and leave the text exactly where it is (the box is the only copy)
+        if (sid !== provisionalId) {
+          warnToast("“" + (sessions.get(sid)?.name || "this session") + "” never started, so there's "
+            + "nowhere to send this. It stays in the box — create the session again to use it.");
+          return;
+        }
         provisionalQueue.push(text);
         registerOptimistic(sid, text);
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
@@ -8694,8 +8739,13 @@ setupSettings();
     close: (el) => {
       const id = el.dataset.id;
       if (!id || !vscodeApi) return;
-      // dead → just drop the read-only tab (optimistically too: it's the same kernel round-trip to wait on)
-      if (el.dataset.dead === "1") { vscodeApi.postMessage({ type: "closeTab", id }); closeTabLocally(id); return; }
+      // dead → just drop the read-only tab (optimistically too: it's the same kernel round-trip to wait
+      // on). A failed provisional is local-only — the kernel never knew its id, so nothing to post.
+      if (el.dataset.dead === "1") {
+        if (!isProvisionalId(id)) vscodeApi.postMessage({ type: "closeTab", id });
+        closeTabLocally(id);
+        return;
+      }
       // LIVE session: show the End/Close confirm IMMEDIATELY, client-side — NOT via a closeSession→confirmClose
       // kernel round-trip, which made the ✕ feel unresponsive (and sometimes never opened the modal when the
       // kernel was busy). The dialog is static; the kernel doesn't need to decide it (the user 2026-06-24).
