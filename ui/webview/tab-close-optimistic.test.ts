@@ -118,7 +118,8 @@ test("closeTabLocally drops the tab, THEN records the close — in that order", 
   // this shipped as set-then-dismiss while dismissSession opened with closingTabs.delete(id), so the
   // record was erased the instant it was written — the executed model above passed while the composed
   // wiring was a no-op. Hence these pins hold the ORDER, and the next test holds dismissSession's hands.
-  assert.match(RENDER, /if \(isProvisionalId\(id\)\) \{ cancelProvisional\(\); return; \}\s*\n\s*dismissSession\(id\);\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);/);
+  assert.match(RENDER, /return;\s*\n\s*\}\s*\n\s*dismissSession\(id\);\s*\n\s*closingTabs\.set\(id, Date\.now\(\)\);/,
+    "the provisional short-circuit returns above; a real tab still dismisses THEN records");
   // declared beside tabMeta, NOT down by dismissSession: renderTabs reads it and can run before the module
   // finishes evaluating, which would make a `const` down there a temporal-dead-zone throw.
   assert.match(RENDER, /const tabMeta = new Map[\s\S]{0,900}?const closingTabs = new Map<string, number>\(\);/);
@@ -133,7 +134,9 @@ test("the strip skips a just-closed tab on BOTH passes (order AND the tabMeta pl
 
 test("every close path is optimistic — the in-page ✕, a dead read-only tab, and the kernel's confirmClose", () => {
   assert.match(RENDER, /closeTab", id \}\);\s*\n\s*closeTabLocally\(id\);/, "the in-page ✕ confirm");
-  assert.match(RENDER, /el\.dataset\.dead === "1"\) \{ vscodeApi\.postMessage\(\{ type: "closeTab", id \}\); closeTabLocally\(id\); return; \}/);
+  // the dead-tab ✕: still optimistic, with the closeTab post skipped for a failed provisional id the
+  // kernel never knew (2026-08-08 — the failed tab now lingers holding its text)
+  assert.match(RENDER, /if \(el\.dataset\.dead === "1"\) \{\s*\n\s*if \(!isProvisionalId\(id\)\) vscodeApi\.postMessage\(\{ type: "closeTab", id \}\);\s*\n\s*closeTabLocally\(id\);\s*\n\s*return;/);
   // the kernel-driven confirmClose modal used to post and then just sit there waiting for the push
   assert.match(RENDER, /m\.type === "confirmClose"[\s\S]*?closeTabLocally\(m\.id\);/);
 });

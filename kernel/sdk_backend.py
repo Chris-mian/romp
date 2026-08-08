@@ -1120,6 +1120,11 @@ class SdkSession:
         #   so spend folds the DELTA between results — folding the raw value re-added the whole
         #   session-so-far cost every turn (the user 2026-08-08, whose spend line was fiction). Reset
         #   at each connect: a fresh CLI process starts its counter at zero.
+        self._last_usage_totals = {}  # same for the TOKEN counts: the result event's usage is the
+        #   process-lifetime `this.totalUsage` counter (verified in the bundle beside total_cost_usd),
+        #   so each field folds as a delta too — raw folding compounded the token readout exactly like
+        #   the dollars (the user 2026-08-08, round two: the hover's 5h/7d/month $-per-token ratios
+        #   diverged wildly because each window carried a different inflation factor).
         # Pending conversation REWIND (the chat's edit-message branch): the target record uuid +
         # the transcript leaf recorded at request time (the one-shot guard — see rewind_disposition).
         # Seeded from the reg so a kernel death mid-rewind re-applies it iff nothing landed since.
@@ -1616,6 +1621,7 @@ class SdkSession:
                     connected = True
                     self.client = client
                     self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero
+                    self._last_usage_totals = {}  # …and its cumulative token counters
                     # The CLI is demonstrably up, so any recorded launch failure is HISTORY — clear it
                     # here, at the proof, rather than on a timer. This is what lifts the usage-limit
                     # hold once the window resets: the next _ensure connects, the error record goes, and
@@ -1956,7 +1962,18 @@ class SdkSession:
             if isinstance(total, (int, float)) and total > 0:
                 delta = total - self._last_cost_total if total >= self._last_cost_total else total
                 self._last_cost_total = float(total)
-                self.backend._record_spend(delta, getattr(msg, "usage", None))   # the rail's spend + token readout
+                # the usage dict is the SAME kind of counter (`usage: this.totalUsage` in the bundle):
+                # per-field deltas, a shrunken field folding whole — see _last_usage_totals in __init__
+                u = getattr(msg, "usage", None)
+                u = u if isinstance(u, dict) else {}
+                turn_u = {}
+                for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                    v = u.get(k)
+                    v = int(v) if isinstance(v, (int, float)) else 0
+                    last = self._last_usage_totals.get(k, 0)
+                    turn_u[k] = v - last if v >= last else v
+                    self._last_usage_totals[k] = v
+                self.backend._record_spend(delta, turn_u)   # the rail's spend + token readout
             self.retrying = False
             self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self.retry_info = None

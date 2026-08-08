@@ -32,10 +32,12 @@ test("the kernel serves spend WINDOWS on the auth-flip marker, zero-filled when 
   // the subscription payload carries the spend windows BESIDE the bars — the hover's token graph
   // needs them for every account, not just spend-only ones (the user 2026-08-08)
   assert.match(KERNEL, /"fiveHour": five, "sevenDay": seven, "fable": fable,[\s\S]{0,600}?"spend": _spend_windows\(\),/);
-  // the accumulator: total_cost_usd is CUMULATIVE per CLI process — fold the per-turn DELTA, and a
-  // shrunken total (an unwatched reset) folds whole, never negative (the user 2026-08-08)
+  // the accumulator: total_cost_usd AND the usage token counts are CUMULATIVE per CLI process — fold
+  // per-turn DELTAS for both, and a shrunken counter (an unwatched reset) folds whole, never negative
+  // (the user 2026-08-08, dollars in the morning and tokens by the evening)
   assert.ok(BACKEND.includes("delta = total - self._last_cost_total if total >= self._last_cost_total else total"));
-  assert.ok(BACKEND.includes('self.backend._record_spend(delta, getattr(msg, "usage", None))'));
+  assert.ok(BACKEND.includes("turn_u[k] = v - last if v >= last else v"));
+  assert.ok(BACKEND.includes("self.backend._record_spend(delta, turn_u)"));
   assert.ok(BACKEND.includes("_fold(days, day, 90)"));
   assert.ok(BACKEND.includes("_fold(hours, hour, 192)"), "8 days of hour buckets feed the rolling windows");
 });

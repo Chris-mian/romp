@@ -332,6 +332,16 @@ function broadcastSettings(settings: unknown, from?: vscode.Webview) {
   }
 }
 
+// The optimistic colour echo rides the same fan-out (the user 2026-08-08): a tab-menu swatch pick in
+// the chat pane repaints the FEED's cards immediately, instead of waiting out the kernel's next feed
+// rebuild. The kernel still gets setSessionColor and its re-broadcast reconciles; this is display-only.
+function broadcastColorSync(m: { sid?: unknown; bg?: unknown }, from?: vscode.Webview) {
+  if (typeof m.sid !== "string" || typeof m.bg !== "string") return;
+  for (const w of [panel?.webview, feedPanel?.webview, fleetPanel?.webview, timelineView?.webview]) {
+    if (w && w !== from) w.postMessage({ type: "colorSync", sid: m.sid, bg: m.bg });
+  }
+}
+
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
 // VS Code does NOT spawn the kernel. It attaches to a manager-owned kernel on romp.kernelPort; if none
 // is there, it asks the `romp up` manager to ENSURE one (the manager spawns + owns it), waits for it,
@@ -537,6 +547,7 @@ function wirePanel(p: vscode.WebviewPanel) {
     if (m.type === "openLink" && typeof m.href === "string") { openLink(String(m.href)); return; }
     if (m.type === "openPane") { openPaneByKey(String(m.pane)); return; }   // strip quick-open
     if (m.type === "settingsSync") { broadcastSettings(m.settings, p.webview); return; }   // gear save → other panes
+    if (m.type === "colorSync") { broadcastColorSync(m, p.webview); return; }   // tab swatch pick → feed repaints now
     if (m.type === "pickFile") { void pickFileForComposer(p); return; }
     if (m.type === "readClipboard") {
       vscode.env.clipboard.readText().then(

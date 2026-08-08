@@ -431,6 +431,43 @@ function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boole
 // user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
 // per-host orders local-first, ids pre-prefixed.
 let sessionOrder: string[] = [];
+// The chat tab strip's sessions (sid+name+color), riding every feed push: the footer's session-filter
+// menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
+// filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
+let sessionsMeta: { sid: string; name: string; color: { bg: string; fg: string } | null }[] = [];
+// The one session the board is filtered to, or null — the DEFAULT, nothing selected, everything shows.
+// sessionStorage, deliberately: it survives this tab's reloads (webviews reload on updates) but a fresh
+// window always starts unfiltered — a filter that persisted for days would read as silently lost cards.
+let feedOnlySid: string | null = null;
+try { feedOnlySid = sessionStorage.getItem("romp:feedOnly") || null; } catch { /* storage blocked */ }
+function setFeedOnly(sid: string | null): void {
+  feedOnlySid = sid;
+  try { sid ? sessionStorage.setItem("romp:feedOnly", sid) : sessionStorage.removeItem("romp:feedOnly"); } catch { /* ignore */ }
+}
+
+// OPTIMISTIC colour echo from the chat pane's tab menu (the user 2026-08-08): the chat repaints its
+// tabs the instant a swatch is picked, but this pane kept the old colour until the kernel's next feed
+// REBUILD pushed — a second or two. The echo arrives kernel-free on two host-matched channels (the
+// same pair settings sync rides): the browser's same-origin iframes hear the localStorage write
+// (`storage` fires cross-document), and VS Code's extension fans {colorSync} to its other panels.
+// Apply it to every copy this pane holds and re-render; the kernel's own re-broadcast reconciles.
+function applyColorEcho(sid: string, bg: string): void {
+  if (!sid || !bg) return;
+  const color = { bg, fg: "#ffffff" };   // fg fixed white, matching the kernel's _name_color
+  let hit = false;
+  for (const a of asks) if (a.sid === sid) { a.color = color; hit = true; }
+  for (const s of sessionsMeta) if (s.sid === sid) { s.color = color; hit = true; }
+  const nm = sessionsMeta.find((s) => s.sid === sid)?.name || asks.find((a) => a.sid === sid)?.name;
+  if (nm) sessionColors.set(nm, bg);     // held-mail cards look colours up by name
+  if (hit) render();
+}
+window.addEventListener("storage", (e) => {
+  if (e.key !== "romp:color-echo" || !e.newValue) return;
+  try {
+    const v = JSON.parse(e.newValue);
+    applyColorEcho(typeof v.sid === "string" ? v.sid : "", typeof v.bg === "string" ? v.bg : "");
+  } catch { /* malformed echo — the kernel push corrects momentarily */ }
+});
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
@@ -2976,6 +3013,74 @@ function ensureGroupToggle(): HTMLElement {
     "group each column's cards by session (tab order), a session header between runs");
 }
 
+// The SESSION FILTER (the user 2026-08-08): a footer menu listing every session the chat tab strip
+// shows, in ITS order, each in its canonical form — identity-colour dot + name with any "host:"
+// prefix folded quiet (hostNameNodes). Picking one shows only that session's cards; "All sessions"
+// (the default — nothing selected) shows everything. The menu opens UPWARD from the footer (that is
+// where the space is) and lives on document.body, outside render()'s reconcile, so a push can never
+// rebuild it mid-press; the button itself is ensure-once like the other footer controls.
+let sessMenuEl: HTMLElement | null = null;
+function closeSessMenu(): void {
+  sessMenuEl?.remove(); sessMenuEl = null;
+  document.removeEventListener("pointerdown", sessMenuAway, true);
+  document.removeEventListener("keydown", sessMenuKey, true);
+}
+function sessMenuAway(ev: Event): void {
+  const t = ev.target as Node;
+  if (sessMenuEl && !sessMenuEl.contains(t) && !(document.getElementById("feed-sessfilter")?.contains(t))) closeSessMenu();
+}
+function sessMenuKey(ev: KeyboardEvent): void { if (ev.key === "Escape") closeSessMenu(); }
+function sessDot(bg: string | undefined): HTMLElement {
+  const d = el("span", "fsm-dot");
+  if (bg) d.style.background = bg; else d.classList.add("blank");
+  return d;
+}
+function openSessMenu(btn: HTMLElement): void {
+  const menu = el("div", "feed-sessmenu");
+  const row = (on: boolean, pick: string | null, ...label: Node[]) => {
+    const r = el("div", "fsm-row" + (on ? " on" : ""));
+    r.append(...label);
+    r.setAttribute("role", "menuitemradio"); r.setAttribute("aria-checked", on ? "true" : "false");
+    r.onclick = (ev) => { ev.stopPropagation(); setFeedOnly(on ? null : pick); closeSessMenu(); render(); };
+    menu.appendChild(r);
+  };
+  row(!feedOnlySid, null, document.createTextNode("All sessions"));
+  // tab order: rank by the kernel's session-order list (the same rank grouped mode sorts by); a sid the
+  // list doesn't know keeps its place in the kernel's tab list (stable sort), after the ranked ones
+  const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
+  const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));
+  for (const s of rows) row(feedOnlySid === s.sid, s.sid, sessDot(s.color?.bg), ...hostNameNodes(s.name, s.sid));
+  document.body.appendChild(menu);
+  // above the footer, left-aligned to the button, clamped into the viewport
+  const r = btn.getBoundingClientRect();
+  menu.style.bottom = Math.round(window.innerHeight - r.top + 6) + "px";
+  menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - menu.offsetWidth - 6))) + "px";
+  sessMenuEl = menu;
+  document.addEventListener("pointerdown", sessMenuAway, true);
+  document.addEventListener("keydown", sessMenuKey, true);
+}
+function ensureSessionFilter(): HTMLElement {
+  let b = document.getElementById("feed-sessfilter") as HTMLElement | null;
+  if (!b) {
+    b = el("button", "fdismiss ffollow feed-modetoggle");
+    b.id = "feed-sessfilter";
+    b.onclick = (ev) => {   // opening the menu IS the acknowledgement (same as the fold caret)
+      ev.stopPropagation();
+      if (sessMenuEl) closeSessMenu(); else openSessMenu(b!);
+    };
+    (document.getElementById("feed-foot") || document.body).appendChild(b);
+  }
+  const cur = feedOnlySid ? sessionsMeta.find((s) => s.sid === feedOnlySid) : undefined;
+  const on = !!feedOnlySid;
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.title = cur ? "showing only " + cur.name + " — click to change or show all"
+    : "show a single session's cards (default: all)";
+  if (cur) b.replaceChildren(sessDot(cur.color?.bg), ...hostNameNodes(cur.name, cur.sid), document.createTextNode(" ▴"));
+  else b.replaceChildren(document.createTextNode("Session ▴"));
+  return b;
+}
+
 // (The footer "Sub-goals" checkbox was removed 2026-07-08: sub-goals is now a per-card "Sub-goals" button
 // beside Summary — wired in applySections as the third mutually-exclusive section.)
 
@@ -3169,6 +3274,7 @@ function render() {
   ensureNewestFirst().style.display = showCA ? "" : "none";       // reverse the column order
   ensureCollapsedToggle().style.display = showCA ? "" : "none";   // default section state (collapsed / expanded)
   ensureGroupToggle().style.display = showCA ? "" : "none";       // by-session grouping (the user 2026-07-13)
+  ensureSessionFilter().style.display = showCA ? "" : "none";     // one-session filter menu (the user 2026-08-08)
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -3195,11 +3301,15 @@ function render() {
 
   const cols = ensureCols(list);
   const buckets: Record<Column, Entry[]> = { asks: [], needsInput: [], completed: [] };
+  // The footer session filter (the user 2026-08-08): with a session picked, the board draws ONLY its
+  // cards. Display-side only — `asks` stays complete, so flipping the filter needs no kernel round-trip
+  // and everything else (the modal, optimistic moves, the empty check above) still sees the whole board.
+  const shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;
   // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId).
   // Only host-flagged asks (groupTitle) participate, and a turn needs ≥2 current
   // members to fold — a lone survivor (siblings cleared) renders as a single card.
   const byTurn = new Map<string, AskItem[]>();
-  for (const a of asks) {
+  for (const a of shown) {
     if (!a.groupTitle || !a.turnId) continue;
     const arr = byTurn.get(a.turnId) || []; arr.push(a); byTurn.set(a.turnId, arr);
   }
@@ -3210,7 +3320,7 @@ function render() {
     const g = buildGroup(tid, members);
     buckets[g.column].push({ kind: "group", t: g.t, group: g });
   }
-  for (const a of asks) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
+  for (const a of shown) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
   // Oldest-at-top by default (the user 2026-06-27): the newest work sits at the BOTTOM of each column, and
   // new/moved cards stack onto the bottom (matches the fly animation). The footer "Newest first" toggle
   // (default off, the user 2026-07-07) reverses each column to newest-at-top.
@@ -3535,6 +3645,12 @@ window.addEventListener("message", (e: MessageEvent) => {
     awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // straw awaiting dots (the user 2026-07-13)
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
+    if (Array.isArray(m.sessions)) {
+      sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
+      // a filter aimed at a session the tab strip no longer shows is moot — clear it (the deciding
+      // event: the session left the tab list), rather than leaving the board silently pinned to nothing
+      if (feedOnlySid && !sessionsMeta.some((s) => s.sid === feedOnlySid)) setFeedOnly(null);
+    }
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
       Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
@@ -3589,6 +3705,10 @@ window.addEventListener("message", (e: MessageEvent) => {
     // same options in-page; a choice goes back as keystrokes (transport only,
     // the user decides — the never-auto-answer rule holds).
     showPickerDialog(String(m.name), Array.isArray(m.options) ? m.options.map(String) : []);
+  } else if (m.type === "colorSync" && typeof m.sid === "string" && typeof m.bg === "string") {
+    // VS Code leg of the optimistic colour echo (see applyColorEcho): the extension fans the chat
+    // pane's swatch pick here, since each webview's localStorage is its own — no storage event.
+    applyColorEcho(m.sid, m.bg);
   } else if (m.type === "cardPredict" && Array.isArray(m.ids)) {
     // kernel fan-back (the user 2026-07-20): a context-carrying reply just fired SOMEWHERE — the chat's
     // citation follow-up, a picker/permission answer typed in the chat, another feed view's button — so
