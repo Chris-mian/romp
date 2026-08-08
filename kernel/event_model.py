@@ -152,6 +152,114 @@ def parse_z(s):
     return None
 
 
+def _result_text(content):
+    """The text of a tool_result's content, whether it's a plain string or a list of {type:text} blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def _parse_task_notification(txt):
+    """Parse a <task-notification> block's fields, or None if it isn't one. Keys on the exact tags the
+    harness emits (status / summary / output-file / tool-use-id), not a guess. tool_use_id is the join
+    key back to the LAUNCHING tool_use — the standalone (string-content) notification shape carries it
+    only inside the text, unlike the older tool_result wrapper whose block names it."""
+    if not txt or "<task-notification>" not in txt:
+        return None
+
+    def fld(tag):
+        a = txt.find("<" + tag + ">")
+        if a < 0:
+            return ""
+        a += len(tag) + 2
+        b = txt.find("</" + tag + ">", a)
+        return txt[a:b].strip() if b >= 0 else ""
+    return {"status": (fld("status") or "completed").lower(), "summary": fld("summary"),
+            "output_file": fld("output-file"), "tool_use_id": fld("tool-use-id")}
+
+
+def _scan_bg_tasks(path, want_all=False):
+    """Walk the transcript pairing async LAUNCHES with their <task-notification> results, and surface a task
+    ONLY while it's still RUNNING (in flight across turns). A finished task drops out the instant its result
+    lands. Newest-launched first, capped. No output content here (a running task's output grows independently
+    of the transcript). Shared substrate: the kernel's chat box + awaiting sources read it through their
+    mtime caches, and the judge's settled gate reads it as the DURABLE awaited-work source — the pairing
+    lives in the transcript, so unlike any live snapshot it survives a kernel restart (2026-08-08).
+
+    Launches come in TWO durable shapes: a Bash tool_use with run_in_background:true, and an async
+    Agent dispatch — its ack is a user record whose TOP-LEVEL toolUseResult says isAsync/"async_launched"
+    (the tool_result block names the launching tool_use id). Results come in THREE: the notification inside
+    a tool_result block (the older wrapper), a standalone user record whose message.content IS the
+    notification string (the current dominant shape — missing this left finished tasks reading 'running'
+    forever), and a queue-operation enqueue holding the notification while the session is busy — the task
+    itself is already finished the moment any of the three exists.
+    Returns [{id,status,summary,command,outputFile}]."""
+    tasks, order = {}, []
+
+    def _mark(note):
+        # a notification keyed by its INNER <tool-use-id> (the string/queue shapes have no wrapper block)
+        tid = (note or {}).get("tool_use_id")
+        if tid and tid in tasks:
+            tasks[tid].update(status=note["status"], outputFile=note["output_file"],
+                              summary=note["summary"] or tasks[tid]["summary"])
+
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '"type"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                t = o.get("type")
+                c = (o.get("message") or {}).get("content")
+                if t == "assistant" and isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and (b.get("input") or {}).get("run_in_background"):
+                            tid, inp = b.get("id"), (b.get("input") or {})
+                            if tid and tid not in tasks:
+                                tasks[tid] = {"id": tid, "status": "running", "t": parse_z(o.get("timestamp")),
+                                              "summary": (inp.get("description") or b.get("name") or "Background task"),
+                                              "command": inp.get("command") or "", "outputFile": ""}
+                                order.append(tid)
+                elif t == "user" and isinstance(c, list):
+                    tur = o.get("toolUseResult")
+                    tur = tur if isinstance(tur, dict) else {}
+                    async_launch = bool(tur.get("isAsync")) or tur.get("status") == "async_launched"
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            tid = b.get("tool_use_id")
+                            if async_launch and tid and tid not in tasks:
+                                # an async Agent dispatch ack — the durable "this work is now running" record
+                                tasks[tid] = {"id": tid, "status": "running", "t": parse_z(o.get("timestamp")),
+                                              "summary": (tur.get("description") or "Background agent"),
+                                              "command": "", "outputFile": tur.get("outputFile") or ""}
+                                order.append(tid)
+                                continue
+                            note = _parse_task_notification(_result_text(b.get("content")))
+                            if tid in tasks and note:      # its result landed → mark it done; the keep-filter drops it
+                                tasks[tid].update(status=note["status"], outputFile=note["output_file"],
+                                                  summary=note["summary"] or tasks[tid]["summary"])
+                elif t == "user" and isinstance(c, str):
+                    _mark(_parse_task_notification(c))
+                elif t == "queue-operation" and o.get("operation") == "enqueue":
+                    _mark(_parse_task_notification(o.get("content") or ""))
+    except OSError:
+        return []
+    if want_all:
+        # EVERY task the transcript knows, launch-ordered, each carrying its launch `t` and its CURRENT
+        # status (still "running", or the terminal status its notification reported). The awaiting-stamp
+        # lift (_lift_spent_awaiting) needs the RETURNED ones too: "this goal's dispatches have all come
+        # back" is precisely the event that ends a wait, and the running-only view cannot express it.
+        return [tasks[tid] for tid in order]
+    keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running"]
+    keep.reverse()
+    return keep[:60]
+
+
 def _read_jsonl(path):
     """Yield parsed json objects from a .jsonl file; [] on any error."""
     try:
