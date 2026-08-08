@@ -3557,9 +3557,12 @@ function renderTabs() {
     // Slim vertical context gauge right of the name (the user 2026-08-08): the statusline battery's
     // fill % + colormap colour, rotated upright and with no % text — so "this session is filling up"
     // reads at a glance across the whole strip. Skipped while compacting (the compacting bar owns that
-    // moment, and the % is about to be wrong) and on dead tabs; gear → Chat toggles it (default on).
-    if (settings.tabCtx !== false && s.status.ctx && st !== "compacting" && st !== "closed") {
-      tab.appendChild(tabCtxGauge(s.status.ctx, s.status.ctxColor));
+    // moment, and the % is about to be wrong) and on dead tabs. gear → Chat picks WHEN it shows:
+    // only once ≥50% full (the default — a gauge on every quiet tab is clutter; it appears when it
+    // has news), always, or never (the user 2026-08-08 v2, replacing the on/off toggle).
+    if (settings.tabCtx !== "never" && s.status.ctx && st !== "compacting" && st !== "closed") {
+      const pct = Math.max(0, Math.min(100, parseInt(s.status.ctx, 10) || 0));
+      if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(tabCtxGauge(s.status.ctx, s.status.ctxColor));
     }
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
     // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.

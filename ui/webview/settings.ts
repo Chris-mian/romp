@@ -16,19 +16,33 @@ export interface RompSettings {
   backend: "tmux" | "sdk";   // which backend a NEWLY-created session uses (the user 2026-06-22): "tmux" (terminal) or "sdk" (Agent SDK). Both coexist; this is only the default for the + button. Read at createSession time (render.ts). Default sdk (the user 2026-07-13).
   defaultDir: string;        // default working directory PREFILLED in the new-session field (the user 2026-06-22). A session's dir is fixed at creation. Empty → the kernel's serve dir. ~ / $VAR expanded server-side.
   showBranch: boolean;       // chat bottom-bar: show the session's git branch (if any) beside the dir (the user 2026-06-23). ON by default.
-  tabCtx: boolean;           // chat tabs: slim vertical context gauge beside each session name (the user 2026-08-08). ON by default.
+  tabCtx: TabCtxMode;        // chat tabs: WHEN the context gauge shows beside each session name (the user 2026-08-08) — "over50" (default: only once half full, so quiet tabs stay clean), "always", or "never".
+}
+// When the tab strip's context gauge shows. "over50" is the default (the user 2026-08-08): a gauge
+// on every tab is clutter while nothing is filling up — it should appear only when it has news.
+export type TabCtxMode = "always" | "over50" | "never";
+// The gauge shipped for a few hours as a boolean toggle (2026-08-08) — normalize a stored
+// true/false (or anything else unrecognized) into the mode enum: false was an explicit "hide"
+// → never; true was the shipped default nobody chose → the new default. loadSettings applies
+// this, so consumers always see a mode.
+export function tabCtxMode(v: unknown): TabCtxMode {
+  return v === "always" || v === "never" ? v : v === false ? "never" : "over50";
 }
 // NOTE: the old `explanations` pref is GONE (the user 2026-06-18) — cards no longer show the planner's
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
 // compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
 // (thinking hidden, tool runs folded); the gear opts back into the full stream.
-export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true, tabCtx: true };
+export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true, tabCtx: "over50" };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      s.tabCtx = tabCtxMode(s.tabCtx);   // a store written by the boolean-era gear holds true/false
+      return s;
+    }
   } catch { /* corrupt / unavailable → defaults */ }
   return { ...DEFAULT_SETTINGS };
 }
