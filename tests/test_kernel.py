@@ -7310,12 +7310,12 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
                           "awaitingAt": NOW - 500}},
             "placements": {}, "status": {g: "working"}}))
         self._log(self._msg(self.A, self.B, NOW - 600, "delegate"))
-        full, tops = km._session_stamp_read(self.A)
+        full, tops, _deleg = km._session_stamp_read(self.A)   # 3rd slot = delegated-peer sids (2026-08-08)
         self.assertEqual(full[2], "sent to a peer to build the flag parser")
         self.assertEqual(tops, frozenset({g}))
         # the peer's reply lands (also busts the postal-key on the stamp cache) → the stamp view lifts
         self._log(self._msg(self.B, self.A, NOW - 100, "coordinate", body="built and merged"))
-        full, tops = km._session_stamp_read(self.A)
+        full, tops, _deleg = km._session_stamp_read(self.A)
         self.assertEqual(full, (None, None, None), "the answered handoff supersedes the older stamp")
         self.assertEqual(tops, frozenset())
 

@@ -8037,7 +8037,7 @@ def _session_stamp_read(sid):
         gs = (jd.GOALDIR / (sid + ".json")).stat()
         gkey = (gs.st_mtime, gs.st_size)
     except Exception:
-        return ((None, None, None), frozenset())       # no store yet → nothing to stamp
+        return ((None, None, None), frozenset(), ())   # no store yet → nothing to stamp, nothing delegated
     try:
         ostt = (jd._overrides_dir() / (sid + ".jsonl")).stat()
         okey = (ostt.st_mtime, ostt.st_size)
@@ -8052,7 +8052,7 @@ def _session_stamp_read(sid):
     hit = _SESSION_STAMP_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
-    full, tops = (None, None, None), set()
+    full, tops, deleg = (None, None, None), set(), ()
     try:                                               # load_goals (not a raw read) so overrides replay —
         nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
         best = None
@@ -8071,9 +8071,27 @@ def _session_stamp_read(sid):
                 tops.add(top)
         if best:
             full = (best[1], best[0], best[2])         # (gid, at, why)
+        # DELEGATION, the same pass (the user 2026-08-08, whose fully-delegated session wore the feed's
+        # green awaiting dot while chat/timeline/rail read plain ready): a top whose every OPEN leaf is a
+        # courier handoff node is work handed to PEERS — the exact evidence the feed's per-card flavor
+        # reads (_deleg_why in build_feed). Collect the PEER SIDS here (names resolve at read time, so a
+        # renamed peer never shows a stale name from this cache); _session_delegated_why formats them for
+        # _session_awaiting's stamp branch. A PURE-delegation top is excluded to mirror the feed exactly:
+        # its card is suppressed in every column, so it never lights the feed dot either.
+        peers = set()
+        for tid, td_ in nodes.items():
+            if td_.get("parentId") is not None or td_.get("nodeComplete") or td_.get("cleared"):
+                continue
+            if not _all_outstanding_delegated(nodes, tid) or _pure_delegation_top(nodes, tid):
+                continue
+            for x in _open_leaves(nodes, tid):
+                h = nodes.get(x, {}).get("handoff")
+                if isinstance(h, dict) and h.get("peer"):
+                    peers.add(str(h["peer"]))
+        deleg = tuple(sorted(peers))
     except Exception:
-        full, tops = (None, None, None), set()
-    val = (full, frozenset(tops))
+        full, tops, deleg = (None, None, None), set(), ()
+    val = (full, frozenset(tops), deleg)
     _SESSION_STAMP_CACHE[sid] = (key, val)
     return val
 
@@ -8096,6 +8114,21 @@ def _session_stamp_cached(sid):
     """The freshest durable ⏳ stamp's WHY for a session (or None) — the display surfaces' view; see
     _session_stamp_full for the gid + awaitingAt the awaiting backstop consumes."""
     return _session_stamp_full(sid)[2]
+
+
+def _session_delegated_why(sid):
+    """The session-scoped DELEGATION wait (or None): every open leaf of some inbox-visible top is a
+    courier handoff — the only outstanding work lives with peers. The SAME evidence the feed's per-card
+    flavor reads (_deleg_why in build_feed), reaching the rail chip / chat chip / timeline lane through
+    _session_awaiting's stamp branch — before this, a fully-delegated session wore the feed's green
+    awaiting dot while every session-scoped surface read plain ready (the user 2026-08-08, who asked why
+    three surfaces disagreed on one fact). Peer SIDS ride the mtime cache; names resolve here so a
+    renamed peer reads fresh."""
+    peers = _session_stamp_read(sid)[2]
+    if not peers:
+        return None
+    names = sorted(_name_of(p) or "a peer" for p in peers)
+    return "delegated to %s; waiting on their result" % ", ".join(names)
 
 
 def _session_awaiting(sid, path, idle, stamp=False):
@@ -8136,7 +8169,15 @@ def _session_awaiting(sid, path, idle, stamp=False):
          per session, for which "the session is awaiting" is the right summary). The FEED does NOT: it scopes
          the stamp per goal via _goal_awaiting_stamp, so a stamp on one goal never floors its siblings to
          awaiting (a session-wide _await_ok would). The nudge gates skip via their own per-goal stamp check.
-    Postal peer-waits are handled separately in build_feed."""
+      2.5 the DELEGATION wait (_session_delegated_why), same opt-in gate as source 2: a top whose every
+         open leaf is a courier handoff has all its outstanding work with PEERS — the same evidence the
+         feed card's _deleg_why reads, so the session dot and the card flavor answer alike (the user
+         2026-08-08). Ends on the graph's own events: run_propagate completes the handoff node when the
+         peer's linked goal lands, busting the store mtime this read is cached on.
+    The one remaining feed-only flavor is the blocked-card peer-wait flip (col blocked + _peer_wait in
+    build_feed): it corrects a needs-you verdict against the wait-for graph, which requires the card's
+    block context — a session-scoped mirror would light this badge for ANY unanswered peer ask, saying
+    MORE than the feed does. Postal peer-waits otherwise stay build_feed's."""
     if not idle:
         return None
     # Source 0 (the user 2026-07-05, jld_audit): the backend snapshot's LIVE subagent count — the designed
@@ -8187,7 +8228,11 @@ def _session_awaiting(sid, path, idle, stamp=False):
         # durable stamp below. Same stamp=True gate: the session-scoped surfaces want one summary answer,
         # while the FEED keeps scoping per goal — a session-wide _await_ok would floor every sibling card
         # to awaiting, which is exactly what that gate has always prevented.
-        return _owned_yield_why(sid, path) or _session_stamp_cached(sid)
+        # …and the DELEGATION wait (the courier handoff graph — the feed card's _deleg_why evidence),
+        # AFTER the judge's stamp, mirroring the feed's own precedence (its _deleg_why yields to
+        # _stamp_why/_await_ok). Without this arm a fully-delegated session was the feed's green dot
+        # and nobody else's (the user 2026-08-08): the three surfaces answered one question two ways.
+        return _owned_yield_why(sid, path) or _session_stamp_cached(sid) or _session_delegated_why(sid)
     return None
 
 
@@ -13123,7 +13168,9 @@ def build_feed(now, tmux=None):
             # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
             # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
             # as "this session should be doing something"). Ends on the graph's own event: run_propagate
-            # checks the handoff off the moment the peer's linked goal completes.
+            # checks the handoff off the moment the peer's linked goal completes. The session-scoped
+            # surfaces (rail/chat/timeline) read the SAME evidence via _session_delegated_why in
+            # _session_awaiting's stamp branch — keep the two in step (the user 2026-08-08).
             _deleg_why = None
             if col == "working" and not _stamp_why and not _await_ok \
                     and _all_outstanding_delegated(nodes, nid):

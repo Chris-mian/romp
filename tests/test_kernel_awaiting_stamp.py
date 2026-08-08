@@ -185,6 +185,106 @@ class SessionLevelStamp(unittest.TestCase):
         self.assertEqual(km._session_stamp_cached(SID), "second wait, a different length so size differs")
 
 
+class SessionLevelDelegation(unittest.TestCase):
+    """Source 2.5 of _session_awaiting (the user 2026-08-08, who saw three surfaces answer one question
+    two ways): a session whose only outstanding work is a courier HANDOFF wore the feed's green awaiting
+    dot (the card flavor reads _deleg_why off the handoff graph) while the rail chip, chat chip, and
+    timeline lane — which read _session_awaiting, blind to delegation — said plain ready. The delegation
+    evidence now reaches the session-scoped surfaces through the same stamp-gated branch, computed in
+    _session_stamp_read's one cached store pass."""
+
+    PEER = "33333333-4444-5555-6666-777777777777"
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions,
+                       km._states_awaiting_overlay, km._name_of)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"
+        km.jd.GOALDIR.mkdir(parents=True)
+        km._SESSION_STAMP_CACHE.clear()
+        km._states_awaiting_overlay = lambda sid: None
+        km._name_of = lambda s: "probe" if s == self.PEER else None
+        # LIVE snapshot, empty bg sets (SDK-style): every live source falls through, like SessionLevelStamp
+        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+
+    def tearDown(self):
+        (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions,
+         km._states_awaiting_overlay, km._name_of) = self._saved
+        km._SESSION_STAMP_CACHE.clear()
+        self.td.cleanup()
+
+    def _seed(self, nodes):
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
+
+    def _handoff(self, nid, parent, complete=False):
+        nd = _node(nid, parent=parent)
+        nd["handoff"] = {"peer": self.PEER, "msgId": "1111111111.00000_00000.TESTHOST"}
+        nd["nodeComplete"] = complete
+        return nd
+
+    def _delegated_store(self):
+        """A top with one COMPLETED own-work leaf and one OPEN handoff — the synth shape: the card shows
+        (not pure delegation), and its only open work is the peer's."""
+        done = _node("s1", parent="g1"); done["nodeComplete"] = True
+        return {"g1": _node("g1"), "s1": done, "h1": self._handoff("h1", "g1")}
+
+    def test_a_fully_delegated_session_reads_awaiting_on_the_session_surfaces(self):
+        self._seed(self._delegated_store())
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         "delegated to probe; waiting on their result")
+
+    def test_stamp_false_stays_none_so_the_feed_keeps_scoping_per_card(self):
+        self._seed(self._delegated_store())
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=False))
+
+    def test_the_judge_stamp_outranks_delegation_like_the_feeds_own_precedence(self):
+        nodes = self._delegated_store()
+        nodes["g1"]["awaitingWhy"], nodes["g1"]["awaitingAt"] = "the sweep it launched", 200
+        self._seed(nodes)
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True), "the sweep it launched")
+
+    def test_a_pure_delegation_top_stays_dark_matching_its_suppressed_card(self):
+        # EVERY leaf a handoff → the feed suppresses the card in every column, so its dot never lights;
+        # the session surfaces must not say MORE than the feed does
+        self._seed({"g1": _node("g1"), "h1": self._handoff("h1", "g1")})
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
+
+    def test_a_completed_handoff_ends_the_wait_on_the_graphs_own_event(self):
+        nodes = self._delegated_store()
+        nodes["h1"]["nodeComplete"] = True             # run_propagate checked it off — peer delivered
+        self._seed(nodes)
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
+
+    def test_own_open_work_keeps_the_session_plain_not_awaiting(self):
+        nodes = self._delegated_store()
+        own = _node("s2", parent="g1")                 # an open OWN leaf → the session can still act
+        nodes["s2"] = own
+        self._seed(nodes)
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
+
+    def test_a_dormant_session_never_lights_off_the_graph(self):
+        self._seed(self._delegated_store())
+        km._tmux_sessions = lambda: {}
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True))
+
+    def test_the_chip_reads_awaitingBg_end_to_end(self):
+        # the shared _session_chip derivation (chat chip AND timeline lane) lights off the same arm
+        self._seed(self._delegated_store())
+        saved = (km._session_working, km._api_error, km._compacting, km._interrupting)
+        km._session_working = lambda turns: False
+        km._api_error = lambda path: None
+        km._compacting = lambda *a, **k: False
+        km._interrupting = lambda *a, **k: False
+        try:
+            chip = km._session_chip(SID, "/p", {"turns": []}, km._tmux_sessions()[SID], NOW)
+        finally:
+            km._session_working, km._api_error, km._compacting, km._interrupting = saved
+        self.assertEqual(chip, "awaitingBg")
+
+
 class OverlayDoesNotVeto(unittest.TestCase):
     """The production regression (the user 2026-07-27): the SDK Stop hook writes awaiting:false at EVERY
     turn end, and nothing has written true since 2026-07-07 — so every real SDK session carries a trailing
