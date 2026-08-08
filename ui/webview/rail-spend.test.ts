@@ -29,9 +29,10 @@ test("the kernel serves spend WINDOWS on the auth-flip marker, zero-filled when 
   assert.ok(KERNEL.includes('k.startswith(month)'));
   // a window-less file on a logged-in machine stays None — nothing known, draw nothing
   assert.match(KERNEL, /if o\.get\("apiKey"\) or [\s\S]{0,900}?return None/);
-  // the subscription payload carries the spend windows BESIDE the bars — the hover's token graph
-  // needs them for every account, not just spend-only ones (the user 2026-08-08)
-  assert.match(KERNEL, /"fiveHour": five, "sevenDay": seven, "fable": fable,[\s\S]{0,600}?"spend": _spend_windows\(\),/);
+  // the subscription payload carries NO spend windows (the user 2026-08-08, same day they were
+  // added beside the bars): a login account's story is its % bars — token volume + dollars are
+  // API-KEY information, carried only on the spend-only payload
+  assert.doesNotMatch(KERNEL, /"fiveHour": five, "sevenDay": seven, "fable": fable,[\s\S]{0,600}?"spend": _spend_windows\(\),/);
   // the accumulator: total_cost_usd AND the usage token counts are CUMULATIVE per CLI process — fold
   // per-turn DELTAS for both, and a shrunken counter (an unwatched reset) folds whole, never negative
   // (the user 2026-08-08, dollars in the morning and tokens by the evening)
@@ -69,12 +70,10 @@ test("the web landing copy carries the SAME builder — the two rails stay in st
   // same row markup as winsHTML: ru-w → ru-name → ru-bars (tracks) → ru-pct readout
   assert.ok(KERNEL.includes("+'<div class=ru-name>'+w[1]+'</div>'"));
   assert.ok(KERNEL.includes("(pct!=null?'<div class=ru-track><i class=ru-fill style=\"width:'+pct+'%;background:'+spendColor(pct)+'\"></i></div>':'')"));
-  // both the single- and multi-account paths fall to the window rows, and BOTH fill the hover detail
-  // (spendDet) so a bars account still gets the token graph
-  assert.ok(KERNEL.includes("if(hasBars(live[0].usage)){el.innerHTML=winsHTML(live[0].usage,det);spendDet(live[0].usage,det);}"));
-  assert.ok(KERNEL.includes("else el.innerHTML=spendWinsHTML(live[0].usage,det);"));
-  assert.ok(KERNEL.includes("if(hasBars(r.usage)){inner=winsHTML(r.usage,det);spendDet(r.usage,det);}"));
-  assert.ok(KERNEL.includes("else inner=spendWinsHTML(r.usage,det);"));
+  // both the single- and multi-account paths fall to the window rows; only the spend path fills the
+  // hover's spend detail (spendDet inside spendWinsHTML) — a bars account gets no token section
+  assert.ok(KERNEL.includes("el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendWinsHTML(live[0].usage,det);"));
+  assert.ok(KERNEL.includes("var inner=hasBars(r.usage)?winsHTML(r.usage,det):spendWinsHTML(r.usage,det);"));
 });
 
 test("the rich tip is the ONE hover surface: no native titles, every account renders, cursor-anchored", () => {
@@ -89,11 +88,14 @@ test("the rich tip is the ONE hover surface: no native titles, every account ren
   // subscription login (the user 2026-08-08) — now it renders its own section
   assert.ok(usageJS.includes("if(!keys.length&&!sp)return '';"));
   assert.ok(usageJS.includes("var spendOnly=!keys.length;"));
-  // the token graph: the three spend windows' volume on ONE shared auto-scale, in the tip's track idiom
+  // the spend graph: the three windows' token volume on ONE shared auto-scale, in the tip's track
+  // idiom, dollars beside each — SPEND-ONLY accounts only (the user 2026-08-08: a login account's
+  // story is its % bars, and token rows there read as noise). The guard also covers an older kernel
+  // in the fleet still attaching spend beside its bars.
   assert.ok(usageJS.includes("function spendDet(u,det)"));
+  assert.ok(usageJS.includes("if(sp&&spendOnly){"));
   assert.ok(usageJS.includes("var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});"));
-  // dollars ride the value column only where they are REAL billing (spend-only accounts)
-  assert.ok(usageJS.includes("+fmtTok(v.tok)+(spendOnly?' \\u00b7 $'"));
+  assert.ok(usageJS.includes("+fmtTok(v.tok)+' \\u00b7 $'"));
   // the tip anchors ABOVE the rail, centered on the CURSOR — never pinned to the container edge
   assert.ok(usageJS.includes("var x=(ev&&typeof ev.clientX==='number')?ev.clientX:(r.left+r.width/2);"));
   assert.ok(usageJS.includes("x-tip.offsetWidth/2"));

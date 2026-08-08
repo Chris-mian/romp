@@ -13873,10 +13873,9 @@ def _usage():
     limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven), "fable": _lim(fable)}
     t = o.get("t")
     return {"fiveHour": five, "sevenDay": seven, "fable": fable,
-            # the spend windows ride BESIDE the subscription bars now (the user 2026-08-08): the rail's
-            # hover draws the three windows' TOKEN volume on one shared scale for every account, and the
-            # token data lives only here. Rail rows still key on the bars; this is hover detail.
-            "spend": _spend_windows(),
+            # NO spend windows beside the bars (the user 2026-08-08, same day they were added: a login
+            # account's story is its % bars, and its token rows read as noise — token volume + dollars
+            # are API-KEY information, carried only on the spend-only payload above).
             "t": t if isinstance(t, (int, float)) else None,
             # WHOSE allowance this is. These windows are account-wide, so two machines signed into the
             # SAME account share one set of numbers and must not be drawn twice; two machines on
@@ -15979,7 +15978,14 @@ def _push(targets, connect=False):
                                                          "reason": _retry_pause_reason()})   # "spend" → the card says 'raise your cap', no countdown
                 _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
             active = {c.get("active") for c in chat_clients if c.get("active")}
-            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
+            # Stable: active tabs first — and TRANSCRIPT-LESS sessions with them. A just-created session
+            # has no transcript, so its build is near-free, and its creator is guaranteed to be staring
+            # at its placeholder — yet the active-first hint can never name it: a client cannot declare
+            # a tab active before that tab's first payload arrives. Ranked last, the new session's
+            # payload waited out the whole fleet's builds (~22s measured), leaving "Opening session"
+            # dots on a session that had been ready for all of it (the user 2026-08-08).
+            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active
+                                 or not os.path.exists(s["path"]) else 1)
             for s in build_order:
                 is_active = s["sid"] in active           # the watched tab(s) always rebuild → stay live
                 sig = _chat_build_sig(s)
@@ -17584,9 +17590,9 @@ if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
 // only month-to-date draws the elapsed track. strip.ts carries the same builder \u2014 kept in step.
 var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
 function spendColor(p){return p>=90?'#c0392b':p>=70?'#e0b020':'#54B204';}
-// The per-account SPEND detail for the rich hover (the token graph + dollars/turns rows) \u2014 filled for
-// EVERY account whose payload carries spend, subscription accounts included (the kernel now attaches
-// spend windows beside the bars): the hover's token view is the same three windows on ONE scale.
+// The per-account SPEND detail for the rich hover (the token graph + dollars rows) \u2014 spend-only
+// accounts (an API key / a login-less host) carry it; a LOGIN account's payload has no spend windows
+// on purpose (the user 2026-08-08: its % bars are the story, and token rows there read as noise).
 function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
 var budget=(typeof seg.budget==='number'&&seg.budget>0)?seg.budget:null;
@@ -17650,8 +17656,7 @@ var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 if(live.length===1){var det={};det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null;
 LAST=[{host:'',det:det}];
-if(hasBars(live[0].usage)){el.innerHTML=winsHTML(live[0].usage,det);spendDet(live[0].usage,det);}
-else el.innerHTML=spendWinsHTML(live[0].usage,det);
+el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendWinsHTML(live[0].usage,det);
 return;}
 var html='';LAST=[];
 // no native title on the account set (the user 2026-08-08 — the rich tip is the ONE hover surface);
@@ -17659,9 +17664,7 @@ var html='';LAST=[];
 live.forEach(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 var hn=r.host||selfHost||'this machine';
 LAST.push({host:hn,det:det});
-var inner;
-if(hasBars(r.usage)){inner=winsHTML(r.usage,det);spendDet(r.usage,det);}
-else inner=spendWinsHTML(r.usage,det);
+var inner=hasBars(r.usage)?winsHTML(r.usage,det):spendWinsHTML(r.usage,det);
 html+='<div class=ru-set>'
 +'<span class=ru-host>'+esc(hn)+':</span>'+inner+'</div>';});
 el.innerHTML=html;}
@@ -17698,17 +17701,17 @@ h+=keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
 :(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
-// The TOKEN GRAPH (the user 2026-08-08): the three spend windows' token volume on ONE shared scale \u2014
-// each bar auto-scales to the largest window, so 5h vs 7d vs month compares at a glance in the same
-// track idiom as the % bars above. Dollars ride the value column only where they are REAL billing (a
-// spend-only account); a subscription login's nominal cost would read as a bill, so it stays tokens.
-if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
+// The API-KEY SPEND graph (the user 2026-08-08): the three windows' token volume on ONE shared scale
+// \u2014 each bar auto-scales to the largest window \u2014 with the real dollars beside each count. SPEND-ONLY
+// accounts only (same day): a login account's story is its % bars, and token rows there read as noise
+// (the guard also holds against an older kernel in the fleet still attaching spend beside its bars).
+if(sp&&spendOnly){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
 if(ks.length){var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});
-h+='<div class=ru-tip-win><div class=ru-tip-name><span>'+(spendOnly?'API-key spend':'Tokens')+'</span></div>'
+h+='<div class=ru-tip-win><div class=ru-tip-name><span>API-key spend</span></div>'
 +ks.map(function(k){var v=sp[k],wpct=v.tok>0?Math.max(2,Math.round(v.tok/mx*100)):0;
 return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
 +'<span class=ru-tip-track><i style="width:'+wpct+'%;background:#6b7a8c"></i></span>'
-+'<span class=ru-tip-v>'+fmtTok(v.tok)+(spendOnly?' \u00b7 $'+(v.usd<100?v.usd.toFixed(2):String(Math.round(v.usd))):'')+'</span></div>';}).join('')
++'<span class=ru-tip-v>'+fmtTok(v.tok)+' \u00b7 $'+(v.usd<100?v.usd.toFixed(2):String(Math.round(v.usd)))+'</span></div>';}).join('')
 +'</div>';}}
 h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
 return h;}
