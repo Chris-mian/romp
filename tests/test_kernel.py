@@ -1150,9 +1150,16 @@ class ViewBuilder(unittest.TestCase):
         src = inspect.getsource(km._drive)
         self.assertIn('text = CONTINUE_TEXT if msg.get("cont") else str(msg["text"])', src)
         self.assertIn("jd.optimistic_followup(sid, iid, text=text, now=int(time.time()))", src)
-        # the canned body ends with the one-line escape hatch: a REAL block (the agent needs something
-        # only the user has) comes back as one sharp re-ask, which the judges re-block from — the
-        # correct move on new information, so a mispressed Continue costs one turn, not the thread
+        # the canned body covers its three arrival contexts (the user 2026-08-08). ALREADY WORKING is
+        # the commonest press — the judge missed a continuation and the user sees the session busy —
+        # and the message lands at the next turn boundary, so it must read as "carry on, don't stop
+        # to reply", not as a question that stops the work for a status report:
+        self.assertIn("If you're already on it, keep going, no reply needed", km.CONTINUE_TEXT)
+        # a pending question is delegated, not answered:
+        self.assertIn("open calls are yours", km.CONTINUE_TEXT)
+        # and it ends with the one-line escape hatch: a REAL block (the agent needs something only the
+        # user has) comes back as one sharp re-ask, which the judges re-block from — the correct move
+        # on new information, so a mispressed Continue costs one turn, not the thread
         self.assertIn("say exactly what you need in one line", km.CONTINUE_TEXT)
 
     def test_feed_awaiting_via_session_signal_is_held_in_working_with_a_badge(self):

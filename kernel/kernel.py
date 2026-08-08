@@ -690,10 +690,16 @@ def _open_leaf_bullets(nodes, subs, cap=12, indent="  "):
 # needs-you; a fifth of Clears landed on sessions visibly mid-turn, where Clear's wrap-up says the
 # opposite of what the user meant; and the short-reply tail was dominated by hand-typed go-aheads.
 # VOICE (test_injected_voice.py renders this through _followup_body): the person the agent works for,
-# no tracking-system nouns. The last line licenses one sharp re-ask when the block is REAL (the agent
-# needs something only the user has): the judges then re-block from that reply, a correct move on new
-# information, so a mispressed Continue costs one turn and returns a tighter brief.
-CONTINUE_TEXT = ("Nothing needed from me here. Keep going, and make any open calls yourself. "
+# no tracking-system nouns. Three arrival contexts, each with its own sentence (the user 2026-08-08,
+# same day): ALREADY WORKING is the commonest press by far (36% of blocked episodes had the session
+# busy through the blocked window — the card was wrong, not the agent), and the message lands at the
+# next turn boundary, so "keep going, no reply needed" makes that turn continue the work instead of
+# stopping for a status report. A pending question gets "open calls are yours". And the last line
+# licenses one sharp re-ask when the block is REAL (the agent needs something only the user has): the
+# judges then re-block from that reply, a correct move on new information, so a mispressed Continue
+# costs one turn and returns a tighter brief.
+CONTINUE_TEXT = ("Nothing needed from me here. If you're already on it, keep going, no reply needed. "
+                 "Any open calls are yours to make. "
                  "If you can't proceed without me, say exactly what you need in one line.")
 
 
