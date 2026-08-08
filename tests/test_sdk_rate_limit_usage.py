@@ -158,6 +158,7 @@ class ExactSnapshotRefresh(unittest.TestCase):
         self.td.cleanup()
 
     def _session(self, scheduled, **kw):
+        kw.setdefault("api_key_auth", False)   # per-session auth (2026-08-08): a keyed one is no candidate
         s = SimpleNamespace(client=object(), loop=object(), ended=False, **kw)
         s.refresh_usage = lambda: scheduled
         return s

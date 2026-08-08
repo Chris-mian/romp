@@ -13690,11 +13690,18 @@ def _usage():
         if stamped and stamped != _claude_account():
             five = seven = fable = None
     if not five and not seven and not fable:
-        # No windows. An API-KEY account (the auth-flip marker _note_auth_source writes) shows SPEND
-        # where the bars sat (the user 2026-08-04): today's accumulated per-result total_cost_usd,
-        # from spend.json. A window-less file WITHOUT the marker stays None — nothing known, draw
-        # nothing (never a confident zero).
-        if o.get("apiKey"):
+        # No windows. A machine with NO Claude login shows SPEND where the bars sat (the user
+        # 2026-08-04): today's accumulated per-result cost from spend.json. The deciding evidence is
+        # the CREDENTIAL STORE (the login's own lifecycle), not a per-session auth report: one session
+        # using an API key never speaks for the login's windows (the user 2026-08-08 — _note_auth_source
+        # is per-session now and writes no marker; the legacy `apiKey` marker is still honored so a
+        # pre-upgrade file shows spend until the next snapshot heals it). The no-login arm additionally
+        # requires spend.json to EXIST: a keyless machine with no recorded spend has nothing to show —
+        # and the guard is what keeps unstamped fixtures/CI (temp STATE, no credential file, no spend)
+        # reading None instead of coupling to the runner's real login (the deliberate decoupling the
+        # acct-stamp comment above records). A window-less file on a LOGGED-IN machine stays None —
+        # nothing known, draw nothing (never a confident zero).
+        if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):
             # The spend WINDOWS mirror the subscription bars (5h / 7d / month) so the two auth modes
             # read identically; _spend_windows always returns all three, zero-filled on a fresh kernel
             # (an empty slot reads as broken — the user 2026-08-04, post-restart).
