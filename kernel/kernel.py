@@ -13717,6 +13717,10 @@ def _usage():
     limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven), "fable": _lim(fable)}
     t = o.get("t")
     return {"fiveHour": five, "sevenDay": seven, "fable": fable,
+            # the spend windows ride BESIDE the subscription bars now (the user 2026-08-08): the rail's
+            # hover draws the three windows' TOKEN volume on one shared scale for every account, and the
+            # token data lives only here. Rail rows still key on the bars; this is hover detail.
+            "spend": _spend_windows(),
             "t": t if isinstance(t, (int, float)) else None,
             # WHOSE allowance this is. These windows are account-wide, so two machines signed into the
             # SAME account share one set of numbers and must not be drawn twice; two machines on
@@ -17127,15 +17131,26 @@ if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
 // only month-to-date draws the elapsed track. strip.ts carries the same builder \u2014 kept in step.
 var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
 function spendColor(p){return p>=90?'#c0392b':p>=70?'#e0b020':'#54B204';}
-function spendWinsHTML(u){var sp=u.spend||{},html='';
+// The per-account SPEND detail for the rich hover (the token graph + dollars/turns rows) \u2014 filled for
+// EVERY account whose payload carries spend, subscription accounts included (the kernel now attaches
+// spend windows beside the bars): the hover's token view is the same three windows on ONE scale.
+function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
+SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
+var budget=(typeof seg.budget==='number'&&seg.budget>0)?seg.budget:null;
+(det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0,
+budget:budget,pct:budget!=null?Math.max(0,Math.min(100,Math.round(seg.usd/budget*100))):null};});}
+// NO native title attributes anywhere on the rail (the user 2026-08-08, who got the browser's flat
+// yellow box on top of the rich hover, nowhere near the cursor): the rich tip is the ONE hover surface,
+// and everything the titles used to say \u2014 dollars, tokens, turns, the budget hint \u2014 lives there now.
+function spendWinsHTML(u,det){var sp=u.spend||{},html='';spendDet(u,det);
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
 var budget=(typeof seg.budget==='number'&&seg.budget>0)?seg.budget:null;
 var pct=budget!=null?Math.max(0,Math.min(100,Math.round(seg.usd/budget*100))):null;
 var el2=null;
 if(w[0]==='month'&&budget!=null){var dd=new Date(),dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate();
 el2=Math.max(0,Math.min(100,Math.round(((dd.getDate()-1+dd.getHours()/24)/dim)*100)));}
-var turns=seg.turns||0,readout='$'+(seg.usd<100?seg.usd.toFixed(2):String(Math.round(seg.usd)))+' \u00b7 '+fmtTok(seg.tok||0)+' tok';
-html+='<div class="ru-w ru-spend" title="'+w[1]+' \u2014 $'+seg.usd.toFixed(2)+' \u00b7 '+fmtTok(seg.tok||0)+' tokens \u00b7 '+turns+' turn'+(turns===1?'':'s')+(budget!=null?' \u00b7 '+pct+'% of the $'+budget+' budget':' \u00b7 no budget set \u2014 dollars only, no fill (set one in spend-budgets.json)')+' \u00b7 API-key billing">'
+var readout='$'+(seg.usd<100?seg.usd.toFixed(2):String(Math.round(seg.usd)))+' \u00b7 '+fmtTok(seg.tok||0)+' tok';
+html+='<div class="ru-w ru-spend">'
 +'<div class=ru-name>'+w[1]+'</div>'
 +'<div class=ru-bars>'
 +(pct!=null?'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+spendColor(pct)+'"></i></div>':'')
@@ -17181,13 +17196,21 @@ function renderRows(rows,selfHost){ROWS=rows||[];LAST={};
 var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 if(live.length===1){var det={};det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null;
-LAST=[{host:'',det:det}];el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendWinsHTML(live[0].usage);return;}
+LAST=[{host:'',det:det}];
+if(hasBars(live[0].usage)){el.innerHTML=winsHTML(live[0].usage,det);spendDet(live[0].usage,det);}
+else el.innerHTML=spendWinsHTML(live[0].usage,det);
+return;}
 var html='';LAST=[];
+// no native title on the account set (the user 2026-08-08 — the rich tip is the ONE hover surface);
+// the separate-allowance note rides the tip's host heading instead (setHTML).
 live.forEach(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 var hn=r.host||selfHost||'this machine';
 LAST.push({host:hn,det:det});
-html+='<div class=ru-set title="The Claude account signed in on '+esc(hn)+'. Its allowance is separate from the others here, so each login gets its own bars.">'
-+'<span class=ru-host>'+esc(hn)+':</span>'+(hasBars(r.usage)?winsHTML(r.usage,det):spendWinsHTML(r.usage))+'</div>';});
+var inner;
+if(hasBars(r.usage)){inner=winsHTML(r.usage,det);spendDet(r.usage,det);}
+else inner=spendWinsHTML(r.usage,det);
+html+='<div class=ru-set>'
++'<span class=ru-host>'+esc(hn)+':</span>'+inner+'</div>';});
 el.innerHTML=html;}
 // The single-payload path the timeline still posts (and the mobile panel's own fetch): treat it as this
 // machine's row, leaving any other account's bars alone.
@@ -17207,24 +17230,48 @@ function barRows(d){return (d.unk
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
 // LAST is one entry per ACCOUNT (2026-07-30), so the tooltip is the same window rows it always was, once
-// per login \u2014 with the host heading it only when there IS more than one, so the ordinary single-account
-// hover is byte-for-byte what it used to be.
+// per login \u2014 with the host heading it only when there IS more than one. A SPEND-ONLY account (an
+// API key / a login-less host) used to return '' here, so a mixed fleet's hover silently showed only
+// the subscription login (the user 2026-08-08) \u2014 its dollars now render as their own section.
 function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
-if(!keys.length)return '';
-return (many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'')
-+keys.map(function(k){var v=d[k];
+var sp=d._spend||null;
+if(!keys.length&&!sp)return '';
+var spendOnly=!keys.length;                       // no subscription windows \u2192 an API-key / no-login account
+var h=(many?'<div class=ru-tip-host>'+esc(e.host)+' \u2014 its own allowance</div>':'');
+h+=keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+' \u2014 no reading since; current usage unknown</span>'
-:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('')
-+(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');}
+:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
+// The TOKEN GRAPH (the user 2026-08-08): the three spend windows' token volume on ONE shared scale \u2014
+// each bar auto-scales to the largest window, so 5h vs 7d vs month compares at a glance in the same
+// track idiom as the % bars above. Dollars ride the value column only where they are REAL billing (a
+// spend-only account); a subscription login's nominal cost would read as a bill, so it stays tokens.
+if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
+if(ks.length){var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});
+h+='<div class=ru-tip-win><div class=ru-tip-name><span>'+(spendOnly?'API-key spend':'Tokens')+'</span>'
++'<span class=ru-tip-reset>5h / 7d / month \u00b7 one scale</span></div>'
++ks.map(function(k){var v=sp[k],wpct=v.tok>0?Math.max(2,Math.round(v.tok/mx*100)):0;
+return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
++'<span class=ru-tip-track><i style="width:'+wpct+'%;background:#6b7a8c"></i></span>'
++'<span class=ru-tip-v>'+fmtTok(v.tok)+(spendOnly?' \u00b7 $'+(v.usd<100?v.usd.toFixed(2):String(Math.round(v.usd))):'')+'</span></div>';}).join('')
++(spendOnly&&!ks.some(function(k){return sp[k].budget!=null;})
+?'<div class=ru-tip-age>no budget set \u2014 dollars only; name one in spend-budgets.json to fill the rail bars</div>':'')
++'</div>';}}
+h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
+return h;}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
-return sets.map(function(e){return setHTML(e,many);}).join('');}
-function showTip(){var h=tipHTML();
+var h=sets.map(function(e){return setHTML(e,many);}).join('');
+return h?h+'<div class=ru-tip-age>click the bars to refresh</div>':'';}
+// The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
+// container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
+function showTip(ev){var h=tipHTML();
 if(!h){tip.style.display='none';return;}
 tip.classList.remove('ru-modal');tip.innerHTML=h;
 var r=el.getBoundingClientRect();tip.style.display='block';
-tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-4))+'px';}
+var x=(ev&&typeof ev.clientX==='number')?ev.clientX:(r.left+r.width/2);
+tip.style.left=Math.max(6,Math.min(window.innerWidth-tip.offsetWidth-6,x-tip.offsetWidth/2))+'px';
+tip.style.top=Math.max(6,r.top-tip.offsetHeight-8)+'px';}
 // Mobile usage PANEL (the user 2026-07-11): the same window bars the desktop tooltip shows, opened as a
 // centered modal from the bottom bar's Usage button (the rail — and its hover — don't exist on mobile).
 // Pulls fresh first so the numbers aren't a stale boot snapshot; any tap or Escape dismisses.
@@ -17245,7 +17292,7 @@ el.addEventListener('mouseleave',function(){tip.style.display='none';});
 // rules); a 60s TIMER runs it silently as a BACKUP so the bars stay fresh even when the timeline iframe isn't
 // forwarding usage (idle, or the Timeline pane toggled off) — the gap that made them look stale until a click.
 // The listener sits on the STABLE #rail-usage container, so render()'s innerHTML swap can't drop it.
-el.style.cursor='pointer';el.title='Click to refresh usage';
+el.style.cursor='pointer';   // no native title (the user 2026-08-08) — the tip's footer carries the click hint
 var _ruBusy=false;
 // /usage/fleet is /usage plus one row per OTHER Claude account in the fleet (the remote readings come from
 // the tunnel supervisor's own cached poll, so this never dials anything). It collapses to a single row \u2014
