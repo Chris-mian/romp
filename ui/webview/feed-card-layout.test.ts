@@ -12,16 +12,19 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the name row; toggles grouped on row3", () => {
+test("COMPACTNESS (the user 2026-07-07; action corner 2026-08-08): time trails the title; Continue+Clear in row1's corner; toggles grouped on row3", () => {
   // the TIME now trails the title on row1 (both cards); row3 holds the Background/Summary/Sub-goals toggles
   assert.match(FEED, /row1\.append\(title, time\)/, "the time trails the title on row1");
   assert.match(FEED, /row3\.append\(bgBtn, takeBtn, stallBtn, subBtn, taskBtn, actions\)/, "ask card: row3 is Background/Summary/Stalled/Sub-goals/Waiting-on-task (+ rare Retry/Revive)");
   assert.match(FEED, /actions\.append\(apiRetry, revive,/, "…so the action row is Retry/Revive (+ resume-gate) only (Clear + toggles moved up)");
-  // Clear is the rightmost control on the NAME row now (both ask + group cards)
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");
+  // the action corner (the user 2026-08-08): Continue+Clear ride the END of row1 in every mode; the
+  // name row keeps only identity + chips
+  assert.match(FEED, /btns\.append\(cont, clr\);/, "ask card: Continue left of Clear in the action corner");
+  assert.match(FEED, /row1\.append\(btns\);/, "the corner floats from the END of row1's flow (title+time keep first claim)");
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/, "ask card: the name row is identity + chips only");
   // its tooltip is plain-spoken (the user 2026-07-13): "clear this task", not the inbox-zero jargon
   assert.match(FEED, /clr\.title = "clear this task";/);
-  assert.match(FEED, /row2\.append\(idwrap, clr\)/, "group card: Clear on the name row");
+  assert.match(FEED, /btns\.append\(clr\);\s*\n\s*row1\.append\(btns\);\s*\n\s*row2\.append\(idwrap\);/, "group card: Clear in row1's action corner, name row is the name only");
   // the group card has no row3 anymore (its only content, the time, moved to row1)
   assert.match(FEED, /main\.append\(row1, row2, memberList\)/, "group card: no row3 (time moved to row1)");
   assert.doesNotMatch(FEED, /const row3 = el\("div", "fask-row3"\); row3\.append\(time\)/, "the group card's time-only row3 is gone");
@@ -57,7 +60,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
   // it's a direct child of the wrapping row2 (NOT nested in idwrap) so a narrow card wraps it under the
   // name instead of overlapping the chips (the user 2026-06-20)
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "the origin marker rides the name row beside the chips");
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/, "the origin marker rides the name row beside the chips");
   assert.doesNotMatch(FEED, /idwrap\.append\(name, origin\)/, "origin is no longer nested inside idwrap");
   // populated from it.origin in the update path: a dim gray "↪ from" + the peer in the bold session-name
   // style (its own identity colour); click opens the sender (the user 2026-06-16)
@@ -74,7 +77,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
 test("the follow-up badge serves ONLY '↩ re-judging' now — the '↻ Followed up' chip was removed (the user 2026-07-01)", () => {
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↩ re-judging"/);
   // the badge rides the SESSION-NAME row (right-justified), NOT the bottom action row
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/);
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge\)/);
   // the CARD badge block is now recheck-only: recheck → "↩ re-judging", else hidden. No followupPending branch.
   // (The modal tree's per-node "↻ Followed up" chip, ftree-followedup, is a separate thing and stays.)
   assert.match(FEED, /if \(it\.recheck\) \{\s*\n\s*a\._followedup\.style\.display = "";\s*\n\s*a\._followedup\.textContent = "↩ re-judging";[\s\S]*?\} else \{\s*\n\s*a\._followedup\.style\.display = "none";\s*\n\s*\}/);

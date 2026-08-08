@@ -682,6 +682,21 @@ def _open_leaf_bullets(nodes, subs, cap=12, indent="  "):
     return out
 
 
+# The Continue button's canned reply (the user 2026-08-08): one click on a needs-you card whose ask the
+# user has nothing to add to. Sent as an ORDINARY follow-up so the whole reply path applies: context
+# quote, goal marker, optimistic reopen + subtree unblock, judge reassert, and the followupAt floor.
+# The evidence behind the button (14 days of card history, 2026-07-25..08-08): 58% of blocked episodes
+# resolved with no user gesture on the card while the card sat a median 5 minutes (p90 72m) in
+# needs-you; a fifth of Clears landed on sessions visibly mid-turn, where Clear's wrap-up says the
+# opposite of what the user meant; and the short-reply tail was dominated by hand-typed go-aheads.
+# VOICE (test_injected_voice.py renders this through _followup_body): the person the agent works for,
+# no tracking-system nouns. The last line licenses one sharp re-ask when the block is REAL (the agent
+# needs something only the user has): the judges then re-block from that reply, a correct move on new
+# information, so a mispressed Continue costs one turn and returns a tighter brief.
+CONTINUE_TEXT = ("Nothing needed from me here. Keep going, and make any open calls yourself. "
+                 "If you can't proceed without me, say exactly what you need in one line.")
+
+
 def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
@@ -4058,8 +4073,16 @@ def _drive(msg, client):
         # (the user 2026-07-01): the SDK path used to take raw text, so an SDK follow-up got no context quote
         # and no header; wrapping unifies it (the SDK `send` is a plain text send, no injection of its own).
         # nudge:true (the canned Nudge button) → romp-authored gray bubble; a typed follow-up → blue human.
-        body = (_followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge")))
-                if iid else str(msg["text"]))
+        # cont:true is the card's Continue button (the user 2026-08-08): the one-click "nothing needed
+        # from me, keep going" reply on a needs-you card. The TEXT is the kernel's (CONTINUE_TEXT: one
+        # source of truth, voice-tested); everything else rides this typed-reply arm UNCHANGED, because
+        # the button's design is a reply with a canned body, never a new mechanism. The removed
+        # messageless cardMove is the cautionary tale: a move with no message adds no information, so
+        # its natural end state was parked-in-Working. Human-authored like the modal's canned Check
+        # status (no romp-injected marker): the gesture asserts the USER's own state, in their voice.
+        text = CONTINUE_TEXT if msg.get("cont") else str(msg["text"])
+        body = (_followup_body(iid, msg.get("title"), text, injected=bool(msg.get("nudge")))
+                if iid else text)
         # Optimistic echo for a tmux follow-up/nudge (the user 2026-06-29): without it, a follow-up sent while
         # the session is WORKING showed as a queued bubble that VANISHED in the dequeue→landed gap (the queue-op
         # record resolves before the real user atom lands). The echo + the while-working queued fold keep it
@@ -4074,7 +4097,7 @@ def _drive(msg, client):
             #                                               next push confirms it against
             ok = False
             try:
-                ok = bool(jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time())))
+                ok = bool(jd.optimistic_followup(sid, iid, text=text, now=int(time.time())))
                 if ok:
                     # (the reopen event holds the top open + wears the chip; stub nodes retired 2026-07-07)
                     _note_user_goal_write(sid)            # …and it shows even mid-judge-pass (_feed_goals)

@@ -769,6 +769,23 @@ function makeAskCard(it: AskItem): HTMLElement {
   // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
   // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this task";   // plain-spoken (the user 2026-07-13, over the inbox-zero jargon)
+  // "Continue" (the user 2026-08-08): the needs-you card's one-click "nothing needed from me, keep
+  // going" — a REPLY with a kernel-canned body (askFollowUp cont:true), never a bare column move (the
+  // removed cardMove is the cautionary tale: a move with no message adds no information). The card
+  // history that earned it (2026-07-25..08-08): 58% of blocked episodes resolved with no input on the
+  // card, and a fifth of Clears landed on sessions visibly mid-turn — a "stop" sent where the user
+  // meant "keep going". Shown only on live needs-you cards without a live ask (updateAskCard).
+  const cont = el("button", "fdismiss fcontinue") as HTMLButtonElement; cont.textContent = "Continue";
+  cont.title = "nothing needed from you — tells this session to keep going and decide open questions itself";
+  cont.style.display = "none";
+  // The action corner (the user 2026-08-08): Continue+Clear ride the END of row1 in EVERY mode —
+  // right-justified beside the timestamp when there's room, dropping below when the title/time need
+  // the width (they keep first claim). wrap-reverse stacks the overflow line UNDER the first, so when
+  // only one button fits per line Clear stays the higher one; on one line Continue sits left of Clear
+  // (source order). Generalizes the grouped-mode float (2026-07-13) to all modes — the re-home dance
+  // between rows is gone, which is the strongest form of the click-safety rule (the buttons never move).
+  const btns = el("span", "fask-btns");
+  btns.append(cont, clr);
   // The card-face "Status?" sweep was REMOVED (the user 2026-07-21): a card still Working doesn't need a
   // status poke from the card face, and once the decision brief carries a paragraph per blocked sub-goal
   // (the briefer's per-sub-goal takeaway) the summary already says where each thing stands, so the sweep was
@@ -793,8 +810,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
-  row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
+  // (Clear left this row 2026-08-08 — it rides row1's action corner in every mode now, see fask-btns.)
+  row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
   // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
   // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
   // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
@@ -810,6 +827,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     setCardNotify(card, live, !cardNotifyOn(live));
   };
   row1.append(bellBtn);   // inline after the time — the metadata cluster's tail
+  row1.append(btns);      // the action corner floats from the END of the flow, so title+time keep first claim
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -928,6 +946,16 @@ function makeAskCard(it: AskItem): HTMLElement {
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); dropDismissed([it.itemId]); } }, 180);
   };
+  cont.onclick = (ev) => {
+    ev.stopPropagation();
+    // the kernel supplies the canned body (CONTINUE_TEXT) — the client sends only the gesture, so the
+    // copy has one voice-tested home. Ack INSTANTLY (disable + relabel, the click-safety rule), then the
+    // same optimistic move a typed reply gets; updateAskCard re-arms the label once the judge has ruled.
+    vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, sid: it.sid, cont: true });
+    cont.disabled = true; cont.textContent = "Sent";
+    optimisticFollowMove(it.itemId);
+    render();
+  };
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
   // this card's timeline journey. LEAVE → restore the pinned card's journey, or
   // clear if none pinned.
@@ -994,6 +1022,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
+  a._cont = cont;
   a._qApprove = qApprove; a._qDeny = qDeny; a._qBody = qbody;
   a._delegations = delegations;
   a._checklist = checklist;
@@ -1539,6 +1568,17 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // A spent MODEL allowance is the same shape: Retry re-fails until you switch model or top up, and the
   // badge says so (the user 2026-08-01). Its window does reset on its own, which the badge title carries.
   a._apiRetry.style.display = (isApiErr && !spendLimit && !modelLimit) ? "" : "none";
+  // "Continue" shows on a LIVE needs-you card with no live ask attached: the gesture claims "you're not
+  // waiting on me", which means nothing in Working/Completed, can't answer a real permission prompt or
+  // picker (it.blocked — text sent there would just queue behind the ask), and has no one to tell on a
+  // dead session. Re-arm the label only once its own reply has been judged (same contract as the modal's
+  // Check status): while followupPending/recheck holds, the disabled "Sent" IS the acknowledgement.
+  const contBtn = a._cont as HTMLButtonElement;
+  contBtn.style.display = (askColumn(it) === "needsInput" && it.live && !it.provisional && !it.blocked)
+    ? "" : "none";
+  if (contBtn.disabled && !it.followupPending && !it.recheck && !it.rejudging) {
+    contBtn.disabled = false; contBtn.textContent = "Continue";
+  }
   if (isApiErr && it.blocked) {
     // on-you errors name themselves: a spend cap (raise it), "prompt too long" (compact), or a spent model
     // allowance (switch model); other API errors are transient and auto-retrying (2026-06-29 / 07-14 / 08-01).
@@ -1651,13 +1691,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   ho.style.display = ho.children.length ? "" : "none";
 
   // GROUPED mode (the user 2026-07-13): the session header on the backdrop carries the identity + working
-  // dot, so the card drops its own name and Clear moves up beside the timestamp (float-right: on the time
-  // line when it fits, else its own right-justified line). The move is guarded so a steady-state re-render
-  // never detaches the button mid-press (click-safety); row2 hides entirely once nothing on it shows.
+  // dot, so the card drops its own name; row2 hides entirely once nothing on it shows. (The Clear re-home
+  // between rows is GONE, the user 2026-08-08: the action corner lives in row1 in every mode now — see
+  // fask-btns at construction — so there is nothing to move between renders, which is the strongest form
+  // of the click-safety rule.)
   const gmode = feedPrefs().grouped;
   ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
-  const clrHome = (gmode ? a._row1 : a._row2) as HTMLElement;
-  if ((a._clr as HTMLElement).parentElement !== clrHome) clrHome.append(a._clr);
   const r2 = a._row2 as HTMLElement;
   const r2live = (Array.from(r2.children) as HTMLElement[]).some((c) => c.style.display !== "none");
   r2.style.display = gmode && !r2live ? "none" : "";
@@ -1776,7 +1815,13 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const name = el("a", "fname"); name.title = "open this session";
   idwrap.append(name);   // no "· N parts" label — the member checklist below already shows the count
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear ALL sub-asks of this request (inbox-zero)";
-  row2.append(idwrap, clr);   // Clear rides the name row (the user 2026-07-07, compactness) — matches the ask card
+  // Clear rides row1's action corner in every mode (the user 2026-08-08) — matches the ask card. Same
+  // fask-btns wrapper so the float/wrap CSS is shared; no Continue here (a group is a multi-ask turn —
+  // its members carry their own).
+  const btns = el("span", "fask-btns");
+  btns.append(clr);
+  row1.append(btns);
+  row2.append(idwrap);
   const memberList = el("div", "fgroup-members");   // no row3: the group card has no time-row content left
   main.append(row1, row2, memberList);
   card.append(main);
@@ -1837,7 +1882,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._members = memberList;
-  a._row1 = row1; a._row2 = row2; a._clr = clr;   // grouped mode re-homes Clear between the rows (2026-07-13)
+  a._row1 = row1; a._row2 = row2; a._clr = clr;   // Clear lives in row1's action corner (2026-08-08)
   return card;
 }
 
@@ -1871,12 +1916,11 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
     }
   }
   // GROUPED mode (the user 2026-07-13) — same treatment as the ask card: the backdrop header carries the
-  // name + dot, Clear rides up beside the timestamp, the emptied name row hides. Move guarded (click-safety).
+  // name + dot, the emptied name row hides. (Clear rides row1's action corner in every mode now, the
+  // user 2026-08-08 — no re-home between renders.)
   const gmode = feedPrefs().grouped;
   ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
-  const clrHome = (gmode ? a._row1 : a._row2) as HTMLElement;
-  if ((a._clr as HTMLElement).parentElement !== clrHome) clrHome.append(a._clr);
-  (a._row2 as HTMLElement).style.display = gmode ? "none" : "";   // the group's row2 is only name + Clear
+  (a._row2 as HTMLElement).style.display = gmode ? "none" : "";   // the group's row2 is only the name now
 }
 
 // Transient hover-highlight signal: hovering a modal line emits its event id(s);
@@ -2502,7 +2546,12 @@ function renderModal() {
     cs.title = "ask this session where every open item on this card stands — replies file back onto the card";
     cs.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, cs, clr);
+    // "Continue" (the user 2026-08-08): the card's one-click "nothing needed from me, keep going", in the
+    // modal too. Left of Clear, matching the card's action corner. The single-ask branch wires + shows it.
+    const cont = el("button", "fdismiss feed-modal-continue"); cont.id = "feed-modal-continue"; cont.textContent = "Continue";
+    cont.title = "nothing needed from you — tells this session to keep going and decide open questions itself";
+    cont.style.display = "none";
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, cs, cont, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
@@ -2593,6 +2642,7 @@ function renderModal() {
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;
   const clrEl = document.getElementById("feed-modal-clear") as HTMLElement;
   const csEl = document.getElementById("feed-modal-status") as HTMLButtonElement | null;
+  const contEl = document.getElementById("feed-modal-continue") as HTMLButtonElement | null;
   const fupEl = document.getElementById("feed-modal-follow") as HTMLButtonElement;
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
   const fuinEl = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement;
@@ -2628,6 +2678,7 @@ function renderModal() {
   clrEl.style.display = "";   // re-shown here because the blocked branch below hides it
   // default-hidden + reset every render; only the single-ask branch shows it (group/standalone never do)
   if (csEl) { csEl.style.display = "none"; }   // disabled/label NOT reset here — "Asked" survives the per-push re-render
+  if (contEl) { contEl.style.display = "none"; }   // same contract as Check status: "Sent" survives re-renders
   let titleHoverId: string | null = null;   // the originating typed turn → chat/timeline hover highlight
   if (grp) {
     ttlEl.textContent = grp.title;
@@ -2669,6 +2720,17 @@ function renderModal() {
         if (!sweep.n) return;
         vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: sweep.text, sid: it.sid });
         csEl.disabled = true; csEl.textContent = "Asked";
+        optimisticFollowMove(it.itemId);
+        render();
+      };
+    }
+    // "Continue" — same gating as the card's button (live needs-you, no live ask), same ack contract.
+    if (contEl && askColumn(it) === "needsInput" && it.live && !it.provisional && !it.blocked) {
+      contEl.style.display = "";
+      if (contEl.disabled && !it.followupPending && !it.recheck && !it.rejudging) { contEl.disabled = false; contEl.textContent = "Continue"; }
+      contEl.onclick = () => {
+        vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, sid: it.sid, cont: true });
+        contEl.disabled = true; contEl.textContent = "Sent";
         optimisticFollowMove(it.itemId);
         render();
       };

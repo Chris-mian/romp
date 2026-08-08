@@ -19,11 +19,11 @@ test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
   assert.match(FEED, /actions\.append\(apiRetry, revive,/);
 });
 
-test("the modal footer is age · Follow up · Check status · Clear", () => {
+test("the modal footer is age · Follow up · Check status · Continue · Clear", () => {
   // "Check status" (the user 2026-07-20) is NOT the old manual Nudge coming back: the Nudge was a
   // contentless poke at a stalled session (auto-nudge replaced it, above); Check status is a per-item
   // sweep — one message asking where every open/blocked sub-goal stands, whose replies file back per item.
-  assert.match(FEED, /footRow\.append\(age, fup, cs, clr\)/);   // cs = Check status ("Move to Working" removed, the user 2026-07-25)
+  assert.match(FEED, /footRow\.append\(age, fup, cs, cont, clr\)/);   // cs = Check status ("Move to Working" removed, the user 2026-07-25)
   assert.match(FEED, /el\("button", "fdismiss feed-modal-status"\)/);
   assert.match(FEED, /cs\.textContent = "Check status"/);
 });

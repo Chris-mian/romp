@@ -1,8 +1,9 @@
 // GROUPED mode (the user 2026-07-13): a footer "Group" toggle organizes each column BY SESSION — session
 // order = the kernel's session-order list (the same order the chat tabs + timeline lanes hold), a
 // name+working-dot header on the column backdrop opens each session's run, and the cards below drop their
-// own name row (the header carries the identity). Clear re-homes beside the timestamp (float-right: on the
-// time line when it fits, else its own right-justified line — the compactness ladder). Source pins.
+// own name row (the header carries the identity). (Clear used to re-home beside the timestamp in this mode
+// only; since 2026-08-08 the action corner lives in row1 in EVERY mode — see feed-continue.test.ts.)
+// Source pins.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -47,15 +48,16 @@ test("a name+dot header entry opens each session's run; only runs that exist get
   assert.match(CSS, /\.feed-sess-head \{ display: flex; flex-wrap: wrap; align-items: center;/);
 });
 
-test("grouped cards drop their own name row; Clear re-homes beside the timestamp (guarded move)", () => {
-  // the name row hides (the header carries it); Clear moves ONLY on a mode change (click-safety) — a
-  // steady-state re-render never detaches the button mid-press
+test("grouped cards drop their own name row; the action corner needs no re-home (2026-08-08)", () => {
+  // the name row hides (the header carries it)
   assert.match(FEED, /\(\(a\._name as HTMLElement\)\.parentElement as HTMLElement\)\.style\.display = gmode \? "none" : "";/);
-  assert.match(FEED, /if \(\(a\._clr as HTMLElement\)\.parentElement !== clrHome\) clrHome\.append\(a\._clr\);/);
-  // row2 hides once nothing on it shows (ask card: badges may remain; group card: always name+Clear)
+  // the Clear re-home between rows is GONE: the action corner (fask-btns) lives in row1 in every mode,
+  // so a mode flip moves nothing — the strongest form of the click-safety rule
+  assert.doesNotMatch(FEED, /clrHome/);
+  // row2 hides once nothing on it shows (ask card: badges may remain; group card: only the name now)
   assert.match(FEED, /r2\.style\.display = gmode && !r2live \? "none" : "";/);
   // float-right = right-justified beside the time when it fits, else its own right-aligned line
-  assert.match(CSS, /\.fask-row1 \.fdismiss \{ float: right; margin-left: 8px; \}/);
+  assert.match(CSS, /\.fask-btns \{ float: right; margin-left: 8px;/);
 });
 
 test("clearing a run's last card drops its session header at once, not on the next push (the user 2026-07-13)", () => {

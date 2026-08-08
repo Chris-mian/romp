@@ -169,10 +169,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-row1 { display: flow-root; }
 .fask-row1 .fcard-title { display: inline; }
 .fask-row1 .ftime { margin-left: 8px; }
-/* GROUPED mode (the user 2026-07-13): Clear floats right on the TIME line — right-justified beside the
-   timestamp when it fits, else it drops to its own right-aligned line (the compactness ladder; row1's
-   flow-root above is what makes that line take real height instead of overlaying row 3). */
-.fask-row1 .fdismiss { float: right; margin-left: 8px; }
+/* The ACTION CORNER, every mode (the user 2026-08-08; generalizes the 2026-07-13 grouped-mode float):
+   Clear — plus Continue on a needs-you card — floats right on the TIME line, right-justified beside the
+   timestamp when it fits, else dropping to its own right-aligned line. Title + time keep first claim on
+   the width (the float anchors at the END of the inline flow); row1's flow-root makes the dropped line
+   take real height. Inside the group, wrap-reverse places the OVERFLOW line ABOVE the first: when only
+   one button fits per line, Clear (second in source, so it is the one that wraps) lands on the upper
+   line — Clear above Continue; on one line Continue sits left of Clear, in source order. */
+.fask-btns { float: right; margin-left: 8px; display: flex; flex-wrap: wrap-reverse;
+  justify-content: flex-end; gap: 3px 8px; }
 /* the by-session header on the column BACKDROP opening that session's run of cards: identity-colored
    name + the working dot; cards under it drop their own name row. NO font-size of its own (the user
    2026-07-13): it wears the base size + weight the CARD TITLES render at, so the two read as one rank. */
