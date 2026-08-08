@@ -10,7 +10,7 @@ work, none of it a reply to the spliced ask — so the no-work guard from the AP
 own knowledge and filed done with a confabulated summary — 30 seconds after the ask was typed,
 before the assistant's first post-splice token. Now the event model marks the synthesized splice
 atom `absorbed`, and planner DONE ops filed off a spliced-trigger segment are stripped
-(_strip_spliced_dones): work in such a segment is never proof the spliced ask — or any listed goal —
+(_strip_unevidenced_dones, spliced leg): work in such a segment is never proof the spliced ask — or any listed goal —
 was answered. Mint/sub still apply (the ask gets its card, the tail work files), the goal stays
 open — the truth — and the turn-level closer keeps done authority. SYNTHETIC fixtures only."""
 import json

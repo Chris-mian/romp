@@ -2342,31 +2342,41 @@ def _seg_spliced(seg):
     `absorbed`). The atoms after such a trigger are the interrupted turn's CONTINUING work: by
     wall-clock they follow the enqueue, but they answer the turn's ORIGINAL ask — deterministically
     indistinguishable from a reply to the splice. So work in this segment is never proof that the
-    spliced ask, or any listed goal, was answered (see _strip_spliced_dones)."""
+    spliced ask, or any listed goal, was answered (see _strip_unevidenced_dones)."""
     trig = (seg or {}).get("trigger")
     if not trig:
         return False
     return any(a.get("uuid") == trig and a.get("absorbed") for a in seg.get("atoms") or [])
 
 
-def _strip_spliced_dones(ops, seg, fsid, seg_id):
-    """Drop planner DONE ops filed off a SPLICED-trigger segment (_seg_spliced). A capable planner,
-    handed 'USER ASKED: …' plus the interrupted turn's unrelated tail work, answers the question
-    from its OWN knowledge and files done with a confabulated summary — a queued question completed
-    as a card 30 seconds after it was typed, before the assistant's first post-splice token, off a
-    turn that then crashed without ever replying (the user 2026-07-29). Same failure family as the
-    API-error confabulation (the user 2026-07-25), but that guard keys on NO assistant work, and a
-    splice defeats it: the absorbed segment inherits the running turn's real atoms. Mint/sub/block
-    still apply — placing the ask and filing the tail work are right — and the goal stays OPEN,
-    which is the truth; the turn-level closer keeps done authority once the turn actually ends.
-    Logged (judge-errors, kind 'spliced-done'), never silent."""
-    if not ops or not _seg_spliced(seg):
+def _strip_unevidenced_dones(ops, seg, fsid, seg_id):
+    """Drop planner DONE ops a segment cannot EVIDENCE — two shapes of one rule (a done needs the
+    reply's own post-ask work as proof):
+      - SPLICED trigger (_seg_spliced): a capable planner, handed 'USER ASKED: …' plus the
+        interrupted turn's unrelated tail work, answers the question from its OWN knowledge and
+        files done with a confabulated summary — a queued question completed as a card 30 seconds
+        after it was typed, before the assistant's first post-splice token, off a turn that then
+        crashed without ever replying (the user 2026-07-29).
+      - WORKLESS segment (no assistant work at all): the workless FOLLOW-UP unit (the user
+        2026-08-08, the beacon g10 card) judges the user's reply so the msg-reopen latch gets its
+        verdict — the reply is real evidence of the user's INTENT (pivot / continuation / block),
+        never of completion. Same failure family as the API-error confabulation (the user
+        2026-07-25), whose mint-only prompt-run op filter already enforces this for plain asks.
+    Mint/sub/block still apply — placing the ask and filing the work are right — and the goal stays
+    OPEN, which is the truth; the turn-level closer keeps done authority once the turn actually
+    ends. Logged (judge-errors, kinds 'spliced-done' / 'workless-done'), never silent."""
+    if not ops:
+        return ops
+    spliced = _seg_spliced(seg)
+    workless = not _has_asst_work((seg or {}).get("atoms") or [])
+    if not (spliced or workless):
         return ops
     kept = [o for o in ops if o.get("do") != "done"]
     if len(kept) != len(ops):
-        _log_judge_error("planner", fsid, "spliced-done", seg=seg_id,
-                         note="dropped %d done op(s): a spliced-trigger segment cannot evidence an answer"
-                              % (len(ops) - len(kept)))
+        kind, shape = (("spliced-done", "spliced-trigger") if spliced else ("workless-done", "workless"))
+        _log_judge_error("planner", fsid, kind, seg=seg_id,
+                         note="dropped %d done op(s): a %s segment cannot evidence an answer"
+                              % (len(ops) - len(kept), shape))
     return kept
 
 
@@ -3907,6 +3917,20 @@ def plan_units(session, store=None):
                         ptext = _strip_cmd_prefix(ptext, seg)
                     if ptext:
                         out.append((seg["id"], "prompt", seg["t"], ptext, True, None, trig, vq))
+                elif _seg_followup(seg) and not _seg_nudge(seg) and not _seg_peer(seg):
+                    # A workless FOLLOW-UP is still JUDGED (the user 2026-08-08, the beacon g10 card):
+                    # the card reply armed the fold's msg-reopen latch (followupPending — the card pins
+                    # Working and the nudge gate defers on "your reply is still being judged" until a
+                    # judge verdict lands on the top), and the follow-up work-run is the ONLY unit that
+                    # files that verdict. A reply that lands as its own turn while the response opens
+                    # the NEXT turn stays workless forever, so skipping it here left the latch waiting
+                    # on an event that could never arrive — a card wedged in Working+Stalled on an idle
+                    # session. Turn end is the event the has-work proxy was approximating; the branch's
+                    # own reopen/dismiss row is the release, and _strip_unevidenced_dones keeps a
+                    # workless reply from CLAIMING completion (the closer holds done authority). Nudges
+                    # keep their skip: their machinery re-asks and escalates on its own.
+                    out.append((seg["id"], "work", seg["t"], work_text, _seg_human(seg),
+                                _seg_followup(seg), trig, vq))
                 continue
             if _seg_peer(seg):                            # POSTAL segment → DELEGATION work-run (files under the courier's goal)
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
@@ -5309,7 +5333,7 @@ def _plan_session(fsid, path, now):
             hist = _goal_work_text(store, seg_by_id, target, GOAL_HISTORY_CHARS)
             ops = _parse_plan(plan_llm(text, _menu_text(store, sub), human=False,
                                        goal_history=hist, goal_num=1), len(sub)) or []
-            ops = _strip_spliced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # a peer message spliced
+            ops = _strip_unevidenced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # a peer message spliced
             #                                           mid-turn can't evidence an answer any more than a
             #                                           spliced human ask can — the fallback sub still files
             # Full expressivity, ROOTED under G: a delegation gets the same sub/done/block a human-minted top
@@ -5398,7 +5422,7 @@ def _plan_session(fsid, path, now):
                 ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
                        if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
                 ops = _restrict_retitle(ops, 1)          # goal_num=1 above → retitle is only valid on #1
-                ops = _strip_spliced_dones(ops, _tseg, fsid, seg_id)   # a nudge spliced mid-turn reads the
+                ops = _strip_unevidenced_dones(ops, _tseg, fsid, seg_id)   # a nudge spliced mid-turn reads the
                 #                                           interrupted turn's work as its reply — resolve
                 #                                           nothing; the goal stays open and re-nudgeable
                 apply_plan(store, seg_id, seg_t, ops, sub, place_key=_pkey, prompt_uuid=trig, quote=vq)
@@ -5434,7 +5458,7 @@ def _plan_session(fsid, path, now):
                                            goal_history=hist, goal_num=gi, followup=True,
                                            lifted_blocks=[(i, a) for i, (_n, a) in sorted(lifted_by_num.items())] or None),
                                   len(menu)) or []
-                ops = _strip_spliced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # a card reply spliced
+                ops = _strip_unevidenced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # a card reply spliced
                 #                                           mid-turn: strip BEFORE the pivot apply and before
                 #                                           the continuation lifts `res`, so a confabulated
                 #                                           done never re-completes the reopened target
@@ -5560,7 +5584,7 @@ def _plan_session(fsid, path, now):
             ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)   # HARD GUARD: a user
             #                                           message never silently vanishes
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
-        ops = _strip_spliced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # the incident path (the user
+        ops = _strip_unevidenced_dones(ops, seg_by_id.get(seg_id), fsid, seg_id)   # the incident path (the user
         #                                           2026-07-29): a queued ask's work-run confabulated a done
         if not ops:                                    # the reply was done-ONLY and stripped → same floor as a
             if not human or p_target:                  #  skip: record processed, or hard-place the ask (a user
