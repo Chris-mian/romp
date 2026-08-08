@@ -89,6 +89,15 @@ romp mail remote                 # connect this remote machine to your laptop's 
 | `check_sent()` | Whether your sent messages were read yet |
 | `recall_message(to, id?)` | Unsend a message the recipient hasn't read |
 
+### Claude Code 2.1.224 or newer
+
+Mail to a terminal (tmux) session delivers through Claude Code's per-session
+inbox socket, which the CLI added in 2.1.224: delivery is instant and never
+touches a half-typed draft. An older Claude Code still works — delivery falls
+back to typing the mail into the pane, which is slower and waits for a free
+prompt — and `romp` says so at launch, with the upgrade being one
+`claude update` away.
+
 ## Configuration
 
 ### Folder click, in your terminal or editor

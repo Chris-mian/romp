@@ -4777,6 +4777,22 @@ class TmuxBackend(sb.SessionBackend):
         state = (self.live_sessions().get(str(sid)) or {}).get("state", "")
         if state not in ("waiting", "idle", "working"):
             return False                                  # permission / unknown / picker → drain later
+        # Inbox-socket leg first (Claude Code ≥ 2.1.224): one JSON line to the CLI's own inbox
+        # socket — wakes an idle session, queues mid-turn, and never touches the composer, so
+        # every pane hazard below (copy-mode, no ❯ prompt, drafts) doesn't exist on this path.
+        # Gated on @romp-inbound-accept, the tag bin/romp writes at the same launch that passes
+        # the CLI --settings '{"crossSessionInbound":"accept"}': without that setting the CLI's
+        # inbound gate can HOLD an unverifiable sender's message and silently expire it after
+        # ~5min, and the socket sends no ack — a held-then-dropped banner would read as delivered
+        # here. The tag is written by the exact event that makes holds impossible, so it can
+        # never flap; untagged (old launch, old CLI) sessions keep pane injection unchanged.
+        try:
+            if self.show_var(name, "@romp-inbound-accept").strip() == "1":
+                sock = _messaging_socket_for(jd._sdk_last_sid(sid) or str(sid))
+                if sock and _socket_deliver(sock, text):
+                    return True
+        except Exception:
+            pass                                          # any socket hiccup → the pane path below
         if self.pane_in_mode(name):                       # scrolled up = copy-mode, where a paste's Enter is eaten
             self.send_keys(name, "-X", "cancel")          # exit it (drop to the live prompt) or bail
             if not _deliver_wait(lambda: not self.pane_in_mode(name), 1.0):
@@ -7497,6 +7513,73 @@ def _session_rows():
                     "lastSid": jd._sdk_last_sid(sid) or sid,
                     "working": notes.get(sid, ""), "backend": meta.get("backend", "")})
     return out
+
+
+# ── inbox-socket delivery (Claude Code ≥ 2.1.224) ──
+# The CLI binds a per-session Unix inbox socket and registers it — with its own session id and pid —
+# in ~/.claude/sessions/<pid>.json. One JSON line {"type":"user","message":{"role":"user","content":…}}
+# posted there injects a message with the CLI's own another-session framing: it wakes an idle session,
+# delivers between tool calls mid-turn, and never touches the composer, so a user's draft survives
+# with no stash dance. This is the CLI's designed external-injection surface (it prints exactly this
+# recipe in its startup log and exports the path to hooks as CLAUDE_CODE_MESSAGING_SOCKET). A session
+# on an older CLI has no registry row, so callers fall through to pane injection.
+
+
+def _claude_sessions_dir():
+    return os.environ.get("ROMP_CLAUDE_SESSIONS_DIR") or os.path.expanduser("~/.claude/sessions")
+
+
+def _messaging_socket_for(fsid):
+    """The inbox-socket path registered for CLI session id `fsid` (a romp row's lastSid), or None.
+    Rows are per-PID: a dead pid's row can linger (the CLI prunes lazily), and a resumed conversation
+    leaves the old pid's row behind with the same session id — so prefer a row whose pid is alive,
+    newest first. The real liveness proof stays the connect in _socket_deliver."""
+    fsid = str(fsid or "")
+    if not fsid:
+        return None
+    base = _claude_sessions_dir()
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return None
+    rows = []
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(base, n)) as f:
+                d = json.load(f)
+        except Exception:
+            continue                                      # malformed/foreign row → skip
+        if not isinstance(d, dict) or d.get("sessionId") != fsid:
+            continue
+        sock = d.get("messagingSocketPath")
+        if isinstance(sock, str) and sock:
+            rows.append(d)
+    if not rows:
+        return None
+    rows.sort(key=lambda d: (bool(_pid_alive(d["pid"])) if isinstance(d.get("pid"), int) else False,
+                             d.get("startedAt") or 0), reverse=True)
+    return rows[0]["messagingSocketPath"]
+
+
+def _socket_deliver(sock_path, text, timeout=3.0):
+    """Post one user message down a session's inbox socket; True iff the write completed. Fire-and-
+    forget by design — the CLI acks nothing for a plain send. Returning True is still an honest
+    "injected": the caller only takes this path for sessions launched with the inbound-accept
+    setting (see TmuxBackend.deliver), where an accepted write cannot be held or dropped."""
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.settimeout(timeout)
+            s.connect(sock_path)
+            s.sendall((json.dumps({"type": "user", "message": {"role": "user", "content": str(text)}})
+                       + "\n").encode("utf-8"))
+        finally:
+            s.close()
+        return True
+    except OSError:
+        return False
 
 
 # ── deliver-time prompt-box parsing (ported from the postal bus; PURE — operate on a captured pane) ──
