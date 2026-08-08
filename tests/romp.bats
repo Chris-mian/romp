@@ -71,6 +71,12 @@ exit 0
 MOCK
     chmod +x "$MOCK_DIR/tmux"
 
+    # Hermetic claude: the launch path probes `claude --version` for the 2.1.224
+    # floor (the inbound-accept setting + @romp-inbound-accept tag) — a dev
+    # machine's real claude would nondeterministically flip those on. Pin a
+    # modern version; per-test override via _stub_claude.
+    _stub_claude "2.1.226"
+
     export PATH="$MOCK_DIR:$PATH"
     unset TMUX            # default: outside tmux → attach-session branch
     # Hermetic HOME: bin/romp probes $HOME/.claude/romp-postal.mcp.json (would
@@ -92,6 +98,16 @@ teardown() {
 # Helper — runs romp with merged stdout+stderr so BATS captures errors
 run_romp() {
     "$ROMP_SCRIPT" "$@" 2>&1
+}
+
+# Helper — a fake `claude` reporting the given version (the launch path only ever
+# runs `claude --version`; the exec line itself lands in the tmux mock's log)
+_stub_claude() {
+    cat > "$MOCK_DIR/claude" <<STUB
+#!/usr/bin/env bash
+echo "$1 (Claude Code)"
+STUB
+    chmod +x "$MOCK_DIR/claude"
 }
 
 # ─── Launch tests ────────────────────────────────────────────────────
@@ -116,6 +132,26 @@ run_romp() {
     # handed to the pane with respawn-pane (atomic), not typed with send-keys.
     grep -qE 'tmux respawn-pane -k -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36}' "$MOCK_LOG"
     grep -q 'tmux attach-session -t myproject' "$MOCK_LOG"
+}
+
+@test "new -t on a 2.1.224+ claude: inbound-accept setting + @romp-inbound-accept tag" {
+    # The kernel's inbox-socket delivery leg fires only for launches that passed the
+    # CLI's inbound-accept setting (an unverifiable sender's mail can otherwise be
+    # held and silently expire); the tag records exactly those launches — one code
+    # path writes both, so they can never disagree. Setup pins claude at 2.1.226.
+    run run_romp new -t myproject
+    [ "$status" -eq 0 ]
+    grep -qF -- "--settings '{\"crossSessionInbound\":\"accept\"}'" "$MOCK_LOG"
+    grep -q 'tmux set -t myproject @romp-inbound-accept 1' "$MOCK_LOG"
+}
+
+@test "new -t on an old claude: no setting, no tag, one upgrade nudge" {
+    _stub_claude "2.1.220"
+    run run_romp new -t myproject
+    [ "$status" -eq 0 ]
+    ! grep -q -- '--settings' "$MOCK_LOG"
+    ! grep -q -- '@romp-inbound-accept' "$MOCK_LOG"
+    [[ "$output" == *"claude update"* ]]     # the informative floor line, not a failure
 }
 
 @test "launch hands the exec line to respawn-pane, never typed via send-keys (dropped-char bug)" {
@@ -203,7 +239,10 @@ run_romp() {
     [ -n "$line" ]
     # no shell metacharacters survive in the exec line
     ! grep -qE '[$();]' <<<"$line"
-    # exactly the two quotes that wrap --name "<name>", no injected extras
+    # exactly the two quotes that wrap --name "<name>", no injected extras. The
+    # fixed --settings tail romp itself appends carries its own JSON quotes — a
+    # trusted constant, not name-derived — so strip it before counting.
+    line="${line%%--settings*}"
     [ "$(grep -o '"' <<<"$line" | wc -l | tr -d ' ')" -eq 2 ]
 }
 

@@ -1325,6 +1325,23 @@ fi
 [[ -f "$HOME/.claude/romp-session-prompt.md" ]] && \
     claude_cmd="$claude_cmd --append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\""
 
+# Claude Code ≥ 2.1.224 gives every session an inbox socket the kernel can
+# deliver agent mail through — instant, and it never touches a half-typed
+# draft. The CLI's inbound gate may HOLD mail from an unverifiable sender
+# (the kernel) when the session runs a bypass-class permission mode, and a
+# held message quietly expires — so accept it explicitly at launch, the
+# CLI's documented setting for unattended inboxes (the user approved this
+# 2026-08-08: same-user processes can already reach the pane itself via
+# send-keys with FULL user authority; socket mail arrives with LESS — the
+# CLI labels it another-session traffic and strips approval power).
+# @romp-inbound-accept (tagged at create, below) tells the kernel this
+# launch carries the setting; an older CLI gets neither flag nor tag, and
+# mail keeps arriving by pane injection exactly as before.
+claude_meets_floor=false
+if _romp_claude_meets_floor; then
+    claude_meets_floor=true
+    claude_cmd="$claude_cmd --settings '{\"crossSessionInbound\":\"accept\"}'"
+fi
 # An old Claude Code falls back to pane-injected agent mail — say so once here,
 # where a session is being launched (see the version-floor helpers up top).
 _romp_claude_floor_nudge
@@ -1345,6 +1362,12 @@ else
 
     # Tag it as a romp session so the dashboard / hook / attach find it.
     tmux set -t "$name" @romp 1
+
+    # The kernel's inbox-socket delivery leg keys on this tag: it marks a launch
+    # that passed the inbound-accept setting (above), i.e. a session whose inbox
+    # socket can never hold-and-drop the kernel's mail. Written here, by the same
+    # code path that added the setting, so tag and setting can never disagree.
+    if $claude_meets_floor; then tmux set -t "$name" @romp-inbound-accept 1; fi
 
     # Install the tmux glue romp needs (hooks/bindings server-wide if absent,
     # status line + tab title on this session) — works on a stock tmux.
