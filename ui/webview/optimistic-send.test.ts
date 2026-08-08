@@ -18,7 +18,26 @@ test("the plain send registers an optimistic bubble; follow-up/quote sends keep 
   assert.match(RENDER, /else \{ vscodeApi\.postMessage\(\{ type: "sendMessage", id: activeId, text \}\); registerOptimistic\(activeId, text\); \}/);
   // registerOptimistic shows it NOW (before any push) via reconcile + appendActive
   assert.match(RENDER, /function registerOptimistic\(id: string, text: string\): void/);
-  assert.match(RENDER, /reconcileOptimistic\(s\);\s*\n\s*if \(id === activeId\) appendActive\(\);/);
+  assert.match(RENDER, /if \(v\) v\.stale = true;\s*\n\s*if \(id === activeId\) appendActive\(\);/);
+});
+
+// The reconcile's two IN-PLACE tail mutations — merging into an existing queued group (a busy session
+// already showing queued messages) and pop+push on a repeat send — leave s.events.length unchanged, so
+// syncView's no-op fast path (rendered === len && !stale) concluded "nothing changed" and skipped the
+// repaint: the bubble waited for the NEXT kernel push, a visible beat after Enter (the user 2026-08-07).
+// Only the length-growing case (first send, bare tail) painted on the keystroke. registerOptimistic now
+// marks the view stale before appendActive, so every send takes the stale window re-render immediately.
+test("a send paints on ITS OWN keystroke even when the tail mutates in place (no length change)", () => {
+  // the stale mark sits between the reconcile and the repaint, so appendActive can't hit the fast path
+  assert.match(RENDER, /reconcileOptimistic\(s\);[\s\S]{0,700}const v = views\.get\(id\);\s*\n\s*if \(v\) v\.stale = true;\s*\n\s*if \(id === activeId\) appendActive\(\);/);
+  // the fast path it defeats keys on length + staleness — stale must veto the skip
+  assert.match(RENDER, /if \(v\.rendered === len && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
+  // executed replica: the fast-path predicate must not skip once the view is marked stale, even though
+  // the in-place merge keeps the length equal to what was last rendered
+  const skips = (rendered: number, len: number, stale: boolean, children: number) =>
+    rendered === len && !stale && children > 0;
+  assert.equal(skips(50, 50, false, 50), true, "length-neutral mutation without the mark: skipped (the bug)");
+  assert.equal(skips(50, 50, true, 50), false, "the stale mark forces the repaint on the same keystroke");
 });
 
 test("every push entry point re-asserts (or retires) the optimistic tail", () => {

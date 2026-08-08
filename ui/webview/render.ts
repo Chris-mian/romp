@@ -300,6 +300,14 @@ function registerOptimistic(id: string, text: string): void {
   const s = sessions.get(id);
   if (!s) return;
   reconcileOptimistic(s);
+  // The reconcile can mutate the tail IN PLACE — merging into an existing queued group, or pop+push
+  // on a repeat send — which leaves s.events.length unchanged, and syncView's no-op fast path
+  // (rendered === len) then skipped the repaint: the bubble waited for the next kernel push instead
+  // of this keystroke (the user 2026-08-07, who saw the delay on sends into a busy session). Marking
+  // the view stale takes the same window re-render a tool-group toggle uses, so the send paints NOW
+  // in every case, not just the length-growing bare-bubble one.
+  const v = views.get(id);
+  if (v) v.stale = true;
   if (id === activeId) appendActive();
 }
 
