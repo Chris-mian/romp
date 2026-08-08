@@ -7047,9 +7047,18 @@ def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
 # walks its chain) — but an answer given in passing files under whichever node the planner judges the
 # segment to serve, so a dormant blocked goal never hears it (a buried sub, or a TOP whose answer came
 # on a sibling card's thread — g48, 2026-07-16). This pass closes that gap: for each open blocked goal
-# with NEW conversation since its block (event-gated), ask whether the conversation answered its
-# question or made it moot, and lift via the same record_verdict("unblock") every other lift uses.
+# with NEW evidence since its block (event-gated), ask whether the record answered its question or
+# made it moot, and lift via the same record_verdict("unblock") every other lift uses.
+# The evidence is TWO-CHANNEL (the user 2026-08-08, the superseded-cards study): the conversation
+# tail scrolls past in UNBLOCK_HISTORY_CHARS and the blockCheckT ratchet never re-presents what one
+# conservative hold let by, so an ask overtaken by later work sat in Needs-you until the user cleaned
+# it up by hand (400 card-hours across 302 manual clears; one audited session held four overtaken
+# asks through ~10h of examines while dozens of sibling cards completed). The session's DONE verdicts
+# are the durable half: they name what was finished and why, they never scroll away, and a new
+# filing is itself an arming event — so a completion can lift a stale ask even when it arrives with
+# no new turn at all (a late closer filing on an idle session).
 UNBLOCK_HISTORY_CHARS = 9000             # the after-conversation tail shown to the unblocker (newest kept)
+UNBLOCK_COMPLETED_CHARS = 4000           # the completed-since section shown to the unblocker (newest kept)
 
 UNBLOCK_SYS = (
     "You review goals a work session earlier marked blocked, each waiting on an answer or decision "
@@ -7057,10 +7066,20 @@ UNBLOCK_SYS = (
     "chat partner: don't act on anything, answer anything, or ask anything.\n\n"
     "Each numbered block in <blocked-goals> is one goal's open question, numbered from 1 (there is no "
     "block 0). <conversation-since> is what "
-    "the session and the user said and did afterwards. Decide for each block whether it is still "
+    "the session and the user said and did afterwards. <completed-since> lists the goals this session "
+    "has finished since the block, with why each counts as done; finished work there can show a "
+    "blocked goal's question was overtaken even when the conversation has moved on. Decide for each "
+    "block whether it is still "
     "genuinely waiting on the user, or whether the conversation has since answered its question or made "
     "it moot (the answer was given in passing, the decision got made another way, or the work visibly "
-    "moved past it). Reply with only a JSON object (no prose, no markdown fences):\n"
+    "moved past it). A goal the session has visibly moved past is moot even though nobody typed an "
+    "answer: an offer or approval whose work was then done anyway (or a newer variant of it shipped), "
+    "or a decision that later work made irrelevant. A blocked goal whose open question is restated by "
+    "a newer blocked goal in the same list is superseded: lift the older, keep the newest. Progress on "
+    "other goals does **not** by itself make an ask moot; if the thing it asks for is still missing "
+    "and still needed, hold. Another goal's completion note or an upbeat wrap-up is not the answer to "
+    "this ask: lift only when the specific thing this goal is waiting on was itself given, done, or "
+    "made irrelevant. Reply with only a JSON object (no prose, no markdown fences):\n"
     '{"verdicts": [{"n": <block number>, "do": "lift" | "hold", "why": "..."}]}\n'
     "- \"lift\": answered or moot. why = where the answer came from, one short plain sentence.\n"
     "- \"hold\": still genuinely waiting on the user. why may be an empty string.\n"
@@ -7068,12 +7087,53 @@ UNBLOCK_SYS = (
     "work proceeding past it; when unsure, hold. Output only the JSON object.")
 
 
-def unblock_llm(blocks_text, since_text):
+def unblock_llm(blocks_text, since_text, completed_text=""):
     """The unblocker's {"verdicts":[...]} reply from the triage-tier model over the numbered open
-    blocked goals + the conversation since the oldest of them. '' on failure (logged by _judge_run)."""
-    user = ("<blocked-goals>\n%s\n</blocked-goals>\n<conversation-since>\n%s\n</conversation-since>"
-            % (blocks_text, since_text))
+    blocked goals + the conversation since the oldest of them + the goals completed since then.
+    '' on failure (logged by _judge_run). Both evidence sections always render (the prompt names
+    them): an examine armed by a done filing alone may carry no new conversation at all."""
+    user = ("<blocked-goals>\n%s\n</blocked-goals>\n<conversation-since>\n%s\n</conversation-since>\n"
+            "<completed-since>\n%s\n</completed-since>"
+            % (blocks_text, since_text.strip() or "(no conversation since the block)",
+               completed_text or "(none)"))
     return _judge_run(_triage_model(), UNBLOCK_SYS, user, judge="unblocker").strip()[:JUDGE_JSON_CAP]
+
+
+def _completed_since(store, oldest_block, exclude):
+    """The goals this session completed since the oldest due block — one '- title: why' line each,
+    oldest first, newest kept under UNBLOCK_COMPLETED_CHARS. This is the DURABLE half of the
+    unblocker's evidence (the replay study, 2026-08-08: an examined-and-held card whose superseding
+    turns had scrolled out of the 9k tail was re-liftable at every later examine once the completions
+    rode along). Synth settle rows are excluded — an episode-boundary settle asserts the conversation
+    ended, not that work was delivered — and so are the due nodes themselves (their own history is
+    not sibling evidence)."""
+    rows = []
+    for nid, nd in store["nodes"].items():
+        if nid in exclude:
+            continue
+        best = None
+        for r in nd.get("log") or []:
+            at = r.get("at") or 0
+            if r.get("kind") == "done" and not r.get("synth") and at > oldest_block \
+                    and (best is None or at > best[0]):
+                best = (at, r.get("why") or nd.get("doneWhy") or "")
+        if best:
+            line = "- %s" % (nd.get("text") or "(goal)")
+            if best[1]:
+                line += ": %s" % str(best[1])[:220]
+            rows.append((best[0], line))
+    rows.sort()
+    return "\n".join(line for _at, line in rows)[-UNBLOCK_COMPLETED_CHARS:]
+
+
+def _newest_done_at(store):
+    """The newest non-synth done verdict FILING time (`at`, arrival domain) in the store — the
+    "something was completed" arming event. Filing time, not ev_t, on purpose: a closer can file a
+    done minutes after its evidence turn ended (or for an already-examined turn), and that filing is
+    the new information a blocked card's supersession check keys on."""
+    return max((r.get("at") or 0 for nd in store["nodes"].values()
+                for r in (nd.get("log") or [])
+                if r.get("kind") == "done" and not r.get("synth")), default=0)
 
 
 def _parse_unblock(raw, n):
@@ -7133,10 +7193,17 @@ def _blocked_sub_candidates(store):
 
 
 def _unblock_session(fsid, path, now):
-    """Re-examine ONE session's stale blocked goals (subs AND tops, 2026-07-16). Event-gated per node: a
-    goal is (re-)examined only when an ENDED turn newer than max(its block, its last check) exists —
-    blockCheckT is the watermark, advanced after every examine (and on the parse give-up) so a stable
-    session costs zero calls. Returns the node ids lifted.
+    """Re-examine ONE session's stale blocked goals (subs AND tops, 2026-07-16). Event-gated per node
+    on TWO event streams, each with its own watermark advanced after every examine (and on the parse
+    give-up) so a stable session costs zero calls. Returns the node ids lifted.
+      - a new ENDED turn — blockCheckT, TURN-time domain. The rejudging latch reads this watermark
+        against reply times (kernel _block_check_floor, PR #144), so it must never carry a filing
+        time: a wall-clock stamp sorts after every turn and would release the latch before any judge
+        saw the reply it latched on.
+      - a new DONE verdict FILED in this session — blockCheckDoneT, arrival-time domain (the user
+        2026-08-08): a completion is the event that can supersede a blocked ask, and it can arrive
+        with no new turn at all (a late closer filing on an idle session). Verdicts file once, so
+        the gate re-arms only on genuinely new filings — no flapping.
 
     Write discipline (the user 2026-07-11): the model call takes seconds and save_goals is a
     last-writer-wins atomic publish, so NO store copy is held across the call — the scan's load is
@@ -7147,27 +7214,31 @@ def _unblock_session(fsid, path, now):
     every fast judge write has; a user action clobbered inside even that window self-heals via the
     override journal replay on the next pass."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
-    cands = _blocked_sub_candidates(load_goals(fsid))  # read-only scan; this copy is NOT saved
+    scan = load_goals(fsid)                            # read-only scan; this copy is NOT saved
+    cands = _blocked_sub_candidates(scan)
     if not cands:
         return []
     session = parsed_session(fsid, [path], now)
     turns = session["turns"]
     ended_ts = [turn.get("t") or 0 for turn in turns if not _turn_open(turn, turns)]
     newest = max(ended_ts, default=0)
+    newest_done = _newest_done_at(scan)
     due = [(nid, nd, bt) for nid, nd, bt in cands
-           if newest > max(bt, nd.get("blockCheckT") or 0)]
+           if newest > max(bt, nd.get("blockCheckT") or 0)
+           or newest_done > max(bt, nd.get("blockCheckDoneT") or 0)]
     if not due:
         return []
     oldest_block = min(bt for _nid, _nd, bt in due)
     since = "\n\n".join(_unit_text(turn["atoms"]) for turn in turns
                         if (turn.get("t") or 0) > oldest_block and not _turn_open(turn, turns))
     since = since[-UNBLOCK_HISTORY_CHARS:]
-    if not since.strip():
+    completed = _completed_since(scan, oldest_block, {nid for nid, _nd, _bt in due})
+    if not since.strip() and not completed:
         return []
     blocks_text = "\n".join("%d. %s\n   blocked on: %s" % (i, nd.get("text") or "(goal)",
                                                            nd.get("blockWhy") or "(no recorded question)")
                             for i, (_nid, nd, _bt) in enumerate(due, 1))
-    raw = unblock_llm(blocks_text, since)              # ← seconds; no store copy held across this
+    raw = unblock_llm(blocks_text, since, completed)   # ← seconds; no store copy held across this
     if not raw:
         return []                                      # call failed / paused (logged) → retry next pass
     lifts = _parse_unblock(raw, len(due))
@@ -7179,15 +7250,16 @@ def _unblock_session(fsid, path, now):
         fails = store.setdefault("unblockFails", 0) + 1
         store["unblockFails"] = fails
         if fails >= JUDGE_FAIL_CAP:                    # give up on THIS evidence: advance the watermarks —
-            store["unblockFails"] = 0                  # a NEWER ended turn re-arms every node (event re-arm)
+            store["unblockFails"] = 0                  # a NEWER ended turn / done filing re-arms every node
             for nid, _nd, _bt in due:
                 if nid in nodes:
-                    nodes[nid]["blockCheckT"] = newest
+                    nodes[nid]["blockCheckT"] = max(newest, nodes[nid].get("blockCheckT") or 0)
+                    nodes[nid]["blockCheckDoneT"] = max(newest_done, nodes[nid].get("blockCheckDoneT") or 0)
         save_goals(fsid, store)
         return []
     store["unblockFails"] = 0
     lifted = []
-    for i, (nid, _stale, _bt) in enumerate(due, 1):
+    for i, (nid, _stale, bt) in enumerate(due, 1):
         nd = nodes.get(nid)
         why = lifts.get(i)
         if nd is None or not nd.get("blocked") or nd.get("cleared"):
@@ -7198,10 +7270,16 @@ def _unblock_session(fsid, path, now):
                 _log_judge_error("unblocker", fsid, "drift-skip", goal=nid,
                                  note="node changed during the model call (resolved/cleared/re-planned) — lift skipped")
             continue
-        nd["blockCheckT"] = newest                     # examined up to here — re-ask only on newer evidence
+        # examined up to here — re-ask only on newer evidence. max() because a done-armed examine can
+        # run with an OLDER turn horizon than a prior turn-armed one; assigning bare `newest` would
+        # regress the turn watermark and both spuriously re-arm it and re-open the rejudging latch.
+        nd["blockCheckT"] = max(newest, nd.get("blockCheckT") or 0)
+        nd["blockCheckDoneT"] = max(newest_done, nd.get("blockCheckDoneT") or 0)
         if why is None:
             continue
-        if record_verdict(store, nd, "unblocker", "unblock", newest,
+        # ev floor mirrors the moot-heal: an examine armed by a done filing alone can have newest <
+        # the block's own evidence, and an unblock that folds BEFORE its block lifts nothing.
+        if record_verdict(store, nd, "unblocker", "unblock", max(newest, bt),
                           why=("answered in passing: " + why) if why else "answered in passing"):
             nd["mt"] = now
             lifted.append(nid)

@@ -57,8 +57,8 @@ class UnblockerBase(unittest.TestCase):
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _stub(self, reply):
-        def fake(blocks_text, since_text):
-            self.calls.append((blocks_text, since_text))
+        def fake(blocks_text, since_text, completed_text=""):
+            self.calls.append((blocks_text, since_text, completed_text))
             return reply
         jd.unblock_llm = fake
 
@@ -97,6 +97,21 @@ class UnblockerBase(unittest.TestCase):
         p = Path(self._td) / (SID + ".jsonl")
         p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         return str(p)
+
+    def _add_completed_sibling(self, done_at, why="the pool sizing table shipped", synth=False,
+                               title="ship the pool sizing table"):
+        """Rebuild the saved store with a completed sibling top carrying its own done verdict row.
+        Written as plain dicts BEFORE save (protected flags are diary-owned once loaded)."""
+        store = json.loads(json.dumps(jd.load_goals(SID)))
+        other = SID + ":g5"
+        store["nodes"][other] = {
+            "id": other, "text": title, "parentId": None,
+            "nodeComplete": True, "blocked": False, "cleared": False, "doneWhy": why,
+            "trail": [], "t": T0, "mt": done_at,
+            "log": [{"ev_t": done_at, "src": "closer", "kind": "done", "why": why,
+                     **({"synth": True} if synth else {}), "at": done_at}]}
+        jd.save_goals(SID, store)
+        return other
 
 
 class Unblocker(UnblockerBase):
@@ -198,8 +213,8 @@ class Unblocker(UnblockerBase):
         path = self._transcript([(T0 + 200, "it is a 10,000mAh pack", "noted")])
         other = SID + ":g9"
 
-        def fake(blocks_text, since_text):
-            self.calls.append((blocks_text, since_text))
+        def fake(blocks_text, since_text, completed_text=""):
+            self.calls.append((blocks_text, since_text, completed_text))
             st = jd.load_goals(SID)
             jd.record_verdict(st, st["nodes"][sub], "user", "done", T0 + 500,
                               why="crossed off by the user mid-call")
@@ -217,6 +232,103 @@ class Unblocker(UnblockerBase):
         rows = [json.loads(line) for line in jd.ERRORS.read_text().splitlines()] if jd.ERRORS.exists() else []
         self.assertTrue(any(r.get("err") == "drift-skip" for r in rows),
                         "the race is observable: a drift-skip row lands in judge-errors")
+
+
+class UnblockerCompletedSince(UnblockerBase):
+    """The two-channel evidence gate (the user 2026-08-08): the session's DONE verdicts ride the
+    examine as <completed-since> (durable — the 9k conversation tail scrolls, a completion doesn't),
+    and a new done FILING is itself an arming event, so supersession can lift a blocked ask even when
+    no new turn ever arrives. All fixtures synthetic."""
+
+    def test_completed_since_rides_the_evidence_and_can_lift(self):
+        top, sub = self._store(block_t=T0 + 100)
+        self._add_completed_sibling(done_at=T0 + 300)
+        path = self._transcript([(T0 + 200, "keep going on the sizing", "on it"),
+                                 (T0 + 400, "anything else?", "wrapping up")])
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "the sizing table shipped past it"}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [sub])
+        self.assertIn("ship the pool sizing table", self.calls[0][2],
+                      "the completed sibling is shown as evidence")
+        self.assertIn("the pool sizing table shipped", self.calls[0][2],
+                      "with the done verdict's why")
+        self.assertIn("<completed-since>", jd.UNBLOCK_SYS, "the prompt names the section it receives")
+
+    def test_a_done_filing_arms_the_examination_without_new_turns(self):
+        # Every turn predates the block: the turn gate can never arm. A sibling completion filed
+        # afterwards must — the font-size offer card sat 1.3h with blockCheckT=None while two dones
+        # filed after its block (2026-08-08 study, synthetic equivalent here).
+        top, sub = self._store(block_t=T0 + 100)
+        self._add_completed_sibling(done_at=T0 + 300)
+        path = self._transcript([(T0 + 40, "please size the pool", "asking a question and idling")])
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "the completion covers it"}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [sub])
+        store = jd.load_goals(SID)
+        self.assertFalse(store["nodes"][sub]["blocked"],
+                         "the lift lands even though its examine had no new turn (ev floor = the block)")
+        self.assertEqual(self.calls[0][1], "", "no conversation since the block existed")
+        self.assertIn("ship the pool sizing table", self.calls[0][2])
+
+    def test_the_done_watermark_prevents_reasking_until_a_newer_filing(self):
+        top, sub = self._store(block_t=T0 + 100)
+        self._add_completed_sibling(done_at=T0 + 300)
+        path = self._transcript([(T0 + 40, "please size the pool", "asking and idling")])
+        self._stub('{"verdicts": [{"n": 1, "do": "hold", "why": ""}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [])
+        self.assertEqual(len(self.calls), 1)
+        # same filings again → no second call (blockCheckDoneT watermark)
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [])
+        self.assertEqual(len(self.calls), 1, "no new filing → no re-ask")
+        # a NEWER done filing re-arms the examination
+        store = json.loads(json.dumps(jd.load_goals(SID)))
+        store["nodes"][SID + ":g5"]["log"].append(
+            {"ev_t": T0 + 500, "src": "closer", "kind": "done",
+             "why": "the follow-on table also shipped", "at": T0 + 500})
+        jd.save_goals(SID, store)
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [])
+        self.assertEqual(len(self.calls), 2, "a new done filing → examined again")
+
+    def test_a_done_armed_examine_never_regresses_the_turn_watermark(self):
+        # REGRESSION GUARD for the rejudging latch (PR #144): kernel _block_check_floor reads
+        # blockCheckT against plain-reply TURN times. A done filing is wall-clock and sorts after
+        # every turn, so it must advance only its OWN watermark — a filing time written into
+        # blockCheckT would release the latch before any judge saw the reply it latched on.
+        top, sub = self._store(block_t=T0 + 100)
+        self._add_completed_sibling(done_at=T0 + 300)
+        path = self._transcript([(T0 + 40, "please size the pool", "asking and idling")])
+        self._stub('{"verdicts": [{"n": 1, "do": "hold", "why": ""}]}')
+        jd._unblock_session(SID, path, NOW)
+        store = jd.load_goals(SID)
+        nd = store["nodes"][sub]
+        newest_turn = T0 + 45                          # the one ended turn's reply line
+        self.assertLessEqual(nd.get("blockCheckT") or 0, newest_turn,
+                             "blockCheckT stays in the turn-time domain")
+        self.assertEqual(nd.get("blockCheckDoneT"), T0 + 300,
+                         "the filing advanced its own watermark only")
+
+    def test_pre_block_dones_neither_arm_nor_ride(self):
+        top, sub = self._store(block_t=T0 + 100)
+        self._add_completed_sibling(done_at=T0 + 50)   # finished BEFORE the ask existed
+        path = self._transcript([(T0 + 40, "please size the pool", "asking and idling")])
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "x"}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [])
+        self.assertEqual(self.calls, [], "nothing new since the block → no examine at all")
+
+    def test_synth_settle_dones_neither_arm_nor_ride(self):
+        # An episode-boundary settle asserts the conversation ended, not that work was delivered —
+        # it is not supersession evidence and must not wake the examine.
+        top, sub = self._store(block_t=T0 + 100)
+        self._add_completed_sibling(done_at=T0 + 300, synth=True)
+        path = self._transcript([(T0 + 40, "please size the pool", "asking and idling")])
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "x"}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [])
+        self.assertEqual(self.calls, [], "a synth settle row is not an arming event")
+        # and when a real turn arms the examine, the synth row still doesn't ride as evidence
+        path2 = self._transcript([(T0 + 40, "please size the pool", "asking and idling"),
+                                  (T0 + 400, "unrelated talk", "unrelated reply")])
+        jd._PARSE_CACHE.clear()
+        self._stub('{"verdicts": [{"n": 1, "do": "hold", "why": ""}]}')
+        jd._unblock_session(SID, path2, NOW)
+        self.assertEqual(self.calls[-1][2], "", "the synth completion is excluded from the section")
 
 
 if __name__ == "__main__":
