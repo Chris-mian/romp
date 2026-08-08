@@ -7574,6 +7574,15 @@ function restoreActiveDraftOnce(): void {
 // Session order elsewhere stays kernel-authoritative; this is only "what did I look at last".
 const sessionMru: string[] = [];
 (window as any).__rompMru = sessionMru;
+// …and the sessions this page knows, for the same switcher: every tab in tab order — local AND
+// the federation-merged remote ones (host-prefixed ids), with the tab's identity colors — so the
+// switcher's rows carry the exact identity language the tabs do (the user 2026-08-08: bold name
+// in the session color, host: prefix in the dim italic). A snapshot accessor, not live state.
+(window as any).__rompSessionList = () =>
+  order.map((id) => {
+    const m = tabMeta.get(id);
+    return { id, name: m?.name || id, bg: m?.color?.bg || "", fg: m?.color?.fg || "" };
+  });
 function noteMru(id: string): void {
   const i = sessionMru.indexOf(id);
   if (i >= 0) sessionMru.splice(i, 1);

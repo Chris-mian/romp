@@ -8,6 +8,7 @@
 // focus, and the window/tab-management set (Cmd+W/T/N/L/Q) stays untouched.
 import { registerCommand } from "./commands";
 import { initPalette, PickItem } from "./palette";
+import { hostPrefix } from "./host-prefix";   // pure display helper — safe here (never federation.ts, which boots a manager on import)
 
 type SessionRow = { id: string; name: string; dir: string; bg: string };
 
@@ -37,40 +38,56 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   }
 
   // ── the session jump switcher (Cmd/Ctrl+O) ────────────────────────────────────────────────
-  // Sessions come from the kernel's /sessions (the authoritative list, same-origin, kernel
-  // order); recency comes from the chat pane's __rompMru (most-recently-ACTIVATED tab ids,
-  // current session first). Obsidian's trick, kept: the current session is excluded and the
-  // previous one sorts first, so Cmd+O Enter toggles between your two most recent sessions.
+  // Sessions come from the CHAT page's registry first (__rompSessionList: tab order, identity
+  // colors — and the only place this page can see the federation-merged REMOTE sessions),
+  // unioned with the kernel's /sessions (locals whose tab was closed). Recency comes from the
+  // chat pane's __rompMru (most-recently-ACTIVATED tab ids, current session first). Obsidian's
+  // trick, kept: the current session is excluded and the previous one sorts first, so Cmd+O
+  // Enter toggles between your two most recent sessions.
+  type SwitchRow = { id: string; name: string; bg: string; dir: string };
+  function chatSessions(): SwitchRow[] {
+    try {
+      const ls = (pane("f-chat")?.contentWindow as any)?.__rompSessionList;
+      return ls ? ls().map((r: any) => ({ id: String(r.id), name: String(r.name), bg: String(r.bg || ""), dir: "" })) : [];
+    } catch (e) { return []; }
+  }
   function mruIds(): string[] {
     try { return (pane("f-chat")?.contentWindow as any)?.__rompMru?.slice() || []; }
     catch (e) { return []; }
   }
-  function sessionItems(rows: SessionRow[]): PickItem[] {
+  function sessionItems(locals: SessionRow[] | null): PickItem[] {
+    const rows = chatSessions();
+    const seen = new Set(rows.map((r) => r.id));
+    for (const l of locals || []) {
+      if (!seen.has(l.id)) rows.push({ id: l.id, name: l.name, bg: l.bg || "", dir: l.dir || "" });
+      else { const r = rows.find((x) => x.id === l.id); if (r) r.dir = l.dir || ""; }   // dir tails for tab rows too
+    }
     const mru = mruIds();
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const ordered: SessionRow[] = [];
+    const ordered: SwitchRow[] = [];
     for (const id of mru.slice(1)) { const r = byId.get(id); if (r) { ordered.push(r); byId.delete(id); } }
     for (const r of rows) if (byId.has(r.id) && r.id !== mru[0]) ordered.push(r);
     const base = (d: string) => (d || "").replace(/\/+$/, "").split("/").pop() || "";
-    return ordered.map((r) => ({
-      title: r.name,
-      dot: r.bg || "#8a8a8a",
-      dim: base(r.dir),
-      run: () => chatPost({ type: "jumpSession", id: r.id }),
-    }));
+    return ordered.map((r) => {
+      const p = hostPrefix(r.name, r.id);   // remote → {host:"host:", rest}; local (bare uuid) → null
+      return {
+        title: p ? p.host + p.rest : r.name,
+        hostLen: p ? p.host.length : 0,
+        color: r.bg || undefined,
+        dim: base(r.dir),
+        run: () => chatPost({ type: "jumpSession", id: r.id }),
+      };
+    });
   }
   function openSessionSwitcher(): void {
-    fetch("/sessions").then((r) => r.json()).then((rows: SessionRow[]) => {
+    fetch("/sessions").then((r) => r.json()).catch(() => null).then((locals) => {
+      const items = sessionItems(Array.isArray(locals) ? (locals as SessionRow[]) : null);
+      // fail loudly, not with a silently empty list: nothing from the chat pane AND no answer
+      // from the kernel means the kernel is the story, not "you have no sessions"
       palette.openPick({
         placeholder: "Jump to a session…",
-        items: sessionItems(Array.isArray(rows) ? rows : []),
-        altEnter: { label: "new session…", run: openNewSessionPicker },
-      });
-    }).catch(() => {
-      // fail loudly, not with a silently empty list: the kernel not answering is the story
-      palette.openPick({
-        placeholder: "Jump to a session…",
-        items: [{ title: "Couldn't load sessions — the kernel didn't answer", run: () => {} }],
+        items: items.length || locals !== null ? items
+          : [{ title: "Couldn't load sessions — the kernel didn't answer", run: () => {} }],
         altEnter: { label: "new session…", run: openNewSessionPicker },
       });
     });
