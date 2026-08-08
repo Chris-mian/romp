@@ -123,10 +123,10 @@ class MachineCutSuppression(unittest.TestCase):
         self.assertFalse(km._interrupt_suppresses_nudge(turns))
 
 
-class MachineCutFeedAndNudge(unittest.TestCase):
-    """End to end through the parse: a restart-cut session is CONTINUED (auto-nudge fires), wears NO
-    'interrupted' badge, and is never interrupt-blocked. A genuine user stop flips the focus goal to
-    Blocked (needs-you) even with auto-nudge OFF, and wears the badge in the needs-you column."""
+class _FeedHarness(unittest.TestCase):
+    """Shared transcript + store + feed fixture for the tick-level classes below (no tests of its
+    own): a temp project dir, a named session, redirected judge/kernel paths, and helpers to write
+    the transcript shapes and read the built card."""
 
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -201,9 +201,16 @@ class MachineCutFeedAndNudge(unittest.TestCase):
             km._tmux_send, jd.optimistic_followup = saved
         return sent, restore
 
-    def _card(self):
+    def _card(self, item_id=None):
         km._parse(str(self.tpath), SID, NOW)                       # warm the cache (stands in for _warm_fleet_bg)
-        return next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
+        return next(a for a in km.build_feed(NOW, self.tmux)["asks"]
+                    if a["itemId"] == (item_id or SID + ":gw"))
+
+
+class MachineCutFeedAndNudge(_FeedHarness):
+    """End to end through the parse: a restart-cut session is CONTINUED (auto-nudge fires), wears NO
+    'interrupted' badge, and is never interrupt-blocked. A genuine user stop flips the focus goal to
+    Blocked (needs-you) even with auto-nudge OFF, and wears the badge in the needs-you column."""
 
     # --- restart / crash cut: continued, no badge, not blocked ------------------------------------
 
@@ -271,6 +278,82 @@ class MachineCutFeedAndNudge(unittest.TestCase):
         km._interrupt_block_tick(NOW, self.tmux)
         self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "working",
                          "the user re-engaged → our interrupt block lifts")
+
+
+class StaleInterruptMarker(_FeedHarness):
+    """The once-per-episode intrBlocked marker is VERIFIED against the store each tick, never trusted
+    (the user 2026-08-08). The audited shape: a genuine stop blocked the then-focus goal; the judges
+    lifted and completed it off newer turns; an injected turn (a task notification) ran and settled
+    with the user silent throughout. The marker still pointed at the finished goal, so the tick read
+    "already blocked this episode" and skipped the re-block forever — the session's LIVE focus goal
+    sat in Working wearing only the 'interrupted' badge, auto-nudge suppressed: invisible-blocked.
+    The re-record stamps the CURRENT quiet (the stop joined with the transcript's newest event — an
+    injected record can FOLD into the cut turn rather than open one, so the last turn's trigger
+    undershoots), landing over the judges' newer rows instead of folding under them."""
+
+    INJECTED = "<task-notification>a background task finished</task-notification>"
+
+    def test_a_wedged_marker_reblocks_the_live_focus_goal(self):
+        km._set_auto_nudge(False)
+        self._genuine_stop()
+        g1 = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][g1], "blocked")
+        self.assertEqual(km._intr_blocked(SID), g1)
+        # the judges move on from newer turns: the stopped goal is lifted and completed, and a second
+        # goal is the live focus now — the marker still points at the finished one
+        st = jd.load_goals(SID)
+        jd.record_verdict(st, st["nodes"][g1], "unblocker", "unblock", T0 + 70,
+                          why="answered in passing: picked the work back up")
+        jd.record_verdict(st, st["nodes"][g1], "planner", "done", T0 + 80, why="shipped")
+        g2 = SID + ":g2"
+        st["nodes"][g2] = {"id": g2, "text": "polish the widget", "parentId": None,
+                           "nodeComplete": False, "blocked": False, "cleared": False,
+                           "trail": [], "t": T0 + 80}
+        st["lastNode"] = g2
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        # an injected turn ran and settled AFTER the stop, the user silent throughout
+        with open(self.tpath, "a") as f:
+            f.write(json.dumps(uline(T0 + 200, self.INJECTED, "u3", "u2")) + "\n")
+            f.write(json.dumps(aline(T0 + 220, "wrapped that up; the build is green", "a2", "u3",
+                                     "end_turn")) + "\n")
+        km._parse_cache.clear()
+        km._interrupt_block_tick(NOW, self.tmux)
+        st = jd.load_goals(SID)
+        self.assertEqual(st["status"][g2], "blocked",
+                         "the marker was verified stale → the LIVE focus goal re-blocks on the user")
+        self.assertEqual(km._intr_blocked(SID), g2, "the marker follows the block it actually placed")
+        card = self._card(g2)
+        self.assertEqual(card["column"], "needs_input")
+        self.assertTrue(card.get("interrupted"), "the needs-you card says the user stopped this session")
+
+    def test_reblock_stands_down_until_newer_quiet_evidence(self):
+        km._set_auto_nudge(False)
+        self._genuine_stop()
+        g1 = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        # a judge lifts OUR block off newer evidence — rows the bare stop's stamp cannot outrank
+        st = jd.load_goals(SID)
+        jd.record_verdict(st, st["nodes"][g1], "unblocker", "unblock", T0 + 70,
+                          why="answered in passing: picked the work back up")
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        rows = len(jd.load_goals(SID)["nodes"][g1]["log"])
+        km._interrupt_block_tick(NOW, self.tmux)
+        st = jd.load_goals(SID)
+        self.assertEqual(st["status"][g1], "working",
+                         "the judges ruled on a newer world — the re-block stands down")
+        self.assertEqual(len(st["nodes"][g1]["log"]), rows, "refused WITHOUT appending — no diary spam")
+        self.assertIsNone(km._intr_blocked(SID), "the stale marker is cleared, not re-set")
+        # an injected turn settles later, the user still silent → the quiet's evidence is newest again
+        with open(self.tpath, "a") as f:
+            f.write(json.dumps(uline(T0 + 200, self.INJECTED, "u3", "u2")) + "\n")
+            f.write(json.dumps(aline(T0 + 220, "wrapped that up", "a2", "u3", "end_turn")) + "\n")
+        km._parse_cache.clear()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][g1], "blocked",
+                         "re-surfaced the moment the stop is the newest information again")
 
 
 if __name__ == "__main__":
