@@ -3420,6 +3420,22 @@ function syncNoSessionsPlaceholder(visibleCount: number) {
   content.appendChild(ph);
 }
 
+// The tab strip's vertical context gauge: fill height = context-used %, coloured by the SAME
+// server-computed global-colormap RGB the statusline battery / timeline use (setCtxBar), with the
+// same traffic-light fallback for an older kernel that doesn't ship ctxColor. Passive — a click
+// falls through to the tab's own select; the statusline battery keeps the click-to-/compact.
+function tabCtxGauge(ctxStr: string, ctxColor?: number[]): HTMLElement {
+  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
+  const g = el("span", "tab-ctx");
+  const fill = el("span", "tab-ctx-fill");
+  fill.style.height = pct + "%";
+  fill.style.background = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
+    : (pct >= 85 ? "#c0392b" : pct >= 60 ? "#e0b020" : "#54B204");
+  g.appendChild(fill);
+  g.title = `context ${pct}% used`;
+  return g;
+}
+
 function renderTabs() {
   if (renameActive) { renderPendingAfterRename = true; return; }
   if (tabPointerHeld) { renderPendingWhilePressed = true; return; }   // don't destroy a tab mid-click (see tabPointerHeld)
@@ -3538,6 +3554,13 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); label.classList.add("name-faded"); });
     }
     tab.appendChild(label);
+    // Slim vertical context gauge right of the name (the user 2026-08-08): the statusline battery's
+    // fill % + colormap colour, rotated upright and with no % text — so "this session is filling up"
+    // reads at a glance across the whole strip. Skipped while compacting (the compacting bar owns that
+    // moment, and the % is about to be wrong) and on dead tabs; gear → Chat toggles it (default on).
+    if (settings.tabCtx !== false && s.status.ctx && st !== "compacting" && st !== "closed") {
+      tab.appendChild(tabCtxGauge(s.status.ctx, s.status.ctxColor));
+    }
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
     // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.
     tab.addEventListener("mouseenter", () => showTabTip(tab, s));
@@ -8536,7 +8559,9 @@ function shipFileToHost(f: File) {
 // CONSUMES the shared 'romp:settings' (compact mode) — applying a change made there, in a same-origin
 // tab, live via the storage event; and reading it at startup. ----
 function setupSettings(): void {
-  onExternalSettingsChange((s) => { settings = s; rerenderAll(); });
+  // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
+  // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
+  onExternalSettingsChange((s) => { settings = s; renderTabs(); rerenderAll(); });
 }
 
 setupComposer();

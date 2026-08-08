@@ -16,12 +16,13 @@ export interface RompSettings {
   backend: "tmux" | "sdk";   // which backend a NEWLY-created session uses (the user 2026-06-22): "tmux" (terminal) or "sdk" (Agent SDK). Both coexist; this is only the default for the + button. Read at createSession time (render.ts). Default sdk (the user 2026-07-13).
   defaultDir: string;        // default working directory PREFILLED in the new-session field (the user 2026-06-22). A session's dir is fixed at creation. Empty → the kernel's serve dir. ~ / $VAR expanded server-side.
   showBranch: boolean;       // chat bottom-bar: show the session's git branch (if any) beside the dir (the user 2026-06-23). ON by default.
+  tabCtx: boolean;           // chat tabs: slim vertical context gauge beside each session name (the user 2026-08-08). ON by default.
 }
 // NOTE: the old `explanations` pref is GONE (the user 2026-06-18) — cards no longer show the planner's
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
 // compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
 // (thinking hidden, tool runs folded); the gear opts back into the full stream.
-export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true };
+export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: true, tabCtx: true };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
