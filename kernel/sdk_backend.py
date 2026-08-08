@@ -1105,6 +1105,12 @@ class SdkSession:
         #   "Reloading session…" notice until the reconnect completes (the user 2026-07-06). Cleared the instant the
         #   new client connects (reconnect loop) — event-based, mirroring _model_pending's dots.
         self.perm_mode = self.mode
+        self.fast = ""      # fast-mode state as the CLI's init message reports it ("on"/"off"/"cooldown");
+        #   "" until an init lands (unknown → the chat shows no fast badge rather than a guess). Flipped
+        #   optimistically by set_fast (the /fast command is delivered like any typed one) and re-asserted
+        #   by fast_mode_state on every init, so a refused toggle can't stick past the next connect.
+        self.fast_reason = ""   # the init's fast_mode_disabled_reason — non-empty means /fast would refuse
+        #   (org-gated / unsupported), so the chat hides the toggle instead of offering a dead control.
         # Pending conversation REWIND (the chat's edit-message branch): the target record uuid +
         # the transcript leaf recorded at request time (the one-shot guard — see rewind_disposition).
         # Seeded from the reg so a kernel death mid-rewind re-applies it iff nothing landed since.
@@ -1782,6 +1788,13 @@ class SdkSession:
             d = msg.data if isinstance(msg.data, dict) else {}
             self._learn_model(pretty_model(d.get("model")))
             self.perm_mode = d.get("permissionMode") or self.perm_mode
+            # Fast-mode truth rides the init payload (fast_mode_state: on/off/cooldown, plus a
+            # disabled_reason when the org/model can't use it) — the AUTHORITATIVE re-assert behind
+            # set_fast's optimistic flip. Absent field (older CLI) → stay unknown, never fabricate "off".
+            fast = d.get("fast_mode_state")
+            if isinstance(fast, str) and fast:
+                self.fast = fast
+                self.fast_reason = str(d.get("fast_mode_disabled_reason") or "")
             # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
             # the field is absent on a subscription login). An auth flip is the deciding event for the
             # rail's /usage bars — see _note_auth_source.
@@ -2308,6 +2321,8 @@ class SdkSession:
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
                 "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
+                "fast": self.fast,   # fast-mode state from init ("on"/"off"/"cooldown"; "" = unknown → no badge)
+                "fastReason": self.fast_reason,   # init's disabled_reason — non-empty hides the chat toggle
                 "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element
                 "retryInfo": self.retry_info,     # the latest attempt's detail (attempt/max, error status+message, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
                 "interrupting": bool(self._interrupted),   # a user interrupt is IN FLIGHT: set at dispatch,
@@ -3467,6 +3482,27 @@ class SdkBackend:
             reg["liveModel"] = _alias_label(value)
             reg["modelPending"] = False
             write_reg(self.state_dir, sid, reg)
+        return True
+
+    def set_fast(self, sid: str, value: str) -> bool:
+        """Toggle fast mode by delivering the literal '/fast on|off' text through the normal send path.
+        Unlike /model (which the SDK input stream does not interpret — see set_model), the CLI's /fast
+        descriptor is marked supportsNonInteractive, so the stream-json input DOES run it: the send's
+        echo gives the chat its command chip, and the CLI answers with its own confirmation line
+        ("Fast mode ON …" — including the model switch it performs when the session isn't on a
+        fast-capable model). The flip here is optimistic for the badge; fast_mode_state on the next
+        init re-asserts the truth, and a refusal (cooldown, org-disabled) is visible as the CLI's own
+        reply. Dormant sessions refuse — fast mode lives in the CLI's own settings, so there is nothing
+        to apply until a client is running (the kernel warns instead of pretending)."""
+        if value not in ("on", "off"):
+            return False
+        s = self.sessions.get(sid)
+        if not s or not s.thread.is_alive():
+            return False
+        if not self.send(sid, "/fast " + value):
+            return False
+        s.fast = value
+        self._wake_push()
         return True
 
     def set_mode(self, sid: str, mode: str) -> bool:

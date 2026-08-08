@@ -42,6 +42,10 @@ class _FakeBackend:
         self.calls.append(("effort", value))
         return True
 
+    def set_fast(self, sid, value):
+        self.calls.append(("fast", value))
+        return True
+
 
 class OpQueueParkOrDeliver(unittest.TestCase):
     def setUp(self):
@@ -88,6 +92,27 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         km._send_or_park(self.be, SID, "second", echo=None)
         self.assertEqual(km._pending_ops.get(SID),
                          [("model", "sonnet"), ("send", "first", None), ("send", "second", None)])
+
+    def test_fast_toggle_parks_replaces_in_place_and_delivers_like_model_and_effort(self):
+        # /fast is a slash command like /model and /effort, so it rides the SAME FIFO: parked while the
+        # gate holds (compaction/open turn), a re-pick replaces the earlier parked toggle in place, and
+        # _apply_pending_ops hands it to the backend once the session is quiet.
+        km._compacting_now = lambda sid: True
+        self.assertTrue(km._set_fast_or_park(self.be, SID, "on"))
+        km._send_or_park(self.be, SID, "then this", echo=None)
+        self.assertTrue(km._set_fast_or_park(self.be, SID, "off"))   # re-pick → in-place replace
+        self.assertEqual(self.be.calls, [], "mid-compaction the backend is NOT touched")
+        self.assertEqual(km._pending_ops.get(SID),
+                         [("fast", "off"), ("send", "then this", None)])
+        self.assertFalse(km._set_fast_or_park(self.be, SID, "sideways"), "only on|off are /fast arguments")
+        km.Sessions.backend_for = lambda sid: self.be
+        km._compacting_now = lambda sid: False
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [("fast", "off"), ("send", "then this")],
+                         "the toggle applies and delivery continues; the send ends the pass")
+        km._compacting_now = lambda sid: False
+        self.assertTrue(km._set_fast_or_park(self.be, SID, "on"), "quiet session → applies immediately")
+        self.assertEqual(self.be.calls[-1], ("fast", "on"))
 
     def test_apply_delivers_sequentially_when_quiet_and_not_before(self):
         # SEQUENTIAL delivery (the user 2026-07-02, compact-mid-turn): settings ops apply and delivery
