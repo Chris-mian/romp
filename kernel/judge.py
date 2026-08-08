@@ -3727,6 +3727,93 @@ def _session_closed(session):
     return bool(last.get("ended")) or any(a["type"] == "idle" for a in last["atoms"])
 
 
+_BG_SCAN_CACHE = {}                       # path -> ((mtime, size), running tasks) — mirrors the kernel's _bg_scan_cached
+
+
+def _bg_unresolved(path):
+    """The transcript's still-RUNNING background launches (em._scan_bg_tasks pairing), mtime+size-cached.
+    The DURABLE awaited-work source: the pairing lives in the transcript, so unlike any live backend
+    snapshot it survives a kernel restart and covers tmux CLIs whose tasks outlive the kernel."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return []
+    hit = _BG_SCAN_CACHE.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    tasks = em._scan_bg_tasks(path)
+    if len(_BG_SCAN_CACHE) > 256:         # bounded by fleet size; a wholesale clear on overflow is fine
+        _BG_SCAN_CACHE.clear()
+    _BG_SCAN_CACHE[path] = (key, tasks)
+    return tasks
+
+
+def _sdk_spawned_at(sid):
+    """When this SDK session's CURRENT CLI spawned (reg spawnedAt, stamped by SdkSession._run), or None
+    for tmux/never-spawned sessions. The bg-tasks ghost gate: a task launched before the live CLI died
+    with its old one — its <task-notification> can never arrive. (The kernel's copy delegates here.)"""
+    try:
+        with open(STATE / "sdk" / (sid + ".json")) as f:
+            v = json.load(f).get("spawnedAt")
+        return v if isinstance(v, (int, float)) else None
+    except Exception:
+        return None
+
+
+def _awaiting_bg_hold(fsid, path, session, store):
+    """True while the session is awaiting its own dispatched background work — the settle must hold.
+
+    A turn that ends with a live awaited task has NOT handed back the floor: the harness re-invokes the
+    session the moment the task's <task-notification> lands, so "ended" is a proxy that reads a wait as
+    a settlement (the user 2026-08-08: a turn ended announcing a comparison batch running in the
+    background; the settle fired in the 57-second gap before the notification re-invoked the session,
+    the focus card froze to Completed — sticky, correctly irreversible without a user gesture — and the
+    board sat empty through three minutes of visible work).
+
+    Event-keyed releases, no timers:
+      - the notification lands → the pairing resolves the launch (em._scan_bg_tasks);
+      - the launch predates the live CLI's spawn → a GHOST whose notification can never arrive
+        (kernel restart mid-wait), never held;
+      - the closer AUDITED the launch's turn (closedTurns) without a live ⏳ stamp anywhere open → the
+        judges declined to affirm a wait, so the task is the session's furniture (a dev server) — the
+        same placed-unstamped-is-a-service rule as the kernel's _bg_split, translated to judge-native
+        events. A live awaitingWhy stamp re-affirms the hold past that audit; its lift releases it.
+    Pre-verdict the hold is conservative (a launch whose turn nothing has swept always holds), matching
+    _bg_split's PENDING→awaited prior."""
+    tasks = _bg_unresolved(path)
+    if not tasks:
+        return False
+    sp = _sdk_spawned_at(fsid)
+    tasks = [t for t in tasks if not (sp and t.get("t") and t["t"] < sp)]
+    if not tasks:
+        return False
+    nodes = store.get("nodes") or {}
+    if any(nd.get("awaitingWhy") and not nd.get("cleared") and not nd.get("nodeComplete")
+           for nd in nodes.values()):
+        return True                       # the closer affirmed a wait somewhere open — hold
+    swept = set(store.get("closedTurns") or [])
+    launch_turn = {}                      # tool_use id -> the turn that dispatched it (launch or its ack)
+    for turn in reversed(session.get("turns") or []):
+        for a in turn["atoms"]:
+            blocks = (a.get("message") or {}).get("content")
+            if not isinstance(blocks, list):
+                continue
+            for b in blocks:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                    launch_turn.setdefault(b["id"], turn.get("id"))
+                elif isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    launch_turn.setdefault(b["tool_use_id"], turn.get("id"))
+    return any(launch_turn.get(t["id"]) not in swept for t in tasks)
+
+
+def _session_settled(fsid, path, session, store):
+    """The rollup's settled gate: the turn ended AND nothing the session dispatched is still awaited.
+    _session_closed alone read the 'ended' proxy; this keys the settle on the event it was
+    approximating — the session actually handing back the floor."""
+    return _session_closed(session) and not _awaiting_bg_hold(fsid, path, session, store)
+
+
 def _seg_anchor(seg):
     """The segment's landable anchor uuid: its trigger when the event model recognized one, else the
     first non-idle atom's uuid. A peer/system segment has no recognized trigger, and every node minted
@@ -5499,7 +5586,7 @@ def _plan_session(fsid, path, now):
                            prompt_uuid=(latest_seg or {}).get("trigger")):
         _group_store(store, fsid, now)
         save_goals(fsid, store)
-    rollup_status(store, _session_closed(session))
+    rollup_status(store, _session_settled(fsid, path, session, store))
     save_goals(fsid, store)
     return placed
 
@@ -6196,7 +6283,7 @@ def _group_session(fsid, path, now):
     after = (store.get("groupedSig"), store.get("groupFails"), store.get("groupFailSig"))
     if relinks or after != before:                     # persist a relink, a new sig, or a strike-counter change
         if relinks:                                    # a structural change needs a status re-roll
-            rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
+            rollup_status(store, _session_settled(fsid, path, parsed_session(fsid, [path], now), store))
         save_goals(fsid, store)
     return relinks
 
@@ -6305,7 +6392,7 @@ def _consolidate_session(fsid, path, now):
     after = (store.get("consolidatedSig"), store.get("consolidateFails"), store.get("consolidateFailSig"))
     if changed or after != before:                     # persist a change, a new sig, or a strike-counter change
         if changed:
-            rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
+            rollup_status(store, _session_settled(fsid, path, parsed_session(fsid, [path], now), store))
         save_goals(fsid, store)
     return 1 if changed else 0
 
@@ -6930,7 +7017,7 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
         swept.add(tid); sig[tid] = fp; did += 1        # remember the size we judged at → detect later growth
     store["closedTurns"] = sorted(swept)
     store["closedSig"] = sig
-    rollup_status(store, _session_closed(session))
+    rollup_status(store, _session_settled(fsid, path, session, store))
     save_goals(fsid, store)
     return newly
 
@@ -7118,7 +7205,7 @@ def _unblock_session(fsid, path, now):
                           why=("answered in passing: " + why) if why else "answered in passing"):
             nd["mt"] = now
             lifted.append(nid)
-    rollup_status(store, _session_closed(session))
+    rollup_status(store, _session_settled(fsid, path, session, store))
     save_goals(fsid, store)
     return lifted
 
@@ -7151,7 +7238,7 @@ def _ab_close_session(fsid, path, now):
     drops from later menus, no double-counting). Returns (a, b, new_goal_texts, samples)."""
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
-    closed = _session_closed(session)
+    closed = _session_settled(fsid, path, session, store)
     rollup_status(store, closed)                        # (a) reflects the current positive-only marks
 
     def completed_tops(s):
@@ -8544,8 +8631,8 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             session = parsed_session(fsid, [str(path)], now)   # states-aware + cached, so _session_closed is correct
         except Exception:
             continue
-        closed[fsid] = _session_closed(session)
         cstore = load_goals(fsid)
+        closed[fsid] = _session_settled(fsid, str(path), session, cstore)
         placed_ids = cstore["placements"]
         for turn in session["turns"]:
             for seg in _segs(turn, cstore):
