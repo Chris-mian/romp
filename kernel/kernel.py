@@ -1954,9 +1954,18 @@ def _record_interrupt_block(sid, ev):
     block rides — and remember the gid in auto-nudge.json so the LIFT on re-engage is cheap (only
     sessions we blocked get their store re-checked). Returns the gid blocked, or None.
 
-    `ev` = the STOP's own transcript time (_interrupt_marks), never wall-clock now: the diary is an
-    evidence-time ledger, and a wall-clock stamp on a store the judges also write is what deadlocked
-    the lift below."""
+    `ev` = the newest evidence of the stopped QUIET — the stop's own transcript time joined by the
+    tick with the transcript's newest event — never wall-clock now: the diary is an evidence-time
+    ledger, and a wall-clock stamp on a store the judges also write is what deadlocked the lift below.
+    The join matters (the user 2026-08-08): injected activity (a task notification, a peer message)
+    can run and settle AFTER the stop with the user silent throughout, and the judges file rows off
+    it — a block stamped at the bare stop folds UNDER those rows as a silent no-op.
+
+    Stands down (returns None, appending NOTHING) when the target's diary already holds a newer
+    unblock/reopen/done/settle row: the judges ruled on a newer world than this evidence, and the
+    fold would bury the row anyway. The tick retries every push, so a refused APPEND would grow the
+    diary at push cadence; refusing without one keeps it clean until newer evidence (the next settled
+    turn) makes the block land."""
     store = jd.load_goals(sid)
     gid = _interrupt_focus_top(store)
     if not gid:
@@ -1964,6 +1973,10 @@ def _record_interrupt_block(sid, ev):
     nd = store["nodes"][gid]
     why = jd.INTERRUPT_BLOCK_WHY      # shared constant, PROCEDURAL (see judge.procedural_block_why)
     ev = int(ev or 0)
+    ceil = max((e.get("ev_t") or 0 for e in (nd.get("log") or [])
+                if e.get("kind") in ("unblock", "reopen", "done", "settle")), default=0)
+    if ev <= ceil:
+        return None                   # the diary outranks this evidence — stand down (see docstring)
     if not jd.record_verdict(store, nd, "interrupt", "block", ev, why=why):
         return None
     nd["mt"] = max(nd.get("mt") or 0, ev)            # the event materialized blocked + blockWhy (never
@@ -2026,6 +2039,24 @@ def _set_intr_blocked(sid, gid):
     _write_auto_nudge(d)
 
 
+def _intr_block_stands(sid, gid):
+    """True while the block the intrBlocked marker points at still HOLDS its card: the node exists in
+    the live store and is blocked (any src — a real judge block owning the card counts; the episode's
+    job, surfacing the stop, is done either way). The marker alone is a CLAIM, not evidence: the world
+    moves under it — judges unblock or complete the goal off newer turns, the user clears the card,
+    compaction archives it — and a tick that trusts the bare marker skips the re-block forever while
+    the session's live focus goal sits in Working wearing only the 'interrupted' badge, auto-nudge
+    suppressed: invisible-blocked (the user 2026-08-08, whose stopped session's marker pointed at a
+    goal since ruled done, cleared, and archived)."""
+    if not gid:
+        return False
+    try:
+        nd = jd.load_goals(sid).get("nodes", {}).get(gid)
+    except Exception:
+        return False
+    return bool(nd and nd.get("blocked"))
+
+
 def _interrupt_block_tick(now, tmux):
     """Interrupt → Blocked, INDEPENDENT of the auto-nudge switch (the user 2026-07-14). A session the
     user genuinely STOPPED mid-turn is waiting on their next instruction: its focus goal needs THEM, so
@@ -2035,7 +2066,12 @@ def _interrupt_block_tick(now, tmux):
     process death) is NOT a user stop — _interrupt_marks already excludes it — so those are continued,
     never blocked. On re-engage (the user's next message, or once a machine cut is no longer the latest
     action) the block WE placed is lifted; a real judge verdict recorded since then stays. Both writes
-    are stamped with the EVENT they are about, never wall-clock now — see _lift_interrupt_block."""
+    are stamped with the EVENT they are about, never wall-clock now — see _lift_interrupt_block.
+
+    The once-per-episode marker is VERIFIED against the store each tick, never trusted (the user
+    2026-08-08): judges complete/clear the goal it points at off newer turns (or compaction archives
+    it), and trusting the bare marker skipped the re-block forever — the live focus goal sat in
+    Working wearing only the badge, auto-nudge suppressed: invisible-blocked."""
     changed = False
     for s in _alive_sessions(now, tmux):
         sid = s["sid"]
@@ -2054,8 +2090,20 @@ def _interrupt_block_tick(now, tmux):
         #                                                  evidence times both writes are stamped with
         block_it = bool(turns) and not _session_working(turns) and stop_t > human_t
         if block_it:                                     # a GENUINE user stop → block the focus goal on them,
-            if not _intr_blocked(sid):                   # once per interrupt episode (the intrBlocked marker)
-                g = _record_interrupt_block(sid, stop_t)
+            ib = _intr_blocked(sid)                      # once per interrupt episode (the intrBlocked marker) —
+            if ib and not _intr_block_stands(sid, ib):   # but VERIFY the marked block still holds its card (see
+                _set_intr_blocked(sid, None)             # _intr_block_stands): a stale marker is the 'already
+                ib = None                                # surfaced' claim with its evidence gone
+            if not ib:
+                # the evidence is the CURRENT quiet, not just the stop: the transcript's newest event
+                # time is the horizon the user has stayed silent through — injected activity (a task
+                # notification, a peer message) may have run and settled since the stop, and it can
+                # FOLD into the cut turn rather than open one, so the last turn's trigger undershoots.
+                # Stamped so, a re-block lands over the judges' rows off that activity instead of
+                # folding under them — see _record_interrupt_block's stand-down
+                ev = max([stop_t] + [a.get("t") or 0 for turn in turns
+                                     for a in (turn.get("atoms") or [])])
+                g = _record_interrupt_block(sid, ev)
                 if g:
                     _set_intr_blocked(sid, g); changed = True
         else:                                            # working / re-engaged / machine cut → lift OUR block if any

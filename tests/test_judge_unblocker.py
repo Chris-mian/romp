@@ -114,6 +114,46 @@ class UnblockerBase(unittest.TestCase):
         return other
 
 
+class InterruptBlocksAreNotUnblockerBusiness(UnblockerBase):
+    """INTERRUPT-src blocks are out of the candidate set (the user 2026-08-08): "waiting on your next
+    instruction" is not a question session output can answer — the kernel lifts it on the user's
+    re-engagement, and a done verdict completes over it. Re-examining one here lifted a stop-block
+    seconds after placement, off the cut turn's own settling output, and the stopped session's card
+    went back to Working with auto-nudge suppressed: invisible-blocked."""
+
+    def _interrupt_store(self, block_t):
+        top = SID + ":g1"
+        why = jd.INTERRUPT_BLOCK_WHY
+        store = {"rompUuid": SID, "seq": 1, "lastNode": top, "placements": {}, "status": {},
+                 "nodes": {top: {"id": top, "text": "wire the widget", "parentId": None,
+                                 "nodeComplete": False, "cleared": False, "blocked": True,
+                                 "blockWhy": why, "trail": [], "t": T0, "mt": block_t,
+                                 "log": [{"ev_t": block_t, "src": "interrupt", "kind": "block",
+                                          "why": why, "at": block_t}]}}}
+        jd.save_goals(SID, store)
+        return top
+
+    def test_a_stop_block_is_never_shown_to_the_model(self):
+        top = self._interrupt_store(block_t=T0 + 100)
+        self.assertEqual(jd._blocked_sub_candidates(jd.load_goals(SID)), [])
+        path = self._transcript([(T0 + 200, "<task-notification>a background task finished</task-notification>",
+                                  "picked the work back up and shipped it")])
+        self._stub('{"verdicts": [{"n": 1, "do": "lift", "why": "the session picked the work back up"}]}')
+        self.assertEqual(jd._unblock_session(SID, path, NOW), [])
+        self.assertEqual(self.calls, [], "no model call — the stop-block was never a candidate")
+        self.assertTrue(jd.load_goals(SID)["nodes"][top]["blocked"],
+                        "only the user's re-engagement lifts a stop-block")
+
+    def test_a_newer_real_judge_block_re_enters_the_set(self):
+        top = self._interrupt_store(block_t=T0 + 100)
+        store = jd.load_goals(SID)
+        jd.record_verdict(store, store["nodes"][top], "closer", "block", T0 + 300, why="pick a port")
+        jd.save_goals(SID, store)
+        cands = jd._blocked_sub_candidates(jd.load_goals(SID))
+        self.assertEqual([nid for nid, _nd, _bt in cands], [top],
+                         "the LATEST block row decides — a real question is examined again")
+
+
 class Unblocker(UnblockerBase):
     def test_an_answered_in_passing_block_is_lifted(self):
         top, sub = self._store(block_t=T0 + 100)

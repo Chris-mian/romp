@@ -92,6 +92,45 @@ class InterruptBlocks(unittest.TestCase):
         kern._set_intr_blocked(SID, None)
         self.assertIsNone(kern._intr_blocked(SID))
 
+    def test_the_marker_is_verified_against_the_store_not_trusted(self):
+        # the marker means "this episode already surfaced the stop" — but the world moves under it
+        # (the user 2026-08-08): _intr_block_stands is the tick's check that the block still HOLDS
+        _seed()
+        self.assertFalse(kern._intr_block_stands(SID, GID), "no block recorded → nothing stands")
+        self.assertFalse(kern._intr_block_stands(SID, SID + ":g99"),
+                         "a vanished node (cleared + archived by compaction) cannot stand")
+        kern._record_interrupt_block(SID, STOP_T)
+        self.assertTrue(kern._intr_block_stands(SID, GID))
+        st = jd.load_goals(SID)
+        jd.record_verdict(st, st["nodes"][GID], "unblocker", "unblock", STOP_T + 6,
+                          why="answered in passing: picked the work back up")
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        self.assertFalse(kern._intr_block_stands(SID, GID),
+                         "the judges lifted it — the marker no longer holds a card")
+
+    def test_record_stands_down_under_newer_judge_rows_without_appending(self):
+        # a block stamped at the old stop would fold UNDER rows the judges filed off newer turns — a
+        # silent no-op retried every push. It must refuse WITHOUT appending, then land the moment the
+        # quiet's evidence (the newest settled turn) outranks the diary (the user 2026-08-08).
+        _seed()
+        st = jd.load_goals(SID)
+        jd.record_verdict(st, st["nodes"][GID], "interrupt", "block", STOP_T, why=jd.INTERRUPT_BLOCK_WHY)
+        jd.record_verdict(st, st["nodes"][GID], "unblocker", "unblock", STOP_T + 6,
+                          why="answered in passing: picked the work back up")
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        rows = len(jd.load_goals(SID)["nodes"][GID]["log"])
+        self.assertIsNone(kern._record_interrupt_block(SID, STOP_T),
+                          "evidence older than the judges' newest row — stand down")
+        st = jd.load_goals(SID)
+        self.assertEqual(len(st["nodes"][GID]["log"]), rows,
+                         "refused WITHOUT appending — no diary growth at push cadence")
+        self.assertEqual(st["status"][GID], "working")
+        # an injected turn settled later with the user still silent → the quiet's evidence is newer
+        self.assertEqual(kern._record_interrupt_block(SID, STOP_T + 300), GID)
+        self.assertEqual(jd.load_goals(SID)["status"][GID], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

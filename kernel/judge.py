@@ -7191,7 +7191,13 @@ def _blocked_sub_candidates(store):
     g48): a blocked top's designed heal paths — a reply on its own thread, a placement under it — cover
     only answers that land ON the card; an answer given on a sibling card's thread reaches neither, and
     the card sat in Needs-you forever. Each with its block-event time (the diary is the authority; mt
-    gets bumped by other touches)."""
+    gets bumped by other touches).
+
+    INTERRUPT-src blocks excluded (the user 2026-08-08): "waiting on your next instruction" is not a
+    question session output can answer — the kernel lifts it on the user's re-engagement, and a done
+    verdict completes over it. Re-examining one here lifted a stop-block seconds after placement, off
+    the cut turn's own settling output, and the stopped session's card went back to Working with
+    auto-nudge suppressed: invisible-blocked."""
     nodes = store["nodes"]
 
     def _sealed(nid):
@@ -7210,6 +7216,9 @@ def _blocked_sub_candidates(store):
     for nid, nd in nodes.items():
         if not nd.get("blocked") or nd.get("cleared") or _sealed(nid):
             continue
+        if next((e.get("src") for e in reversed(nd.get("log") or [])
+                 if e.get("kind") == "block"), None) == "interrupt":
+            continue                    # a procedural stop-block: only the user's re-engagement lifts it
         block_t = max((e.get("ev_t") or 0 for e in (nd.get("log") or []) if e.get("kind") == "block"),
                       default=nd.get("mt", nd.get("t", 0)))
         out.append((nid, nd, block_t))
