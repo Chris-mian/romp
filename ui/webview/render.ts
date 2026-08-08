@@ -3685,6 +3685,14 @@ function setSessionColor(id: string, bg: string) {
   const meta = tabMeta.get(id);
   if (meta) meta.color = color;
   renderTabs();
+  // OPTIMISTIC cross-pane echo (the user 2026-08-08): the tabs repaint on this very click, but the
+  // FEED kept the old colour until the kernel's next feed rebuild pushed — a second or two. Tell the
+  // other panes kernel-free, on the same host-matched pair settings sync rides: the browser's
+  // same-origin iframes hear the localStorage write (`storage` fires cross-document; `t` makes
+  // re-picking the same colour still fire it), and in VS Code — where each webview's localStorage is
+  // its own — the host fans {colorSync} to its other panels (__rompShowStrip marks that host).
+  try { localStorage.setItem("romp:color-echo", JSON.stringify({ sid: id, bg, t: Date.now() })); } catch { /* storage blocked */ }
+  if ((window as any).__rompShowStrip) vscodeApi?.postMessage({ type: "colorSync", sid: id, bg });
   if (vscodeApi) vscodeApi.postMessage({ type: "setSessionColor", id, bg });
 }
 
