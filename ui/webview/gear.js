@@ -76,6 +76,10 @@ var GEAR_HTML =
   '<span><b>Show git branch</b>' +
   "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>" +
   '</span></label>' +
+  '<label class=rs-row><input type=checkbox id=rs-tabctx>' +
+  '<span><b>Context gauge in tabs</b>' +
+  "<span class=rs-sub>A slim vertical bar beside each session's name in the tab strip, filling as its context fills — the same colors as the context battery, no number.</span>" +
+  '</span></label>' +
   '<div class=rs-sec>Timeline</div>' +
   '<label class=rs-row><input type=checkbox id=rs-collapsegaps checked>' +
   '<span><b>Collapse idle gaps</b>' +
@@ -135,10 +139,11 @@ function initGear(post) {
     jix = document.getElementById('rs-judges-index'), jtr = document.getElementById('rs-judges-triage'),
     an = document.getElementById('rs-autonudge'), bk = document.getElementById('rs-backend'),
     dd = document.getElementById('rs-defaultdir'), gb = document.getElementById('rs-branch'),
+    tc = document.getElementById('rs-tabctx'),
     cg = document.getElementById('rs-collapsegaps'), jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
     ie = document.getElementById('rs-indexeffort');
-  function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, collapseGaps: true }; } }
+  function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, tabCtx: true, collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, tabCtx: true, collapseGaps: true }; } }
   // save() ALWAYS dispatches the same-doc 'romp:settings' signal: consumers in
   // THIS document (the feed's card gates, and the chat transcript now that it
   // hosts its own gear) never get a 'storage' event for a same-document write —
@@ -154,6 +159,7 @@ function initGear(post) {
   }
   cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
   if (gb) gb.addEventListener('change', function () { var s = load(); s.showBranch = gb.checked; save(s); });
+  if (tc) tc.addEventListener('change', function () { var s = load(); s.tabCtx = tc.checked; save(s); });
   jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); });
   jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); });
   if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); });
@@ -246,7 +252,7 @@ function initGear(post) {
     if (on) { de.classList.add(m); document.body.classList.add(m); } else { de.classList.remove(m); document.body.classList.remove(m); } }
   function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
   function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
-    p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (tc) tc.checked = s.tabCtx !== false; if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
   p.addEventListener('click', function (e) { if (e.target === p) closeSettings(); });   // click the dimmed backdrop (not the card) → close

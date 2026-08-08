@@ -81,15 +81,17 @@ body { display: flex; flex-direction: column; }
   border-bottom: 1px solid var(--box-border);
   background: var(--vscode-sideBar-background, var(--bg));
 }
-/* #tabs fills the bar width and wraps its tabs across multiple rows */
-#tabs { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 4px; }
+/* #tabs fills the bar width and wraps its tabs across multiple rows. gap 0 (was 4px, the user
+   2026-08-08): the strip trades its empty inter-tab space for room for the per-tab context gauge —
+   the active/hover fills and per-tab padding still separate neighbours visually. */
+#tabs { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 0; }
 /* (the settings gear + modal live on the TIMELINE now — see ui/romp-timeline-view.js) */
 
 .tab {
   --state: transparent;                 /* working/awaiting state color (set by class) */
   position: relative;                   /* for the drag drop-indicator pseudo-element */
-  display: flex; flex: 0 0 auto; align-items: center; gap: 6px;
-  padding: 6px 9px; font-size: 0.92em; color: var(--dim);
+  display: flex; flex: 0 0 auto; align-items: center; gap: 4px;   /* 4px (was 6): tighter dot↔name↔gauge↔✕ run (the user 2026-08-08) */
+  padding: 6px 7px; font-size: 0.92em; color: var(--dim);         /* 7px sides (was 9): the saved space goes to the context gauge (the user 2026-08-08) */
   background: transparent; border: 1px solid transparent; border-bottom: none;
   border-radius: 6px 6px 0 0; cursor: pointer; white-space: nowrap; user-select: none;
   /* No UA focus ring: ⏎-send / Escape move keyboard focus ONTO the active tab (so ←/→ switch), and the
@@ -146,6 +148,13 @@ body { display: flex; flex-direction: column; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the straw chip (the user 2026-07-13) */
+/* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
+   upright — fills bottom-up with the context-used %, in the SAME global-colormap colour (fill set
+   inline by tabCtxGauge, render.ts), no % text. A faint track so an empty gauge still reads as
+   "gauge", not dirt. Toggled in gear → Chat ("Context gauge in tabs"), default on. */
+.tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px;
+  overflow: hidden; background: rgba(255, 255, 255, 0.13); }
+.tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
 /* compacting → a tiny animated compaction bar before the name (this state gets no tab outline, so the bar
    is the cue). A teal fill whose right edge slides left and loops — the same compression motion as the
    statusline ctx-scan bar, miniaturised — so it reads as a transient process, not a status colour (the user
@@ -185,7 +194,7 @@ body { display: flex; flex-direction: column; }
 .tab.tab-placeholder.colored .tab-label { opacity: 0.75; }   /* keep the identity color but a touch muted while loading */
 .tab.tab-placeholder:hover { color: var(--dim); background: none; }
 .tab-ph-swirl { width: 12px; height: 12px; border-radius: 2px; flex: none;
-  animation: tab-ph-swirl-spin 7s linear infinite; }   /* .tab is flex with gap:6px, so no margin needed */
+  animation: tab-ph-swirl-spin 7s linear infinite; }   /* .tab is flex with its own gap, so no margin needed */
 @keyframes tab-ph-swirl-spin { to { transform: rotate(-360deg); } }
 /* SELECTED: gray fill PLUS an outline in the session's own identity color. */
 .tab.active { color: var(--fg); background: rgba(255, 255, 255, 0.14); }
