@@ -116,6 +116,39 @@ read and render. This is the producer/consumer split the whole system rests on,
 collapsed into a single process for the common (one-machine) case while preserving
 single-writer.
 
+### How mail reaches a session
+
+The bus stores mail per recipient (a Maildir) and the kernel owns the wake
+(`POST /deliver`). Three delivery legs, chosen by what the recipient is:
+
+1. **SDK session** — the kernel enqueues the banner on the session's SDK input
+   queue. First-class, nothing to scrape.
+2. **tmux session on Claude Code ≥ 2.1.224** — one JSON user record written to
+   the session's **inbox socket**, the per-session Unix socket the CLI binds and
+   registers (with its session id) in `~/.claude/sessions/<pid>.json`. The
+   kernel joins that registry on the session's current transcript id
+   (`lastSid`), connects, writes one line, done: instant, wakes an idle session,
+   delivers between tool calls mid-turn, and never touches the composer, so a
+   half-typed draft survives with no stash dance. The CLI treats socket arrivals
+   as another-session traffic; its inbound gate can HOLD mail from an
+   unverifiable sender (the kernel is one) when the session runs a bypass-class
+   permission mode, and a held message silently expires after ~5 minutes — and
+   the socket acks nothing, so a hold would read as delivered. That is why
+   `bin/romp` launches sessions with the CLI's inbound-accept setting
+   (`crossSessionInbound: accept`) and tags them `@romp-inbound-accept`, and the
+   kernel takes this leg ONLY for tagged sessions: the tag is written by the
+   same launch that made holds impossible, so tag and setting can never
+   disagree. Security shape: the socket is owner-only (0600 inside a 0700 dir),
+   unreachable from off-machine and from other local users; a same-user process
+   could already type into any pane via `tmux send-keys` with FULL user
+   authority, while socket mail arrives explicitly labeled as peer traffic with
+   approval power stripped — the lower-privilege injection path of the two.
+3. **Everything else** (older CLI, untagged launch, socket gone) —
+   draft-preserving pane injection at a live ❯ prompt, with the Stop-hook drain
+   (`hooks/romp-postal-drain.sh`) as the turn-boundary backstop. Unchanged, and
+   still the fallback whenever leg 2 fails for any reason: non-delivery is
+   caught by the maildir claim/retry and stuck-mail warnings either way.
+
 ## The two inputs
 
 1. **Durable judge records** (`docs/judges.md` writes these):

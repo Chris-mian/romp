@@ -40,6 +40,63 @@ ROMP_NAMES_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/na
 ROMP_ARCHIVE_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/archive"
 ROMP_CAPTIONS_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/captions"
 
+# --- Claude Code version floor ---------------------------------------------
+# Agent mail delivers through Claude Code's per-session inbox socket, which
+# appeared in 2.1.224; an older CLI still works, but delivery falls back to
+# the slower, more fragile pane injection. `claude --version` costs ~1s of
+# node startup, so the answer is cached keyed on the binary's mtime and
+# re-read only when the binary actually changes (an event, not a TTL).
+ROMP_CLAUDE_FLOOR="2.1.224"
+
+_romp_claude_version() {
+    local bin mtime cache line ver
+    bin="$(command -v claude 2>/dev/null || true)"
+    [[ -n "$bin" ]] || { echo ""; return 0; }
+    mtime="$(stat -c %Y "$bin" 2>/dev/null || stat -f %m "$bin" 2>/dev/null || echo 0)"
+    cache="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/claude-version"
+    if line="$(cat "$cache" 2>/dev/null)" && [[ "$line" == "$mtime "* ]]; then
+        echo "${line#* }"; return 0
+    fi
+    ver="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    # cache only a real answer — a transient --version failure shouldn't stick until the next update
+    if [[ -n "$ver" ]]; then
+        { mkdir -p "$(dirname "$cache")" && printf '%s %s\n' "$mtime" "$ver" > "$cache"; } 2>/dev/null || true
+    fi
+    echo "$ver"
+}
+
+_romp_version_lt() {
+    # true when dotted version $1 < $2 (numeric per part; missing parts are 0)
+    local IFS=. i x y; local -a a b
+    read -r -a a <<<"$1"; read -r -a b <<<"$2"
+    for i in 0 1 2; do
+        x="${a[i]:-0}"; y="${b[i]:-0}"
+        if (( 10#$x < 10#$y )); then return 0; fi
+        if (( 10#$x > 10#$y )); then return 1; fi
+    done
+    return 1
+}
+
+_romp_claude_meets_floor() {
+    # unknown version (no claude on PATH, unparsable output) → below the floor:
+    # callers keep the safe old path rather than assuming a capability
+    local v; v="$(_romp_claude_version)"
+    [[ -n "$v" ]] || return 1
+    if _romp_version_lt "$v" "$ROMP_CLAUDE_FLOOR"; then return 1; fi
+    return 0
+}
+
+_romp_claude_floor_nudge() {
+    # An informative line, not a gate: romp still runs and mail still delivers
+    # (by pane injection); the nudge names what the upgrade buys and the command.
+    local v; v="$(_romp_claude_version)"
+    [[ -n "$v" ]] || return 0
+    if _romp_version_lt "$v" "$ROMP_CLAUDE_FLOOR"; then
+        echo "[romp] Claude Code $v found; romp wants $ROMP_CLAUDE_FLOOR or newer so agent mail arrives instantly (older versions fall back to slower typing into the pane). Upgrade with: claude update" >&2
+    fi
+    return 0
+}
+
 _romp_record() {   # <sid> <name> <dir> [bg] [fg] — write/replace the map entry
     local sid="$1" nm="$2" dir="$3" bg="${4:-}" fg="${5:-}"
     [[ -n "$sid" ]] || return 0
@@ -732,6 +789,7 @@ if [[ $# -eq 0 ]]; then
         exit 1
     fi
     _url="http://127.0.0.1:$_kport/?token=$_tok"
+    _romp_claude_floor_nudge
     # Is this a machine we could plausibly open a browser on? An ssh session or a Linux box with no
     # DISPLAY is headless — opening would silently do nothing, so say so instead of faking success.
     _headless=0
@@ -1267,6 +1325,27 @@ fi
 [[ -f "$HOME/.claude/romp-session-prompt.md" ]] && \
     claude_cmd="$claude_cmd --append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\""
 
+# Claude Code ≥ 2.1.224 gives every session an inbox socket the kernel can
+# deliver agent mail through — instant, and it never touches a half-typed
+# draft. The CLI's inbound gate may HOLD mail from an unverifiable sender
+# (the kernel) when the session runs a bypass-class permission mode, and a
+# held message quietly expires — so accept it explicitly at launch, the
+# CLI's documented setting for unattended inboxes (the user approved this
+# 2026-08-08: same-user processes can already reach the pane itself via
+# send-keys with FULL user authority; socket mail arrives with LESS — the
+# CLI labels it another-session traffic and strips approval power).
+# @romp-inbound-accept (tagged at create, below) tells the kernel this
+# launch carries the setting; an older CLI gets neither flag nor tag, and
+# mail keeps arriving by pane injection exactly as before.
+claude_meets_floor=false
+if _romp_claude_meets_floor; then
+    claude_meets_floor=true
+    claude_cmd="$claude_cmd --settings '{\"crossSessionInbound\":\"accept\"}'"
+fi
+# An old Claude Code falls back to pane-injected agent mail — say so once here,
+# where a session is being launched (see the version-floor helpers up top).
+_romp_claude_floor_nudge
+
 # --- Launch or attach ---
 if tmux has-session -t "=$name" 2>/dev/null; then
     # Session exists (Claude is running there) — attach/switch, or report.
@@ -1283,6 +1362,12 @@ else
 
     # Tag it as a romp session so the dashboard / hook / attach find it.
     tmux set -t "$name" @romp 1
+
+    # The kernel's inbox-socket delivery leg keys on this tag: it marks a launch
+    # that passed the inbound-accept setting (above), i.e. a session whose inbox
+    # socket can never hold-and-drop the kernel's mail. Written here, by the same
+    # code path that added the setting, so tag and setting can never disagree.
+    if $claude_meets_floor; then tmux set -t "$name" @romp-inbound-accept 1; fi
 
     # Install the tmux glue romp needs (hooks/bindings server-wide if absent,
     # status line + tab title on this session) — works on a stock tmux.
