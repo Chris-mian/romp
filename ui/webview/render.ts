@@ -3902,6 +3902,18 @@ window.addEventListener("keydown", (e) => {
     if (focusComposerOrAsk()) e.preventDefault();   // the picker card if one's up, else the message box
   }
 });
+// Cmd/Ctrl+O — toggle the session quick switcher (the picker), from anywhere in the page INCLUDING
+// the composer, the way Obsidian's quick switcher opens over the editor (the user 2026-08-08). The
+// page may claim this combo: preventDefault cancels the browser's own Cmd+O (open file) while this
+// tab has focus, and only there. Capture + stopPropagation so it wins over focused-control handlers —
+// and so the combined shell's per-pane capture handler (palette-main.ts, which relays the same combo
+// from the OTHER panes) never double-fires when focus is already in this document: window-capture
+// runs before document-capture, so this handler acts and stops the event first.
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || (e.key || "").toLowerCase() !== "o") return;
+  e.preventDefault(); e.stopPropagation();
+  if (pickerVisible()) closePicker(); else openPicker();
+}, true);
 // Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.
 function tabInAdjacentRow(id: string, dir: number): string | null {
   const bar = document.getElementById("tabs");
@@ -4055,6 +4067,9 @@ function signalPickerOverlay(on: boolean) {
       // screen rather than as a dialog over the dashboard. Dropping this page's background and hiding
       // its own content leaves only the picker drawn, so the timeline, feed and chat stay visible
       // (dimmed by the picker's own backdrop) behind a modal that floats over all of them.
+      // The class rides documentElement AND body (like the gear's rs-modal-open): THEME_CSS paints
+      // html and body separately, and an opaque html kept the lift a full black-out (the user 2026-08-08).
+      document.documentElement.classList.toggle("picker-lifted", on);
       document.body.classList.toggle("picker-lifted", on);
     }
   } catch (e) { /* standalone: no shell to lift */ }
@@ -4654,6 +4669,11 @@ function pickerError(msg: string | null) {
   if (!e) return;
   e.textContent = msg || "";
   e.classList.toggle("show", !!msg);
+}
+
+function pickerVisible(): boolean {
+  const o = document.getElementById("picker");
+  return !!o && o.style.display !== "none";
 }
 
 function closePicker() {
@@ -7960,7 +7980,12 @@ window.addEventListener("message", (e: MessageEvent) => {
       if (di) { di.value = m.path; di.focus(); }
     }
   }
-  else if (m.type === "openPicker") openPicker(!!m.pick, m.prompt, !!m.allowNew);
+  // toggle:true is the hotkey form (Cmd/Ctrl+O relayed by the shell): a second press closes an open
+  // picker instead of re-opening it, so the key behaves like Obsidian's quick switcher.
+  else if (m.type === "openPicker") {
+    if (m.toggle && pickerVisible()) closePicker();
+    else openPicker(!!m.pick, m.prompt, !!m.allowNew);
+  }
   // The host asks US to confirm (in-page, no native dialogs): ending a live
   // session on tab-close, and reviving a dead one on open.
   else if (m.type === "confirmClose" && m.id) {

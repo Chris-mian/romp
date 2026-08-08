@@ -33,7 +33,9 @@ var SHORTCUT_ROWS =
   '<div class=rs-key><span class=rs-key-combo><kbd>Shift</kbd> + <kbd>Enter</kbd></span><span class=rs-key-desc>New line</span></div>' +
   '<div class=rs-key><span class=rs-key-combo><kbd>Esc</kbd></span><span class=rs-key-desc>Jump to the session tabs</span></div>' +
   '<div class=rs-key><span class=rs-key-combo><kbd>←</kbd> / <kbd>→</kbd></span><span class=rs-key-desc>Switch session (from the tabs)</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>Ctrl</kbd> + <kbd>C</kbd></span><span class=rs-key-desc>Interrupt the session</span></div>';
+  '<div class=rs-key><span class=rs-key-combo><kbd>Ctrl</kbd> + <kbd>C</kbd></span><span class=rs-key-desc>Interrupt the session</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>O</kbd></span><span class=rs-key-desc>Open or create a session (quick switcher)</span></div>' +
+  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>P</kbd></span><span class=rs-key-desc>Command palette (browser dashboard)</span></div>';
 
 // The modal markup — ported verbatim from the kernel's _gear_html; the model/
 // effort selects start empty and are filled from /models (see fill()).

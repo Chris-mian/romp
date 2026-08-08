@@ -51,9 +51,11 @@ class OneHeightBasis(unittest.TestCase):
             self.assertNotIn(frag, shell, frag)
 
     def test_a_lifted_pane_is_sized_by_its_insets_not_by_viewport_units(self):
-        # inset:0 already IS the viewport box for a fixed element; the explicit 100vw/100vh overrode it
-        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200}", self.html)
-        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200}", self.html)
+        # inset:0 already IS the viewport box for a fixed element; the explicit 100vw/100vh overrode it.
+        # (background:transparent rides the same rules: an opaque lifted iframe blacks out the window —
+        # see test_kernel.test_settings_is_a_fullscreen_modal.)
+        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;background:transparent}", self.html)
+        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}", self.html)
 
     def test_an_unpainted_pane_is_dark_not_white(self):
         # a pane whose document has not painted is a white rectangle in a dark frame (Firefox shows it

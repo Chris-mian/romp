@@ -18138,14 +18138,18 @@ def _landing():
             "body.settings-open #feed-pane{display:block!important}"
             # inset:0 alone sizes a fixed box to the viewport; the explicit 100vw/100vh OVERRODE it and
             # overshot on iOS, hanging the modal's own actions below the fold (the user 2026-07-29).
-            "body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200}"
+            # background:transparent — the shell paints every iframe #1e1e1e (no white flash while a pane
+            # loads), but a LIFTED iframe must show the dashboard through it: its page goes transparent
+            # (rs-modal-open / picker-lifted), and with the element still opaque the modal's dim composited
+            # over solid #1e1e1e — the whole window went black (the user 2026-08-08).
+            "body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;background:transparent}"
             # New-session PICKER full-screen (the user 2026-07-05): the picker lives INSIDE the /chat iframe, so
             # its position:fixed;inset:0 only covered the chat PANE — a short pane couldn't scroll the session
             # list. Same bridge as settings: render.ts posts {romp:'picker',on} and the shell lifts the chat
             # iframe over the whole window (body.picker-open) so the overlay fills the screen and the list gets
             # the full height to scroll. Restored on close.
             "body.picker-open #chat-pane{display:block!important}"
-            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200}"
+            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}"   # same transparency as the settings lift above
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
             # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
@@ -18498,16 +18502,19 @@ def _landing():
             "#romp-boot .rl-dots{gap:9px}#romp-boot .rl-dots i{width:11px;height:11px}"
             # The notification center (the user 2026-07-27; replaces the fixed top banners — offline /
             # usage-limit / judge-degraded — which got in the way): the bell in the bottom bar's action
-            # cluster goes RED when an error lands; the popover is a panel anchored above the bell
-            # (bottom-right), newest first, per-row clear + Clear all.
+            # cluster goes RED when an error lands; clicking it opens the Log as a centered modal
+            # (the one panel treatment, the user 2026-08-08), newest first, per-row clear + Clear all.
             "#rail-errs.has,#merr.has{color:#ff6b6b}"   # red bell = something unread / a live problem; no count badge (it clipped, and the number added nothing — the user 2026-07-27)
-            "#rerr-back{position:fixed;inset:0;z-index:210;background:rgba(0,0,0,.35)}"
+            # centered like every other panel (the user 2026-08-08: one modal treatment — centered card,
+            # 0.55 dim, dashboard unchanged behind it; it used to sit bottom-right over the feed)
+            "#rerr-back{position:fixed;inset:0;z-index:210;display:flex;align-items:center;justify-content:center;"
+            "background:rgba(0,0,0,0.55)}#rerr-back[hidden]{display:none}"
             # The panel wears the SAME modal vocabulary as the settings card / network panel (the user
             # 2026-07-27: the first cut's font shorthand leaned on --vscode-font-family, which the browser
             # shell never defines, so the whole shorthand was invalid and the text rendered oversized in
             # the page default): #252526 card, 13px system-ui body, 14px/600 header, 11.5px rows + 11px
             # dim times (the network panel's information-type sizes), rnet-style action button + close.
-            "#rerr-panel{position:absolute;right:10px;bottom:44px;width:min(700px,94vw);max-height:min(60vh,480px);"   # 60% wider (the user 2026-07-28)
+            "#rerr-panel{width:min(700px,94vw);max-height:min(60vh,480px);"   # 60% wider (the user 2026-07-28); a flex child of the centered backdrop, no own positioning
             "display:flex;flex-direction:column;background:#252526;border:1px solid #3a3a3a;border-radius:10px;"
             "box-shadow:0 12px 36px #000000aa;color:#ccc;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}"
             "#rerr-panel .rerr-top{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#e8eaed;"
@@ -18755,6 +18762,10 @@ def _landing():
             "<script>" + _LANDING_REMOTES_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
+            # the command palette (Cmd/Ctrl+P) and the session quick-switcher hotkey (Cmd/Ctrl+O):
+            # a dist bundle (ui/webview/palette-main.ts) like age-color-global above. Loaded last —
+            # it reads the __romp* globals lazily, at command run time, so order is cosmetic.
+            + ("<script src=/dist/palette-main.js?v=%d></script>" % v)
             + _stale_block(v) + _rdrift_block() +
             "</body></html>")
 

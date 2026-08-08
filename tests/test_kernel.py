@@ -6207,7 +6207,7 @@ class ServeSecurity(unittest.TestCase):
         # asks the shell to lift the feed iframe over the whole window; the feed then goes TRANSPARENT and
         # hides its own content (rs-modal-open), so the dimmed three-pane DASHBOARD shows through behind the
         # card — not the feed cards blown up full-screen.
-        self.assertIn("#rsettings { position: fixed; inset: 0; z-index: 60; background: #0000009c;", _gear_css_src())
+        self.assertIn("#rsettings { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55);", _gear_css_src())   # the one modal dim (the user 2026-08-08)
         self.assertIn(".rs-card {", _gear_css_src())
         self.assertIn(".rs-modal-open { background: transparent; }", _gear_css_src())            # feed iframe transparent while open
         self.assertIn("body.rs-modal-open #feed-list", _gear_css_src())                     # feed cards hidden while open
@@ -6215,9 +6215,12 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("feedFull(true)", _gear_src())              # open → ask the shell to go full-window
         self.assertIn("setModalCls(true)", _gear_src())          # open → feed goes transparent + hides content
         self.assertIn("if (e.target === p) closeSettings()", _gear_src())   # backdrop click closes
-        # shell side: the feed iframe lifts to cover the whole window (the panes show THROUGH the transparent feed)
+        # shell side: the feed iframe lifts to cover the whole window (the panes show THROUGH the transparent
+        # feed). background:transparent on the LIFTED IFRAME ELEMENT is load-bearing: the shell's default
+        # iframe{background:#1e1e1e} otherwise sits under the transparent page and turns the modal's dim
+        # into a full-window black-out (the user 2026-08-08).
         html = km._landing()
-        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200", html)   # display:block beats the mobile iframe-hiding
+        self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;background:transparent}", html)
         self.assertIn("m.romp==='settings'", html)
         self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
 
@@ -6227,12 +6230,29 @@ class ServeSecurity(unittest.TestCase):
         # render.ts posts {romp:'picker',on} and the shell lifts the chat iframe over the whole window
         # (body.picker-open), so the overlay fills the screen and the list gets the full height to scroll.
         html = km._landing()
-        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200", html)  # lift the chat iframe full-window (display:block beats the mobile hiding)
+        # background:transparent — same as the settings lift: the opaque iframe element was the black-out
+        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}", html)
         self.assertIn("body.picker-open #chat-pane{display:block!important}", html)         # un-hide it even if chat is toggled off
         self.assertIn("m.romp==='picker'", html)                                            # the shell listens for the picker post
         self.assertIn("document.body.classList.toggle('picker-open',!!m.on)", html)
         # the settings bridge is untouched (both share the one message handler)
         self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
+
+    def test_log_panel_is_a_centered_modal(self):
+        # the user 2026-08-08: ONE panel treatment — the Log wore the network modal's card but sat
+        # anchored bottom-right over the feed; now its backdrop centers it like #rnet-back, at the
+        # standard 0.55 dim, with the dashboard unchanged (dimmed, visible) behind it.
+        html = km._landing()
+        self.assertIn("#rerr-back{position:fixed;inset:0;z-index:210;display:flex;align-items:center;justify-content:center;", html)
+        self.assertIn("background:rgba(0,0,0,0.55)}#rerr-back[hidden]{display:none}", html)
+        # the panel is a flex child of the centered backdrop — no anchored positioning of its own
+        self.assertNotIn("#rerr-panel{position:absolute", html)
+
+    def test_palette_bundle_wired(self):
+        # the command palette (Cmd/Ctrl+P) + quick-switcher hotkey (Cmd/Ctrl+O): a dist bundle the
+        # shell page loads like age-color-global; behavior is pinned in ui/webview/palette.test.ts.
+        html = km._landing()
+        self.assertIn("<script src=/dist/palette-main.js?v=", html)
 
     def test_fleet_page_served(self):
         # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, rendered by dist/fleet.js.
