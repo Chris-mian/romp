@@ -368,3 +368,37 @@ setup_hook_repo() {
     run git -C "$WORK" push origin HEAD:main
     [ "$status" -eq 0 ]
 }
+
+# ─── Claude Code version notice ──────────────────────────────────────
+
+_stub_claude() {   # $1 = the version the stub reports; PATH-prepended so install.sh's probe sees it
+    mkdir -p "$TEST_DIR/mock"
+    cat > "$TEST_DIR/mock/claude" <<STUB
+#!/usr/bin/env bash
+echo "$1 (Claude Code)"
+STUB
+    chmod +x "$TEST_DIR/mock/claude"
+    export PATH="$TEST_DIR/mock:$PATH"
+}
+
+@test "install.sh: an old Claude Code gets the upgrade notice at the end" {
+    _stub_claude "2.1.220"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2.1.220"* ]]
+    [[ "$output" == *"claude update"* ]]
+}
+
+@test "install.sh: a current Claude Code gets no upgrade notice" {
+    _stub_claude "2.1.226"
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"claude update"* ]]
+}
+
+@test "install.sh: the version floor matches bin/romp's (no drift)" {
+    a="$(sed -n 's/^ROMP_CLAUDE_FLOOR="\(.*\)"$/\1/p' "$ROMP_DIR/install.sh" | head -1)"
+    b="$(sed -n 's/^ROMP_CLAUDE_FLOOR="\(.*\)"$/\1/p' "$ROMP_DIR/bin/romp" | head -1)"
+    [ -n "$a" ]
+    [ "$a" = "$b" ]
+}

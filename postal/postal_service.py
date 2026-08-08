@@ -2265,6 +2265,8 @@ Addressing is live-only: you can message only currently-live sessions (list_agen
 A name is not guaranteed unique. When more than one live session answers to it the send is refused and the candidates are listed as `host:name`: pick one and resend rather than assuming the first. Your OWN name is refused outright, because a message there lands in your own inbox looking exactly like a reply from someone else. Your row in list_agents is the one marked `(you)`.
 
 An isolation refusal is FINAL. A mailbox toggled off is a boundary the user drew: if send_message refuses for isolation, do NOT reroute the content through any other door (the kernel's /send route, tmux keystrokes, shared files, another peer as relay). Report the refusal to the user and stop — only they lift the isolation.
+
+Claude Code ships its own cross-session messaging (SendMessage / ListAgents). For peer romp sessions, use these postal tools instead: postal mail declares a kind, is tracked until answered, respects the user's per-host trust boundaries, and is visible to them; a native cross-session send has none of that, so it is invisible to the user and unaccountable. Native SendMessage remains the right tool for your own subagents and teammates inside this session — just not for peer sessions.
 """
 
 MCP_TOOLS = [
