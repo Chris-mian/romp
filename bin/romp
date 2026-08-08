@@ -784,12 +784,15 @@ fi
 if [[ $# -eq 0 ]]; then
     _tok="$(_romp_token)"
     _kport="${ROMP_KERNEL_PORT:-29855}"
+    # The floor nudge comes BEFORE the token bail: a fresh install whose service
+    # hasn't minted a token yet is exactly the run that should hear about an old
+    # Claude Code, not be cut off by the earlier exit.
+    _romp_claude_floor_nudge
     if [[ -z "$_tok" ]]; then
         echo "romp: no serve token yet; the kernel mints it. Is romp running? (the login service starts it; \`romp up\` runs it by hand)" >&2
         exit 1
     fi
     _url="http://127.0.0.1:$_kport/?token=$_tok"
-    _romp_claude_floor_nudge
     # Is this a machine we could plausibly open a browser on? An ssh session or a Linux box with no
     # DISPLAY is headless — opening would silently do nothing, so say so instead of faking success.
     _headless=0

@@ -86,3 +86,14 @@ STUB
     [ "$status" -eq 0 ]
     [[ "$output" != *"claude update"* ]]
 }
+
+@test "old claude: nudge still fires when no serve token exists yet (fresh install)" {
+    # A fresh install whose service hasn't minted a token is exactly the run that
+    # should hear about an old Claude Code — the nudge precedes the token bail.
+    rm -f "$XDG_STATE_HOME/romp/serve-token"
+    _stub_claude "2.1.220"
+    run "$ROMP_SCRIPT"
+    [ "$status" -eq 1 ]                       # still the loud no-token bail
+    [[ "$output" == *"claude update"* ]]      # but the floor line came first
+    [[ "$output" == *"no serve token"* ]]
+}
