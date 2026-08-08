@@ -50,11 +50,24 @@ test("the menu sits right of Group, lists sessions in tab order, canonical form,
   assert.match(FEED, /ensureGroupToggle\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionFilter\(\)\.style\.display = showCA \? "" : "none";/);
   // tab order: ranked by the kernel's session-order list — the same rank grouped mode sorts by
   assert.ok(FEED.includes("const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));"));
-  // canonical form: identity dot + host-folded name (the shared .host-prefix treatment)
-  assert.ok(FEED.includes("row(feedOnlySid === s.sid, s.sid, sessDot(s.color?.bg), ...hostNameNodes(s.name, s.sid));"));
   // the menu lives on document.body — outside render()'s reconcile, so a push can't rebuild it mid-press
   assert.ok(FEED.includes("document.body.appendChild(menu);"));
-  // with a filter on, the button wears the picked session's dot+name and the accent .on state — a
-  // narrowed board must never look like the whole one
-  assert.ok(FEED.includes('if (cur) b.replaceChildren(sessDot(cur.color?.bg), ...hostNameNodes(cur.name, cur.sid), document.createTextNode(" ▴"));'));
+});
+
+test("menu rows write a session the way the tabs do — coloured bold name + the shared status dot", () => {
+  // the identity treatment every other surface gives a session (the user 2026-08-08, round two: a
+  // colour SWATCH read as a status dot — on this board a dot beside a name means working/awaiting)
+  assert.ok(FEED.includes("nm.replaceChildren(...hostNameNodes(s.name, s.sid));"), "host prefix folded quiet");
+  assert.ok(FEED.includes("if (s.color) nm.style.color = s.color.bg;"), "name IN the identity colour");
+  assert.ok(FEED.includes("for (const s of rows) row(feedOnlySid === s.sid, s.sid, sessMenuName(s), s.name);"));
+  assert.ok(FEED.includes("if (dotName) setWorkDot(label, dotFor(dotName));"),
+    "the SAME working/awaiting dot the tabs and headers wear — never a colour swatch");
+  assert.ok(!FEED.includes("sessDot"), "the swatch helper is gone");
+  const CSS = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.css"), "utf8");
+  assert.match(CSS, /\.fsm-name \{ font-weight: 600; \}/, "bold, like the tab titles and session headers");
+  assert.ok(!CSS.includes(".fsm-dot"), "no swatch styles either");
+  // with a filter on, the button quotes the picked session verbatim, dot included — a narrowed board
+  // must never look like the whole one
+  assert.ok(FEED.includes('b.replaceChildren(nm, document.createTextNode(" ▴"));'));
+  assert.ok(FEED.includes("setWorkDot(nm, dotFor(cur.name));"));
 });

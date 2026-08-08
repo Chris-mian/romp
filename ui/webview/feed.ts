@@ -3014,11 +3014,12 @@ function ensureGroupToggle(): HTMLElement {
 }
 
 // The SESSION FILTER (the user 2026-08-08): a footer menu listing every session the chat tab strip
-// shows, in ITS order, each in its canonical form — identity-colour dot + name with any "host:"
-// prefix folded quiet (hostNameNodes). Picking one shows only that session's cards; "All sessions"
-// (the default — nothing selected) shows everything. The menu opens UPWARD from the footer (that is
-// where the space is) and lives on document.body, outside render()'s reconcile, so a push can never
-// rebuild it mid-press; the button itself is ensure-once like the other footer controls.
+// shows, in ITS order, each written the way every other surface writes a session — bold name in its
+// identity colour, "host:" prefix folded quiet, the shared working/awaiting status dot. Picking one
+// shows only that session's cards; "All sessions" (the default — nothing selected) shows everything.
+// The menu opens UPWARD from the footer (that is where the space is) and lives on document.body,
+// outside render()'s reconcile, so a push can never rebuild it mid-press; the button itself is
+// ensure-once like the other footer controls.
 let sessMenuEl: HTMLElement | null = null;
 function closeSessMenu(): void {
   sessMenuEl?.remove(); sessMenuEl = null;
@@ -3030,26 +3031,34 @@ function sessMenuAway(ev: Event): void {
   if (sessMenuEl && !sessMenuEl.contains(t) && !(document.getElementById("feed-sessfilter")?.contains(t))) closeSessMenu();
 }
 function sessMenuKey(ev: KeyboardEvent): void { if (ev.key === "Escape") closeSessMenu(); }
-function sessDot(bg: string | undefined): HTMLElement {
-  const d = el("span", "fsm-dot");
-  if (bg) d.style.background = bg; else d.classList.add("blank");
-  return d;
+// A session's name in the menu wears EXACTLY the identity treatment every other surface gives it (the
+// user 2026-08-08): bold, in the session's own colour, host prefix folded quiet — the way the chat tabs
+// and the grouped session headers write it. Never a colour swatch: a dot beside a name on this board
+// already MEANS working/awaiting (the shared fwork-dot vocabulary), so that status dot rides here too.
+function sessMenuName(s: { sid: string; name: string; color: { bg: string; fg: string } | null }): HTMLElement {
+  const nm = el("span", "fsm-name");
+  nm.replaceChildren(...hostNameNodes(s.name, s.sid));
+  if (s.color) nm.style.color = s.color.bg;
+  return nm;
 }
 function openSessMenu(btn: HTMLElement): void {
   const menu = el("div", "feed-sessmenu");
-  const row = (on: boolean, pick: string | null, ...label: Node[]) => {
+  const row = (on: boolean, pick: string | null, label: HTMLElement, dotName?: string) => {
     const r = el("div", "fsm-row" + (on ? " on" : ""));
-    r.append(...label);
+    r.appendChild(label);
+    if (dotName) setWorkDot(label, dotFor(dotName));   // inserts the status dot before the name, in place
     r.setAttribute("role", "menuitemradio"); r.setAttribute("aria-checked", on ? "true" : "false");
     r.onclick = (ev) => { ev.stopPropagation(); setFeedOnly(on ? null : pick); closeSessMenu(); render(); };
     menu.appendChild(r);
   };
-  row(!feedOnlySid, null, document.createTextNode("All sessions"));
+  const all = el("span", "");
+  all.textContent = "All sessions";
+  row(!feedOnlySid, null, all);
   // tab order: rank by the kernel's session-order list (the same rank grouped mode sorts by); a sid the
   // list doesn't know keeps its place in the kernel's tab list (stable sort), after the ranked ones
   const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
   const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));
-  for (const s of rows) row(feedOnlySid === s.sid, s.sid, sessDot(s.color?.bg), ...hostNameNodes(s.name, s.sid));
+  for (const s of rows) row(feedOnlySid === s.sid, s.sid, sessMenuName(s), s.name);
   document.body.appendChild(menu);
   // above the footer, left-aligned to the button, clamped into the viewport
   const r = btn.getBoundingClientRect();
@@ -3076,8 +3085,11 @@ function ensureSessionFilter(): HTMLElement {
   b.setAttribute("aria-pressed", on ? "true" : "false");
   b.title = cur ? "showing only " + cur.name + " — click to change or show all"
     : "show a single session's cards (default: all)";
-  if (cur) b.replaceChildren(sessDot(cur.color?.bg), ...hostNameNodes(cur.name, cur.sid), document.createTextNode(" ▴"));
-  else b.replaceChildren(document.createTextNode("Session ▴"));
+  if (cur) {
+    const nm = sessMenuName(cur);
+    b.replaceChildren(nm, document.createTextNode(" ▴"));
+    setWorkDot(nm, dotFor(cur.name));   // the button quotes the picked session verbatim, dot included
+  } else b.replaceChildren(document.createTextNode("Session ▴"));
   return b;
 }
 
