@@ -37,10 +37,22 @@ test("running an item closes the palette FIRST so its own modal never lands unde
   assert.match(PALETTE, /function run\(item: PickItem\): void \{\s*\n\s*close\(\);[\s\S]*?item\.run\(\);/);
 });
 
-test("session rows carry the session color dot and a dim directory tail", () => {
-  assert.match(PALETTE, /\.rpal-dot\{flex:0 0 auto;width:8px;height:8px;border-radius:50%\}/);
+test("session rows wear the TAB identity language: bold name in the session color, host: prefix dim italic", () => {
+  // the user 2026-08-08: visual consistency across surfaces — .tab.colored .tab-label is 600-weight
+  // in the identity color; .host-prefix is dim italic at 0.88em. The switcher copies both, and the
+  // fuzzy-match marks underline instead of recoloring so the identity color stays intact.
+  assert.match(PALETTE, /\.rpal-name\{font-weight:600\}/);
+  assert.match(PALETTE, /\.rpal-host\{color:#9aa0a6;font-weight:400;font-style:italic;font-size:0\.88em\}/);
+  assert.match(PALETTE, /\.rpal-name b,\.rpal-host b\{color:inherit;font-weight:inherit;text-decoration:underline\}/);
+  assert.match(PALETTE, /n\.style\.color = item\.color;/);
   assert.match(PALETTE, /\.rpal-dim\{[^}]*font-size:11px/);
-  assert.match(PALETTE, /d\.style\.background = item\.dot;/);
+  // one fuzzy match over "host:name", split across the two styled spans
+  assert.match(PALETTE, /clipRanges\(hit\.ranges, 0, hl\)/);
+  assert.match(PALETTE, /clipRanges\(hit\.ranges, hl, item\.title\.length\)/);
+  // …and the same treatment the tabs use, pinned at its source so the two can't drift silently
+  const STYLES = read("styles.css");
+  assert.match(STYLES, /\.tab\.colored \.tab-label \{ color: var\(--chip-bg\); font-weight: 600; \}/);
+  assert.match(STYLES, /\.host-prefix \{ color: var\(--dim\); font-weight: 400; font-style: italic; font-size: 0\.88em; \}/);
 });
 
 // ── the shell boot: three combos, wired into every pane ────────────────────────────────────
@@ -58,12 +70,21 @@ test("key wiring mirrors the Alt+Arrow pane nav: capture on the shell doc AND ev
   assert.match(MAIN, /f\.addEventListener\("load", wire\);\s*\n\s*wire\(\);/);
 });
 
-test("the jump switcher reads /sessions (kernel-authoritative), sorts by the chat's MRU, and excludes the current session", () => {
-  assert.match(MAIN, /fetch\("\/sessions"\)/);
+test("the jump switcher merges the chat registry (remote sessions included) with /sessions, MRU-first, current excluded", () => {
+  assert.match(MAIN, /__rompSessionList/);                           // the chat page's merged registry — the only source of federated remotes
+  assert.match(MAIN, /fetch\("\/sessions"\)/);                       // …unioned with locals whose tab is closed
+  assert.match(MAIN, /if \(!seen\.has\(l\.id\)\) rows\.push/);
   assert.match(MAIN, /__rompMru/);
   assert.match(MAIN, /for \(const id of mru\.slice\(1\)\)/);          // previous session first → Cmd+O Enter toggles back
   assert.match(MAIN, /if \(byId\.has\(r\.id\) && r\.id !== mru\[0\]\)/); // current session excluded
   assert.match(MAIN, /chatPost\(\{ type: "jumpSession", id: r\.id \}\)/);
+  // remote rows split the "host:" prefix off with the shared helper (host-prefix.ts, never federation.ts)
+  assert.match(MAIN, /import \{ hostPrefix \} from "\.\/host-prefix";/);
+  assert.match(MAIN, /title: p \? p\.host \+ p\.rest : r\.name,/);
+  assert.match(MAIN, /hostLen: p \? p\.host\.length : 0,/);
+  // render.ts publishes the registry snapshot the shell reads
+  assert.match(RENDER, /__rompSessionList/);
+  assert.match(RENDER, /order\.map\(\(id\) => \{\s*\n\s*const m = tabMeta\.get\(id\);/);
 });
 
 test("the switcher fails loudly when the kernel doesn't answer, and Shift+Enter reaches the new-session picker", () => {

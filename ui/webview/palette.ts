@@ -8,13 +8,17 @@
 import { commandList } from "./commands";
 import { fuzzyMatch, FuzzyHit, FuzzyRange } from "./fuzzy";
 
-// One row of a pick list. Commands map onto this 1:1; session rows add a color dot and a dim
-// directory tail. run() is the whole contract — the palette closes itself, then runs it.
+// One row of a pick list. Commands map onto this 1:1; session rows wear the TAB's identity
+// language (the user 2026-08-08: visual consistency across surfaces) — the name bold in the
+// session color, a remote's "host:" prefix in the dim italic, exactly like .tab-label /
+// .host-prefix — plus a dim directory tail. run() is the whole contract — the palette closes
+// itself, then runs it.
 export type PickItem = {
-  title: string;   // what's shown and fuzzy-matched
-  kbd?: string;    // display-only hotkey chip ("⌘O")
-  dot?: string;    // CSS color for a leading session dot
-  dim?: string;    // dim tail after the title (a session's directory basename)
+  title: string;    // what's shown and fuzzy-matched — for a remote session "host:name", host included
+  kbd?: string;     // display-only hotkey chip ("⌘O")
+  hostLen?: number; // leading chars of title that are the "host:" prefix (0/absent = local)
+  color?: string;   // session identity color for the name (the tab's --chip-bg)
+  dim?: string;     // dim tail after the title (a session's directory basename)
   run: () => void;
 };
 
@@ -43,9 +47,14 @@ const CSS =
   "#rpal-list{flex:1 1 auto;overflow-y:auto;margin-top:6px}" +
   ".rpal-row{display:flex;align-items:center;gap:10px;padding:5px 10px;border-radius:6px;cursor:pointer}" +
   ".rpal-row.active{background:rgba(156,210,255,0.12)}" +   // accent-blue focus cue, not a status color
-  ".rpal-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%}" +
   ".rpal-title{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
   ".rpal-title b{color:var(--accent,#9cd2ff);font-weight:600}" +
+  // the tabs' identity language, verbatim: .tab.colored .tab-label is 600-weight in the session
+  // color; .host-prefix is dim italic at 0.88em. Matched characters keep the row's own colors
+  // (underline marks them) — an accent-blue <b> inside a colored name would fight the identity.
+  ".rpal-name{font-weight:600}" +
+  ".rpal-host{color:#9aa0a6;font-weight:400;font-style:italic;font-size:0.88em}" +
+  ".rpal-name b,.rpal-host b{color:inherit;font-weight:inherit;text-decoration:underline}" +
   ".rpal-dim{flex:0 1 auto;color:#9aa0a6;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
   ".rpal-kbd{flex:0 0 auto;color:#9aa0a6;font-size:11px;border:1px solid #3a3a3a;border-radius:4px;padding:0 5px}" +
   ".rpal-empty{padding:8px 10px;color:#9aa0a6}" +
@@ -122,6 +131,17 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
     return frag;
   }
 
+  // Clip highlight ranges to [start,end) and re-base them on start — one fuzzy match over the
+  // whole "host:name" string, split across the two differently-styled spans.
+  function clipRanges(ranges: FuzzyRange[], start: number, end: number): FuzzyRange[] {
+    const out: FuzzyRange[] = [];
+    for (const [s, e] of ranges) {
+      const cs = Math.max(s, start), ce = Math.min(e, end);
+      if (cs < ce) out.push([cs - start, ce - start]);
+    }
+    return out;
+  }
+
   function render(query: string): void {
     const hits = spec.items
       .map((item) => ({ item, hit: fuzzyMatch(query, item.title) }))
@@ -132,15 +152,25 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
     for (const { item, hit } of hits) {
       const row = doc.createElement("div");
       row.className = "rpal-row";
-      if (item.dot) {
-        const d = doc.createElement("span");
-        d.className = "rpal-dot";
-        d.style.background = item.dot;
-        row.appendChild(d);
-      }
       const title = doc.createElement("span");
       title.className = "rpal-title";
-      title.appendChild(highlight(item.title, hit.ranges));
+      const hl = item.hostLen || 0;
+      if (hl > 0 || item.color) {
+        // a session row: "host:" dim italic + the name bold in its identity color — the tab treatment
+        if (hl > 0) {
+          const h = doc.createElement("span");
+          h.className = "rpal-host";
+          h.appendChild(highlight(item.title.slice(0, hl), clipRanges(hit.ranges, 0, hl)));
+          title.appendChild(h);
+        }
+        const n = doc.createElement("span");
+        n.className = "rpal-name";
+        if (item.color) n.style.color = item.color;
+        n.appendChild(highlight(item.title.slice(hl), clipRanges(hit.ranges, hl, item.title.length)));
+        title.appendChild(n);
+      } else {
+        title.appendChild(highlight(item.title, hit.ranges));
+      }
       row.appendChild(title);
       if (item.dim) {
         const m = doc.createElement("span");
