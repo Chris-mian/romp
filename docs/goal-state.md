@@ -92,7 +92,10 @@ Sort events by evidence time (`ev_t`; arrival `at` breaks ties) and replay:
 Judge rulings at segment/turn end · your reply (any column; reopens
 instantly, optimistically, moves the card to Working, and clears blocks across
 the card's whole subtree (you reply to the card, never to its blocked
-sub-goals) · Clear / Undo clear · Resolve · the agent checking off its to-dos ·
+sub-goals) · Continue (a needs-you card's one-click canned reply, 2026-08-08:
+"nothing needed from me, keep going" — the same reply path end to end, so it
+inherits the optimistic reopen and the judges' reassert; never a bare column
+move) · Clear / Undo clear · Resolve · the agent checking off its to-dos ·
 a peer completing delegated work (courier link-back) · a failed auto-nudge
 (records a block) · the settle moment · the live floors below.
 

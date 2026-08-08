@@ -1141,6 +1141,20 @@ class ViewBuilder(unittest.TestCase):
         src = inspect.getsource(km._drive)
         self.assertIn('echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None', src)
 
+    def test_continue_button_rides_the_followup_arm_with_the_kernel_canned_body(self):
+        # the Continue button (the user 2026-08-08) posts askFollowUp cont:true; the kernel substitutes
+        # CONTINUE_TEXT and the arm otherwise IS the typed-reply path — same body compose, same optimistic
+        # reopen, same ack. A reply with a canned body, never a new mechanism: the removed messageless
+        # cardMove showed that a move with no message adds no information and parks the card in Working.
+        import inspect
+        src = inspect.getsource(km._drive)
+        self.assertIn('text = CONTINUE_TEXT if msg.get("cont") else str(msg["text"])', src)
+        self.assertIn("jd.optimistic_followup(sid, iid, text=text, now=int(time.time()))", src)
+        # the canned body ends with the one-line escape hatch: a REAL block (the agent needs something
+        # only the user has) comes back as one sharp re-ask, which the judges re-block from — the
+        # correct move on new information, so a mispressed Continue costs one turn, not the thread
+        self.assertIn("say exactly what you need in one line", km.CONTINUE_TEXT)
+
     def test_feed_awaiting_via_session_signal_is_held_in_working_with_a_badge(self):
         # AWAITING = a flavor of WORKING (the user 2026-06-22): when the EVENT-MODEL signal says the session
         # is paused on dispatched/delegated work, its working top stays in the working column (never

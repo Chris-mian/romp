@@ -4,7 +4,7 @@
 //     its top-level goal IS the tree root, a notch larger than its sub-items);
 //   - the tree/checklist sits directly below, with per-node "(Xm ago)" times pulled in close to the
 //     content (fit-content) and right-aligned, in parentheses;
-//   - BOTTOM bar: the (recency-tinted) age + Follow up + Clear in one row, the composer dropping in below.
+//   - BOTTOM bar: the (recency-tinted) age + Follow up + Continue + Clear in one row, the composer dropping in below.
 // No jsdom harness for the feed, so — like the other feed-*.test.ts — pin it at the source level.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -26,8 +26,8 @@ test("TOP bar = session name (left) + ✕ (right); age is no longer in the heade
   assert.match(CSS, /\.feed-modal-close \{[^}]*margin-left: auto/);   // ✕ pinned far-right
 });
 
-test("BOTTOM bar = age + Follow up + Check status + Clear in one row, the checklist sitting above it", () => {
-  assert.match(FEED, /footRow\.append\(age, fup, cs, clr\)/);   // Nudge moved off the footer onto the card (the user 2026-06-18); Move to Working removed (the user 2026-07-25); cs the user 2026-07-20
+test("BOTTOM bar = age + Follow up + Check status + Continue + Clear in one row, the checklist sitting above it", () => {
+  assert.match(FEED, /footRow\.append\(age, fup, cs, cont, clr\)/);   // Nudge moved off the footer onto the card (the user 2026-06-18); Move to Working removed (the user 2026-07-25); cs the user 2026-07-20
   // the per-sub follow-up target label sits between the button row and the composer box
   assert.match(FEED, /foot\.append\(nudges, footRow, futgt, fubox\)/);
   assert.match(FEED, /inner\.append\(head, body, foot\)/);            // head, then tree, then footer

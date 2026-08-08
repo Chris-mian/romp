@@ -104,6 +104,9 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
                 km._followup_body(TOP, None, km.AUTO_NUDGE_STALLED_TEXT, injected=True, auto=True,
                                   stalled=True),
             "typed follow-up on a summary": km._followup_body(TOP, None, "ship it"),
+            # the Continue button's canned reply (the user 2026-08-08) — rides the typed-reply path,
+            # rendered exactly as the recipient session will see it
+            "continue button": km._followup_body(TOP, None, km.CONTINUE_TEXT),
             "multi-goal bundle": km._nudge_bundle_body([TOP, TOP2], nodes, set()),
             "multi-goal bundle (fork)": km._nudge_bundle_body([TOP, TOP2], nodes, {TOP}),
             "clear wrap-up": km._clear_wrap_body([TOP], nodes),
