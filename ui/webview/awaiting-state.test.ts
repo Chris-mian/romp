@@ -46,8 +46,9 @@ test("the feed dot matches too: dotFor picks work/await per name, the dot retint
   assert.match(FEED, /const dotFor = \(name: string\): DotState => workingSet\.has\(name\) \? "work" : awaitingSet\.has\(name\) \? "await" : "";/);
   // an existing dot RETINTS when the state flips (working → awaiting), instead of only add/remove
   assert.match(FEED, /else if \(st && has\) prev!\.classList\.toggle\("await", st === "await"\);/);
-  // every name-dot site routes through dotFor: cards, group cards, both modal headers, grouped headers
-  assert.equal((FEED.match(/setWorkDot\((?:a\._name|agent|nm), dotFor\(/g) || []).length, 5);
+  // every name-dot site routes through dotFor: cards, group cards, both modal headers, grouped
+  // headers, and the session-filter button (2026-08-08; its menu rows route via setWorkDot(label,…))
+  assert.equal((FEED.match(/setWorkDot\((?:a\._name|agent|nm), dotFor\(/g) || []).length, 6);
   assert.match(FEEDCSS, /\.fwork-dot\.await \{ background: #54B204; \}/);
   assert.match(FED, /const ARRAY_ID = \["order", "names", "working", "awaiting"\];/);
   assert.match(FED, /if \(Array\.isArray\(f\.awaiting\)\) merged\.awaiting\.push\(\.\.\.f\.awaiting\);/);

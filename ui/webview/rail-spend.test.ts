@@ -91,7 +91,6 @@ test("the rich tip is the ONE hover surface: no native titles, every account ren
   assert.ok(usageJS.includes("var spendOnly=!keys.length;"));
   // the token graph: the three spend windows' volume on ONE shared auto-scale, in the tip's track idiom
   assert.ok(usageJS.includes("function spendDet(u,det)"));
-  assert.ok(usageJS.includes("5h / 7d / month \\u00b7 one scale"));
   assert.ok(usageJS.includes("var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});"));
   // dollars ride the value column only where they are REAL billing (spend-only accounts)
   assert.ok(usageJS.includes("+fmtTok(v.tok)+(spendOnly?' \\u00b7 $'"));
@@ -100,5 +99,19 @@ test("the rich tip is the ONE hover surface: no native titles, every account ren
   assert.ok(usageJS.includes("x-tip.offsetWidth/2"));
   assert.ok(usageJS.includes("r.top-tip.offsetHeight-8"));
   // the click hint the native title used to carry lives in the tip's footer now
-  assert.ok(usageJS.includes("'<div class=ru-tip-age>click the bars to refresh</div>'"));
+  assert.ok(usageJS.includes("'<div class=ru-tip-age>click to refresh</div>'"));
+});
+
+test("every tip string carries data — the narration is gone and stays gone", () => {
+  // The de-inking pass (the user 2026-08-08, who found the tip overly verbose): the host name alone
+  // heads a section, the token rows label themselves, config hints live in the docs, and the reader
+  // is already hovering the bars when the refresh hint shows.
+  const usageJS = KERNEL.split("_LANDING_USAGE_JS = \"\"\"")[1].split('"""')[0];
+  const code = usageJS.split("\n").map((l) => l.split("//")[0]).join("\n");
+  assert.ok(!code.includes("its own allowance"), "the host heading is the host name, bare");
+  assert.ok(!code.includes("one scale"), "the token rows are their own labels");
+  assert.ok(!code.includes("no budget set"), "no config instructions in a glance surface");
+  assert.ok(!code.includes("current usage unknown"), "the ? row already says unknown");
+  assert.ok(!code.includes("click the bars"), "the short hint replaced it");
+  assert.ok(code.includes("window reset '+esc(v.ago)+'; no reading since"), "the rolled note keeps only its facts");
 });

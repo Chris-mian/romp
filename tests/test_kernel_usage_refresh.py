@@ -67,7 +67,8 @@ class UsageRefreshWiring(unittest.TestCase):
         # footer, never a native title (the user 2026-08-08: the browser's flat box fought the tip)
         self.assertIn("id=rail-usage", html)
         self.assertIn("el.style.cursor='pointer'", html)
-        self.assertIn("click the bars to refresh", html)
+        self.assertIn("click to refresh", html)
+        self.assertNotIn("click the bars", html)   # tightened 2026-08-08 — the reader is already on the bars
         self.assertNotIn("Click to refresh usage", html)
         # a click fetches the on-demand endpoint and re-renders through the normal render() path.
         # (2026-07-30: /usage/fleet — /usage plus one row per OTHER Claude account signed in across the

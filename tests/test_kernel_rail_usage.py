@@ -121,14 +121,18 @@ class RailUsage(unittest.TestCase):
         self.assertIn("<span class=ru-tip-k>last known</span>", self.html,
                       "the hover is the ONE place the stale number appears, and it says what it is")
         self.assertIn("window reset '+esc(v.ago)", self.html, "the tooltip dates how stale the reading is")
-        self.assertIn("current usage unknown", self.html)
+        # "no reading since" carries the whole fact; "current usage unknown" restated what the '?' and
+        # the "last known" label already say (the user 2026-08-08 de-inking pass)
+        self.assertIn("; no reading since", self.html)
+        self.assertNotIn("current usage unknown", self.html)
         # the STANDALONE timeline copy (Obsidian) says the same thing — one rule, every surface
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
         self.assertIn("const rolled = !!(seg.resetsAt && nowS > seg.resetsAt);", tv)
         self.assertIn("b.usage.txt.textContent = rolled ? '?' : pct + '%';", tv)
         self.assertIn("if (track) track.style.display = rolled ? 'none' : '';", tv,
                       "the bar itself is hidden, not faded")
-        self.assertIn("current usage unknown (last known ", tv)
+        self.assertIn("; no reading since (last known ", tv)
+        self.assertNotIn("current usage unknown", tv)
 
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
