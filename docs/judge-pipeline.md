@@ -94,7 +94,7 @@ The board judges, with what each one reads and the ops it may emit:
 | planner | a segment's work ends | the work + the tree | `mint`, `sub`, `done`, `block`, `retitle`, `skip` |
 | placer | the planner filed under a card that has open sub-goals | that card's subtree only | pick the level inside the card |
 | closer | the turn ends | the goals this turn touched | `done`, `block`, omit (when in doubt, omit) |
-| unblocker | an open blocked sub has ended turns newer than its block (or its last check) | the sub's question + the conversation since | `lift`, `hold` (when unsure, hold) |
+| unblocker | an open blocked goal has ended turns or done filings newer than its block (or its last check of each) | the goal's question + the conversation since + the goals completed since | `lift`, `hold` (when unsure, hold) |
 | courier | a peer message arrives | the message + both sessions' trees | plant a goal + tracking node, or nothing |
 | grouper | the set of open cards changed | open top cards | nest a card, mint an umbrella, nothing |
 | consolidator | the set of completed cards changed | completed top cards | the same ops, done column |

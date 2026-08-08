@@ -37,7 +37,7 @@ so idle sessions cost file stats, not model calls.
 | planner | triage | `PLAN_SYS` | a segment's work ends |
 | placer | triage | `PLACE_SYS` | the planner filed under a card with open sub-goals |
 | closer | triage | `CLOSER_SYS` | a turn ends |
-| unblocker | triage | `UNBLOCK_SYS` | an open blocked sub has ended turns newer than its block (or its last check) |
+| unblocker | triage | `UNBLOCK_SYS` | an open blocked goal has ended turns or done filings newer than its block (or its last check of each) |
 | distiller | triage | `DISTILL_SYS` | a card completed and settled |
 | briefer | triage | `BLOCK_BRIEF_SYS` | a card blocked |
 | grouper | triage | `GROUP_SYS` | the set of open cards changed |
@@ -64,8 +64,9 @@ needs picking. When the turn ends, the closer audits the goals the turn
 touched for quiet completions and the archiver refreshes the session's
 headline. From there the board keeps itself: a completed card settles and
 gets the distiller's takeaway, a blocked card gets the briefer's decision
-brief, a blocked sub with new conversation since its block gets the
-unblocker's re-examination (was its question answered in passing?), a
+brief, a blocked goal with new conversation or new completions since its
+block gets the unblocker's re-examination (was its question answered in
+passing, or overtaken by finished work?), a
 changed set of top cards may get nested by the grouper (open column) or
 the consolidator (done column), and a peer message goes to the courier
 instead of the planners. Every section below is one of those moments in
@@ -148,22 +149,32 @@ stay distinguishable, and both defer to the user floor: a verdict computed
 from evidence at or before your last reply loses.
 
 **unblocker.** The stale-block backstop; it exists because answers arrive
-in passing. A sub-goal blocked on a question is only ever unblocked by
-work filed on that exact node — but the answer usually files wherever the
-planner judges the segment to serve, so a dormant blocked sub never hears
-it and holds its whole card in Needs you (a card can otherwise sit for hours
-on a buried sub whose question the very next stretch of conversation already
-answered). Given each open blocked sub's question plus
-the conversation since its block, it verdicts lift or hold, "when unsure,
-hold"; a lift lands as a normal `unblock` diary event, why-prefixed
-"answered in passing". Subs only — a blocked top is the card's Needs you,
-with its own heal paths (your reply re-judges it; a placement under it
-unblocks the chain). Event-gated per node: `blockCheckT` remembers the
-newest ended turn examined, so a stable session costs zero calls and a
-give-up re-arms on the next new turn. Its model call spans seconds, so it
-holds no store copy across the call: verdicts apply to a fresh load, and a
-node that moved on mid-call (you resolved or cleared it) is skipped with a
-`drift-skip` error row rather than overwritten. `ROMP_UNBLOCKER=0`
+in passing and work overtakes asks. A goal blocked on a question is only
+ever unblocked by work filed on that exact node — but the answer usually
+files wherever the planner judges the segment to serve, so a dormant
+blocked goal never hears it and holds its card in Needs you (a card can
+otherwise sit for hours on a buried sub whose question the very next
+stretch of conversation already answered — or on an approval whose work
+the session then visibly did anyway). Given each open blocked goal's
+question (subs and tops both) plus two evidence sections — the
+conversation since its block, and the goals the session has completed
+since then with why each counts as done — it verdicts lift or hold, "when
+unsure, hold"; a lift lands as a normal `unblock` diary event,
+why-prefixed "answered in passing". The completed-since section is the
+durable half: the conversation tail scrolls past its 9k-char window and a
+hold is never re-examined against the same turns, so an ask superseded by
+later completions used to rot in Needs you until cleared by hand (the
+2026-08-08 study: 400 card-hours across 302 manual clears). Event-gated
+per node on both streams: `blockCheckT` remembers the newest ended turn
+examined (turn-time domain — the feed's re-judging latch reads it against
+reply times, so it never carries a filing time), and `blockCheckDoneT`
+remembers the newest done-verdict filing, so a completion arms a
+re-examination even when no new turn ever arrives (a late closer filing
+on an idle session), a stable session costs zero calls, and a give-up
+re-arms on the next new turn or filing. Its model call spans seconds, so
+it holds no store copy across the call: verdicts apply to a fresh load,
+and a node that moved on mid-call (you resolved or cleared it) is skipped
+with a `drift-skip` error row rather than overwritten. `ROMP_UNBLOCKER=0`
 disables.
 
 **distiller.** When a top card completes and settles: `BACKGROUND:`
