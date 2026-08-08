@@ -13569,6 +13569,12 @@ def build_feed(now, tmux=None):
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
             "order": _session_order(),
+            # the chat tab strip's sessions, name+color resolved exactly as tab_meta resolves them: the
+            # feed footer's session-filter menu lists precisely the tabs (the user 2026-08-08) — including
+            # a session with no cards on the board, which filters to an empty board rather than being
+            # unlistable. Federation prefixes sid+name per host and concatenates.
+            "sessions": [{"sid": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])}
+                         for s in _chat_tab_sessions(now, tmux)],
             # /clear boundary settles, newest per session → the bell logs each once (the user 2026-07-27)
             "clearNotices": _boundary_clear_notices(alive),
             # SDK-backend failures → the same bell, one entry per occurrence (the user 2026-07-28)

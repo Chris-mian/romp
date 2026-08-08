@@ -563,6 +563,19 @@ class ViewBuilder(unittest.TestCase):
         feed = km.build_feed(NOW)
         self.assertNotIn("testsess", feed["awaiting"])
 
+    def test_feed_payload_lists_the_tab_sessions_for_the_footer_filter(self):
+        """The footer's session-filter menu lists exactly the chat tab strip (the user 2026-08-08): the
+        payload carries the SAME list _chat_tab_sessions renders, in ITS order, name+colour resolved
+        like tab_meta — so the menu, the tabs, and the grouped headers can never disagree. A session
+        with no cards still appears (filtering to it shows an empty board, it is never unlistable)."""
+        feed = km.build_feed(NOW)
+        rows = feed["sessions"]
+        self.assertEqual([r["sid"] for r in rows],
+                         [s["sid"] for s in km._chat_tab_sessions(NOW, km._tmux_sessions())])
+        me = next(r for r in rows if r["sid"] == SID)
+        self.assertEqual(me["name"], "testsess")
+        self.assertEqual(me["color"], km._name_color(SID), "the tab_meta colour resolution, verbatim")
+
     def test_judge_awaiting_stamp_suppresses_the_stalled_chip(self):
         """The false-'stalled' chain, reproduced end to end: a failed-nudge record exists, the live
         awaiting sources are dark, but the goal store carries the judge's stamp — the card must wear
