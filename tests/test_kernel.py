@@ -2352,7 +2352,9 @@ class ViewBuilder(unittest.TestCase):
         saved = (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
                  km.build_timeline, km._send_client)
         km._tmux_sessions = lambda: {}
-        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A"}, {"sid": "B"}, {"sid": "C"}]
+        p = str(self.tpath)   # a transcript ON DISK — a pathless fake would rank as just-created (top tier)
+        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A", "path": p}, {"sid": "B", "path": p},
+                                                   {"sid": "C", "path": p}]
         km.build_session = lambda sid, now, tmux: {"id": sid, "name": sid, "color": None,
                                                    "status": None, "ledger": None}
         km.build_feed = lambda now, tmux: {"working": [], "asks": []}
@@ -2378,7 +2380,9 @@ class ViewBuilder(unittest.TestCase):
         saved = (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
                  km.build_timeline, km._send_client)
         km._tmux_sessions = lambda: {}
-        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A"}, {"sid": "B"}, {"sid": "C"}]
+        p = str(self.tpath)
+        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A", "path": p}, {"sid": "B", "path": p},
+                                                   {"sid": "C", "path": p}]
         km.build_session = lambda sid, now, tmux: {"id": sid, "name": sid, "color": None,
                                                    "status": None, "ledger": None}
         km.build_feed = lambda now, tmux: {"working": [], "asks": []}
@@ -2391,6 +2395,35 @@ class ViewBuilder(unittest.TestCase):
              km.build_timeline, km._send_client) = saved
         self.assertEqual([key[1] for (key, _) in sent if key[0] == "chat"], ["A", "B", "C"],
                          "no active hint → tab order, all tabs still delivered")
+
+    def test_push_builds_a_transcript_less_session_at_active_priority(self):
+        """A JUST-CREATED session has no transcript, and its creator cannot declare it active — a
+        client can't post activeTab for a tab whose first payload hasn't arrived — so ranked last it
+        waited out the whole fleet's builds (~22s measured live), leaving "Opening session" dots on a
+        session that had been ready the whole time (the user 2026-08-08). Its build is near-free, so
+        it rides the ACTIVE tier and its payload streams at the top of the cycle."""
+        sent = []
+        saved = (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+                 km.build_timeline, km._send_client)
+        km._tmux_sessions = lambda: {}
+        p = str(self.tpath)
+        km._chat_tab_sessions = lambda now, tmux: [
+            {"sid": "A", "path": p},
+            {"sid": "NEW", "path": p + ".does-not-exist"},   # just created: nothing on disk yet
+            {"sid": "C", "path": p}]
+        km.build_session = lambda sid, now, tmux: {"id": sid, "name": sid, "color": None,
+                                                   "status": None, "ledger": None}
+        km.build_feed = lambda now, tmux: {"working": [], "asks": []}
+        km.build_timeline = lambda now, tmux: None
+        km._send_client = lambda c, key, msg, pre=None: sent.append((key, msg))
+        try:
+            km._push([{"app": "chat", "active": "C", "alive": True}])
+        finally:
+            (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+             km.build_timeline, km._send_client) = saved
+        chat_order = [key[1] for (key, _) in sent if key[0] == "chat"]
+        self.assertEqual(chat_order, ["NEW", "C", "A"],
+                         "the transcript-less session shares the active tier (stable within it)")
 
     def test_push_caches_unchanged_background_tabs_but_always_rebuilds_active(self):
         # the user 2026-06-24 (sluggish UI): the 0.5s pusher rebuilt EVERY open tab — a full transcript reshape

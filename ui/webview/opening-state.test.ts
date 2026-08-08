@@ -49,3 +49,12 @@ test("the MCP panel names a stale kernel instead of a raw parse error (the user 
   assert.match(RENDER, /this romp kernel predates the MCP panel — restart romp to update it/);
   assert.match(RENDER, /\(\(e && e\.message\) \|\| e\)/);
 });
+
+test("the pusher builds a transcript-less session at ACTIVE priority — its creator can't declare it yet", () => {
+  // A new session's payload took ~22s to reach the client that created it (the user 2026-08-08,
+  // round two: the dots outlived a fully-ready session): the active-first build hint can never name
+  // a JUST-CREATED sid, because a client cannot post activeTab for a tab whose first payload hasn't
+  // arrived. A transcript-less session's build is near-free, so it rides the top priority tier.
+  assert.ok(KERNEL.includes('build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active'));
+  assert.ok(KERNEL.includes('or not os.path.exists(s["path"]) else 1)'));
+});
