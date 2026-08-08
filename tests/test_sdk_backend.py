@@ -405,6 +405,72 @@ class LiveTail(unittest.TestCase):
         self.assertTrue(be.set_effort(sid, "low"))
         self.assertEqual(be.live_atoms(sid), [])
 
+    def _live_fast_session(self, d, sid):
+        """A constructed SdkSession whose thread READS alive (set_fast's gate) without spawning a CLI."""
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        s.thread = type("T", (), {"is_alive": lambda self: True})()
+        be.sessions[sid] = s
+        return be, s
+
+    def test_set_fast_delivers_the_slash_command_and_flips_optimistically(self):
+        """/fast is one of the slash commands the SDK input stream DOES interpret (its CLI descriptor is
+        marked supportsNonInteractive, unlike /model — see set_model's control-channel note). set_fast
+        therefore delivers the literal '/fast on' through the normal send path — the echo is the chat's
+        acknowledgement, the CLI's own confirmation follows — and flips the badge state optimistically;
+        fast_mode_state on the next init re-asserts the truth."""
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-888888888888"
+        be, s = self._live_fast_session(d, sid)
+        self.assertTrue(be.set_fast(sid, "on"))
+        self.assertEqual(s.pending(), ["/fast on"], "the literal command is queued for the CLI to interpret")
+        echoes = [a for a in be.live_atoms(sid) if a.get("_echo_text") == "/fast on"]
+        self.assertEqual(len(echoes), 1, "the send path's echo IS the chat acknowledgement")
+        self.assertEqual(s.fast, "on", "optimistic flip — init re-asserts")
+        self.assertEqual(s.snapshot()["fast"], "on", "the badge reads it from the snapshot")
+
+    def test_set_fast_refuses_bad_values_and_dormant_sessions(self):
+        # only on|off are /fast arguments; a dormant session has no live CLI to apply the toggle —
+        # refuse (the kernel is LOUD about it) rather than reviving a session as a click side effect.
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-999999999999"
+        be, s = self._live_fast_session(d, sid)
+        self.assertFalse(be.set_fast(sid, "maybe"))
+        self.assertEqual(s.pending(), [], "a bad value never reaches the CLI")
+        be2 = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        self.assertFalse(be2.set_fast("no-such-sid", "on"))
+
+    def test_init_reports_fast_mode_state_into_the_snapshot(self):
+        """fast_mode_state rides the CLI's init message ("on"/"off"/"cooldown", plus a disabled_reason
+        when the org/model can't use it) — the AUTHORITATIVE source behind the chat's fast badge. An
+        init WITHOUT the field (older CLI) must leave the state unknown, never fabricate "off"."""
+        import asyncio
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-aaaaaaaaaaaa"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        async def _noop(): pass
+        s._do_refresh_context = _noop
+        self.assertEqual(s.snapshot()["fast"], "", "unknown until an init lands → no badge")
+
+        async def run(data):
+            s._on_message(_Sys(data), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)                       # let the ensure_future'd refresh run
+        asyncio.run(run({"fast_mode_state": "on"}))
+        self.assertEqual(s.fast, "on")
+        self.assertEqual(s.snapshot()["fast"], "on")
+        self.assertEqual(s.snapshot()["fastReason"], "")
+        asyncio.run(run({"fast_mode_state": "off", "fast_mode_disabled_reason": "Fast mode is org-disabled"}))
+        self.assertEqual(s.fast, "off")
+        self.assertEqual(s.snapshot()["fastReason"], "Fast mode is org-disabled",
+                         "a disabled_reason rides along so the kernel can hide the toggle")
+        asyncio.run(run({}))                             # an init with no field → the last truth STANDS
+        self.assertEqual(s.fast, "off", "absent field never overwrites the known state")
+
     def test_send_echo_authors_a_romp_nudge_as_romp_not_human(self):
         # the bug (the user 2026-06-28): an auto-nudge sent through send() echoed as a BLUE HUMAN "Follow-up"
         # instead of the GRAY "from romp" auto-nudge it is, because the echo hardcoded author="human". The echo

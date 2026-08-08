@@ -107,6 +107,17 @@ ghostty --working-directory={dir}   # Linux: Ghostty
 code {dir}                          # VS Code instead
 ```
 
+### Fast mode, from the chat statusline
+
+The statusline's badges — permission mode, model, effort — are each a small
+dropdown. A fourth, **Fast**, appears when the session reports Claude Code's
+fast-mode state (an Opus-only research preview, billed at a premium). Picking
+On or Off sends the CLI's own `/fast` command; the badge reads the state the
+CLI reports — orange while on, and a cooldown label while fast requests are
+rate-limited — and never appears on a session that cannot run fast mode.
+Turning it on while the session is on a non-Opus model makes the CLI switch to
+a fast-capable one, which the chat shows as the command's own confirmation.
+
 ### Install-time switches
 
 For `./install.sh`:

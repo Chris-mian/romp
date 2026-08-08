@@ -3982,7 +3982,7 @@ def _drive(msg, client):
         return False
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
-              "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode",
+              "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode", "setFast",
               "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
@@ -4047,6 +4047,8 @@ def _drive(msg, client):
             _set_model_or_park(be, sid, cmd[len("/model "):].strip())   # mid-compaction → parked as a queued command
         elif cmd.startswith("/effort "):
             _set_effort_or_park(be, sid, cmd[len("/effort "):].strip())   # mid-compaction → parked as a queued command
+        elif cmd.startswith("/fast "):
+            _set_fast_or_park(be, sid, cmd[len("/fast "):].strip())   # mid-compaction → parked as a queued command
         else:
             _send_or_park(be, sid, cmd)   # mid-compaction → parked as a queued command
     elif t == "askFollowUp":
@@ -4219,6 +4221,14 @@ def _drive(msg, client):
         _set_model_or_park(be, sid, str(msg["value"])); _push_soon()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):
         _set_effort_or_park(be, sid, str(msg["value"])); _push_soon()   # tmux: /effort; SDK: reconnect with --effort; mid-compaction → parked
+    elif t == "setFast" and msg.get("value") in ("on", "off"):
+        # the chat's fast badge — /fast on|off delivered like any slash command; mid-compaction → parked.
+        # LOUD on refusal (fail loudly, never degrade silently): a dormant SDK session has no live CLI to
+        # apply it, and silently swallowing the click would leave a toggle that "did nothing".
+        if not _set_fast_or_park(be, sid, str(msg["value"])):
+            client["send"](json.dumps({"type": "warn",
+                                       "text": "Couldn't toggle fast mode — the session isn't connected right now."}))
+        _push_soon()
     elif t == "setMode" and msg.get("value"):
         be.set_mode(sid, str(msg["value"])); _push_soon()
     elif t == "stopTask" and msg.get("taskId"):
@@ -4670,6 +4680,12 @@ class TmuxBackend(sb.SessionBackend):
         _tmux_send(_name_of(sid) or sid, "/effort " + value)
         return True
 
+    def set_fast(self, sid, value):
+        if value not in ("on", "off"):
+            return False
+        _tmux_send(_name_of(sid) or sid, "/fast " + value)   # args form applies directly (no picker/confirm)
+        return True
+
     # lifecycle — tmux sessions are launched by bin/romp (not the kernel) and revived via romp-postal, so
     # spawn/resume aren't backend primitives here; the kernel uses _spawn_session/_revive_session for those.
     def spawn(self, name, cwd, bg="", fg="", sid=None):
@@ -4966,6 +4982,8 @@ class Sessions:
                                 "retryCount": int(st.get("retryCount") or 0),   # api_retry backoff attempts → the chat's "API retrying — attempt N…" element
                                 "retryInfo": st.get("retryInfo") or None,   # the attempt's detail (attempt/max, error, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
+                                "fast": st.get("fast", ""),   # fast-mode state from the CLI's init ("on"/"off"/"cooldown"; "" = unknown → no badge)
+                                "fastReason": st.get("fastReason", ""),   # init's disabled_reason — non-empty hides the chat toggle
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
                                 "subagents": st.get("subagents") or [],   # live Task subagents (SDK only) → lane pill
                                 # live BACKGROUND TASKS (the CLI's task lifecycle stream) — the awaiting
@@ -10174,7 +10192,7 @@ def _save_pending_ops():
         sys.stderr.write("pending-ops save: %s\n" % traceback.format_exc())
 
 
-_pending_ops = _load_pending_ops()   # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("compact",), …] in park order
+_pending_ops = _load_pending_ops()   # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("fast", v) | ("compact",), …] in park order
 
 
 def _compacting_now(sid):
@@ -10299,7 +10317,7 @@ def _park_op(sid, op):
     earlier parked op of the same kind IN PLACE — its queue position stands, its value updates — so the
     chat shows one "/model …" chip carrying the latest pick. Messages always append."""
     q = _pending_ops.setdefault(str(sid), [])
-    if op[0] in ("model", "effort"):
+    if op[0] in ("model", "effort", "fast"):
         for i, o in enumerate(q):
             if o[0] == op[0]:
                 q[i] = op
@@ -10448,6 +10466,18 @@ def _set_effort_or_park(be, sid, value):
         be.set_effort(sid, value)
 
 
+def _set_fast_or_park(be, sid, value):
+    """Apply a fast-mode toggle now — or park it while the session compacts, exactly like /model and
+    /effort (it is a slash command and must keep press order in the same FIFO). Returns the backend's
+    verdict so the caller can be loud when a live apply refuses (dormant SDK session)."""
+    if value not in ("on", "off"):
+        return False
+    if _ops_gate(sid):
+        _park_op(sid, ("fast", value))
+        return True
+    return be.set_fast(sid, value)
+
+
 def _deliver_send_batch(be, sid, run):
     """Deliver a run of consecutive parked ('send', text, echo) ops AT ONCE (the user 2026-07-17: a pile of
     queued messages should all go in together, not one turn each). A backend that forwards its own sends
@@ -10508,6 +10538,9 @@ def _apply_pending_ops():
                     ops.pop(0)
                 elif op[0] == "effort":
                     be.set_effort(sid, op[1])
+                    ops.pop(0)
+                elif op[0] == "fast":
+                    be.set_fast(sid, op[1])
                     ops.pop(0)
                 else:
                     ops.pop(0)                        # unknown op kind → drop, never wedge the queue
@@ -11751,6 +11784,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   "retryTries": _retry_gate_state(sid)[0] or None,
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
+                  # fast-mode badge (SDK sessions; the CLI's init reports on/off/cooldown, "" = unknown →
+                  # no badge — tmux stays "" until its statusline publishes a fast var). A non-empty
+                  # disabled_reason means /fast would refuse, so the chat hides the toggle.
+                  "fast": "" if tm.get("fastReason") else tm.get("fast", ""),
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
                   "effortPending": bool(tm.get("effortPending")),   # switching-dots on the effort badge while the /effort reconnect applies (SDK-only; the user 2026-07-06)
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
@@ -16030,7 +16067,7 @@ def _fleet_view_sig(now, tmux):
             pass
     for s in sorted(tmux):
         t = tmux[s]
-        sig["t:" + s] = (t.get("state"), t.get("model"), t.get("ctx"), t.get("effort"), t.get("mode"), t.get("since"))
+        sig["t:" + s] = (t.get("state"), t.get("model"), t.get("ctx"), t.get("effort"), t.get("mode"), t.get("fast"), t.get("since"))
     return tuple(sorted(sig.items()))
 
 

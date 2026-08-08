@@ -196,7 +196,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -6568,7 +6568,7 @@ function elapsedMs(sinceMs: number | null): string {
 // Each value is a little dropdown: picking an entry has the host inject the matching
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
-type MetaKind = "mode" | "model" | "effort";
+type MetaKind = "mode" | "model" | "effort" | "fast";
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
@@ -6587,6 +6587,22 @@ const MODE_CHOICES: { label: string; value: string }[] = [
   { label: "Auto", value: "auto" },
   { label: "Plan", value: "plan" },
 ];
+// Fast mode (the CLI's /fast — Opus-only research preview): a two-state toggle offered as the same
+// dropdown shape as the other badges. The badge exists only when the session REPORTS a fast state
+// (st.fast, from the SDK init's fast_mode_state) — a session that can't run it, or a tmux session
+// whose statusline doesn't publish it yet, shows no dead control.
+const FAST_CHOICES: { label: string; value: string }[] = [
+  { label: "On", value: "on" },
+  { label: "Off", value: "off" },
+];
+// the fast-mode state ("on"/"off"/"cooldown") → the badge label
+function prettyFast(f: string | undefined): string {
+  switch ((f || "").toLowerCase()) {
+    case "on": return "Fast on";
+    case "cooldown": return "Fast cooldown";   // rate-limited: the CLI resumes fast mode when the limit resets
+    default: return "Fast off";
+  }
+}
 // the @claude-permission-mode var → a short readable badge label
 function prettyMode(m: string | undefined): string {
   switch ((m || "").toLowerCase()) {
@@ -6599,17 +6615,18 @@ function prettyMode(m: string | undefined): string {
   }
 }
 const META_CHOICES: Record<MetaKind, { label: string; value: string }[]> = {
-  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES,
+  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES,
 };
 // the live value of a meta kind for the active session
 function metaCurrent(kind: MetaKind, st: Status): string {
-  return (kind === "model" ? st.model : kind === "effort" ? st.effort : st.mode) || "";
+  return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast : st.mode) || "";
 }
 
 // Is this menu entry the session's current value? Effort matches exactly; the
 // model var holds a display name ("Opus 4.8"), so match on the leading word.
 function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "effort") return (st.effort || "").toLowerCase() === value;
+  if (kind === "fast") return (st.fast || "").toLowerCase() === value;   // "cooldown" marks neither entry
   if (kind === "mode") {
     const m = (st.mode || "").toLowerCase();
     if (value === "default") return m === "" || m === "default" || m === "normal";
@@ -6653,6 +6670,7 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
   btn.appendChild(caret);
   btn.title = kind === "model" ? "change model (sends /model)"
     : kind === "effort" ? "change thinking effort (sends /effort)"
+    : kind === "fast" ? "toggle fast mode (sends /fast)"
     : "change permission mode (shift+tab cycle)";
   btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn); });
   return btn;
@@ -6661,6 +6679,9 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
 // The model/effort label tint, from the server-computed colormap RGB (by capability/effort rank, the user
 // 2026-07-02) — "" for mode (untinted) or an unknown model/effort, which resets to the default gray.
 function metaColor(kind: MetaKind, st: Status): string {
+  // fast ON wears the CLI's own fast-mode orange (--fast, a status color) so the badge reads the same
+  // here as in the Claude Code TUI; off/cooldown stay the default gray.
+  if (kind === "fast") return (st.fast || "").toLowerCase() === "on" ? "var(--fast)" : "";
   const c = kind === "model" ? st.modelColor : kind === "effort" ? st.effortColor : undefined;
   return (c && c.length === 3) ? `rgb(${c[0]},${c[1]},${c[2]})` : "";
 }
@@ -6668,18 +6689,20 @@ function metaColor(kind: MetaKind, st: Status): string {
 // Build or refresh the model/effort buttons inside #spinner-meta. Called from
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
 function syncMetaControls(meta: HTMLElement, st: Status) {
-  // order left→right: mode · model · effort — the mode selector sits LEFT of the model name (the user 2026-06-16)
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : ""].filter(Boolean).join();
+  // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name (the
+  // user 2026-06-16); fast is rightmost and exists only when the session reports a state (SDK init).
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
     if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode)));
     if (st.model) meta.appendChild(metaButton("model", st.model));
     if (st.effort) meta.appendChild(metaButton("effort", st.effort));
+    if (st.fast) meta.appendChild(metaButton("fast", prettyFast(st.fast)));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;
-    const disp = kind === "mode" ? prettyMode(st.mode) : metaCurrent(kind, st);
+    const disp = kind === "mode" ? prettyMode(st.mode) : kind === "fast" ? prettyFast(st.fast) : metaCurrent(kind, st);
     const label = b.querySelector(".meta-label") as HTMLElement | null;
     // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
     // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
@@ -6723,7 +6746,7 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
-        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : "setMode", id: activeId, value: c.value });
+        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: activeId, value: c.value });
         const was = metaCurrent(kind, s.status);
         metaPending.set(`${activeId}:${kind}`, { was, until: Date.now() + 20_000 });
         btn.classList.add("meta-pending");
