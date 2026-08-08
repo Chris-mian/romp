@@ -4981,6 +4981,7 @@ class Sessions:
                                 "effortPending": bool(st.get("effortPending")),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                                 "retryCount": int(st.get("retryCount") or 0),   # api_retry backoff attempts → the chat's "API retrying — attempt N…" element
                                 "retryInfo": st.get("retryInfo") or None,   # the attempt's detail (attempt/max, error, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
+                                "connected": bool(st.get("connected")),   # SDK handshake up → the opening-chip override stands down (fresh sessions have no transcript yet)
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "fast": st.get("fast", ""),   # fast-mode state from the CLI's init ("on"/"off"/"cooldown"; "" = unknown → no badge)
                                 "fastReason": st.get("fastReason", ""),   # init's disabled_reason — non-empty hides the chat toggle
@@ -11757,9 +11758,15 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         chip = _session_chip(sid, sess["path"], session, tm, now)   # THE shared derivation — identical to the timeline lane (the user 2026-07-03)
         # A session whose transcript DOESN'T EXIST YET is OPENING, whatever the snapshot claims (the
         # user 2026-08-05: a just-spawned tab said "Working" over a clock with no honest base). The
-        # transcript's first record is the deciding event: it lands, discover() sees it, and the normal
-        # derivation takes over. Never for an override render (a closed episode's path is historical).
-        if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]):
+        # deciding event is per-backend. tmux: the transcript's first record — the only observable —
+        # lands, discover() sees it, and the normal derivation takes over. SDK: the backend KNOWS the
+        # earlier designed event, the handshake (tm.connected) — a fresh SDK session writes NO
+        # transcript until its first turn, so keying its chip on the file left a fully-up, idle
+        # session wearing the opening dots until the user's first message, indefinitely (the user
+        # 2026-08-08, who read minutes of dots as creation still running). Never for an override
+        # render (a closed episode's path is historical).
+        if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]) \
+                and not tm.get("connected"):
             chip = "opening"
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API

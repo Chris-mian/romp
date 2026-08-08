@@ -2321,6 +2321,12 @@ class SdkSession:
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
                 "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
+                "connected": bool(self.client),   # the SDK handshake is up (set at connect, cleared at
+                #   teardown) — the "this session is OPEN" event for a transcript-less fresh session:
+                #   the kernel's opening-chip override stands down on it, so a new SDK session reads
+                #   ready the moment it can take a message instead of wearing the opening dots until
+                #   its first turn writes a transcript (the user 2026-08-08, whose fresh session sat
+                #   on animated dots for minutes while fully up)
                 "fast": self.fast,   # fast-mode state from init ("on"/"off"/"cooldown"; "" = unknown → no badge)
                 "fastReason": self.fast_reason,   # init's disabled_reason — non-empty hides the chat toggle
                 "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element

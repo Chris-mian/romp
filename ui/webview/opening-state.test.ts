@@ -15,8 +15,20 @@ const CSS = fs.readFileSync(path.join(ROOT, "ui", "webview", "styles.css"), "utf
 const KERNEL = fs.readFileSync(path.join(ROOT, "kernel", "kernel.py"), "utf8");
 
 test("the kernel reports OPENING while the transcript doesn't exist — never a working chip on a broken clock", () => {
-  assert.ok(KERNEL.includes('if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]):'));
+  assert.ok(KERNEL.includes('if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]) \\'));
+  assert.ok(KERNEL.includes('and not tm.get("connected"):'));
   assert.ok(KERNEL.includes('chip = "opening"'));
+});
+
+// The deciding event is per-backend (the user 2026-08-08, who read minutes of dots as creation still
+// running): a fresh SDK session writes NO transcript until its first turn, so keying its chip on the
+// file left a fully-up idle session on the opening dots indefinitely. The SDK handshake (snapshot
+// `connected`, set the moment the client context opens) stands the override down; tmux — whose only
+// observable IS the file — keeps the transcript's first record as its event.
+test("the SDK handshake ends OPENING before any transcript exists", () => {
+  const SDK = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "utf8");
+  assert.ok(SDK.includes('"connected": bool(self.client)'), "the snapshot carries the handshake event");
+  assert.ok(KERNEL.includes('"connected": bool(st.get("connected"))'), "the live merge threads it through");
 });
 
 test("the statusline shows Opening + dots for BOTH the pre-payload tab and the kernel's opening state", () => {
