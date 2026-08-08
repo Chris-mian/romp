@@ -47,6 +47,7 @@ const webview = {
     "../ui/webview/gear.css",            // the settings modal (linked by the kernel feed page + VS Code chat/feed)
     "../ui/webview/federation.ts",   // multi-kernel manager: loaded after the shim on chat/feed/fleet pages
     "../ui/webview/age-color-global.ts",   // window.__rompAgeColor for the kernel's inline shell scripts (bell panel)
+    "../ui/webview/palette-main.ts",   // command palette + Cmd/Ctrl+O/P hotkeys for the kernel's shell page
   ],
   nodePaths: [path.join(__dirname, "node_modules")],
   bundle: true,

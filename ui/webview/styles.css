@@ -1736,7 +1736,7 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 /* ---------- session picker overlay (colored, Claude-Code-history style) ---------- */
 .picker-overlay {
   position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.55);   /* the one modal dim — same as the shell's network/Log/palette backdrops */
   display: none; align-items: flex-start; justify-content: center;
   z-index: 1000; padding: 56px 16px 16px;
 }
@@ -1757,6 +1757,7 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    timeline and feed, which is why the picker read as the chat expanded to full screen instead of as a
    dialog. `visibility` (not display) so nothing reflows: layout is untouched, and the chat is exactly
    where it was when the picker closes. */
+html.picker-lifted { background: transparent !important; }   /* THEME_CSS paints html AND body — both must step aside */
 body.picker-lifted { background: transparent !important; }
 body.picker-lifted > * { visibility: hidden; }
 body.picker-lifted > #picker { visibility: visible; }

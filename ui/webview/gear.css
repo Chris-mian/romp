@@ -12,8 +12,8 @@
 /* The settings panel is a full-screen MODAL (the user 2026-06-23): #rsettings is the backdrop
    (the web shell expands the feed iframe to the whole window first — _LANDING_SETTINGS_JS;
    the VS Code feed panel already fills its group), .rs-card the roomy centered card. */
-#rsettings { position: fixed; inset: 0; z-index: 60; background: #0000009c; display: flex; align-items: flex-start;
-  justify-content: center; overflow: auto; padding: 6vh 16px; box-sizing: border-box; }
+#rsettings { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start;
+  justify-content: center; overflow: auto; padding: 6vh 16px; box-sizing: border-box; }   /* the one modal dim */
 #rsettings[hidden] { display: none; }
 /* while open: the feed goes transparent + hides its own content, so (in the web shell) the
    full-window iframe shows the dashboard's panes through it — not the feed cards. */
