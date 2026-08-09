@@ -11447,6 +11447,7 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             _e = efforts[_ei]; _ei += 1
             events.append({"kind": "effortApplied", "effort": _e["effort"], "ts": iso(_e["t"]),
                            "uuid": "effort:%d" % _e["t"]})
+    _pl_memo = {}   # per-BUILD-pass cache for _path_links: one repo listing serves every message here
     for turn in session["turns"]:
         for a in turn["atoms"]:
             t = a.get("t"); ts = iso(t) if t else None
@@ -11515,6 +11516,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                             sp = _space_paths(prompt, sid, a.get("uuid"))
                             if sp:
                                 ev["spacePaths"] = sp   # backticked filenames WITH spaces, filesystem-verified → whole-span links
+                            pl = _path_links(prompt, sid, a.get("uuid"), _pl_memo)
+                            if pl is not None:
+                                ev["pathLinks"] = pl    # path-shaped tokens, filesystem-verified/fixed → the client's link gate
                             if reminders:                # join each task-notification to its command + output tail
                                 to = _task_outputs_for(reminders, sess["path"])
                                 if to:
@@ -11592,6 +11596,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                         sp = _space_paths(txt, sid, a.get("uuid"))
                         if sp:
                             ev["spacePaths"] = sp   # backticked filenames WITH spaces, filesystem-verified → whole-span links
+                        pl = _path_links(txt, sid, a.get("uuid"), _pl_memo)
+                        if pl is not None:
+                            ev["pathLinks"] = pl    # path-shaped tokens, filesystem-verified/fixed → the client's link gate
                         if _interrupt_settle(events, txt, a):   # the null settle-reply closing an interrupted
                             ev["interruptSettle"] = True        # turn → rendered as seam marker, not a bubble
                         events.append(ev)
@@ -16025,6 +16032,125 @@ def _space_paths(md, sid, uuid):
             _SPACE_PATH_CACHE.clear()
         _SPACE_PATH_CACHE[key] = hit = tuple(out)
     return list(hit) or None
+
+
+# ── verified path links ────────────────────────────────────────────────────────────────────────────
+# The chat linkifies path-shaped tokens by SHAPE alone (render.ts CLICKABLE_PATH_RE), so a bare
+# `render.js` in a reply became a blue link that 404'd on click — the token resolved against the
+# session's cwd, where no such file lives. The kernel is the machine that HAS the filesystem, so it
+# verifies at message-build time and, when a shortened mention names exactly one real file, FIXES the
+# link to that file. Three tiers, first hit wins:
+#   1. exact — the token resolves like a click (_resolve_open_path) to a real file;
+#   2. suffix — the token has a slash and exactly ONE repo file ends with "/" + token;
+#   3. basename — the token has no slash and exactly ONE repo file bears that name.
+# Zero matches or several → the token stays OUT of the map, and the client leaves it prose: a
+# silently-wrong link is worse than no link, so ambiguity is never guessed at.
+# The repo list is `git ls-files -co --exclude-standard` in the SESSION's cwd (each session may be a
+# different repo), re-run per build pass — ~6ms here, and any mtime-keyed cache would miss the
+# untracked files agents create constantly. Ignored files are deliberately invisible to tiers 2/3.
+_PATH_TOKEN_RE = re.compile(          # Python port of render.ts CLICKABLE_PATH_RE — parity pinned in
+    r"file:///?[^\s<>\"'`)]+"         #   tests/test_path_links.py + chat-path-links.test.ts over the
+    r"|[~.\w\-]*/[~.\w\-/]*[\w\-]"    #   shared tests/fixtures/path_token_parity.json
+    r"|[\w\-][\w\-.]*\.[A-Za-z0-9]{1,8}",
+    re.IGNORECASE)
+_PATH_TRAIL_RE = re.compile(r"[.,;:!?)\]}>\"'`]+$")   # the client's trailing-punctuation strip, mirrored
+_REPO_LIST_MAX = 200_000              # a runaway listing skips tiers 2/3 rather than indexing forever
+_PATH_LINK_CACHE = {}                 # (sid, uuid) -> (links dict, misses tuple) — see _path_links
+
+
+def _repo_file_index(cwd):
+    """basename -> [repo-relative paths] for every tracked or untracked-unignored file under `cwd`,
+    or None when there is no list to be had (not a git repo, git absent/failing, or a listing past
+    _REPO_LIST_MAX). None means tiers 2/3 stand down for this build; tier 1 needs no list."""
+    try:
+        out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"],
+                             cwd=cwd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    if out.returncode != 0:
+        return None
+    names = set(out.stdout.splitlines())   # a set: an index/worktree duplicate must not fake ambiguity
+    if len(names) > _REPO_LIST_MAX:
+        return None
+    idx = {}
+    for p in names:
+        idx.setdefault(p.rsplit("/", 1)[-1], []).append(p)
+    return idx
+
+
+def _resolve_path_token(tok, sid, memo):
+    """One shape-matched token → the file it names (the open target), or None. Tier 1 keeps the token
+    as its own target (a click already resolves it against the session's cwd); tiers 2/3 return the
+    repo-relative path from the file list, which the same click-time resolution reaches. `memo` is the
+    per-build cache — the file index is built at most once per build pass, and only when some token
+    actually misses tier 1."""
+    ap = _resolve_open_path(tok, sid)
+    if os.path.isabs(ap) and os.path.isfile(ap):
+        return tok                                        # tier 1 — exact, exactly today's click
+    cwd = _cwd_of(sid)
+    if not cwd:
+        return None                                       # nowhere to resolve a repo-relative fix
+    if "idx" not in memo:
+        memo["idx"] = _repo_file_index(cwd)
+    idx = memo["idx"]
+    if idx is None:
+        return None
+    cands = idx.get(tok.rsplit("/", 1)[-1]) or []
+    if "/" in tok:                                        # tier 2 — unique suffix fixes a shortened path
+        cands = [p for p in cands if p == tok or p.endswith("/" + tok)]
+    if len(cands) == 1 and os.path.isfile(os.path.join(cwd, cands[0])):
+        return cands[0]                                   # tier 3 is the no-slash case of the same test
+    return None
+
+
+def _path_tokens(md):
+    """CLICKABLE_PATH_RE's matches over `md`, trailing punctuation stripped, deduped — the exact token
+    strings the client will look up in pathLinks. Resumes after the STRIPPED token, as the client's
+    exec loop does. Parity with the client regex is pinned over tests/fixtures/path_token_parity.json
+    (tests/test_path_links.py here, chat-path-links.test.ts there)."""
+    toks, pos = [], 0
+    while True:
+        m = _PATH_TOKEN_RE.search(md, pos)
+        if not m:
+            break
+        tok = _PATH_TRAIL_RE.sub("", m.group(0))
+        pos = max(m.start() + len(tok), pos + 1)
+        if tok and tok not in toks:
+            toks.append(tok)
+    return toks
+
+
+def _path_links(md, sid, uuid, memo):
+    """Path-shaped tokens in `md` the filesystem VERIFIES → {token: open target}, shipped as pathLinks
+    on the chat event. Returns None when the message has no candidate tokens at all (the common message
+    adds no payload); an EMPTY dict when tokens exist but none resolved — the key's presence is what
+    tells the client a verdict was rendered, so it gates rather than falling back to shape-only.
+
+    The cache is deliberately ASYMMETRIC: a resolved token is cached for the message's life — a link
+    never flaps away — while an unresolved one is retried on every build, because the standard agent
+    flow mentions `report.md` moments BEFORE creating it, and the Write that creates it triggers the
+    very rebuild that should turn the mention into a link."""
+    if not uuid or not md:
+        return None
+    key = (sid, uuid)
+    hit = _PATH_LINK_CACHE.get(key)
+    if hit is None:
+        hit = ({}, tuple(t for t in _path_tokens(md)
+                         if not t.lower().startswith("file://")))   # file:// stays the client's verbatim link, ungated
+    links, misses = hit
+    if misses:
+        still = []
+        for tok in misses:
+            r = _resolve_path_token(tok, sid, memo)
+            if r is None:
+                still.append(tok)
+            else:
+                links[tok] = r
+        misses = tuple(still)
+    if len(_PATH_LINK_CACHE) > 50000:                     # runaway backstop; one entry per rendered message
+        _PATH_LINK_CACHE.clear()
+    _PATH_LINK_CACHE[key] = (links, misses)
+    return dict(links) if (links or misses) else None
 
 
 def _open_file(p, sid=None):

@@ -1,0 +1,17 @@
+{
+  "note": "Shared tokenizer-parity fixture: the kernel's _path_tokens (Python port of CLICKABLE_PATH_RE, trailing punctuation stripped, deduped) and the client regex extracted from render.ts must produce EXACTLY these tokens for each text. Tokens here are pre-gate: prose like and/or is a TOKEN on both sides (the shape gates and the pathLinks map are what keep it prose). pd.DataFram pins the {1,8} extension cap behaving identically. Synthetic paths only.",
+  "cases": [
+    { "text": "see design/foo.md for details", "tokens": ["design/foo.md"] },
+    { "text": "the fix is in ui/webview/render.ts and kernel/kernel.py.", "tokens": ["ui/webview/render.ts", "kernel/kernel.py"] },
+    { "text": "wrote report.md, then plot.png!", "tokens": ["report.md", "plot.png"] },
+    { "text": "and/or read/write 24/7 TCP/IP", "tokens": ["and/or", "read/write", "24/7", "TCP/IP"] },
+    { "text": "np.array and pd.DataFrame are not files, e.g. this", "tokens": ["np.array", "pd.DataFram", "e.g"] },
+    { "text": "file:///tmp/a%20b.pdf, plus ~/notes/plan.md and ./x.py ../y.ts /abs/z.log", "tokens": ["file:///tmp/a%20b.pdf", "~/notes/plan.md", "./x.py", "../y.ts", "/abs/z.log"] },
+    { "text": "(see src/util/helpers.py):", "tokens": ["src/util/helpers.py"] },
+    { "text": "backticked `render.js` should resolve", "tokens": ["render.js"] },
+    { "text": "version 0.4.293 and 24/7 uptime", "tokens": ["0.4.293", "24/7"] },
+    { "text": "results in output/final report.md maybe", "tokens": ["output/final", "report.md"] },
+    { "text": "report.md twice: report.md is deduped", "tokens": ["report.md"] },
+    { "text": "no paths here at all", "tokens": [] }
+  ]
+}

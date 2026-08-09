@@ -17,7 +17,9 @@ test("the linkifier matches file:// URIs AND bare paths, and gates each token ki
   assert.ok(RENDER.includes("const CLICKABLE_PATH_RE = /file:"), "regex still handles file:// URIs");
   assert.ok(RENDER.includes("[~.\\w\\-]"), "regex has the slashed-path alternative");
   assert.match(RENDER, /if \(!isUri && !looksLikeFilePath\(tok\) && !\(inCode && looksLikeBareFileName\(tok\)\)\) continue;/);
-  assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, tok, true\)\);/);
+  // the kernel's pathLinks verdict then narrows further, and its value is the OPEN target — pinned
+  // in chat-path-links.test.ts; here we pin that the link opens `open`, whatever chose it
+  assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, open, true\)\);/);
 });
 
 test("a relative path click carries the active session id so the kernel resolves against its cwd", () => {

@@ -73,8 +73,8 @@ type TaskOutputs = Record<string, { command: string; output: string }>;
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[] }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[] }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string> }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -964,7 +964,15 @@ const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|
 // `Moving from correlation to causal components.md` linkified only its last word. For exactly these
 // verified spans, the whole inline-code content becomes ONE link; the filesystem is the authority, so a
 // backticked command like `uv run pytest tests/x.py` (no such file) is never mislinked.
-function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[]): void {
+// `pathLinks`: the kernel's verdict on every path-shaped token in this message (build_session's
+// _path_links — tier 1 exact stat, tiers 2/3 a unique repo-list match that FIXES a shortened mention
+// to its real file). When the key is present, a token links ONLY if it's in the map, and it opens the
+// map's value — so `render.js` in prose stops 404ing, and hover shows the real target. Every shape
+// gate below still applies; the map only ever narrows. An event with NO pathLinks key at all (an old
+// kernel, a cached payload) keeps today's shape-only linking rather than unlinking history.
+// file:// URIs are explicit absolute paths — never gated on the map.
+function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
+                         pathLinks?: Record<string, string>): void {
   const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
   if (spacePaths && spacePaths.length) {
     const verified = new Set(spacePaths);
@@ -996,9 +1004,11 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
       if (!tok) continue;
       const isUri = /^file:\/\//i.test(tok);
       if (!isUri && !looksLikeFilePath(tok) && !(inCode && looksLikeBareFileName(tok))) continue;   // "and/or", `np.array` etc. — leave as prose
+      const fixed = !isUri && pathLinks ? pathLinks[tok] : undefined;   // the kernel's verdict, when it rendered one
+      if (!isUri && pathLinks && typeof fixed !== "string") continue;   // checked against the filesystem: no such file (or several) → prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, tok, true));
-      const open = isUri ? fileUriToPath(tok) : tok;
+      const open = isUri ? fileUriToPath(tok) : (fixed ?? tok);
+      frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, open, true));
       if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) previewable.push(open);
       last = m.index + tok.length;
       re.lastIndex = last;
@@ -1682,7 +1692,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths, ev.spacePaths);
+          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
           // toggle rides the stable document.body delegate (data-act), NOT a per-render listener —
@@ -1695,7 +1705,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         }
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
-        linkifyFileUris(bubble, imgPaths, ev.spacePaths);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks);   // bare file:// URLs in a message → clickable (open in the host's default app)
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
@@ -1834,7 +1844,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body, undefined, ev.spacePaths);   // bare file:// URLs + verified spaced filenames → clickable
+    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks);   // bare file:// URLs + verified spaced filenames → clickable
     turn.appendChild(body);
     return turn;
   }
