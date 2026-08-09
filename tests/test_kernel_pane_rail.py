@@ -167,17 +167,17 @@ class PaneRailTest(unittest.TestCase):
         # folded into settings (the user 2026-06-30): no standalone ? modal in the shell anymore
         self.assertNotIn("id=rhelp-overlay", self.html)
         self.assertNotIn("id=rail-help", self.html)
-        # the shortcuts render as a section in the feed's settings modal — a flat verified list, keys in <kbd>
-        # the modal lives in the feed BUNDLE now (ui/webview/gear.js, 2026-07-13)
+        # the section is a LINK now (the user 2026-08-09): the configurable shortcuts dialog
+        # (ui/webview/shortcuts-modal.ts) is the one home for the whole list — record, conflicts,
+        # reset — and the gear row just opens it (VS Code's row points at its own keybindings editor
+        # instead). The old static list is gone with its stale-per-surface copies, Enter row first.
         import pathlib
         gear = (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()
         self.assertIn(">Keyboard shortcuts</div>", gear)
-        self.assertIn("class=rs-key", gear)
-        self.assertIn("<kbd>Enter</kbd>", gear)
-        self.assertIn("Send message", gear)
-        self.assertIn("Interrupt the session", gear)
-        self.assertIn("Switch session (from the tabs)", gear)
-        self.assertIn("Jump to the session tabs", gear)
+        self.assertIn("Customize shortcuts…", gear)
+        self.assertIn("'openKeys'", gear)
+        self.assertNotIn("Send message", gear, "the Enter row is gone — a typing key nobody looks up")
+        self.assertNotIn("<kbd>Enter</kbd>", gear)
         self.assertNotIn("Slash-command menu", gear)
         self.assertNotIn("Question picker", gear)
 

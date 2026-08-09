@@ -5,7 +5,7 @@
 // lives in the SHELL document, so like the network panel it composites over the real panes:
 // one centered card, the standard 0.55 dim, and the dashboard unchanged behind it (the one
 // modal treatment, the user 2026-08-08).
-import { commandList } from "./commands";
+import { commandList, PaletteCommand } from "./commands";
 import { fuzzyMatch, FuzzyHit, FuzzyRange } from "./fuzzy";
 
 // One row of a pick list. Commands map onto this 1:1; session rows wear the TAB's identity
@@ -68,7 +68,10 @@ export type Palette = {
   isOpen(): boolean;
 };
 
-export function initPalette(opts?: { onClose?: () => void }, doc: Document = document): Palette {
+// kbdFor computes a command's hotkey chip at OPEN time from the live keybindings store, so the
+// palette always shows what the key actually does today, never a hardcoded default (the user
+// 2026-08-09, with the configurable shortcuts).
+export function initPalette(opts?: { onClose?: () => void; kbdFor?: (c: PaletteCommand) => string | undefined }, doc: Document = document): Palette {
   let back: HTMLElement | null = null;
   let input: HTMLInputElement;
   let list: HTMLElement;
@@ -235,7 +238,9 @@ export function initPalette(opts?: { onClose?: () => void }, doc: Document = doc
   function open(): void {
     openPick({
       placeholder: "Type a command…",
-      items: commandList().map((c) => ({ title: c.title, kbd: c.kbd, run: c.run })),
+      // hidden commands are bindable but not listed (palette.toggle from the palette just blinks it)
+      items: commandList().filter((c) => !c.hidden)
+        .map((c) => ({ title: c.title, kbd: opts && opts.kbdFor ? opts.kbdFor(c) : undefined, run: c.run })),
     });
   }
   function close(): void {

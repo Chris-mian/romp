@@ -133,6 +133,17 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   assert.ok(usageJS.includes("'<div class=ru-tip-age>click to refresh</div>'"));
 });
 
+test("the hover names WHICH login the window bars belong to (the tab hover's label)", () => {
+  // the user 2026-08-09: the usage tip says whose account the windows are, like the tab hover;
+  // the cross-host dedup stays on the opaque acct digest — acctLabel is display only
+  const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
+  assert.ok(usageJS.includes("if(u.acctLabel)det._acct=u.acctLabel;"));
+  assert.ok(usageJS.includes("if(d._acct&&keys.length)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';"),
+    "…and only beside actual window sections — key-only hosts' spend already says whose dollars");
+  assert.ok(KERNEL.includes('"acctLabel": _claude_account_label(),'));
+  assert.ok(KERNEL.includes(".ru-tip-acct{"));
+});
+
 test("a multi-host breakdown lays hosts SIDE BY SIDE, one column each", () => {
   // the user 2026-08-09: the per-host breakdown used to stack every host into one tall pillar;
   // now each host is a flex column, and flex-wrap folds the mobile modal back to a stack on its own

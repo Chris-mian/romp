@@ -55,12 +55,23 @@ test("session rows wear the TAB identity language: bold name in the session colo
   assert.match(STYLES, /\.host-prefix \{ color: var\(--dim\); font-weight: 400; font-style: italic; font-size: 0\.88em; \}/);
 });
 
-// ── the shell boot: three combos, wired into every pane ────────────────────────────────────
-test("Cmd/Ctrl+O = jump switcher, +Shift = new-session picker, Cmd/Ctrl+P = palette (Shift+P left alone)", () => {
-  assert.match(MAIN, /if \(!\(e\.metaKey \|\| e\.ctrlKey\) \|\| e\.altKey \|\| e\.repeat\) return;/);
-  assert.match(MAIN, /if \(e\.shiftKey\) openNewSessionPicker\(\); else openSessionSwitcher\(\);/);
-  assert.match(MAIN, /k === "p" && !e\.shiftKey/);
-  assert.match(MAIN, /e\.preventDefault\(\); e\.stopPropagation\(\);[\s\S]*?palette\.toggle\(\);/);
+// ── the shell boot: the bindings dispatcher, wired into every pane ─────────────────────────
+test("the defaults hold — Mod+O jump, Mod+Shift+O picker, Mod+P palette — through the bindings store", () => {
+  // the chords are DEFAULTS on the commands now (the user 2026-08-09, configurable shortcuts):
+  // one dispatcher resolves keydown → chord → command through the user's overrides
+  assert.match(MAIN, /registerCommand\(\{ id: "session\.jump", title: "Jump to a session", chord: "Mod\+O", run: openSessionSwitcher \}\);/);
+  assert.match(MAIN, /registerCommand\(\{ id: "session\.new", title: "New session", chord: "Mod\+Shift\+O", run: openNewSessionPicker \}\);/);
+  // the palette toggle is itself bindable, hidden from its own list; Cmd+Shift+P stays the browser's
+  assert.match(MAIN, /id: "palette\.toggle", title: "Command palette", chord: "Mod\+P", hidden: true/);
+  assert.match(MAIN, /if \(!dispatchable\(e, isTyping\(e\.target\)\)\) return;/);
+  assert.match(MAIN, /byChord = chordMap\(commandList\(\), loadOverrides\(\), mac\);/);
+  assert.match(MAIN, /e\.preventDefault\(\); e\.stopPropagation\(\);\s*\n\s*palette\.close\(\);.*\n\s*runCommand\(id\);/);
+  // a store change (this document or another tab) rebuilds the chord map on the next keydown
+  assert.match(MAIN, /window\.addEventListener\(KEYS_EVENT, invalidate\);/);
+  assert.match(MAIN, /window\.addEventListener\("storage", invalidate\);/);
+  // …and the palette chips show the EFFECTIVE binding, never a stale default
+  assert.match(MAIN, /kbdFor: \(c\) => \{ const ch = effectiveChord\(c\.id, c\.chord, loadOverrides\(\), mac\); return ch \? displayChord\(ch, mac\) : undefined; \}/);
+  assert.match(PALETTE, /commandList\(\)\.filter\(\(c\) => !c\.hidden\)/);
 });
 
 test("key wiring mirrors the Alt+Arrow pane nav: capture on the shell doc AND every pane doc, re-wired on load", () => {
@@ -143,6 +154,9 @@ test("picker lift pins the body to the pane's old rect and keeps painting; hidde
   assert.match(CSS, /body\.picker-lifted \{\s*\n\s*position: fixed;\s*\n\s*left: var\(--pane-x, 0\); top: var\(--pane-y, 0\);/);
   assert.match(CSS, /body\.picker-lifted\.pane-gone > \* \{ visibility: hidden; \}/);
   assert.match(CSS, /body\.picker-lifted\.pane-gone > #picker \{ visibility: visible; \}/);
+  // the gone-fallback box is TRANSPARENT: with no --pane-* vars it spans the viewport, and painted
+  // --bg it would black out every pane behind the dialog (the settings modal's 2026-08-09 bug)
+  assert.match(CSS, /body\.picker-lifted\.pane-gone \{ background: transparent; \}/);
 });
 
 test("settings lift does the same via rs-lifted / rs-pane-gone", () => {
@@ -150,6 +164,15 @@ test("settings lift does the same via rs-lifted / rs-pane-gone", () => {
   assert.match(GEAR, /getElementById\('feed-pane'\)/);
   assert.match(GEAR_CSS, /body\.rs-lifted \{ position: fixed; left: var\(--pane-x, 0\); top: var\(--pane-y, 0\);/);
   assert.match(GEAR_CSS, /body\.rs-pane-gone #feed-head, body\.rs-pane-gone #feed-list, body\.rs-pane-gone #feed-foot \{ visibility: hidden; \}/);
+  // the 2026-08-09 blackout, pinned shut three ways: the gone-fallback sheet is transparent (never
+  // an opaque full-viewport cover over the chat)…
+  assert.match(GEAR_CSS, /body\.rs-lifted\.rs-pane-gone \{ background: transparent; \}/);
+  // …the shell is signalled BEFORE the first measurement (feedFull un-hides #feed-pane; measuring
+  // first burned the whole retry against a display:none pane)…
+  assert.match(GEAR, /p\.hidden = false; feedFull\(true\); setModalCls\(true\);/);
+  // …and a close clears the measured rect, so the next open can't inherit a stale one
+  assert.match(GEAR, /function clearPaneVars\(\)/);
+  assert.match(GEAR, /clearPaneVars\(\);\s*\n\s*window\.removeEventListener\('resize', onRsResize\);/);
 });
 
 test("overlay dims are the one standard 0.55", () => {
@@ -157,9 +180,10 @@ test("overlay dims are the one standard 0.55", () => {
   assert.match(GEAR_CSS, /#rsettings \{ position: fixed; inset: 0; z-index: 60; background: rgba\(0, 0, 0, 0\.55\);/);
 });
 
-// ── discoverability: the settings' shortcut list names all three hotkeys ───────────────────
-test("the gear's shortcut rows document Cmd/Ctrl+O, Cmd/Ctrl+Shift+O and Cmd/Ctrl+P", () => {
-  assert.match(GEAR, /<kbd>⌘\/Ctrl<\/kbd> \+ <kbd>O<\/kbd>[\s\S]*?Jump to a session \(quick switcher\)/);
-  assert.match(GEAR, /<kbd>⌘\/Ctrl<\/kbd> \+ <kbd>Shift<\/kbd> \+ <kbd>O<\/kbd>[\s\S]*?New session picker/);
-  assert.match(GEAR, /<kbd>⌘\/Ctrl<\/kbd> \+ <kbd>P<\/kbd>[\s\S]*?Command palette/);
+// ── discoverability: the settings section links the shortcuts dialog (the static list is gone) ──
+test("the gear links the shortcuts dialog instead of carrying its own stale list", () => {
+  assert.match(GEAR, /Customize shortcuts…/);
+  assert.match(GEAR, /\{ romp: 'openKeys' \}/);
+  assert.doesNotMatch(GEAR, /quick switcher/);
+  assert.doesNotMatch(GEAR, /<kbd>⌘\/Ctrl<\/kbd>/);
 });

@@ -6,8 +6,10 @@
 // host). Cmd/Ctrl+P toggles the command palette. All three combos are claimable by a page
 // (Google Docs and Figma take Cmd+O/Cmd+P), the override lasts only while this tab has
 // focus, and the window/tab-management set (Cmd+W/T/N/L/Q) stays untouched.
-import { registerCommand } from "./commands";
+import { registerCommand, runCommand, commandList } from "./commands";
 import { initPalette, PickItem } from "./palette";
+import { initShortcutsModal } from "./shortcuts-modal";
+import { chordMap, chordOf, dispatchable, displayChord, effectiveChord, loadOverrides, KEYS_EVENT } from "./keybindings";
 import { hostPrefix } from "./host-prefix";   // pure display helper — safe here (never federation.ts, which boots a manager on import)
 
 type SessionRow = { id: string; name: string; dir: string; bg: string };
@@ -19,7 +21,6 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   if (window.parent && window.parent !== window) return;
   const w = window as any;
   const mac = /Mac|iP(hone|ad|od)/.test(navigator.platform || "");
-  const mod = mac ? "⌘" : "Ctrl+";
 
   function pane(id: string): HTMLIFrameElement | null {
     return document.getElementById(id) as HTMLIFrameElement | null;
@@ -96,8 +97,8 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   // ── the dashboard's actions, registered as commands ──────────────────────────────────────
   // Each calls the SAME code path its rail button uses; the palette adds reachability, not
   // behavior.
-  registerCommand({ id: "session.jump", title: "Jump to a session", kbd: mod + "O", run: openSessionSwitcher });
-  registerCommand({ id: "session.new", title: "New session", kbd: mod + (mac ? "⇧O" : "Shift+O"), run: openNewSessionPicker });
+  registerCommand({ id: "session.jump", title: "Jump to a session", chord: "Mod+O", run: openSessionSwitcher });
+  registerCommand({ id: "session.new", title: "New session", chord: "Mod+Shift+O", run: openNewSessionPicker });
   registerCommand({
     id: "settings.open", title: "Open settings",
     run: () => { try { pane("f-feed")!.contentWindow!.postMessage({ romp: "openSettings" }, "*"); } catch (e) { /* feed not loaded */ } },
@@ -117,21 +118,50 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   }
 
   // Esc (or running an item) hands focus back to the chat pane, so "palette, Esc, type"
-  // never strands the keyboard on the shell document.
-  const palette = initPalette({ onClose: () => { try { pane("f-chat")!.contentWindow!.focus(); } catch (e) { /* no chat pane */ } } });
+  // never strands the keyboard on the shell document. The palette's hotkey chips show each
+  // command's EFFECTIVE binding (kbdFor), so a rebound command never advertises a stale default.
+  const palette = initPalette({
+    onClose: () => { try { pane("f-chat")!.contentWindow!.focus(); } catch (e) { /* no chat pane */ } },
+    kbdFor: (c) => { const ch = effectiveChord(c.id, c.chord, loadOverrides(), mac); return ch ? displayChord(ch, mac) : undefined; },
+  });
   w.__rompPalette = palette;   // reachable by other shell scripts (e.g. a future mobile-bar button)
 
+  // The palette toggle is itself a bindable command — hidden from the palette's own list (running
+  // "toggle the palette" from the palette would just blink it). Cmd+Shift+P deliberately stays
+  // unbound: it is the browser's / VS Code's own palette.
+  registerCommand({ id: "palette.toggle", title: "Command palette", chord: "Mod+P", hidden: true, run: () => palette.toggle() });
+
+  // The shortcuts dialog: every command above, rebindable — VS Code's grammar, the browser's home
+  // (the user 2026-08-09). Reachable from the palette, the gear's customize link ({romp:'openKeys'}
+  // from the feed iframe), and the shell Escape chain closes it first (topmost, z300).
+  const keys = initShortcutsModal(mac);
+  registerCommand({ id: "keys.open", title: "Keyboard shortcuts", run: () => keys.open() });
+  w.__rompKeysOpen = () => keys.open();
+  w.__rompKeysClose = () => keys.close();   // false when not open — the Escape chain moves on
+  window.addEventListener("message", (e) => { if (e.data && e.data.romp === "openKeys") keys.open(); });
+
+  // ONE dispatcher for every bound chord, rebuilt lazily when the store changes (KEYS_EVENT from
+  // this document's saves, `storage` from another tab's).
+  let byChord: Map<string, string> | null = null;
+  const invalidate = () => { byChord = null; };
+  window.addEventListener(KEYS_EVENT, invalidate);
+  window.addEventListener("storage", invalidate);
+  function isTyping(t: EventTarget | null): boolean {
+    const el = t as HTMLElement | null;
+    if (!el || !el.closest) return false;
+    return !!el.closest("input, textarea, select, [contenteditable=true]");
+  }
   function onKey(e: KeyboardEvent): void {
-    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.repeat) return;
-    const k = (e.key || "").toLowerCase();
-    if (k === "o") {
-      e.preventDefault(); e.stopPropagation();
-      palette.close();
-      if (e.shiftKey) openNewSessionPicker(); else openSessionSwitcher();
-    } else if (k === "p" && !e.shiftKey) {   // Cmd+Shift+P stays the browser's / VS Code's
-      e.preventDefault(); e.stopPropagation();
-      palette.toggle();
-    }
+    if (keys.isOpen()) return;                    // the dialog is recording/browsing — never dispatch under it
+    if (!dispatchable(e, isTyping(e.target))) return;
+    const ch = chordOf(e);
+    if (!ch) return;
+    if (!byChord) byChord = chordMap(commandList(), loadOverrides(), mac);
+    const id = byChord.get(ch);
+    if (!id) return;
+    e.preventDefault(); e.stopPropagation();
+    palette.close();                              // a command fired by key must not land under an open palette
+    runCommand(id);
   }
   // The same dual wiring as the Alt+Arrow pane nav (_LANDING_FOCUS_JS): capture on the shell
   // document AND on every same-origin pane document, re-attached on every iframe (re)load.

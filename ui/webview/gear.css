@@ -24,9 +24,14 @@
 body.rs-lifted { position: fixed; left: var(--pane-x, 0); top: var(--pane-y, 0);
   width: var(--pane-w, 100%); height: var(--pane-h, 100%); overflow: hidden;
   background: var(--bg, #1e1e1e); }
-/* no measurable pane to stand in for (hidden pane, or a cross-origin parent like VS Code):
-   fall back to hiding the feed's own content so only the settings card draws */
+/* no measurable pane to stand in for (hidden pane, a sliver, mobile's display:contents rows, or a
+   cross-origin parent like VS Code): hide the feed's own content so only the settings card draws —
+   and the fallback box goes TRANSPARENT (the user 2026-08-09): with no --pane-* vars set, body.rs-lifted
+   above is a full-viewport sheet, and painted --bg it blacked out every pane behind the modal (the
+   chat vanished, unlike every other panel). Transparent, the dashboard shows through the dim exactly
+   like the measurable case; in VS Code the webview's own background stands behind it, same as before. */
 body.rs-pane-gone #feed-head, body.rs-pane-gone #feed-list, body.rs-pane-gone #feed-foot { visibility: hidden; }
+body.rs-lifted.rs-pane-gone { background: transparent; }
 .rs-card { width: min(560px, 94%); max-height: 88vh; overflow: auto; background: #252526; border: 1px solid #3a3a3a;
   border-radius: 10px; padding: 16px 20px; font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ccc; box-shadow: 0 12px 36px #000000aa; }
 #rsettings .rs-h { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #e8eaed; }
@@ -81,6 +86,11 @@ body.rs-pane-gone #feed-head, body.rs-pane-gone #feed-list, body.rs-pane-gone #f
 #rsettings .rs-key { display: flex; align-items: baseline; gap: 12px; padding: 3px 0; }
 #rsettings .rs-key-combo { flex: 0 0 auto; min-width: 108px; }
 #rsettings .rs-key-desc { flex: 1 1 auto; color: #cdd3da; }
+#rsettings .rs-key[hidden] { display: none; }
+/* the customize link that replaced the static list (the shell's shortcuts dialog owns it now) */
+#rs-keys-btn { flex: 0 0 auto; cursor: pointer; background: #2a2a2a; color: #ccc;
+  border: 1px solid #3a3a3a; border-radius: 5px; padding: 3px 8px; font: inherit; }
+#rs-keys-btn:hover { background: #333; color: #e8eaed; }
 #rsettings kbd { display: inline-block; background: #1c1c1f; border: 1px solid #3d3d42; border-bottom-width: 2px;
   border-radius: 4px; padding: 1px 6px; font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #e6e6e6; }
 /* token-usage analytics: a button in the gear panel opens a centered modal with the chart. */
