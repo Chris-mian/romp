@@ -405,41 +405,109 @@ class LiveTail(unittest.TestCase):
         self.assertTrue(be.set_effort(sid, "low"))
         self.assertEqual(be.live_atoms(sid), [])
 
-    def _live_fast_session(self, d, sid):
-        """A constructed SdkSession whose thread READS alive (set_fast's gate) without spawning a CLI."""
+    def _live_fast_session(self, d, sid, unlocked=False):
+        """A constructed SdkSession whose thread READS alive (set_fast's gate) without spawning a CLI.
+        `unlocked` simulates a connection made WITH the fastMode flag (the _connect_once snapshot)."""
         be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
         sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
         s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
         s.thread = type("T", (), {"is_alive": lambda self: True})()
+        s._fast_unlocked = unlocked
         be.sessions[sid] = s
         return be, s
 
-    def test_set_fast_delivers_the_slash_command_and_flips_optimistically(self):
-        """/fast is one of the slash commands the SDK input stream DOES interpret (its CLI descriptor is
-        marked supportsNonInteractive, unlike /model — see set_model's control-channel note). set_fast
-        therefore delivers the literal '/fast on' through the normal send path — the echo is the chat's
-        acknowledgement, the CLI's own confirmation follows — and flips the badge state optimistically;
-        fast_mode_state on the next init re-asserts the truth."""
+    def test_set_fast_on_an_unlocked_connection_delivers_the_slash_command(self):
+        """A connection made WITH the fastMode flag-settings opt-in interprets the literal '/fast on|off'
+        (the CLI's descriptor is marked supportsNonInteractive; without the flag it refuses the command
+        outright — verified against claude 2.1.224). So an unlocked session takes the live send in BOTH
+        directions, no reconnect: the echo is the chat's acknowledgement, the flip is optimistic, and
+        fast_mode_state on the next init re-asserts the truth. The reg mirrors every toggle — the
+        persisted ask that drives the next connect's flag, so a lingering opt-in is impossible."""
         d = tempfile.mkdtemp()
-        sid = "11111111-2222-3333-4444-888888888888"
-        be, s = self._live_fast_session(d, sid)
+        sid = "11111111-2222-3333-4444-777777777777"
+        be, s = self._live_fast_session(d, sid, unlocked=True)
+        self.assertTrue(s._fast_unlocked, "precondition: THIS connection carries the opt-in flag")
+        reconnects = []
+        s.request_reconnect = lambda: reconnects.append(1)
         self.assertTrue(be.set_fast(sid, "on"))
         self.assertEqual(s.pending(), ["/fast on"], "the literal command is queued for the CLI to interpret")
         echoes = [a for a in be.live_atoms(sid) if a.get("_echo_text") == "/fast on"]
         self.assertEqual(len(echoes), 1, "the send path's echo IS the chat acknowledgement")
         self.assertEqual(s.fast, "on", "optimistic flip — init re-asserts")
         self.assertEqual(s.snapshot()["fast"], "on", "the badge reads it from the snapshot")
+        self.assertTrue(sb.read_reg(d, sid)["fast"], "the reg mirrors the toggle")
+        self.assertTrue(be.set_fast(sid, "off"), "…and OFF is a live send too, not a reconnect")
+        self.assertEqual(s.pending(), ["/fast on", "/fast off"])
+        self.assertFalse(sb.read_reg(d, sid)["fast"], "the reg mirrors the off as well")
+        self.assertEqual(reconnects, [], "an unlocked connection never reconnects for a toggle")
 
-    def test_set_fast_refuses_bad_values_and_dormant_sessions(self):
-        # only on|off are /fast arguments; a dormant session has no live CLI to apply the toggle —
-        # refuse (the kernel is LOUD about it) rather than reviving a session as a click side effect.
+    def test_set_fast_first_opt_in_reconnects_to_apply_the_flag(self):
+        # The current connection was made WITHOUT the flag, so the CLI would refuse the literal send;
+        # the opt-in applies at the (re)connect that carries it — request_reconnect, the /effort
+        # machinery: immediately if idle, at the end of the current turn if busy.
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-888888888888"
+        be, s = self._live_fast_session(d, sid, unlocked=False)
+        reconnects = []
+        s.request_reconnect = lambda: reconnects.append(1)
+        self.assertTrue(be.set_fast(sid, "on"))
+        self.assertEqual(len(reconnects), 1, "the flag is connect-time here → reconnect to apply")
+        self.assertEqual(s.pending(), [], "no literal send — this connection would refuse it")
+        self.assertTrue(s.fast_opt, "the next _options carries the flag")
+        self.assertEqual(s.fast, "on", "optimistic for the badge; init re-asserts")
+        self.assertTrue(sb.read_reg(d, sid)["fast"])
+
+    def test_set_fast_off_on_a_locked_connection_is_a_no_op_beyond_the_reg(self):
+        # No flag at connect → fast mode is already off on this connection; there is nothing to send
+        # and nothing to reconnect for. The reg still flips — it is the persisted ask.
         d = tempfile.mkdtemp()
         sid = "11111111-2222-3333-4444-999999999999"
-        be, s = self._live_fast_session(d, sid)
+        be, s = self._live_fast_session(d, sid, unlocked=False)
+        sb.write_reg(d, sid, dict(sb.read_reg(d, sid), fast=True))   # a stale on-disk ask to clear
+        reconnects = []
+        s.request_reconnect = lambda: reconnects.append(1)
+        self.assertTrue(be.set_fast(sid, "off"))
+        self.assertEqual(s.pending(), [], "nothing to send — the connection never had fast mode")
+        self.assertEqual(reconnects, [], "and nothing to reconnect for")
+        self.assertFalse(sb.read_reg(d, sid)["fast"], "but the ask is cleared, so the next connect is plain")
+        self.assertFalse(s.fast_opt)
+
+    def test_set_fast_on_a_dormant_session_persists_and_applies_at_the_next_connect(self):
+        # No live thread → nothing to send and nothing to reconnect; the reg carries the ask and the
+        # NEXT connect applies it (fast_opt seeds from the reg, _options writes the flag file).
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-aaaaaaaaaaaa"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        self.assertTrue(be.set_fast(sid, "on"), "accepted: the pick applies at the next connect")
+        self.assertTrue(sb.read_reg(d, sid)["fast"])
+        self.assertEqual(be.live_atoms(sid), [], "nothing claimed in the chat — no live CLI took it")
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp", "fast": True})
+        self.assertTrue(s.fast_opt, "a fresh construction picks the ask up from the reg")
+        # the per-connection unlock is snapshotted from fast_opt exactly where _connect_once builds
+        # the options that carry the flag, so the two can never disagree
+        import inspect
+        self.assertIn("self._fast_unlocked = self.fast_opt", inspect.getsource(sb.SdkSession._amain))
+
+    def test_set_fast_refuses_bad_values_and_unknown_sids(self):
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-bbbbbbbbbbbb"
+        be, s = self._live_fast_session(d, sid, unlocked=True)
         self.assertFalse(be.set_fast(sid, "maybe"))
         self.assertEqual(s.pending(), [], "a bad value never reaches the CLI")
         be2 = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         self.assertFalse(be2.set_fast("no-such-sid", "on"))
+
+    def test_fast_mode_is_never_remembered_as_the_seed_for_new_sessions(self):
+        # Fast mode draws credits at a higher rate and has its own rate limit, so it stays per-session —
+        # the same call ultracode makes, and the reason romp never spreads it to every new session.
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = be.spawn("a", d)
+        self.assertTrue(be.set_fast(sid, "on"))
+        self.assertNotIn("fast", sb.read_sdk_defaults(d), "never becomes the default for the next session")
+        self.assertFalse(sb.read_reg(d, be.spawn("b", d)).get("fast"), "a NEW session starts plain")
+        self.assertTrue(sb.read_reg(d, sid)["fast"], "but THIS session keeps it")
 
     def test_init_reports_fast_mode_state_into_the_snapshot(self):
         """fast_mode_state rides the CLI's init message ("on"/"off"/"cooldown", plus a disabled_reason
@@ -1705,7 +1773,7 @@ class OptionsAssembly(unittest.TestCase):
         sess.effort = "ultracode"
         opts = be._options(sess, _sdk.ClaudeAgentOptions)
         self.assertEqual(opts.effort, "xhigh", "the typed field carries the effort half of ultracode")
-        self.assertTrue(opts.settings and opts.settings.endswith(sb.ULTRACODE_SETTINGS))
+        self.assertTrue(opts.settings and sb.FLAG_SETTINGS_DIR in opts.settings)
         with open(opts.settings) as f:
             self.assertEqual(json.load(f), {"ultracode": True})
         self.assertNotIn("effort", opts.extra_args or {})
@@ -1716,7 +1784,45 @@ class OptionsAssembly(unittest.TestCase):
         sess.effort = "max"
         opts = be._options(sess, _sdk.ClaudeAgentOptions)
         self.assertEqual(opts.effort, "max")
-        self.assertIsNone(opts.settings, "no ultracode → no flag-settings file")
+        self.assertIsNone(opts.settings, "no ultracode and no fast mode → no flag-settings file")
+
+    def test_fast_mode_rides_the_flag_settings_opt_in(self):
+        # The CLI REFUSES fast mode to any non-interactive client ("Fast mode is not available in the
+        # Agent SDK") unless `fastMode` is true in the flag-settings layer — options.settings is that
+        # layer, and this key is the host's designed opt-in (verified against claude 2.1.224).
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sess = self._sess(be)
+        sess.fast_opt = True
+        opts = be._options(sess, _sdk.ClaudeAgentOptions)
+        self.assertTrue(opts.settings, "fast mode needs a flag-settings file to opt in through")
+        with open(opts.settings) as f:
+            self.assertEqual(json.load(f), {"fastMode": True})
+
+    def test_ultracode_and_fast_mode_share_one_settings_file(self):
+        # options.settings takes ONE path, so both keys must compose — an earlier shape wrote a fixed
+        # single-key file and the second setting would have silently dropped the first.
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sess = self._sess(be)
+        sess.effort, sess.fast_opt = "ultracode", True
+        opts = be._options(sess, _sdk.ClaudeAgentOptions)
+        with open(opts.settings) as f:
+            self.assertEqual(json.load(f), {"ultracode": True, "fastMode": True})
+
+    def test_each_session_gets_its_own_flag_settings_file(self):
+        # The file is per-sid, not one shared file: its content now VARIES by session, so a shared path
+        # would hand one session's fast mode to every other session that reads it.
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        a, b = self._sess(be), self._sess(be)
+        b.sid = "99999999-8888-7777-6666-555555555555"
+        a.fast_opt, b.fast_opt = True, False
+        b.effort = "ultracode"
+        pa = be._options(a, _sdk.ClaudeAgentOptions).settings
+        pb = be._options(b, _sdk.ClaudeAgentOptions).settings
+        self.assertNotEqual(pa, pb, "two sessions, two settings files")
+        with open(pa) as f:
+            self.assertEqual(json.load(f), {"fastMode": True})
+        with open(pb) as f:
+            self.assertEqual(json.load(f), {"ultracode": True}, "b's file is untouched by a's fast mode")
 
     def test_ultracode_is_a_choice_everywhere_but_never_the_seeded_default(self):
         self.assertIn("ultracode", sb.EFFORT_LEVELS, "the SDK backend accepts the pick")
