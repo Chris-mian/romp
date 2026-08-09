@@ -735,11 +735,19 @@ def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
 # kernel's death interrupted): visible in the chat as a gray romp card, so the recovery is never
 # silent, and instructing the model — whose transcript tail is an unanswered user message — to pick
 # the work back up. romp-injected → author 'romp' (gray bubble), skipped by the planner as a goal.
+# The middle sentence DISARMS the CLI's stop record (the user 2026-08-08): a machine cut writes the
+# same "[Request interrupted by user]" record as a real Esc, and a resumed model that wasn't told
+# otherwise read it as the user's intent — across the fleet's transcripts roughly one restart-cut
+# session in six answered this notice by standing down and awaiting direction instead of resuming. Naming the record verbatim and disowning it is what
+# lets "pick the work back up" win. Lockstep: kernel INTR_RESTART_SIG/INTR_CRASH_SIG match on these
+# texts (test_kernel_interrupt_machine_cut), so the leading sentences must keep their phrases.
 BOOT_RESUME_NUDGE = (
     "<!-- romp-injected --><!-- romp-system -->[romp] The romp kernel restarted and cut this session's "
-    "in-flight turn; the session has been resumed with its history intact. Re-read the tail of the "
-    "conversation and pick the work back up where it stopped. Any messages queued before the restart "
-    "follow this one.")
+    "in-flight turn; the session has been resumed with its history intact. If the conversation tail "
+    "shows '[Request interrupted by user]', that record came from this cut, not from the user: nobody "
+    "asked you to stop. Re-read the tail of the conversation and pick the work back up where it "
+    "stopped, without asking whether to continue. Any messages queued before the restart follow "
+    "this one.")
 
 # Staggered boot-resume (the user 2026-07-20): spawning every reconciled session's CLI at once
 # detonated a fleet-wide CPU storm — each resumed claude burns ~a full core catching up on its
@@ -756,8 +764,10 @@ BOOT_RESUME_SLOT_S = float(os.environ.get("ROMP_BOOT_RESUME_SLOT_S", "180"))
 # for the next boot's reconcile.
 CRASH_RESUME_NUDGE = (
     "<!-- romp-injected --><!-- romp-system -->[romp] This session's claude process died mid-turn "
-    "(killed or crashed); the session has been resumed with its history intact. Re-read the tail of "
-    "the conversation and pick the work back up where it stopped.")
+    "(killed or crashed); the session has been resumed with its history intact. If the conversation "
+    "tail shows '[Request interrupted by user]', that record came from this cut, not from the user: "
+    "nobody asked you to stop. Re-read the tail of the conversation and pick the work back up where "
+    "it stopped, without asking whether to continue.")
 
 
 # A CLI that cannot even START says so on the way out — and the ONE cause that reliably does this is the
