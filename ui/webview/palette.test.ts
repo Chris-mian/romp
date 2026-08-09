@@ -154,9 +154,14 @@ test("picker lift pins the body to the pane's old rect and keeps painting; hidde
   assert.match(CSS, /body\.picker-lifted \{\s*\n\s*position: fixed;\s*\n\s*left: var\(--pane-x, 0\); top: var\(--pane-y, 0\);/);
   assert.match(CSS, /body\.picker-lifted\.pane-gone > \* \{ visibility: hidden; \}/);
   assert.match(CSS, /body\.picker-lifted\.pane-gone > #picker \{ visibility: visible; \}/);
-  // the gone-fallback box is TRANSPARENT: with no --pane-* vars it spans the viewport, and painted
-  // --bg it would black out every pane behind the dialog (the settings modal's 2026-08-09 bug)
-  assert.match(CSS, /body\.picker-lifted\.pane-gone \{ background: transparent; \}/);
+  // The body's background is TRANSPARENT with the pane-rect backing on a ::before child (the user
+  // 2026-08-09, pixel-verified headless): with the root transparent, CSS promotes the BODY's
+  // background to the CANVAS — the whole viewport — so an opaque body blacked out the feed and the
+  // bottom bar behind the picker. A child's background never propagates; the gone branch hides the
+  // pseudo too (its var-less box spans the viewport).
+  assert.match(CSS, /body\.picker-lifted \{[\s\S]{0,220}?background: transparent;\s*\n\}/);
+  assert.match(CSS, /body\.picker-lifted::before \{ content: ""; position: absolute; inset: 0; background: var\(--bg\); z-index: -1; \}/);
+  assert.match(CSS, /body\.picker-lifted\.pane-gone::before \{ display: none; \}/);
 });
 
 test("settings lift does the same via rs-lifted / rs-pane-gone", () => {
@@ -164,9 +169,13 @@ test("settings lift does the same via rs-lifted / rs-pane-gone", () => {
   assert.match(GEAR, /getElementById\('feed-pane'\)/);
   assert.match(GEAR_CSS, /body\.rs-lifted \{ position: fixed; left: var\(--pane-x, 0\); top: var\(--pane-y, 0\);/);
   assert.match(GEAR_CSS, /body\.rs-pane-gone #feed-head, body\.rs-pane-gone #feed-list, body\.rs-pane-gone #feed-foot \{ visibility: hidden; \}/);
-  // the 2026-08-09 blackout, pinned shut three ways: the gone-fallback sheet is transparent (never
-  // an opaque full-viewport cover over the chat)…
-  assert.match(GEAR_CSS, /body\.rs-lifted\.rs-pane-gone \{ background: transparent; \}/);
+  // the 2026-08-09 blackout, pinned shut four ways: the body's background is transparent with the
+  // pane-rect backing on a ::before child (an opaque BODY background propagates to the CANVAS — the
+  // whole viewport — and blacked out every pane outside the pinned rect, in BOTH lift branches)…
+  assert.match(GEAR_CSS, /body\.rs-lifted \{ position: fixed;[\s\S]{0,200}?background: transparent; \}/);
+  assert.match(GEAR_CSS, /body\.rs-lifted::before \{ content: ""; position: absolute; inset: 0; background: var\(--bg, #1e1e1e\); z-index: -1; \}/);
+  // …the gone branch hides the backing pseudo (its var-less box spans the viewport)…
+  assert.match(GEAR_CSS, /body\.rs-lifted\.rs-pane-gone::before \{ display: none; \}/);
   // …the shell is signalled BEFORE the first measurement (feedFull un-hides #feed-pane; measuring
   // first burned the whole retry against a display:none pane)…
   assert.match(GEAR, /p\.hidden = false; feedFull\(true\); setModalCls\(true\);/);
