@@ -10,7 +10,7 @@ export const INTENT_OPS: ReadonlySet<string> = new Set([
   "sendMessage", "askFollowUp", "askText", "addCustomAsk", "sendCommand", "rewindSend",
   // explicit clicks that mutate kernel/session state
   "interrupt", "apiRetry", "rewindDelete",
-  "setModel", "setEffort", "setMode", "setFast",
+  "setModel", "setEffort", "setMode", "setFast", "setAuth",
   "renameSession", "endSession", "reviveSession",
   "nodeOverride", "askClear", "undoClear", "cardMove", "cardNotify",
   "answerAsk", "submitAsk", "toggleAsk", "navAsk", "cancelAsk",

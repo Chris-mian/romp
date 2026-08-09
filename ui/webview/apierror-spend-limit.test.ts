@@ -18,12 +18,13 @@ test("Status carries the per-session apiSpendLimit flag", () => {
 });
 
 test("the auto-retry tick SKIPS a spend-capped thread (retrying can't fix a billing cap)", () => {
-  // a spent MODEL allowance is skipped by the same rule (the user 2026-08-01)
-  assert.match(R, /!s\.status\.retrySuppressed && !s\.status\.apiSpendLimit && !s\.status\.apiModelLimit/);
+  // a spent MODEL allowance is skipped by the same rule (the user 2026-08-01), and a dead credential
+  // too (per-session auth, the user 2026-08-08): every retry re-presents the same broken login/key
+  assert.match(R, /!s\.status\.retrySuppressed && !s\.status\.apiSpendLimit && !s\.status\.apiModelLimit && !s\.status\.apiAuthErr/);
 });
 
 test("a spend cap paints the tab alarm-red (on-you), not amber retrying", () => {
-  assert.match(R, /\(s\.status\.apiTooLong \|\| s\.status\.apiSpendLimit \|\| s\.status\.apiModelLimit\) \? "tab-blocked" : "tab-retrying"/);
+  assert.match(R, /\(s\.status\.apiTooLong \|\| s\.status\.apiSpendLimit \|\| s\.status\.apiModelLimit \|\| s\.status\.apiAuthErr\) \? "tab-blocked" : "tab-retrying"/);
 });
 
 test("the paused line names the spend cap and points at the settings page (no fake countdown)", () => {

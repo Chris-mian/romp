@@ -1,14 +1,16 @@
-"""One set of usage bars per Claude ACCOUNT (the user 2026-07-30).
+"""Fleet usage: one PAYLOAD ROW PER HOST, one AGGREGATED rendering (the user 2026-08-08).
 
-The 5h / 7d windows are account-wide, so a fleet signed into one login has ONE allowance and drawing it
-per host would just repeat the same number — that case renders exactly as it always did, a single bare
-set. But sign a second machine into a DIFFERENT account and the single set was flatly wrong: two
-independent allowances, shown as one.
+The 5h / 7d windows are account-wide allowances, so the collapsed rail draws ONE set of bars — per
+window, the worst known reading across every account (a shared login reports the same number from every
+host and the max collapses it for free) — plus one API cell for everything key-billed. The per-host
+story lives in the hover, so /usage/fleet now emits every reporting host, INCLUDING a key-only host with
+no account digest at all (the old per-account dedup dropped those entirely, and a mixed host's key spend
+never rendered anywhere).
 
 The account is read from Claude Code's own ~/.claude.json (`oauthAccount.accountUuid`) — the identity the
 CLI itself uses, with no API that reports it. It travels as an opaque digest, never the email: the only
-question is "same login or not", and an email is a personal identifier that would otherwise ride to every
-federated host, sit in a payload and appear in any screenshot of the bars.
+question is "same login or not" (the client's aggregation and a reader of the hover both lean on it),
+and an email is a personal identifier that would otherwise ride to every federated host.
 
 Synthetic accounts and hosts only; no real uuid, email or hostname appears here.
 """
@@ -78,41 +80,39 @@ class FleetRollup(unittest.TestCase):
         with km._remotes_lock:
             km._remotes[host] = {"host": host, "status": status, "usage": _usage(acct) if acct else None}
 
-    def test_one_account_everywhere_stays_one_set(self):
+    def test_every_reporting_host_rides_along_shared_login_or_not(self):
+        # the rail aggregates and the hover breaks down per host, so a shared login is NOT deduped
+        # server-side any more — each host's row carries the same acct and the client collapses it
         km._usage = lambda: _usage(ACCT_A)
         self._remote("api", ACCT_A)
         self._remote("gpu", ACCT_A)
         rows = km._fleet_usage()
-        self.assertEqual(len(rows), 1, "an account-wide window drawn twice would repeat one number")
-        self.assertEqual(rows[0]["host"], "", "the local row is unlabelled")
+        self.assertEqual([r["host"] for r in rows], ["", "api", "gpu"])
+        self.assertEqual({r["acct"] for r in rows}, {ACCT_A}, "the digest is what lets the client collapse them")
 
-    def test_a_second_account_gets_its_own_set(self):
+    def test_a_second_account_gets_its_own_row(self):
         km._usage = lambda: _usage(ACCT_A)
         self._remote("api", ACCT_B)
         rows = km._fleet_usage()
         self.assertEqual([r["host"] for r in rows], ["", "api"])
         self.assertEqual(rows[1]["acct"], ACCT_B)
 
-    def test_two_hosts_on_the_same_second_account_share_one_set(self):
-        km._usage = lambda: _usage(ACCT_A)
-        self._remote("api", ACCT_B)
-        self._remote("gpu", ACCT_B)
-        rows = km._fleet_usage()
-        self.assertEqual(len(rows), 2, "one allowance, however many machines are burning it")
-
     def test_a_disconnected_host_contributes_nothing(self):
         km._usage = lambda: _usage(ACCT_A)
         self._remote("api", ACCT_B, status="down")
         self.assertEqual(len(km._fleet_usage()), 1)
 
-    def test_a_host_that_cannot_report_an_account_is_left_out_rather_than_guessed(self):
-        # an older remote kernel has no `acct` field; a phantom second set of bars would be worse than
-        # the honest single one
+    def test_a_key_only_host_is_included_even_with_no_account_to_report(self):
+        # the old per-account dedup dropped an acct-less row entirely, so a remote key-only host's
+        # spend could never reach the rail (found 2026-08-08 while adding per-session auth): the host
+        # itself is the identity for the spend half of a payload
         km._usage = lambda: _usage(ACCT_A)
         self._remote("api", "")
         with km._remotes_lock:
-            km._remotes["api"]["usage"] = {"fiveHour": {"pct": 5}, "t": 1}
-        self.assertEqual(len(km._fleet_usage()), 1)
+            km._remotes["api"]["usage"] = {"apiKey": True, "spend": {"fiveHour": {"usd": 1.0}}, "t": 1, "acct": ""}
+        rows = km._fleet_usage()
+        self.assertEqual([r["host"] for r in rows], ["", "api"])
+        self.assertEqual(rows[1]["acct"], "")
 
     def test_the_local_row_is_always_first_so_the_notices_read_off_this_machine(self):
         km._usage = lambda: _usage(ACCT_A)
@@ -151,17 +151,34 @@ class RailRendering(unittest.TestCase):
         self.assertIn("fetch('/usage/fleet'", self.js)
         self.assertIn("function renderRows(rows,selfHost)", self.js)
 
-    def test_a_single_account_renders_exactly_as_before_with_no_label(self):
-        self.assertIn("if(live.length===1)", self.js)
-        # the host label markup is reached only on the many-account branch
-        self.assertIn("class=ru-set", self.js)
-        self.assertIn("class=ru-host", self.js)
+    def test_the_rail_aggregates_and_never_repeats_the_windows_per_host(self):
+        # collapsed = one set of bars (worst window across hosts) + one API cell; the per-host
+        # .ru-set/.ru-host rail markup is gone (the user 2026-08-08) — hosts appear only in the hover
+        self.assertIn("function aggBarsHTML(live)", self.js)
+        self.assertIn("function apiCellHTML(live)", self.js)
+        self.assertIn("aggBarsHTML(LAST)+apiCellHTML(LAST)", self.js)
+        self.assertNotIn("class=ru-set", self.js)
+        self.assertNotIn("class=ru-host>", self.js)
+        self.assertIn("if(!best||d.pct>best.pct)best=d;", self.js, "worst known reading wins the bar")
 
-    def test_the_label_is_the_chat_tabs_quiet_lowercase_italic_host_prefix(self):
+    def test_the_api_cell_is_numbers_with_the_keys_own_tail_and_no_bars(self):
+        # label 'API …wxyz' (one distinct key) or bare 'API'; value = 5h burn + month-to-date dollars;
+        # the spend bar graphs are gone everywhere (the user 2026-08-08: they told you nothing)
+        self.assertIn("'API'+(tl.length===1?' …'+esc(tl[0]):'')", self.js)
+        self.assertIn("fmtUsd(sum.fiveHour)+' 5h · '+fmtUsd(sum.month)+' mo</div>'", self.js)
+        self.assertNotIn("spendColor", self.js)
+        self.assertNotIn("spendWinsHTML", self.js)
+
+    def test_the_hover_is_the_per_host_breakdown_in_the_quiet_lowercase_italic(self):
         css = km._landing()
-        self.assertIn(".ru-host{font:italic 400 10px", css)
+        self.assertIn(".ru-tip-host{font:italic 400 10px", css)
         self.assertIn("text-transform:lowercase", css)
-        self.assertIn("'<span class=ru-host>'+esc(hn)+':</span>'", self.js, "…and it ends in a colon")
+        # a host section can carry BOTH its login's windows and its key's spend (per-session auth),
+        # and the spend rows are numbers only — no track span
+        self.assertIn("function winDet(u,det)", self.js)
+        self.assertIn("winDet(r.usage,det);spendDet(r.usage,det);", self.js)
+        self.assertIn("API'+(d._tail?' …'+esc(d._tail):'')+' spend</span>", self.js)
+        self.assertIn("' tok · '+(v.turns||0)+' turns</span>", self.js)
 
     def test_the_account_wide_notices_read_off_THIS_machine(self):
         # a limit pauses THIS kernel's retries and judges; a remote account's limit does not

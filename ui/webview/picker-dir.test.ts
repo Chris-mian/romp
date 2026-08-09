@@ -23,7 +23,7 @@ test("createSession carries the chosen dir, alongside name + backend", () => {
   // backend comes from the + dialog's per-session toggle, falling back to the gear default (the user
   // 2026-06-23). The whole request goes through startCreate, which remembers it so a missing directory
   // can be created and the SAME create re-sent (the user 2026-07-28).
-  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel \}\)/);
+  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel, \.\.\.\(auth \? \{ auth \} : \{\}\) \}\)/);
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "createSession", \.\.\.req/);
 });
 

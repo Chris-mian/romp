@@ -16,8 +16,8 @@ test("Status carries the server-driven modelPending flag", () => {
 
 test("syncMetaControls renders dots for a pending model, driven by the server flag (+ local click heuristic)", () => {
   // model + effort both drive dots now (effort reconnects to apply); the model clause is still present
-  assert.match(RENDER, /const pending = \(kind === "model" && !!st\.modelPending\) \|\| \(kind === "effort" && !!st\.effortPending\) \|\| isMetaPending\(kind, st\);/);
-  assert.match(RENDER, /const showDots = pending && \(kind === "model" \|\| kind === "effort"\);/);
+  assert.match(RENDER, /const pending = \(kind === "model" && !!st\.modelPending\) \|\| \(kind === "effort" && !!st\.effortPending\)\s*\n\s*\|\| \(kind === "auth" && !!st\.authPending\) \|\| isMetaPending\(kind, st\);/);
+  assert.match(RENDER, /const showDots = pending && \(kind === "model" \|\| kind === "effort" \|\| kind === "auth"\);/);
   assert.match(RENDER, /if \(!label\.querySelector\("\.meta-dots"\)\) label\.replaceChildren\(metaDots\(\)\);/);
 });
 

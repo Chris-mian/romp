@@ -92,20 +92,21 @@ export function fmtTok(n: number): string {
   return String(n);
 }
 
-// API-key auth: SPEND windows mirror the subscription bars' grammar exactly — same rows, same labels,
+// API-key SPEND windows mirror the subscription bars' grammar exactly — same rows, same labels,
 // same twin tracks — so flipping between the two auth modes reads instantly (the user 2026-08-04, who
 // asked for "5 hours / week / month, visually similar"). A row FILLS only when spend-budgets.json names
 // that window's budget: the fill is spend-over-budget, and without a cap there is no honest fraction —
 // the row then carries plain dollars in the readout slot and no used-track. Rolling windows (5h/7d)
-// have no reset boundary, so only month-to-date draws the elapsed track. The web landing carries the
-// same builder (kernel.py spendWinsHTML); the two copies must stay in step.
+// have no reset boundary, so only month-to-date draws the elapsed track. Keyed on the spend windows'
+// PRESENCE, not the apiKey flag: with per-session auth a host's payload carries bars AND its key's
+// spend at once (the user 2026-08-08), and the strip should show both, not silently drop the dollars.
 export const SPEND_WINS: Array<[string, string, string]> = [
   ["fiveHour", "5 hours", "5h"],
   ["sevenDay", "7 days", "7d"],
   ["month", "Month", "mo"],
 ];
 export function spendWindows(usage: any, nowS: number): UsageWindow[] {
-  const sp = usage && usage.apiKey && usage.spend;
+  const sp = usage && usage.spend;
   if (!sp) return [];
   const out: UsageWindow[] = [];
   for (const [key, label, short] of SPEND_WINS) {

@@ -15,7 +15,7 @@ const K = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py
 const apiErr = R.slice(R.indexOf("function renderApiError"), R.indexOf("// ── API-error auto-retry"));
 
 test("a spend cap suppresses the Retry button entirely", () => {
-  assert.match(apiErr, /const spendCap = !!st\?\.apiSpendLimit \|\| !!st\?\.apiModelLimit;/);
+  assert.match(apiErr, /const spendCap = !!st\?\.apiSpendLimit \|\| !!st\?\.apiModelLimit \|\| !!st\?\.apiAuthErr;/);
   assert.match(apiErr, /if \(!spendCap\) \{[\s\S]*?retry\.textContent = "Retry now";/);
 });
 

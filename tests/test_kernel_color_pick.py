@@ -87,7 +87,7 @@ class PickColor(unittest.TestCase):
         got = {}
 
         class _FakeSdk:
-            def spawn(self, nm, cwd, bg="", fg="", sid=None):
+            def spawn(self, nm, cwd, bg="", fg="", sid=None, auth=""):
                 got.update(bg=bg, fg=fg)
                 return SID % 9
             def connect(self, sid):

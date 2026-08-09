@@ -3663,7 +3663,7 @@ def _pick_identity_color(now=None):
     return bgs[i], fgs[i]
 
 
-def _create_sdk_session(nm, cwd):
+def _create_sdk_session(nm, cwd, auth=""):
     """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14, who asked why it took so long
     to open a new SDK session). spawn() is file writes and connect() is threaded (~0.4s to a booting
     CLI) — the 7-10s the user waited was the handler's inline _push_all(): a new session invalidates the
@@ -3673,7 +3673,7 @@ def _create_sdk_session(nm, cwd):
     pusher's build arrives — then the dirty-mark wake. Never a synchronous fleet build on this path
     (the push-architecture rule, 2026-07-05)."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
-    sid = _sdk().spawn(nm, cwd, bg, fg)
+    sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth)
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
     _set_hidden_tab(sid, False)
     _reveal_chat({"type": "focus", "id": sid})
@@ -3786,6 +3786,45 @@ _SDK_BOOT_PROBLEMS = []
 def _sdk_problem(text):
     _SDK_BOOT_PROBLEMS.append({"seq": len(_SDK_BOOT_PROBLEMS) + 1, "t": time.time(), "text": str(text)})
     del _SDK_BOOT_PROBLEMS[:-20]
+
+
+def _auth_key_tail():
+    """Last 4 characters of the manager's API key ("" = none) — the label that says WHICH key without
+    saying the key. Cheap: an attribute read off the backend singleton, safe per-push."""
+    be = _sdk()
+    key = str(getattr(be, "work_key", "") or "") if be else ""
+    return key[-4:] if key else ""
+
+
+def _auth_both():
+    """True when this machine offers BOTH billing choices (a signed-in login and a manager-env key) —
+    the condition for the per-session auth selector to exist anywhere (picker, gear). Cheap per-push:
+    _claude_account is mtime-cached and the key is an attribute read."""
+    return bool(_auth_key_tail()) and bool(_claude_account())
+
+
+def _auth_avail():
+    """Which billing choices this machine can offer a session: {'login','key','tail','default'}. The
+    picker and the gear render the auth selector ONLY when both are real — one choice is no choice, so
+    the control disappears (the user 2026-08-08). login = the credential store names a signed-in
+    account (_claude_account — the same authority the usage bars trust; a stale login still fails
+    LOUDLY per session via apiKeySource/authErr rather than being second-guessed here). key = the
+    manager's environment carried ANTHROPIC_API_KEY, now held by the SDK backend (work_api_key claimed
+    it out of os.environ). tail = the key's last 4 characters — the label that says WHICH key without
+    saying the key. default = what a fresh session would use absent an explicit pick."""
+    be = _sdk()
+    key = str(getattr(be, "work_key", "") or "") if be else ""
+    d = {}
+    try:
+        d = json.loads((jd.STATE / "sdk-defaults.json").read_text())
+        d = d if isinstance(d, dict) else {}
+    except Exception:
+        d = {}
+    default = d.get("auth") if d.get("auth") in ("login", "key") else ("key" if key else "login")
+    if default == "key" and not key:
+        default = "login"
+    return {"login": bool(_claude_account()), "key": bool(key),
+            "tail": key[-4:] if key else "", "default": default}
 
 
 def _sdk_problem_count():
@@ -4071,7 +4110,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode", "setFast",
-              "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction")
+              "setAuth", "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -4327,6 +4366,15 @@ def _drive(msg, client):
         _push_soon()
     elif t == "setMode" and msg.get("value"):
         be.set_mode(sid, str(msg["value"])); _push_soon()
+    elif t == "setAuth" and msg.get("value") in ("login", "key"):
+        # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
+        # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): tmux
+        # sessions and a keyless manager can't apply it, and a silent swallow leaves a dead control.
+        if not _set_auth_or_park(be, sid, str(msg["value"])):
+            client["send"](json.dumps({"type": "warn",
+                                       "text": "Couldn't switch the account this session bills — "
+                                               "it isn't an SDK session, or no API key is configured."}))
+        _push_soon()
     elif t == "stopTask" and msg.get("taskId"):
         # the SDK's designed stop_task control request, addressed by the id the bg-task box shows.
         # LOUD on refusal (fail loudly, never degrade silently): unknown task / dead client / tmux
@@ -4784,7 +4832,7 @@ class TmuxBackend(sb.SessionBackend):
 
     # lifecycle — tmux sessions are launched by bin/romp (not the kernel) and revived via romp-postal, so
     # spawn/resume aren't backend primitives here; the kernel uses _spawn_session/_revive_session for those.
-    def spawn(self, name, cwd, bg="", fg="", sid=None):
+    def spawn(self, name, cwd, bg="", fg="", sid=None, auth=""):
         return None
 
     def resume(self, name, sid, cwd=None):
@@ -5097,6 +5145,8 @@ class Sessions:
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "fast": st.get("fast", ""),   # fast-mode state from the CLI's init ("on"/"off"/"cooldown"; "" = unknown → no badge)
                                 "fastReason": st.get("fastReason", ""),   # init's disabled_reason — non-empty hides the chat toggle
+                                "auth": st.get("auth", ""),   # which account this session bills ('login'|'key') → gear badge
+                                "authPending": bool(st.get("authPending")),   # an /auth switch reconnecting → badge dots
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
                                 "subagents": st.get("subagents") or [],   # live Task subagents (SDK only) → lane pill
                                 # live BACKGROUND TASKS (the CLI's task lifecycle stream) — the awaiting
@@ -6514,26 +6564,22 @@ def _poll_remote_usage(r):
 
 
 def _fleet_usage():
-    """Every DISTINCT Claude account across the fleet, each with the usage to draw for it.
+    """One row per HOST whose usage is known — local always first (the notices read off it), each row
+    {host, acct, usage}.
 
-    The rail drew one set of bars for this machine alone, which is right exactly when every machine is
-    signed into the same account — the windows are account-wide, so drawing them per host would just
-    repeat one number. When accounts DIFFER the single set was wrong instead: two real allowances shown
-    as one (the user 2026-07-30). So group by account digest and emit one row per group, labelled with a
-    host that is on it. Rows whose account matches this machine's collapse into the local row, and a
-    remote that cannot report an account at all (an older kernel) is left out rather than guessed at —
-    a phantom second set of bars would be worse than the honest single one."""
+    This USED to emit one row per distinct account digest, because the rail drew every row as its own
+    set of bars and a shared login drawn twice reads as two allowances (the user 2026-07-30). The rail
+    no longer draws rows: it AGGREGATES one set of bars (worst window across accounts, deduped by
+    `acct` client-side) and breaks down PER HOST on hover (the user 2026-08-08) — so every reporting
+    host must ride along. That includes a host with no login at all (acct ""), whose API-key spend the
+    dedup used to drop entirely: with per-session auth a host's payload can carry bars AND spend, and
+    the spend half has no account digest to group by — the host IS its identity."""
     local = _usage() or {}
     rows = [{"host": "", "acct": local.get("acct") or "", "usage": local or None}]
-    seen = {rows[0]["acct"]} if rows[0]["acct"] else set()
     with _remotes_lock:
         cand = [(r["host"], r.get("usage")) for r in _remotes.values() if (r.get("status") == "up") and r.get("usage")]
     for host, u in sorted(cand):
-        acct = (u or {}).get("acct") or ""
-        if not acct or acct in seen:
-            continue      # same login as somewhere already drawn (or a kernel too old to say) → one set
-        seen.add(acct)
-        rows.append({"host": host, "acct": acct, "usage": u})
+        rows.append({"host": host, "acct": (u or {}).get("acct") or "", "usage": u})
     return rows
 
 
@@ -9030,6 +9076,22 @@ def _is_model_limit(text):
     return "limit" in low and ("/usage-credits" in low or "switch models" in low)
 
 
+# An AUTH failure — no working login ("Not logged in · Please run /login"), or a key the API refuses
+# (401 "API key is invalid", "Failed to authenticate", an expired OAuth token). On YOU like the three
+# limit classes: retrying re-presents the same dead credential forever, and with per-session auth
+# (2026-08-08) this is precisely how a session that picked a broken side surfaces — the alternative was
+# an unclassified "transient" error, i.e. an invisible working card that never works again. Matched on
+# the CLI's own phrasings plus the API's 401 wording; a transient 5xx/timeout matches none of these.
+def _is_auth_error(text):
+    low = (text or "").lower()
+    return ("not logged in" in low
+            or "api key is invalid" in low
+            or "invalid x-api-key" in low
+            or "failed to authenticate" in low
+            or ("oauth token" in low and ("expired" in low or "revoked" in low))
+            or "authentication_error" in low)
+
+
 def _spend_dialog_showing(pane):
     """Is the CLI's spend-cap MODAL currently up in this pane capture? When a tmux session hits the
     monthly cap MID-TURN the CLI drops into an interactive menu ("What do you want to do? / Adjust
@@ -9091,7 +9153,10 @@ def _api_error(path):
                                # a model's own allowance is spent — on YOU too (switch model / add
                                # credits), and the auto-retry keeps running only because the window does
                                # eventually reset; see _is_model_limit
-                               "modelLimit": _is_model_limit(text)}
+                               "modelLimit": _is_model_limit(text),
+                               # a dead credential (no login / refused key) — on YOU, never auto-retried;
+                               # see _is_auth_error (per-session auth, the user 2026-08-08)
+                               "authErr": _is_auth_error(text)}
                     elif (isinstance(c, list) and any(isinstance(b, dict)
                             and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                             or (isinstance(c, str) and c.strip()):
@@ -10604,6 +10669,18 @@ def _set_effort_or_park(be, sid, value):
         be.set_effort(sid, value)
 
 
+def _set_auth_or_park(be, sid, value):
+    """Apply a billing-account change now — or park it while the session compacts, in the same FIFO as
+    /model and /effort (it reconnects the session, which mid-compaction would derail the compaction
+    exactly the way a model switch would). Returns the backend's verdict so the caller can be loud."""
+    if value not in ("login", "key"):
+        return False
+    if _ops_gate(sid):
+        _park_op(sid, ("auth", value))
+        return True
+    return be.set_auth(sid, value)
+
+
 def _set_fast_or_park(be, sid, value):
     """Apply a fast-mode toggle now — or park it while the session compacts, exactly like /model and
     /effort (it is a slash command and must keep press order in the same FIFO). Returns the backend's
@@ -10679,6 +10756,9 @@ def _apply_pending_ops():
                     ops.pop(0)
                 elif op[0] == "fast":
                     be.set_fast(sid, op[1])
+                    ops.pop(0)
+                elif op[0] == "auth":
+                    be.set_auth(sid, op[1])
                     ops.pop(0)
                 else:
                     ops.pop(0)                        # unknown op kind → drop, never wedge the queue
@@ -11918,6 +11998,11 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # client's retry-all skips it: nothing retries into it until the model changes or its
                   # window resets, and an amber "retrying" tab said the opposite (the user 2026-08-01)
                   "apiModelLimit": bool(aerr and aerr.get("modelLimit")),
+                  # an AUTH failure (not logged in / invalid or expired key) is on-you like the three
+                  # above — retrying can't fix a credential, only you can (claude /login, or fix
+                  # service.env) — and with per-session auth it's how a session that landed on a broken
+                  # side gets seen at all instead of idling as an invisible transient (the user 2026-08-08)
+                  "apiAuthErr": bool(aerr and aerr.get("authErr")),
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -11932,6 +12017,12 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # no badge — tmux stays "" until its statusline publishes a fast var). A non-empty
                   # disabled_reason means /fast would refuse, so the chat hides the toggle.
                   "fast": "" if tm.get("fastReason") else tm.get("fast", ""),
+                  # which account this session bills ('login'|'key') — present ONLY when this machine
+                  # actually offers both (see _auth_both), so the badge disappears rather than showing
+                  # a one-option selector (the user 2026-08-08). authTail labels the key option.
+                  "auth": (tm.get("auth", "") if _auth_both() else ""),
+                  "authPending": bool(tm.get("authPending")),   # an /auth reconnect applying → badge dots
+                  "authTail": (_auth_key_tail() if _auth_both() else ""),
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
                   "effortPending": bool(tm.get("effortPending")),   # switching-dots on the effort badge while the /effort reconnect applies (SDK-only; the user 2026-07-06)
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
@@ -13460,7 +13551,7 @@ def build_feed(now, tmux=None):
             # a session nothing could move — not nudged (the api-error gate suppresses it), not blocked,
             # not awaiting, for 80 minutes.
             api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
-                                                          or aerr.get("modelLimit"))))
+                                                          or aerr.get("modelLimit") or aerr.get("authErr"))))
             # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
             # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
             # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
@@ -13623,11 +13714,15 @@ def build_feed(now, tmux=None):
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
                              "spendLimit": bool(aerr.get("spendLimit")),
                              "modelLimit": bool(aerr.get("modelLimit")),
+                             "authErr": bool(aerr.get("authErr")),
                              "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
                                       else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
                                       # the CLI's own text names the model and the two remedies; the card
                                       # states them, because "Retry to resume" is false here (the user 2026-08-01)
                                       else "this session's model is out of allowance — switch its model or add credits to continue" if aerr.get("modelLimit")
+                                      # a dead credential: retrying re-presents it forever — name the fix
+                                      # (per-session auth, the user 2026-08-08)
+                                      else "this session's sign-in or API key isn't working — fix the login (claude /login) or the key, or switch which one it bills" if aerr.get("authErr")
                                       else "this session stopped on an API error — Retry to resume")} if nid == api_top
                             else {"state": perm_state,
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
@@ -13875,8 +13970,10 @@ def _usage():
         if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):
             # The spend WINDOWS mirror the subscription bars (5h / 7d / month) so the two auth modes
             # read identically; _spend_windows always returns all three, zero-filled on a fresh kernel
-            # (an empty slot reads as broken — the user 2026-08-04, post-restart).
-            return {"apiKey": True, "spend": _spend_windows(),
+            # (an empty slot reads as broken — the user 2026-08-04, post-restart). TOTAL sums, not the
+            # keyed split: on a no-login machine every turn bills the key, and legacy files predate
+            # the split. apiTail names WHICH key (last 4) — the rail's API label (the user 2026-08-08).
+            return {"apiKey": True, "spend": _spend_windows(), "apiTail": _auth_key_tail(),
                     "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                     "acct": _claude_account()}
         return None
@@ -13887,17 +13984,26 @@ def _usage():
         return bool(s and s.get("pct", 0) >= 100 and not (s.get("resetsAt") and time.time() > s["resetsAt"]))
     limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven), "fable": _lim(fable)}
     t = o.get("t")
-    return {"fiveHour": five, "sevenDay": seven, "fable": fable,
-            # NO spend windows beside the bars (the user 2026-08-08, same day they were added: a login
-            # account's story is its % bars, and its token rows read as noise — token volume + dollars
-            # are API-KEY information, carried only on the spend-only payload above).
-            "t": t if isinstance(t, (int, float)) else None,
-            # WHOSE allowance this is. These windows are account-wide, so two machines signed into the
-            # SAME account share one set of numbers and must not be drawn twice; two machines on
-            # DIFFERENT accounts have genuinely separate allowances and pooling them was a lie (the user
-            # 2026-07-30). An opaque digest — equality is the whole question, and no identifier travels.
-            "acct": _claude_account(),
-            "limited": limited if any(limited.values()) else None}
+    out = {"fiveHour": five, "sevenDay": seven, "fable": fable,
+           "t": t if isinstance(t, (int, float)) else None,
+           # WHOSE allowance this is. These windows are account-wide, so two machines signed into the
+           # SAME account share one set of numbers and must not be drawn twice; two machines on
+           # DIFFERENT accounts have genuinely separate allowances and pooling them was a lie (the user
+           # 2026-07-30). An opaque digest — equality is the whole question, and no identifier travels.
+           "acct": _claude_account(),
+           "limited": limited if any(limited.values()) else None}
+    # API-KEY spend BESIDE the bars — the KEYED split only (turns whose session billed the key; a login
+    # turn's computed cost is dollars nobody pays), attached only when key turns actually exist, so a
+    # host that never uses its key shows nothing extra. This supersedes the same-day rule that bars
+    # never carry spend (the user 2026-08-08, morning): that held for a machine whose sessions all
+    # share one auth; per-session auth (same day, evening) makes one host BOTH, and the key's real
+    # dollars belong on the rail next to the login's real %.
+    if _auth_key_tail():
+        ksp = _spend_windows(keyed_only=True)
+        if any((ksp.get(k) or {}).get("turns") for k in ("fiveHour", "sevenDay", "month")):
+            out["spend"] = ksp
+            out["apiTail"] = _auth_key_tail()
+    return out
 
 
 _jf_cache = {"fp": None, "val": None}                 # judge-failure scan, mtime-fingerprinted over the goals dir
@@ -13935,12 +14041,18 @@ def _spend_budgets():
         return {}
 
 
-def _spend_windows():
+def _spend_windows(keyed_only=False):
     """API-mode usage windows MIRRORING the subscription bars (the user 2026-08-04, who wanted the two
     auth modes to read identically at a glance): rolling 5h and 7d summed from spend.json's hour
     buckets, month-to-date from its day buckets — each {usd, tok, turns}, plus `budget` where
     spend-budgets.json names one. Always returns all three windows (zeros when nothing is recorded —
-    the day genuinely holds none; the honest-zero rule from the chip era)."""
+    the day genuinely holds none; the honest-zero rule from the chip era).
+
+    keyed_only=True sums each bucket's `key` sub-counters instead — the turns whose SESSION billed an
+    API key (see _record_spend). That is what the rail's API readout shows beside a login's bars on a
+    mixed host: the total would fold login turns' computed costs in — dollars nobody is billed (the
+    user 2026-08-08). The no-login machine keeps the total (everything there IS the key, and legacy
+    files predate the split)."""
     try:
         d = json.loads((jd.STATE / "spend.json").read_text())
     except Exception:
@@ -13952,9 +14064,15 @@ def _spend_windows():
         out = {"usd": 0.0, "tok": 0, "turns": 0}
         for e in entries:
             if isinstance(e, dict):
-                out["usd"] = round(out["usd"] + float(e.get("usd") or 0), 4)
-                out["turns"] += int(e.get("turns") or 0)
-                out["tok"] += sum(int(e.get(k) or 0) for k in ("tokIn", "tokOut", "tokCacheR", "tokCacheW"))
+                if keyed_only:
+                    e = e.get("key") if isinstance(e.get("key"), dict) else {}
+                    out["usd"] = round(out["usd"] + float(e.get("usd") or 0), 4)
+                    out["turns"] += int(e.get("turns") or 0)
+                    out["tok"] += int(e.get("tok") or 0)
+                else:
+                    out["usd"] = round(out["usd"] + float(e.get("usd") or 0), 4)
+                    out["turns"] += int(e.get("turns") or 0)
+                    out["tok"] += sum(int(e.get(k) or 0) for k in ("tokIn", "tokOut", "tokCacheR", "tokCacheW"))
         return out
 
     now = time.time()
@@ -17602,9 +17720,9 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;
 var WINS=[['fiveHour',5*3600,'5h','Session','5 hours'],
           ['sevenDay',7*86400,'7d','Weekly','7 days'],
           ['fable',7*86400,'F5','Fable 5','Fable 5']];
-// ROWS is one entry per DISTINCT Claude account across the fleet, local first (see /usage/fleet); LAST is
-// the tooltip detail for the ones actually drawn; SELF names this machine, for labelling the local set
-// when there is more than one. A one-account fleet keeps a single unlabelled set, exactly as before.
+// ROWS is one entry per HOST whose usage is known, local first (see /usage/fleet); LAST is the per-host
+// tooltip detail for the ones drawn into the aggregate; SELF names this machine for its hover heading
+// when there is more than one host.
 var ROWS=[],LAST=[],SELF='';
 // Limit / judge-degraded SIGNATURES (the user 2026-07-03; reshaped 2026-07-27): these used to gate fixed
 // top banners with a ✕ dismissal; the banners are gone — the same situations now log ONE entry each in
@@ -17642,98 +17760,92 @@ if(!on){_limPut('');}   // fully cleared -> forget the logged signature so a fut
 else if(sig!==_limGet()){_limPut(sig);var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
 if(window.__rompNotify)window.__rompNotify('limit',names.join(' and ')+' usage limit reached \u2014 retries paused until it resets');}}
 function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
-// API-key auth: no subscription windows exist — the rail shows SPEND where the bars sat (the user
-// 2026-08-04): today's accumulated per-result cost from the kernel's spend.json. strip.ts carries the
-// same branch; the two copies must stay in step (rail-spend pins).
-function hasSpend(u){return !!(u&&u.apiKey&&u.spend&&u.spend.fiveHour);}
+// API-key spend rides the payload's `spend` windows. It used to require the apiKey flag (a no-login
+// machine, spend INSTEAD of bars); with per-session auth one host carries bars AND its key's spend at
+// once (the user 2026-08-08), so presence of the windows is the whole test. strip.ts carries the same
+// branch; the two copies must stay in step (rail-spend pins).
+function hasSpend(u){return !!(u&&u.spend&&u.spend.fiveHour);}
 function fmtTok(n){if(n>=1e9)return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
 if(n>=1e6)return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
 if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
-// API-key auth: SPEND windows mirror the subscription bars' grammar exactly \u2014 same rows, labels,
-// twin tracks \u2014 so flipping auth modes reads instantly (the user 2026-08-04). A row FILLS only when
-// spend-budgets.json names that window's budget (the fill is spend-over-budget; no cap, no honest
-// fraction \u2014 plain dollars in the readout slot instead). Rolling windows have no reset boundary, so
-// only month-to-date draws the elapsed track. strip.ts carries the same builder \u2014 kept in step.
+function fmtUsd(v){return '$'+(v<100?v.toFixed(2):String(Math.round(v)));}
 var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
-function spendColor(p){return p>=90?'#c0392b':p>=70?'#e0b020':'#54B204';}
-// The per-account SPEND detail for the rich hover (the token graph + dollars rows) \u2014 spend-only
-// accounts (an API key / a login-less host) carry it; a LOGIN account's payload has no spend windows
-// on purpose (the user 2026-08-08: its % bars are the story, and token rows there read as noise).
+// The per-host SPEND detail for the rich hover: plain NUMBERS per window (dollars, tokens, turns).
+// No bars anywhere for spend (the user 2026-08-08: the spend bar graphs told you nothing. The old
+// hover scaled each window's bar to the largest window, a shape with no meaning, and the budget-fill
+// tracks die with it): the numbers are the information, so the numbers are the rendering.
 function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
+if(u.apiTail)det._tail=u.apiTail;
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
-var budget=(typeof seg.budget==='number'&&seg.budget>0)?seg.budget:null;
-(det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0,
-budget:budget,pct:budget!=null?Math.max(0,Math.min(100,Math.round(seg.usd/budget*100))):null};});}
-// NO native title attributes anywhere on the rail (the user 2026-08-08, who got the browser's flat
-// yellow box on top of the rich hover, nowhere near the cursor): the rich tip is the ONE hover surface,
-// and everything the titles used to say \u2014 dollars, tokens, turns, the budget hint \u2014 lives there now.
-function spendWinsHTML(u,det){var sp=u.spend||{},html='';spendDet(u,det);
-SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
-var budget=(typeof seg.budget==='number'&&seg.budget>0)?seg.budget:null;
-var pct=budget!=null?Math.max(0,Math.min(100,Math.round(seg.usd/budget*100))):null;
-var el2=null;
-if(w[0]==='month'&&budget!=null){var dd=new Date(),dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate();
-el2=Math.max(0,Math.min(100,Math.round(((dd.getDate()-1+dd.getHours()/24)/dim)*100)));}
-var readout='$'+(seg.usd<100?seg.usd.toFixed(2):String(Math.round(seg.usd)))+' \u00b7 '+fmtTok(seg.tok||0)+' tok';
-html+='<div class="ru-w ru-spend">'
-+'<div class=ru-name>'+w[1]+'</div>'
-+'<div class=ru-bars>'
-+(pct!=null?'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+spendColor(pct)+'"></i></div>':'')
-+(el2!=null?'<div class=ru-track><i class=ru-fill style="width:'+el2+'%;background:#6b7a8c"></i></div>':'')
-+'</div>'
-+'<div class=ru-pct>'+readout+'</div>'
-+'</div>';});
-return html;}
-// One account's windows, as markup + the tooltip detail for them. Pure: the caller decides where it goes.
-function winsHTML(u,det){var nowS=Math.floor(Date.now()/1000),html='';
+(det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0};});}
+// One payload's WINDOW detail for the hover (used/elapsed/reset per window). Detail only, no markup:
+// the rail no longer draws each account's own bars (they aggregate, below), but the tip still tells
+// each host's story from this.
+function winDet(u,det){var nowS=Math.floor(Date.now()/1000);
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 // A ROLLED window (its reset passed since the last report) is UNKNOWN, not 0 (the user 2026-07-31: a
 // remote whose kernel had no live session to ask sat on a days-old snapshot, and the rail drew a
-// confident 0% beside a live account's real bars). Last-known fill drawn FADED + a '?' readout, so
-// unknown and genuinely-empty can never be confused; the tooltip dates the gap.
+// confident 0% beside a live account's real bars). The last-known number renders in the hover,
+// labelled as such; the rail's aggregate never counts an unknown as a value.
 var rolled=!!(seg.resetsAt&&nowS>seg.resetsAt),pct=Math.max(0,Math.min(100,seg.pct||0));
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(!rolled&&seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
-det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtAgo(seg.resetsAt):null),reset:(!rolled&&seg.resetsAt)?fmtR(seg.resetsAt):null};
-// Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks \u2014 the
+det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtAgo(seg.resetsAt):null),reset:(!rolled&&seg.resetsAt)?fmtR(seg.resetsAt):null};});}
+// ONE aggregated set of bars for every account at once (the user 2026-08-08: never repeat the windows
+// per host; say '5 hours' once). Per window, the WORST known reading across the fleet: the windows are
+// allowances and the binding one is the fullest; each host's own number lives in the hover. A window
+// every reporter has ROLLED is unknown ('?'), exactly as a single account's was; a shared login on two
+// hosts reports the same number twice and the max collapses it for free.
+function aggBarsHTML(live){var html='';
+WINS.forEach(function(w){var best=null,anyRolled=false;
+live.forEach(function(e){var d=e.det[w[0]];if(!d)return;
+if(d.unk){anyRolled=true;return;}
+if(!best||d.pct>best.pct)best=d;});
+if(!best&&!anyRolled)return;
+// Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks: the
 // used-% bar (colormap colour) ON TOP of the elapsed-% bar (slate) so you can compare pace at a glance (used
-// ahead of elapsed = burning too fast) \u2014 then the used-% readout. All inline (label \u00b7 bars \u00b7 %).
+// ahead of elapsed = burning too fast), then the used-% readout. All inline (label \u00b7 bars \u00b7 %).
 // An UNKNOWN window draws NO BARS (the user 2026-07-31, round 2): a faded last-known fill still
-// asserts a value we do not have \u2014 the length itself is the lie. Its slot holds a single '?' so the
-// rows stay aligned, and the last-known number moves to the hover, labelled as such.
-html+='<div class="ru-w'+(rolled?' ru-unk':'')+'" data-w="'+w[0]+'">'
+// asserts a value we do not have; the length itself is the lie. Its slot holds a single '?' so the
+// rows stay aligned, and the last-known number lives in the hover, labelled as such.
+html+='<div class="ru-w'+(best?'':' ru-unk')+'" data-w="'+w[0]+'">'
 +'<div class=ru-name>'+w[4]+'</div>'
-+(rolled?'<div class=ru-bars><div class=ru-qmark>?</div></div>'
-:('<div class=ru-bars>'
-+'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+col+'"></i></div>'
-+'<div class=ru-track><i class=ru-fill style="width:'+(tp||0)+'%;background:#6b7a8c"></i></div>'
++(best?('<div class=ru-bars>'
++'<div class=ru-track><i class=ru-fill style="width:'+best.pct+'%;background:'+best.col+'"></i></div>'
++'<div class=ru-track><i class=ru-fill style="width:'+(best.tp||0)+'%;background:#6b7a8c"></i></div>'
 +'</div>'
-+'<div class=ru-pct>'+pct+'%</div>'))
++'<div class=ru-pct>'+best.pct+'%</div>')
+:'<div class=ru-bars><div class=ru-qmark>?</div></div>')
 +'</div>';});
 return html;}
-// ONE SET PER CLAUDE ACCOUNT (the user 2026-07-30). These windows are ACCOUNT-wide, so a fleet signed into
-// one login has one allowance and drawing it per host would repeat the same number \u2014 that is the common
-// case and it renders exactly as it always did, bare. Sign a machine into a SECOND account, though, and the
-// single set was flatly wrong: two independent allowances added up and shown as one. So the kernel groups
-// by account and each group gets its own bars, labelled with a host that is on it, in the quiet lowercase
-// italic `host:` the chat tabs already wear for a federated session \u2014 same idea, same treatment.
-function renderRows(rows,selfHost){ROWS=rows||[];LAST={};
+// The API cell (the user 2026-08-08): ONE compact entry for everything key-billed across the fleet,
+// labelled by the key's own last 4 (\u2026wxyz names WHICH key without saying the key; several distinct
+// keys fall back to the bare 'API'), with NUMBERS beside it: the 5h burn and the month-to-date. No
+// bars (see spendDet). The full per-window, per-host breakdown is the hover's job.
+function apiCellHTML(live){var tails={},sum={fiveHour:0,month:0},any=false;
+live.forEach(function(e){var sp=e.det._spend;if(!sp)return;any=true;
+if(e.det._tail)tails[e.det._tail]=1;
+['fiveHour','month'].forEach(function(k){if(sp[k])sum[k]+=sp[k].usd;});});
+if(!any)return '';
+var tl=Object.keys(tails);
+var label='API'+(tl.length===1?' \u2026'+esc(tl[0]):'');
+return '<div class="ru-w ru-api">'
++'<div class=ru-name>'+label+'</div>'
++'<div class=ru-pct>'+fmtUsd(sum.fiveHour)+' 5h \u00b7 '+fmtUsd(sum.month)+' mo</div>'
++'</div>';}
+// The collapsed rail is the AGGREGATE story (the user 2026-08-08; supersedes the one-set-per-account
+// rendering of 2026-07-30): one set of window bars for the whole fleet plus one API cell, never a
+// per-host repeat. Each host still computes its own detail (LAST), and the hover is where that breaks
+// down per host: with per-session auth a host can carry BOTH a login's windows and its key's spend.
+// The one-host common case renders the same bars it always did, just without a host label anywhere.
+// (No native title anywhere on the rail, the user 2026-08-08: the rich tip is the ONE hover surface.)
+function renderRows(rows,selfHost){ROWS=rows||[];LAST=[];
 var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
-if(live.length===1){var det={};det._t=(typeof live[0].usage.t==='number')?live[0].usage.t:null;
-LAST=[{host:'',det:det}];
-el.innerHTML=hasBars(live[0].usage)?winsHTML(live[0].usage,det):spendWinsHTML(live[0].usage,det);
-return;}
-var html='';LAST=[];
-// no native title on the account set (the user 2026-08-08 — the rich tip is the ONE hover surface);
-// the separate-allowance note rides the tip's host heading instead (setHTML).
-live.forEach(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
-var hn=r.host||selfHost||'this machine';
-LAST.push({host:hn,det:det});
-var inner=hasBars(r.usage)?winsHTML(r.usage,det):spendWinsHTML(r.usage,det);
-html+='<div class=ru-set>'
-+'<span class=ru-host>'+esc(hn)+':</span>'+inner+'</div>';});
-el.innerHTML=html;}
+LAST=live.map(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
+winDet(r.usage,det);spendDet(r.usage,det);
+return {host:r.host||selfHost||'this machine',det:det};});
+el.innerHTML=aggBarsHTML(LAST)+apiCellHTML(LAST);}
 // The single-payload path the timeline still posts (and the mobile panel's own fetch): treat it as this
 // machine's row, leaving any other account's bars alone.
 function render(u){notices(u);
@@ -17751,33 +17863,30 @@ function barRows(d){return (d.unk
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
-// LAST is one entry per ACCOUNT (2026-07-30), so the tooltip is the same window rows it always was, once
-// per login \u2014 with the host heading it only when there IS more than one. A SPEND-ONLY account (an
-// API key / a login-less host) used to return '' here, so a mixed fleet's hover silently showed only
-// the subscription login (the user 2026-08-08) \u2014 its dollars now render as their own section.
-// EVERY string here must carry data the reader acts on (the user 2026-08-08, who found the tip overly
-// verbose): the host name alone heads a section (no "its own allowance" tail), the token rows label
-// themselves (no "5h / 7d / month" subtitle), and config hints live in the docs, not a hover.
+// LAST is one entry per HOST (the user 2026-08-08: the hover is the per-host breakdown the collapsed
+// rail no longer draws), each with the window rows it always had, the host name heading it when there
+// is more than one. A host carries BOTH sections when it has both: its login's windows and its key's
+// spend (per-session auth). EVERY string here must carry data the reader acts on (the user 2026-08-08,
+// who found the tip overly verbose): the host name alone heads a section, the spend rows label
+// themselves, and config hints live in the docs, not a hover.
 function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
 var sp=d._spend||null;
 if(!keys.length&&!sp)return '';
-var spendOnly=!keys.length;                       // no subscription windows \u2192 an API-key / no-login account
 var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
 h+=keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
 :(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
-// The API-KEY SPEND graph (the user 2026-08-08): the three windows' token volume on ONE shared scale
-// \u2014 each bar auto-scales to the largest window \u2014 with the real dollars beside each count. SPEND-ONLY
-// accounts only (same day): a login account's story is its % bars, and token rows there read as noise
-// (the guard also holds against an older kernel in the fleet still attaching spend beside its bars).
-if(sp&&spendOnly){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
-if(ks.length){var mx=1;ks.forEach(function(k){if(sp[k].tok>mx)mx=sp[k].tok;});
-h+='<div class=ru-tip-win><div class=ru-tip-name><span>API-key spend</span></div>'
-+ks.map(function(k){var v=sp[k],wpct=v.tok>0?Math.max(2,Math.round(v.tok/mx*100)):0;
+// The API-KEY SPEND rows (the user 2026-08-08): dollars, tokens and turns per window, NUMBERS ONLY.
+// The old token-volume graph scaled each window's bar to the largest window, a shape that told the
+// reader nothing; it is gone, and this section now renders for ANY host with key spend, beside that
+// host's own bars when it has both (per-session auth).
+if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
+if(ks.length){
+h+='<div class=ru-tip-win><div class=ru-tip-name><span>API'+(d._tail?' \u2026'+esc(d._tail):'')+' spend</span></div>'
++ks.map(function(k){var v=sp[k];
 return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
-+'<span class=ru-tip-track><i style="width:'+wpct+'%;background:#6b7a8c"></i></span>'
-+'<span class=ru-tip-v>'+fmtTok(v.tok)+' \u00b7 $'+(v.usd<100?v.usd.toFixed(2):String(Math.round(v.usd)))+'</span></div>';}).join('')
++'<span class=ru-tip-v>'+fmtUsd(v.usd)+' \u00b7 '+fmtTok(v.tok)+' tok \u00b7 '+(v.turns||0)+' turns</span></div>';}).join('')
 +'</div>';}}
 h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
 return h;}
@@ -19028,20 +19137,15 @@ def _landing():
             ".ru-tip-k{opacity:.55;min-width:46px}"
             ".ru-tip-track{width:64px;height:6px;border-radius:3px;background:rgba(255,255,255,0.10);overflow:hidden;display:inline-block}"
             ".ru-tip-track i{display:block;height:100%;border-radius:3px;transition:width .3s ease}"
-            ".ru-tip-v{min-width:30px;text-align:right;font-variant-numeric:tabular-nums}"
+            # margin-left:auto right-aligns every value to one edge, so the bar rows and the numbers-only
+            # spend rows (no track span, the user 2026-08-08) read as one table.
+            ".ru-tip-v{min-width:30px;text-align:right;font-variant-numeric:tabular-nums;margin-left:auto}"
             ".ru-tip-age{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);"
             "opacity:.55;font-size:10px}"
-            # PER-ACCOUNT bar sets (the user 2026-07-30): a machine on a different Claude login has its own
-            # allowance, so it gets its own set, named by a host that is on it. The label is the exact
-            # treatment a federated session's name wears in the chat tabs — quiet, lowercase, italic, and
-            # visibly metadata rather than part of the reading. Only rendered when there IS more than one
-            # account; a same-login fleet keeps a single bare set and this costs nothing.
-            ".ru-set{display:flex;flex-direction:row;align-items:center;gap:10px;flex:0 0 auto}"
-            # a hairline between allowances, so two sets of bars read as two accounts rather than one long
-            # run of windows. Only ever drawn between sets, so the single-account rail is untouched.
-            ".ru-set+.ru-set{padding-left:16px;border-left:1px solid #313234}"
-            ".ru-host{font:italic 400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
-            "color:#6e7681;white-space:nowrap;text-transform:lowercase}"
+            # (The per-host .ru-set/.ru-host rail sets are gone, the user 2026-08-08: the collapsed rail
+            # aggregates one set of bars + one API cell, and the per-host story lives in the hover, whose
+            # .ru-tip-host heading keeps the quiet lowercase-italic treatment a federated session's name
+            # wears in the chat tabs.)
             ".ru-tip-host{font:italic 400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
             "color:#9aa0a6;text-transform:lowercase;margin:0 0 4px}"
             "#ru-tip .ru-tip-host:not(:first-child){margin-top:10px;padding-top:8px;"
@@ -20063,7 +20167,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not _sdk_ready():          # see _sdk_ready — a built backend is not a working one
                         return self._send(200, json.dumps({"ok": False, "error": SDK_SETUP_HINT}),
                                           "application/json")
-                    sid = _create_sdk_session(nm, cwd)
+                    a = (b or {}).get("auth")
+                    sid = _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""))
                     return self._send(200, json.dumps({"ok": True, "id": sid, "dir": cwd}),
                                       "application/json")
                 threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
@@ -20593,7 +20698,10 @@ class Handler(BaseHTTPRequestHandler):
                     # missing, so the old check took it as a yes and created a session that could never
                     # run — silently, which is the whole failure (the user 2026-07-28).
                     if _sdk_ready():
-                        _create_sdk_session(nm, cwd)
+                        # auth ('login'|'key') is the picker's per-session billing pick; anything else
+                        # (older clients, no pick) means the remembered/ambient default (spawn's seed).
+                        a = msg.get("auth")
+                        _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""))
                     else:
                         # NEVER silently fall back to tmux (the user asked for SDK and got a mystery tmux
                         # session on a remote host without the venv, 2026-07-02). Say what's missing.
@@ -20618,7 +20726,10 @@ class Handler(BaseHTTPRequestHandler):
             # walk is ~78ms cold once forks are off, so paging it in bought nothing (the user 2026-07-24).
             client["send"](json.dumps({"type": "sessionList",
                                        "items": _session_list(int(time.time()), _tmux_sessions()),
-                                       "defaultDir": _tilde(_default_create_dir())}))   # prefill the new-session dir field
+                                       "defaultDir": _tilde(_default_create_dir()),   # prefill the new-session dir field
+                                       # billing choices THIS host can offer a new session — the picker
+                                       # shows its auth control only when both are real (see _auth_avail)
+                                       "authAvail": _auth_avail()}))
         elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
             if sid:
