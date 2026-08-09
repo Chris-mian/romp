@@ -127,6 +127,40 @@ rate-limited — and never appears on a session that cannot run fast mode.
 Turning it on while the session is on a non-Opus model makes the CLI switch to
 a fast-capable one, which the chat shows as the command's own confirmation.
 
+### Per-session billing (login vs API key)
+
+An SDK session can bill either the machine's Claude login (subscription usage)
+or the `ANTHROPIC_API_KEY` the manager's environment carries — per session.
+The choice appears in two places, and only on a machine that actually offers
+both (with one choice there is nothing to pick, so the control is absent):
+
+- the new-session picker's **Billing** row, when the selected host offers both
+  and the backend toggle says SDK;
+- a statusline badge on the session, beside mode/model/effort. Switching
+  reconnects the session to apply (the key rides the launch environment), with
+  the same switching-dots the effort badge wears.
+
+The key option is always labelled by the key's last 4 characters (`API …wxyz`)
+so you can tell which key it is; the key itself never appears. A new session
+defaults to the last pick made anywhere, and before any pick to the key when
+one is configured — exactly what an ambient key did before the selector
+existed. tmux sessions are not covered: their CLI lives in the tmux server's
+environment, which the kernel does not control.
+
+Failures are loud rather than silent: a session that lands on the other auth
+than it was launched for (say, a key found through `apiKeyHelper`) is flagged
+in the Log panel, and a dead credential — "Not logged in", an invalid or
+expired key — blocks the session's card with the fix named, and is never
+auto-retried.
+
+The usage rail reflects a mixed machine: the window bars (5 hours / 7 days /
+Fable 5) are drawn once, aggregated across every connected host's login as the
+worst reading per window, and an `API …wxyz` cell beside them carries the
+key-billed dollars (5-hour burn and month-to-date, numbers only). Hovering
+breaks both down per host; a host can show its login's windows and its key's
+spend side by side. Only turns whose session billed the key count toward the
+API numbers — a login turn's computed cost is dollars nobody pays.
+
 ### Install-time switches
 
 For `./install.sh`:

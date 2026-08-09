@@ -122,6 +122,15 @@ class SessionBackend(ABC):
         SDK input stream interprets it, unlike /model). False when it can't be delivered (dormant SDK
         session, bad value) so the kernel can be loud instead of pretending."""
 
+    def set_auth(self, sid: str, value: str) -> bool:
+        """Pick which account this session bills — 'login' (the machine's Claude login) or 'key' (the
+        API key the manager's environment carries). SDK-only control: an SDK session's CLI inherits
+        the KERNEL's environment, so the kernel owns the choice (SdkBackend injects or withholds the
+        key per session at connect). A tmux session's CLI lives in the tmux server's environment,
+        which the kernel does not control — the default False means "no such control here" and the
+        kernel warns on a refusal instead of pretending."""
+        return False
+
     def stop_task(self, sid: str, task_id: str) -> bool:
         """Stop ONE background task (the SDK's designed stop_task control request). SDK-only control:
         the chat's bg-task box only ever shows live tasks for SDK sessions (the CLI's task lifecycle
@@ -146,8 +155,10 @@ class SessionBackend(ABC):
 
     # ── lifecycle ────────────────────────────────────────────────────────────────────────────────
     @abstractmethod
-    def spawn(self, name: str, cwd: str, bg: str = "", fg: str = "", sid: str | None = None) -> str | None:
-        """Start a NEW session; return its sid (or None on failure)."""
+    def spawn(self, name: str, cwd: str, bg: str = "", fg: str = "", sid: str | None = None,
+              auth: str = "") -> str | None:
+        """Start a NEW session; return its sid (or None on failure). `auth` ('login'|'key'|'') is the
+        picker's per-session billing pick — meaningful on the SDK backend only (see set_auth)."""
 
     @abstractmethod
     def resume(self, name: str, sid: str, cwd: str | None = None) -> bool:

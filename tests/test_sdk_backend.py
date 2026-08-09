@@ -1561,8 +1561,9 @@ class SpendRecord(unittest.TestCase):
     def test_result_message_records_and_the_kernel_serves_it(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
                                 "kernel", "sdk_backend.py")).read()
-        self.assertIn("self.backend._record_spend(delta, turn_u)", src,
-                      "the settle folds THIS turn's DELTAS — cost AND tokens are cumulative per process")
+        self.assertIn("self.backend._record_spend(delta, turn_u, keyed=self.api_key_auth)", src,
+                      "the settle folds THIS turn's DELTAS — cost AND tokens are cumulative per process — "
+                      "tagged with the session's own auth so the API sum stays honest on a mixed host")
         self.assertIn("self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero",
                       src, "each connect resets the watermark with its new process")
         self.assertIn("self._last_usage_totals = {}  # …and its cumulative token counters", src,
@@ -1572,7 +1573,7 @@ class SpendRecord(unittest.TestCase):
         self.assertIn('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):',
                       ksrc, "_usage serves spend on the legacy marker OR a login-less machine with recorded spend")
         self.assertIn('"spend": _spend_windows()', ksrc)
-        self.assertIn("def _spend_windows():", ksrc)
+        self.assertIn("def _spend_windows(keyed_only=False):", ksrc)   # keyed_only: the mixed-host API sum (test_session_auth)
 
     def test_cumulative_process_totals_fold_as_per_turn_deltas(self):
         """The CLI's total_cost_usd AND its usage dict are CUMULATIVE per process (the result event

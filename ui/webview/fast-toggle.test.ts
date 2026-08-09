@@ -17,7 +17,7 @@ const SDK = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk_bac
 
 test("the fast badge is a meta control that appears only when the session reports a state", () => {
   assert.match(RENDER, /fast\?: string;/);                                   // status carries it
-  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast";/);
+  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast" \| "auth";/);
   assert.match(RENDER, /st\.fast \? "fast" : ""/);                           // no state → no badge
   assert.match(RENDER, /meta\.appendChild\(metaButton\("fast", prettyFast\(st\.fast\)\)\)/);
 });

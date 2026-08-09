@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Per-session billing (the user 2026-08-08): some sessions on the Claude login, some on the API key.
+
+The mechanics under test:
+  * The manager environment's ANTHROPIC_API_KEY is CLAIMED OUT of os.environ once per process
+    (work_api_key) — the SDK's transport hands the CLI this process's env wholesale, so an ambient
+    key would bill every session regardless of its pick. Injection is explicit per session: _options
+    adds the key only when the session's effective auth says so, and a login session launches with a
+    genuinely clean env (the CLI treats even an EMPTY var as key-mode-without-a-key and refuses with
+    "Not logged in" — verified live 2026-08-08 — so removal is the only correct strip).
+  * set_auth mirrors set_effort: persist + authPending + reconnect to apply (auth is connect-time).
+  * The CLI's init apiKeySource is compared against what _options actually launched with — a landing
+    on the wrong side is a session billing the wrong account, flagged into the problems ring.
+  * spend.json buckets carry a `key` sub-count for key-billed turns, so the rail's API readout on a
+    mixed host sums ONLY the key's turns (_spend_windows(keyed_only=True)); a login turn's computed
+    cost is dollars nobody is billed.
+  * An auth failure ("Not logged in", a 401 key) is an ON-YOU api-error class (authErr): retrying
+    re-presents the same dead credential forever, so it blocks visibly and is never auto-retried.
+  * Availability gates every selector: the kernel offers the choice only when BOTH a signed-in login
+    (_claude_account) and a manager-env key exist — one choice is no choice, the control disappears.
+
+Synthetic sids/paths only; no real key material (the fixture key is an invented string).
+"""
+import json
+import os
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ.setdefault("XDG_STATE_HOME", tempfile.mkdtemp())
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+sb = SourceFileLoader("romp_sdk_backend_auth", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
+km = SourceFileLoader("romp_kernel_auth", os.path.join(BIN, "romp-kernel")).load_module()
+
+FAKE_KEY = "sk-ant-api03-TESTFIXTUREKEYNOTREAL-wxyz"
+
+
+class _Keyed(unittest.TestCase):
+    """Base: a backend whose process env carried the fixture key (the stash is module-global and
+    once-per-process, so each test re-arms it explicitly and restores the world after)."""
+
+    KEY = FAKE_KEY
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self._env_before = os.environ.pop("ANTHROPIC_API_KEY", None)
+        self._stash_before = sb._WORK_KEY
+        sb._WORK_KEY = None                       # force a fresh claim from the env
+        if self.KEY:
+            os.environ["ANTHROPIC_API_KEY"] = self.KEY
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def tearDown(self):
+        sb._WORK_KEY = self._stash_before
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        if self._env_before is not None:
+            os.environ["ANTHROPIC_API_KEY"] = self._env_before
+
+    def _sess(self, n=1, **reg):
+        return sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-%012d" % n,
+                                       "name": "s%d" % n, "cwd": "/tmp", **reg})
+
+
+class WorkKeyStash(_Keyed):
+    def test_the_key_is_claimed_out_of_the_environment_exactly_once(self):
+        self.assertEqual(self.be.work_key, FAKE_KEY)
+        self.assertNotIn("ANTHROPIC_API_KEY", os.environ,
+                         "an ambient key would bill EVERY session — the transport merges options.env "
+                         "over this process's env, so the strip must happen here")
+        # a re-constructed backend (the WS handler's lazy construction, tests) still finds it
+        be2 = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        self.assertEqual(be2.work_key, FAKE_KEY)
+
+    def test_an_empty_var_counts_as_no_key(self):
+        sb._WORK_KEY = None
+        os.environ["ANTHROPIC_API_KEY"] = ""
+        self.assertEqual(sb.work_api_key(), "")
+
+
+class EffectiveAuth(_Keyed):
+    def test_explicit_pick_wins_and_unset_preserves_the_ambient_world(self):
+        self.assertEqual(self._sess(1, auth="login").effective_auth(), "login")
+        self.assertEqual(self._sess(2, auth="key").effective_auth(), "key")
+        # unset + a key in the manager env = key, exactly what the pre-selector world did
+        self.assertEqual(self._sess(3).effective_auth(), "key")
+
+    def test_a_junk_registry_value_is_ignored(self):
+        self.assertEqual(self._sess(4, auth="both-please").auth, "")
+
+
+class EffectiveAuthKeyless(_Keyed):
+    KEY = ""
+
+    def test_everything_falls_to_login_when_no_key_exists(self):
+        self.assertEqual(self._sess(1).effective_auth(), "login")
+        self.assertEqual(self._sess(2, auth="key").effective_auth(), "login",
+                         "'key' with nothing to inject launches on the login — loudly, via _options")
+
+
+class OptionsInjection(_Keyed):
+    def setUp(self):
+        super().setUp()
+        # ClaudeAgentOptions is a parameter (a dict stands in) and the in-function import only needs
+        # HookMatcher — stub the module when the real dependency is absent (CI without the venv), so
+        # the one behavior this feature must never get wrong is tested everywhere
+        import sys
+        import types
+        self._fake_sdk = "claude_agent_sdk" not in sys.modules and not sb.sdk_importable()
+        if self._fake_sdk:
+            fake = types.ModuleType("claude_agent_sdk")
+            fake.HookMatcher = lambda **kw: kw
+            sys.modules["claude_agent_sdk"] = fake
+
+    def tearDown(self):
+        import sys
+        if self._fake_sdk:
+            sys.modules.pop("claude_agent_sdk", None)
+        super().tearDown()
+
+    def _options_kw(self, sess):
+        return self.be._options(sess, dict)
+
+    def test_a_key_session_gets_the_key_and_a_login_session_a_clean_env(self):
+        kw = self._options_kw(self._sess(1, auth="key"))
+        self.assertEqual(kw["env"].get("ANTHROPIC_API_KEY"), FAKE_KEY)
+        kw2 = self._options_kw(self._sess(2, auth="login"))
+        self.assertNotIn("ANTHROPIC_API_KEY", kw2["env"],
+                         "removal, not blanking: an empty var reads as key-mode-without-a-key")
+
+    def test_options_records_what_it_launched_with_for_the_init_check(self):
+        s = self._sess(3, auth="key")
+        self._options_kw(s)
+        self.assertTrue(s._launched_keyed)
+        s2 = self._sess(4, auth="login")
+        self._options_kw(s2)
+        self.assertFalse(s2._launched_keyed)
+
+    def test_a_key_pick_with_no_key_is_a_logged_problem_not_a_silent_fall(self):
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).read()
+        self.assertIn("session is set to the API key but the manager environment carries", src)
+        self.assertIn('kw["env"] = dict(kw["env"], ANTHROPIC_API_KEY=self.work_key)', src)
+
+
+class InitMismatchIsLoud(_Keyed):
+    def test_a_cli_landing_on_the_wrong_side_reaches_the_problems_ring(self):
+        s = self._sess(1, auth="login")
+        s._launched_keyed = False
+        self.be._note_auth_source(s, "ANTHROPIC_API_KEY")   # found a key some other way (apiKeyHelper…)
+        texts = [p["text"] for p in self.be.problems(10)]
+        self.assertTrue(any("billing the API key" in t for t in texts),
+                        "a session billing the wrong account must never pass silently")
+
+    def test_the_agreeing_init_stays_quiet(self):
+        s = self._sess(2, auth="key")
+        s._launched_keyed = True
+        self.be._note_auth_source(s, "ANTHROPIC_API_KEY")
+        self.assertFalse([p for p in self.be.problems(10) if "billing" in p["text"]])
+
+
+class SetAuth(_Keyed):
+    def test_persists_pending_and_seeds_the_next_session(self):
+        sid = self.be.spawn("n", "/tmp")
+        self.assertTrue(self.be.set_auth(sid, "login"))
+        reg = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual(reg["auth"], "login")
+        self.assertTrue(reg["authPending"], "the applying reconnect hasn't happened yet — badge dots")
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("auth"), "login")
+        # …and the next spawn seeds from it
+        sid2 = self.be.spawn("m", "/tmp")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid2).get("auth"), "login")
+
+    def test_the_picker_pick_beats_the_remembered_default(self):
+        sb.write_sdk_default(self.be.state_dir, auth="login")
+        sid = self.be.spawn("n", "/tmp", auth="key")
+        self.assertEqual(sb.read_reg(self.be.state_dir, sid)["auth"], "key")
+
+    def test_refuses_junk_and_a_key_pick_on_a_keyless_manager(self):
+        sid = self.be.spawn("n", "/tmp")
+        self.assertFalse(self.be.set_auth(sid, "credit-card"))
+        self.be.work_key = ""
+        self.assertFalse(self.be.set_auth(sid, "key"),
+                         "nothing to inject — refuse rather than half-apply; the UI never offers it")
+
+    def test_a_live_session_reconnects_and_gets_the_ack_chip(self):
+        sid = self.be.spawn("n", "/tmp")
+        s = self._sess(9)
+        s.sid = sid
+        called = []
+        s.request_reconnect = lambda: called.append(True)
+        self.be.sessions[sid] = s
+        self.assertTrue(self.be.set_auth(sid, "key"))
+        self.assertTrue(called, "auth is connect-time — the reconnect is what applies it")
+        self.assertEqual(s.auth, "key")
+        self.assertEqual(s._auth_pending, "key")
+        chips = [a for a in self.be._live.get(sid, {}).values() if a.get("command") == "/auth"]
+        self.assertEqual(len(chips), 1, "an idle session's switch must still show SOMETHING in the chat")
+
+    def test_a_stranded_pending_flag_heals_on_construction(self):
+        sid = self.be.spawn("n", "/tmp")
+        self.be._update_reg(sid, authPending=True)
+        self._sess(1, sid=sid)
+        s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
+        self.assertFalse(sb.read_reg(self.be.state_dir, sid).get("authPending"),
+                         "a fresh construction applies the reg on its next connect — pending is over")
+
+    def test_snapshot_and_dormant_rows_both_carry_the_choice(self):
+        sid = self.be.spawn("n", "/tmp", auth="login")
+        s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
+        self.assertEqual(s.snapshot()["auth"], "login")
+        rows = self.be.live_sessions()
+        self.assertEqual(rows[sid]["auth"], "login", "a dormant session's gear must read the same truth")
+
+
+class SpendKeyedSplit(_Keyed):
+    def test_key_turns_fold_into_the_key_subcount_and_login_turns_do_not(self):
+        self.be._record_spend(1.0, {"input_tokens": 10, "output_tokens": 5}, keyed=True)
+        self.be._record_spend(2.0, {"input_tokens": 100}, keyed=False)
+        d = json.loads((Path(self.d) / "spend.json").read_text())
+        day = d["days"][time.strftime("%Y-%m-%d")]
+        self.assertEqual(day["usd"], 3.0, "the total keeps every turn (display gates, the record doesn't)")
+        self.assertEqual(day["key"]["usd"], 1.0, "…but the key sub-count holds ONLY the key-billed turn")
+        self.assertEqual(day["key"]["turns"], 1)
+        self.assertEqual(day["key"]["tok"], 15)
+
+    def test_spend_windows_keyed_only_reads_the_subcounts(self):
+        self.be._record_spend(1.5, {"input_tokens": 10}, keyed=True)
+        self.be._record_spend(4.0, None, keyed=False)
+        real_state = km.jd.STATE
+        try:
+            km.jd.STATE = Path(self.d)
+            total = km._spend_windows()
+            keyed = km._spend_windows(keyed_only=True)
+        finally:
+            km.jd.STATE = real_state
+        self.assertEqual(total["month"]["usd"], 5.5)
+        self.assertEqual(keyed["month"]["usd"], 1.5,
+                         "a login turn's computed cost is dollars nobody is billed — never in the API sum")
+        self.assertEqual(keyed["month"]["turns"], 1)
+
+
+class UsagePayloadMixed(unittest.TestCase):
+    """_usage() attaches the keyed spend + the key's tail BESIDE the login's bars — only when key
+    turns actually exist, so a host that never uses its key shows nothing extra."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.real_state = km.jd.STATE
+        km.jd.STATE = Path(self.d)
+        self.real_tail = km._auth_key_tail
+        (Path(self.d) / "usage.json").write_text(json.dumps(
+            {"t": 1000, "five_hour": {"pct": 40, "resets_at": None}}))   # unstamped = legacy, keeps bars
+
+    def tearDown(self):
+        km.jd.STATE = self.real_state
+        km._auth_key_tail = self.real_tail
+
+    def _spend(self, keyed_turns):
+        day = time.strftime("%Y-%m-%d")
+        hour = time.strftime("%Y-%m-%dT%H")
+        b = {"usd": 2.0, "turns": 3, "tokIn": 1, "tokOut": 1, "tokCacheR": 0, "tokCacheW": 0}
+        if keyed_turns:
+            b["key"] = {"usd": 0.5, "turns": keyed_turns, "tok": 7}
+        (Path(self.d) / "spend.json").write_text(json.dumps({"days": {day: b}, "hours": {hour: b}}))
+
+    def test_bars_carry_the_keyed_spend_when_key_turns_exist(self):
+        km._auth_key_tail = lambda: "wxyz"
+        self._spend(keyed_turns=2)
+        u = km._usage()
+        self.assertTrue(u["fiveHour"], "the login's bars stay the headline")
+        self.assertEqual(u["apiTail"], "wxyz")
+        self.assertEqual(u["spend"]["month"]["usd"], 0.5, "keyed-only, never the total")
+
+    def test_no_key_turns_or_no_key_means_no_spend_beside_the_bars(self):
+        km._auth_key_tail = lambda: "wxyz"
+        self._spend(keyed_turns=0)
+        self.assertNotIn("spend", km._usage())
+        km._auth_key_tail = lambda: ""
+        self._spend(keyed_turns=2)
+        self.assertNotIn("spend", km._usage())
+
+    def test_the_spend_only_arm_names_the_key_too(self):
+        km._auth_key_tail = lambda: "wxyz"
+        (Path(self.d) / "usage.json").write_text(json.dumps({"t": 1000, "apiKey": True}))
+        self._spend(keyed_turns=0)
+        u = km._usage()
+        self.assertTrue(u["apiKey"])
+        self.assertEqual(u["apiTail"], "wxyz")
+
+
+class AuthErrorClass(unittest.TestCase):
+    def test_the_cli_and_api_phrasings_classify_and_transients_do_not(self):
+        for text in ("Not logged in · Please run /login",
+                     "Failed to authenticate. API Error: 401 API key is invalid.",
+                     "invalid x-api-key",
+                     "OAuth token has expired",
+                     'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'):
+            self.assertTrue(km._is_auth_error(text), text)
+        for text in ("500 server_error", "Request timed out", "prompt is too long",
+                     "You've reached your Fable 5 limit", ""):
+            self.assertFalse(km._is_auth_error(text), text)
+
+    def test_it_is_an_on_you_class_end_to_end(self):
+        import inspect
+        self.assertIn('"authErr": _is_auth_error(text)', inspect.getsource(km._api_error))
+        self.assertIn('"apiAuthErr": bool(aerr and aerr.get("authErr"))', inspect.getsource(km.build_session))
+        feed = inspect.getsource(km.build_feed)
+        self.assertIn('aerr.get("authErr"))))', feed, "the card floors to needs-you")
+        self.assertIn("sign-in or API key isn't working", feed, "the card names the real remedy")
+
+
+class Availability(unittest.TestCase):
+    """The selector exists only when BOTH choices are real — everywhere it could appear."""
+
+    def setUp(self):
+        self.real_sdk, self.real_acct = km._sdk, km._claude_account
+
+    def tearDown(self):
+        km._sdk, km._claude_account = self.real_sdk, self.real_acct
+
+    def _world(self, key, acct):
+        km._sdk = lambda: type("B", (), {"work_key": key})()
+        km._claude_account = lambda: acct
+
+    def test_both_gates_the_selector_and_the_tail_names_the_key(self):
+        self._world(FAKE_KEY, "aaaaaaaaaaaa")
+        self.assertTrue(km._auth_both())
+        self.assertEqual(km._auth_key_tail(), "wxyz")
+        a = km._auth_avail()
+        self.assertEqual((a["login"], a["key"], a["tail"]), (True, True, "wxyz"))
+        self.assertNotIn(FAKE_KEY, json.dumps(a), "the key itself never travels")
+
+    def test_one_choice_is_no_choice(self):
+        self._world("", "aaaaaaaaaaaa")
+        self.assertFalse(km._auth_both())
+        self._world(FAKE_KEY, "")
+        self.assertFalse(km._auth_both())
+
+    def test_the_session_payload_carries_auth_only_when_both_exist(self):
+        import inspect
+        src = inspect.getsource(km.build_session)
+        self.assertIn('"auth": (tm.get("auth", "") if _auth_both() else "")', src)
+        self.assertIn('"authTail": (_auth_key_tail() if _auth_both() else "")', src)
+
+    def test_the_picker_learns_availability_on_the_session_list(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn('"authAvail": _auth_avail()', src)
+
+
+class DrivePlumbing(unittest.TestCase):
+    """setAuth rides the same drive/park path as the other per-session switches (source pins)."""
+
+    def test_the_op_is_routed_parked_and_replayed(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn('"setAuth", "endSession"', src.replace("\n", " "), "an ID_OPS member")
+        self.assertIn('elif t == "setAuth" and msg.get("value") in ("login", "key"):', src)
+        self.assertIn("def _set_auth_or_park(be, sid, value):", src)
+        self.assertIn('_park_op(sid, ("auth", value))', src)
+        self.assertIn('elif op[0] == "auth":', src)
+        self.assertIn("be.set_auth(sid, op[1])", src)
+
+    def test_create_paths_pass_the_pick_through(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn("def _create_sdk_session(nm, cwd, auth=\"\"):", src)
+        self.assertEqual(src.count('auth=(a if a in ("login", "key") else "")'), 2,
+                         "the WS op and POST /new both pass it")
+
+    def test_the_abc_names_the_control_and_tmux_refuses(self):
+        sbc = open(os.path.join(os.path.dirname(HERE), "kernel", "session_backend.py")).read()
+        self.assertIn("def set_auth(self, sid: str, value: str) -> bool:", sbc)
+        self.assertIn("return False", sbc.split("def set_auth", 1)[1][:900])
+
+
+if __name__ == "__main__":
+    unittest.main()

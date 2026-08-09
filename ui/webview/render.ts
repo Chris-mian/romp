@@ -196,7 +196,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authTail?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -2651,7 +2651,9 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   const st = activeId ? sessions.get(activeId)?.status : undefined;
   // A spent MODEL allowance gets no Retry either (the user 2026-08-01): "retry" re-fails until the model
   // changes or its own window resets, so the card names the fix instead of offering a button that cannot work.
-  const spendCap = !!st?.apiSpendLimit || !!st?.apiModelLimit;
+  // A dead CREDENTIAL is the same shape (the user 2026-08-08, per-session auth): retrying re-presents the
+  // broken login/key forever — the fix is /login, the key, or switching which one the session bills.
+  const spendCap = !!st?.apiSpendLimit || !!st?.apiModelLimit || !!st?.apiAuthErr;
   if (!spendCap) {
     const retry = el("button", "apierror-retry") as HTMLButtonElement;
     retry.textContent = "Retry now";
@@ -2747,7 +2749,7 @@ function apiRetryTick(): void {
     // never auto-retried — the card asks you to raise it instead (the global pause it engages also gates this).
     // A spent MODEL allowance (apiModelLimit) is out for the same reason: every retry re-fails until the
     // user switches model or tops up, and the card says exactly that (the user 2026-08-01).
-    sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed && !s.status.apiSpendLimit && !s.status.apiModelLimit) blocked.add(id); });
+    sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed && !s.status.apiSpendLimit && !s.status.apiModelLimit && !s.status.apiAuthErr) blocked.add(id); });
     apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered / suppressed → stop
     blocked.forEach((id) => {
       // The kernel owns the cadence now (the user 2026-07-29): it backs each outage's attempts off up to
@@ -3513,7 +3515,7 @@ function renderTabs() {
     // "blocked" is an API error. An on-YOU one — "prompt is too long" (compact), a monthly spend cap (raise it,
     // the user 2026-07-14), or a spent model allowance (switch model, the user 2026-08-01) — is alarm-red dashed; a TRANSIENT API error is auto-retrying and needs no attention → the
     // amber retrying treatment, not red (the user 2026-06-29).
-    else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit || s.status.apiModelLimit) ? "tab-blocked" : "tab-retrying");
+    else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit || s.status.apiModelLimit || s.status.apiAuthErr) ? "tab-blocked" : "tab-retrying");
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
     else if (st === "compacting" || st === "clearing") tab.classList.add("tab-compacting");   // both: a context op in flight
@@ -4231,7 +4233,42 @@ let pickerListHost = "";
 
 function requestSessionList(host: string): void {
   pickerListHost = host;
+  // the billing choices on screen belong to the host that just stopped being selected — hide the auth
+  // row until ITS kernel's sessionList answers with its own availability (the same staleness rule the
+  // dir status follows; an older kernel never answers with one and the row simply stays away)
+  pickerAuthAvail = null;
+  syncPickerAuth();
   if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions", host });
+}
+
+// Per-session BILLING for a NEW session (the user 2026-08-08): login vs the API key the selected host's
+// manager environment carries. The row exists only when that host offers BOTH (authAvail on its
+// sessionList reply) AND the backend toggle says SDK (a tmux session's CLI lives in the tmux server's
+// environment, which the kernel does not control) — otherwise it disappears entirely.
+let pickerAuthAvail: { login?: boolean; key?: boolean; tail?: string; default?: string } | null = null;
+
+function syncPickerAuth(): void {
+  const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
+  if (!wrap) return;
+  const beSel = document.querySelector("#picker .picker-backend:not(.picker-host):not(.picker-auth) .picker-be-opt.sel") as HTMLElement | null;
+  const a = pickerAuthAvail;
+  const show = !pickMode && !!(a && a.login && a.key) && (beSel?.dataset.be || loadSettings().backend) === "sdk";
+  wrap.style.display = show ? "" : "none";
+  if (!show) return;
+  const keyBtn = wrap.querySelector('.picker-be-opt[data-auth="key"]') as HTMLElement | null;
+  if (keyBtn) keyBtn.textContent = a!.tail ? `API …${a!.tail}` : "API key";   // name WHICH key, never the key
+  // seed the selection from the host's default only when nothing is selected yet this open
+  if (!wrap.querySelector(".picker-be-opt.sel")) {
+    const def = a!.default === "key" ? "key" : "login";
+    wrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.auth === def));
+  }
+}
+
+// the picked billing for the create payload — "" when the row is hidden (kernel default applies)
+function pickerAuthChoice(): string {
+  const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
+  if (!wrap || wrap.style.display === "none") return "";
+  return (wrap.querySelector(".picker-be-opt.sel") as HTMLElement | null)?.dataset.auth || "";
 }
 
 function pickerHost(): string {
@@ -4372,7 +4409,7 @@ function dirKey(e: KeyboardEvent): boolean {
 // warned into a toast the "Opening…" cue was covering, so the create looked like it silently did
 // nothing for 30 seconds (the user 2026-07-28). The request is remembered so "Create it" can re-send
 // exactly the same create with mkdir set, host and backend included.
-interface CreateReq { name: string; backend: string; dir: string; host: string }
+interface CreateReq { name: string; backend: string; dir: string; host: string; auth?: string }
 let lastCreate: CreateReq | null = null;
 
 function startCreate(req: CreateReq, mkdir = false): void {
@@ -4463,6 +4500,21 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     };
     beWrap.append(beLabel, mkBe("sdk", "SDK", "Runs via the Claude Agent SDK."),   // not "headless" — same full chat UI (the user 2026-07-12)
                   mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."));   // SDK first — the de-facto default (the user 2026-07-02)
+    // the billing row exists only for SDK sessions — re-decide on every backend toggle
+    beWrap.addEventListener("click", () => syncPickerAuth());
+    // per-session BILLING row (the user 2026-08-08): Login | API …wxyz, shown only when the selected
+    // host offers both (see syncPickerAuth); the same segmented-toggle grammar as Backend above.
+    const auWrap = el("div", "picker-backend picker-auth");
+    auWrap.style.display = "none";   // hidden until a sessionList reply proves both choices exist
+    const auLabel = el("span", "picker-backend-label"); auLabel.textContent = "Billing";
+    const mkAu = (val: string, txt: string, tip: string) => {
+      const b = el("button", "picker-be-opt") as HTMLButtonElement;
+      b.type = "button"; b.textContent = txt; b.title = tip; b.dataset.auth = val;
+      b.addEventListener("click", () => auWrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b)));
+      return b;
+    };
+    auWrap.append(auLabel, mkAu("login", "Login", "Bill this session to the machine's Claude login (subscription usage)."),
+                  mkAu("key", "API key", "Bill this session to the API key the manager's environment carries (per-token)."));
     // per-session HOST picker (federation, the user 2026-07-02): local | each attached SSH host — the new
     // session is created BY that host's kernel (over its tunnel) and appears prefixed `host:name`. The
     // options are rebuilt on every open (hosts attach/detach live); the row hides with no hosts attached.
@@ -4494,8 +4546,11 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       const beSel = beWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
       // host: local ("") or an attached SSH host — the federation manager routes createSession there.
       const hostSel = (hostWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null)?.dataset.host || "";
+      // billing: the picker's Billing row when it is showing (both choices real on that host); ""
+      // omits the field and the kernel's own default stands (the user 2026-08-08)
+      const auth = pickerAuthChoice();
       startCreate({ name, backend: beSel?.dataset.be || loadSettings().backend,
-                    dir: dirInput.value.trim(), host: hostSel });
+                    dir: dirInput.value.trim(), host: hostSel, ...(auth ? { auth } : {}) });
     });
     const openAll = el("button", "picker-action");
     openAll.textContent = "↗ Open all running sessions";
@@ -4510,6 +4565,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     box.appendChild(list);
     box.appendChild(dirWrap);
     box.appendChild(beWrap);
+    box.appendChild(auWrap);
     box.appendChild(hostWrap);
     box.appendChild(actions);
     overlay.appendChild(box);
@@ -4523,11 +4579,16 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   if (actions) actions.style.display = pick ? "none" : "";
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
-  const beWrapEl = overlay.querySelector(".picker-backend:not(.picker-host)") as HTMLElement | null;
+  const beWrapEl = overlay.querySelector(".picker-backend:not(.picker-host):not(.picker-auth)") as HTMLElement | null;
   if (beWrapEl) {   // reset the backend toggle to the gear default each open (overridable for this session)
     beWrapEl.style.display = pick ? "none" : "";
     const def = loadSettings().backend || "tmux";
     beWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.be === def));
+  }
+  const auWrapEl = overlay.querySelector(".picker-auth") as HTMLElement | null;
+  if (auWrapEl) {   // fresh open: forget last time's pick + availability; the local sessionList reply re-arms it
+    auWrapEl.style.display = "none";
+    auWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.remove("sel"));
   }
   const hostWrapEl = overlay.querySelector(".picker-host") as HTMLElement | null;
   if (hostWrapEl) {   // rebuild the host options each open (attach/detach is live); hide with no remotes
@@ -6704,7 +6765,7 @@ function elapsedMs(sinceMs: number | null): string {
 // Each value is a little dropdown: picking an entry has the host inject the matching
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
-type MetaKind = "mode" | "model" | "effort" | "fast";
+type MetaKind = "mode" | "model" | "effort" | "fast" | "auth";
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
@@ -6731,6 +6792,14 @@ const FAST_CHOICES: { label: string; value: string }[] = [
   { label: "On", value: "on" },
   { label: "Off", value: "off" },
 ];
+// Per-session billing (the user 2026-08-08): the Claude login vs the API key the manager's environment
+// carries. The badge exists only when the session REPORTS a choice (st.auth) — the kernel emits it only
+// when the machine actually offers BOTH, so a one-auth machine shows no dead selector at all. The key
+// entry's menu label carries the key's last 4 (st.authTail) so you can tell WHICH key it is.
+const AUTH_CHOICES: { label: string; value: string }[] = [
+  { label: "Login", value: "login" },
+  { label: "API key", value: "key" },
+];
 // the fast-mode state ("on"/"off"/"cooldown") → the badge label
 function prettyFast(f: string | undefined): string {
   switch ((f || "").toLowerCase()) {
@@ -6738,6 +6807,10 @@ function prettyFast(f: string | undefined): string {
     case "cooldown": return "Fast cooldown";   // rate-limited: the CLI resumes fast mode when the limit resets
     default: return "Fast off";
   }
+}
+// the per-session billing choice → the badge label; the key wears its own last 4
+function prettyAuth(st: Status): string {
+  return (st.auth || "").toLowerCase() === "key" ? (st.authTail ? `API …${st.authTail}` : "API key") : "Login";
 }
 // the @claude-permission-mode var → a short readable badge label
 function prettyMode(m: string | undefined): string {
@@ -6751,11 +6824,12 @@ function prettyMode(m: string | undefined): string {
   }
 }
 const META_CHOICES: Record<MetaKind, { label: string; value: string }[]> = {
-  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES,
+  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES, auth: AUTH_CHOICES,
 };
 // the live value of a meta kind for the active session
 function metaCurrent(kind: MetaKind, st: Status): string {
-  return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast : st.mode) || "";
+  return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast
+    : kind === "auth" ? st.auth : st.mode) || "";
 }
 
 // Is this menu entry the session's current value? Effort matches exactly; the
@@ -6763,6 +6837,7 @@ function metaCurrent(kind: MetaKind, st: Status): string {
 function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "effort") return (st.effort || "").toLowerCase() === value;
   if (kind === "fast") return (st.fast || "").toLowerCase() === value;   // "cooldown" marks neither entry
+  if (kind === "auth") return (st.auth || "").toLowerCase() === value;
   if (kind === "mode") {
     const m = (st.mode || "").toLowerCase();
     if (value === "default") return m === "" || m === "default" || m === "normal";
@@ -6807,6 +6882,7 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
   btn.title = kind === "model" ? "change model (sends /model)"
     : kind === "effort" ? "change thinking effort (sends /effort)"
     : kind === "fast" ? "toggle fast mode (sends /fast)"
+    : kind === "auth" ? "switch which account this session bills (login vs API key; reconnects to apply)"
     : "change permission mode (shift+tab cycle)";
   btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn); });
   return btn;
@@ -6825,9 +6901,10 @@ function metaColor(kind: MetaKind, st: Status): string {
 // Build or refresh the model/effort buttons inside #spinner-meta. Called from
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
 function syncMetaControls(meta: HTMLElement, st: Status) {
-  // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name (the
-  // user 2026-06-16); fast is rightmost and exists only when the session reports a state (SDK init).
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : ""].filter(Boolean).join();
+  // order left→right: mode · model · effort · fast · auth — the mode selector sits LEFT of the model name
+  // (the user 2026-06-16); fast/auth exist only when the session reports them (SDK init / a both-auth
+  // machine), so a machine with one billing choice shows no dead selector (the user 2026-08-08).
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : "", st.auth ? "auth" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
@@ -6835,10 +6912,12 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     if (st.model) meta.appendChild(metaButton("model", st.model));
     if (st.effort) meta.appendChild(metaButton("effort", st.effort));
     if (st.fast) meta.appendChild(metaButton("fast", prettyFast(st.fast)));
+    if (st.auth) meta.appendChild(metaButton("auth", prettyAuth(st)));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;
-    const disp = kind === "mode" ? prettyMode(st.mode) : kind === "fast" ? prettyFast(st.fast) : metaCurrent(kind, st);
+    const disp = kind === "mode" ? prettyMode(st.mode) : kind === "fast" ? prettyFast(st.fast)
+      : kind === "auth" ? prettyAuth(st) : metaCurrent(kind, st);
     const label = b.querySelector(".meta-label") as HTMLElement | null;
     // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
     // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
@@ -6846,8 +6925,9 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     // model resolves live; effort reconnects to apply (--effort is connect-time) — both drive the switching-
     // dots from the server (st.modelPending / st.effortPending), with isMetaPending covering the sub-second
     // before the first server push (the user 2026-07-06).
-    const pending = (kind === "model" && !!st.modelPending) || (kind === "effort" && !!st.effortPending) || isMetaPending(kind, st);
-    const showDots = pending && (kind === "model" || kind === "effort");
+    const pending = (kind === "model" && !!st.modelPending) || (kind === "effort" && !!st.effortPending)
+      || (kind === "auth" && !!st.authPending) || isMetaPending(kind, st);
+    const showDots = pending && (kind === "model" || kind === "effort" || kind === "auth");   // all three apply via a resolve/reconnect the server tracks
     if (label) {
       if (showDots) {
         if (!label.querySelector(".meta-dots")) label.replaceChildren(metaDots());
@@ -6878,11 +6958,12 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
   menu.dataset.kind = kind;
   for (const c of META_CHOICES[kind]) {
     const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
-    item.textContent = c.label;
+    // the key entry names WHICH key by its last 4 (the user 2026-08-08) — same string the badge wears
+    item.textContent = (kind === "auth" && c.value === "key" && s.status.authTail) ? `API …${s.status.authTail}` : c.label;
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
-        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: activeId, value: c.value });
+        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : kind === "auth" ? "setAuth" : "setMode", id: activeId, value: c.value });
         const was = metaCurrent(kind, s.status);
         metaPending.set(`${activeId}:${kind}`, { was, until: Date.now() + 20_000 });
         btn.classList.add("meta-pending");
@@ -8104,6 +8185,10 @@ window.addEventListener("message", (e: MessageEvent) => {
     const from = typeof m.host === "string" ? m.host : "";
     if (from !== pickerListHost) return;
     if (typeof m.defaultDir === "string" && !from) kernelDefaultDir = m.defaultDir;   // the LOCAL default dir
+    // the selected host's billing choices ride its own list reply — this is what arms (or hides) the
+    // picker's Billing row (the user 2026-08-08); an older kernel sends none and the row stays away
+    pickerAuthAvail = (m.authAvail && typeof m.authAvail === "object") ? m.authAvail : null;
+    syncPickerAuth();
     renderPicker(m.items || []);
   }
   else if (m.type === "browseResult" && typeof m.path === "string") {   // native Browse dialog returned a folder
