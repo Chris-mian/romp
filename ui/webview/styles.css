@@ -1766,21 +1766,26 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    position:fixed child of the body, and the body has no transform, so the overlay still spans and dims
    the WHOLE viewport. */
 html.picker-lifted { background: transparent !important; }   /* THEME_CSS paints html AND body — html must step aside */
+/* The body's own background stays TRANSPARENT (the user 2026-08-09, pixel-verified headless): with the
+   root transparent, CSS promotes the BODY's background to the CANVAS — the whole viewport — so an opaque
+   background here painted a full-window #1e1e1e sheet under the dim, blacking out the feed and the bottom
+   bar behind the picker (the fourth form of the 2026-08-08 bug). The chat's backing where the pane was is
+   the ::before child: absolute inset 0 = exactly the pinned box, z-index -1 behind the content, and a
+   child's background never propagates to the canvas. */
 body.picker-lifted {
   position: fixed;
   left: var(--pane-x, 0); top: var(--pane-y, 0);
   width: var(--pane-w, 100%); height: var(--pane-h, 100%);
   overflow: hidden;
-  background: var(--bg);   /* the body now paints the chat exactly where the pane was */
+  background: transparent;
 }
+body.picker-lifted::before { content: ""; position: absolute; inset: 0; background: var(--bg); z-index: -1; }
 /* No measurable pane to stand in for (the pane is hidden, or the parent is cross-origin — VS Code):
-   fall back to hiding the page's own content so only the picker draws — and the fallback box goes
-   TRANSPARENT: with no --pane-* vars, body.picker-lifted above is a full-viewport sheet, and painted
-   --bg it would black out every pane behind the dialog (the settings modal's 2026-08-09 bug; this is
-   the same branch, fixed before it fired here). */
+   fall back to hiding the page's own content so only the picker draws — the backing pseudo included:
+   with no --pane-* vars its box spans the whole viewport, the same black-out from the other branch. */
 body.picker-lifted.pane-gone > * { visibility: hidden; }
 body.picker-lifted.pane-gone > #picker { visibility: visible; }
-body.picker-lifted.pane-gone { background: transparent; }
+body.picker-lifted.pane-gone::before { display: none; }
 /* centred, like every other modal. Top-aligned made sense when this filled the screen and the list
    wanted every pixel of height; as a dialog over the dashboard it should sit in the middle. */
 body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }

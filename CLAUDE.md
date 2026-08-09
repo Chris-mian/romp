@@ -225,9 +225,17 @@ iframe ELEMENT's own `background:transparent` (the default
 — the 2026-08-08 bug, twice); and the page's BODY is pinned to the pane's old
 screen rect and KEEPS PAINTING (`--pane-*` vars measured from the shell's pane
 div: `placeLifted()` in render.ts / gear.js), because hiding the content instead
-leaves a black hole where that pane was — the same bug's third form. Only an
-unmeasurable pane (hidden, or a cross-origin parent like VS Code) falls back to
-hiding its content (`.pane-gone` / `.rs-pane-gone`). Small pane-local dialogs
+leaves a black hole where that pane was — the same bug's third form. The pinned
+body's own `background` must stay TRANSPARENT, with the pane-rect backing on a
+`::before` child (absolute inset 0, `--bg`, z-index -1): with the root
+transparent, CSS promotes the BODY's background to the CANVAS — the whole
+viewport — so an opaque body background painted a full-window sheet under the dim
+and blacked out every pane outside the pinned rect. That is the bug's FOURTH form
+(2026-08-09, found by headless pixel comparison after the third fix; a child's
+background never propagates). Only an unmeasurable pane (hidden, or a
+cross-origin parent like VS Code) falls back to hiding its content (`.pane-gone`
+/ `.rs-pane-gone`), which also hides the backing pseudo — its var-less box spans
+the viewport. Small pane-local dialogs
 (confirm boxes, the feed's card modal) stay pane-local by design; this rule is
 for panels that present over the dashboard as a whole.
 

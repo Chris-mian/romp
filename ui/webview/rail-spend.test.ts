@@ -133,6 +133,18 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   assert.ok(usageJS.includes("'<div class=ru-tip-age>click to refresh</div>'"));
 });
 
+test("same-account hosts share the FRESHEST window reading — one truth per login", () => {
+  // the user 2026-08-09: the windows are account-wide allowances, so a host that hadn't polled in
+  // hours sat beside the live number contradicting it. Grouped on the acct digest, freshest t wins,
+  // window fields shared; each host keeps its OWN key spend (dollars are host-local).
+  const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
+  assert.ok(usageJS.includes("function shareFreshest(live)"));
+  assert.ok(usageJS.includes("var a=r.usage&&r.usage.acct;if(a)(by[a]=by[a]||[]).push(r);"), "grouped on the digest; key-only hosts (no acct) stand alone");
+  assert.ok(usageJS.includes("if(tr>tb)best=r;"), "freshest reading wins the group");
+  assert.ok(usageJS.includes("['fiveHour','sevenDay','fable','t','limited','acctLabel'].forEach"), "window fields shared — spend deliberately not");
+  assert.ok(usageJS.includes("shareFreshest(live);"), "…and it runs on every render");
+});
+
 test("the hover names WHICH login the window bars belong to (the tab hover's label)", () => {
   // the user 2026-08-09: the usage tip says whose account the windows are, like the tab hover;
   // the cross-host dedup stays on the opaque acct digest — acctLabel is display only

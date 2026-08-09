@@ -19,19 +19,26 @@
    old screen rect (--pane-* vars, gear.js placeLifted), still painting — so the dashboard shows through
    the full-window iframe with the feed cards live and visible in place under the dim, not a black hole
    where the pane was (the user 2026-08-08). #rsettings is a fixed child of an untransformed body, so the
-   backdrop still spans and dims the whole viewport. */
+   backdrop still spans and dims the whole viewport.
+
+   The body's own background MUST stay transparent (the user 2026-08-09, pixel-verified headless): with
+   the root transparent, CSS promotes the BODY's background to the CANVAS — the whole viewport — so an
+   opaque background here painted a full-window #1e1e1e sheet under the dim and blacked out every pane
+   outside the pinned rect (the fourth form of the 2026-08-08 bug, live in both lifted modals until
+   today). The pane-rect backing lives on a ::before child instead: absolute inset 0 resolves against
+   the fixed body = exactly the pinned box, z-index -1 sits behind the content, and a child's
+   background never propagates anywhere. */
 .rs-modal-open { background: transparent; }
 body.rs-lifted { position: fixed; left: var(--pane-x, 0); top: var(--pane-y, 0);
   width: var(--pane-w, 100%); height: var(--pane-h, 100%); overflow: hidden;
-  background: var(--bg, #1e1e1e); }
+  background: transparent; }
+body.rs-lifted::before { content: ""; position: absolute; inset: 0; background: var(--bg, #1e1e1e); z-index: -1; }
 /* no measurable pane to stand in for (hidden pane, a sliver, mobile's display:contents rows, or a
-   cross-origin parent like VS Code): hide the feed's own content so only the settings card draws —
-   and the fallback box goes TRANSPARENT (the user 2026-08-09): with no --pane-* vars set, body.rs-lifted
-   above is a full-viewport sheet, and painted --bg it blacked out every pane behind the modal (the
-   chat vanished, unlike every other panel). Transparent, the dashboard shows through the dim exactly
-   like the measurable case; in VS Code the webview's own background stands behind it, same as before. */
+   cross-origin parent like VS Code): hide the feed's own content so only the settings card draws — and
+   the backing pseudo goes with it (the user 2026-08-09): with no --pane-* vars the box spans the whole
+   viewport, and painted --bg it would be the same full-window black-out from the other branch. */
 body.rs-pane-gone #feed-head, body.rs-pane-gone #feed-list, body.rs-pane-gone #feed-foot { visibility: hidden; }
-body.rs-lifted.rs-pane-gone { background: transparent; }
+body.rs-lifted.rs-pane-gone::before { display: none; }
 .rs-card { width: min(560px, 94%); max-height: 88vh; overflow: auto; background: #252526; border: 1px solid #3a3a3a;
   border-radius: 10px; padding: 16px 20px; font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ccc; box-shadow: 0 12px 36px #000000aa; }
 #rsettings .rs-h { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #e8eaed; }

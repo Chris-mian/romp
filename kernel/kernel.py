@@ -17911,9 +17911,27 @@ return '<div class="ru-w ru-api">'
 // down per host: with per-session auth a host can carry BOTH a login's windows and its key's spend.
 // The one-host common case renders the same bars it always did, just without a host label anywhere.
 // (No native title anywhere on the rail, the user 2026-08-08: the rich tip is the ONE hover surface.)
+// Same account, ONE truth (the user 2026-08-09): the windows are ACCOUNT-wide allowances, so two
+// hosts signed into the same login are reporting the SAME quantity — and a host that hasn't polled
+// in hours sat beside the live number contradicting it (stale %, rolled '?', an 'updated 2h ago'
+// footer). Hosts are grouped by the acct digest (equality is exactly what it exists for) and every
+// member takes the freshest member's window reading; each host keeps its OWN key spend — dollars
+// really are host-local. Copies stay per host, so the hover still reads per host, just agreeing.
+function shareFreshest(live){var by={};
+live.forEach(function(r){var a=r.usage&&r.usage.acct;if(a)(by[a]=by[a]||[]).push(r);});
+Object.keys(by).forEach(function(a){var g=by[a];if(g.length<2)return;
+var best=g[0];g.forEach(function(r){
+var tb=(typeof best.usage.t==='number')?best.usage.t:-1,tr=(typeof r.usage.t==='number')?r.usage.t:-1;
+if(tr>tb)best=r;});
+g.forEach(function(r){if(r===best)return;var v={},u=r.usage,b=best.usage,k;
+for(k in u)v[k]=u[k];
+['fiveHour','sevenDay','fable','t','limited','acctLabel'].forEach(function(w){
+if(b[w]!==undefined)v[w]=b[w];else delete v[w];});
+r.usage=v;});});}
 function renderRows(rows,selfHost){ROWS=rows||[];LAST=[];
 var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
+shareFreshest(live);
 LAST=live.map(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 winDet(r.usage,det);spendDet(r.usage,det);
 return {host:r.host||selfHost||'this machine',det:det};});
