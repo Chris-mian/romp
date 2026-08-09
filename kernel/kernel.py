@@ -14023,6 +14023,10 @@ def _usage():
            # DIFFERENT accounts have genuinely separate allowances and pooling them was a lie (the user
            # 2026-07-30). An opaque digest — equality is the whole question, and no identifier travels.
            "acct": _claude_account(),
+           # …and its NAME, for the hover (the user 2026-08-09, who wanted the usage tip to say which
+           # account the windows belong to, the way the tab hover does). The dedup stays on the digest;
+           # this is display only, "" when no login.
+           "acctLabel": _claude_account_label(),
            "limited": limited if any(limited.values()) else None}
     # API-KEY spend BESIDE the bars — the KEYED split only (turns whose session billed the key; a login
     # turn's computed cost is dollars nobody pays), attached only when key turns actually exist, so a
@@ -17737,17 +17741,20 @@ paint();})();
 # Alt+Arrow nav (_LANDING_FOCUS_JS): capture on the shell document AND on every same-origin pane
 # document, re-attached on every iframe (re)load. Each panel exposes its OWN close (their state
 # cleanup lives in those closures); this block only decides which panel Escape means, topmost first
-# (usage z300 > Log z210 > net z200). With no shell modal open it touches nothing, so pane-local
-# Escapes (dialogs, menus inside the chat) keep working.
+# (shortcuts dialog z300 — whose close() first CANCELS an in-progress chord recording, one Escape
+# level at a time — then usage z300 > Log z210 > net z200). With no shell modal open it touches
+# nothing, so pane-local Escapes (dialogs, menus inside the chat) keep working.
 _LANDING_ESC_JS = """
 (function(){
 function onEsc(e){if(e.key!=='Escape')return;
-var closed=false,ru=document.getElementById('ru-back');
+var closed=false;
+if(window.__rompKeysClose&&window.__rompKeysClose()){closed=true;}
+else{var ru=document.getElementById('ru-back');
 if(ru&&ru.classList.contains('on')&&window.__rompUsageClose){window.__rompUsageClose();closed=true;}
 else{var er=document.getElementById('rerr-back');
 if(er&&!er.hidden&&window.__rompCloseErrs){window.__rompCloseErrs();closed=true;}
 else{var nt=document.getElementById('rnet-back');
-if(nt&&!nt.hidden&&window.__rompCloseNet){window.__rompCloseNet();closed=true;}}}
+if(nt&&!nt.hidden&&window.__rompCloseNet){window.__rompCloseNet();closed=true;}}}}
 if(closed){e.preventDefault();e.stopPropagation();}}
 document.addEventListener('keydown',onEsc,true);
 ['f-chat','f-fleet','f-feed','f-timeline'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
@@ -17843,6 +17850,7 @@ SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='numbe
 // the rail no longer draws each account's own bars (they aggregate, below), but the tip still tells
 // each host's story from this.
 function winDet(u,det){var nowS=Math.floor(Date.now()/1000);
+if(u.acctLabel)det._acct=u.acctLabel;   // WHICH login the windows belong to (the user 2026-08-09) — hover-only
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 // A ROLLED window (its reset passed since the last report) is UNKNOWN, not 0 (the user 2026-07-31: a
 // remote whose kernel had no live session to ask sat on a days-old snapshot, and the rail drew a
@@ -17937,6 +17945,9 @@ function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter
 var sp=d._spend||null;
 if(!keys.length&&!sp)return '';
 var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
+// the account the window bars belong to, named the way the tab hover names it (the user 2026-08-09);
+// only beside actual window sections — a key-only host's spend already says whose dollars they are
+if(d._acct&&keys.length)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';
 h+=keys.map(function(k){var v=d[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+'</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
@@ -19227,6 +19238,10 @@ def _landing():
             "color:#9aa0a6;text-transform:lowercase;margin:0 0 4px}"
             "#ru-tip .ru-tip-host:not(:first-child){margin-top:10px;padding-top:8px;"
             "border-top:1px solid rgba(255,255,255,0.08)}"
+            # the login the window bars belong to (the user 2026-08-09) — quiet, above the sections,
+            # the host heading's size without its lowercase-italic host vocabulary
+            ".ru-tip-acct{font:400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "color:#9aa0a6;margin:0 0 4px}"
             # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}"

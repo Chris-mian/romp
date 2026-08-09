@@ -23,12 +23,15 @@ test("the shared Escape block wires the shell document AND every pane document",
 });
 
 test("topmost first, and only when a shell modal is actually open", () => {
-  // usage modal (z300) beats the Log (z210) beats the net panel (z200); with nothing open the
-  // handler touches nothing, so pane-local Escapes (chat dialogs, menus) keep working
+  // the shortcuts dialog (z300, whose close() first cancels an in-progress recording) beats the
+  // usage modal (z300, opened from elsewhere) beats the Log (z210) beats the net panel (z200);
+  // with nothing open the handler touches nothing, so pane-local Escapes keep working
+  const ky = ESC.indexOf("__rompKeysClose");
   const ru = ESC.indexOf("__rompUsageClose");
   const er = ESC.indexOf("__rompCloseErrs");
   const nt = ESC.indexOf("__rompCloseNet");
-  assert.ok(ru > -1 && er > ru && nt > er, "priority order: usage, Log, net");
+  assert.ok(ky > -1 && ru > ky && er > ru && nt > er, "priority order: shortcuts, usage, Log, net");
+  assert.ok(ESC.includes("window.__rompKeysClose&&window.__rompKeysClose()"), "the dialog reports whether it consumed the press");
   assert.ok(ESC.includes("ru.classList.contains('on')"));
   assert.ok(ESC.includes("!er.hidden"));
   assert.ok(ESC.includes("!nt.hidden"));

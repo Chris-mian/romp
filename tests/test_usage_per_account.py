@@ -69,6 +69,9 @@ class AccountIdentity(unittest.TestCase):
 
     def test_the_usage_payload_carries_it(self):
         self.assertIn('"acct": _claude_account(),', inspect.getsource(km._usage))
+        # …and, since 2026-08-09, the login's NAME beside it — display for the hover only (the
+        # rail's cross-host dedup stays on the digest, which carries nothing)
+        self.assertIn('"acctLabel": _claude_account_label(),', inspect.getsource(km._usage))
 
 
 class FleetRollup(unittest.TestCase):

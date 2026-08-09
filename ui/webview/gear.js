@@ -27,16 +27,16 @@ function ku(path) {
   return kb() + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tok);
 }
 
-// Static port of the kernel's _shortcut_rows() (the chat-surface shortcuts).
+// The keyboard-shortcuts SECTION is one link now (the user 2026-08-09): the full list — bindable
+// commands, recording, conflicts — lives in the shell's shortcuts dialog (shortcuts-modal.ts), and
+// this row just opens it. Web shell only: in VS Code the same actions are contributed rompChat.*
+// commands, rebindable in VS Code's own Keyboard Shortcuts editor, so the row says that instead
+// (a second editor there would fight the native one). The old static list is gone with the section
+// (it opened with "Enter — send message", a typing key nobody looks up, and went stale per surface).
 var SHORTCUT_ROWS =
-  '<div class=rs-key><span class=rs-key-combo><kbd>Enter</kbd></span><span class=rs-key-desc>Send message</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>Shift</kbd> + <kbd>Enter</kbd></span><span class=rs-key-desc>New line</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>Esc</kbd></span><span class=rs-key-desc>Jump to the session tabs</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>←</kbd> / <kbd>→</kbd></span><span class=rs-key-desc>Switch session (from the tabs)</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>Ctrl</kbd> + <kbd>C</kbd></span><span class=rs-key-desc>Interrupt the session</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>O</kbd></span><span class=rs-key-desc>Jump to a session (quick switcher)</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></span><span class=rs-key-desc>New session picker</span></div>' +
-  '<div class=rs-key><span class=rs-key-combo><kbd>⌘/Ctrl</kbd> + <kbd>P</kbd></span><span class=rs-key-desc>Command palette (browser dashboard)</span></div>';
+  '<div class=rs-key id=rs-keys-web hidden><button id=rs-keys-btn type=button>Customize shortcuts…</button>' +
+  '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
+  '<div class=rs-key id=rs-keys-vsc hidden><span class=rs-key-desc>Shortcuts are VS Code keybindings here — search "rompChat" in Keyboard Shortcuts.</span></div>';
 
 // The modal markup — ported verbatim from the kernel's _gear_html; the model/
 // effort selects start empty and are filled from /models (see fill()).
@@ -273,17 +273,36 @@ function initGear(post) {
     else if (tries > 0) requestAnimationFrame(function () { placeLifted(tries - 1); });
   }
   function onRsResize() { placeLifted(0); }   // panes track the window; follow them while open
+  function clearPaneVars() { var st = document.documentElement.style;   // a stale rect from THIS open must not
+    ['--pane-x', '--pane-y', '--pane-w', '--pane-h'].forEach(function (k) { st.removeProperty(k); }); }   // place the NEXT one (the user 2026-08-09)
   function setModalCls(on) { var de = document.documentElement, m = 'rs-modal-open';
     if (on) { de.classList.add(m); document.body.classList.add(m);
       if (window.parent !== window) { document.body.classList.add('rs-lifted'); placeLifted(5); window.addEventListener('resize', onRsResize); } }
     else { de.classList.remove(m); document.body.classList.remove(m);
       document.body.classList.remove('rs-lifted'); document.body.classList.remove('rs-pane-gone');
+      clearPaneVars();
       window.removeEventListener('resize', onRsResize); } }
   function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
   function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
-    p.hidden = false; setModalCls(true); feedFull(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (tc) tc.value = tabCtxMode(s.tabCtx); if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    // Signal the SHELL first, then measure (the picker's order, adopted 2026-08-09): feedFull posts
+    // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
+    // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
+    // full-viewport fallback box blacked out every pane behind the modal.
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch !== false; if (tc) tc.value = tabCtxMode(s.tabCtx); if (cg) cg.checked = s.collapseGaps !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
+  // The shortcuts row: the web shell (same-origin parent) gets the customize link — it opens the
+  // shell's shortcuts dialog and closes this modal so the two never stack; VS Code (cross-origin
+  // parent) gets the pointer at its own Keyboard Shortcuts editor instead (the user 2026-08-09).
+  (function () {
+    var web = false;
+    try { web = window.parent !== window && !!window.parent.document; } catch (e) { web = false; }
+    var wrow = document.getElementById('rs-keys-web'), vrow = document.getElementById('rs-keys-vsc');
+    if (wrow) wrow.hidden = !web;
+    if (vrow) vrow.hidden = web;
+    var kb2 = document.getElementById('rs-keys-btn');
+    if (kb2) kb2.onclick = function () { closeSettings(); try { window.parent.postMessage({ romp: 'openKeys' }, '*'); } catch (e) { /* no shell to ask */ } };
+  })();
   p.addEventListener('click', function (e) { if (e.target === p) closeSettings(); });   // click the dimmed backdrop (not the card) → close
   document.addEventListener('click', function (e) { if (!p.hidden && e.target !== g && !p.contains(e.target)) closeSettings(); });
   var rf = document.getElementById('rrefresh');   // ↻ (web shell rail only): POST /restart, poll /healthz, reload

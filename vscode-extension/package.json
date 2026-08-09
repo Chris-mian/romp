@@ -127,11 +127,13 @@
     "keybindings": [
       {
         "command": "rompChat.nextTab",
+        "key": "ctrl+alt+right",
         "mac": "cmd+alt+right",
         "when": "activeWebviewPanelId == 'rompChat'"
       },
       {
         "command": "rompChat.prevTab",
+        "key": "ctrl+alt+left",
         "mac": "cmd+alt+left",
         "when": "activeWebviewPanelId == 'rompChat'"
       },
