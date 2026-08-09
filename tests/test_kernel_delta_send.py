@@ -149,7 +149,9 @@ class RenderHandlesTheTail(unittest.TestCase):
         # resident tail is fine). A GAP (from past what we hold) → ask for a full session: "wait for the
         # next full" was a promise nothing kept, and the tab froze there until its socket dropped.
         self.assertIn("if (from < 0) return;", r)
-        self.assertIn("if (from > s.events.length) {", r)
+        # the gap check runs in KERNEL coordinates — the client's injected optimistic tail is not part
+        # of the kernel's index space, and counting it masked genuine gaps (the user 2026-08-09)
+        self.assertIn("if (from > kernelLen) {", r)
         self.assertIn("requestFullSession(msg.id);", r)
         self.assertIn("s.events.length = from;", r)                            # truncate the superseded tail
         self.assertIn("for (const e of (msg.events || [])) s.events.push(e);", r)  # append the suffix

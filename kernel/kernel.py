@@ -21171,16 +21171,21 @@ def _ensure_bundles():
     """Build the shared webview bundles (the human's tuned UI) if missing/stale — keeps the
     kernel a single command and auto-rebuilds after TS/CSS edits (mirrors bin/romp-serve). Watches
     .css as well as .ts: a CSS-only change must still trigger a rebuild on restart (the user 2026-06-16
-    hit a shipped style that didn't go live because only *.ts was checked)."""
+    hit a shipped style that didn't go live because only *.ts was checked). Watches ui/webview TOO,
+    not just vscode-extension/src: esbuild.js builds the webview entrypoints from ../ui/webview
+    (render.ts, styles.css, feed.ts, …), so an edit there never marked the bundle stale — a
+    render.ts-only fix could sit unshipped through every kernel restart, with the ?v= cache token
+    frozen so browsers kept the old bundle as well (found 2026-08-09 hunting the optimistic-echo
+    bug: the docstring promised a rebuild the check couldn't see)."""
     cv = ROOT / "vscode-extension"
     render = DIST / "render.js"
     if not (cv / "node_modules").exists():
         sys.stderr.write("romp-kernel: UI deps missing — run once: (cd %s && npm install)\n" % cv)
         return
-    src = cv / "src"
+    srcs = [cv / "src", ROOT / "ui" / "webview"]
     stale = not render.exists() or any(
         f.stat().st_mtime > render.stat().st_mtime
-        for f in [*src.rglob("*.ts"), *src.rglob("*.css")])
+        for src in srcs for f in [*src.rglob("*.ts"), *src.rglob("*.css")])
     if stale:
         sys.stderr.write("romp-kernel: building UI bundles…\n")
         # --production (minified, no sourcemaps), matching vscode-extension/install.sh. Both

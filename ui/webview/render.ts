@@ -247,7 +247,13 @@ const order: string[] = [];           // positional tab order (for cycling)
 const OPT_PREFIX = "optimistic:";
 const OPT_TTL_MS = 20_000;    // backstop: a real send always echoes within this; past it we stop asserting
 const OPT_TAIL_SCAN = 30;     // the kernel's version (user atom / queued bubble) always lands at the tail
-const pendingSent = new Map<string, { text: string; ts: number }[]>();   // sid → in-flight optimistic sends
+// sid → in-flight optimistic sends. `base` is how many LANDED user atoms carrying this text the tail
+// already held at send time (stamped on the first reconcile, -1 until then): only a count BEYOND base
+// means THIS send landed. The old retire test was a bare substring scan with no notion of which event
+// carried the text, so a resend — or any short message that substrings an older bubble ("continue",
+// "test") — retired its own entry in the very call that created it, and the send showed nothing at
+// all (the user 2026-08-09, who watched sends vanish for a beat before appearing).
+const pendingSent = new Map<string, { text: string; ts: number; base: number }[]>();
 const isOptimistic = (e: ChatEvent): boolean => !!e.uuid && e.uuid.startsWith(OPT_PREFIX);
 
 // The kernel's own queued group, if one is at the tail. Ours merges INTO it when present: the session is
@@ -274,28 +280,44 @@ function reconcileOptimistic(s: Session): void {
   if (!list || !list.length) return;
   const now = Date.now();
   const tail = s.events.slice(-OPT_TAIL_SCAN);
-  const landed = (t: string) => tail.some((e) =>
-    (e.kind === "user" && typeof e.md === "string" && e.md.includes(t)) ||
-    (e.kind === "queued" && Array.isArray(e.texts) && e.texts.some((x) => typeof x.md === "string" && x.md.includes(t))));
-  const keep = list.filter((p) => now - p.ts < OPT_TTL_MS && !landed(p.text));
+  // A LANDED copy of the text is a real user atom — never the kernel's own provisional echo, whose
+  // uuid keeps the backend's "echo:" prefix all the way into the payload. Retiring on the echo was
+  // the flash-out: the echo deleted our entry for good, then blinked in its own echo→landed handoff
+  // with nothing left to cover the gap (the user 2026-08-09). The header above always said "until
+  // the payload DEMONSTRABLY carries the message" — an unlanded echo demonstrates nothing yet.
+  const landedCount = (t: string) => tail.filter((e) =>
+    e.kind === "user" && typeof e.md === "string" && e.md.includes(t)
+    && !String((e as any).uuid || "").startsWith("echo:")).length;
+  // The kernel's own PROVISIONAL copy — its queued bubble, or its echo atom — SUPPRESSES our bubble
+  // for this push (injecting beside it would show the send twice) but never retires the entry: if
+  // the provisional blinks out on the next push, ours steps straight back in.
+  const shownProvisional = (t: string) => tail.some((e) =>
+    (e.kind === "queued" && Array.isArray(e.texts) && e.texts.some((x) => typeof x.md === "string" && x.md.includes(t))) ||
+    (e.kind === "user" && typeof e.md === "string" && String((e as any).uuid || "").startsWith("echo:") && e.md.includes(t)));
+  // First reconcile after the send (registerOptimistic calls this synchronously): whatever matching
+  // atoms the tail ALREADY holds are background — an older identical message, a bubble this text
+  // substrings — not this send. Only growth past this count is a landing.
+  for (const p of list) if (p.base < 0) p.base = landedCount(p.text);
+  const keep = list.filter((p) => now - p.ts < OPT_TTL_MS && landedCount(p.text) <= p.base);
   if (keep.length) pendingSent.set(s.id, keep); else pendingSent.delete(s.id);
-  if (!keep.length) return;
+  const inject = keep.filter((p) => !shownProvisional(p.text));
+  if (!inject.length) return;
   const mk = (p: { text: string }) => ({ md: p.text, optimistic: true, cancelable: false });
   const qj = tailQueuedIdx(s.events);
   if (qj >= 0) {
     // something IS queued here → ours queues behind it: show it in that group, under its header, counted
     const q = s.events[qj] as Extract<ChatEvent, { kind: "queued" }>;
-    s.events[qj] = { ...q, texts: [...q.texts, ...keep.map(mk)] };
+    s.events[qj] = { ...q, texts: [...q.texts, ...inject.map(mk)] };
   } else {
     // nothing known-queued → a BARE dashed bubble: no "N queued messages" header to claim what we can't back
-    s.events.push({ kind: "queued", bare: true, texts: keep.map(mk), uuid: OPT_PREFIX + keep[0].ts });
+    s.events.push({ kind: "queued", bare: true, texts: inject.map(mk), uuid: OPT_PREFIX + inject[0].ts });
   }
 }
 
 // Record a composer send as in-flight and show its optimistic bubble NOW (before any kernel push).
 function registerOptimistic(id: string, text: string): void {
   const arr = pendingSent.get(id) || [];
-  arr.push({ text, ts: Date.now() });
+  arr.push({ text, ts: Date.now(), base: -1 });   // base is stamped by the reconcile just below
   pendingSent.set(id, arr);
   const s = sessions.get(id);
   if (!s) return;
@@ -308,7 +330,15 @@ function registerOptimistic(id: string, text: string): void {
   // in every case, not just the length-growing bare-bubble one.
   const v = views.get(id);
   if (v) v.stale = true;
-  if (id === activeId) appendActive();
+  if (id === activeId) {
+    appendActive();
+    // Your OWN send always reveals itself: appendActive's stick rule keeps the viewport still when
+    // you're read up >80px from the bottom, so a send made while scrolled up painted below the fold
+    // and looked like it never appeared (the user 2026-08-09). Hitting Enter is the intent to see
+    // the message — scroll to it, exactly once, at send time.
+    const content = document.getElementById("content");
+    if (content) content.scrollTop = content.scrollHeight;
+  }
 }
 
 // ── conversation rewind (edit a past message, SDK sessions) ──────────────────────────────────────
@@ -338,7 +368,7 @@ function reconcileRewind(s: Session): void {
   if (s.status?.backend === "sdk") {
     for (let i = lastCompact + 1; i < s.events.length; i++) {
       const e = s.events[i] as any;
-      if (e.kind === "user" && e.human && e.uuid && !e.romp && !e.interruptMarker && !e.pending
+      if (e.kind === "user" && e.human && e.uuid && !e.romp && !e.interruptMarker
           && !e.uuid.startsWith(OPT_PREFIX)) editable.add(e.uuid);
     }
   }
@@ -7888,7 +7918,14 @@ function chatTail(msg: any) {
   if (!s) return;                                  // no base yet → ignore; a full session must arrive first
   // msg.from is a GLOBAL transcript index; the resident events are the tail [headFrom, …) → map to local.
   const from = (msg.from | 0) - (s.headFrom || 0);
-  if (from > s.events.length) {
+  // The kernel's coordinate space ends at ITS OWN events — our injected optimistic tail is not in it.
+  // Comparing `from` against the inflated length masked a genuine 1-event gap (the repair below never
+  // fired, PR #107's desync class), and a delta starting exactly one past kernel truth landed BEYOND
+  // the injected bubble, freezing it into the resident events as fake history the reconcile's strip
+  // loop could never pop (the user 2026-08-09).
+  let kernelLen = s.events.length;
+  while (kernelLen > 0 && isOptimistic(s.events[kernelLen - 1])) kernelLen--;
+  if (from > kernelLen) {
     // GAP: the delta starts PAST what we hold, so the events in between never reached us. Applying it would
     // fabricate a transcript that silently skips them. This used to just `return` and "wait for the next
     // full" — but no full was ever coming: the kernel's per-client bookkeeping (_send_chat's echat) advances

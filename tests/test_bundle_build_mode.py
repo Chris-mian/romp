@@ -57,6 +57,21 @@ class BundleBuildMode(unittest.TestCase):
         self.assertIn("ROMP_EXT_DEV_BUILD", _read(EXT_INSTALL))
         self.assertIn("ROMP_EXT_DEV_BUILD", _read(KERNEL))
 
+    def test_the_staleness_scan_covers_every_source_root_esbuild_reads(self):
+        """esbuild.js builds the webview entrypoints from ../ui/webview (render.ts, styles.css,
+        feed.ts, …), but _ensure_bundles used to scan only vscode-extension/src — so a
+        ui/webview-only edit never marked the bundle stale, and the fix sat unshipped through
+        every kernel restart with the ?v= cache token frozen (found 2026-08-09 hunting the
+        optimistic-echo bug: the docstring promised a rebuild the check couldn't see)."""
+        self.assertIn("ui/webview", _read(ESBUILD).replace("\\", "/"),
+                      "esbuild reads the shared webview sources — the premise of this guard")
+        src = _read(KERNEL)
+        m = re.search(r"def _ensure_bundles\(\):.*?(?=\ndef )", src, re.S)
+        body = m.group(0)
+        self.assertIn('ROOT / "ui" / "webview"', body,
+                      "the staleness scan must watch ui/webview, where the webview sources live")
+        self.assertIn("for src in srcs", body, "…as one scan over every source root")
+
 
 if __name__ == "__main__":
     unittest.main()
