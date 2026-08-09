@@ -524,23 +524,104 @@ class LandingRevealPins(unittest.TestCase):
 
 
 class RailBell(unittest.TestCase):
-    """The desktop rail carries the same push bell as the mobile tab bar (the user 2026-08-08: a
-    laptop Chrome tab can receive Web Push with no install at all, but the opt-in bell rendered
-    only on the mobile layout, so a desktop tab had no way in)."""
+    """The desktop rail carries the same bell as the mobile tab bar (the user 2026-08-08), and the
+    pair is the MASTER notification switch (the user 2026-08-09): on = every task notifies unless
+    its own bell mutes it, with the device push subscription a best-effort leg on top."""
 
     def test_shell_serves_both_bells_and_one_flow_drives_them(self):
         status, body = _serve_get("/", headers={"X-Romp-Token": km.TOKEN})
         self.assertEqual(status, 200)
         page = body.decode()
-        self.assertIn("id=rail-bell hidden", page, "the rail bell ships hidden, revealed on Push support")
+        self.assertIn("id=rail-bell hidden", page, "the bells ship hidden; the wiring reveals them at boot")
         self.assertIn("id=mbell hidden", page, "the mobile bell is unchanged")
         # ONE wiring drives the pair — reveal, paint and busy all iterate the same list — so the
-        # two bells can never disagree about this device's subscription state
+        # two bells can never disagree about the master's state
         self.assertIn("querySelectorAll('#mbell,#rail-bell')", page)
         self.assertNotIn("getElementById('mbell')", page, "the single-bell wiring is gone")
         # the rail bell paints its states exactly like the mobile one
         self.assertIn(".rail-acts #rail-bell.on{color:var(--accent)}", page)
         self.assertIn(".rail-acts #rail-bell.busy{opacity:.45}", page)
+
+    def test_the_bell_is_the_master_switch_not_a_device_toggle(self):
+        _, body = _serve_get("/", headers={"X-Romp-Token": km.TOKEN})
+        page = body.decode()
+        # kernel-authoritative paint: state comes from GET /notify-all at boot and the shell WS
+        # push on every toggle — never from this device's push subscription
+        self.assertIn("fetch('/notify-all')", page)
+        self.assertIn("window.__rompNotifyAllPaint", page)
+        self.assertIn("m.type==='notifyAll'", page, "the shell WS repaints every open dashboard")
+        self.assertIn("post('/notify-all',{on:want})", page)
+        # the bell shows everywhere — the master matters even where the Push API is missing (the
+        # kernel box still gets osascript, other devices still buzz); only the subscribe leg gates
+        self.assertNotIn("('Notification' in window))return", page,
+                         "the old whole-bell capability bail is gone")
+        self.assertIn("var canPush=", page)
+        # the permission ask still runs in the tap's own stack (iOS voids the gesture across awaits)
+        self.assertIn("Notification.requestPermission():null", page)
+
+
+class MasterBellRoute(unittest.TestCase):
+    """GET/POST /notify-all — the master bell's kernel half (the user 2026-08-09). Live server for
+    the POST (the SubscribeRoutes pattern: a fake socket cannot exercise Content-Length reads)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def setUp(self):
+        try:
+            (jd.STATE / "notify-cards.json").unlink()
+        except OSError:
+            pass
+        km._notify_cards_cache.clear()
+
+    def _post(self, path, body, token=True, raw=None):
+        import urllib.request, urllib.error
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["X-Romp-Token"] = km.TOKEN
+        data = raw if raw is not None else json.dumps(body).encode()
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path),
+                                     method="POST", data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def test_get_is_gated_and_reads_the_store(self):
+        status, _ = _serve_get("/notify-all")
+        self.assertEqual(status, 403, "the master state is behind the serve token like every page")
+        status, body = _serve_get("/notify-all", headers={"X-Romp-Token": km.TOKEN})
+        self.assertEqual((status, json.loads(body)), (200, {"on": False}))
+
+    def test_post_flips_and_broadcasts(self):
+        sent = []
+        with mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append((app, m))):
+            code, body = self._post("/notify-all", {"on": True})
+        self.assertEqual((code, json.loads(body)), (200, {"ok": True, "on": True}))
+        self.assertTrue(km._notify_all_on())
+        self.assertIn(("shell", {"type": "notifyAll", "on": True}), sent,
+                      "every open dashboard's bell repaints on the toggle, not just the clicker's")
+        _, body = _serve_get("/notify-all", headers={"X-Romp-Token": km.TOKEN})
+        self.assertEqual(json.loads(body), {"on": True})
+        code, _ = self._post("/notify-all", {"on": False})
+        self.assertEqual(code, 200)
+        self.assertFalse(km._notify_all_on())
+
+    def test_post_requires_token_and_refuses_garbage(self):
+        code, _ = self._post("/notify-all", {"on": True}, token=False)
+        self.assertEqual(code, 403)
+        code, _ = self._post("/notify-all", None, raw=b"not json")
+        self.assertEqual(code, 400)
+        self.assertFalse(km._notify_all_on(), "a refused body must not flip the master")
 
 
 if __name__ == "__main__":

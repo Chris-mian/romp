@@ -100,7 +100,7 @@ interface AskItem {
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
   judging?: boolean;                               // the turn has SETTLED and the judge's pass is due/in flight → the swirl chip says Analyzing… — on a provisional card while the planner's classify is pending (the user 2026-07-12), and on a REAL working card while the closer's verdict is (the settle→verdict gap, the user 2026-07-13); an open turn stays the honest Working…
-  notify?: boolean | null;                         // per-card bell (the user 2026-07-28): the kernel fires an OS notification when THIS card enters needs_input/completed (kernel notify-cards.json ← the card's right-click menu). True/absent, never false
+  notify?: boolean | null;                         // per-card bell (the user 2026-07-28): the kernel fires an OS notification when THIS card enters needs_input/completed. EFFECTIVE state (card override > session override > the master bell's default, 2026-08-09) — with the master on, every card arrives armed unless muted. True/absent, never false
   tree: AskTreeNode[];                             // the ask's DAG, rendered as a tree in the expanded body
 }
 // A GROUP = N sibling asks minted by ONE typed turn (shared turnId), folded into a
@@ -637,7 +637,9 @@ function ensureHeader() {
 // Every card wears a small bell BUTTON in its bottom-right corner (the user 2026-07-28, round 2 —
 // promoted from a right-click-only toggle): click it to arm/disarm an OS notification for when THIS
 // card blocks on you or completes (kernel notify-cards.json; the session-wide version lives on the
-// timeline lane / tab menu). Armed = accent bell, always visible; off = slashed dim bell, revealed on
+// timeline lane / tab menu, and the bottom bar's master bell defaults every card ON at once — the
+// kernel resolves the three most-specific-wins and sends the effective state, so a click here is a
+// per-card override against the defaults). Armed = accent bell, always visible; off = slashed dim bell, revealed on
 // card hover (the tab-close idiom — no clutter on a quiet feed). Right-clicking the card still opens
 // the labelled menu for the same toggle. Optimism mirrors the lane toggles: pendingNotify holds the
 // clicked value sticky across pushes until the kernel's payload agrees, so the bell never flickers
