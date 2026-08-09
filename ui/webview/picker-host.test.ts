@@ -25,5 +25,8 @@ test("createSession carries the picked host (empty = local) so the manager route
 });
 
 test("picking a remote host disables the (host-local) Browse… dialog", () => {
-  assert.match(RENDER, /browse\.disabled = !!h/);
+  // The disable moved into applyBrowseState, which also hides the button on a kernel with no desktop at
+  // all — see picker-dir.test.ts. The host row's job is unchanged: pick remote, lose Browse.
+  assert.match(RENDER, /applyBrowseState\(h\);/);
+  assert.match(RENDER, /function applyBrowseState\(host: string\)[\s\S]*?b\.disabled = !!host;/);
 });

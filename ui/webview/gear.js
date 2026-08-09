@@ -249,6 +249,11 @@ function initGear(post) {
     if (je && typeof v.judgeEffort === 'string') je.value = v.judgeEffort;
     if (ie && typeof v.indexEffort === 'string') ie.value = v.indexEffort;
     if (dd && typeof v.defaultDir === 'string') dd.value = v.defaultDir;   // the kernel's persisted default is authoritative
+    // Browse… draws on the KERNEL's screen, and a kernel with no desktop has none — the click used to
+    // vanish into a macOS-only dialog. Drop the button rather than offer one that cannot work; the
+    // field takes a typed path, which is what that machine has. An older kernel sends no verdict and
+    // keeps the button it always had.
+    if (ddb && typeof v.nativeDialogs === 'boolean') ddb.style.display = v.nativeDialogs ? '' : 'none';
     var x = lv(); b.innerHTML = 'kernel ' + (v.kernel_sha || '?') + '\nserving v' + v.dist_ver + '\nthis tab v' + (x || '?');
   }).catch(function () { b.textContent = '(version unavailable)'; }); }
   // The settings modal is full-WINDOW in the web shell — ask it to expand the

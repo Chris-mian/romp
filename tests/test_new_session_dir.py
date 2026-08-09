@@ -12,11 +12,16 @@ remote host: federation routes the same ops to that host's kernel, and it reads 
 
 Synthetic paths in a temp dir only.
 """
+import inspect
 import json
 import os
 import tempfile
+import threading
+import types
 import unittest
+from unittest import mock
 from importlib.machinery import SourceFileLoader
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -222,6 +227,126 @@ class CreateSessionDirFork(_Wire):
         self.send({"type": "createSession", "name": "web", "dir": self.tmp, "backend": "sdk"})
         self.assertEqual(len(self.spawned), 1)
         self.assertNotIn("createDirMissing", [m.get("type") for m in self.sent])
+
+
+class NativeDialogAvailability(unittest.TestCase):
+    """Browse… (and 📎) reach a dialog on the KERNEL's machine, and that machine may have no way to show
+    one. It was osascript-only, so on Linux the click hit a missing binary, the OSError was swallowed, no
+    reply came back, and the button sat there looking alive. Ask the desktop what it has; when the answer
+    is nothing, say so instead of returning silence."""
+
+    def cmd(self, kind="folder", platform="linux", which=(), env=None):
+        have = set(which)
+        with mock.patch.object(km.sys, "platform", platform), \
+             mock.patch.object(km.shutil, "which", lambda e: ("/usr/bin/" + e) if e in have else None), \
+             mock.patch.dict(os.environ, env or {}, clear=False):
+            for k in ("DISPLAY", "WAYLAND_DISPLAY"):
+                if not (env or {}).get(k):
+                    os.environ.pop(k, None)
+            return km._dialog_cmd(kind)
+
+    def test_a_headless_machine_has_no_dialog_at_all(self):
+        self.assertIsNone(self.cmd(which=("zenity",)),
+                          "zenity with no screen to draw on is the same silent nothing in a new hat")
+        self.assertIsNone(self.cmd(which=()))
+
+    def test_a_linux_desktop_uses_whichever_picker_it_has(self):
+        z = self.cmd(which=("zenity",), env={"DISPLAY": ":0"})
+        self.assertEqual(z[0], "zenity")
+        self.assertIn("--directory", z)                       # a session cwd is a folder, never a file
+        self.assertNotIn("--directory", self.cmd("file", which=("zenity",), env={"DISPLAY": ":0"}))
+        k = self.cmd(which=("kdialog",), env={"WAYLAND_DISPLAY": "wayland-0"})
+        self.assertEqual(k[0], "kdialog")                     # KDE, and Wayland counts as a desktop
+        self.assertIn("--getexistingdirectory", k)
+        self.assertIn("--getopenfilename", self.cmd("file", which=("kdialog",), env={"DISPLAY": ":0"}))
+
+    def test_macos_still_uses_osascript_and_needs_no_display_var(self):
+        c = self.cmd(platform="darwin", which=())
+        self.assertEqual(c[0], "osascript")
+        self.assertIn("choose folder", c[-1])
+        self.assertIn("choose file", self.cmd("file", platform="darwin", which=())[-1])
+
+    def test_the_capability_is_what_the_ui_is_told(self):
+        with mock.patch.object(km, "_dialog_cmd", lambda kind: None):
+            self.assertFalse(km._native_dialogs())
+        with mock.patch.object(km, "_dialog_cmd", lambda kind: ["zenity"]):
+            self.assertTrue(km._native_dialogs())
+
+    def test_a_cancelled_or_failed_dialog_is_None_not_a_crash(self):
+        with mock.patch.object(km, "_dialog_cmd", lambda kind: ["picker"]):
+            with mock.patch.object(km.subprocess, "run",
+                                   lambda *a, **k: types.SimpleNamespace(stdout="  /tmp/chosen \n")):
+                self.assertEqual(km._run_dialog("folder"), "/tmp/chosen")
+            with mock.patch.object(km.subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="\n")):
+                self.assertIsNone(km._run_dialog("folder"), "cancelled → empty stdout")
+            with mock.patch.object(km.subprocess, "run", mock.Mock(side_effect=OSError("gone"))):
+                self.assertIsNone(km._run_dialog("folder"))
+
+    def test_the_reason_names_the_actual_cause_and_what_to_do_instead(self):
+        with mock.patch.object(km.sys, "platform", "linux"), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DISPLAY", None); os.environ.pop("WAYLAND_DISPLAY", None)
+            why = km._no_dialog_why("folder")
+            self.assertIn("No folder dialog", why)
+            self.assertIn("no desktop session", why)
+            self.assertNotIn("zenity", why, "no point telling a headless box to install a picker")
+            self.assertIn("Type the folder path", why)
+            f = km._no_dialog_why("file")
+            self.assertIn("No file dialog", f, "the 📎 refusal is about a FILE, not a folder")
+            self.assertIn("paste its path", f)
+        with mock.patch.object(km.sys, "platform", "linux"), \
+             mock.patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False):
+            self.assertIn("zenity", km._no_dialog_why("folder"), "a desktop with no picker CAN install one")
+
+
+class NativeDialogWire(_Wire):
+    """What the client sees: the capability up front, and a spoken refusal if a click lands anyway."""
+
+    def test_the_session_list_advertises_whether_browse_can_work(self):
+        for cap in (True, False):
+            with mock.patch.object(km, "_native_dialogs", lambda c=cap: c):
+                self.sent.clear()
+                r = self.send({"type": "requestSessions"})
+                self.assertEqual(r["type"], "sessionList")
+                self.assertIs(r["nativeDialogs"], cap)
+
+    def test_a_click_a_headless_kernel_cannot_serve_is_answered_not_swallowed(self):
+        with mock.patch.object(km, "_native_dialogs", lambda: False):
+            for msg, said in (({"type": "browseDir"}, "No folder dialog"),
+                              ({"type": "browseDir", "target": "gear"}, "No folder dialog"),
+                              ({"type": "pickFile"}, "No file dialog")):
+                self.sent.clear()
+                r = self.send(msg)
+                self.assertIsNotNone(r, "silence is the bug: %r returned nothing" % (msg,))
+                self.assertEqual(r["type"], "warn")
+                self.assertIn(said, r["text"])
+
+    def test_a_kernel_that_can_show_one_says_nothing_and_opens_it(self):
+        opened = []
+        with mock.patch.object(km, "_native_dialogs", lambda: True), \
+             mock.patch.object(km, "_pick_folder", lambda: opened.append("folder") or ""), \
+             mock.patch.object(km, "_pick_file", lambda: opened.append("file") or ""):
+            for msg in ({"type": "browseDir"}, {"type": "pickFile"}):
+                self.sent.clear()
+                self.send(msg)
+                self.assertEqual([m for m in self.sent if m.get("type") == "warn"], [],
+                                 "an available dialog must not be talked about, only shown")
+        for t in threading.enumerate():                      # the dialog runs off the message loop
+            if t is not threading.current_thread() and t.daemon:
+                t.join(timeout=2)
+        self.assertEqual(sorted(opened), ["file", "folder"])
+
+    def test_the_gear_learns_the_same_thing_from_its_own_route(self):
+        # The gear has no socket — it fetches /version — so the capability rides there too, beside the
+        # default directory it already reads.
+        src = inspect.getsource(km._version_info)
+        self.assertIn('"nativeDialogs": _native_dialogs()', src)
+        self.assertIn("v.nativeDialogs", _gear())
+        self.assertIn("ddb.style.display", _gear(), "no dialog on this machine → no Browse button")
+
+
+def _gear():
+    return Path(os.path.dirname(HERE), "ui", "webview", "gear.js").read_text()
 
 
 class HeadlessParity(unittest.TestCase):

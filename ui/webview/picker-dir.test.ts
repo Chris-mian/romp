@@ -66,6 +66,30 @@ test("a Browse button opens the host-native folder dialog (browseDir → browseR
   assert.match(CSS, /\.picker-browse \{/);
 });
 
+// The dialog is drawn by the KERNEL, and not every kernel can draw one — a Linux server or cloud VM has
+// no desktop session, and the button was a no-op there. The capability rides in on the local sessionList;
+// every place that touches the button goes through ONE helper, so a new call site can't reintroduce a
+// button that promises what the machine cannot do.
+test("Browse… disappears on a kernel with no desktop, and is disabled (not hidden) for a remote host", () => {
+  assert.match(RENDER, /let kernelNativeDialogs = true;/, "unknown → keep the button an older kernel always had");
+  assert.match(RENDER, /function applyBrowseState\(host: string\)[\s\S]*?b\.style\.display = kernelNativeDialogs \? "" : "none";[\s\S]*?b\.disabled = !!host;/);
+  // one helper, called from all three places the button's state can change
+  assert.match(RENDER, /applyBrowseState\(h\);/);                // the host row was clicked
+  assert.match(RENDER, /applyBrowseState\(""\);/);               // the picker opened
+  assert.match(RENDER, /applyBrowseState\(pickerHost\(\)\);/);   // the capability landed while it was open
+  assert.doesNotMatch(RENDER, /browse0/, "the old inline reset is gone — the state lives in the helper");
+  assert.match(CSS, /\.picker-browse:disabled \{/, "a disabled button must LOOK disabled, not just ignore clicks");
+});
+
+test("the capability is adopted only from the LOCAL kernel's reply, like defaultDir", () => {
+  // a remote's answer is about that machine's screen, not this one's
+  assert.match(RENDER, /if \(typeof m\.nativeDialogs === "boolean" && !from\) \{\s*\n\s*kernelNativeDialogs = m\.nativeDialogs;/);
+});
+
+test("no tooltip still claims the folder dialog is macOS-only", () => {
+  assert.doesNotMatch(RENDER, /native macOS dialog/);
+});
+
 test("the dir field prefills with the kernel's real default path (not blank), still editable", () => {
   // …and only from the LOCAL reply: a remote kernel's default directory is that machine's, not this one's
   assert.match(RENDER, /if \(typeof m\.defaultDir === "string" && !from\) kernelDefaultDir = m\.defaultDir/);

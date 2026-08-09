@@ -4261,6 +4261,30 @@ function dirPrefill(host: string): string {
   return host ? "" : (kernelDefaultDir || loadSettings().defaultDir || "");
 }
 
+// Browse… is served by the kernel, and only when THAT machine can actually draw a dialog. Two ways it
+// can't: a REMOTE host, whose dialog would open on the local screen and list the wrong disk; and a kernel
+// with no desktop session at all — a server, a cloud VM — where the click used to reach a macOS-only
+// osascript and return nothing whatsoever. Neither is a reason to leave a button that looks live, and
+// neither costs anything to lose: the field beside it already does the job — the completer asks the
+// OWNING kernel, so a path on any host is typed with real folders offered as you go.
+// The capability rides in on the local sessionList; assume yes until a kernel says otherwise, so an older
+// kernel that doesn't send it keeps the button it always had.
+let kernelNativeDialogs = true;
+
+// The two cases are shown differently, because one of them can change and the other cannot. A REMOTE host
+// is one click back to local, so the button stays in place, disabled, saying so. A kernel with no desktop
+// can NEVER open a dialog, so the button is not rendered at all: a permanently grey control explained only
+// by a hover title is no explanation on a phone, and the field beside it is the whole affordance anyway.
+function applyBrowseState(host: string): void {
+  const b = document.querySelector("#picker .picker-browse") as HTMLButtonElement | null;
+  if (!b) return;
+  b.style.display = kernelNativeDialogs ? "" : "none";
+  b.disabled = !!host;
+  b.title = host
+    ? `The native dialog is local-only. Type the path on ${host} instead; it completes as you type.`
+    : "Pick a folder with the native dialog (opens on the kernel's machine — host-local)";
+}
+
 // Which host's sessions the picker list is currently showing ("" = this machine). The Host row picks the
 // machine a NEW session would be created on; it now also picks whose EXISTING sessions are listed, so a
 // remote session can be reopened or revived without going to that machine's own dashboard.
@@ -4530,7 +4554,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     const dirList = document.createElement("datalist"); dirList.id = "picker-dir-list";
     const browseBtn = el("button", "picker-browse") as HTMLButtonElement;
     browseBtn.type = "button"; browseBtn.textContent = "Browse…";
-    browseBtn.title = "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)";
+    browseBtn.title = "Pick a folder with the native dialog (opens on the kernel's machine — host-local)";
     browseBtn.addEventListener("click", () => { if (vscodeApi) vscodeApi.postMessage({ type: "browseDir" }); });
     // the completer's dropdown + the one-line status of whatever is typed, both fed by the owning kernel
     const dirMenu = el("div", "picker-dir-menu"); dirMenu.id = "picker-dir-menu"; dirMenu.style.display = "none";
@@ -4660,8 +4684,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
         hostWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b));
         // the native Browse… dialog opens on the LOCAL kernel's screen, so it can't stand for a remote
         // machine's disk; the inline completer can — it asks that host's own kernel (the user 2026-07-28)
-        const browse = overlay!.querySelector(".picker-browse") as HTMLButtonElement | null;
-        if (browse) { browse.disabled = !!h; browse.title = h ? `The native dialog is local-only. Type the path on ${h} instead; it completes as you type.` : "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)"; }
+        applyBrowseState(h);
         const dirIn = document.getElementById("picker-dir") as HTMLInputElement | null;
         if (dirIn) dirIn.placeholder = h ? `New-session directory on ${h} (blank = its default)` : "New-session directory (blank = default)";
         // …and the SESSIONS listed above belong to that machine now too (the user 2026-07-29): the list
@@ -4680,9 +4703,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       });
       hostWrapEl.appendChild(b);
     }
-    const browse0 = overlay.querySelector(".picker-browse") as HTMLButtonElement | null;
-    if (browse0) browse0.disabled = false;   // fresh open defaults back to local
   }
+  applyBrowseState("");   // fresh open defaults back to local — enabled unless this kernel has no desktop
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
   // the host row resets to local on every open, so this is the local prefill: what you last used here,
   // else the kernel's persisted default (file→env; localStorage is a same-tab cache)
@@ -8249,6 +8271,12 @@ window.addEventListener("message", (e: MessageEvent) => {
     const from = typeof m.host === "string" ? m.host : "";
     if (from !== pickerListHost) return;
     if (typeof m.defaultDir === "string" && !from) kernelDefaultDir = m.defaultDir;   // the LOCAL default dir
+    // …and whether that kernel can open a folder dialog at all. It arrives after the picker is already on
+    // screen, so re-settle the button now rather than leaving it live until the next open.
+    if (typeof m.nativeDialogs === "boolean" && !from) {
+      kernelNativeDialogs = m.nativeDialogs;
+      applyBrowseState(pickerHost());
+    }
     // the selected host's billing choices ride its own list reply — this is what arms (or hides) the
     // picker's Billing row (the user 2026-08-08); an older kernel sends none and the row stays away
     pickerAuthAvail = (m.authAvail && typeof m.authAvail === "object") ? m.authAvail : null;
@@ -8770,48 +8798,76 @@ function setupComposer() {
   });
   wirePasteFallback(ta); // belt-and-braces: native paste disarms it, so no double-insert
 
-  // The bulletproof path: 📎 asks the host to run a native open dialog (no
-  // workbench drop overlay to fight) and the picked path comes back as
-  // droppedPath → an attachment thumbnail (the user 2026-08-04; it used to insert
-  // the raw path at the cursor). Mousedown (not click) so the textarea keeps focus.
+  // 📎 opens a file picker on the machine whose SCREEN you are looking at, routed
+  // by host the same way Browse… splits:
   //
-  // TOUCH devices (phone/tablet on the web dashboard) can't use the host dialog:
-  // it pops on the DESKTOP running the kernel, not the phone. So 📎 instead opens
-  // the phone's own photo picker (a hidden <input type=file accept=image/*>), and
-  // the chosen image's bytes ship to the host (shipFileToHost → dropFile), which
-  // saves them under ~/.local/state/romp/drops/ and posts the saved path back
-  // (droppedPath), landing as an attachment thumbnail — a screenshot reaches the
-  // session with no AirDrop/path gymnastics (the user 2026-06-17).
+  //   • VS Code webview → the host extension's native open dialog (pickFile): the
+  //     editor IS the local machine, so the dialog is on the right screen and the
+  //     picked path comes back as droppedPath → an attachment thumbnail (the user
+  //     2026-08-04; it used to insert the raw path at the cursor).
+  //   • Web dashboard (http/https) → the BROWSER's own picker (the hidden
+  //     <input type=file> below), and the chosen files' bytes ship to the kernel
+  //     (shipFileToHost → dropFile → droppedPath), the flow drag/paste already
+  //     rides. The old behavior posted pickFile to the kernel, whose native dialog
+  //     opens on the KERNEL's machine — the wrong screen entirely from a remote
+  //     browser, and on a headless kernel nothing but a warning.
+  //
+  // TOUCH devices keep the phone photo-picker UX (accept=image/*, the user
+  // 2026-06-17: a screenshot reaches the session with no AirDrop/path gymnastics);
+  // a desktop browser gets an unscoped, multi-select picker — attributes are set
+  // per open, at the moment the pointer type is known.
   const attach = document.getElementById("composer-attach") as HTMLButtonElement | null;
   const isTouch = isCoarsePointer;
+  const isWebPage = location.protocol === "http:" || location.protocol === "https:";
   const filePicker = document.createElement("input");
   filePicker.type = "file";
-  filePicker.accept = "image/*";
   filePicker.style.display = "none";
   filePicker.addEventListener("change", () => {
     Array.from(filePicker.files || []).forEach((f) => shipFileToHost(f));
     filePicker.value = ""; // let the same file be picked again
   });
   document.body.appendChild(filePicker);
-  // touch: open the phone's photo picker — must fire from a real click gesture (iOS)
-  attach?.addEventListener("click", (e) => { if (isTouch()) { e.preventDefault(); filePicker.click(); } });
-  // desktop: native host dialog; mousedown keeps the textarea focused for cursor-position insert
+  // web (touch or desktop): open the browser's picker — must fire from a real click gesture (iOS)
+  attach?.addEventListener("click", (e) => {
+    if (!isTouch() && !isWebPage) return;   // VS Code desktop → the host-dialog path (mousedown below)
+    e.preventDefault();
+    if (isTouch()) { filePicker.accept = "image/*"; filePicker.multiple = false; }
+    else { filePicker.removeAttribute("accept"); filePicker.multiple = true; }
+    filePicker.click();
+  });
+  // VS Code desktop: native host dialog; mousedown keeps the textarea focused for cursor-position insert
   attach?.addEventListener("mousedown", (e) => {
-    if (isTouch()) return;
+    if (isTouch() || isWebPage) return;
     e.preventDefault();
     vscodeApi?.postMessage({ type: "pickFile" });
   });
 }
 
-// No filesystem path available for a dropped/pasted file → ship the bytes to
-// the host, which saves them under ~/.local/state/romp/drops/ and posts back
-// {type:"droppedPath", path} — which lands as an attachment thumbnail.
+// No filesystem path available for a picked/dropped/pasted file → ship the bytes
+// to the kernel that OWNS the active session, which saves them under its state
+// dir's drops/ and posts back {type:"droppedPath", path} — which lands as an
+// attachment thumbnail. dropFile carries the session id so federation routes it
+// (routeOutbound's SCALAR_ID): the saved path rides the prompt and is read by the
+// agent on THAT machine, so bytes saved on any other kernel would hand the agent
+// a path that does not exist there.
+const SHIP_MAX_BYTES = 50 * 1024 * 1024;   // payload ceiling for shipped attachment bytes
 function shipFileToHost(f: File) {
-  if (f.size > 50 * 1024 * 1024) return;   // too big to ship over postMessage
+  if (f.size > SHIP_MAX_BYTES) {
+    // an oversize file must be REFUSED VISIBLY, never dropped silently — name the
+    // file, its size and the cap, on the same loud surface a failed federation
+    // delivery uses.
+    warnToast((f.name || "This file") + " is " + (f.size / (1024 * 1024)).toFixed(1)
+      + " MB — attachments over 50 MB can't be shipped, so it was not attached.");
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     const b64 = String(reader.result || "").split(",")[1] || "";
-    if (b64 && vscodeApi) vscodeApi.postMessage({ type: "dropFile", name: f.name || "pasted.png", b64 });
+    if (!b64 || !vscodeApi) return;
+    const msg: { type: string; name: string; b64: string; id?: string } =
+      { type: "dropFile", name: f.name || "pasted.png", b64 };
+    if (activeId) msg.id = activeId;   // the owning session → the owning kernel
+    vscodeApi.postMessage(msg);
   };
   reader.readAsDataURL(f);
 }
