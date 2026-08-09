@@ -356,5 +356,28 @@ class StaleInterruptMarker(_FeedHarness):
                          "re-surfaced the moment the stop is the newest information again")
 
 
+class ResumeNudgeDisarmsTheStopRecord(unittest.TestCase):
+    """The resume notices must DISARM the interrupt record they follow (the user 2026-08-08). A machine
+    cut writes the same '[Request interrupted by user]' record as a real Esc, and the resumed model
+    reads that record as the user's intent: across the fleet's transcripts, roughly one restart-cut
+    session in six answered the resume notice by standing down and awaiting direction instead of resuming. The notice must therefore name the record,
+    say the user did not write it, and instruct the model to continue without asking."""
+
+    def test_both_nudges_name_and_disown_the_stop_record(self):
+        for nudge in (sb.BOOT_RESUME_NUDGE, sb.CRASH_RESUME_NUDGE):
+            self.assertIn("[Request interrupted by user]", nudge,
+                          "the notice names the record it is disarming, verbatim")
+            self.assertIn("nobody asked you to stop", nudge,
+                          "…and says plainly the user did not stop the session")
+            self.assertIn("without asking", nudge,
+                          "…and that resuming needs no permission")
+
+    def test_signatures_survive_the_copy(self):
+        self.assertIn(km.INTR_RESTART_SIG, sb.BOOT_RESUME_NUDGE)
+        self.assertIn(km.INTR_CRASH_SIG, sb.CRASH_RESUME_NUDGE)
+        self.assertNotIn(km.INTR_RESTART_SIG, sb.CRASH_RESUME_NUDGE,
+                         "the two causes stay distinguishable")
+
+
 if __name__ == "__main__":
     unittest.main()
