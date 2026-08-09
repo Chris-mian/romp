@@ -5,7 +5,9 @@
 //     (authAvail) and shown only while the backend toggle says SDK;
 //   * the statusline auth badge, present only when the kernel emits st.auth (it gates on _auth_both),
 //     posting setAuth and wearing switching-dots while the applying reconnect is pending.
-// The key is always named by its LAST 4 (…wxyz) — which key, never the key.
+// The key is labelled plainly 'API key' — NO key material anywhere: not the key, not even a last-4
+// tail (the user 2026-08-08, evening: a tail is still key material; hosts are told apart by name).
+// The chat tab's hover tooltip carries the same fact as a Billing row (same day).
 // No jsdom harness → source pins (the repo convention).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -28,8 +30,7 @@ test("the picker's Billing row exists only when the host offers both, and only f
   assert.match(RENDER, /pickerAuthAvail = \(m\.authAvail && typeof m\.authAvail === "object"\) \? m\.authAvail : null;/);
 });
 
-test("the picker's key option names WHICH key, and the pick rides createSession", () => {
-  assert.match(RENDER, /keyBtn\.textContent = a!\.tail \? `API …\$\{a!\.tail\}` : "API key";/);
+test("the pick rides createSession, omitted when the row is hidden", () => {
   // the pick is omitted entirely when the row is hidden — the kernel's own default stands
   assert.match(RENDER, /function pickerAuthChoice\(\): string/);
   assert.match(RENDER, /host: hostSel, \.\.\.\(auth \? \{ auth \} : \{\}\) \}\);/);
@@ -44,14 +45,27 @@ test("the statusline auth badge is a MetaKind gated on the kernel emitting st.au
   assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast" \| "auth";/);
   assert.match(RENDER, /st\.auth \? "auth" : ""/);
   assert.match(RENDER, /meta\.appendChild\(metaButton\("auth", prettyAuth\(st\)\)\)/);
-  // the badge and its menu name the key by its tail
-  assert.match(RENDER, /`API …\$\{st\.authTail\}`/);
-  assert.match(RENDER, /kind === "auth" && c\.value === "key" && s\.status\.authTail/);
+  // the badge label is the plain choice, never key material
+  assert.match(RENDER, /return \(st\.auth \|\| ""\)\.toLowerCase\(\) === "key" \? "API key" : "Login";/);
   // the pick posts setAuth, and the applying reconnect drives the switching-dots
   assert.match(RENDER, /kind === "auth" \? "setAuth"/);
   assert.match(RENDER, /\(kind === "auth" && !!st\.authPending\)/);
   assert.match(RENDER, /kind === "model" \|\| kind === "effort" \|\| kind === "auth"\);/);
-  assert.match(RENDER, /auth\?: string; authPending\?: boolean; authTail\?: string;/);
+  assert.match(RENDER, /auth\?: string; authPending\?: boolean;/);
+});
+
+test("no key material reaches the webview — no tail plumbing survives anywhere", () => {
+  // the user 2026-08-08 (evening): even a last-4 tail is more key than any label needs. The kernel
+  // stopped shipping authTail/apiTail/tail, and the client has no code left that could render one.
+  assert.doesNotMatch(RENDER, /authTail/);
+  assert.doesNotMatch(RENDER, /apiTail/);
+  assert.doesNotMatch(RENDER, /a!\.tail/);
+});
+
+test("the chat tab hover carries a Billing row with the same disappearing rule", () => {
+  // whether this tab bills the API key or the login, on the tab tooltip (the user 2026-08-08);
+  // st.auth is both-gated by the kernel, so a one-auth machine shows no row at all
+  assert.match(RENDER, /if \(s\.status\.auth\) rows\.push\(\["Billing", s\.status\.auth === "key" \? "API key" : "Login"\]\);/);
 });
 
 test("setAuth is an intent op — held through a kernel-restart window, never dropped", () => {

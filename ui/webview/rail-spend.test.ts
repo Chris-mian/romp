@@ -3,7 +3,8 @@
 // reader nothing, and the budget-fill tracks on the web rail died with it. A host's payload can now
 // carry a login's WINDOWS and its key's SPEND at once (`spend` beside the bars, keyed-only sums), so
 // presence of the spend windows — not the legacy apiKey flag — is what turns the dollars on. The
-// collapsed web rail shows one API cell (key tail + 5h/month dollars); the hover breaks spend down
+// collapsed web rail shows one API cell (constant 'API' label + 5h/month dollars — no key material,
+// not even a last-4 tail, the user 2026-08-08 evening); the hover breaks spend down
 // per window per host. Spend accumulates per ResultMessage (total_cost_usd + usage tokens) into
 // spend.json's day AND hour buckets, each bucket carrying a `key` sub-count for key-billed turns.
 // No jsdom harness → source pins (the repo convention).
@@ -22,13 +23,17 @@ test("the kernel serves spend windows for BOTH payload shapes, keyed-only beside
   // the spend-only view arms on the legacy apiKey marker OR a login-less machine with recorded spend,
   // and keeps TOTAL sums (everything there bills the key; legacy files predate the split)
   assert.ok(KERNEL.includes('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):'));
-  assert.ok(KERNEL.includes('"spend": _spend_windows(), "apiTail": _auth_key_tail(),'));
+  assert.ok(KERNEL.includes('return {"apiKey": True, "spend": _spend_windows(),'));
   // the bars payload attaches the KEYED split only — a login turn's computed cost there would be
   // dollars nobody is billed — and only when key turns actually exist (the user 2026-08-08)
   assert.ok(KERNEL.includes("def _spend_windows(keyed_only=False):"));
   assert.ok(KERNEL.includes("ksp = _spend_windows(keyed_only=True)"));
   assert.match(KERNEL, /if any\(\(ksp\.get\(k\) or \{\}\)\.get\("turns"\) for k in \("fiveHour", "sevenDay", "month"\)\):/);
-  assert.ok(KERNEL.includes('out["apiTail"] = _auth_key_tail()'));
+  // no fragment of the key rides ANY payload (the user 2026-08-08, evening): the tail plumbing is
+  // gone from the kernel wholesale, and the keyed-spend gate is a plain existence check
+  assert.ok(KERNEL.includes("if _auth_key_present():"));
+  assert.ok(!KERNEL.includes("apiTail"), "no key material in any usage payload");
+  assert.ok(!KERNEL.includes("authTail"), "no key material in the status payload either");
   // rolling 5h/7d read the HOUR buckets; month-to-date reads the day ledger
   assert.match(KERNEL, /"fiveHour": _rolling\(5\), "sevenDay": _rolling\(7 \* 24\)/);
   assert.ok(KERNEL.includes("k.startswith(month)"));
@@ -56,11 +61,12 @@ test("VS Code strip: spend rows key on the windows' PRESENCE, one row builder fo
   assert.doesNotMatch(STRIPCSS, /\.ru-spend/);
 });
 
-test("the web rail's API cell is numbers with the key's own tail — no spend bars anywhere", () => {
+test("the web rail's API cell is numbers under a constant label — no spend bars anywhere", () => {
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
-  // one compact cell: 'API …wxyz' (several distinct keys fall back to bare 'API'), 5h + month dollars
+  // one compact cell: a bare 'API' label (never any key fragment), 5h + month dollars
   assert.ok(usageJS.includes("function apiCellHTML(live)"));
-  assert.ok(usageJS.includes("'API'+(tl.length===1?' \\u2026'+esc(tl[0]):'')"));
+  assert.ok(usageJS.includes("'<div class=ru-name>API</div>'"));
+  assert.ok(!usageJS.includes("_tail"), "no tail plumbing survives in the rail JS");
   assert.ok(usageJS.includes("fmtUsd(sum.fiveHour)+' 5h \\u00b7 '+fmtUsd(sum.month)+' mo</div>'"));
   // the graph and the budget fills are gone: no spend track, no spend color ramp, no shared scale
   assert.ok(!usageJS.includes("spendColor"), "the budget-fill ramp died with the spend bars");
@@ -83,9 +89,9 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   assert.ok(usageJS.includes("if(!keys.length&&!sp)return '';"));
   assert.ok(!usageJS.includes("spendOnly"), "spend renders for ANY host that has it");
   assert.ok(usageJS.includes("if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});"));
-  // numbers only: dollars · tokens · turns per window, labelled by the key's tail
+  // numbers only: dollars · tokens · turns per window, under a plain 'API spend' heading
   assert.ok(usageJS.includes("function spendDet(u,det)"));
-  assert.ok(usageJS.includes("API'+(d._tail?' \\u2026'+esc(d._tail):'')+' spend</span>"));
+  assert.ok(usageJS.includes("<span>API spend</span>"));
   assert.ok(usageJS.includes("fmtUsd(v.usd)+' \\u00b7 '+fmtTok(v.tok)+' tok \\u00b7 '+(v.turns||0)+' turns</span>"));
   // the tip anchors ABOVE the rail, centered on the CURSOR — never pinned to the container edge
   assert.ok(usageJS.includes("var x=(ev&&typeof ev.clientX==='number')?ev.clientX:(r.left+r.width/2);"));
@@ -93,6 +99,17 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   assert.ok(usageJS.includes("r.top-tip.offsetHeight-8"));
   // the click hint the native title used to carry lives in the tip's footer now
   assert.ok(usageJS.includes("'<div class=ru-tip-age>click to refresh</div>'"));
+});
+
+test("a multi-host breakdown lays hosts SIDE BY SIDE, one column each", () => {
+  // the user 2026-08-09: the per-host breakdown used to stack every host into one tall pillar;
+  // now each host is a flex column, and flex-wrap folds the mobile modal back to a stack on its own
+  const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
+  assert.ok(usageJS.includes("'<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'"));
+  // a single host keeps its plain un-columned layout — the wrapper exists only when there is a fleet
+  assert.ok(usageJS.includes("var h=many?"));
+  assert.ok(KERNEL.includes(".ru-tip-cols{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}"));
+  assert.ok(KERNEL.includes(".ru-tip-col{flex:0 1 auto;min-width:150px}"));
 });
 
 test("every tip string carries data — the narration is gone and stays gone", () => {

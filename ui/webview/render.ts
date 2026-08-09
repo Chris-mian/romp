@@ -196,7 +196,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authTail?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -3290,6 +3290,10 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // Backend is a plain labelled FIELD now, under the others (the user 2026-07-08 — no longer a coloured
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
   if (be === "sdk" || be === "tmux") rows.push(["Backend", be === "sdk" ? "SDK" : "tmux"]);
+  // Billing: whether this tab bills the API key or the Claude login (the user 2026-08-08). st.auth
+  // exists only when the machine offers both (kernel _auth_both), so a one-auth machine shows no row —
+  // the selector's own disappearing rule. The label carries no key material, ever.
+  if (s.status.auth) rows.push(["Billing", s.status.auth === "key" ? "API key" : "Login"]);
   for (const [k, v] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
@@ -4245,7 +4249,7 @@ function requestSessionList(host: string): void {
 // manager environment carries. The row exists only when that host offers BOTH (authAvail on its
 // sessionList reply) AND the backend toggle says SDK (a tmux session's CLI lives in the tmux server's
 // environment, which the kernel does not control) — otherwise it disappears entirely.
-let pickerAuthAvail: { login?: boolean; key?: boolean; tail?: string; default?: string } | null = null;
+let pickerAuthAvail: { login?: boolean; key?: boolean; default?: string } | null = null;
 
 function syncPickerAuth(): void {
   const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
@@ -4255,8 +4259,6 @@ function syncPickerAuth(): void {
   const show = !pickMode && !!(a && a.login && a.key) && (beSel?.dataset.be || loadSettings().backend) === "sdk";
   wrap.style.display = show ? "" : "none";
   if (!show) return;
-  const keyBtn = wrap.querySelector('.picker-be-opt[data-auth="key"]') as HTMLElement | null;
-  if (keyBtn) keyBtn.textContent = a!.tail ? `API …${a!.tail}` : "API key";   // name WHICH key, never the key
   // seed the selection from the host's default only when nothing is selected yet this open
   if (!wrap.querySelector(".picker-be-opt.sel")) {
     const def = a!.default === "key" ? "key" : "login";
@@ -4502,7 +4504,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
                   mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."));   // SDK first — the de-facto default (the user 2026-07-02)
     // the billing row exists only for SDK sessions — re-decide on every backend toggle
     beWrap.addEventListener("click", () => syncPickerAuth());
-    // per-session BILLING row (the user 2026-08-08): Login | API …wxyz, shown only when the selected
+    // per-session BILLING row (the user 2026-08-08): Login | API key, shown only when the selected
     // host offers both (see syncPickerAuth); the same segmented-toggle grammar as Backend above.
     const auWrap = el("div", "picker-backend picker-auth");
     auWrap.style.display = "none";   // hidden until a sessionList reply proves both choices exist
@@ -6795,7 +6797,8 @@ const FAST_CHOICES: { label: string; value: string }[] = [
 // Per-session billing (the user 2026-08-08): the Claude login vs the API key the manager's environment
 // carries. The badge exists only when the session REPORTS a choice (st.auth) — the kernel emits it only
 // when the machine actually offers BOTH, so a one-auth machine shows no dead selector at all. The key
-// entry's menu label carries the key's last 4 (st.authTail) so you can tell WHICH key it is.
+// entry is labelled 'API key', full stop — no fragment of the key, not even a last-4 tail, is shipped
+// or shown (the user 2026-08-08, evening: a tail is still key material and no surface needs it).
 const AUTH_CHOICES: { label: string; value: string }[] = [
   { label: "Login", value: "login" },
   { label: "API key", value: "key" },
@@ -6808,9 +6811,9 @@ function prettyFast(f: string | undefined): string {
     default: return "Fast off";
   }
 }
-// the per-session billing choice → the badge label; the key wears its own last 4
+// the per-session billing choice → the badge label (never any key material)
 function prettyAuth(st: Status): string {
-  return (st.auth || "").toLowerCase() === "key" ? (st.authTail ? `API …${st.authTail}` : "API key") : "Login";
+  return (st.auth || "").toLowerCase() === "key" ? "API key" : "Login";
 }
 // the @claude-permission-mode var → a short readable badge label
 function prettyMode(m: string | undefined): string {
@@ -6958,8 +6961,7 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
   menu.dataset.kind = kind;
   for (const c of META_CHOICES[kind]) {
     const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
-    // the key entry names WHICH key by its last 4 (the user 2026-08-08) — same string the badge wears
-    item.textContent = (kind === "auth" && c.value === "key" && s.status.authTail) ? `API …${s.status.authTail}` : c.label;
+    item.textContent = c.label;
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
