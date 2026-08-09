@@ -1367,6 +1367,15 @@ def _session_flag(sid, flag):
     return bool(f.get(flag)) if isinstance(f, dict) else False
 
 
+def _session_flag_raw(sid, flag):
+    """The flag's stored value, or None when the session never set it — the tri-state the notify
+    bells need (absent = follow the master default, True/False = an explicit per-session choice).
+    _session_flag's bool() collapses absent and False, which is right for the on/off view flags."""
+    f = _session_flags().get(sid)
+    v = f.get(flag) if isinstance(f, dict) else None
+    return None if v is None else bool(v)
+
+
 def _set_session_flag(sid, flag, value):
     cur = dict(_session_flags())                     # copy: never mutate the cached dict in place
     f = dict(cur.get(sid)) if isinstance(cur.get(sid), dict) else {}
@@ -1412,13 +1421,19 @@ def _set_session_flag(sid, flag, value):
             sys.stderr.write("unmute fast-forward: %s\n" % traceback.format_exc())
 
 
-# ── per-card notification subscriptions (the user 2026-07-28) ─────────────────────────────────────
-# The feed card's right-click "Notify me" toggle: {itemId: true} in notify-cards.json under STATE.
-# Session-level subscriptions ride session-flags.json (flag "notify" — the timeline lane bell / tab
-# menu); this file holds the per-card ones. An armed id gets an OS notification when its card enters
-# needs_input or completed (_feed_notifications). Same mtime+size cache as _session_flags — build_feed
-# echoes it on every push. Ids whose card left the feed are pruned on write (the card is gone; a fresh
-# card is a fresh id), so the file tracks the live feed instead of growing forever.
+# ── notification subscriptions (the user 2026-07-28; master default 2026-08-09) ──────────────────
+# notify-cards.json under STATE holds the per-card bell values plus one reserved key: "*" is the
+# MASTER default — the bottom-right bell. The user's model (2026-08-09): turning that bell on means
+# every task notifies, and the per-session / per-card bells then read as mutes. So arming resolves
+# most-specific-wins: card override > session override (session-flags "notify" — the timeline lane
+# bell / tab menu) > master. Overrides are tri-state — an explicit True/False sticks, absent follows
+# the default — and a bell click that lands back ON its default deletes the override instead of
+# pinning it (see _set_notify_card), so the file records deviations, not echoes. An armed id gets an
+# OS notification when its card enters needs_input or completed (_feed_notifications). Same
+# mtime+size cache as _session_flags — build_feed echoes the effective value on every push. Ids
+# whose card left the feed are pruned on write (the card is gone; a fresh card is a fresh id), so
+# the file tracks the live feed instead of growing forever.
+NOTIFY_ALL_KEY = "*"
 _notify_cards_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
@@ -1441,22 +1456,78 @@ def _notify_cards():
     return d
 
 
-def _set_notify_card(item_id, value):
+def _notify_all_on():
+    """The master default — the bottom-right bell: on = every task notifies unless muted."""
+    return bool(_notify_cards().get(NOTIFY_ALL_KEY))
+
+
+def _set_notify_all(value):
     cur = dict(_notify_cards())                      # copy: never mutate the cached dict in place
     if value:
-        cur[item_id] = True
+        cur[NOTIFY_ALL_KEY] = True
     else:
-        cur.pop(item_id, None)
+        cur.pop(NOTIFY_ALL_KEY, None)
     _atomic_write(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+
+
+def _notify_session_effective(sid):
+    """The session bell's effective state: its own override if it has one, else the master."""
+    v = _session_flag_raw(sid, "notify")
+    return _notify_all_on() if v is None else v
+
+
+def _notify_card_effective(cards, item_id, sid):
+    """One card's effective arming — card override > session override > master. `cards` is passed in
+    so the two per-build callers (build_feed's stamp loop, _feed_notifications' gate) resolve every
+    card against ONE read of the store."""
+    v = cards.get(item_id)
+    if v is None:
+        v = _session_flag_raw(sid, "notify")
+    return bool(cards.get(NOTIFY_ALL_KEY)) if v is None else bool(v)
+
+
+def _set_notify_card(item_id, value, sid=""):
+    """Persist a card-bell click. The value the user chose is stored as an override — UNLESS it
+    matches what the card would inherit anyway (session override, else master), in which case the
+    override is deleted: clicking a bell back to its default returns it to FOLLOWING the default,
+    rather than pinning today's default against tomorrow's master flip."""
+    cur = dict(_notify_cards())                      # copy: never mutate the cached dict in place
+    default = _session_flag_raw(sid, "notify")
+    if default is None:
+        default = bool(cur.get(NOTIFY_ALL_KEY))
+    if bool(value) == default:
+        cur.pop(item_id, None)
+    else:
+        cur[item_id] = bool(value)
+    _atomic_write(jd.STATE / "notify-cards.json", json.dumps(cur, sort_keys=True))
+
+
+def _set_notify_session(sid, value):
+    """Persist a session-bell click (tab menu / timeline lane gear) — same delete-if-default
+    discipline as _set_notify_card, against the master. Not _set_session_flag: that setter's
+    pop-on-false is right for the on/off view flags, but here False is a real value (muted while
+    the master is on)."""
+    cur = dict(_session_flags())                     # copy: never mutate the cached dict in place
+    f = dict(cur.get(sid)) if isinstance(cur.get(sid), dict) else {}
+    if bool(value) == _notify_all_on():
+        f.pop("notify", None)
+    else:
+        f["notify"] = bool(value)
+    if f:
+        cur[sid] = f
+    else:
+        cur.pop(sid, None)
+    _atomic_write(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
 
 
 def _prune_notify_cards(live_ids):
     """Drop armed ids whose card is no longer in the feed (cleared/archived — the id never comes back).
-    Called from the feed-diff detector, so the write happens only on the event of a card leaving."""
+    Called from the feed-diff detector, so the write happens only on the event of a card leaving.
+    The master key is not a card and never prunes; values are kept as stored (False = a mute)."""
     cur = _notify_cards()
-    gone = [i for i in cur if i not in live_ids]
+    gone = [i for i in cur if i not in live_ids and i != NOTIFY_ALL_KEY]
     if gone:
-        kept = {i: True for i in cur if i in live_ids}
+        kept = {i: cur[i] for i in cur if i in live_ids or i == NOTIFY_ALL_KEY}
         _atomic_write(jd.STATE / "notify-cards.json", json.dumps(kept, sort_keys=True))
 
 
@@ -12097,7 +12168,7 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),
-            "notify": _session_flag(sid, "notify"),   # session-level bell: OS notification when its work blocks on you / completes (the user 2026-07-28)
+            "notify": _notify_session_effective(sid),   # session-level bell, EFFECTIVE (override, else the master default): OS notification when its work blocks on you / completes (the user 2026-07-28)
             # NEVER `now`. This rides the chat payload, and _send_client dedups by comparing the
             # SERIALIZED payload against what that client last received — so a firstSeen that ticked
             # with the wall clock made every build differ, defeated the dedup entirely, and re-sent the
@@ -13826,10 +13897,12 @@ def build_feed(now, tmux=None):
     asks.extend(_quarantine_cards(now, cleared))
     # per-card bell (the user 2026-07-28): one pass over the FINAL ask list — goal cards, placeholders,
     # parked handoffs and quarantine cards alike — so every card's right-click menu reflects its armed
-    # state. True/None (not False) keeps unarmed payloads byte-identical to pre-bell ones.
+    # state, EFFECTIVE (card override > session override > the master default, 2026-08-09) — with the
+    # master on, every bell paints on unless muted. True/None (not False) keeps unarmed payloads
+    # byte-identical to pre-bell ones.
     _ncards = _notify_cards()
     for _a in asks:
-        _a["notify"] = True if _ncards.get(_a["itemId"]) else None
+        _a["notify"] = True if _notify_card_effective(_ncards, _a["itemId"], str(_a.get("sid") or "")) else None
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
             # session name -> live judge-classified SERVICE descs (a dev server the session keeps around;
@@ -15320,7 +15393,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "faded": faded,
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
-            "notify": _session_flag(sid, "notify")})   # lane bell → OS notification when this session's work blocks on you / completes (the user 2026-07-28)
+            "notify": _notify_session_effective(sid)})   # lane bell, EFFECTIVE (override, else the master default) → OS notification when this session's work blocks on you / completes (the user 2026-07-28)
     if with_bars:
         messages = _postal_messages(now, set(id2name), id2name)
         _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)
@@ -16430,9 +16503,10 @@ def _cached_feed(now, tmux, sig, connect=False):
 
 
 # ── system notifications: the bell toggles (the user 2026-07-28) ──────────────────────────────────
-# A session's bell (timeline lane / tab menu → session-flags "notify") or a card's bell (right-click →
-# notify-cards.json) arms OS-level notifications, fired when an armed card ENTERS needs_input (blocked
-# on you) or completed. Detection diffs each fresh feed build against the previous one — the exact event
+# The master bell (bottom-right → notify-cards.json "*"), a session's bell (timeline lane / tab menu →
+# session-flags "notify") or a card's bell (right-click → notify-cards.json) arm OS-level notifications
+# — resolved most-specific-wins by _notify_card_effective — fired when an armed card ENTERS needs_input
+# (blocked on you) or completed. Detection diffs each fresh feed build against the previous one — the exact event
 # the columns move on, no separate heuristic — and the FIRST build after a kernel start is a silent
 # baseline: existing state is status, not news (the same policy as extension.ts freshNeedsYou). A card
 # re-entering needs_input later (a new block after an answer) notifies again by construction.
@@ -16476,7 +16550,7 @@ def _feed_notifications(feed):
         col = a.get("column")
         if col not in ("needs_input", "completed") or prev.get(iid) == col:
             continue
-        if not (cards.get(iid) or _session_flag(str(a.get("sid") or ""), "notify")):
+        if not _notify_card_effective(cards, iid, str(a.get("sid") or "")):
             continue
         what = "Needs you" if col == "needs_input" else "Completed"
         txt = str(a.get("text") or "").strip()
@@ -18627,7 +18701,9 @@ if(m&&m.type==='reveal'&&m.pane)show(m.pane);
 // the app-icon badge: setAppBadge only exists where badging works (installed apps) — everyone
 // else falls through silently, so this needs no capability gymnastics
 else if(m&&m.type==='badge'&&'setAppBadge' in navigator){
-try{(m.n?navigator.setAppBadge(m.n):navigator.clearAppBadge())['catch'](function(e){});}catch(e){}}};
+try{(m.n?navigator.setAppBadge(m.n):navigator.clearAppBadge())['catch'](function(e){});}catch(e){}}
+// the master bell toggled somewhere (this tab included) — repaint ours from the kernel's word
+else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotifyAllPaint(!!m.on);};
 ws.onclose=function(){setTimeout(shellWS,2000);};}catch(e){}}
 shellWS();
 var last='chat';try{var s=localStorage.getItem(KT);if(s&&F[s])last=s;}catch(e){}show(last);
@@ -18635,44 +18711,55 @@ var last='chat';try{var s=localStorage.getItem(KT);if(s&&F[s])last=s;}catch(e){}
 """
 
 
-# The bell in the mobile tab bar: this device opting in/out of the needs-you pushes
-# (plans/ios-app.md proposal 2). Progressive disclosure at the capability level: the button ships
-# hidden and only appears where push can actually work — which on iOS means the INSTALLED
-# home-screen app (Safari in-browser has no PushManager), exactly the surface the feature is for.
-# Notification.requestPermission runs synchronously in the tap (iOS voids the gesture across an
-# await), which is why the on/off branch keys on a state var painted at boot, not a fresh query.
+# The bell in the bottom bar's action cluster / mobile tab bar: the MASTER notification switch
+# (the user 2026-08-09, who expected the bottom-right bell to turn notifications on for every task,
+# with per-item bells as the way to mute some — not a switch that arms nothing by itself). ON = the
+# kernel arms every card by default (notify-cards.json "*", POST /notify-all) and the session/card
+# bells read as mutes; the same tap also opts THIS device into the web pushes where the Push API
+# exists (plans/ios-app.md proposal 2 — on iOS that means the installed home-screen app), so one
+# gesture buys the arming and the delivery together. The bell paints from the KERNEL's state (GET
+# /notify-all at boot, a {type:'notifyAll'} shell push on every toggle) — never from the device
+# subscription, so every device's bell agrees. The push-subscribe leg is best-effort ON TOP of the
+# master flip: a denied permission lands in the Log but leaves notifications on (the kernel box
+# still speaks, other devices still buzz). Notification.requestPermission runs synchronously in the
+# tap (iOS voids the gesture across an await), which is why it is kicked off BEFORE the /notify-all
+# round-trip rather than chained after it.
 _LANDING_PUSH_JS = """
 (function(){var bells=[].slice.call(document.querySelectorAll('#mbell,#rail-bell'));if(!bells.length)return;
-if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return;
 bells.forEach(function(b){b.hidden=false;});
+var canPush=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window);
 var isOn=false,busy=false;
 function paint(){bells.forEach(function(b){b.classList.toggle('on',isOn);
-var t=isOn?'Notifications on for this device — tap to turn off':'Notify this device when a session needs you';
+var t=isOn?'Notifications on for every task — tap to turn off':'Notify when any task needs you or completes';
 b.setAttribute('title',t);b.setAttribute('aria-label',t);});}
+window.__rompNotifyAllPaint=function(on){isOn=!!on;paint();};   // the shell WS repaints every open dashboard on a toggle
+fetch('/notify-all').then(function(r){return r.json();}).then(function(d){isOn=!!(d&&d.on);paint();}).catch(function(e){});
 function sub(){return navigator.serviceWorker.getRegistration('/').then(function(r){return r?r.pushManager.getSubscription():null;});}
-sub().then(function(s){isOn=!!s;paint();}).catch(function(e){});
 function fail(e){try{window.__rompNotify&&window.__rompNotify('error','Notifications: '+((e&&e.message)||e));}catch(err){}}
 function post(path,obj){return fetch(path,{method:'POST',body:JSON.stringify(obj)}).then(function(r){
 if(!r.ok)return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});});}
 function b64u(s){var raw=atob((s+'==='.slice((s.length+3)%4)).replace(/-/g,'+').replace(/_/g,'/'));
 var a=new Uint8Array(raw.length);for(var i=0;i<raw.length;i++)a[i]=raw.charCodeAt(i);return a;}
 function done(){busy=false;bells.forEach(function(b){b.classList.remove('busy');});}
-bells.forEach(function(bl){bl.addEventListener('click',function(){
-if(busy)return;busy=true;bells.forEach(function(b){b.classList.add('busy');});   // acknowledge the tap before any round-trip
-if(isOn){
-sub().then(function(s){var ep=s?s.endpoint:'';
-return (s?s.unsubscribe():Promise.resolve()).then(function(){return post('/push/unsubscribe',{endpoint:ep});});})
-.then(function(){isOn=false;paint();done();},function(e){fail(e);done();});
-return;}
-Notification.requestPermission().then(function(perm){
-if(perm!=='granted')throw new Error('not allowed on this device');
+function devSub(perm){return perm.then(function(p){
+if(p!=='granted')throw new Error('push not allowed on this device');
 return navigator.serviceWorker.register('/sw.js');
 }).then(function(){return fetch('/push/vapid-key').then(function(r){
 if(!r.ok)return r.text().then(function(t){throw new Error(t||'no server key');});return r.json();});
 }).then(function(k){return navigator.serviceWorker.ready.then(function(reg){
 return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(k.key)});});
-}).then(function(s){return post('/push/subscribe',s.toJSON());})
-.then(function(){isOn=true;paint();done();},function(e){fail(e);done();});
+}).then(function(s){return post('/push/subscribe',s.toJSON());});}
+function devUnsub(){return sub().then(function(s){var ep=s?s.endpoint:'';
+return (s?s.unsubscribe():Promise.resolve()).then(function(){return ep?post('/push/unsubscribe',{endpoint:ep}):null;});});}
+bells.forEach(function(bl){bl.addEventListener('click',function(){
+if(busy)return;busy=true;bells.forEach(function(b){b.classList.add('busy');});   // acknowledge the tap before any round-trip
+var want=!isOn;
+var perm=(want&&canPush)?Notification.requestPermission():null;   // in the tap's own stack, before any await
+post('/notify-all',{on:want}).then(function(){
+isOn=want;paint();                       // the master flipped — the bell says so even if the push leg fails below
+if(!canPush)return;
+return want?devSub(perm):devUnsub();
+}).then(function(){done();},function(e){fail(e);done();});
 });});
 })();
 // Landing a push tap on the session that fired (the user 2026-08-08). Two arrivals:
@@ -20001,6 +20088,11 @@ class Handler(BaseHTTPRequestHandler):
                 # register() fetch is same-origin and carries the cookie, and only an authed shell
                 # ever registers it. no-cache so a changed worker is picked up on the next launch.
                 return self._send(200, _SW_JS, "text/javascript; charset=utf-8", cache="no-cache")
+            if p == "/notify-all":
+                # the master bell's state (the user 2026-08-09): on = every task notifies when it
+                # blocks on you or completes, unless its session/card bell mutes it. The shell
+                # paints the bottom-right bell from this at boot.
+                return self._send(200, json.dumps({"on": _notify_all_on()}), "application/json", cache="no-cache")
             if p == "/push/vapid-key":
                 # the public key the shell subscribes with (applicationServerKey). Gated like every
                 # page fetch; the 500 carries the missing-package message for the bell to surface.
@@ -20088,6 +20180,19 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, FLEET_REPORT.read_text(), "application/json")
                 except OSError:
                     return self._send(200, json.dumps({"rows": []}), "application/json")
+            if u.path == "/notify-all":
+                # the master bell's toggle (the user 2026-08-09). Kernel-authoritative: the click
+                # posts here first, and only a 200 flips the bell — the device push subscription is
+                # a separate, best-effort leg on top. Every connected shell repaints at once, and
+                # the dirty mark rebuilds the feed so per-card bells show their new effective state.
+                try:
+                    _on = bool(json.loads(raw_body or b"{}").get("on"))
+                except (ValueError, AttributeError):
+                    return self._send(400, "bad json", "text/plain")
+                _set_notify_all(_on)
+                _mark_views_dirty()
+                _send_to_app("shell", {"type": "notifyAll", "on": _on})
+                return self._send(200, json.dumps({"ok": True, "on": _on}), "application/json")
             if u.path == "/push/subscribe":
                 # A device opting into the bell pushes (plans/ios-app.md proposal 2): body is the
                 # browser's own PushSubscription JSON, stored keyed by endpoint — so re-subscribing
@@ -20643,13 +20748,19 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         elif msg and msg.get("type") == "setSessionFlag" and msg.get("id") and msg.get("flag"):
             # timeline lane gear → toggle a per-session view flag (e.g. hideFromFeed). Persisted +
-            # re-broadcast so the feed drops/restores that session's cards immediately.
-            _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
+            # re-broadcast so the feed drops/restores that session's cards immediately. The notify
+            # bell is tri-state (an override on the master default) → its own setter.
+            if str(msg["flag"]) == "notify":
+                _set_notify_session(str(msg["id"]), bool(msg.get("value")))
+            else:
+                _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
             _mark_views_dirty()
         elif msg and msg.get("type") == "cardNotify" and msg.get("itemId"):
             # feed card right-click → per-card bell (OS notification when THIS card blocks on you /
             # completes). Persisted to notify-cards.json; build_feed echoes it back as ask.notify.
-            _set_notify_card(str(msg["itemId"]), bool(msg.get("value")))
+            # sid rides so the override can be resolved against the card's own default (session, else
+            # the master) and deleted when it merely restates it.
+            _set_notify_card(str(msg["itemId"]), bool(msg.get("value")), str(msg.get("sid") or ""))
             _mark_views_dirty()
         elif msg and msg.get("type") == "setSessionColor" and msg.get("id") and msg.get("bg"):
             # tab right-click color picker → override the session's identity color (persisted to the names
