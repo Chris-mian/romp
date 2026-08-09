@@ -6325,6 +6325,21 @@ def known_share(host):
     return bool((e or {}).get("share"))
 
 
+def _host_trust(host):
+    """This kernel's trust tier for `host`: the attached row's level when it is attached, else the
+    level remembered from its last attachment, else "" (never seen here). Callers treat anything
+    but "trusted" as below the line, so unknown fails safe — the same by-origin judgment the bus
+    makes for inbound mail (see set_trust)."""
+    host = (host or "").strip()
+    if not host:
+        return ""
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is not None:
+            return str(r.get("trust") or "directed")
+    return str(known_trust(host) or "")
+
+
 def known_forget(host):
     """Drop a remembered host (the popover's Forget). True if it was there."""
     host = (host or "").strip()
@@ -16248,9 +16263,15 @@ def _cached_feed(now, tmux, sig, connect=False):
     feed["buildId"] = bid
     _built_feed[:] = [sig, feed, time.time(), started]
     _badge = _needs_you_count(feed)
-    for _t, _b, _sid in _feed_notifications(feed):        # armed bells: fresh builds are the transition event
+    _fired = _feed_notifications(feed)                    # armed bells: fresh builds are the transition event
+    for _t, _b, _sid in _fired:
         _system_notify(_t, _b)
         _push_notify(_t, _b, _sid, _badge)                # same events to subscribed phones (plans/ios-app.md)
+    if _fired:
+        # …and to trusted peers' devices (plans/federated-push.md): the phone subscribed at the
+        # always-on box must buzz for THIS kernel's cards too — which kernel detected an event is
+        # romp's business, never the user's.
+        _push_forward([{"title": _t, "body": _b, "sid": _sid} for _t, _b, _sid in _fired])
     _badge_push(_badge)                                   # app-icon count for installed shells (proposal 3)
     return feed
 
@@ -16480,13 +16501,15 @@ def _push_send_one(sub, payload):
         return True
 
 
-def _push_notify(title, body, sid="", badge=0):
+def _push_notify(title, body, sid="", badge=None):
     """_system_notify's sibling sink: the same (title, body) — the card's gist and nothing more —
     to every subscribed device, plus two pieces of ROUTING metadata, not content: sid, so tapping
     the notification lands on the session that fired (the user 2026-08-08), and badge, the
-    needs-you count the service worker paints on the app icon while the app is closed. Runs on
-    the pusher thread, so all network work moves to a daemon thread (the _refresh_remote_prices
-    discipline) and this never blocks or raises."""
+    needs-you count the service worker paints on the app icon while the app is closed. badge=None
+    OMITS the key and the worker leaves the icon's count alone — the shape a mirrored federated
+    event wears, because the origin kernel's count is not this kernel's count
+    (plans/federated-push.md). Runs on the pusher thread, so all network work moves to a daemon
+    thread (the _refresh_remote_prices discipline) and this never blocks or raises."""
     subs = _push_subs()
     if not subs:
         return
@@ -16496,8 +16519,10 @@ def _push_notify(title, body, sid="", badge=0):
         print("romp: web push: %d subscription(s) on file but the python 'cryptography' package "
               "is missing — notification not delivered" % len(subs), file=sys.stderr)
         return
-    payload = json.dumps({"title": str(title), "body": str(body),
-                          "sid": str(sid or ""), "badge": int(badge or 0)}).encode()
+    d = {"title": str(title), "body": str(body), "sid": str(sid or "")}
+    if badge is not None:
+        d["badge"] = int(badge or 0)
+    payload = json.dumps(d).encode()
 
     def run():
         dead = []
@@ -16509,6 +16534,37 @@ def _push_notify(title, body, sid="", badge=0):
                 pass                               # one bad subscription must not block the rest
         for ep in dead:
             _del_push_sub(ep)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _push_forward(events):
+    """The federated half of the push sink (plans/federated-push.md; the user 2026-08-08, who wants
+    one device subscription to buzz for EVERY connected kernel): hand this kernel's fresh bell
+    events — [{title, body, sid}] — to every attached TRUSTED peer, and each peer delivers them to
+    the devices subscribed to IT. Rides the channel every kernel-to-kernel control call already
+    rides (_peer_call: the pair's tunnel + the token exchanged at attach) — no new legs, no new
+    trust surface. Only events THIS kernel detected are ever forwarded, and /push/relay mirrors to
+    devices only, never onward, so a cycle of attachments cannot echo an event back. Fire-and-forget
+    on a daemon thread (the _push_notify discipline); a peer that is down misses the moment by
+    design — its own dashboard was equally blind while it was down. No status filter on purpose: a
+    flapping tunnel mark must not cost a bell, and a dead peer just times out inside the thread."""
+    if not events:
+        return
+    with _remotes_lock:
+        peers = [dict(r) for r in _remotes.values()
+                 if (r.get("trust") or "directed") == "trusted"
+                 and r.get("local_port") and r.get("token")]
+    if not peers:
+        return
+    body = {"origin": _self_host(), "events": [dict(e) for e in events]}
+
+    def run():
+        for r in peers:
+            try:
+                _peer_call(r, "POST", "/push/relay", body, timeout=6)
+            except Exception:
+                pass                               # one unreachable peer must not block the rest
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -16532,7 +16588,10 @@ var work=[self.registration.showNotification(d.title||'romp',
 {body:d.body||'',icon:'/media/romp-app-192.png',badge:'/media/romp-app-192.png',data:{sid:d.sid||''}})];
 // the app-icon count, kept current while the app is CLOSED (the open shell re-paints it live over
 // its own WS). setAppBadge exists in the SW only where badging works at all (iOS installed apps).
-if('setAppBadge' in self.navigator)work.push(self.navigator.setAppBadge(d.badge||0)['catch'](function(){}));
+// Numeric-only on purpose: a mirrored federated event omits badge (the ORIGIN kernel's count is
+// not this kernel's count — plans/federated-push.md), and repainting 0 for it would CLEAR a real
+// local count.
+if('setAppBadge' in self.navigator&&typeof d.badge==='number')work.push(self.navigator.setAppBadge(d.badge)['catch'](function(){}));
 e.waitUntil(Promise.all(work));
 });
 // Land ON the thing that notified (the user 2026-08-08, whose first push opened a different
@@ -16563,6 +16622,13 @@ def _reveal_msg(sid):
     """What lands in the chat pane: a live session gets the focus (live=True → the live tail,
     where the blocking prompt sits); a dead one gets the revive prompt, never a silent reveal —
     the same split _reveal_or_confirm makes for feed/timeline taps."""
+    if ":" in str(sid or ""):
+        # a federated session ("host:sid" — the prefix federation.js stamps on every remote id, and
+        # a local sid is a bare uuid that never carries a colon): its liveness is the ORIGIN
+        # kernel's truth, not ours, and the merged dashboard's own tabs route the prefixed id
+        # (plans/federated-push.md) — so hand the focus over as-is, never a confirmRevive minted
+        # from the wrong kernel's session list.
+        return {"type": "focus", "id": sid, "live": True}
     if sid and sid not in _tmux_sessions():
         return {"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid}
     return {"type": "focus", "id": sid, "live": True}
@@ -19401,8 +19467,14 @@ class Handler(BaseHTTPRequestHandler):
         if getattr(self, "_set_cookie", None):       # auto-inject the token so a client never 401-loops
             # Max-Age=1yr so the phone persists the token past its browser session (no re-prompt on
             # the tailnet after the tab is closed) — for simplify's auto-serve/permanence work.
+            # SameSite=Lax, NOT Strict (the user 2026-08-08): Android launches an installed
+            # home-screen app through a launcher INTENT, which Chrome scores as a cross-site
+            # top-level navigation — Strict withheld the cookie on every launch and the app opened
+            # on the login page each time, a token re-ask per launch. Lax still attaches only on
+            # top-level navigations (never on a cross-site POST/subresource, and every
+            # state-changing route here is a POST), so the gate the token provides is unchanged.
             self.send_header("Set-Cookie", "romp_token=%s; Path=/; Max-Age=31536000; "
-                             "SameSite=Strict; HttpOnly" % self._set_cookie)
+                             "SameSite=Lax; HttpOnly" % self._set_cookie)
         # CORS delivery for an AUTHORIZED browser origin (set at the _authorize call sites).
         # A VS Code webview's synthetic origin makes every kernel fetch cross-origin, and
         # without an echoed Access-Control-Allow-Origin the browser withholds the response
@@ -19828,6 +19900,51 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, "bad json", "text/plain")
                 _del_push_sub(ep)
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path == "/push/relay":
+                # A federated peer mirroring its bell events into THIS kernel's subscriptions
+                # (plans/federated-push.md): deliver to the devices subscribed HERE and stop — a
+                # relayed event is terminal (never re-forwarded), so attachment cycles cannot echo.
+                # The serve token already authorized the caller like any client; the ORIGIN's tier
+                # is the HUMAN boundary on top of it: only a host the user marked trusted may buzz
+                # their pocket, and anything else drops with its reason on stderr (fail loudly),
+                # never a silent buzz and never a silent drop.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                    origin = str(body.get("origin") or "").strip()
+                    events = body.get("events")
+                except (ValueError, AttributeError):
+                    return self._send(400, "bad json", "text/plain")
+                if not origin or not isinstance(events, list):
+                    return self._send(400, "missing origin or events", "text/plain")
+                tier = _host_trust(origin)
+                if tier != "trusted":
+                    print("romp: web push: dropped %d bell event(s) relayed from '%s' (its trust "
+                          "here is '%s'; only a trusted host's events reach this kernel's devices "
+                          "— the network panel's per-host selector raises it)"
+                          % (len(events), origin, tier or "unknown"), file=sys.stderr)
+                    return self._send(200, json.dumps({"ok": False, "mirrored": 0,
+                                                       "tier": tier or "unknown"}), "application/json")
+                n = 0
+                for ev in events[:16]:            # a bell mirror, not a bulk pipe — cap the fan-in
+                    if not isinstance(ev, dict):
+                        continue
+                    t = str(ev.get("title") or "")
+                    b = str(ev.get("body") or "")
+                    sid = str(ev.get("sid") or "")
+                    if not (t or b):
+                        continue
+                    # Wear the origin the way every federated surface wears it (host-prefix.ts):
+                    # the sid gains "origin:" so a tap routes through the merged dashboard's own
+                    # tabs, and the title's session name gains the same prefix. Tolerant surgery:
+                    # a title a different build composed passes through unprefixed rather than
+                    # mangled — version skew between peers is a normal state, not an error.
+                    if sid and ":" not in sid:
+                        sid = "%s:%s" % (origin, sid)
+                    if t.startswith("romp: "):
+                        t = "romp: %s:%s" % (origin, t[len("romp: "):])
+                    _push_notify(t, b, sid)       # badge omitted: the origin's count is not ours
+                    n += 1
+                return self._send(200, json.dumps({"ok": True, "mirrored": n}), "application/json")
             if u.path == "/reveal":
                 # The cold-start half of a push tap (see _PENDING_REVEAL): the freshly opened
                 # shell asks for the focus its ?push-reveal= URL named, aimed by its own wid so

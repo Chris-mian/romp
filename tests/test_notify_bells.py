@@ -200,9 +200,12 @@ class NotifyWiring(unittest.TestCase):
 
     def test_fresh_feed_builds_drive_the_notifier(self):
         # the detector runs where the fresh build lands — the one choke point every push shares
-        # (the sid joined the tuple 2026-08-08 so the push sink can aim its tap-to-open)
-        self.assertIn("for _t, _b, _sid in _feed_notifications(feed):", self.src)
+        # (the sid joined the tuple 2026-08-08 so the push sink can aim its tap-to-open; the list
+        # got a name the same day so the federated forward rides the SAME events, never a re-diff)
+        self.assertIn("_fired = _feed_notifications(feed)", self.src)
+        self.assertIn("for _t, _b, _sid in _fired:", self.src)
         self.assertIn("_system_notify(_t, _b)", self.src)
+        self.assertIn("_push_forward([{", self.src)   # trusted peers hear the same transition
 
 
 if __name__ == "__main__":
