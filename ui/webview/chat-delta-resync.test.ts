@@ -17,8 +17,12 @@ const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8"
 const KERNEL = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
 
 test("a delta gap asks the kernel for a full session instead of freezing", () => {
-  assert.match(RENDER, /if \(from > s\.events\.length\) \{/,
+  // measured against the KERNEL-owned length: the injected optimistic tail is not in the kernel's
+  // coordinate space, and counting it masked a genuine 1-event gap (the user 2026-08-09)
+  assert.match(RENDER, /if \(from > kernelLen\) \{/,
     "chatTail must treat a too-far-ahead delta as its own case, not fold it into the silent return");
+  assert.match(RENDER, /while \(kernelLen > 0 && isOptimistic\(s\.events\[kernelLen - 1\]\)\) kernelLen--;/,
+    "…in kernel coordinates, with the injected tail excluded");
   assert.match(RENDER, /requestFullSession\(msg\.id\);/, "…and request a re-base");
   assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "needFull", id \}\)/,
     "the resync request must actually reach the kernel");
