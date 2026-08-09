@@ -244,20 +244,21 @@ class SpendKeyedSplit(_Keyed):
 
 
 class UsagePayloadMixed(unittest.TestCase):
-    """_usage() attaches the keyed spend + the key's tail BESIDE the login's bars — only when key
-    turns actually exist, so a host that never uses its key shows nothing extra."""
+    """_usage() attaches the keyed spend BESIDE the login's bars — only when key turns actually
+    exist, so a host that never uses its key shows nothing extra. No key material rides along:
+    the API label is constant, so the payload carries no tail (the user 2026-08-08, evening)."""
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.real_state = km.jd.STATE
         km.jd.STATE = Path(self.d)
-        self.real_tail = km._auth_key_tail
+        self.real_key = km._auth_key_present
         (Path(self.d) / "usage.json").write_text(json.dumps(
             {"t": 1000, "five_hour": {"pct": 40, "resets_at": None}}))   # unstamped = legacy, keeps bars
 
     def tearDown(self):
         km.jd.STATE = self.real_state
-        km._auth_key_tail = self.real_tail
+        km._auth_key_present = self.real_key
 
     def _spend(self, keyed_turns):
         day = time.strftime("%Y-%m-%d")
@@ -268,28 +269,28 @@ class UsagePayloadMixed(unittest.TestCase):
         (Path(self.d) / "spend.json").write_text(json.dumps({"days": {day: b}, "hours": {hour: b}}))
 
     def test_bars_carry_the_keyed_spend_when_key_turns_exist(self):
-        km._auth_key_tail = lambda: "wxyz"
+        km._auth_key_present = lambda: True
         self._spend(keyed_turns=2)
         u = km._usage()
         self.assertTrue(u["fiveHour"], "the login's bars stay the headline")
-        self.assertEqual(u["apiTail"], "wxyz")
         self.assertEqual(u["spend"]["month"]["usd"], 0.5, "keyed-only, never the total")
+        self.assertNotIn("apiTail", u, "no key fragment travels — the rail's label is the constant 'API'")
 
     def test_no_key_turns_or_no_key_means_no_spend_beside_the_bars(self):
-        km._auth_key_tail = lambda: "wxyz"
+        km._auth_key_present = lambda: True
         self._spend(keyed_turns=0)
         self.assertNotIn("spend", km._usage())
-        km._auth_key_tail = lambda: ""
+        km._auth_key_present = lambda: False
         self._spend(keyed_turns=2)
         self.assertNotIn("spend", km._usage())
 
-    def test_the_spend_only_arm_names_the_key_too(self):
-        km._auth_key_tail = lambda: "wxyz"
+    def test_the_spend_only_arm_carries_no_key_material_either(self):
+        km._auth_key_present = lambda: True
         (Path(self.d) / "usage.json").write_text(json.dumps({"t": 1000, "apiKey": True}))
         self._spend(keyed_turns=0)
         u = km._usage()
         self.assertTrue(u["apiKey"])
-        self.assertEqual(u["apiTail"], "wxyz")
+        self.assertNotIn("apiTail", u)
 
 
 class AuthErrorClass(unittest.TestCase):
@@ -326,13 +327,18 @@ class Availability(unittest.TestCase):
         km._sdk = lambda: type("B", (), {"work_key": key})()
         km._claude_account = lambda: acct
 
-    def test_both_gates_the_selector_and_the_tail_names_the_key(self):
+    def test_both_gates_the_selector_and_no_key_material_travels(self):
         self._world(FAKE_KEY, "aaaaaaaaaaaa")
         self.assertTrue(km._auth_both())
-        self.assertEqual(km._auth_key_tail(), "wxyz")
+        self.assertTrue(km._auth_key_present())
         a = km._auth_avail()
-        self.assertEqual((a["login"], a["key"], a["tail"]), (True, True, "wxyz"))
+        self.assertEqual((a["login"], a["key"]), (True, True))
+        # No fragment of the key leaves the kernel — not the key, not even its last-4 tail
+        # (the user 2026-08-08, evening: a tail is still key material; 'API key' is label enough,
+        # and host names already tell keys apart in the per-host hover).
+        self.assertNotIn("tail", a)
         self.assertNotIn(FAKE_KEY, json.dumps(a), "the key itself never travels")
+        self.assertNotIn("wxyz", json.dumps(a), "…and neither does any substring of it")
 
     def test_one_choice_is_no_choice(self):
         self._world("", "aaaaaaaaaaaa")
@@ -344,7 +350,7 @@ class Availability(unittest.TestCase):
         import inspect
         src = inspect.getsource(km.build_session)
         self.assertIn('"auth": (tm.get("auth", "") if _auth_both() else "")', src)
-        self.assertIn('"authTail": (_auth_key_tail() if _auth_both() else "")', src)
+        self.assertNotIn("authTail", src, "the status payload carries the choice, never key material")
 
     def test_the_picker_learns_availability_on_the_session_list(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()

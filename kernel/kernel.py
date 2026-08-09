@@ -3788,32 +3788,33 @@ def _sdk_problem(text):
     del _SDK_BOOT_PROBLEMS[:-20]
 
 
-def _auth_key_tail():
-    """Last 4 characters of the manager's API key ("" = none) — the label that says WHICH key without
-    saying the key. Cheap: an attribute read off the backend singleton, safe per-push."""
+def _auth_key_present():
+    """Whether the manager's environment carried an API key (now held by the SDK backend). A bool on
+    purpose: no fragment of the key — not even a last-4 tail — leaves the kernel process for a label
+    (the user 2026-08-08, who judged even a tail more key than any surface needs; 'API key' is the
+    display everywhere, and host names already tell keys apart in the per-host hover). Cheap: an
+    attribute read off the backend singleton, safe per-push."""
     be = _sdk()
-    key = str(getattr(be, "work_key", "") or "") if be else ""
-    return key[-4:] if key else ""
+    return bool(str(getattr(be, "work_key", "") or "") if be else "")
 
 
 def _auth_both():
     """True when this machine offers BOTH billing choices (a signed-in login and a manager-env key) —
     the condition for the per-session auth selector to exist anywhere (picker, gear). Cheap per-push:
     _claude_account is mtime-cached and the key is an attribute read."""
-    return bool(_auth_key_tail()) and bool(_claude_account())
+    return _auth_key_present() and bool(_claude_account())
 
 
 def _auth_avail():
-    """Which billing choices this machine can offer a session: {'login','key','tail','default'}. The
+    """Which billing choices this machine can offer a session: {'login','key','default'}. The
     picker and the gear render the auth selector ONLY when both are real — one choice is no choice, so
     the control disappears (the user 2026-08-08). login = the credential store names a signed-in
     account (_claude_account — the same authority the usage bars trust; a stale login still fails
     LOUDLY per session via apiKeySource/authErr rather than being second-guessed here). key = the
     manager's environment carried ANTHROPIC_API_KEY, now held by the SDK backend (work_api_key claimed
-    it out of os.environ). tail = the key's last 4 characters — the label that says WHICH key without
-    saying the key. default = what a fresh session would use absent an explicit pick."""
-    be = _sdk()
-    key = str(getattr(be, "work_key", "") or "") if be else ""
+    it out of os.environ) — a bool only, never any fragment of the key (see _auth_key_present).
+    default = what a fresh session would use absent an explicit pick."""
+    key = _auth_key_present()
     d = {}
     try:
         d = json.loads((jd.STATE / "sdk-defaults.json").read_text())
@@ -3823,8 +3824,7 @@ def _auth_avail():
     default = d.get("auth") if d.get("auth") in ("login", "key") else ("key" if key else "login")
     if default == "key" and not key:
         default = "login"
-    return {"login": bool(_claude_account()), "key": bool(key),
-            "tail": key[-4:] if key else "", "default": default}
+    return {"login": bool(_claude_account()), "key": key, "default": default}
 
 
 def _sdk_problem_count():
@@ -12019,10 +12019,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   "fast": "" if tm.get("fastReason") else tm.get("fast", ""),
                   # which account this session bills ('login'|'key') — present ONLY when this machine
                   # actually offers both (see _auth_both), so the badge disappears rather than showing
-                  # a one-option selector (the user 2026-08-08). authTail labels the key option.
+                  # a one-option selector (the user 2026-08-08). The key is labelled 'API key', never
+                  # any fragment of it (same day: even a last-4 tail is more key than a label needs).
                   "auth": (tm.get("auth", "") if _auth_both() else ""),
                   "authPending": bool(tm.get("authPending")),   # an /auth reconnect applying → badge dots
-                  "authTail": (_auth_key_tail() if _auth_both() else ""),
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
                   "effortPending": bool(tm.get("effortPending")),   # switching-dots on the effort badge while the /effort reconnect applies (SDK-only; the user 2026-07-06)
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
@@ -13972,8 +13972,9 @@ def _usage():
             # read identically; _spend_windows always returns all three, zero-filled on a fresh kernel
             # (an empty slot reads as broken — the user 2026-08-04, post-restart). TOTAL sums, not the
             # keyed split: on a no-login machine every turn bills the key, and legacy files predate
-            # the split. apiTail names WHICH key (last 4) — the rail's API label (the user 2026-08-08).
-            return {"apiKey": True, "spend": _spend_windows(), "apiTail": _auth_key_tail(),
+            # the split. The rail's label is the constant 'API' — no fragment of the key travels
+            # (the user 2026-08-08; hosts are told apart by name in the hover, not by key).
+            return {"apiKey": True, "spend": _spend_windows(),
                     "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                     "acct": _claude_account()}
         return None
@@ -13998,11 +13999,10 @@ def _usage():
     # never carry spend (the user 2026-08-08, morning): that held for a machine whose sessions all
     # share one auth; per-session auth (same day, evening) makes one host BOTH, and the key's real
     # dollars belong on the rail next to the login's real %.
-    if _auth_key_tail():
+    if _auth_key_present():
         ksp = _spend_windows(keyed_only=True)
         if any((ksp.get(k) or {}).get("turns") for k in ("fiveHour", "sevenDay", "month")):
             out["spend"] = ksp
-            out["apiTail"] = _auth_key_tail()
     return out
 
 
@@ -17775,7 +17775,6 @@ var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
 // hover scaled each window's bar to the largest window, a shape with no meaning, and the budget-fill
 // tracks die with it): the numbers are the information, so the numbers are the rendering.
 function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
-if(u.apiTail)det._tail=u.apiTail;
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
 (det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0};});}
 // One payload's WINDOW detail for the hover (used/elapsed/reset per window). Detail only, no markup:
@@ -17819,18 +17818,16 @@ html+='<div class="ru-w'+(best?'':' ru-unk')+'" data-w="'+w[0]+'">'
 +'</div>';});
 return html;}
 // The API cell (the user 2026-08-08): ONE compact entry for everything key-billed across the fleet,
-// labelled by the key's own last 4 (\u2026wxyz names WHICH key without saying the key; several distinct
-// keys fall back to the bare 'API'), with NUMBERS beside it: the 5h burn and the month-to-date. No
-// bars (see spendDet). The full per-window, per-host breakdown is the hover's job.
-function apiCellHTML(live){var tails={},sum={fiveHour:0,month:0},any=false;
+// with NUMBERS beside it: the 5h burn and the month-to-date. No bars (see spendDet). The label is the
+// constant 'API' \u2014 no fragment of any key, not even a last-4 tail, reaches a surface (the user
+// 2026-08-08, evening: a tail is still key material, and the hover's HOST names already tell whose
+// spend is whose). The full per-window, per-host breakdown is the hover's job.
+function apiCellHTML(live){var sum={fiveHour:0,month:0},any=false;
 live.forEach(function(e){var sp=e.det._spend;if(!sp)return;any=true;
-if(e.det._tail)tails[e.det._tail]=1;
 ['fiveHour','month'].forEach(function(k){if(sp[k])sum[k]+=sp[k].usd;});});
 if(!any)return '';
-var tl=Object.keys(tails);
-var label='API'+(tl.length===1?' \u2026'+esc(tl[0]):'');
 return '<div class="ru-w ru-api">'
-+'<div class=ru-name>'+label+'</div>'
++'<div class=ru-name>API</div>'
 +'<div class=ru-pct>'+fmtUsd(sum.fiveHour)+' 5h \u00b7 '+fmtUsd(sum.month)+' mo</div>'
 +'</div>';}
 // The collapsed rail is the AGGREGATE story (the user 2026-08-08; supersedes the one-set-per-account
@@ -17883,7 +17880,7 @@ return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+es
 // host's own bars when it has both (per-session auth).
 if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
 if(ks.length){
-h+='<div class=ru-tip-win><div class=ru-tip-name><span>API'+(d._tail?' \u2026'+esc(d._tail):'')+' spend</span></div>'
+h+='<div class=ru-tip-win><div class=ru-tip-name><span>API spend</span></div>'
 +ks.map(function(k){var v=sp[k];
 return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
 +'<span class=ru-tip-v>'+fmtUsd(v.usd)+' \u00b7 '+fmtTok(v.tok)+' tok \u00b7 '+(v.turns||0)+' turns</span></div>';}).join('')
@@ -17892,8 +17889,14 @@ h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
 return h;}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
-var h=sets.map(function(e){return setHTML(e,many);}).join('');
-return h?h+'<div class=ru-tip-age>click to refresh</div>':'';}
+var blocks=sets.map(function(e){return setHTML(e,many);}).filter(function(b){return b;});
+if(!blocks.length)return '';
+// Hosts sit SIDE BY SIDE, one column each (the user 2026-08-08: the breakdown used to stack every
+// host into one tall pillar; columns put them beside each other so hosts compare at a glance).
+// flex-wrap folds the columns back into a stack when width runs out — the mobile Usage modal
+// reuses this exact HTML, so narrow screens degrade on their own, no second layout.
+var h=many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0];
+return h+'<div class=ru-tip-age>click to refresh</div>';}
 // The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
 // container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
 function showTip(ev){var h=tipHTML();
@@ -19131,6 +19134,10 @@ def _landing():
             "padding:8px 10px;font:500 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfd6dd;"
             "box-shadow:0 5px 18px rgba(0,0,0,0.45);pointer-events:none;line-height:1.4}"
             ".ru-tip-win{margin-bottom:8px}#ru-tip .ru-tip-win:last-child{margin-bottom:0}"
+            # Multi-host breakdown: one COLUMN per host, side by side (the user 2026-08-08 — not one
+            # tall stack). flex-wrap lets the mobile modal (92vw cap) fold back to a stack on its own.
+            ".ru-tip-cols{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}"
+            ".ru-tip-col{flex:0 1 auto;min-width:150px}"
             ".ru-tip-name{font-weight:700;color:#e8eef5;display:flex;justify-content:space-between;gap:14px;margin-bottom:3px}"
             ".ru-tip-reset{font-weight:400;opacity:.6;font-size:10px}"
             ".ru-tip-row{display:flex;align-items:center;gap:6px;margin-top:3px}"

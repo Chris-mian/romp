@@ -140,12 +140,17 @@ both (with one choice there is nothing to pick, so the control is absent):
   reconnects the session to apply (the key rides the launch environment), with
   the same switching-dots the effort badge wears.
 
-The key option is always labelled by the key's last 4 characters (`API …wxyz`)
-so you can tell which key it is; the key itself never appears. A new session
-defaults to the last pick made anywhere, and before any pick to the key when
-one is configured — exactly what an ambient key did before the selector
-existed. tmux sessions are not covered: their CLI lives in the tmux server's
+The key option is labelled plainly `API key` — no fragment of the key, not
+even a last-4 tail, ever reaches a browser or a screen (hosts are told apart
+by name, which is all a mixed setup needs). A new session defaults to the
+last pick made anywhere, and before any pick to the key when one is
+configured — exactly what an ambient key did before the selector existed.
+tmux sessions are not covered: their CLI lives in the tmux server's
 environment, which the kernel does not control.
+
+Each chat tab's hover tooltip carries the same fact as a `Billing` row
+(`API key` or `Login`), so a mixed set of sessions reads at a glance; like
+the selector, the row is absent on a one-auth machine.
 
 Failures are loud rather than silent: a session that lands on the other auth
 than it was launched for (say, a key found through `apiKeyHelper`) is flagged
@@ -155,11 +160,12 @@ auto-retried.
 
 The usage rail reflects a mixed machine: the window bars (5 hours / 7 days /
 Fable 5) are drawn once, aggregated across every connected host's login as the
-worst reading per window, and an `API …wxyz` cell beside them carries the
+worst reading per window, and an `API` cell beside them carries the
 key-billed dollars (5-hour burn and month-to-date, numbers only). Hovering
-breaks both down per host; a host can show its login's windows and its key's
-spend side by side. Only turns whose session billed the key count toward the
-API numbers — a login turn's computed cost is dollars nobody pays.
+breaks both down per host — one column per host, side by side — and a host
+can show its login's windows and its key's spend together. Only turns whose
+session billed the key count toward the API numbers — a login turn's computed
+cost is dollars nobody pays.
 
 ### Install-time switches
 

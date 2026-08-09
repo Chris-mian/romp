@@ -161,10 +161,12 @@ class RailRendering(unittest.TestCase):
         self.assertNotIn("class=ru-host>", self.js)
         self.assertIn("if(!best||d.pct>best.pct)best=d;", self.js, "worst known reading wins the bar")
 
-    def test_the_api_cell_is_numbers_with_the_keys_own_tail_and_no_bars(self):
-        # label 'API …wxyz' (one distinct key) or bare 'API'; value = 5h burn + month-to-date dollars;
-        # the spend bar graphs are gone everywhere (the user 2026-08-08: they told you nothing)
-        self.assertIn("'API'+(tl.length===1?' …'+esc(tl[0]):'')", self.js)
+    def test_the_api_cell_is_numbers_under_a_constant_label_and_no_bars(self):
+        # a bare 'API' label — never any fragment of the key, not even a last-4 tail (the user
+        # 2026-08-08, evening); value = 5h burn + month-to-date dollars; the spend bar graphs are
+        # gone everywhere (same day, morning: they told you nothing)
+        self.assertIn("'<div class=ru-name>API</div>'", self.js)
+        self.assertNotIn("_tail", self.js)
         self.assertIn("fmtUsd(sum.fiveHour)+' 5h · '+fmtUsd(sum.month)+' mo</div>'", self.js)
         self.assertNotIn("spendColor", self.js)
         self.assertNotIn("spendWinsHTML", self.js)
@@ -177,7 +179,7 @@ class RailRendering(unittest.TestCase):
         # and the spend rows are numbers only — no track span
         self.assertIn("function winDet(u,det)", self.js)
         self.assertIn("winDet(r.usage,det);spendDet(r.usage,det);", self.js)
-        self.assertIn("API'+(d._tail?' …'+esc(d._tail):'')+' spend</span>", self.js)
+        self.assertIn("<span>API spend</span>", self.js)
         self.assertIn("' tok · '+(v.turns||0)+' turns</span>", self.js)
 
     def test_the_account_wide_notices_read_off_THIS_machine(self):
