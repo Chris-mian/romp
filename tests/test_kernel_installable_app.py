@@ -128,5 +128,23 @@ class InstallMetas(unittest.TestCase):
         self.assertNotIn("apple-touch-icon", km._TOKEN_LOGIN_HTML)
 
 
+class AuthCookieSurvivesAppLaunches(unittest.TestCase):
+    def test_cookie_is_lax_not_strict(self):
+        # The user 2026-08-08: the installed Android app asked for the token on EVERY launch.
+        # Android opens a home-screen app through a launcher INTENT, which Chrome scores as a
+        # cross-site top-level navigation — SameSite=Strict withheld the cookie each time, so the
+        # app booted cookieless onto the login page. Lax attaches on top-level navigations (the
+        # launch) while still never riding a cross-site POST or subresource — and every
+        # state-changing kernel route is a POST, so the gate is unchanged.
+        status, _, headers = _serve_get("/sw.js?token=" + km.TOKEN)   # any gated route sets it
+        self.assertEqual(status, 200)
+        cookie = headers.get("Set-Cookie") or ""
+        self.assertIn("romp_token=", cookie)
+        self.assertIn("SameSite=Lax", cookie)
+        self.assertNotIn("Strict", cookie)
+        self.assertIn("HttpOnly", cookie)                 # still no script access
+        self.assertIn("Max-Age=31536000", cookie)         # still the year the phone needs
+
+
 if __name__ == "__main__":
     unittest.main()

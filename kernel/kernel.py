@@ -19467,8 +19467,14 @@ class Handler(BaseHTTPRequestHandler):
         if getattr(self, "_set_cookie", None):       # auto-inject the token so a client never 401-loops
             # Max-Age=1yr so the phone persists the token past its browser session (no re-prompt on
             # the tailnet after the tab is closed) — for simplify's auto-serve/permanence work.
+            # SameSite=Lax, NOT Strict (the user 2026-08-08): Android launches an installed
+            # home-screen app through a launcher INTENT, which Chrome scores as a cross-site
+            # top-level navigation — Strict withheld the cookie on every launch and the app opened
+            # on the login page each time, a token re-ask per launch. Lax still attaches only on
+            # top-level navigations (never on a cross-site POST/subresource, and every
+            # state-changing route here is a POST), so the gate the token provides is unchanged.
             self.send_header("Set-Cookie", "romp_token=%s; Path=/; Max-Age=31536000; "
-                             "SameSite=Strict; HttpOnly" % self._set_cookie)
+                             "SameSite=Lax; HttpOnly" % self._set_cookie)
         # CORS delivery for an AUTHORIZED browser origin (set at the _authorize call sites).
         # A VS Code webview's synthetic origin makes every kernel fetch cross-origin, and
         # without an echoed Access-Control-Allow-Origin the browser withholds the response
