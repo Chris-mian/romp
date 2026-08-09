@@ -39,13 +39,19 @@ def _usage(acct):
 
 class AccountIdentity(unittest.TestCase):
     def test_it_is_a_digest_and_never_the_raw_identifier(self):
-        src = inspect.getsource(km._claude_account)
+        # the read mechanics live in _acct_read now: ONE cached parse feeds the digest AND the
+        # display label (the user 2026-08-09 added the label; the digest's own rules stand)
+        src = inspect.getsource(km._acct_read)
         self.assertIn("accountUuid", src, "the account identity the CLI itself uses")
         self.assertIn("sha256", src)
-        self.assertNotIn('"emailAddress"', src)
-        self.assertNotIn("emailAddress\"", src)
-        # the digest is short and opaque: enough to answer "same or not", carrying nothing back
+        # the digest is short and opaque: enough to answer "same or not", carrying nothing back —
+        # and it hashes the uuid ALONE, never the email, so cross-host equality carries no identity
         self.assertIn("hexdigest()[:12]", src)
+        self.assertIn('hashlib.sha256(str(uuid).encode("utf-8"))', src)
+        # the label is the deliberate, narrower exception: display-only (picker Billing row, tab
+        # hover), read through _claude_account_label — the digest path itself never returns it
+        self.assertIn('return _ACCT_CACHE["val"]', inspect.getsource(km._claude_account))
+        self.assertNotIn('_ACCT_CACHE["label"]', inspect.getsource(km._claude_account))
 
     def test_a_missing_or_unreadable_file_is_no_account_not_a_crash(self):
         old = os.environ.get("HOME")
@@ -59,7 +65,7 @@ class AccountIdentity(unittest.TestCase):
             km._ACCT_CACHE["mtime"] = -1.0
 
     def test_the_reading_is_cached_on_the_file_and_not_reparsed_per_poll(self):
-        self.assertIn('_ACCT_CACHE["mtime"] == m', inspect.getsource(km._claude_account))
+        self.assertIn('_ACCT_CACHE["mtime"] == m', inspect.getsource(km._acct_read))
 
     def test_the_usage_payload_carries_it(self):
         self.assertIn('"acct": _claude_account(),', inspect.getsource(km._usage))
@@ -163,11 +169,13 @@ class RailRendering(unittest.TestCase):
 
     def test_the_api_cell_is_numbers_under_a_constant_label_and_no_bars(self):
         # a bare 'API' label — never any fragment of the key, not even a last-4 tail (the user
-        # 2026-08-08, evening); value = 5h burn + month-to-date dollars; the spend bar graphs are
-        # gone everywhere (same day, morning: they told you nothing)
+        # 2026-08-08, evening); each window then wears its ONE display name LEFT of its dollars+tokens
+        # (the user 2026-08-09 — same words, font and position as the account bars); the spend bar
+        # graphs are gone everywhere (2026-08-08, morning: they told you nothing)
         self.assertIn("'<div class=ru-name>API</div>'", self.js)
         self.assertNotIn("_tail", self.js)
-        self.assertIn("fmtUsd(sum.fiveHour)+' 5h · '+fmtUsd(sum.month)+' mo</div>'", self.js)
+        self.assertIn("seg('fiveHour','5 hours')+seg('month','Month')", self.js)
+        self.assertIn("'<div class=ru-pct>'+fmtUsd(sum[k].usd)+' · '+fmtTok(sum[k].tok)+' tok</div>'", self.js)
         self.assertNotIn("spendColor", self.js)
         self.assertNotIn("spendWinsHTML", self.js)
 

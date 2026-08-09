@@ -196,7 +196,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authBoth?: boolean; authAcct?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -3290,10 +3290,11 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   // Backend is a plain labelled FIELD now, under the others (the user 2026-07-08 — no longer a coloured
   // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
   if (be === "sdk" || be === "tmux") rows.push(["Backend", be === "sdk" ? "SDK" : "tmux"]);
-  // Billing: whether this tab bills the API key or the Claude login (the user 2026-08-08). st.auth
-  // exists only when the machine offers both (kernel _auth_both), so a one-auth machine shows no row —
-  // the selector's own disappearing rule. The label carries no key material, ever.
-  if (s.status.auth) rows.push(["Billing", s.status.auth === "key" ? "API key" : "Login"]);
+  // Billing: whether this tab bills the API key or the Claude login — and WHICH login account (the
+  // user 2026-08-09: shown whenever the backend reports it, one-auth machines included; only a tmux
+  // session, whose CLI env romp does not control, reports nothing). No key material, ever.
+  if (s.status.auth) rows.push(["Billing", s.status.auth === "key" ? "API key"
+    : (s.status.authAcct ? `Login (${s.status.authAcct})` : "Login")]);
   for (const [k, v] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
@@ -4246,19 +4247,34 @@ function requestSessionList(host: string): void {
 }
 
 // Per-session BILLING for a NEW session (the user 2026-08-08): login vs the API key the selected host's
-// manager environment carries. The row exists only when that host offers BOTH (authAvail on its
-// sessionList reply) AND the backend toggle says SDK (a tmux session's CLI lives in the tmux server's
-// environment, which the kernel does not control) — otherwise it disappears entirely.
-let pickerAuthAvail: { login?: boolean; key?: boolean; default?: string } | null = null;
+// manager environment carries. The row is ALWAYS there for an SDK session (the user 2026-08-09):
+// segmented BUTTONS when the selected host offers both, and when it offers ONE, the same spot just
+// writes out which it is — informative, never a one-option selector (what the earlier disappearing
+// rule was really against). The row still disappears when the backend toggle says tmux (that CLI
+// lives in the tmux server's environment, which the kernel does not control) and until the host's
+// sessionList reply carries authAvail (an older kernel never answers with one).
+let pickerAuthAvail: { login?: boolean; key?: boolean; acct?: string; default?: string } | null = null;
 
 function syncPickerAuth(): void {
   const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
   if (!wrap) return;
   const beSel = document.querySelector("#picker .picker-backend:not(.picker-host):not(.picker-auth) .picker-be-opt.sel") as HTMLElement | null;
   const a = pickerAuthAvail;
-  const show = !pickMode && !!(a && a.login && a.key) && (beSel?.dataset.be || loadSettings().backend) === "sdk";
+  const show = !pickMode && !!(a && (a.login || a.key)) && (beSel?.dataset.be || loadSettings().backend) === "sdk";
   wrap.style.display = show ? "" : "none";
   if (!show) return;
+  const both = !!(a!.login && a!.key);
+  wrap.querySelectorAll(".picker-be-opt").forEach((x) => ((x as HTMLElement).style.display = both ? "" : "none"));
+  const fixed = wrap.querySelector(".picker-auth-fixed") as HTMLElement | null;
+  if (fixed) {
+    fixed.style.display = both ? "none" : "";
+    // one real choice → written out in the buttons' place, naming the login account when known
+    fixed.textContent = both ? "" : (a!.key ? "API key" : (a!.acct ? `Login (${a!.acct})` : "Login"));
+  }
+  if (!both) return;   // the fixed text is the whole row — nothing to seed
+  // the Login button's hover names WHICH account (the user 2026-08-09)
+  const loginBtn = wrap.querySelector('.picker-be-opt[data-auth="login"]') as HTMLElement | null;
+  if (loginBtn && a!.acct) loginBtn.title = `Bill this session to the machine's Claude login (${a!.acct}).`;
   // seed the selection from the host's default only when nothing is selected yet this open
   if (!wrap.querySelector(".picker-be-opt.sel")) {
     const def = a!.default === "key" ? "key" : "login";
@@ -4266,11 +4282,15 @@ function syncPickerAuth(): void {
   }
 }
 
-// the picked billing for the create payload — "" when the row is hidden (kernel default applies)
+// the picked billing for the create payload — "" when the row is hidden or written-out (one real
+// choice: the kernel default IS that choice, and a stale .sel from a previously-selected both-offering
+// host must not ride along)
 function pickerAuthChoice(): string {
   const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
   if (!wrap || wrap.style.display === "none") return "";
-  return (wrap.querySelector(".picker-be-opt.sel") as HTMLElement | null)?.dataset.auth || "";
+  const sel = wrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
+  if (!sel || sel.style.display === "none") return "";
+  return sel.dataset.auth || "";
 }
 
 function pickerHost(): string {
@@ -4504,10 +4524,11 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
                   mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."));   // SDK first — the de-facto default (the user 2026-07-02)
     // the billing row exists only for SDK sessions — re-decide on every backend toggle
     beWrap.addEventListener("click", () => syncPickerAuth());
-    // per-session BILLING row (the user 2026-08-08): Login | API key, shown only when the selected
-    // host offers both (see syncPickerAuth); the same segmented-toggle grammar as Backend above.
+    // per-session BILLING row (the user 2026-08-08): Login | API key buttons when the selected host
+    // offers both; with ONE real choice the same spot writes it out as plain text (the user
+    // 2026-08-09) — see syncPickerAuth. Same segmented-toggle grammar as Backend above.
     const auWrap = el("div", "picker-backend picker-auth");
-    auWrap.style.display = "none";   // hidden until a sessionList reply proves both choices exist
+    auWrap.style.display = "none";   // hidden until a sessionList reply carries authAvail
     const auLabel = el("span", "picker-backend-label"); auLabel.textContent = "Billing";
     const mkAu = (val: string, txt: string, tip: string) => {
       const b = el("button", "picker-be-opt") as HTMLButtonElement;
@@ -4515,8 +4536,11 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       b.addEventListener("click", () => auWrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b)));
       return b;
     };
+    const auFixed = el("span", "picker-auth-fixed");   // the written-out single choice
+    auFixed.style.display = "none";
     auWrap.append(auLabel, mkAu("login", "Login", "Bill this session to the machine's Claude login (subscription usage)."),
-                  mkAu("key", "API key", "Bill this session to the API key the manager's environment carries (per-token)."));
+                  mkAu("key", "API key", "Bill this session to the API key the manager's environment carries (per-token)."),
+                  auFixed);
     // per-session HOST picker (federation, the user 2026-07-02): local | each attached SSH host — the new
     // session is created BY that host's kernel (over its tunnel) and appears prefixed `host:name`. The
     // options are rebuilt on every open (hosts attach/detach live); the row hides with no hosts attached.
@@ -6795,10 +6819,11 @@ const FAST_CHOICES: { label: string; value: string }[] = [
   { label: "Off", value: "off" },
 ];
 // Per-session billing (the user 2026-08-08): the Claude login vs the API key the manager's environment
-// carries. The badge exists only when the session REPORTS a choice (st.auth) — the kernel emits it only
-// when the machine actually offers BOTH, so a one-auth machine shows no dead selector at all. The key
-// entry is labelled 'API key', full stop — no fragment of the key, not even a last-4 tail, is shipped
-// or shown (the user 2026-08-08, evening: a tail is still key material and no surface needs it).
+// carries. st.auth is now ALWAYS reported when the backend knows it (the user 2026-08-09 — the tab
+// hover says Billing everywhere), so this SWITCHING badge gates on st.authBoth instead: a one-auth
+// machine still shows no dead selector, while the hover stays informative. The key entry is labelled
+// 'API key', full stop — no fragment of the key, not even a last-4 tail, is shipped or shown (the
+// user 2026-08-08, evening: a tail is still key material and no surface needs it).
 const AUTH_CHOICES: { label: string; value: string }[] = [
   { label: "Login", value: "login" },
   { label: "API key", value: "key" },
@@ -6907,7 +6932,7 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
   // order left→right: mode · model · effort · fast · auth — the mode selector sits LEFT of the model name
   // (the user 2026-06-16); fast/auth exist only when the session reports them (SDK init / a both-auth
   // machine), so a machine with one billing choice shows no dead selector (the user 2026-08-08).
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : "", st.auth ? "auth" : ""].filter(Boolean).join();
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : "", (st.auth && st.authBoth) ? "auth" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
@@ -6915,7 +6940,7 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     if (st.model) meta.appendChild(metaButton("model", st.model));
     if (st.effort) meta.appendChild(metaButton("effort", st.effort));
     if (st.fast) meta.appendChild(metaButton("fast", prettyFast(st.fast)));
-    if (st.auth) meta.appendChild(metaButton("auth", prettyAuth(st)));
+    if (st.auth && st.authBoth) meta.appendChild(metaButton("auth", prettyAuth(st)));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;

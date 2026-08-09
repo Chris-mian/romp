@@ -131,26 +131,29 @@ a fast-capable one, which the chat shows as the command's own confirmation.
 
 An SDK session can bill either the machine's Claude login (subscription usage)
 or the `ANTHROPIC_API_KEY` the manager's environment carries — per session.
-The choice appears in two places, and only on a machine that actually offers
-both (with one choice there is nothing to pick, so the control is absent):
 
-- the new-session picker's **Billing** row, when the selected host offers both
-  and the backend toggle says SDK;
-- a statusline badge on the session, beside mode/model/effort. Switching
-  reconnects the session to apply (the key rides the launch environment), with
-  the same switching-dots the effort badge wears.
+The new-session picker's **Billing** row states the case whenever the backend
+toggle says SDK: segmented buttons when the selected host offers both choices,
+and with only one real choice, the same spot simply writes out which applies —
+`Login (name@example.com)` or `API key` — so what a session will bill is never
+a mystery. A live session additionally wears a statusline badge for
+*switching*, beside mode/model/effort, and that control keeps the stricter
+rule: it exists only when both choices are real (a one-option selector is
+noise). Switching reconnects the session to apply (the key rides the launch
+environment), with the same switching-dots the effort badge wears.
 
-The key option is labelled plainly `API key` — no fragment of the key, not
-even a last-4 tail, ever reaches a browser or a screen (hosts are told apart
-by name, which is all a mixed setup needs). A new session defaults to the
-last pick made anywhere, and before any pick to the key when one is
-configured — exactly what an ambient key did before the selector existed.
-tmux sessions are not covered: their CLI lives in the tmux server's
+The login is named by its account (the email the credential store records);
+the key option is labelled plainly `API key` — no fragment of the key, not
+even a last-4 tail, ever reaches a browser or a screen. A new session
+defaults to the last pick made anywhere, and before any pick to the key when
+one is configured — exactly what an ambient key did before the selector
+existed. tmux sessions are not covered: their CLI lives in the tmux server's
 environment, which the kernel does not control.
 
-Each chat tab's hover tooltip carries the same fact as a `Billing` row
-(`API key` or `Login`), so a mixed set of sessions reads at a glance; like
-the selector, the row is absent on a one-auth machine.
+Each chat tab's hover tooltip carries the same fact as a `Billing` row —
+`API key`, or `Login (name@example.com)` — whenever the session's backend
+reports it, one-auth machines included; only tmux sessions, whose billing romp
+cannot know, show no row.
 
 Failures are loud rather than silent: a session that lands on the other auth
 than it was launched for (say, a key found through `apiKeyHelper`) is flagged

@@ -234,7 +234,7 @@ class FableBanner(unittest.TestCase):
 
     def test_fable_is_still_flagged_limited_for_the_rail_bar(self):
         # the passive third rail bar still reflects the Fable window — only the proactive BANNER is suppressed
-        self.assertIn("['fable',7*86400,'F5','Fable 5','Fable 5']", km._LANDING_USAGE_JS, "the rail still has the Fable bar")
+        self.assertIn("['fable',7*86400,'Fable 5']", km._LANDING_USAGE_JS, "the rail still has the Fable bar")
 
 
 class JudgeFailureBanner(unittest.TestCase):

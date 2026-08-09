@@ -3806,14 +3806,17 @@ def _auth_both():
 
 
 def _auth_avail():
-    """Which billing choices this machine can offer a session: {'login','key','default'}. The
-    picker and the gear render the auth selector ONLY when both are real — one choice is no choice, so
-    the control disappears (the user 2026-08-08). login = the credential store names a signed-in
-    account (_claude_account — the same authority the usage bars trust; a stale login still fails
-    LOUDLY per session via apiKeySource/authErr rather than being second-guessed here). key = the
-    manager's environment carried ANTHROPIC_API_KEY, now held by the SDK backend (work_api_key claimed
-    it out of os.environ) — a bool only, never any fragment of the key (see _auth_key_present).
-    default = what a fresh session would use absent an explicit pick."""
+    """Which billing choices this machine can offer a session: {'login','key','acct','default'}. The
+    picker's Billing row is ALWAYS there for an SDK session (the user 2026-08-09): BUTTONS when both
+    choices are real, and when only one is, the same row simply WRITES OUT which one applies — informative,
+    not a one-option selector (which is what the earlier disappearing rule was really against, the user
+    2026-08-08). login = the credential store names a signed-in account (_claude_account — the same
+    authority the usage bars trust; a stale login still fails LOUDLY per session via apiKeySource/authErr
+    rather than being second-guessed here). key = the manager's environment carried ANTHROPIC_API_KEY,
+    now held by the SDK backend (work_api_key claimed it out of os.environ) — a bool only, never any
+    fragment of the key (see _auth_key_present). acct = the login's display name (_claude_account_label),
+    so 'Login' can say WHICH account it means. default = what a fresh session would use absent an
+    explicit pick."""
     key = _auth_key_present()
     d = {}
     try:
@@ -3824,7 +3827,8 @@ def _auth_avail():
     default = d.get("auth") if d.get("auth") in ("login", "key") else ("key" if key else "login")
     if default == "key" and not key:
         default = "login"
-    return {"login": bool(_claude_account()), "key": key, "default": default}
+    return {"login": bool(_claude_account()), "key": key,
+            "acct": _claude_account_label(), "default": default}
 
 
 def _sdk_problem_count():
@@ -12017,11 +12021,17 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # no badge — tmux stays "" until its statusline publishes a fast var). A non-empty
                   # disabled_reason means /fast would refuse, so the chat hides the toggle.
                   "fast": "" if tm.get("fastReason") else tm.get("fast", ""),
-                  # which account this session bills ('login'|'key') — present ONLY when this machine
-                  # actually offers both (see _auth_both), so the badge disappears rather than showing
-                  # a one-option selector (the user 2026-08-08). The key is labelled 'API key', never
-                  # any fragment of it (same day: even a last-4 tail is more key than a label needs).
-                  "auth": (tm.get("auth", "") if _auth_both() else ""),
+                  # which account this session bills ('login'|'key') — ALWAYS reported when the backend
+                  # knows it (the user 2026-08-09: the tab hover says Billing even on a one-auth
+                  # machine; tmux sessions report nothing, honestly — their CLI's env is not romp's).
+                  # The key is labelled 'API key', never any fragment of it (2026-08-08: even a last-4
+                  # tail is more key than a label needs); authAcct names WHICH login account.
+                  "auth": tm.get("auth", ""),
+                  # whether this machine offers BOTH choices — the gate for the CONTROLS (statusline
+                  # badge menu / picker buttons); display no longer hangs on it (the user 2026-08-09)
+                  "authBoth": _auth_both(),
+                  # the login's display name, shown beside 'Login' (the user 2026-08-09); "" when no login
+                  "authAcct": _claude_account_label(),
                   "authPending": bool(tm.get("authPending")),   # an /auth reconnect applying → badge dots
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
                   "effortPending": bool(tm.get("effortPending")),   # switching-dots on the effort badge while the /effort reconnect applies (SDK-only; the user 2026-07-06)
@@ -13889,7 +13899,7 @@ def _state_intervals(sid, want, now):
     return out
 
 
-_ACCT_CACHE = {"mtime": -1.0, "val": ""}
+_ACCT_CACHE = {"mtime": -1.0, "val": "", "label": ""}
 
 
 def _claude_account():
@@ -13902,23 +13912,44 @@ def _claude_account():
     emailAddress — the comparison only needs "same or not", and an email is a personal identifier that
     would then travel to every federated host, sit in a payload and show up in any screenshot of the
     bars. A digest answers the question and carries nothing back. Cached on the file's mtime.
+
+    (_claude_account_label below is the deliberate, narrower exception: the login's own name, for the
+    login-facing UI rows the user asked to carry it. Cross-host equality stays on this digest.)
     """
+    _acct_read()
+    return _ACCT_CACHE["val"]
+
+
+def _claude_account_label():
+    """The signed-in login's display name — emailAddress (the identity `claude /login` itself shows),
+    falling back to displayName — or "" when there is none. FOR DISPLAY beside 'Login': the new-session
+    picker's Billing row and the chat tab's hover (the user 2026-08-09, who wanted to see WHICH account
+    'Login' means). The one sanctioned account-identity payload field; anything that only needs
+    same-or-not (the rail's per-host dedup) keeps the _claude_account digest, which carries nothing."""
+    _acct_read()
+    return _ACCT_CACHE["label"]
+
+
+def _acct_read():
+    """Refresh _ACCT_CACHE (digest + label) from ~/.claude.json, mtime-cached — one stat per push."""
     p = os.path.expanduser("~/.claude.json")
     try:
         m = os.stat(p).st_mtime
     except OSError:
-        return ""
+        _ACCT_CACHE["mtime"], _ACCT_CACHE["val"], _ACCT_CACHE["label"] = -1.0, "", ""
+        return
     if _ACCT_CACHE["mtime"] == m:
-        return _ACCT_CACHE["val"]
-    val = ""
+        return
+    val = label = ""
     try:
-        uuid = ((json.loads(open(p, encoding="utf-8").read()) or {}).get("oauthAccount") or {}).get("accountUuid")
+        oa = (json.loads(open(p, encoding="utf-8").read()) or {}).get("oauthAccount") or {}
+        uuid = oa.get("accountUuid")
         if uuid:
             val = hashlib.sha256(str(uuid).encode("utf-8")).hexdigest()[:12]
+        label = str(oa.get("emailAddress") or oa.get("displayName") or "")
     except Exception:
-        val = ""
-    _ACCT_CACHE["mtime"], _ACCT_CACHE["val"] = m, val
-    return val
+        val = label = ""
+    _ACCT_CACHE["mtime"], _ACCT_CACHE["val"], _ACCT_CACHE["label"] = m, val, label
 
 
 def _usage():
@@ -17695,7 +17726,34 @@ back.addEventListener('click',function(e){if(e.target===back)close();});
 if(x)x.addEventListener('click',close);
 if(clearBtn)clearBtn.addEventListener('click',function(){NOTES=[];save();renderList();paint();});
 window.__rompOpenErrs=open;   // the mobile bar's bell routes here (no rail on mobile)
+window.__rompCloseErrs=close;   // Escape routes here (_LANDING_ESC_JS) — close owns the state cleanup
 paint();})();
+"""
+
+
+# Escape closes the TOPMOST open shell modal (the user 2026-08-09: the usage/network/Log panels could
+# only be clicked away; Escape did nothing whenever focus sat inside a pane iframe, because a keydown
+# never crosses the iframe boundary). Same dual wiring as the palette (palette-main.ts) and the
+# Alt+Arrow nav (_LANDING_FOCUS_JS): capture on the shell document AND on every same-origin pane
+# document, re-attached on every iframe (re)load. Each panel exposes its OWN close (their state
+# cleanup lives in those closures); this block only decides which panel Escape means, topmost first
+# (usage z300 > Log z210 > net z200). With no shell modal open it touches nothing, so pane-local
+# Escapes (dialogs, menus inside the chat) keep working.
+_LANDING_ESC_JS = """
+(function(){
+function onEsc(e){if(e.key!=='Escape')return;
+var closed=false,ru=document.getElementById('ru-back');
+if(ru&&ru.classList.contains('on')&&window.__rompUsageClose){window.__rompUsageClose();closed=true;}
+else{var er=document.getElementById('rerr-back');
+if(er&&!er.hidden&&window.__rompCloseErrs){window.__rompCloseErrs();closed=true;}
+else{var nt=document.getElementById('rnet-back');
+if(nt&&!nt.hidden&&window.__rompCloseNet){window.__rompCloseNet();closed=true;}}}
+if(closed){e.preventDefault();e.stopPropagation();}}
+document.addEventListener('keydown',onEsc,true);
+['f-chat','f-fleet','f-feed','f-timeline'].forEach(function(id){var f=document.getElementById(id);if(!f)return;
+var wire=function(){try{if(f.contentDocument)f.contentDocument.addEventListener('keydown',onEsc,true);}catch(e){}};
+f.addEventListener('load',wire);wire();});
+})();
 """
 
 
@@ -17717,9 +17775,13 @@ var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);m-=h*60;
 return(h<24?h+'h '+(m?m+'m ':''):Math.floor(h/24)+'d ')+'ago';}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 // [key, spanSec, shortTag (tooltip), name (tooltip), label (bottom-bar, expanded — plenty of horizontal room)]
-var WINS=[['fiveHour',5*3600,'5h','Session','5 hours'],
-          ['sevenDay',7*86400,'7d','Weekly','7 days'],
-          ['fable',7*86400,'F5','Fable 5','Fable 5']];
+// ONE display name per window, worn EVERYWHERE it appears — the collapsed bars, the hover's window
+// sections, the API cell's designators (the user 2026-08-09: '5 hours' on the bars but '5h' on the API
+// numbers, plus a third 'Session (5h)' in the hover, was three vocabularies for one thing; same words,
+// same font, same left-of-value position across all of it).
+var WINS=[['fiveHour',5*3600,'5 hours'],
+          ['sevenDay',7*86400,'7 days'],
+          ['fable',7*86400,'Fable 5']];
 // ROWS is one entry per HOST whose usage is known, local first (see /usage/fleet); LAST is the per-host
 // tooltip detail for the ones drawn into the aggregate; SELF names this machine for its hover heading
 // when there is more than one host.
@@ -17757,7 +17819,7 @@ if(window.__rompNotify)window.__rompNotify('judge',nc+' '+noun+" couldn't be sum
 var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));
 var sig=on?((lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')):'';
 if(!on){_limPut('');}   // fully cleared -> forget the logged signature so a future limit logs again
-else if(sig!==_limGet()){_limPut(sig);var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
+else if(sig!==_limGet()){_limPut(sig);var names=[];if(lim.fiveHour)names.push('5-hour');if(lim.sevenDay)names.push('7-day');
 if(window.__rompNotify)window.__rompNotify('limit',names.join(' and ')+' usage limit reached \u2014 retries paused until it resets');}}
 function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
 // API-key spend rides the payload's `spend` windows. It used to require the apiKey flag (a no-login
@@ -17768,7 +17830,7 @@ function hasSpend(u){return !!(u&&u.spend&&u.spend.fiveHour);}
 function fmtTok(n){if(n>=1e9)return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
 if(n>=1e6)return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
 if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
-function fmtUsd(v){return '$'+(v<100?v.toFixed(2):String(Math.round(v)));}
+function fmtUsd(v){return '$'+String(Math.round(v));}   // whole dollars everywhere — no cents (the user 2026-08-09)
 var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
 // The per-host SPEND detail for the rich hover: plain NUMBERS per window (dollars, tokens, turns).
 // No bars anywhere for spend (the user 2026-08-08: the spend bar graphs told you nothing. The old
@@ -17789,7 +17851,7 @@ WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=!!(seg.resetsAt&&nowS>seg.resetsAt),pct=Math.max(0,Math.min(100,seg.pct||0));
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(!rolled&&seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
-det[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtAgo(seg.resetsAt):null),reset:(!rolled&&seg.resetsAt)?fmtR(seg.resetsAt):null};});}
+det[w[0]]={name:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtAgo(seg.resetsAt):null),reset:(!rolled&&seg.resetsAt)?fmtR(seg.resetsAt):null};});}
 // ONE aggregated set of bars for every account at once (the user 2026-08-08: never repeat the windows
 // per host; say '5 hours' once). Per window, the WORST known reading across the fleet: the windows are
 // allowances and the binding one is the fullest; each host's own number lives in the hover. A window
@@ -17808,7 +17870,7 @@ if(!best&&!anyRolled)return;
 // asserts a value we do not have; the length itself is the lie. Its slot holds a single '?' so the
 // rows stay aligned, and the last-known number lives in the hover, labelled as such.
 html+='<div class="ru-w'+(best?'':' ru-unk')+'" data-w="'+w[0]+'">'
-+'<div class=ru-name>'+w[4]+'</div>'
++'<div class=ru-name>'+w[2]+'</div>'
 +(best?('<div class=ru-bars>'
 +'<div class=ru-track><i class=ru-fill style="width:'+best.pct+'%;background:'+best.col+'"></i></div>'
 +'<div class=ru-track><i class=ru-fill style="width:'+(best.tp||0)+'%;background:#6b7a8c"></i></div>'
@@ -17817,18 +17879,23 @@ html+='<div class="ru-w'+(best?'':' ru-unk')+'" data-w="'+w[0]+'">'
 :'<div class=ru-bars><div class=ru-qmark>?</div></div>')
 +'</div>';});
 return html;}
-// The API cell (the user 2026-08-08): ONE compact entry for everything key-billed across the fleet,
-// with NUMBERS beside it: the 5h burn and the month-to-date. No bars (see spendDet). The label is the
-// constant 'API' \u2014 no fragment of any key, not even a last-4 tail, reaches a surface (the user
-// 2026-08-08, evening: a tail is still key material, and the hover's HOST names already tell whose
-// spend is whose). The full per-window, per-host breakdown is the hover's job.
-function apiCellHTML(live){var sum={fiveHour:0,month:0},any=false;
+// The API cell (the user 2026-08-08): ONE compact entry for everything key-billed across the fleet \u2014
+// the 5-hour burn and the month-to-date, dollars AND tokens (the user 2026-08-09, who wanted the
+// tokens kept beside the spend). No bars (see spendDet). It wears the window cells' own grammar
+// (same day): each designator is the window's ONE display name, in the name font, LEFT of its value \u2014
+// never a '$12 5h' with the window trailing the number in a second vocabulary. The label is the
+// constant 'API' \u2014 no fragment of any key, not even a last-4 tail, reaches a surface (2026-08-08,
+// evening: a tail is still key material, and the hover's HOST names already tell whose spend is
+// whose). The full per-window, per-host breakdown is the hover's job.
+function apiCellHTML(live){var sum={fiveHour:{usd:0,tok:0},month:{usd:0,tok:0}},any=false;
 live.forEach(function(e){var sp=e.det._spend;if(!sp)return;any=true;
-['fiveHour','month'].forEach(function(k){if(sp[k])sum[k]+=sp[k].usd;});});
+['fiveHour','month'].forEach(function(k){var s=sp[k];if(s){sum[k].usd+=s.usd;sum[k].tok+=s.tok||0;}});});
 if(!any)return '';
+var seg=function(k,lbl){return '<div class=ru-name>'+lbl+'</div>'
++'<div class=ru-pct>'+fmtUsd(sum[k].usd)+' \u00b7 '+fmtTok(sum[k].tok)+' tok</div>';};
 return '<div class="ru-w ru-api">'
 +'<div class=ru-name>API</div>'
-+'<div class=ru-pct>'+fmtUsd(sum.fiveHour)+' 5h \u00b7 '+fmtUsd(sum.month)+' mo</div>'
++seg('fiveHour','5 hours')+seg('month','Month')
 +'</div>';}
 // The collapsed rail is the AGGREGATE story (the user 2026-08-08; supersedes the one-set-per-account
 // rendering of 2026-07-30): one set of window bars for the whole fleet plus one API cell, never a
@@ -17871,7 +17938,7 @@ var sp=d._spend||null;
 if(!keys.length&&!sp)return '';
 var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
 h+=keys.map(function(k){var v=d[k];
-return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+' ('+esc(v.span)+')</span>'
+return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+'</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
 :(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
 // The API-KEY SPEND rows (the user 2026-08-08): dollars, tokens and turns per window, NUMBERS ONLY.
@@ -17914,9 +17981,11 @@ function openIt(){var h=tipHTML();if(!h)return;
 tip.innerHTML=h;tip.classList.add('ru-modal');tip.style.left='';tip.style.top='';tip.style.display='block';
 back.classList.add('on');
 var off=function(){tip.style.display='none';tip.classList.remove('ru-modal');back.classList.remove('on');
-document.removeEventListener('keydown',esc2,true);};
-var esc2=function(e){if(e.key==='Escape')off();};
-back.onclick=off;document.addEventListener('keydown',esc2,true);}
+window.__rompUsageClose=null;};
+// Escape lands via _LANDING_ESC_JS (shell AND pane documents — the shell-only listener this modal
+// used to bind was deaf whenever focus sat inside a pane iframe); the backdrop tap stays.
+window.__rompUsageClose=off;
+back.onclick=off;}
 pullFleet().then(openIt,openIt);};
 el.addEventListener('mouseenter',showTip);
 el.addEventListener('mouseleave',function(){tip.style.display='none';});
@@ -18066,9 +18135,10 @@ if(more)more.onclick=function(){var on=sub.hidden;sub.hidden=!on;more.setAttribu
 more.textContent=on?'Hide':'How it works';};
 icon.onclick=function(e){e.stopPropagation();if(back.hidden)open();else close();};
 window.__rompOpenNet=open;   // the mobile bottom bar's Net button (the rail is hidden there)
+window.__rompCloseNet=close;   // Escape routes here (_LANDING_ESC_JS — shell AND pane documents; the
+                               // shell-only keydown this panel used to hold was deaf with focus in an iframe)
 back.onclick=function(e){if(e.target===back)close();};
 if(x)x.onclick=close;
-document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
 function mruHost(){try{return localStorage.getItem('romp:lastRemoteHost')||'';}catch(e){return '';}}
 // SUGGESTIONS, not the menu. The box takes any ssh target: attach_remote validates it with _safe_ssh_host
 // and hands it to ssh as a positional arg, so ~/.ssh/config is one source of completions rather than the
@@ -19535,6 +19605,7 @@ def _landing():
             "<script>" + _LANDING_USAGE_JS + "</script>"
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"
+            "<script>" + _LANDING_ESC_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"
             # the restart flow needs this kernel's boot id (to detect the NEW kernel answering /healthz)
             # and the loader markup (to rebuild the boot splash the boot JS removed) — spliced, not

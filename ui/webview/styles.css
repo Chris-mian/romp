@@ -1873,6 +1873,9 @@ body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
 }
 .picker-be-opt:hover { background: rgba(255, 255, 255, 0.12); color: var(--fg); }
 .picker-be-opt.sel { background: var(--accent); color: var(--accent-fg); border-color: transparent; }   /* selected backend = accent, not working-yellow (the user 2026-06-24) */
+/* the Billing row's single-choice text: written out where the buttons would sit (the user 2026-08-09) —
+   the buttons' 0.82em, plain, no button chrome (it is a fact, not a control) */
+.picker-auth-fixed { flex: 0 0 auto; color: var(--fg); font-size: 0.82em; padding: 4px 0; }
 .picker-list { overflow-y: auto; }
 .picker-row {
   padding: 9px 14px; cursor: pointer;

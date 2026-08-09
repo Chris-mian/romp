@@ -318,14 +318,15 @@ class Availability(unittest.TestCase):
     """The selector exists only when BOTH choices are real — everywhere it could appear."""
 
     def setUp(self):
-        self.real_sdk, self.real_acct = km._sdk, km._claude_account
+        self.real_sdk, self.real_acct, self.real_label = km._sdk, km._claude_account, km._claude_account_label
 
     def tearDown(self):
-        km._sdk, km._claude_account = self.real_sdk, self.real_acct
+        km._sdk, km._claude_account, km._claude_account_label = self.real_sdk, self.real_acct, self.real_label
 
-    def _world(self, key, acct):
+    def _world(self, key, acct, label="user@example.com"):
         km._sdk = lambda: type("B", (), {"work_key": key})()
         km._claude_account = lambda: acct
+        km._claude_account_label = lambda: (label if acct else "")
 
     def test_both_gates_the_selector_and_no_key_material_travels(self):
         self._world(FAKE_KEY, "aaaaaaaaaaaa")
@@ -333,6 +334,8 @@ class Availability(unittest.TestCase):
         self.assertTrue(km._auth_key_present())
         a = km._auth_avail()
         self.assertEqual((a["login"], a["key"]), (True, True))
+        # the login is NAMED, so 'Login' can say which account it means (the user 2026-08-09)
+        self.assertEqual(a["acct"], "user@example.com")
         # No fragment of the key leaves the kernel — not the key, not even its last-4 tail
         # (the user 2026-08-08, evening: a tail is still key material; 'API key' is label enough,
         # and host names already tell keys apart in the per-host hover).
@@ -340,17 +343,54 @@ class Availability(unittest.TestCase):
         self.assertNotIn(FAKE_KEY, json.dumps(a), "the key itself never travels")
         self.assertNotIn("wxyz", json.dumps(a), "…and neither does any substring of it")
 
-    def test_one_choice_is_no_choice(self):
+    def test_one_choice_still_reports_availability_for_the_written_out_row(self):
+        # One real choice hides the CONTROLS, but the picker row still WRITES OUT which auth applies
+        # (the user 2026-08-09) — so availability itself is always reported, only _auth_both flips.
         self._world("", "aaaaaaaaaaaa")
         self.assertFalse(km._auth_both())
+        a = km._auth_avail()
+        self.assertEqual((a["login"], a["key"], a["acct"]), (True, False, "user@example.com"))
         self._world(FAKE_KEY, "")
         self.assertFalse(km._auth_both())
+        a = km._auth_avail()
+        self.assertEqual((a["login"], a["key"], a["acct"]), (False, True, ""))
 
-    def test_the_session_payload_carries_auth_only_when_both_exist(self):
+    def test_the_session_payload_always_carries_auth_and_gates_only_the_controls(self):
         import inspect
         src = inspect.getsource(km.build_session)
-        self.assertIn('"auth": (tm.get("auth", "") if _auth_both() else "")', src)
+        # auth rides ungated (the user 2026-08-09: the tab hover says Billing on one-auth machines
+        # too); authBoth is the separate gate the CONTROLS key on; authAcct names the login.
+        self.assertIn('"auth": tm.get("auth", "")', src)
+        self.assertIn('"authBoth": _auth_both()', src)
+        self.assertIn('"authAcct": _claude_account_label()', src)
         self.assertNotIn("authTail", src, "the status payload carries the choice, never key material")
+
+    def test_the_label_reads_the_oauth_account_and_misses_quietly(self):
+        # The label comes from the CLI's own store (~/.claude.json oauthAccount): emailAddress first,
+        # displayName as the fallback, "" when nothing is signed in — never an exception.
+        real_home = os.environ.get("HOME")
+        home = tempfile.mkdtemp()
+        os.environ["HOME"] = home
+        try:
+            km._ACCT_CACHE["mtime"] = -2.0   # bust the mtime cache; the path just changed under it
+            self.assertEqual(km._claude_account_label(), "", "no file → no label, no error")
+            p = Path(home) / ".claude.json"
+            p.write_text(json.dumps({"oauthAccount": {"accountUuid": "11111111-2222-3333-4444-555555555555",
+                                                      "emailAddress": "user@example.com",
+                                                      "displayName": "A User"}}))
+            km._ACCT_CACHE["mtime"] = -2.0
+            self.assertEqual(km._claude_account_label(), "user@example.com")
+            self.assertTrue(km._claude_account(), "the digest still reads beside the label")
+            p.write_text(json.dumps({"oauthAccount": {"accountUuid": "11111111-2222-3333-4444-555555555555",
+                                                      "displayName": "A User"}}))
+            km._ACCT_CACHE["mtime"] = -2.0
+            self.assertEqual(km._claude_account_label(), "A User", "displayName is the fallback")
+        finally:
+            if real_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = real_home
+            km._ACCT_CACHE["mtime"] = -2.0   # never leak the temp world into later tests
 
     def test_the_picker_learns_availability_on_the_session_list(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
