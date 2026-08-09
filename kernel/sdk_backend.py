@@ -1171,6 +1171,12 @@ class SdkSession:
         #   per-CONNECTION snapshot of fast_opt, taken where _connect_once builds options and never
         #   persisted. Only an unlocked connection accepts literal '/fast on|off' sends; without the
         #   flag the CLI refuses them, so set_fast reconnects instead.
+        self._fast_expect = ""   # one-shot: the word a literal '/fast' send asked for. The toggle's own
+        #   turn opens with an init whose fast_mode_state is the state at turn START — one word stale,
+        #   since the toggle applies after it — and taking it verbatim stomps the optimistic flip until
+        #   the NEXT turn's init (the badge reads off for a whole turn right after the CLI acknowledged
+        #   the toggle). The init re-sync lets that single stale word yield to this; the next init wins
+        #   unconditionally.
         self.api_key_auth = False   # THIS session's init said it authenticates with an API key — a
         #   PER-SESSION fact (the user 2026-08-08: one keyed session must not speak for the login's
         #   windows). Gates this session's get_usage polls + its RateLimitEvent records; set by
@@ -1699,6 +1705,8 @@ class SdkSession:
             # interprets literal '/fast on|off' sends on a connection made with the flag; set_fast
             # reads this to choose between the live send and an applying reconnect.
             self._fast_unlocked = self.fast_opt
+            self._fast_expect = ""   # a fresh connection's first init speaks for the flag, not for any
+            #   toggle sent on the old one — never hold a pre-reconnect expectation against it
             connected = False
             try:
                 async with ClaudeSDKClient(options=opts) as client:
@@ -1902,6 +1910,12 @@ class SdkSession:
             # set_fast's optimistic flip. Absent field (older CLI) → stay unknown, never fabricate "off".
             fast = d.get("fast_mode_state")
             if isinstance(fast, str) and fast:
+                # …except the one init opened by a literal /fast send itself, whose word predates the
+                # toggle it carries. A disabled_reason is real refusal evidence, so it always wins.
+                if self._fast_expect and fast != self._fast_expect \
+                        and not d.get("fast_mode_disabled_reason"):
+                    fast = self._fast_expect
+                self._fast_expect = ""
                 self.fast = fast
                 self.fast_reason = str(d.get("fast_mode_disabled_reason") or "")
             # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
@@ -3706,6 +3720,7 @@ class SdkBackend:
             if not self.send(sid, "/fast " + value):
                 return False
             s.fast = value
+            s._fast_expect = value             # the send's own turn-init is one word stale; let it yield
             self._wake_push()
             return True
         if value == "off":                     # no flag at connect → fast mode is already off; nothing to send

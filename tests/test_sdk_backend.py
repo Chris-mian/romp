@@ -539,6 +539,44 @@ class LiveTail(unittest.TestCase):
         asyncio.run(run({}))                             # an init with no field → the last truth STANDS
         self.assertEqual(s.fast, "off", "absent field never overwrites the known state")
 
+    def test_the_toggle_turns_own_init_yields_to_the_sent_word_once(self):
+        """A literal '/fast on' send opens a turn whose init still reports the state at turn START —
+        one word stale, since the toggle applies after it. Taking it verbatim stomps set_fast's
+        optimistic flip until the NEXT turn's init, so the badge reads off for a whole turn right
+        after the CLI acknowledged the toggle. That single stale, reason-less word yields to the
+        send's one-shot expectation; the next init wins unconditionally, and a disabled_reason
+        (real refusal evidence) always wins immediately."""
+        import asyncio
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-bbbbbbbbbbbb"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        s.thread = type("T", (), {"is_alive": lambda self: True})()
+        s._fast_unlocked = True
+        be.sessions[sid] = s
+        async def _noop(): pass
+        s._do_refresh_context = _noop
+        async def run(data):
+            s._on_message(_Sys(data), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)
+
+        self.assertTrue(be.set_fast(sid, "on"))
+        self.assertEqual(s.fast, "on", "optimistic flip on the live send")
+        self.assertEqual(s._fast_expect, "on", "…armed for the send's own turn-init")
+        asyncio.run(run({"fast_mode_state": "off"}))     # the toggle turn's init: one word stale
+        self.assertEqual(s.fast, "on", "the same-turn stale word yields")
+        asyncio.run(run({"fast_mode_state": "off"}))     # any LATER init is authoritative
+        self.assertEqual(s.fast, "off", "one-shot — the next init wins")
+
+        self.assertTrue(be.set_fast(sid, "on"))          # armed again…
+        asyncio.run(run({"fast_mode_state": "off",
+                         "fast_mode_disabled_reason": "Fast mode is org-disabled"}))
+        self.assertEqual(s.fast, "off", "…but a disabled_reason beats the expectation immediately")
+        self.assertEqual(s.snapshot()["fastReason"], "Fast mode is org-disabled")
+
     def test_send_echo_authors_a_romp_nudge_as_romp_not_human(self):
         # the bug (the user 2026-06-28): an auto-nudge sent through send() echoed as a BLUE HUMAN "Follow-up"
         # instead of the GRAY "from romp" auto-nudge it is, because the echo hardcoded author="human". The echo
