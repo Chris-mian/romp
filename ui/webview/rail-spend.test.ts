@@ -63,17 +63,49 @@ test("VS Code strip: spend rows key on the windows' PRESENCE, one row builder fo
 
 test("the web rail's API cell is numbers under a constant label — no spend bars anywhere", () => {
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
-  // one compact cell: a bare 'API' label (never any key fragment), 5h + month dollars
+  // one compact cell: a bare 'API' label (never any key fragment), then per-window pairs in the
+  // window cells' own grammar — the window's ONE display name, name-font, LEFT of its value, with
+  // dollars AND tokens (the user 2026-08-09: no more '$12 5h' second vocabulary trailing the number)
   assert.ok(usageJS.includes("function apiCellHTML(live)"));
   assert.ok(usageJS.includes("'<div class=ru-name>API</div>'"));
   assert.ok(!usageJS.includes("_tail"), "no tail plumbing survives in the rail JS");
-  assert.ok(usageJS.includes("fmtUsd(sum.fiveHour)+' 5h \\u00b7 '+fmtUsd(sum.month)+' mo</div>'"));
+  assert.ok(usageJS.includes("seg('fiveHour','5 hours')+seg('month','Month')"));
+  assert.ok(usageJS.includes("var seg=function(k,lbl){return '<div class=ru-name>'+lbl+'</div>'"));
+  assert.ok(usageJS.includes("'<div class=ru-pct>'+fmtUsd(sum[k].usd)+' \\u00b7 '+fmtTok(sum[k].tok)+' tok</div>'"));
   // the graph and the budget fills are gone: no spend track, no spend color ramp, no shared scale
   assert.ok(!usageJS.includes("spendColor"), "the budget-fill ramp died with the spend bars");
   assert.ok(!usageJS.includes("spendWinsHTML"), "spend never renders as window rows with tracks");
   assert.ok(!usageJS.includes("var mx=1;"), "the token auto-scale graph is gone");
   // presence-keyed, like the strip
   assert.ok(usageJS.includes("function hasSpend(u){return !!(u&&u.spend&&u.spend.fiveHour);}"));
+});
+
+test("one display name per window, worn everywhere: bars, hover sections, API cell, notices", () => {
+  // the user 2026-08-09: '5 hours' on the bars, '5h' on the API numbers and 'Session (5h)' in the
+  // hover were three vocabularies for one thing — WINS now carries the ONE display name per window
+  const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
+  assert.ok(usageJS.includes("var WINS=[['fiveHour',5*3600,'5 hours'],"));
+  assert.ok(usageJS.includes("['sevenDay',7*86400,'7 days'],"));
+  assert.ok(usageJS.includes("['fable',7*86400,'Fable 5']];"));
+  assert.ok(usageJS.includes("'<div class=ru-name>'+w[2]+'</div>'"), "the collapsed bars wear it");
+  // the hover window heading is the bare name — no '(5h)' span, no Session/Weekly third vocabulary
+  assert.ok(usageJS.includes("'<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+'</span>'"));
+  assert.ok(!usageJS.includes("'Session'"), "the Session/Weekly names are retired");
+  assert.ok(!usageJS.includes("Weekly (7d)"));
+  // the limit notice speaks the same windows, prose-shaped
+  assert.ok(usageJS.includes("names.push('5-hour')"));
+  assert.ok(usageJS.includes("names.push('7-day')"));
+});
+
+test("dollars are WHOLE everywhere — no cents on any spend surface", () => {
+  // the user 2026-08-09: cents are noise at these magnitudes; the rail, its hover, and the VS Code
+  // strip all round to whole dollars through their one formatter each
+  const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
+  assert.ok(usageJS.includes("function fmtUsd(v){return '$'+String(Math.round(v));}"));
+  assert.ok(!usageJS.includes("toFixed(2)"), "no cents anywhere in the rail JS");
+  assert.match(STRIP, /readout: "\$" \+ Math\.round\(seg\.usd\)/);
+  assert.match(STRIP, /title: label \+ " — \$" \+ Math\.round\(seg\.usd\)/);
+  assert.doesNotMatch(STRIP, /usd\.toFixed\(2\)/);
 });
 
 test("the rich tip is the ONE hover surface: no native titles, per-host sections, numbers-only spend", () => {

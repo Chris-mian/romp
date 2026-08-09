@@ -123,10 +123,10 @@ export function spendWindows(usage: any, nowS: number): UsageWindow[] {
     const turns = seg.turns || 0;
     out.push({
       key, label, short, pct, elapsedPct, unknown: false,
-      // dollars AND tokens stay VISIBLE (the user 2026-08-05 — the hover-only split hid them again)
-      readout: "$" + (seg.usd < 100 ? seg.usd.toFixed(2) : String(Math.round(seg.usd)))
-        + " · " + fmtTok(seg.tok || 0) + " tok",
-      title: label + " — $" + seg.usd.toFixed(2) + " · " + fmtTok(seg.tok || 0) + " tokens · "
+      // dollars AND tokens stay VISIBLE (the user 2026-08-05 — the hover-only split hid them again);
+      // WHOLE dollars, no cents, matching the rail everywhere (the user 2026-08-09)
+      readout: "$" + Math.round(seg.usd) + " · " + fmtTok(seg.tok || 0) + " tok",
+      title: label + " — $" + Math.round(seg.usd) + " · " + fmtTok(seg.tok || 0) + " tokens · "
         + turns + " turn" + (turns === 1 ? "" : "s")
         + (budget != null ? " · " + pct + "% of the $" + budget + " budget"
            : " · no budget set — dollars only, no fill (set one in spend-budgets.json)")

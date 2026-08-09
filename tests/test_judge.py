@@ -5553,7 +5553,7 @@ class Distiller(unittest.TestCase):
             jd.run_distill(now=now)
         det = [w for w in jd.load_goals(SID)["nodes"][gid].get("warns") or []
                if w.get("kind") == "brief-failed"][0]["detail"]
-        self.assertIn("Session (5h)", det, "the maxed account window is named as the cause")
+        self.assertIn("5-hour", det, "the maxed account window is named as the cause, in the rail's own window vocabulary")
         self.assertNotIn("Fable", det, "Fable-5 is model-scoped — never blamed for a Sonnet-summarizer failure")
         self.assertIn("resets", det, "rate-limit copy says it retries automatically on reset")
 

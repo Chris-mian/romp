@@ -2152,7 +2152,9 @@ def _giveup_cause():
     try:
         u = json.loads((STATE / "usage.json").read_text())
         now = time.time()
-        for key, label in (("five_hour", "Session (5h)"), ("seven_day", "Weekly (7d)")):
+        # the windows wear their ONE display name here too (the user 2026-08-09: '5 hours' on the rail
+        # but 'Session (5h)' in this modal was two vocabularies for the same window) — prose-shaped
+        for key, label in (("five_hour", "5-hour"), ("seven_day", "7-day")):
             s = u.get(key) if isinstance(u, dict) else None
             if isinstance(s, dict) and (s.get("pct") or 0) >= 100 and not (s.get("resets_at") and now > s["resets_at"]):
                 names.append(label)

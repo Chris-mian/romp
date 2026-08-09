@@ -97,7 +97,7 @@ class RailUsage(unittest.TestCase):
         # the included Fable 5 weekly allowance (the user 2026-07-02): a third bar in the rail, a third
         # window in the tooltip, and a third pair on the timeline's standalone toolbar copy
         import inspect
-        self.assertIn("['fable',7*86400,'F5','Fable 5','Fable 5']", self.html, "the rail renders a Fable 5 bar (expanded bottom-bar label)")
+        self.assertIn("['fable',7*86400,'Fable 5']", self.html, "the rail renders a Fable 5 bar (its ONE display name — the user 2026-08-09)")
         self.assertIn("['fiveHour','sevenDay','fable'].filter", self.html, "the tooltip covers it")
         self.assertIn('"fable": fable', inspect.getsource(km._usage), "_usage serves the fable window")
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
