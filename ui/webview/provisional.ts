@@ -3,7 +3,7 @@
 // Creating a session used to raise a modal "Opening session…" over the whole pane, and you waited: the
 // kernel resolves the directory, spawns tmux or connects the SDK, and the first transcript poll comes
 // back — seconds, sometimes many. Nothing could be typed in that gap, and the only thing on screen was a
-// dialog with three dots. So the tab appears at once with a working chip and a live composer; anything
+// dialog with three dots. So the tab appears at once in the OPENING state with a live composer; anything
 // typed is held and flushed the moment the real session lands, and a create that FAILS says so in a
 // dialog instead of the cue quietly timing out after thirty seconds.
 //

@@ -3571,6 +3571,10 @@ function renderTabs() {
     // red tab highlight instead (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
     else if (st === "awaitingBg") tab.appendChild(el("span", "tab-dot await"));
+    // OPENING (a provisional tab, or the kernel's own opening chip): the accent loader dot — the session
+    // is starting, and a tab with no cue at all read as dead (the user 2026-08-10). Same pulse as the
+    // statusline's opening dots; never the solid working yellow, which claims work that isn't happening.
+    else if (st === "opening") tab.appendChild(el("span", "tab-dot opening"));
     // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
     // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
     // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
@@ -4093,8 +4097,10 @@ let pickAllowNew = false;
 // could do nothing with, watching three dots. See ./provisional.ts for why the id carries no colon.
 //
 // `pendingNewSession` is the NAME the created session will arrive under; it is the only join available,
-// since the kernel mints the id. The provisional tab carries a working chip (romp genuinely is starting
-// it), a live composer, and anything typed into it, held until the real session lands.
+// since the kernel mints the id. The provisional tab carries the OPENING state (the same "Opening
+// session" dots the kernel's own opening chip renders — it seeded "working" once, which put a Working
+// chip over an epoch-sized clock in the statusline until the first real payload arrived; the user
+// 2026-08-10), a live composer, and anything typed into it, held until the real session lands.
 let pendingNewSession: string | null = null;
 let provisionalId: string | null = null;
 const provisionalQueue: string[] = [];
@@ -4118,8 +4124,13 @@ function openProvisional(req: CreateReq): void {
   pendingNewSession = display;
   const id = mintProvisionalId(Date.now().toString(36) + Math.random().toString(36).slice(2));
   provisionalId = id;
+  // state "opening", NOT "working": updateStatusline renders the working chip with an elapsed timer off
+  // sinceEpoch, and a provisional tab has no honest work clock — the seed showed "Working" + a giant
+  // number for however long the first kernel payload took (the user 2026-08-10, who read it as "a random
+  // string of numbers"). "opening" is the designed vocabulary for exactly this phase, and the kernel's
+  // first payload for the real session continues it seamlessly. sinceEpoch is MILLISECONDS everywhere.
   sessions.set(id, { id, name: display, color: null, events: [],
-                     status: { state: "working", sinceEpoch: Math.floor(Date.now() / 1000) } });
+                     status: { state: "opening", sinceEpoch: Date.now() } });
   order.push(id);                          // a tab the kernel does not know yet survives reconcileTabOrder
   renderTabs();
   setActive(id);
@@ -4190,7 +4201,7 @@ function failProvisional(why: string): void {
   const s = sessions.get(id);
   // "closed" gives the tab the dead treatment (struck label, plain ✕) — but the composer stays LIVE
   // for a failed provisional (the read-only exemption below), since the held text must stay editable
-  if (s) s.status = { state: "closed", sinceEpoch: Math.floor(Date.now() / 1000) };
+  if (s) s.status = { state: "closed", sinceEpoch: Date.now() };   // ms, like every kernel payload
   setActive(id);                     // jump back to the failed thread BEFORE saying anything
   if (held) {
     drafts.set(id, held); persistDrafts();
