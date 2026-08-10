@@ -539,6 +539,34 @@ class LiveTail(unittest.TestCase):
         asyncio.run(run({}))                             # an init with no field → the last truth STANDS
         self.assertEqual(s.fast, "off", "absent field never overwrites the known state")
 
+    def test_the_opt_in_required_reason_never_hides_the_toggle(self):
+        """The CLI stamps 'sdk_opt_in_required' on EVERY connect made without the fastMode
+        flag-settings opt-in (verified live 2026-08-10 on 2.1.226 — opus/fable/sonnet headless
+        connects alike). Treating it like a real refusal hid the chat toggle on every SDK session:
+        the control that GRANTS the opt-in was gated on already having it (the user 2026-08-10,
+        who switched to Opus and found no toggle anywhere). It reads as 'available, currently off';
+        every other reason still hides the dead control."""
+        import asyncio
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-cccccccccccc"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        async def _noop(): pass
+        s._do_refresh_context = _noop
+
+        async def run(data):
+            s._on_message(_Sys(data), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)
+        asyncio.run(run({"fast_mode_state": "off", "fast_mode_disabled_reason": "sdk_opt_in_required"}))
+        self.assertEqual(s.fast, "off")
+        self.assertEqual(s.snapshot()["fastReason"], "", "the curable opt-in reason shows the badge")
+        asyncio.run(run({"fast_mode_state": "off", "fast_mode_disabled_reason": "Fast mode is org-disabled"}))
+        self.assertEqual(s.snapshot()["fastReason"], "Fast mode is org-disabled",
+                         "a real refusal still hides the toggle")
+
     def test_the_toggle_turns_own_init_yields_to_the_sent_word_once(self):
         """A literal '/fast on' send opens a turn whose init still reports the state at turn START —
         one word stale, since the toggle applies after it. Taking it verbatim stomps set_fast's
