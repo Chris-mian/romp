@@ -57,7 +57,15 @@ test("creating a session opens the provisional tab instead of a modal", () => {
   assert.match(RENDER, /openProvisional\(req\);/);
   assert.doesNotMatch(RENDER, /showOpeningModal/, "the modal is gone, not merely hidden");
   assert.doesNotMatch(RENDER, /hideOpeningModal/);
-  assert.match(RENDER, /status: \{ state: "working", sinceEpoch/, "the chip is honest: romp IS starting it");
+  // "opening", never "working": the working chip renders an elapsed timer off sinceEpoch, and a
+  // provisional tab has no honest work clock — the old "working" seed (in SECONDS, at that) showed
+  // "Working" + an epoch-sized number until the first kernel payload arrived (the user 2026-08-10).
+  assert.match(RENDER, /status: \{ state: "opening", sinceEpoch: Date\.now\(\) \}/,
+    "the chip says what this phase IS — the session is opening");
+  assert.doesNotMatch(RENDER, /state: "working", sinceEpoch: Math\.floor/, "the broken-clock seed is gone");
+  // …and the tab strip shows the accent loader dot for the opening state, so the starting tab has a cue
+  assert.match(RENDER, /else if \(st === "opening"\) tab\.appendChild\(el\("span", "tab-dot opening"\)\);/);
+  assert.match(CSS, /\.tab-dot\.opening \{ background: var\(--accent\); animation: opening-line-pulse/);
   assert.match(RENDER, /order\.push\(id\);/, "the tab survives reconcileTabOrder as a not-yet-kernel-known extra");
 });
 

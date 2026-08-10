@@ -3899,7 +3899,7 @@ def _reap_if_cancelled(name):
 def _spawn_session(name, cwd=None):
     """Create a detached romp session named `name` — the same launch the old TS backend ran
     (`romp new -t --detach <name>`, tmux-backend.ts). Threaded so the ~seconds-long launch never blocks the WS
-    recv loop; the 4s pusher then delivers the new tab and closes the webview's 'Opening…' modal. Scrub
+    recv loop; the targeted push below then delivers the new tab. Scrub
     TMUX* so the child launcher never thinks it is already inside a tmux client. `cwd` is the session's
     working directory (validated by _resolve_create_dir); None falls back to the kernel default."""
     cwd = cwd or _default_create_dir()
@@ -3910,7 +3910,13 @@ def _spawn_session(name, cwd=None):
     except Exception:
         sys.stderr.write("spawn '%s': %s\n" % (name, traceback.format_exc()))
     _reap_if_cancelled(name)   # the ✕ may have fired while this spawn was in flight
-    _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
+    # Surface the new tab NOW — one targeted single-session push, not the old inline _push_all(): that
+    # duplicated the whole fleet build on this thread (against the push-architecture rule) and still left
+    # the tab's freshness to chance. The dirty wake covers feed/timeline on the next cycle.
+    sid = _live_names(_tmux_sessions()).get(name)
+    if sid:
+        _push_session_now(sid)
+    _mark_views_dirty()
 
 
 def _pick_identity_color(now=None):
@@ -3951,13 +3957,17 @@ def _create_sdk_session(nm, cwd, auth=""):
     thread, duplicating the rebuild the pusher (woken by spawn's poke) was already doing. Order matters:
     focus FIRST — setActive holds the sid client-side, so the tab lands already-selected whenever the
     pusher's build arrives — then the dirty-mark wake. Never a synchronous fleet build on this path
-    (the push-architecture rule, 2026-07-05)."""
+    (the push-architecture rule, 2026-07-05) — but DO push this ONE session's tab+payload directly
+    (_push_session_now, one near-free transcript-less build): the dirty wake alone left the tab riding
+    the next full cycle, ~5-6s on a busy fleet, all of it spent staring at the provisional dots
+    (measured live, the user 2026-08-10)."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth)
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
     _set_hidden_tab(sid, False)
     _reveal_chat({"type": "focus", "id": sid})
     _mark_views_dirty()
+    _push_session_now(sid)   # the tab the user is staring at, ahead of the woken cycle
     return sid
 
 
@@ -4042,6 +4052,7 @@ def _sdk_locked():
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_producer_wake.set, push=_pusher_wake.set,
+                push_session=_push_session_now,   # targeted one-session push for per-session chip events (connect)
                 mcp_config=(str(_SDK_MCP) if _SDK_MCP.exists() else None),
                 append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
                 log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m),
@@ -12266,15 +12277,20 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         chip = _session_chip(sid, sess["path"], session, tm, now)   # THE shared derivation — identical to the timeline lane (the user 2026-07-03)
         # A session whose transcript DOESN'T EXIST YET is OPENING, whatever the snapshot claims (the
         # user 2026-08-05: a just-spawned tab said "Working" over a clock with no honest base). The
-        # deciding event is per-backend. tmux: the transcript's first record — the only observable —
-        # lands, discover() sees it, and the normal derivation takes over. SDK: the backend KNOWS the
-        # earlier designed event, the handshake (tm.connected) — a fresh SDK session writes NO
-        # transcript until its first turn, so keying its chip on the file left a fully-up, idle
-        # session wearing the opening dots until the user's first message, indefinitely (the user
-        # 2026-08-08, who read minutes of dots as creation still running). Never for an override
-        # render (a closed episode's path is historical).
+        # deciding event — "the CLI is up" — is per-backend. SDK: the handshake (tm.connected) — a
+        # fresh SDK session writes NO transcript until its first turn, so keying its chip on the file
+        # left a fully-up, idle session wearing the opening dots until the user's first message,
+        # indefinitely (the user 2026-08-08, who read minutes of dots as creation still running).
+        # tmux: the CLI's statusline hook publishing its first @claude-state — the same wait, the
+        # matching event (2026-08-10; the transcript's first record only lands with the first MESSAGE,
+        # so keying on the file alone held a fully-up tmux session on the dots until the user typed).
+        # SDK snapshots always carry a non-empty state ("waiting" from birth), so the state leg is
+        # tmux-only by construction (backend == "tmux"). Never for an override render (a closed
+        # episode's path is historical).
+        cli_up = bool(tm.get("connected")) or \
+            (tm.get("backend") == "tmux" and bool((tm.get("state") or "").strip()))
         if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]) \
-                and not tm.get("connected"):
+                and not cli_up:
             chip = "opening"
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API
@@ -16726,6 +16742,45 @@ def _push_all():
     with _clients_lock:
         clients = list(_clients)
     _push(clients)
+
+
+def _push_session_now(sid):
+    """ONE session's tab strip + chat payload to every connected chat client, immediately — the targeted
+    push for a per-session event (a create, the SDK connect handshake). A just-created session used to
+    become visible only on the periodic pusher's NEXT full cycle, and on a busy fleet a cycle runs
+    seconds (measured live 2026-08-10: the tab appeared 5-6s after the create landed, the opening→ready
+    flip 12s after, while the kernel had known the session since 0.4s) — so the one tab the user was
+    guaranteed to be staring at painted last. This builds exactly one session — a transcript-less build
+    is near-free — and sends the tab strip plus that payload directly; the next full cycle re-sends both
+    idempotently (per-client dedup absorbs the overlap).
+
+    Deliberately NOT touched here: the shared delta baseline (_prev_chat_events) — only a push that
+    reaches every client may advance it (the 2026-07-28 stranded-delta lesson), and change_from=0 below
+    always takes the full-session form so no client's tail state can be left ahead of the baseline; and
+    the build cache/_last_tab_order bookkeeping, which belong to the pusher. Never a fleet build (the
+    push-architecture rule, 2026-07-05): callers sit on WS-handler / spawn / backend threads."""
+    sid = str(sid)
+    with _clients_lock:
+        targets = [c for c in _clients if c["app"] == "chat" and c.get("alive", True)]
+    if not targets:
+        return
+    try:
+        now = int(time.time())
+        tmux = _tmux_sessions()
+        chat_list = _chat_tab_sessions(now, tmux)
+        if not any(s["sid"] == sid for s in chat_list):
+            return                                   # hidden / raced a teardown — the periodic pusher owns the rest
+        tab_order = [s["sid"] for s in chat_list]
+        tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
+        m = build_session(sid, now, tmux)
+        if not m:
+            return
+        ms = json.dumps(m)
+        for c in targets:
+            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
+            _send_chat(c, m, ms, 0, True)            # change_from 0 → always the full-session form
+    except Exception:
+        sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
 
 
 # ───────────────────────── producer + push threads ─────────────────────────

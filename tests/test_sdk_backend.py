@@ -2882,5 +2882,47 @@ class LiveAtomKinds(unittest.TestCase):
         self.assertEqual(len(be._live[sid]), 3, "read-only: the live tail is untouched")
 
 
+class PushSessionCallback(unittest.TestCase):
+    """_push_session — the connect handshake's targeted one-session push (2026-08-10). The handshake is
+    the exact event the kernel's opening chip stands down on, and a plain pusher wake left that flip
+    riding the next FULL push cycle (seconds on a busy fleet) — so the flip pushes its one session
+    directly. Threaded, because the callback builds+serializes a payload and must never run on the
+    session's asyncio loop thread."""
+
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def test_threaded_callback_receives_the_sid(self):
+        got, done = [], threading.Event()
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None,
+                           push_session=lambda sid: (got.append(sid), done.set()))
+        be._push_session(self.SID)
+        self.assertTrue(done.wait(5), "the callback fires, on its own thread")
+        self.assertEqual(got, [self.SID])
+
+    def test_without_the_callback_it_falls_back_to_the_pusher_wake(self):
+        # an older kernel (or a test) that didn't wire push_session still gets the pre-existing
+        # behavior: the periodic pusher wake, never a silent no-op
+        woke = []
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None,
+                           push=lambda: woke.append(True))
+        be._push_session(self.SID)
+        self.assertEqual(woke, [True])
+
+    def test_a_failing_callback_is_contained_and_logged(self):
+        logs = []   # the ctor may log too (a missing-SDK note) — poll for THIS failure's line
+
+        def boom(sid):
+            raise RuntimeError("nope")
+
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None,
+                           push_session=boom, log=logs.append)
+        be._push_session(self.SID)   # must not raise into the caller (the connect path)
+        deadline = time.time() + 5
+        while time.time() < deadline and not any("session push" in str(m) for m in logs):
+            time.sleep(0.01)
+        self.assertTrue(any("session push" in str(m) for m in logs),
+                        "the failure is reported, not swallowed: %r" % logs)
+
+
 if __name__ == "__main__":
     unittest.main()

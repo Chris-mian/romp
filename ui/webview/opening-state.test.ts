@@ -16,19 +16,38 @@ const KERNEL = fs.readFileSync(path.join(ROOT, "kernel", "kernel.py"), "utf8");
 
 test("the kernel reports OPENING while the transcript doesn't exist — never a working chip on a broken clock", () => {
   assert.ok(KERNEL.includes('if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]) \\'));
-  assert.ok(KERNEL.includes('and not tm.get("connected"):'));
+  assert.ok(KERNEL.includes("and not cli_up:"));
   assert.ok(KERNEL.includes('chip = "opening"'));
 });
 
-// The deciding event is per-backend (the user 2026-08-08, who read minutes of dots as creation still
-// running): a fresh SDK session writes NO transcript until its first turn, so keying its chip on the
-// file left a fully-up idle session on the opening dots indefinitely. The SDK handshake (snapshot
-// `connected`, set the moment the client context opens) stands the override down; tmux — whose only
-// observable IS the file — keeps the transcript's first record as its event.
-test("the SDK handshake ends OPENING before any transcript exists", () => {
+// The deciding event — "the CLI is up" — is per-backend (the user 2026-08-08, who read minutes of dots
+// as creation still running): a fresh session of EITHER backend writes NO transcript until its first
+// turn, so keying the chip on the file alone held a fully-up idle session on the opening dots until the
+// user typed. SDK: the handshake (snapshot `connected`, set the moment the client context opens).
+// tmux: the CLI's statusline hook publishing its first @claude-state (2026-08-10) — the matching event,
+// since the transcript's first record only lands with the first MESSAGE.
+test("each backend's own 'CLI is up' event ends OPENING before any transcript exists", () => {
   const SDK = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "utf8");
   assert.ok(SDK.includes('"connected": bool(self.client)'), "the snapshot carries the handshake event");
   assert.ok(KERNEL.includes('"connected": bool(st.get("connected"))'), "the live merge threads it through");
+  assert.ok(KERNEL.includes('cli_up = bool(tm.get("connected")) or \\'), "SDK: the handshake");
+  assert.ok(KERNEL.includes('(tm.get("backend") == "tmux" and bool((tm.get("state") or "").strip()))'),
+    "tmux: the first published @claude-state");
+});
+
+// A per-session chip event must not ride the periodic full push cycle, which runs SECONDS on a busy
+// fleet (measured live 2026-08-10: the tab appeared 5-6s after the create landed, the opening→ready
+// flip 12s after, while the kernel had known the session since 0.4s). The create paths and the SDK
+// connect handshake each fire the kernel's targeted one-session push, so the one tab the user is
+// guaranteed to be staring at paints first, not last.
+test("create + connect push the ONE session directly instead of waiting out a full push cycle", () => {
+  const SDK = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "utf8");
+  assert.ok(KERNEL.includes("def _push_session_now(sid):"), "the targeted push exists");
+  assert.match(KERNEL, /_mark_views_dirty\(\)\s*\n\s*_push_session_now\(sid\)/,
+    "an SDK create pushes its tab at once");
+  assert.ok(KERNEL.includes("push_session=_push_session_now,"), "the backend is wired to it");
+  assert.match(SDK, /self\.client = client\s*\n(\s*#[^\n]*\n)*\s*self\.backend\._push_session\(self\.sid\)/,
+    "the handshake — the flip the opening chip stands down on — pushes immediately");
 });
 
 test("the statusline shows Opening + dots for BOTH the pre-payload tab and the kernel's opening state", () => {

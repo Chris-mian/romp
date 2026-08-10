@@ -148,6 +148,10 @@ body { display: flex; flex-direction: column; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the straw chip (the user 2026-07-13) */
+/* OPENING: the accent loader dot — a session still starting is a WAIT, so it pulses like the statusline's
+   opening dots (the loading-state rule; the working dot above stays solid on purpose — that rule is about
+   real work, this one is about a load in progress). */
+.tab-dot.opening { background: var(--accent); animation: opening-line-pulse 1.2s ease-in-out infinite; }
 /* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
    upright — fills bottom-up with the context-used %, in the SAME global-colormap colour (fill set
    inline by tabCtxGauge, render.ts), no % text. A faint track so an empty gauge still reads as
