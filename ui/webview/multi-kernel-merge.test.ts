@@ -478,3 +478,69 @@ test("pickWid prefers the host-supplied ?wid=, then the shell's per-tab id", () 
 test("pickWid survives a malformed query instead of throwing the connect away", () => {
   assert.equal(pickWid("%", "from-storage"), "from-storage");
 });
+
+// ── absorbHostReport: the merged strip keeps its promises about placement ─────────────────────────────
+// End-to-end through the real manager: stub window (emissions) + localStorage (the stored arrangement),
+// feed inbound tabOrder pushes, read the merged order the panes would render.
+function withManager(fn: (fm: FederationManager, emitted: any[], store: Map<string, string>) => void): void {
+  const emitted: any[] = [];
+  const store = new Map<string, string>();
+  const g: any = globalThis;
+  const hadWindow = "window" in g, prevWindow = g.window;
+  const hadLS = "localStorage" in g, prevLS = g.localStorage;
+  g.window = { dispatchEvent: (ev: any) => { if (ev && ev.data) emitted.push(ev.data); } };
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null,
+                     setItem: (k: string, v: string) => { store.set(k, v); } };
+  try {
+    fn(new FederationManager(), emitted, store);
+  } finally {
+    if (hadWindow) g.window = prevWindow; else delete g.window;
+    if (hadLS) g.localStorage = prevLS; else delete g.localStorage;
+  }
+}
+const lastOrder = (emitted: any[]) => emitted.filter((m) => m && m.type === "tabOrder").pop()!.order;
+
+test("a session created after a remote host attached lands at the END of the merged strip", () => {
+  // The 2026-08-10 report: the new session's provisional tab rendered last, then the merged push
+  // re-slotted it in front of the remote host's block (host-blocked seed, local first).
+  withManager((fm, emitted) => {
+    fm.inbound("", { type: "tabOrder", order: ["a", "b"],
+                     tabs: [{ id: "a", name: "web" }, { id: "b", name: "api" }] });
+    fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });
+    assert.deepEqual(lastOrder(emitted), ["a", "b", "TESTHOST:" + V]);
+    // the new session appears mid-seed, at the end of the LOCAL kernel's block…
+    fm.inbound("", { type: "tabOrder", order: ["a", "b", "n"],
+                     tabs: [{ id: "a", name: "web" }, { id: "b", name: "api" }, { id: "n", name: "fresh" }] });
+    // …but the merged strip shows it at the very end, where its provisional tab already rendered
+    assert.deepEqual(lastOrder(emitted), ["a", "b", "TESTHOST:" + V, "n"]);
+    // and the placement is WRITTEN, so it survives the next merge and a reload identically
+    fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });
+    assert.deepEqual(lastOrder(emitted), ["a", "b", "TESTHOST:" + V, "n"]);
+  });
+});
+
+test("a relaunch that swaps the transcript fsid keeps the session's slot — it is not a new session", () => {
+  withManager((fm, emitted) => {
+    fm.inbound("", { type: "tabOrder", order: ["f1", "s"],
+                     tabs: [{ id: "f1", name: "web" }, { id: "s", name: "api" }] });
+    fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });
+    // /clear: the kernel's own order already inherited the slot by name; the arrangement must follow
+    fm.inbound("", { type: "tabOrder", order: ["f2", "s"],
+                     tabs: [{ id: "f2", name: "web" }, { id: "s", name: "api" }] });
+    assert.deepEqual(lastOrder(emitted), ["f2", "s", "TESTHOST:" + V],
+      "f2 holds f1's slot instead of jumping to the end");
+  });
+});
+
+test("a closed session leaves the arrangement; a detached host's sessions keep their slots", () => {
+  withManager((fm, emitted, store) => {
+    fm.inbound("", { type: "tabOrder", order: ["a", "b"],
+                     tabs: [{ id: "a", name: "web" }, { id: "b", name: "api" }] });
+    fm.inbound("TESTHOST", { type: "tabOrder", order: [V], tabs: [{ id: V, name: "tests" }] });
+    fm.inbound("", { type: "tabOrder", order: ["b"], tabs: [{ id: "b", name: "api" }] });   // a closed
+    assert.deepEqual(lastOrder(emitted), ["b", "TESTHOST:" + V]);
+    assert.ok(!JSON.parse(store.get("romp:vieworder")!).includes("a"), "the closed id is pruned from storage");
+    assert.ok(JSON.parse(store.get("romp:vieworder")!).includes("TESTHOST:" + V),
+      "the remote id stays placed — its host simply wasn't the one reporting");
+  });
+});

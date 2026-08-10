@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
-  applyViewOrder, applyViewOrderTo, pruneViewOrder, parseViewOrder,
+  adoptArrivals, applyViewOrder, applyViewOrderTo, churnSwaps, healOrder, pruneViewOrder, parseViewOrder,
   VIEW_ORDER_KEY, VIEW_ORDER_CAP,
 } from "./view-order";
 
@@ -86,4 +86,44 @@ test("a corrupt or foreign stored value reads as no arrangement, never throws", 
 
 test("the key is namespaced alongside the feed's other browser-owned state", () => {
   assert.match(VIEW_ORDER_KEY, /^romp:/);
+});
+
+// ── adoptArrivals / healOrder / churnSwaps: arrivals land at the END, a relaunch keeps its slot ──────
+test("adoptArrivals appends never-placed ids at the END, in seed order among themselves", () => {
+  assert.deepEqual(adoptArrivals(["b", "a"], ["a", "b", "n1", "TESTHOST:r", "n2"]),
+    ["b", "a", "n1", "TESTHOST:r", "n2"]);
+  // placed ids never move, and ids the seed doesn't carry (a detached host's) stay put too
+  assert.deepEqual(adoptArrivals(["GONEHOST:x", "a"], ["a", "n"]), ["GONEHOST:x", "a", "n"]);
+  // an empty arrangement adopts the whole seed verbatim — the shown order is unchanged by the write
+  assert.deepEqual(adoptArrivals([], ["a", "TESTHOST:r"]), ["a", "TESTHOST:r"]);
+});
+
+test("a NEW local session shows after a remote host's sessions, not in front of them", () => {
+  // The 2026-08-10 report: the provisional tab rendered at the very end, then the merge re-derived the
+  // host-blocked seed (local block first) and popped the tab to in front of the remote block. Adoption
+  // writes the end placement down, so every later merge and reload agrees with what first rendered.
+  const view0 = adoptArrivals([], ["a", "b", "TESTHOST:r"]);        // the strip as first adopted
+  const seed1 = ["a", "b", "NEW", "TESTHOST:r"];                    // the local kernel appends NEW to ITS block
+  const view1 = adoptArrivals(view0, seed1);
+  assert.deepEqual(applyViewOrder(seed1, view1), ["a", "b", "TESTHOST:r", "NEW"]);
+});
+
+test("healOrder hands a slot to the heir id in place", () => {
+  assert.deepEqual(healOrder(["a", "old", "b"], new Map([["old", "new"]])), ["a", "new", "b"]);
+  // a swap that would duplicate an id keeps the first occurrence
+  assert.deepEqual(healOrder(["a", "old", "new"], new Map([["old", "new"]])), ["a", "new"]);
+  assert.deepEqual(healOrder(["a", "b"], new Map()), ["a", "b"], "no swaps → unchanged");
+});
+
+test("churnSwaps pairs a vanished id with the appeared id of the same NAME — fsid churn, not a new session", () => {
+  // a /clear mints a new transcript fsid for the same logical session; the kernel's own order inherits
+  // the slot by name (_ordered, 2026-06-29) and the browser arrangement must follow the same way
+  const swaps = churnSwaps(["f1", "s"], new Map([["f1", "web"], ["s", "api"]]),
+                           ["f2", "s"], new Map([["f2", "web"], ["s", "api"]]));
+  assert.deepEqual([...swaps], [["f1", "f2"]]);
+  // no name recorded for the vanished id → no inheritance (a genuinely new session must not be claimed)
+  assert.deepEqual([...churnSwaps(["x"], new Map(), ["y"], new Map([["y", "web"]]))], []);
+  // an id present in both reports is never treated as churn
+  assert.deepEqual([...churnSwaps(["x"], new Map([["x", "web"]]), ["x", "y"],
+                                  new Map([["x", "web"], ["y", "web"]]))], []);
 });

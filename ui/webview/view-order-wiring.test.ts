@@ -51,15 +51,23 @@ test("a pane answers another pane's drag by re-emitting, never by rewriting the 
   // Every revert arrived through the `storage` listener — another context answering the write by running
   // its own gc, which prunes ids ITS session lists don't name and so dropped the tab that had just moved
   // (the newest tab is the one a stale list is likeliest to be missing). An arrangement is not evidence
-  // about what exists; only a host's own report is, and that is the one caller allowed to gc.
-  assert.match(FED, /this\.emitMergedOrder\(true\);\s+\/\/ a host just reported/, "inbound tabOrder gc's");
-  assert.match(FED, /private emitMergedOrder\(gc = false\): void \{\s*\n\s*if \(gc\) this\.gcView\(\);/,
+  // about what exists; only a host's own report is, and that is the one caller allowed to touch the store.
+  assert.match(FED, /this\.absorbHostReport\(host, prevOrder, prevTabs\);\s+\/\/ a host just reported/,
+    "inbound tabOrder is the one store-mutating moment");
+  assert.match(FED, /private emitMergedOrder\(\): void \{\s*\n\s*const order = mergeHostOrder/,
     "every other caller — both drag paths included — re-emits without touching the stored order");
+  assert.doesNotMatch(FED, /private gcView|this\.gcView/,
+    "the old gc-on-emit hook is gone, folded into absorbHostReport");
 });
 
-test("the stale arrangement self-cleans on the host's own report, not on a clock", () => {
+test("the host's report heals churn, prunes the gone, and adopts arrivals — one conditional write", () => {
+  // heal: a /clear relaunch keeps its slot (the kernel's own name inheritance, mirrored browser-side);
+  // prune: the old gcView rule, unchanged — event-based, detached hosts left entirely alone;
+  // adopt: a NEW session lands at the end of the WHOLE strip, where its provisional tab already
+  // rendered, not at the end of its host's block mid-strip (the user 2026-08-10).
+  assert.match(FED, /const healed = healOrder\(cur, churnSwaps\(prevOrder, names\(prevTabs\),/);
   assert.match(FED, /const reporting = new Set\(Object\.keys\(this\.perHostOrder\)\);/);
-  assert.match(FED, /if \(!reporting\.size\) return;/, "no report in hand → prune nothing");
-  assert.match(FED, /const kept = pruneViewOrder\(cur, hostOf, reporting, live\);/);
-  assert.match(FED, /if \(kept\.length !== cur\.length\) writeViewOrder\(kept\);/, "written only when it changed");
+  assert.match(FED, /const next = adoptArrivals\(pruneViewOrder\(healed, hostOf, reporting, live\), seed\);/);
+  assert.match(FED, /if \(next\.length !== cur\.length \|\| next\.some\(\(id, i\) => id !== cur\[i\]\)\) writeViewOrder\(next\);/,
+    "written only when it actually changed");
 });
