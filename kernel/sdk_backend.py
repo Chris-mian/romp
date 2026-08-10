@@ -1157,12 +1157,16 @@ class SdkSession:
         #   "Reloading session…" notice until the reconnect completes (the user 2026-07-06). Cleared the instant the
         #   new client connects (reconnect loop) — event-based, mirroring _model_pending's dots.
         self.perm_mode = self.mode
-        self.fast = ""      # fast-mode state as the CLI's init message reports it ("on"/"off"/"cooldown");
-        #   "" until an init lands (unknown → the chat shows no fast badge rather than a guess). Flipped
-        #   optimistically by set_fast (the /fast command is delivered like any typed one) and re-asserted
-        #   by fast_mode_state on every init, so a refused toggle can't stick past the next connect.
-        self.fast_reason = ""   # the init's fast_mode_disabled_reason — non-empty means /fast would refuse
-        #   (org-gated / unsupported), so the chat hides the toggle instead of offering a dead control.
+        self.fast = reg.get("liveFast") or ""   # fast-mode state as the CLI last reported it ("on"/"off"/
+        #   "cooldown"); "" = unknown → the chat shows no fast badge rather than a guess. Seeded from the
+        #   reg (the liveModel pattern) so a kernel restart doesn't blank every session's badge until its
+        #   next turn (the user 2026-08-10, who found the fast toggle nowhere). Flipped optimistically by
+        #   set_fast (the /fast command is delivered like any typed one) and re-asserted by
+        #   _adopt_fast_state at every connect and every init, so a refused toggle or a stale seed can't
+        #   stick past the next connect.
+        self.fast_reason = reg.get("liveFastReason") or ""   # the CLI's fast_mode_disabled_reason —
+        #   non-empty means /fast would refuse (org-gated / unsupported), so the chat hides the toggle
+        #   instead of offering a dead control. Persisted and seeded beside liveFast.
         self.fast_opt = bool(reg.get("fast"))   # the user's PERSISTED fast-mode ask (the reg's `fast`).
         #   The CLI refuses /fast to a non-interactive client unless the connect carried the `fastMode`
         #   flag-settings opt-in, so this drives that key in _options at every connect. Per-session on
@@ -1517,6 +1521,57 @@ class SdkSession:
         if changed:
             self.backend._poke()
 
+    def _adopt_fast_state(self, d) -> bool:
+        """Adopt fast-mode truth from a CLI payload that carries it. The per-turn init message and the
+        connect-time initialize response (get_server_info) share the exact field names (verified live
+        2026-08-10 on 2.1.226): fast_mode_state "on"/"off"/"cooldown" plus fast_mode_disabled_reason.
+        An absent field (older CLI) leaves the last truth standing — never fabricate "off". Returns
+        whether anything changed; a change persists to the reg (liveFast/liveFastReason, the liveModel
+        pattern) so a kernel restart doesn't blank a dormant session's badge."""
+        fast = d.get("fast_mode_state")
+        if not (isinstance(fast, str) and fast):
+            return False
+        # …except the one init opened by a literal /fast send itself, whose word predates the
+        # toggle it carries. A disabled_reason is real refusal evidence, so it always wins.
+        if self._fast_expect and fast != self._fast_expect \
+                and not d.get("fast_mode_disabled_reason"):
+            fast = self._fast_expect
+        self._fast_expect = ""
+        reason = str(d.get("fast_mode_disabled_reason") or "")
+        # 'sdk_opt_in_required' is NOT a refusal to respect — it is the one refusal romp is
+        # BUILT to cure (set_fast reconnects with the fastMode flag-settings opt-in), and the
+        # CLI stamps it on EVERY connect made without the flag (verified live 2026-08-10 on
+        # 2.1.226: opus/fable/sonnet headless connects all report off + this reason). Keeping
+        # it in fast_reason hid the chat toggle on every SDK session — the control that
+        # GRANTS the opt-in was gated on already having it (the user 2026-08-10, who switched
+        # to Opus and looked for the toggle). Blank it: the badge shows "Fast off" and a
+        # click cures the reason; every OTHER reason still hides the dead control.
+        reason = "" if reason == "sdk_opt_in_required" else reason
+        changed = fast != self.fast or reason != self.fast_reason
+        self.fast, self.fast_reason = fast, reason
+        if changed:
+            try:
+                self.backend._update_reg(self.sid, liveFast=fast, liveFastReason=reason)
+            except Exception as e:
+                self.backend._log("fast-state persist (%s): registry write failed: %s" % (self.name, e))
+        return changed
+
+    async def _do_adopt_server_info(self):
+        """Fast-mode state at CONNECT, before any turn. The init message _adopt_fast_state feeds on
+        only streams WITH a turn — so after a kernel restart every session's fast badge sat blank
+        until it next spoke, and a /model switch never made one appear at all (the user 2026-08-10,
+        who switched a session to Opus and found no toggle). The initialize response the SDK stored
+        at connect (get_server_info — the designed connect-time snapshot, this path's
+        get_context_usage) carries the same fast fields, so adopt them the moment we connect."""
+        if not self.client:
+            return
+        try:
+            info = await self.client.get_server_info()
+        except Exception:
+            return
+        if isinstance(info, dict) and self._adopt_fast_state(info):
+            self.backend._poke()
+
     def effective_auth(self) -> str:
         """'key' or 'login' — what _options launches this session with. An explicit pick wins; unset
         preserves the pre-selector world, where a manager environment that carried a key billed every
@@ -1756,6 +1811,10 @@ class SdkSession:
                     # and returns BOTH the live model id and the % pre-turn, so this one refresh fills both. Runs on
                     # every (re)connect; guarded + idempotent + pokes only on change.
                     asyncio.ensure_future(self._do_refresh_context())
+                    # …and the fast-mode fields the same way: they ride the initialize response the
+                    # SDK already holds (get_server_info), so the badge exists pre-turn too — without
+                    # this, nothing showed after a kernel restart until each session's next turn.
+                    asyncio.ensure_future(self._do_adopt_server_info())
                     feeder = asyncio.ensure_future(client.query(inputs()))
                     recv = asyncio.ensure_future(drain(client))
                     waker = asyncio.ensure_future(self._wake.wait())
@@ -1905,28 +1964,9 @@ class SdkSession:
             d = msg.data if isinstance(msg.data, dict) else {}
             self._learn_model(pretty_model(d.get("model")))
             self.perm_mode = d.get("permissionMode") or self.perm_mode
-            # Fast-mode truth rides the init payload (fast_mode_state: on/off/cooldown, plus a
-            # disabled_reason when the org/model can't use it) — the AUTHORITATIVE re-assert behind
-            # set_fast's optimistic flip. Absent field (older CLI) → stay unknown, never fabricate "off".
-            fast = d.get("fast_mode_state")
-            if isinstance(fast, str) and fast:
-                # …except the one init opened by a literal /fast send itself, whose word predates the
-                # toggle it carries. A disabled_reason is real refusal evidence, so it always wins.
-                if self._fast_expect and fast != self._fast_expect \
-                        and not d.get("fast_mode_disabled_reason"):
-                    fast = self._fast_expect
-                self._fast_expect = ""
-                self.fast = fast
-                reason = str(d.get("fast_mode_disabled_reason") or "")
-                # 'sdk_opt_in_required' is NOT a refusal to respect — it is the one refusal romp is
-                # BUILT to cure (set_fast reconnects with the fastMode flag-settings opt-in), and the
-                # CLI stamps it on EVERY connect made without the flag (verified live 2026-08-10 on
-                # 2.1.226: opus/fable/sonnet headless connects all report off + this reason). Keeping
-                # it in fast_reason hid the chat toggle on every SDK session — the control that
-                # GRANTS the opt-in was gated on already having it (the user 2026-08-10, who switched
-                # to Opus and looked for the toggle). Blank it: the badge shows "Fast off" and a
-                # click cures the reason; every OTHER reason still hides the dead control.
-                self.fast_reason = "" if reason == "sdk_opt_in_required" else reason
+            # Fast-mode truth rides the init payload — the AUTHORITATIVE re-assert behind set_fast's
+            # optimistic flip, shared with the connect-time initialize response (_adopt_fast_state).
+            self._adopt_fast_state(d)
             # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
             # the field is absent on a subscription login). An auth flip is the deciding event for the
             # rail's /usage bars — see _note_auth_source.
@@ -3720,6 +3760,8 @@ class SdkBackend:
         if not reg:
             return False
         reg["fast"] = (value == "on")
+        reg["liveFast"] = value   # mirror the optimistic flip where the badge reads it while dormant /
+        #                           across a restart; _adopt_fast_state re-asserts at the next connect
         write_reg(self.state_dir, sid, reg)
         s = self.sessions.get(sid)
         if not s or not s.thread.is_alive():
@@ -3891,6 +3933,10 @@ class SdkBackend:
                             "auth": self.default_auth(reg),
                             "authPending": bool(reg.get("authPending")),
                             "mode": reg.get("mode", ""),
+                            # last persisted fast state (liveFast, like liveCtx above) → the badge
+                            # survives idle/restart instead of vanishing until the next turn
+                            "fast": reg.get("liveFast", ""),
+                            "fastReason": reg.get("liveFastReason", ""),
                             "ctx": lc if isinstance(lc, (int, float)) else "", "summary": ""}
         return out
 

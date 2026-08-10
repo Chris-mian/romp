@@ -605,6 +605,63 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(s.fast, "off", "…but a disabled_reason beats the expectation immediately")
         self.assertEqual(s.snapshot()["fastReason"], "Fast mode is org-disabled")
 
+    def test_fast_state_survives_a_kernel_restart_via_the_reg(self):
+        """The init message only streams WITH a turn, so in-memory-only fast state meant every kernel
+        restart blanked every session's badge until it next spoke (the user 2026-08-10, who found the
+        toggle nowhere). The state persists to the reg on adoption (liveFast/liveFastReason, the
+        liveModel pattern) and seeds the next construction — and a DORMANT session (no thread at all
+        after a restart) reports it straight from the reg in live_sessions."""
+        import asyncio
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-dddddddddddd"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        async def _noop(): pass
+        s._do_refresh_context = _noop
+        async def run(data):
+            s._on_message(_Sys(data), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)
+        asyncio.run(run({"fast_mode_state": "off", "fast_mode_disabled_reason": "sdk_opt_in_required"}))
+        reg = sb.read_reg(d, sid)
+        self.assertEqual(reg["liveFast"], "off", "adoption persists the state")
+        self.assertEqual(reg["liveFastReason"], "", "…with the curable reason already blanked")
+        # "the kernel restarts": a fresh construction from the same reg — the badge is there pre-turn
+        s2 = sb.SdkSession(be, sb.read_reg(d, sid))
+        self.assertEqual(s2.fast, "off", "seeded from the reg, no init needed")
+        self.assertEqual(s2.fast_reason, "")
+        # …and a session with NO thread at all reports it straight from the reg
+        live = be.live_sessions()
+        self.assertEqual(live[sid]["fast"], "off", "a dormant session's badge survives the restart")
+        self.assertEqual(live[sid]["fastReason"], "")
+
+    def test_connect_adopts_fast_state_from_the_initialize_response(self):
+        """A turn-less connect emits NO init message, so a session that merely reconnected (every
+        session, after a kernel restart) knew nothing until it next spoke — and a /model switch never
+        produced a badge at all. The initialize response the SDK stores at connect (get_server_info)
+        carries the same fast_mode_state/fast_mode_disabled_reason fields (verified live 2026-08-10 on
+        2.1.226), and _connect_once adopts it right beside the pre-turn context/model refresh."""
+        import asyncio
+        import inspect
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-eeeeeeeeeeee"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        self.assertEqual(s.fast, "", "unknown before the connect")
+        class _Client:
+            async def get_server_info(self):
+                return {"fast_mode_state": "off", "fast_mode_disabled_reason": "sdk_opt_in_required"}
+        s.client = _Client()
+        asyncio.run(s._do_adopt_server_info())
+        self.assertEqual(s.fast, "off", "the badge exists pre-turn")
+        self.assertEqual(s.fast_reason, "", "the curable opt-in reason never hides the toggle")
+        self.assertEqual(sb.read_reg(d, sid)["liveFast"], "off", "…and it persisted")
+        # the adoption is wired into the connect path, beside the pre-turn context refresh
+        self.assertIn("_do_adopt_server_info", inspect.getsource(sb.SdkSession._amain))
+
     def test_send_echo_authors_a_romp_nudge_as_romp_not_human(self):
         # the bug (the user 2026-06-28): an auto-nudge sent through send() echoed as a BLUE HUMAN "Follow-up"
         # instead of the GRAY "from romp" auto-nudge it is, because the echo hardcoded author="human". The echo
