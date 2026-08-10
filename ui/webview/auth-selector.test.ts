@@ -4,9 +4,10 @@
 //   * the new-session picker's Billing row is ALWAYS there for an SDK session: segmented buttons when
 //     the selected host's own sessionList reply (authAvail) says both choices are real, and the same
 //     spot writes the single choice out as plain text when only one is (a fact, not a control);
-//   * the statusline auth badge is the SWITCHING control, so it keeps the stricter gate: it exists
-//     only when the machine offers both (st.authBoth), posting setAuth and wearing switching-dots
-//     while the applying reconnect is pending;
+//   * the SWITCHING control is a Billing submenu in the chat tab's right-click menu (moved from a
+//     statusline badge, the user 2026-08-09): it exists only when the machine offers both
+//     (st.authBoth), posting the same setAuth; the sub-line says "applying…" while the reconnect
+//     is pending;
 //   * the chat tab's hover carries the fact as a Billing row whenever the backend reports it
 //     (st.auth rides ungated now), naming WHICH login account (st.authAcct) beside 'Login'.
 // The key is labelled plainly 'API key' — NO key material anywhere: not the key, not even a last-4
@@ -59,18 +60,23 @@ test("the pick rides createSession, omitted when the row is hidden or written-ou
   assert.match(RENDER, /const def = a!\.default === "key" \? "key" : "login";/);
 });
 
-test("the statusline auth badge — the switching CONTROL — still gates on both", () => {
-  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast" \| "auth";/);
-  // st.auth is always reported now; the CONTROL keys on st.authBoth so a one-auth machine
-  // shows no dead selector (the display rows carry the fact instead)
-  assert.match(RENDER, /\(st\.auth && st\.authBoth\) \? "auth" : ""/);
-  assert.match(RENDER, /if \(st\.auth && st\.authBoth\) meta\.appendChild\(metaButton\("auth", prettyAuth\(st\)\)\);/);
-  // the badge label is the plain choice, never key material
-  assert.match(RENDER, /return \(st\.auth \|\| ""\)\.toLowerCase\(\) === "key" \? "API key" : "Login";/);
-  // the pick posts setAuth, and the applying reconnect drives the switching-dots
-  assert.match(RENDER, /kind === "auth" \? "setAuth"/);
-  assert.match(RENDER, /\(kind === "auth" && !!st\.authPending\)/);
-  assert.match(RENDER, /kind === "model" \|\| kind === "effort" \|\| kind === "auth"\);/);
+test("the switching CONTROL is the tab menu's Billing submenu, gated on both", () => {
+  // moved OUT of the statusline (the user 2026-08-09): no auth badge kind survives there
+  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast";/);
+  assert.doesNotMatch(RENDER, /metaButton\("auth"/);
+  assert.doesNotMatch(RENDER, /AUTH_CHOICES/);
+  // …and INTO showTabMenu: only when the machine offers both choices does the item exist at all
+  // (a one-auth machine keeps the fact on the tab hover, never a dead selector)
+  assert.match(RENDER, /if \(st && st\.auth && st\.authBoth\) \{/);
+  // the flyout offers the two plain labels — Login named by its account, the key by NO material —
+  // with the session's current choice check-marked
+  assert.match(RENDER, /\{ label: st\.authAcct \? `Login \(\$\{st\.authAcct\}\)` : "Login", value: "login" \},/);
+  assert.match(RENDER, /\{ label: "API key", value: "key" \}\]/);
+  assert.match(RENDER, /el\("div", "ctx-item" \+ \(st\.auth === c\.value \? " current" : ""\)\)/);
+  // a pick posts the same setAuth the badge used, and only a CHANGE posts (current = dismiss)
+  assert.match(RENDER, /if \(st\.auth !== c\.value && vscodeApi\) vscodeApi\.postMessage\(\{ type: "setAuth", id, value: c\.value \}\);/);
+  // the item's sub-line names the current billing, or the applying reconnect
+  assert.match(RENDER, /st\.authPending \? "applying…"/);
   assert.match(RENDER, /auth\?: string; authPending\?: boolean; authBoth\?: boolean; authAcct\?: string;/);
 });
 
