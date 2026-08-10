@@ -3,7 +3,7 @@
 origin's newest release tag (git ls-remote — the remote's own refs, never the local tag list) and
 compares it against the VERSION-file release. Modes (update-mode.json, default "ask" — ON out of
 the box): ask = the shell's update banner offers it; auto = the kernel updates itself once per
-discovered version; off = never checks. The update runs DETACHED (git pull --ff-only + install.sh,
+discovered version; off = never checks. The update runs DETACHED (fetch + ff-only merge ONTO THE TAG + install.sh,
 report to update-report.json, restart through the manager door only on success), and the outcome is
 always filed as a sync notice — by the next boot, or by /update-check's poll on the still-running
 kernel (fail loudly, never silent). Synthetic tags/paths only."""
@@ -249,7 +249,7 @@ class CheckLoop(Fresh):
 
 
 class RunUpdate(Fresh):
-    def test_detached_child_pulls_installs_reports_and_restarts_only_on_success(self):
+    def test_detached_child_lands_on_the_tag_installs_reports_and_restarts_only_on_success(self):
         calls = []
         with mock.patch.object(km.subprocess, "Popen", side_effect=lambda *a, **kw: calls.append((a, kw))), \
              mock.patch.dict(km.os.environ, {"ROMP_MANAGER_PORT": "7777"}):
@@ -258,7 +258,11 @@ class RunUpdate(Fresh):
         self.assertEqual(a[0][:2], ["bash", "-c"])
         self.assertTrue(kw.get("start_new_session"), "install.sh + the restart take the kernel down — the child must outlive it")
         script = a[0][2]
-        self.assertIn("git pull --ff-only", script)
+        # EXACTLY the release commit, never the branch tip (the user 2026-08-09): the tag is fetched
+        # by explicit refspec and fast-forwarded onto — an update to v0.7.0 means running v0.7.0
+        self.assertIn("git fetch origin refs/tags/v0.7.0:refs/tags/v0.7.0", script)
+        self.assertIn("git merge --ff-only v0.7.0", script)
+        self.assertNotIn("git pull", script, "a pull takes whatever the branch has gained past the tag")
         self.assertIn("./install.sh", script)
         self.assertIn("update-report.json", script)
         # the restart rides the SUCCESS branch only: everything after `if` up to `else` has it,
