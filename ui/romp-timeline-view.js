@@ -81,6 +81,17 @@ const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8
                 retrying: { bg: '#e67e22', fg: '#2a1500' },   // amber: soft-blocked on an API rate-limit/overload auto-retry (api 2026-06-23)
                 awaitbg: { bg: '#54B204', fg: '#0c1a00' } };  // romp brand green: idle, waiting on bg work — matches the chat chip (--st-awaitbg-bg; the user 2026-07-22)
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+// The ONE menu vocabulary every romp dropdown wears (CLAUDE.md rule, the user 2026-08-09) — the chat
+// pane's .ctx-menu/.meta-menu spec (ui/webview/styles.css), inlined with its values RESOLVED because
+// this pane may live in a foreign document (Obsidian) that loads neither styles.css nor its vars, and
+// would otherwise hand the menus the host app's own font. Card #252526, hairline border, 6px radius,
+// 12px romp sans; the current-choice mark is the same ✓-in-circle the chat meta menus use.
+const MENU_STYLE = 'padding:4px;background:#252526;border:1px solid rgba(255,255,255,0.12);'
+  + 'border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.35);font:12px/1.4 ' + FONT + ';'
+  + 'color:#cccccc;user-select:none;';
+const MENU_CHECK_STYLE = 'position:absolute;right:6px;top:50%;transform:translateY(-50%);'
+  + 'background:#1EA1EB;color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'
+  + 'font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and
 // OUTLINED in the judge's OWN colour (so a bar reads as "judge X on session Y"). Fed by
@@ -2192,15 +2203,18 @@ class TimelinePanel {
     if (s.state === 'awaiting' || s.state === 'permission') return;
     // Styled inline (NOT via a CSS class): injectStyles() guards on an existing <style> id, so a CSS
     // rule added later never lands after a plugin reload — only a full restart. Inline always applies.
+    // MENU_STYLE/etc = the one shared menu vocabulary (CLAUDE.md rule, the user 2026-08-09) — the chat
+    // pane's .ctx-menu/.meta-menu spec, inlined because this pane may live in a foreign document
+    // (Obsidian) that loads neither styles.css nor romp's font stack.
     const menu = document.body.createDiv();
-    menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:96px;padding:4px;background:#1c2430;border:1px solid #ffffff1f;border-radius:8px;box-shadow:0 8px 24px #00000066;font-size:12px;color:#e6edf3;user-select:none;');
+    menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:96px;' + MENU_STYLE);
     menu._kind = kind; menu._sid = s.id;
     for (const c of (kind === 'model' ? MODEL_CHOICES : EFFORT_CHOICES)) {
       const cur = isCurrentMeta(kind, s, c.value);
       const item = menu.createDiv({ text: c.label });
-      item.setAttribute('style', 'padding:4px 22px 4px 9px;border-radius:5px;cursor:pointer;position:relative;white-space:nowrap;' + (cur ? 'color:#54B204;' : ''));
-      if (cur) { const ck = item.createSpan({ text: '✓' }); ck.setAttribute('style', 'position:absolute;right:8px;'); }
-      item.addEventListener('mouseenter', () => { item.style.background = '#ffffff14'; });
+      item.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;');
+      if (cur) { const ck = item.createSpan({ text: '✓' }); ck.setAttribute('style', MENU_CHECK_STYLE); }
+      item.addEventListener('mouseenter', () => { item.style.background = 'rgba(255,255,255,0.09)'; });
       item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
       item.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2232,11 +2246,10 @@ class TimelinePanel {
     const reopen = this._laneMenu && this._laneMenu._sid === s.id;
     this._closeLaneMenu(); this._closeMetaMenu();
     if (reopen) return;
-    // Styled inline like the meta menu (injectStyles can't add rules after a plugin reload).
+    // Styled inline like the meta menu (injectStyles can't add rules after a plugin reload) — the
+    // shared menu vocabulary again (MENU_STYLE).
     const menu = document.body.createDiv();
-    menu.setAttribute('style', 'position:fixed;z-index:1001;width:280px;padding:4px;background:#1c2430;'
-      + 'border:1px solid #ffffff1f;border-radius:8px;box-shadow:0 8px 24px #00000066;font-size:12px;'
-      + 'color:#e6edf3;user-select:none;');
+    menu.setAttribute('style', 'position:fixed;z-index:1001;width:280px;' + MENU_STYLE);
     menu._sid = s.id;
     menu.addEventListener('click', (e) => e.stopPropagation());   // inside clicks must not reach the doc closer
     const build = () => {
@@ -2244,18 +2257,18 @@ class TimelinePanel {
       for (const t of LANE_TOGGLES) {
         const on = t.enabled(s);
         const row = menu.createDiv();
-        row.setAttribute('style', 'display:flex;gap:9px;align-items:flex-start;padding:6px 9px;border-radius:5px;cursor:pointer;');
+        row.setAttribute('style', 'display:flex;gap:8px;align-items:flex-start;padding:4px 10px;border-radius:4px;cursor:pointer;');
         const ic = el('svg', { viewBox: '0 0 17 17', width: 15, height: 15 });
         ic.setAttribute('style', 'flex:0 0 auto;margin-top:1px;' + (on ? '' : 'opacity:0.55;'));
         ic.appendChild(t.icon(!on, 8.5, 8.5, on ? ROMP_BLUE : MODEL_FG));
         row.appendChild(ic);
         const body = row.createDiv();
-        body.setAttribute('style', 'display:flex;flex-direction:column;line-height:1.35;min-width:0;');
+        body.setAttribute('style', 'display:flex;flex-direction:column;line-height:1.25;min-width:0;');
         const lab = body.createDiv({ text: t.label + ' — ' + (on ? 'on' : 'off') });
         lab.setAttribute('style', on ? '' : 'opacity:0.75;');
         const sub = body.createDiv({ text: t.desc });
-        sub.setAttribute('style', 'opacity:0.55;font-size:11px;');
-        row.addEventListener('mouseenter', () => { row.style.background = '#ffffff14'; });
+        sub.setAttribute('style', 'opacity:0.6;font-size:0.82em;');
+        row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.1)'; });
         row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
         row.addEventListener('click', (e) => {
           e.stopPropagation();

@@ -247,7 +247,19 @@ Before adding a new `font-size`, reuse one already on the surface; nesting relat
 siblings), so prefer flat contexts or compensate explicitly. Triggered by the
 follow-up header rendering as a soup of 0.74/0.78/0.9em fragments.
 
-### The accent color is light blue `#9cd2ff` — use `var(--accent)`
+### Menus and dropdowns wear ONE vocabulary (user rule, 2026-08-09)
+Every dropdown on every romp surface — the chat tab context menu, the statusline
+meta menus, the timeline's lane gear + model/effort pickers, and any future one —
+wears the same skin: `#252526` card, `rgba(255,255,255,0.12)` hairline border, 6px
+radius, `0 4px 12px rgba(0,0,0,0.35)` shadow, 12px romp sans, sub-lines `0.82em`
+at 0.6 opacity, and the `#1EA1EB` ✓-in-circle current mark. The chat pane's
+`.ctx-menu`/`.meta-menu` (`ui/webview/styles.css`) is the reference spec; the
+timeline inlines the same values as `MENU_STYLE`/`MENU_CHECK_STYLE` in
+`ui/romp-timeline-view.js`. A surface that cannot load styles.css (the timeline
+also runs inside Obsidian) MUST declare `font-family` explicitly — an adopted
+element inherits the host app's font otherwise, which is exactly how the timeline
+gear menu drifted off-brand (triggered 2026-08-09: bluish `#1c2430` card, host
+font, its own radii and sub-sizes).
 The romp accent is light blue `#9cd2ff` (`--accent` in `ui/webview/styles.css`, with
 `--accent-fg: #0c1a2e` for text on it). Use it for accent/highlight chrome — selected
 toggles, in-progress loading dots, the Fleet pill, focus cues — anywhere you want "the
