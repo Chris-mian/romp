@@ -56,6 +56,12 @@ var GEAR_HTML =
   '<span><b>Auto Nudge</b>' +
   '<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>' +
   '</span></label>' +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates</b>" +
+  '<span class=rs-sub>When romp starts, it checks its repo for a new release. Check and ask (the default) offers it as a banner with an Update button; Install automatically pulls, installs and restarts by itself; Off never checks. Kernel-side setting.</span>' +
+  "<select id=rs-updates style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;" +
+  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>" +
+  '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
+  '</select></span></div>' +
   "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
   '<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs via the Agent SDK. Both kinds run side by side; this only sets the default.</span>' +
   "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;" +
@@ -145,7 +151,7 @@ function initGear(post) {
     tc = document.getElementById('rs-tabctx'),
     cg = document.getElementById('rs-collapsegaps'), jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
-    ie = document.getElementById('rs-indexeffort');
+    ie = document.getElementById('rs-indexeffort'), upm = document.getElementById('rs-updates');
   function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, tabCtx: 'over50', collapseGaps: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: true, tabCtx: 'over50', collapseGaps: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
@@ -172,6 +178,7 @@ function initGear(post) {
   // Auto Nudge / judge tiers are SERVER-SIDE (the kernel runs them): post the
   // change; the controls re-initialize from /version on every open (fill()).
   if (an) an.addEventListener('change', function () { post({ type: 'setAutoNudge', enabled: an.checked }); });
+  if (upm) upm.addEventListener('change', function () { post({ type: 'setUpdateMode', mode: upm.value }); });
   if (jm) jm.addEventListener('change', function () { post({ type: 'setJudgeModel', model: jm.value }); });
   if (im) im.addEventListener('change', function () { post({ type: 'setIndexModel', model: im.value }); });
   if (je) je.addEventListener('change', function () { post({ type: 'setJudgeEffort', effort: je.value }); });
@@ -244,6 +251,7 @@ function initGear(post) {
     var m = t && t.getAttribute('src').match(/[?&]v=(\d+)/); return m ? +m[1] : 0; }
   function fill() { fillChoices().then(function () { return fetch(ku('/version'), { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
     if (an) an.checked = !!v.autoNudge;
+    if (upm && typeof v.updateMode === 'string') upm.value = v.updateMode;   // the kernel's persisted mode is authoritative
     if (jm && typeof v.judgeModel === 'string') jm.value = v.judgeModel;   // the judge's ACTUAL current model/effort per tier is authoritative
     if (im && typeof v.indexModel === 'string') im.value = v.indexModel;
     if (je && typeof v.judgeEffort === 'string') je.value = v.judgeEffort;

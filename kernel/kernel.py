@@ -412,6 +412,8 @@ def _version_info():
     return {"kernel_sha": _kernel_sha(), "kernel_ver": _kernel_ver(), "pid": os.getpid(), "started": int(_STARTED),
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
+            "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
+            "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
             "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),  # current per-tier judge efforts ("" = default/none)
             "defaultDir": _tilde(_default_create_dir()),   # the resolved default new-session dir → the gear "Default directory" field
@@ -1594,6 +1596,157 @@ def _set_auto_nudge(enabled):
     d = dict(_auto_nudge_data())
     d["enabled"] = bool(enabled)
     _write_auto_nudge(d)
+
+
+# ── automatic updates of THIS machine (the user 2026-08-09) ───────────────────────────────────────
+# At kernel boot, one async check asks the clone's `origin` for its newest RELEASE tag
+# (`git ls-remote --tags` — network read only, nothing local moves) and compares it against the
+# release this code descends from (_kernel_ver's VERSION file, "+" stripped). Three modes, persisted
+# in update-mode.json under STATE, "ask" by default — the check is ON out of the box:
+#   ask  — a newer release raises the shell's update banner; its Update button POSTs /update.
+#   auto — the kernel updates itself at boot, once per discovered version (update-attempted.json
+#          keeps a failing update from looping on every restart — that stall is logged, not silent).
+#   off  — never even checks.
+# The update itself (_run_update) runs DETACHED (start_new_session: install.sh reloads the manager
+# and the restart takes this kernel down, and the child must outlive both): `git pull --ff-only`,
+# then ./install.sh, everything appended to update.log under STATE, a report written to
+# update-report.json, and a restart through the manager door ONLY on success. The outcome is never
+# silent (fail loudly): the next boot — or the still-running kernel, via /update-check's poll —
+# consumes the report into a sync notice, the Log's standing record of what romp did to your
+# machines. `romp update [host]` remains the other direction (pushing THIS build to remotes).
+_UPDATE_AVAIL = [""]     # newest remote release tag when newer than ours ("" = none/unknown)
+_UPDATE_STATE = [""]     # "" | "running" — one update at a time; the banner reads this
+_UPDATE_MODES = ("ask", "auto", "off")
+
+
+def _update_mode():
+    try:
+        m = json.loads((jd.STATE / "update-mode.json").read_text()).get("mode")
+        return m if m in _UPDATE_MODES else "ask"
+    except (OSError, ValueError, AttributeError):
+        return "ask"
+
+
+def _set_update_mode(mode):
+    if mode in _UPDATE_MODES:
+        _atomic_write(jd.STATE / "update-mode.json", json.dumps({"mode": mode}))
+
+
+def _semver(tag):
+    """'v0.6.0' → (0, 6, 0); None for anything that is not a plain release number."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", str(tag or "").strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def _latest_release_tag():
+    """The newest release tag on the clone's `origin`, read from the REMOTE's refs (ls-remote) — never
+    from the local tag list, which says only what this clone last fetched (refs do not travel with
+    commits; _kernel_ver's lesson). Raises on any git/network failure so the caller can say so."""
+    r = subprocess.run(["git", "-C", str(ROOT), "ls-remote", "--tags", "origin"],
+                       capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or "git ls-remote failed").strip()[:200])
+    best, best_v = "", None
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2 or parts[1].endswith("^{}"):   # ^{} = peeled duplicate of an annotated tag
+            continue
+        tag = parts[1].rsplit("/", 1)[-1]
+        v = _semver(tag)
+        if v and (best_v is None or v > best_v):
+            best, best_v = tag, v
+    return best
+
+
+def _run_update(tag):
+    """Start the self-update: pull + install + report (+ restart on success), in a DETACHED child.
+    Returns True when the child was launched. The tag has passed _semver before it gets here; the
+    guard repeats anyway because the string lands inside a shell script."""
+    if not _semver(tag) or _UPDATE_STATE[0] == "running":
+        return False
+    _UPDATE_STATE[0] = "running"
+    q = shlex.quote
+    log, rep = q(str(jd.STATE / "update.log")), q(str(jd.STATE / "update-report.json"))
+    mport = os.environ.get("ROMP_MANAGER_PORT") or ""
+    restart = ("  curl -s -X POST http://127.0.0.1:%d/restart-all >/dev/null 2>&1\n" % int(mport)) if mport.isdigit() \
+        else "  : # no manager — the new code arms on the next romp start (the report says so)\n"
+    ok_rep = {"ok": True, "tag": tag, "restarted": bool(mport.isdigit())}
+    script = (
+        "cd %s || exit 1\n" % q(str(ROOT))
+        + "{ echo; echo \"== romp self-update to %s ==\"; date; } >> %s 2>&1\n" % (tag, log)
+        + "if git pull --ff-only >> %s 2>&1 && ./install.sh >> %s 2>&1; then\n" % (log, log)
+        + "  printf '%%s' %s > %s\n" % (q(json.dumps(ok_rep)), rep)
+        + restart
+        + "else\n"
+        + "  printf '%%s' %s > %s\n" % (q(json.dumps({"ok": False, "tag": tag, "why": "the pull or install failed"})), rep)
+        + "fi\n")
+    subprocess.Popen(["bash", "-c", script], start_new_session=True, cwd=str(ROOT),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+
+def _consume_update_report(running_only=False):
+    """File the updater child's report as a sync notice, ONCE (the file renames on consumption).
+    Two callers: the next boot (the success path — the restart took the reporting kernel down), and
+    /update-check's poll on the still-running kernel (the failure path, and the no-manager success),
+    which passes running_only to also clear the in-flight latch."""
+    p = jd.STATE / "update-report.json"
+    try:
+        rep = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    try:
+        p.rename(jd.STATE / "update-report-last.json")   # consumed — never re-filed on later boots
+    except OSError:
+        return None
+    if running_only:
+        _UPDATE_STATE[0] = ""
+    tag = str(rep.get("tag") or "a new release")
+    if rep.get("ok") and rep.get("restarted"):
+        _sync_notice("romp updated itself to %s and restarted into it" % tag)
+    elif rep.get("ok"):
+        _sync_notice("romp updated itself to %s — no manager is running, so restart romp yourself to run it" % tag)
+    else:
+        _sync_notice("romp could not update itself to %s: %s — nothing was restarted; update.log under "
+                     "~/.local/state/romp has the full output" % (tag, rep.get("why") or "the update failed"),
+                     ok=False)
+    return rep
+
+
+def _update_check():
+    """The boot check (its own daemon thread): learn the newest release, then act per mode."""
+    if _update_mode() == "off":
+        return
+    cur = _semver((_kernel_ver() or "").rstrip("+"))
+    if cur is None:
+        return                                      # no VERSION / not a release clone → nothing to compare
+    try:
+        latest = _latest_release_tag()
+    except Exception as e:
+        sys.stderr.write("romp-kernel: update check could not read origin's tags: %s\n" % e)
+        return
+    lv = _semver(latest)
+    if not lv or lv <= cur:
+        return
+    _UPDATE_AVAIL[0] = latest
+    if _update_mode() == "auto":
+        tried = ""
+        try:
+            tried = json.loads((jd.STATE / "update-attempted.json").read_text()).get("tag", "")
+        except (OSError, ValueError, AttributeError):
+            pass
+        if tried == latest:
+            # the automatic update to THIS version already ran once and did not land — looping the
+            # same failure every boot helps nobody, but going quiet would hide it (fail loudly)
+            _sync_notice("a newer romp (%s) is available, but the automatic update to it already ran "
+                         "once without landing — update.log under ~/.local/state/romp has the story; "
+                         "the banner still offers it" % latest, ok=False)
+            _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest})
+            return
+        _atomic_write(jd.STATE / "update-attempted.json", json.dumps({"tag": latest, "t": int(time.time())}))
+        _run_update(latest)
+    else:
+        _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest})
 
 
 def _auto_update_remotes_on():
@@ -18881,7 +19034,9 @@ if(m&&m.type==='reveal'&&m.pane)show(m.pane);
 else if(m&&m.type==='badge'&&'setAppBadge' in navigator){
 try{(m.n?navigator.setAppBadge(m.n):navigator.clearAppBadge())['catch'](function(e){});}catch(e){}}
 // the master bell toggled somewhere (this tab included) — repaint ours from the kernel's word
-else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotifyAllPaint(!!m.on);};
+else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotifyAllPaint(!!m.on);
+// the boot check found a newer romp release — raise the update banner on every open dashboard
+else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'');};
 ws.onclose=function(){setTimeout(shellWS,2000);};}catch(e){}}
 shellWS();
 var last='chat';try{var s=localStorage.getItem(KT);if(s&&F[s])last=s;}catch(e){}show(last);
@@ -19053,6 +19208,62 @@ _LANDING_COLLAPSE_JS = """
 def _stale_block(v):
     return ("<style>" + _STALE_CSS + "</style>" + _STALE_HTML
             + "<script>" + _STALE_JS.replace("__LOADEDVER__", str(int(v))) + "</script>")
+
+
+# UPDATE banner (the user 2026-08-09): a newer romp RELEASE exists (the boot check, _update_check) —
+# distinct from #rstale, which is about this tab running an older BUNDLE than the kernel serves. Same
+# top-center prompt vocabulary, offset below rstale so the two can stack. The Update button POSTs
+# /update and then polls /update-check: a changed `boot` means the new kernel is up → reload; a
+# `failed`/`updated` answer means the still-running kernel consumed the child's report → say so.
+# "Not now" is page-scoped on purpose — the next kernel start re-offers (what the user asked for).
+_UPD_CSS = (
+    "#rupd{position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
+    "align-items:center;gap:12px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
+    "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
+    "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "#rupd.show{display:flex}#rupd .rup-msg{font-weight:500}"
+    "#rupd button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
+    "border:1px solid transparent;white-space:nowrap}"
+    "#rupd button:disabled{opacity:.55;cursor:default}"
+    "#rupd .rup-go{background:#54B204;color:#0c1a00;font-weight:600;border-color:#3f8a00}"
+    "#rupd .rup-go:hover:not(:disabled){background:#62c80a}"
+    "#rupd .rup-dismiss{background:none;color:#9aa0a6;border-color:#4a4d51}"
+    "#rupd .rup-dismiss:hover{color:#e6e6e6}")
+_UPD_HTML = (
+    "<div id=rupd role=alert><span class=rup-msg></span>"
+    "<button class=rup-go id=rupd-go>Update</button>"
+    "<button class=rup-dismiss id=rupd-dismiss>Not now</button></div>")
+_UPD_JS = (
+    "(function(){var box=document.getElementById('rupd');if(!box)return;"
+    "var msg=box.querySelector('.rup-msg'),go=document.getElementById('rupd-go'),dm=document.getElementById('rupd-dismiss');"
+    "var dismissed=false,waiting=false,bootNow='';"
+    "function show(m){msg.textContent=m;box.classList.add('show');}"
+    "function offer(cur,tag){if(dismissed||waiting)return;go.hidden=false;go.disabled=false;dm.hidden=false;"
+    "show('romp '+tag+' is available'+(cur?' \\u2014 you are on '+cur:'')+'.');}"
+    "window.__rompUpdateOffer=offer;"   # the shell WS relays the kernel's boot-check push here
+    "function poll(){fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    "if(!waiting)return;"
+    "if(d.boot&&bootNow&&d.boot!==bootNow){location.reload();return;}"
+    "if(d.failed){waiting=false;go.hidden=false;go.disabled=false;show('The update did not finish: '+d.failed);return;}"
+    "if(d.updated){waiting=false;show('romp updated to '+d.updated+' \\u2014 restart romp (the \\u21bb button) to run it.');return;}"
+    "setTimeout(poll,3000);}).catch(function(){if(waiting)setTimeout(poll,3000);});}"
+    "go.onclick=function(){go.disabled=true;dm.hidden=true;waiting=true;"
+    "show('Updating romp \\u2014 this can take a minute; the dashboard reloads when it restarts\\u2026');"
+    "fetch('/update',{method:'POST'}).then(function(r){"
+    "if(!r.ok)return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});poll();})"
+    "['catch'](function(e){waiting=false;go.disabled=false;dm.hidden=false;"
+    "show('Could not start the update: '+((e&&e.message)||e));});};"
+    "dm.onclick=function(){dismissed=true;box.classList.remove('show');};"
+    "fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    "bootNow=(d&&d.boot)||'';"
+    "if(d&&d.state==='running'){waiting=true;go.hidden=true;dm.hidden=true;"
+    "show('romp is updating \\u2014 the dashboard reloads when it restarts\\u2026');poll();return;}"
+    "if(d&&d.tag&&d.mode==='ask')offer(d.cur||'',d.tag);})"
+    "['catch'](function(e){});})();")
+
+
+def _update_block():
+    return "<style>" + _UPD_CSS + "</style>" + _UPD_HTML + "<script>" + _UPD_JS + "</script>"
 
 
 # REMOTE-DRIFT banner (the user 2026-07-04): a proactive "push your build to the remote?" prompt with LIVE
@@ -19919,7 +20130,7 @@ def _landing():
             # a dist bundle (ui/webview/palette-main.ts) like age-color-global above. Loaded last —
             # it reads the __romp* globals lazily, at command run time, so order is cosmetic.
             + ("<script src=/dist/palette-main.js?v=%d></script>" % v)
-            + _stale_block(v) + _rdrift_block() +
+            + _stale_block(v) + _update_block() + _rdrift_block() +
             "</body></html>")
 
 
@@ -20266,6 +20477,32 @@ class Handler(BaseHTTPRequestHandler):
                 # register() fetch is same-origin and carries the cookie, and only an authed shell
                 # ever registers it. no-cache so a changed worker is picked up on the next launch.
                 return self._send(200, _SW_JS, "text/javascript; charset=utf-8", cache="no-cache")
+            if p == "/update-check":
+                # the update banner's state (the user 2026-08-09): what release we're on, what's newer,
+                # the mode, and whether an update is in flight. `boot` lets the banner detect the NEW
+                # kernel answering after a successful update (same trick as the restart flow); polling
+                # this route is also what consumes a report the still-running kernel would otherwise
+                # sit on (the failure path, and the no-manager success).
+                failed = updated = ""
+                if _UPDATE_STATE[0] == "running":
+                    # PEEK before consuming: a success that is about to restart belongs to the NEXT
+                    # kernel's boot — consuming it here would file the notice into this dying
+                    # process's in-memory ring and the new kernel would find nothing to log. Only a
+                    # failure, or a success with no manager to restart, is this kernel's to file.
+                    try:
+                        _peek = json.loads((jd.STATE / "update-report.json").read_text())
+                    except (OSError, ValueError):
+                        _peek = None
+                    if _peek is not None and not (_peek.get("ok") and _peek.get("restarted")):
+                        rep = _consume_update_report(running_only=True)
+                        if rep is not None and not rep.get("ok"):
+                            failed = str(rep.get("why") or "the pull or install failed")
+                        elif rep is not None:
+                            updated = str(rep.get("tag") or "")
+                return self._send(200, json.dumps({
+                    "cur": _kernel_ver() or "", "tag": _UPDATE_AVAIL[0], "mode": _update_mode(),
+                    "state": _UPDATE_STATE[0], "failed": failed, "updated": updated,
+                    "boot": _BOOT_ID}), "application/json", cache="no-cache")
             if p == "/notify-all":
                 # the master bell's state (the user 2026-08-09): on = every task notifies when it
                 # blocks on you or completes, unless its session/card bell mutes it. The shell
@@ -20358,6 +20595,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, FLEET_REPORT.read_text(), "application/json")
                 except OSError:
                     return self._send(200, json.dumps({"rows": []}), "application/json")
+            if u.path == "/update":
+                # the banner's Update button (the user 2026-08-09). Only a release the boot check
+                # actually found is ever installed — the route takes no version from the client.
+                tag = _UPDATE_AVAIL[0]
+                if not tag:
+                    return self._send(409, "no newer release known to this kernel", "text/plain")
+                if _UPDATE_STATE[0] != "running":
+                    _audit_restart_request("self-update", tag=tag, addr=str(self.client_address[0]))
+                    _run_update(tag)
+                return self._send(200, json.dumps({"ok": True, "state": _UPDATE_STATE[0]}), "application/json")
             if u.path == "/notify-all":
                 # the master bell's toggle (the user 2026-08-09). Kernel-authoritative: the click
                 # posts here first, and only a 200 flips the bell — the device push subscription is
@@ -20948,6 +21195,8 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "setAutoNudge" and msg.get("enabled") is not None:
             _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
             _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
+        elif msg and msg.get("type") == "setUpdateMode" and msg.get("mode") in _UPDATE_MODES:
+            _set_update_mode(str(msg["mode"]))      # feed gear → how romp handles new releases at boot
         elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
             # a cleared card drops any composer citation chip pointing INTO it (the user 2026-07-01) — the
             # goal is gone, so following up on it makes no sense. Chips can cite a SUB-goal of the card
@@ -21607,6 +21856,8 @@ def main():
     threading.Thread(target=_parent_watch, daemon=True).start()
     _known_load()                                              # remembered past hosts (popover's re-attach rows)
     _remotes_load()                                            # re-attach remote kernels from a prior run
+    _consume_update_report()                                   # last self-update's outcome → the Log, once
+    threading.Thread(target=_update_check, daemon=True).start()   # newer release? (mode-gated inside)
     threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
