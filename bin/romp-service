@@ -10,6 +10,9 @@
 # presence-gated (zero model calls when no browser is connected). Runs as a USER-level
 # agent (no root). PATH + ROMP_DIR are baked into the unit so the service finds
 # node / python3 / claude / the romp bins (reinstall after a PATH change to refresh).
+# Secrets the service needs but only login shells have (e.g. ANTHROPIC_API_KEY on an
+# API-key-auth box) go in ~/.config/romp/service.env — read at manager start, never
+# baked into the unit. See SERVICE_ENV_FILE below and docs/reference.md.
 set -euo pipefail
 
 # Resolve the repo root through any symlink (matches the other bin/ consumers).
@@ -41,6 +44,16 @@ NO_LOAD="${ROMP_SERVICE_NO_LOAD:-}"
 LAUNCHCTL="${ROMP_LAUNCHCTL:-launchctl}"
 PLIST="$LAUNCHD_DIR/$LABEL.plist"
 UNIT="$SYSTEMD_DIR/romp-manager.service"
+
+# Extra service environment: plain KEY=VALUE lines loaded when the manager STARTS
+# (not baked at install) — systemd reads the file via EnvironmentFile=-, the macOS
+# login agent's launcher (romp-node-launch) parses it before exec. This is the
+# documented seam for env a login shell has but a service doesn't: on a box where
+# claude auth is env-var-only (no OAuth credentials file), kernel-spawned SDK
+# sessions are silently unauthenticated without ANTHROPIC_API_KEY here. Values are
+# read fresh on every manager (re)start, so rotating one never needs a reinstall.
+# chmod 600 the file; ROMP_SERVICE_ENV_FILE overrides the path (tests).
+SERVICE_ENV_FILE="${ROMP_SERVICE_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/romp/service.env}"
 
 # The instance-scoping env: the variables that say WHICH romp this service supervises.
 # A second OS user on one machine (a kernel handed to another person) shares the machine's
@@ -127,6 +140,7 @@ RestartSec=2
 Environment=PATH=$PATH
 Environment=ROMP_DIR=$ROMP_DIR
 Environment=ROMP_SUPERVISED=1
+EnvironmentFile=-$SERVICE_ENV_FILE
 ${_unit_env}
 [Install]
 WantedBy=default.target
@@ -221,6 +235,8 @@ case "${1:-status}" in
         fi
         echo "  Installed launchd agent: $PLIST"
         echo "  romp-manager now auto-starts at login — just open the browser."
+        echo "  Extra service env (e.g. ANTHROPIC_API_KEY): $SERVICE_ENV_FILE"
+        echo "      KEY=VALUE lines, chmod 600, picked up at manager (re)start."
         if [[ -x "$ROMP_NODE" ]]; then
             echo
             echo "  Full Disk Access: grant it to romp's OWN node copy (not plain 'node'):"
@@ -236,7 +252,9 @@ case "${1:-status}" in
             loginctl enable-linger "$(id -un)" 2>/dev/null || true   # survive logout (best-effort)
         fi
         echo "  Installed systemd --user service: $UNIT"
-        echo "  romp-manager now auto-starts at login — just open the browser." ;;
+        echo "  romp-manager now auto-starts at login — just open the browser."
+        echo "  Extra service env (e.g. ANTHROPIC_API_KEY): $SERVICE_ENV_FILE"
+        echo "      KEY=VALUE lines, chmod 600, picked up at manager (re)start." ;;
       *) echo "romp-service: unsupported OS '$os'" >&2; exit 1 ;;
     esac ;;
   uninstall)

@@ -203,6 +203,27 @@ Run `romp-service install` again after changing one. The service unit bakes in
 whatever is set at install time, so a renumbered port that only lives in your
 shell leaves the supervised manager on the old one, and the two collide.
 
+### Service environment (secrets)
+
+The manager runs as a login service (launchd on macOS, systemd --user on
+Linux), so it never sees variables your shell rc exports — a terminal having
+`ANTHROPIC_API_KEY` does nothing for the sessions the kernel spawns. On a
+machine where Claude authenticates through an OAuth login this gap is
+invisible (the credentials live in a file any process can read); on an
+API-key-only machine it means SDK sessions come up unauthenticated while
+`claude` in your terminal works fine.
+
+Env like that goes in `~/.config/romp/service.env` — plain `KEY=VALUE` lines,
+`chmod 600`:
+
+    ANTHROPIC_API_KEY=sk-ant-...
+
+Unlike the ports above it is NOT baked at install: it is read each time the
+manager starts (the systemd unit via `EnvironmentFile=-`, the macOS login
+agent's launcher by parsing it — line by line, never sourced, so a malformed
+line is skipped rather than executed). Rotate a value by editing the file and
+restarting the manager (`romp-service install`); a missing file is a no-op.
+
 ## Where things live
 
 State is written under `${XDG_STATE_HOME:-~/.local/state}/romp/`. Transcripts

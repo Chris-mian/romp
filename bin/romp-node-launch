@@ -45,6 +45,22 @@ if [ -n "$sys_node" ]; then
     fi
 fi
 
+# Extra service environment (parity with the systemd unit's EnvironmentFile=-):
+# plain KEY=VALUE lines exported to the manager, so env a login shell has but
+# launchd doesn't (e.g. ANTHROPIC_API_KEY where claude auth is env-var-only)
+# reaches kernel-spawned sessions. Parsed line-by-line, never sourced: a
+# malformed line is skipped instead of executing code or (under set -eu)
+# taking the manager — and the whole kernel — down with it.
+ENV_FILE="${ROMP_SERVICE_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/romp/service.env}"
+if [ -f "$ENV_FILE" ]; then
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ''|'#'*) ;;
+            [A-Za-z_]*=*) export "$_line" 2>/dev/null || true ;;
+        esac
+    done < "$ENV_FILE"
+fi
+
 # Prefer the labeled copy; fall back to the system node so a bad/missing copy
 # never blocks startup.
 if [ -x "$ROMP_NODE" ]; then
