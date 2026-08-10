@@ -1608,9 +1608,10 @@ def _set_auto_nudge(enabled):
 #          keeps a failing update from looping on every restart — that stall is logged, not silent).
 #   off  — never even checks.
 # The update itself (_run_update) runs DETACHED (start_new_session: install.sh reloads the manager
-# and the restart takes this kernel down, and the child must outlive both): `git pull --ff-only`,
-# then ./install.sh, everything appended to update.log under STATE, a report written to
-# update-report.json, and a restart through the manager door ONLY on success. The outcome is never
+# and the restart takes this kernel down, and the child must outlive both): fetch the tag, then
+# `git merge --ff-only <tag>` — the tree lands EXACTLY on the release commit, never the branch tip
+# (the user 2026-08-09) — then ./install.sh, everything appended to update.log under STATE, a
+# report written to update-report.json, and a restart through the manager door ONLY on success. The outcome is never
 # silent (fail loudly): the next boot — or the still-running kernel, via /update-check's poll —
 # consumes the report into a sync notice, the Log's standing record of what romp did to your
 # machines. `romp update [host]` remains the other direction (pushing THIS build to remotes).
@@ -1659,9 +1660,14 @@ def _latest_release_tag():
 
 
 def _run_update(tag):
-    """Start the self-update: pull + install + report (+ restart on success), in a DETACHED child.
-    Returns True when the child was launched. The tag has passed _semver before it gets here; the
-    guard repeats anyway because the string lands inside a shell script."""
+    """Start the self-update: fetch the tag, fast-forward EXACTLY onto it, install, report (+ restart
+    on success), in a DETACHED child. Returns True when the child was launched. The tree lands on the
+    RELEASE COMMIT, never the branch tip (the user 2026-08-09: a pull took whatever main had gained
+    since the tag — an update to v0.7.0 must mean running v0.7.0): the tag is fetched by explicit
+    refspec and merged --ff-only, so the current branch moves precisely to the tagged commit, a tag
+    already behind HEAD is a no-op, and a diverged tree fails loudly instead of guessing. The tag has
+    passed _semver before it gets here; the guard repeats anyway because the string lands inside a
+    shell script."""
     if not _semver(tag) or _UPDATE_STATE[0] == "running":
         return False
     _UPDATE_STATE[0] = "running"
@@ -1674,11 +1680,13 @@ def _run_update(tag):
     script = (
         "cd %s || exit 1\n" % q(str(ROOT))
         + "{ echo; echo \"== romp self-update to %s ==\"; date; } >> %s 2>&1\n" % (tag, log)
-        + "if git pull --ff-only >> %s 2>&1 && ./install.sh >> %s 2>&1; then\n" % (log, log)
+        + "if git fetch origin refs/tags/%s:refs/tags/%s >> %s 2>&1 && git merge --ff-only %s >> %s 2>&1 "
+          "&& ./install.sh >> %s 2>&1; then\n" % (tag, tag, log, tag, log, log)
         + "  printf '%%s' %s > %s\n" % (q(json.dumps(ok_rep)), rep)
         + restart
         + "else\n"
-        + "  printf '%%s' %s > %s\n" % (q(json.dumps({"ok": False, "tag": tag, "why": "the pull or install failed"})), rep)
+        + "  printf '%%s' %s > %s\n" % (q(json.dumps({"ok": False, "tag": tag,
+                                                      "why": "the fetch, fast-forward or install failed"})), rep)
         + "fi\n")
     subprocess.Popen(["bash", "-c", script], start_new_session=True, cwd=str(ROOT),
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
