@@ -977,21 +977,42 @@ def list_regs(state_dir: Path) -> list[dict]:
 # Stored OUTSIDE sdk/ so list_regs' sdk/*.json glob never mistakes it for a session.
 # ---------------------------------------------------------------------------
 
-ULTRACODE_SETTINGS = "sdk-ultracode.json"   # the --settings payload for sessions whose effort is "ultracode"
+FLAG_SETTINGS_DIR = "sdk-flag-settings"   # per-session --settings payloads, one file per sid
 
 
-def ultracode_settings_path(state_dir) -> str:
+def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bool = False) -> str:
     """The settings file handed to the CLI (options.settings — the flag-settings layer, the CLI's
-    documented per-session hook for the `ultracode` key) when a session's effort is "ultracode". The
-    SDK's typed EffortLevel has no such value: ultracode IS xhigh plus standing dynamic-workflow
-    orchestration, so the typed field carries "xhigh" and this key switches the orchestration on.
-    Rewritten on every use (constant content, atomic enough for a one-key file)."""
-    p = os.path.join(str(state_dir), ULTRACODE_SETTINGS)
+    documented per-session hook for keys the SDK has no typed field for). Returns "" when a session
+    needs none, which is the common case.
+
+    Two keys ride here, both per-session:
+    - `ultracode`: the SDK's typed EffortLevel has no such value — ultracode IS xhigh plus standing
+      dynamic-workflow orchestration, so the typed field carries "xhigh" and this key switches the
+      orchestration on.
+    - `fastMode`: the CLI REFUSES fast mode to any non-interactive client ("Fast mode is not available
+      in the Agent SDK") unless this exact key is true in the flag-settings layer — that check is the
+      host's designed opt-in, not a loophole (verified against claude 2.1.224 on 2026-08-07: with the
+      key, a headless run reports fast_mode_state "on"; without it, "off" with the disabled reason
+      "sdk_opt_in_required").
+
+    One file PER SESSION (not the single shared file the ultracode key used to get): the content now
+    varies by session, so a shared file would hand one session's fast mode to every other one. Rewritten
+    on every use — a couple of boolean keys, atomic enough."""
+    keys = {}
+    if ultracode:
+        keys["ultracode"] = True
+    if fast:
+        keys["fastMode"] = True
+    if not keys:
+        return ""
+    d = os.path.join(str(state_dir), FLAG_SETTINGS_DIR)
+    p = os.path.join(d, "%s.json" % sid)
     try:
+        os.makedirs(d, exist_ok=True)
         with open(p, "w") as f:
-            f.write('{"ultracode": true}\n')
+            f.write(json.dumps(keys) + "\n")
     except OSError:
-        pass
+        return ""     # no settings file → the session still launches, just without these keys
     return p
 
 
@@ -1142,6 +1163,20 @@ class SdkSession:
         #   by fast_mode_state on every init, so a refused toggle can't stick past the next connect.
         self.fast_reason = ""   # the init's fast_mode_disabled_reason — non-empty means /fast would refuse
         #   (org-gated / unsupported), so the chat hides the toggle instead of offering a dead control.
+        self.fast_opt = bool(reg.get("fast"))   # the user's PERSISTED fast-mode ask (the reg's `fast`).
+        #   The CLI refuses /fast to a non-interactive client unless the connect carried the `fastMode`
+        #   flag-settings opt-in, so this drives that key in _options at every connect. Per-session on
+        #   purpose: fast mode draws credits at a higher rate, so it is never a remembered default.
+        self._fast_unlocked = False   # whether THIS connection was made with the opt-in flag — the
+        #   per-CONNECTION snapshot of fast_opt, taken where _connect_once builds options and never
+        #   persisted. Only an unlocked connection accepts literal '/fast on|off' sends; without the
+        #   flag the CLI refuses them, so set_fast reconnects instead.
+        self._fast_expect = ""   # one-shot: the word a literal '/fast' send asked for. The toggle's own
+        #   turn opens with an init whose fast_mode_state is the state at turn START — one word stale,
+        #   since the toggle applies after it — and taking it verbatim stomps the optimistic flip until
+        #   the NEXT turn's init (the badge reads off for a whole turn right after the CLI acknowledged
+        #   the toggle). The init re-sync lets that single stale word yield to this; the next init wins
+        #   unconditionally.
         self.api_key_auth = False   # THIS session's init said it authenticates with an API key — a
         #   PER-SESSION fact (the user 2026-08-08: one keyed session must not speak for the login's
         #   windows). Gates this session's get_usage polls + its RateLimitEvent records; set by
@@ -1665,6 +1700,13 @@ class SdkSession:
                 self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
             opts = self.backend._options(self, ClaudeAgentOptions)
+            # Whether THIS connection carries the fastMode opt-in — snapshotted at the same moment
+            # _options composes the flag-settings file, so the two can never disagree. The CLI only
+            # interprets literal '/fast on|off' sends on a connection made with the flag; set_fast
+            # reads this to choose between the live send and an applying reconnect.
+            self._fast_unlocked = self.fast_opt
+            self._fast_expect = ""   # a fresh connection's first init speaks for the flag, not for any
+            #   toggle sent on the old one — never hold a pre-reconnect expectation against it
             connected = False
             try:
                 async with ClaudeSDKClient(options=opts) as client:
@@ -1868,6 +1910,12 @@ class SdkSession:
             # set_fast's optimistic flip. Absent field (older CLI) → stay unknown, never fabricate "off".
             fast = d.get("fast_mode_state")
             if isinstance(fast, str) and fast:
+                # …except the one init opened by a literal /fast send itself, whose word predates the
+                # toggle it carries. A disabled_reason is real refusal evidence, so it always wins.
+                if self._fast_expect and fast != self._fast_expect \
+                        and not d.get("fast_mode_disabled_reason"):
+                    fast = self._fast_expect
+                self._fast_expect = ""
                 self.fast = fast
                 self.fast_reason = str(d.get("fast_mode_disabled_reason") or "")
             # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
@@ -3140,8 +3188,12 @@ class SdkBackend:
                       % sess.name)
         if self.mcp_config:
             kw["mcp_servers"] = self.mcp_config
-        if (sess.effort or "") == "ultracode":
-            kw["settings"] = ultracode_settings_path(self.state_dir)   # the `ultracode` settings key, per session
+        # The flag-settings layer carries the two keys the SDK has no typed field for — ultracode
+        # (effort) and fastMode. Both are connect-time, which is why changing either reconnects.
+        fs = flag_settings_path(self.state_dir, sess.sid,
+                                ultracode=(sess.effort or "") == "ultracode", fast=sess.fast_opt)
+        if fs:
+            kw["settings"] = fs
         # Per-session auth (the user 2026-08-08): the work key was claimed OUT of this process's env at
         # startup (work_api_key), so a login session's CLI inherits a clean environment and finds the
         # login on its own; a key session gets the key injected here, explicitly. options.env merges
@@ -3636,23 +3688,45 @@ class SdkBackend:
         return True
 
     def set_fast(self, sid: str, value: str) -> bool:
-        """Toggle fast mode by delivering the literal '/fast on|off' text through the normal send path.
-        Unlike /model (which the SDK input stream does not interpret — see set_model), the CLI's /fast
-        descriptor is marked supportsNonInteractive, so the stream-json input DOES run it: the send's
-        echo gives the chat its command chip, and the CLI answers with its own confirmation line
-        ("Fast mode ON …" — including the model switch it performs when the session isn't on a
-        fast-capable model). The flip here is optimistic for the badge; fast_mode_state on the next
-        init re-asserts the truth, and a refusal (cooldown, org-disabled) is visible as the CLI's own
-        reply. Dormant sessions refuse — fast mode lives in the CLI's own settings, so there is nothing
-        to apply until a client is running (the kernel warns instead of pretending)."""
+        """Toggle fast mode ('on'|'off'). The CLI's /fast descriptor is marked supportsNonInteractive,
+        so the SDK input stream DOES interpret the literal '/fast on|off' text (unlike /model — see
+        set_model) — but only on a connection made with the `fastMode` flag-settings opt-in; without
+        it the CLI refuses the command outright ("Fast mode is not available in the Agent SDK",
+        verified against claude 2.1.224). So this is a hybrid:
+
+        - The reg's `fast` mirrors EVERY toggle first — the persisted ask that drives the connect-time
+          opt-in (_options → flag_settings_path), so a lingering flag on a session the user turned off
+          is impossible, and a dormant session applies the pick at its next connect. Deliberately NOT
+          write_sdk_default: fast mode draws credits at a higher rate and carries its own rate limits,
+          so it stays per-session rather than quietly spreading to every new session.
+        - A connection made WITH the flag (_fast_unlocked) takes the literal send in both directions:
+          the send's echo is the chat's acknowledgement, the flip here is optimistic for the badge,
+          and fast_mode_state on the next init re-asserts the truth.
+        - A connection made WITHOUT the flag can't take the send, but 'off' needs none (fast mode is
+          already off there) and 'on' reconnects — the flag applies at the (re)connect, immediately
+          if idle, at the end of the current turn if busy (request_reconnect, the /effort machinery)."""
         if value not in ("on", "off"):
             return False
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return False
+        reg["fast"] = (value == "on")
+        write_reg(self.state_dir, sid, reg)
         s = self.sessions.get(sid)
         if not s or not s.thread.is_alive():
-            return False
-        if not self.send(sid, "/fast " + value):
-            return False
-        s.fast = value
+            return True                        # dormant: the persisted ask applies at the next connect
+        s.fast_opt = (value == "on")
+        if s._fast_unlocked:                   # opted in at connect → the CLI interprets the literal send
+            if not self.send(sid, "/fast " + value):
+                return False
+            s.fast = value
+            s._fast_expect = value             # the send's own turn-init is one word stale; let it yield
+            self._wake_push()
+            return True
+        if value == "off":                     # no flag at connect → fast mode is already off; nothing to send
+            return True
+        s.request_reconnect()                  # first opt-in: the flag applies at the (re)connect
+        s.fast = "on"                          # optimistic for the badge; init re-asserts the truth
         self._wake_push()
         return True
 

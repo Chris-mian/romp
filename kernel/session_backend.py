@@ -117,10 +117,10 @@ class SessionBackend(ABC):
 
     @abstractmethod
     def set_fast(self, sid: str, value: str) -> bool:
-        """Toggle fast mode (value 'on'|'off') — the CLI's /fast command, which its descriptor marks as
-        supported non-interactively, so BOTH backends deliver it as the literal '/fast on|off' text (the
-        SDK input stream interprets it, unlike /model). False when it can't be delivered (dormant SDK
-        session, bad value) so the kernel can be loud instead of pretending."""
+        """Toggle fast mode (value 'on'|'off'). tmux delivers the literal '/fast on|off' text into the
+        pane; the SDK opts in at connect (the `fastMode` flag-settings key) and takes the literal text
+        only on a connection made with that flag — see SdkBackend.set_fast for the hybrid. False when
+        it can't be applied (bad value, unknown sid) so the kernel can be loud instead of pretending."""
 
     def set_auth(self, sid: str, value: str) -> bool:
         """Pick which account this session bills — 'login' (the machine's Claude login) or 'key' (the
