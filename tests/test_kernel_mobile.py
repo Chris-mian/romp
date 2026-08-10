@@ -166,9 +166,9 @@ class LandingShell(unittest.TestCase):
         # (the user 2026-06-23; + boot-splash + rail-usage 2026-06-26; + connection-status banner
         # 2026-06-27; + the visible-viewport pin; + the remote-drift banner 2026-07-04; + the head's
         # ios-standalone viewport flip and the push bell 2026-08-07, plans/ios-app.md; + the shared
-        # Escape-closes-the-topmost-modal block 2026-08-09).
+        # Escape-closes-the-topmost-modal block 2026-08-09; + the release-update banner 2026-08-09).
         html = km._landing()
-        self.assertEqual(html.count("<script>"), 15)
+        self.assertEqual(html.count("<script>"), 16)
 
     def test_bottom_bar_is_text_only_and_compact(self):
         html = km._landing()

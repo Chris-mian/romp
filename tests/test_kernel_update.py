@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""Automatic updates of THIS machine (the user 2026-08-09): at kernel boot, one async check reads
+origin's newest release tag (git ls-remote — the remote's own refs, never the local tag list) and
+compares it against the VERSION-file release. Modes (update-mode.json, default "ask" — ON out of
+the box): ask = the shell's update banner offers it; auto = the kernel updates itself once per
+discovered version; off = never checks. The update runs DETACHED (git pull --ff-only + install.sh,
+report to update-report.json, restart through the manager door only on success), and the outcome is
+always filed as a sync notice — by the next boot, or by /update-check's poll on the still-running
+kernel (fail loudly, never silent). Synthetic tags/paths only."""
+import io
+import json
+import os
+import subprocess
+import tempfile
+import threading
+import unittest
+from unittest import mock
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+# Raw-run belt over conftest's suspenders — via the ENVIRONMENT, not a module attribute: loading the
+# kernel re-executes romp_judge into the same module object, which RESETS a hand-assigned jd.STATE
+# back to the env-derived default (verified 2026-08-09 — the webpush test's attribute rebind only
+# holds under pytest because conftest moves XDG_STATE_HOME first). ROMP_STATE_DIR is the designed
+# override and is read on every (re)execution, so it protects a bare `python3 tests/...` run too.
+# Scoped to the loads and RESTORED right after (the modules capture STATE at exec): left set, it
+# outranks conftest's XDG_STATE_HOME for every test module pytest imports after this one — which is
+# exactly how this file's first cut broke two postal-bus tests three modules downstream.
+_STATE_TD = tempfile.TemporaryDirectory()
+_PREV_STATE_DIR = os.environ.get("ROMP_STATE_DIR")
+os.environ["ROMP_STATE_DIR"] = _STATE_TD.name
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
+SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
+jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+km = SourceFileLoader("romp_kernel_update", os.path.join(BIN, "romp-kernel")).load_module()
+if _PREV_STATE_DIR is None:
+    os.environ.pop("ROMP_STATE_DIR", None)
+else:
+    os.environ["ROMP_STATE_DIR"] = _PREV_STATE_DIR
+
+
+def _serve_get(path, headers=None):
+    """The real do_GET over a fake socket (the webpush-test harness): (status, body_bytes)."""
+    h = km.Handler.__new__(km.Handler)
+    h.client_address = ("127.0.0.1", 0)
+    h.headers = dict(headers or {})
+    h.path = path
+    h.command = "GET"
+    h.request_version = "HTTP/1.1"
+    h.wfile = io.BytesIO()
+    h.rfile = io.BytesIO()
+    h.close_connection = True
+    captured = {}
+    h.send_response = lambda code, *a: captured.__setitem__("status", code)
+    h.send_header = lambda k, v: None
+    h.end_headers = lambda: None
+    h.log_message = lambda *a: None
+    h.do_GET()
+    return captured.get("status"), h.wfile.getvalue()
+
+
+class Fresh(unittest.TestCase):
+    """Every test starts with no update state: fresh STATE dir, empty avail/latch, empty notices."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = Path(self.td.name)
+        km._UPDATE_AVAIL[0] = ""
+        km._UPDATE_STATE[0] = ""
+        with km._SYNC_LOCK:
+            del km._SYNC_NOTICES[:]
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        self.td.cleanup()
+
+    def notices(self):
+        with km._SYNC_LOCK:
+            return list(km._SYNC_NOTICES)
+
+
+class Semver(unittest.TestCase):
+    def test_parses_plain_releases_only(self):
+        self.assertEqual(km._semver("v0.6.0"), (0, 6, 0))
+        self.assertEqual(km._semver("1.12.3"), (1, 12, 3))
+        for junk in ("", None, "v1.2", "v1.2.3-rc1", "release", "v1.2.3.4", "v1.2.x"):
+            self.assertIsNone(km._semver(junk), junk)
+
+    def test_orders_numerically_not_lexically(self):
+        self.assertGreater(km._semver("v0.10.0"), km._semver("v0.9.9"))
+
+
+class ModeStore(Fresh):
+    def test_default_is_ask_the_check_is_on_out_of_the_box(self):
+        self.assertEqual(km._update_mode(), "ask")
+
+    def test_set_and_persist(self):
+        km._set_update_mode("auto")
+        self.assertEqual(km._update_mode(), "auto")
+        km._set_update_mode("off")
+        self.assertEqual(km._update_mode(), "off")
+
+    def test_garbage_is_refused_at_both_ends(self):
+        km._set_update_mode("yes please")               # setter drops it
+        self.assertEqual(km._update_mode(), "ask")
+        (jd.STATE / "update-mode.json").write_text(json.dumps({"mode": "banana"}))
+        self.assertEqual(km._update_mode(), "ask", "an unknown stored mode reads as the default")
+
+
+class LatestReleaseTag(unittest.TestCase):
+    def _ls(self, stdout, rc=0, stderr=""):
+        return mock.patch.object(km.subprocess, "run", return_value=subprocess.CompletedProcess(
+            args=[], returncode=rc, stdout=stdout, stderr=stderr))
+
+    def test_picks_the_numerically_newest_real_release(self):
+        out = ("aaa\trefs/tags/v0.9.9\n"
+               "bbb\trefs/tags/v0.10.0\n"
+               "ccc\trefs/tags/v0.10.0^{}\n"          # peeled duplicate of the annotated tag
+               "ddd\trefs/tags/nightly\n"             # not a release number
+               "eee\trefs/tags/v0.2.0\n")
+        with self._ls(out):
+            self.assertEqual(km._latest_release_tag(), "v0.10.0")
+
+    def test_no_release_tags_is_empty_not_an_error(self):
+        with self._ls("aaa\trefs/tags/nightly\n"):
+            self.assertEqual(km._latest_release_tag(), "")
+
+    def test_git_failure_raises_so_the_caller_can_say_so(self):
+        with self._ls("", rc=128, stderr="fatal: could not read from remote"):
+            with self.assertRaises(RuntimeError):
+                km._latest_release_tag()
+
+
+class UpdateCheck(Fresh):
+    def test_mode_off_never_even_asks_the_network(self):
+        km._set_update_mode("off")
+        with mock.patch.object(km, "_latest_release_tag", side_effect=AssertionError("must not run")):
+            km._update_check()
+        self.assertEqual(km._UPDATE_AVAIL[0], "")
+
+    def test_newer_release_in_ask_mode_raises_the_banner_on_every_shell(self):
+        sent = []
+        with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0+"), \
+             mock.patch.object(km, "_latest_release_tag", return_value="v0.7.0"), \
+             mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append((app, m))):
+            km._update_check()
+        self.assertEqual(km._UPDATE_AVAIL[0], "v0.7.0")
+        self.assertEqual(sent, [("shell", {"type": "updateAvail", "cur": "v0.6.0+", "tag": "v0.7.0"})])
+
+    def test_same_or_older_release_is_silence(self):
+        sent = []
+        for latest in ("v0.6.0", "v0.5.9", ""):
+            with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0"), \
+                 mock.patch.object(km, "_latest_release_tag", return_value=latest), \
+                 mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append(m)):
+                km._update_check()
+        self.assertEqual((km._UPDATE_AVAIL[0], sent), ("", []))
+
+    def test_no_local_release_number_means_nothing_to_compare(self):
+        with mock.patch.object(km, "_kernel_ver", return_value=None), \
+             mock.patch.object(km, "_latest_release_tag", side_effect=AssertionError("must not run")):
+            km._update_check()                        # no raise — the check just stands down
+
+    def test_network_failure_is_a_stderr_note_never_a_crash(self):
+        with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0"), \
+             mock.patch.object(km, "_latest_release_tag", side_effect=RuntimeError("no route to host")):
+            km._update_check()
+        self.assertEqual(km._UPDATE_AVAIL[0], "")
+
+    def test_auto_mode_updates_once_per_discovered_version(self):
+        ran = []
+        with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0"), \
+             mock.patch.object(km, "_latest_release_tag", return_value="v0.7.0"), \
+             mock.patch.object(km, "_run_update", side_effect=lambda tag: ran.append(tag) or True), \
+             mock.patch.object(km, "_send_to_app"):
+            km._set_update_mode("auto")
+            km._update_check()
+            self.assertEqual(ran, ["v0.7.0"])
+            self.assertEqual(json.loads((jd.STATE / "update-attempted.json").read_text())["tag"], "v0.7.0")
+            # a SECOND boot finding the same version does not loop the failed attempt — it says so
+            # in the Log and falls back to offering the banner
+            km._update_check()
+        self.assertEqual(ran, ["v0.7.0"], "one automatic attempt per version")
+        self.assertTrue(any(not n["ok"] and "v0.7.0" in n["text"] for n in self.notices()))
+
+
+class RunUpdate(Fresh):
+    def test_detached_child_pulls_installs_reports_and_restarts_only_on_success(self):
+        calls = []
+        with mock.patch.object(km.subprocess, "Popen", side_effect=lambda *a, **kw: calls.append((a, kw))), \
+             mock.patch.dict(km.os.environ, {"ROMP_MANAGER_PORT": "7777"}):
+            self.assertTrue(km._run_update("v0.7.0"))
+        (a, kw), = calls
+        self.assertEqual(a[0][:2], ["bash", "-c"])
+        self.assertTrue(kw.get("start_new_session"), "install.sh + the restart take the kernel down — the child must outlive it")
+        script = a[0][2]
+        self.assertIn("git pull --ff-only", script)
+        self.assertIn("./install.sh", script)
+        self.assertIn("update-report.json", script)
+        # the restart rides the SUCCESS branch only: everything after `if` up to `else` has it,
+        # the failure branch does not
+        ok_branch, fail_branch = script.split("else\n", 1)
+        self.assertIn("/restart-all", ok_branch)
+        self.assertNotIn("/restart-all", fail_branch)
+        self.assertEqual(km._UPDATE_STATE[0], "running")
+
+    def test_no_manager_means_no_restart_leg(self):
+        calls = []
+        env = {k: v for k, v in km.os.environ.items() if k != "ROMP_MANAGER_PORT"}
+        with mock.patch.object(km.subprocess, "Popen", side_effect=lambda *a, **kw: calls.append(a)), \
+             mock.patch.dict(km.os.environ, env, clear=True):
+            self.assertTrue(km._run_update("v0.7.0"))
+        self.assertNotIn("/restart-all", calls[0][0][2])
+
+    def test_refuses_junk_tags_and_reentry(self):
+        with mock.patch.object(km.subprocess, "Popen", side_effect=AssertionError("must not spawn")):
+            self.assertFalse(km._run_update("v1; rm -rf /"), "a tag is shell payload — semver or nothing")
+        with mock.patch.object(km.subprocess, "Popen"):
+            self.assertTrue(km._run_update("v0.7.0"))
+            self.assertFalse(km._run_update("v0.7.0"), "one update at a time")
+
+
+class ReportConsumption(Fresh):
+    def test_success_with_restart_files_once_and_archives(self):
+        (jd.STATE / "update-report.json").write_text(json.dumps({"ok": True, "tag": "v0.7.0", "restarted": True}))
+        rep = km._consume_update_report()
+        self.assertTrue(rep["ok"])
+        ns = self.notices()
+        self.assertEqual(len(ns), 1)
+        self.assertTrue(ns[0]["ok"])
+        self.assertIn("v0.7.0", ns[0]["text"])
+        self.assertFalse((jd.STATE / "update-report.json").exists(), "consumed — never re-filed")
+        self.assertTrue((jd.STATE / "update-report-last.json").exists())
+        self.assertIsNone(km._consume_update_report(), "second boot: nothing left to file")
+
+    def test_failure_is_a_loud_not_ok_notice(self):
+        (jd.STATE / "update-report.json").write_text(json.dumps({"ok": False, "tag": "v0.7.0",
+                                                                 "why": "the pull or install failed"}))
+        km._consume_update_report()
+        ns = self.notices()
+        self.assertEqual(len(ns), 1)
+        self.assertFalse(ns[0]["ok"])
+        self.assertIn("update.log", ns[0]["text"])
+
+    def test_running_only_clears_the_inflight_latch(self):
+        km._UPDATE_STATE[0] = "running"
+        (jd.STATE / "update-report.json").write_text(json.dumps({"ok": False, "tag": "v0.7.0"}))
+        km._consume_update_report(running_only=True)
+        self.assertEqual(km._UPDATE_STATE[0], "")
+
+
+class Routes(Fresh):
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def _post(self, path, token=True):
+        import urllib.request, urllib.error
+        headers = {"X-Romp-Token": km.TOKEN} if token else {}
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method="POST",
+                                     data=b"{}", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def test_update_check_is_gated_and_reports_the_state(self):
+        status, _ = _serve_get("/update-check")
+        self.assertEqual(status, 403)
+        km._UPDATE_AVAIL[0] = "v0.7.0"
+        status, body = _serve_get("/update-check", headers={"X-Romp-Token": km.TOKEN})
+        d = json.loads(body)
+        self.assertEqual((status, d["tag"], d["mode"], d["state"]), (200, "v0.7.0", "ask", ""))
+        self.assertEqual(d["boot"], km._BOOT_ID, "the banner detects the NEW kernel by this flipping")
+
+    def test_update_check_poll_consumes_a_failed_report_mid_run(self):
+        km._UPDATE_STATE[0] = "running"
+        (jd.STATE / "update-report.json").write_text(json.dumps({"ok": False, "tag": "v0.7.0",
+                                                                 "why": "the pull or install failed"}))
+        _, body = _serve_get("/update-check", headers={"X-Romp-Token": km.TOKEN})
+        d = json.loads(body)
+        self.assertEqual((d["failed"], d["state"]), ("the pull or install failed", ""))
+        self.assertTrue(any(not n["ok"] for n in self.notices()), "the failure reached the Log too")
+
+    def test_a_success_headed_for_restart_is_left_for_the_next_boot(self):
+        # consuming it mid-run would file the notice into THIS dying kernel's in-memory ring — the
+        # new kernel's boot must find the report and log the success durably
+        km._UPDATE_STATE[0] = "running"
+        (jd.STATE / "update-report.json").write_text(json.dumps({"ok": True, "tag": "v0.7.0",
+                                                                 "restarted": True}))
+        _, body = _serve_get("/update-check", headers={"X-Romp-Token": km.TOKEN})
+        d = json.loads(body)
+        self.assertEqual((d["failed"], d["updated"], d["state"]), ("", "", "running"))
+        self.assertTrue((jd.STATE / "update-report.json").exists(), "not consumed — the next boot files it")
+        self.assertEqual(self.notices(), [])
+
+    def test_post_update_requires_a_known_release_and_the_token(self):
+        code, _ = self._post("/update", token=False)
+        self.assertEqual(code, 403)
+        code, body = self._post("/update")
+        self.assertEqual(code, 409, "no newer release known → nothing to install: " + body)
+        km._UPDATE_AVAIL[0] = "v0.7.0"
+        ran = []
+        with mock.patch.object(km, "_run_update", side_effect=lambda tag: ran.append(tag) or True):
+            code, body = self._post("/update")
+        self.assertEqual((code, ran), (200, ["v0.7.0"]))
+
+
+class Wiring(unittest.TestCase):
+    """Source pins: the check runs at boot, the banner ships on the landing page, the gear posts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = Path(os.path.join(BIN, "romp-kernel")).resolve().read_text()
+        cls.gear = (Path(BIN).parent / "ui" / "webview" / "gear.js").read_text()
+
+    def test_boot_starts_the_check_and_files_the_last_report(self):
+        self.assertIn("threading.Thread(target=_update_check, daemon=True).start()", self.src)
+        self.assertIn("_consume_update_report()                                   # last self-update's outcome", self.src)
+
+    def test_the_landing_ships_the_banner_and_the_shell_relay(self):
+        self.assertIn("_stale_block(v) + _update_block() + _rdrift_block()", self.src)
+        self.assertIn("window.__rompUpdateOffer=offer", self.src)
+        self.assertIn("m.type==='updateAvail'&&window.__rompUpdateOffer", self.src)
+
+    def test_the_gear_offers_the_three_modes_and_posts_the_pick(self):
+        self.assertIn("id=rs-updates", self.gear)
+        for opt in ("value=ask", "value=auto", "value=off"):
+            self.assertIn(opt, self.gear)
+        self.assertIn("post({ type: 'setUpdateMode', mode: upm.value })", self.gear)
+        self.assertIn("upm.value = v.updateMode", self.gear)
+        self.assertIn('msg.get("type") == "setUpdateMode"', self.src)
+
+
+if __name__ == "__main__":
+    unittest.main()
