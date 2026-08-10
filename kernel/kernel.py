@@ -16721,9 +16721,11 @@ def _push(targets, connect=False, tmux=None):
                     _prev_chat_events.pop(sid, None)
                     _prev_chat_ledger.pop(sid, None)
         fsig = _fleet_view_sig(now, tmux) if (want_feed or want_tl) else None
-        feed = _cached_feed(now, tmux, fsig, connect) if want_feed else None
+        feed_src = _cached_feed(now, tmux, fsig, connect) if want_feed else None
+        feed = feed_src
         if feed is not None:
-            feed = dict(feed)                            # copy so the per-push ledger attach never dirties the cache
+            feed = dict(feed_src)                        # copy so the per-push ledger attach never dirties the cache
+            #                                              (feed_src's identity keys the wire cache below)
             # Attach `ledgers` whenever the session build RAN (want_chat or want_fleet) — even as an EMPTY list
             # for a fleet with no sessions — so the fleet can tell "the build ran, here's the data (maybe none)"
             # from "no data yet, still loading" and keep its loader up until real data lands (the user
@@ -16766,23 +16768,40 @@ def _push(targets, connect=False, tmux=None):
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
-    # Serialize the shared payloads ONCE per cycle (the 2026-08-10 CPU fix, round two): feed + bars both
-    # carry volatile top-level keys, so every _send_client used to pay TWO dumps per client per cycle —
-    # the full bytes and the filtered sort_keys dedup sig — even when nothing changed and the send
-    # deduped. One serialization + one sig per cycle now serves every client of that payload.
+    # Serialize the shared payloads once per BUILD, not per cycle (the 2026-08-10 CPU fix, round
+    # three). Round two had brought feed/bars down to one dumps each per cycle — measured on a QUIET
+    # fleet that was still ~357KB (feed) + ~1.65MB (bars) of json.dumps every cycle, ~4MB/s, nearly
+    # all of it discarded by the dedup because nothing had changed. The serialization is now keyed on
+    # the EVENT that can change the bytes: for bars, the cached timeline object's identity (a rebuild
+    # mints a new object; the cache slot holds the ref, so identity is stable and safe) + the warming
+    # flag; for the feed, the cached pre-copy feed object's identity + a DEEP-EQUALITY check on the
+    # per-cycle ledgers attach (rebuilt fresh each cycle around the always-rebuilt active tab, so its
+    # OBJECT is always new but its content only changes when a session's ledger/status genuinely
+    # moved — dict == is C-speed and allocation-free, far cheaper than re-serializing).
+    global _feed_wire, _bars_wire
     feed_ms = feed_sig = bars = bars_ms = bars_sig = None
     for c in targets:
         if c["app"] in ("feed", "fleet"):   # the feed pane AND the Fleet view both ride the feed payload (Fleet reads feed.ledgers)
             if feed_ms is None:
-                feed_ms = json.dumps(feed)
-                feed_sig = _dedup_sig(feed, feed_ms)
+                w = _feed_wire                           # tuple snapshot — rebound whole, never mutated (torn reads)
+                if w is not None and w[0] is feed_src and w[1] == feed.get("ledgers"):
+                    feed, feed_ms, feed_sig = w[2], w[3], w[4]
+                else:
+                    feed_ms = json.dumps(feed)
+                    feed_sig = _dedup_sig(feed, feed_ms)
+                    _feed_wire = (feed_src, feed.get("ledgers"), feed, feed_ms, feed_sig)
             _send_client(c, ("feed",), feed, pre=feed_ms, sig=feed_sig)
         elif c["app"] == "timeline" and timeline is not None:
             if bars_ms is None:
-                bars = {"type": "bars", "turns": timeline["turns"], "judging": timeline["judging"],
-                        "messages": timeline["messages"], "now": timeline["now"], "warming": tl_warming}
-                bars_ms = json.dumps(bars)
-                bars_sig = _dedup_sig(bars, bars_ms)
+                w = _bars_wire
+                if w is not None and w[0] is timeline and w[1] == tl_warming:
+                    bars, bars_ms, bars_sig = w[2], w[3], w[4]
+                else:
+                    bars = {"type": "bars", "turns": timeline["turns"], "judging": timeline["judging"],
+                            "messages": timeline["messages"], "now": timeline["now"], "warming": tl_warming}
+                    bars_ms = json.dumps(bars)
+                    bars_sig = _dedup_sig(bars, bars_ms)
+                    _bars_wire = (timeline, tl_warming, bars, bars_ms, bars_sig)
             _send_client(c, ("timelinebars",), bars, pre=bars_ms, sig=bars_sig)
     with _clients_lock:
         _clients[:] = [c for c in _clients if c.get("alive", True)]
@@ -16908,6 +16927,13 @@ def _producer_sig(browser):
 # reload, an idle tick) reuses the last build instead of rebuilding.
 _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_at, build_started_at]
 _built_timeline = [None, None, 0.0, 0.0]          # [fleet_sig, payload, built_at, build_started_at]
+# Wire-form caches for the two heavy shared payloads (the 2026-08-10 CPU fix, round three): the last
+# (source-identity key, serialized bytes, dedup sig) for the feed and the timeline bars, so an unchanged
+# build is never re-serialized cycle after cycle (~357KB + ~1.65MB per cycle measured on a quiet fleet).
+# TUPLES, rebound whole — a concurrent connect push on a WS thread snapshots the ref and can never see a
+# torn entry; the identity keys stay alive because these tuples (and the build caches above) hold them.
+_feed_wire = None   # (feed_src, ledgers, wire_feed, ms, sig)
+_bars_wire = None   # (timeline, warming, bars, ms, sig)
 # Each build is intrinsically ~1-1.6s (re-segments every session); the IDEAL is a per-session lane/card cache
 # (only the changed session rebuilds), but that's a big refactor of build_feed/build_timeline. Interim cap: a
 # minimum rebuild interval. With an ACTIVE fleet the fleet_sig busts on every push (the watched session keeps

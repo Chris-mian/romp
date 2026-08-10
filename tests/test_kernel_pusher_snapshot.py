@@ -145,6 +145,41 @@ class LazyChatSerialization(unittest.TestCase):
         out2 = km._send_chat(c2, m, out, 3, False)
         self.assertIs(out2, out)
 
+    def test_unchanged_feed_and_bars_reuse_their_wire_form_across_cycles(self):
+        # Round three: with nothing changed, a cycle must not re-serialize the shared payloads at all —
+        # measured on a quiet fleet, the per-cycle dumps were ~357KB (feed) + ~1.65MB (bars), ~4MB/s of
+        # json.dumps discarded by the dedup. The wire caches key on the cached build's identity (+ a
+        # deep-eq on the ledgers attach), so an unchanged second cycle serves the SAME tuple.
+        base = OneSnapshotPerCycle("test_one_cycle_reads_liveness_once_however_deep_the_call")
+        base.setUp()
+        try:
+            km.Sessions.live = lambda: dict(base.row)
+            frames = []
+            with km._clients_lock:
+                km._clients[:] = [
+                    {"app": "chat", "alive": True, "wid": "", "qbytes": 0, "send": lambda s: None},
+                    {"app": "feed", "alive": True, "wid": "", "qbytes": 0, "send": frames.append},
+                    {"app": "timeline", "alive": True, "wid": "", "qbytes": 0, "send": lambda s: None},
+                ]
+            km._feed_wire = km._bars_wire = None
+            km._built_feed[:] = [None, None, 0.0, 0.0]
+            km._built_timeline[:] = [None, None, 0.0, 0.0]
+            km._pusher_cycle()
+            w_feed, w_bars = km._feed_wire, km._bars_wire
+            self.assertIsNotNone(w_feed, "the first cycle serialized the feed once")
+            self.assertIsInstance(w_feed[3], str)
+            n = len(frames)
+            km._pusher_cycle()
+            self.assertIs(km._feed_wire, w_feed, "unchanged feed → the SAME wire tuple, no re-dump")
+            if w_bars is not None:   # bars need a warmed timeline build; when present, same contract
+                self.assertIs(km._bars_wire, w_bars, "unchanged bars → the SAME wire tuple, no re-dump")
+            self.assertEqual(len(frames), n, "…and the deduped client got nothing new")
+        finally:
+            base.tearDown()
+            km._feed_wire = km._bars_wire = None
+            km._built_feed[:] = [None, None, 0.0, 0.0]
+            km._built_timeline[:] = [None, None, 0.0, 0.0]
+
     def test_send_client_honors_a_precomputed_dedup_sig(self):
         # feed/bars carry volatile keys, so _dedup_sig re-dumps the FILTERED payload per call — the
         # pusher now computes it once per cycle and passes it down. Prove the parameter is authoritative:
