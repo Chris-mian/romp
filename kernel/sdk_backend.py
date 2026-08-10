@@ -1917,7 +1917,16 @@ class SdkSession:
                     fast = self._fast_expect
                 self._fast_expect = ""
                 self.fast = fast
-                self.fast_reason = str(d.get("fast_mode_disabled_reason") or "")
+                reason = str(d.get("fast_mode_disabled_reason") or "")
+                # 'sdk_opt_in_required' is NOT a refusal to respect — it is the one refusal romp is
+                # BUILT to cure (set_fast reconnects with the fastMode flag-settings opt-in), and the
+                # CLI stamps it on EVERY connect made without the flag (verified live 2026-08-10 on
+                # 2.1.226: opus/fable/sonnet headless connects all report off + this reason). Keeping
+                # it in fast_reason hid the chat toggle on every SDK session — the control that
+                # GRANTS the opt-in was gated on already having it (the user 2026-08-10, who switched
+                # to Opus and looked for the toggle). Blank it: the badge shows "Fast off" and a
+                # click cures the reason; every OTHER reason still hides the dead control.
+                self.fast_reason = "" if reason == "sdk_opt_in_required" else reason
             # HOW this CLI authenticates (verified live 2026-08-04: 'ANTHROPIC_API_KEY' on API-key auth;
             # the field is absent on a subscription login). An auth flip is the deciding event for the
             # rail's /usage bars — see _note_auth_source.
