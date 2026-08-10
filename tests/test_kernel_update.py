@@ -182,10 +182,70 @@ class UpdateCheck(Fresh):
             self.assertEqual(ran, ["v0.7.0"])
             self.assertEqual(json.loads((jd.STATE / "update-attempted.json").read_text())["tag"], "v0.7.0")
             # a SECOND boot finding the same version does not loop the failed attempt — it says so
-            # in the Log and falls back to offering the banner
+            # in the Log and falls back to offering the banner. (The in-memory discovery is
+            # per-run, so a fresh boot starts empty — modeled by clearing it.)
+            km._UPDATE_AVAIL[0] = ""
             km._update_check()
         self.assertEqual(ran, ["v0.7.0"], "one automatic attempt per version")
         self.assertTrue(any(not n["ok"] and "v0.7.0" in n["text"] for n in self.notices()))
+
+    def test_rediscovering_the_same_release_mid_run_stays_quiet(self):
+        # the 6h re-check re-finds a version for weeks — only a CHANGED discovery is new information
+        sent = []
+        with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0"), \
+             mock.patch.object(km, "_latest_release_tag", return_value="v0.7.0"), \
+             mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append(m)):
+            km._update_check()
+            km._update_check()
+            km._update_check()
+        self.assertEqual(len(sent), 1, "one banner push per discovered version, not one per pass")
+
+    def test_a_newer_release_than_the_announced_one_reoffers(self):
+        sent = []
+        with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0"), \
+             mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append(m)):
+            with mock.patch.object(km, "_latest_release_tag", return_value="v0.7.0"):
+                km._update_check()
+            with mock.patch.object(km, "_latest_release_tag", return_value="v0.8.0"):
+                km._update_check()
+        self.assertEqual([m["tag"] for m in sent], ["v0.7.0", "v0.8.0"])
+        self.assertEqual(km._UPDATE_AVAIL[0], "v0.8.0")
+
+    def test_a_mode_flip_applies_on_the_next_pass_without_a_restart(self):
+        # every pass re-reads the mode: turning the gear setting on mid-run must not need a boot
+        sent = []
+        km._set_update_mode("off")
+        with mock.patch.object(km, "_kernel_ver", return_value="v0.6.0"), \
+             mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append(m)):
+            with mock.patch.object(km, "_latest_release_tag", side_effect=AssertionError("off must not ask")):
+                km._update_check()
+            km._set_update_mode("ask")
+            with mock.patch.object(km, "_latest_release_tag", return_value="v0.7.0"):
+                km._update_check()
+        self.assertEqual([m["tag"] for m in sent], ["v0.7.0"])
+
+
+class CheckLoop(Fresh):
+    def test_one_pass_per_cadence_and_a_crash_never_kills_the_thread(self):
+        passes = []
+        naps = []
+
+        def nap(s):
+            naps.append(s)
+            if len(naps) == 2:
+                raise SystemExit                       # unhook the forever-loop after two rounds
+
+        def one_pass():
+            passes.append(1)
+            if len(passes) == 1:
+                raise RuntimeError("boom")             # the first pass dies — the loop must survive it
+        with mock.patch.object(km, "_update_check", side_effect=one_pass), \
+             mock.patch.object(km.time, "sleep", side_effect=nap), \
+             self.assertRaises(SystemExit):
+            km._update_check_loop()
+        self.assertEqual(len(passes), 2, "the pass after a crashed pass still ran")
+        self.assertEqual(naps, [km._UPDATE_CHECK_EVERY_S] * 2)
+        self.assertEqual(km._UPDATE_CHECK_EVERY_S, 6 * 3600)
 
 
 class RunUpdate(Fresh):
@@ -326,9 +386,17 @@ class Wiring(unittest.TestCase):
         cls.src = Path(os.path.join(BIN, "romp-kernel")).resolve().read_text()
         cls.gear = (Path(BIN).parent / "ui" / "webview" / "gear.js").read_text()
 
-    def test_boot_starts_the_check_and_files_the_last_report(self):
-        self.assertIn("threading.Thread(target=_update_check, daemon=True).start()", self.src)
+    def test_boot_starts_the_check_loop_and_files_the_last_report(self):
+        # the LOOP, not a one-shot: kernels outlive browser tabs by weeks (the user 2026-08-09),
+        # so a boot-only check would almost never fire
+        self.assertIn("threading.Thread(target=_update_check_loop, daemon=True).start()", self.src)
         self.assertIn("_consume_update_report()                                   # last self-update's outcome", self.src)
+
+    def test_the_banner_dismissal_is_per_release(self):
+        # Not-now silences THE dismissed tag; a strictly newer release found by a later pass is
+        # new information and re-offers
+        self.assertIn("if(waiting||tag===dismissedTag)return;", self.src)
+        self.assertIn("dm.onclick=function(){dismissedTag=curTag;", self.src)
 
     def test_the_landing_ships_the_banner_and_the_shell_relay(self):
         self.assertIn("_stale_block(v) + _update_block() + _rdrift_block()", self.src)

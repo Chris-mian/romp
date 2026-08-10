@@ -1714,7 +1714,12 @@ def _consume_update_report(running_only=False):
 
 
 def _update_check():
-    """The boot check (its own daemon thread): learn the newest release, then act per mode."""
+    """ONE check pass: learn the newest release, then act per mode. Runs at boot and then on
+    _update_check_loop's cadence — kernels outlive browser tabs by days or weeks (the user
+    2026-08-09), so a boot-only check would almost never fire. Every pass re-reads the mode, so
+    flipping the gear setting takes effect without a restart. A pass acts only when the discovered
+    version CHANGES (new information): the same release re-found every few hours must not re-raise
+    banners or re-file notices."""
     if _update_mode() == "off":
         return
     cur = _semver((_kernel_ver() or "").rstrip("+"))
@@ -1728,6 +1733,8 @@ def _update_check():
     lv = _semver(latest)
     if not lv or lv <= cur:
         return
+    if latest == _UPDATE_AVAIL[0]:
+        return                                      # already discovered and acted on this kernel run
     _UPDATE_AVAIL[0] = latest
     if _update_mode() == "auto":
         tried = ""
@@ -1747,6 +1754,23 @@ def _update_check():
         _run_update(latest)
     else:
         _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest})
+
+
+# Re-check cadence. This is a POLL by nature, not a heuristic standing in for an event: the repo
+# cannot notify a local kernel that a release landed, so there is no event to key on (the same
+# category as the /tunnels poll). Six hours is far under release frequency and far over the cost
+# of one ls-remote.
+_UPDATE_CHECK_EVERY_S = 6 * 3600
+
+
+def _update_check_loop():
+    """The daemon thread: one pass at boot, then one per cadence, forever."""
+    while True:
+        try:
+            _update_check()
+        except Exception:
+            sys.stderr.write("update check pass: %s\n" % traceback.format_exc())
+        time.sleep(_UPDATE_CHECK_EVERY_S)
 
 
 def _auto_update_remotes_on():
@@ -19236,9 +19260,11 @@ _UPD_HTML = (
 _UPD_JS = (
     "(function(){var box=document.getElementById('rupd');if(!box)return;"
     "var msg=box.querySelector('.rup-msg'),go=document.getElementById('rupd-go'),dm=document.getElementById('rupd-dismiss');"
-    "var dismissed=false,waiting=false,bootNow='';"
+    "var dismissedTag='',curTag='',waiting=false,bootNow='';"
     "function show(m){msg.textContent=m;box.classList.add('show');}"
-    "function offer(cur,tag){if(dismissed||waiting)return;go.hidden=false;go.disabled=false;dm.hidden=false;"
+    # Not-now is PER RELEASE (the periodic re-check re-finds versions for weeks): the dismissed tag
+    # stays quiet, a strictly newer one is new information and re-offers.
+    "function offer(cur,tag){if(waiting||tag===dismissedTag)return;curTag=tag;go.hidden=false;go.disabled=false;dm.hidden=false;"
     "show('romp '+tag+' is available'+(cur?' \\u2014 you are on '+cur:'')+'.');}"
     "window.__rompUpdateOffer=offer;"   # the shell WS relays the kernel's boot-check push here
     "function poll(){fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
@@ -19253,7 +19279,7 @@ _UPD_JS = (
     "if(!r.ok)return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});poll();})"
     "['catch'](function(e){waiting=false;go.disabled=false;dm.hidden=false;"
     "show('Could not start the update: '+((e&&e.message)||e));});};"
-    "dm.onclick=function(){dismissed=true;box.classList.remove('show');};"
+    "dm.onclick=function(){dismissedTag=curTag;box.classList.remove('show');};"
     "fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     "bootNow=(d&&d.boot)||'';"
     "if(d&&d.state==='running'){waiting=true;go.hidden=true;dm.hidden=true;"
@@ -21857,7 +21883,7 @@ def main():
     _known_load()                                              # remembered past hosts (popover's re-attach rows)
     _remotes_load()                                            # re-attach remote kernels from a prior run
     _consume_update_report()                                   # last self-update's outcome → the Log, once
-    threading.Thread(target=_update_check, daemon=True).start()   # newer release? (mode-gated inside)
+    threading.Thread(target=_update_check_loop, daemon=True).start()   # newer release? boot + every 6h (mode-gated inside)
     threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
     threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
