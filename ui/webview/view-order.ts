@@ -16,7 +16,12 @@
 //   view  = the ids this viewer has arranged, in their arranged order
 //   shown = every id the view names, in view order, then everything else in SEED order
 // An empty view is the identity transform, so a viewer who has never dragged sees precisely the old
-// behaviour, and the first drag is what takes ownership.
+// behaviour. Since 2026-08-10 the arrangement is DENSE: a host's own report ADOPTS any id the viewer
+// has never placed by appending it at the end (adoptArrivals below, called from federation's
+// absorbHostReport) — so a NEW session lands at the end of the whole strip, not at the end of its
+// host's block mid-strip, and the placement survives merges and reloads. A drag was already dense
+// (commitTabOrder writes the full rendered order); adoption just stops the never-dragged and
+// stale-arrangement states from re-deriving host-block positions for newcomers.
 //
 // The three surfaces that must agree on this (chat tab strip, timeline lanes, feed grouped mode) read the
 // same key out of the same origin's localStorage, so they cannot drift; federation.ts applies this at all
@@ -66,6 +71,70 @@ export function applyViewOrderTo<T>(rows: readonly T[], view: readonly string[],
     .map((r, i) => ({ r, i, k: rank.has(idOf(r)) ? rank.get(idOf(r))! : Number.MAX_SAFE_INTEGER }))
     .sort((a, b) => (a.k - b.k) || (a.i - b.i))
     .map((x) => x.r);
+}
+
+/** Append every seed id the arrangement has never placed at its END — in seed order among themselves.
+ *  This is what puts a NEW session at the end of the WHOLE strip rather than at the end of its host's
+ *  block mid-strip (the user 2026-08-10: a fresh session's provisional tab rendered last, then the merge
+ *  re-derived host-block order and popped it in front of a remote host's sessions). Adopting writes the
+ *  placement down, so it holds across merges and reloads instead of depending on which hosts happen to
+ *  sit later in the seed. Ids already placed are untouched — this never re-arranges, only appends. */
+export function adoptArrivals(view: readonly string[], seed: readonly string[]): string[] {
+  const have = new Set(view.filter((id) => typeof id === "string"));
+  const out = view.filter((id) => typeof id === "string");
+  for (const id of seed) {
+    if (typeof id === "string" && !have.has(id)) {
+      have.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** Rewrite arrangement ids through `swap` (old id → its heir), keeping their positions: the SLOT follows
+ *  the session, not the fsid. Duplicates that a swap would create keep the first occurrence. */
+export function healOrder(view: readonly string[], swap: ReadonlyMap<string, string>): string[] {
+  if (!swap.size) return view.filter((id) => typeof id === "string");
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of view) {
+    if (typeof id !== "string") continue;
+    const next = swap.get(id) || id;
+    if (!seen.has(next)) {
+      seen.add(next);
+      out.push(next);
+    }
+  }
+  return out;
+}
+
+/** One host's report, diffed against its previous one: which ids were SWAPPED rather than closed+opened.
+ *  A /clear or a relaunch mints a NEW transcript fsid for the SAME logical session, and the kernel's own
+ *  order inherits the old slot by the stable session NAME (`_ordered`, the 2026-06-29 fix). The viewer's
+ *  arrangement must inherit the same way, or the relaunched session would read as brand-new and jump to
+ *  the end of the strip. An id that vanished from the report is matched to an id that appeared in it and
+ *  carries the same display name (first unclaimed wins, mirroring the kernel); no name, no match. SDK
+ *  session ids are stable, so this fires only for the transcript-fsid (tmux) world. */
+export function churnSwaps(
+  prevOrder: readonly string[], prevNames: ReadonlyMap<string, string>,
+  nextOrder: readonly string[], nextNames: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const prevSet = new Set(prevOrder);
+  const nextSet = new Set(nextOrder);
+  const fresh = nextOrder.filter((id) => !prevSet.has(id));
+  const swaps = new Map<string, string>();
+  const claimed = new Set<string>();
+  for (const oldId of prevOrder) {
+    if (nextSet.has(oldId)) continue;
+    const name = prevNames.get(oldId);
+    if (!name) continue;
+    const heir = fresh.find((id) => !claimed.has(id) && nextNames.get(id) === name);
+    if (heir) {
+      claimed.add(heir);
+      swaps.set(oldId, heir);
+    }
+  }
+  return swaps;
 }
 
 /** Drop arrangement entries for sessions that are GONE, and only those.

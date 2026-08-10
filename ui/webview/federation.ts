@@ -11,8 +11,8 @@
 // local kernel is just connection #0 with the empty-string host key, so its messages pass through
 // unprefixed and the single-kernel path is byte-for-byte unchanged.
 
-import { applyViewOrder, applyViewOrderTo, pruneViewOrder, readViewOrder, writeViewOrder,
-         VIEW_ORDER_KEY, VIEW_ORDER_EVENT } from "./view-order";
+import { adoptArrivals, applyViewOrder, applyViewOrderTo, churnSwaps, healOrder, pruneViewOrder,
+         readViewOrder, writeViewOrder, VIEW_ORDER_KEY, VIEW_ORDER_EVENT } from "./view-order";
 import { hostOf, bareId } from "./host-prefix";
 
 export const SEP = ":";
@@ -434,14 +434,14 @@ export class FederationManager {
     // only in other same-origin contexts) and this one through the writer's own CustomEvent. Both land here,
     // and re-emitting all three merged payloads is what moves the tabs, lanes and feed groups together.
     // ...and it RE-EMITS ONLY: reacting to an arrangement by rewriting it is what made a drag fail to
-    // stick. gcView (below) drops ids the reporting hosts no longer list, judged against THIS context's
-    // session lists — so any pane holding a stale list (a dashboard window whose socket died, a surface
-    // that never got the newest session's push) answered another pane's drag by pruning the very tab
-    // that had just moved, and the writer obeyed the write-back. On the audited drag the strip permuted
-    // correctly and reverted in the same second, twice per attempt, so the tab looked like it never
-    // moved at all — and it was always the NEWEST tab, the one a stale list is most likely to be missing
-    // (the user 2026-08-02). A view arrangement is not new information about what exists; only a host's
-    // own report is, so only an inbound tabOrder push may gc (see emitMergedOrder's `gc`).
+    // stick. The old gc-on-emit dropped ids the reporting hosts no longer list, judged against THIS
+    // context's session lists — so any pane holding a stale list (a dashboard window whose socket died, a
+    // surface that never got the newest session's push) answered another pane's drag by pruning the very
+    // tab that had just moved, and the writer obeyed the write-back. On the audited drag the strip
+    // permuted correctly and reverted in the same second, twice per attempt, so the tab looked like it
+    // never moved at all — and it was always the NEWEST tab, the one a stale list is most likely to be
+    // missing (the user 2026-08-02). A view arrangement is not new information about what exists; only a
+    // host's own report is, so only an inbound tabOrder push may touch the store (absorbHostReport).
     const reorder = () => { this.emitMergedOrder(); this.emitMergedFeed(); this.emitMergedTimeline(false); };
     w.addEventListener("storage", (e: StorageEvent) => { if (!e.key || e.key === VIEW_ORDER_KEY) reorder(); });
     w.addEventListener(VIEW_ORDER_EVENT, reorder);
@@ -460,10 +460,13 @@ export class FederationManager {
       (this.perHostSids[host] ||= new Set()).add(m.id);
     }
     if (m && m.type === "tabOrder") {
+      const prevOrder = this.perHostOrder[host] || [];
+      const prevTabs = this.perHostTabs[host] || [];
       this.perHostOrder[host] = Array.isArray(m.order) ? m.order.filter((x: any) => typeof x === "string") : [];
       this.perHostTabs[host] = Array.isArray(m.tabs) ? m.tabs : [];
       this.ensureHost(host);
-      this.emitMergedOrder(true);   // a host just reported its sessions → the one moment gc has fresh evidence
+      this.absorbHostReport(host, prevOrder, prevTabs);   // a host just reported its sessions → the one
+      this.emitMergedOrder();                             //   moment the stored arrangement may be touched
       return;
     }
     if (m && m.type === "feed") {
@@ -528,30 +531,49 @@ export class FederationManager {
     window.dispatchEvent(new MessageEvent("message", { data }));
   }
 
-  // `gc` is the caller's answer to "did a host just tell me what it has?" — true only on an inbound
-  // tabOrder push, which carries a fresh, complete list for that host. Every other caller (a drag
-  // landing here through the storage / CustomEvent path) re-emits without touching the stored
-  // arrangement, so no pane can prune away what another pane just arranged.
-  private emitMergedOrder(gc = false): void {
-    if (gc) this.gcView();
+  // Every caller re-emits WITHOUT touching the stored arrangement — a drag landing here through the
+  // storage / CustomEvent path must never be answered by a rewrite (the 2026-08-02 revert bug: a pane
+  // holding a stale session list pruned the very tab another pane had just moved). Only an inbound
+  // tabOrder push mutates the store, in absorbHostReport below, because only a host's own report is
+  // evidence about what exists.
+  private emitMergedOrder(): void {
     const order = mergeHostOrder(this.perHostOrder, this.hostSeq, this.view());
     const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
     window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs } }));
   }
 
-  // Self-clean the stored arrangement, event-based: a host that has just reported its sessions is telling
-  // us exactly which of its ids still exist, so any of ITS ids missing from that report is gone for good and
-  // can be dropped. A host that is detached or unreachable reports nothing and is left entirely alone —
-  // pruning against a tunnel blip would flatten every remote session's placement and stack them all at the
-  // end of the strip when the host came back. Rewritten only when it actually changes.
-  private gcView(): void {
+  // Fold a host's OWN report — the one moment with fresh evidence about what exists — into the stored
+  // arrangement, in three steps, one conditional write:
+  // 1. HEAL fsid churn: a /clear or relaunch mints a new transcript fsid for the SAME logical session,
+  //    and the kernel's own list inherits the old slot by the stable session NAME (`_ordered`, the
+  //    2026-06-29 fix). The arrangement inherits the same way (churnSwaps matches vanished→appeared ids
+  //    by display name within this host's report), or the relaunched session would read as brand-new.
+  // 2. PRUNE ids the reporting hosts no longer list (the old gcView rule, unchanged): event-based, never
+  //    aged out. A detached / unreachable host reports nothing and its ids are left entirely alone —
+  //    pruning against a tunnel blip would flatten every remote session's placement and stack them all
+  //    at the end of the strip when the host came back.
+  // 3. ADOPT arrivals: every id the viewer has never placed appends at the very END of the arrangement,
+  //    so a NEW session lands at the end of the whole strip — exactly where its provisional tab already
+  //    rendered — not at the end of its host's block, mid-strip in front of another host's sessions
+  //    (the user 2026-08-10, who watched the new tab pop from last place to second-to-last). Writing the
+  //    placement down is what makes it hold: an unadopted id was re-derived from the host-blocked seed
+  //    on every merge and every reload.
+  private absorbHostReport(host: string, prevOrder: readonly string[], prevTabs: readonly any[]): void {
+    const names = (tabs: readonly any[]) => {
+      const byId = new Map<string, string>();
+      for (const t of tabs) if (t && typeof t.id === "string") byId.set(t.id, String(t.name || ""));
+      return byId;
+    };
+    const cur = this.view();
+    const healed = healOrder(cur, churnSwaps(prevOrder, names(prevTabs),
+                                             this.perHostOrder[host] || [], names(this.perHostTabs[host] || [])));
     const reporting = new Set(Object.keys(this.perHostOrder));
-    if (!reporting.size) return;
     const live = new Set<string>();
     for (const h of reporting) for (const id of this.perHostOrder[h] || []) live.add(id);
-    const cur = this.view();
-    const kept = pruneViewOrder(cur, hostOf, reporting, live);
-    if (kept.length !== cur.length) writeViewOrder(kept);
+    const seed: string[] = [];
+    for (const h of this.hostSeq) seed.push(...(this.perHostOrder[h] || []));
+    const next = adoptArrivals(pruneViewOrder(healed, hostOf, reporting, live), seed);
+    if (next.length !== cur.length || next.some((id, i) => id !== cur[i])) writeViewOrder(next);
   }
 
   private lastClearHost = LOCAL; // where the most recent askClear routed — undoClear follows it
