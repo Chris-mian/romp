@@ -241,6 +241,18 @@ body { display: flex; flex-direction: column; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
 /* identity-color swatches (the user 2026-06-29): the romp palette as circles, the current one ringed. A grid
    so 9 colors wrap to a tidy block instead of one long row. */
+/* Billing submenu (the user 2026-08-09: the login/API-key switch lives here now, not the statusline).
+   The caret marks a level deeper (progressive disclosure); the flyout is a second .ctx-menu placed
+   beside its item, and .current wears the same check the statusline meta menus use. */
+.ctx-caret { margin-left: auto; padding-left: 10px; opacity: 0.55; align-self: center; }
+.ctx-sub { z-index: 101; }
+.ctx-sub .ctx-item { padding-right: 26px; position: relative; }
+.ctx-sub .ctx-item.current::after {
+  content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  background: var(--check-bg); color: #fff; border-radius: 50%;
+  width: 13px; height: 13px; font-size: 9px; font-weight: 900;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
 .ctx-colors { display: grid; grid-template-columns: repeat(5, 18px); gap: 7px; padding: 6px 8px 4px;
   justify-content: start; }
 .ctx-swatch { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;

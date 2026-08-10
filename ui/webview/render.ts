@@ -3735,14 +3735,16 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
     ? '<circle cx="8" cy="8" r="6"/><path d="M5 8.3 L7.2 10.7 L11.4 5.3"/>'              // circle + check (on the feed)
     : kind === "mail"
       ? '<rect x="2" y="4" width="12" height="8" rx="1.5"/><path d="M2.5 5 L8 9 L13.5 5"/>'  // envelope (on the postal service)
-      : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
+      : kind === "bill"
+        ? '<rect x="2" y="4" width="12" height="8" rx="1.5"/><line x1="2" y1="6.8" x2="14" y2="6.8"/><line x1="4.2" y1="9.6" x2="7.4" y2="9.6"/>'  // payment card (billing)
+        : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
   span.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" '
     + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + slash + "</svg>";
   return span;
@@ -3789,6 +3791,51 @@ function showTabMenu(e: MouseEvent, id: string) {
     onBell ? "Stop notifying" : "Notify me",
     onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
     () => setSessionFlag(id, "notify", !onBell));
+  // Billing submenu (the user 2026-08-09, who wants the login/API-key switch here rather than as a
+  // statusline badge). Only when the machine offers BOTH choices (st.authBoth) — a one-auth machine
+  // keeps the fact on the tab hover, never a dead selector — and the key stays labelled plainly
+  // 'API key', no fragment of it anywhere. Clicking opens a flyout with the two choices, the
+  // session's current one check-marked; a pick posts the same setAuth the badge used (the session
+  // reconnects to apply, so the sub-line says "applying…" while st.authPending rides the status).
+  const st = s ? s.status : null;
+  if (st && st.auth && st.authBoth) {
+    menu.appendChild(el("div", "ctx-sep"));
+    const item = el("div", "ctx-item ctx-item-toggle ctx-item-billing");
+    item.appendChild(ctxIcon("bill", false));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = "Billing"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub");
+    sb.textContent = st.authPending ? "applying…"
+      : (st.auth === "key" ? "API key" : (st.authAcct ? `Login (${st.authAcct})` : "Login"));
+    bodyEl.appendChild(sb);
+    item.appendChild(bodyEl);
+    const caret = el("span", "ctx-caret"); caret.textContent = "▸"; item.appendChild(caret);
+    item.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const open = menu.querySelector(".ctx-sub");
+      if (open) { open.remove(); return; }                       // second click folds the flyout
+      const sub = el("div", "ctx-menu ctx-sub");
+      for (const c of [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login" },
+                       { label: "API key", value: "key" }]) {
+        const opt = el("div", "ctx-item" + (st.auth === c.value ? " current" : ""));
+        opt.textContent = c.label;
+        opt.addEventListener("click", (ev2) => {
+          ev2.stopPropagation();
+          dismissTabMenu();
+          if (st.auth !== c.value && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value });
+        });
+        sub.appendChild(opt);
+      }
+      // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed
+      // beside the item — .ctx-menu is position:fixed, so the coords are viewport-space, clamped
+      menu.appendChild(sub);
+      const ir = item.getBoundingClientRect();
+      const sr = sub.getBoundingClientRect();
+      sub.style.left = Math.max(0, Math.min(ir.right + 2, window.innerWidth - sr.width - 4)) + "px";
+      sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
+    });
+    menu.appendChild(item);
+  }
   // Color swatches (the user 2026-06-29): the romp identity palette as circles, the session's current one
   // ringed. Click one to recolor the session. Omitted until /palette has loaded (paletteColors empty).
   if (paletteColors.length) {
@@ -6821,7 +6868,7 @@ function elapsedMs(sinceMs: number | null): string {
 // Each value is a little dropdown: picking an entry has the host inject the matching
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
-type MetaKind = "mode" | "model" | "effort" | "fast" | "auth";
+type MetaKind = "mode" | "model" | "effort" | "fast";
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
@@ -6848,16 +6895,12 @@ const FAST_CHOICES: { label: string; value: string }[] = [
   { label: "On", value: "on" },
   { label: "Off", value: "off" },
 ];
-// Per-session billing (the user 2026-08-08): the Claude login vs the API key the manager's environment
-// carries. st.auth is now ALWAYS reported when the backend knows it (the user 2026-08-09 — the tab
-// hover says Billing everywhere), so this SWITCHING badge gates on st.authBoth instead: a one-auth
-// machine still shows no dead selector, while the hover stays informative. The key entry is labelled
-// 'API key', full stop — no fragment of the key, not even a last-4 tail, is shipped or shown (the
-// user 2026-08-08, evening: a tail is still key material and no surface needs it).
-const AUTH_CHOICES: { label: string; value: string }[] = [
-  { label: "Login", value: "login" },
-  { label: "API key", value: "key" },
-];
+// Per-session billing (the user 2026-08-08) — the Claude login vs the API key the manager's
+// environment carries — is no longer a statusline badge: the SWITCHING control lives in the tab's
+// right-click menu (showTabMenu's Billing flyout, the user 2026-08-09), still gated on st.authBoth
+// so a one-auth machine shows no dead selector, and still labelled plainly 'API key' — no fragment
+// of the key, not even a last-4 tail, is shipped or shown (2026-08-08, evening). The tab hover's
+// Billing row keeps carrying the fact everywhere.
 // the fast-mode state ("on"/"off"/"cooldown") → the badge label
 function prettyFast(f: string | undefined): string {
   switch ((f || "").toLowerCase()) {
@@ -6865,10 +6908,6 @@ function prettyFast(f: string | undefined): string {
     case "cooldown": return "Fast cooldown";   // rate-limited: the CLI resumes fast mode when the limit resets
     default: return "Fast off";
   }
-}
-// the per-session billing choice → the badge label (never any key material)
-function prettyAuth(st: Status): string {
-  return (st.auth || "").toLowerCase() === "key" ? "API key" : "Login";
 }
 // the @claude-permission-mode var → a short readable badge label
 function prettyMode(m: string | undefined): string {
@@ -6882,12 +6921,12 @@ function prettyMode(m: string | undefined): string {
   }
 }
 const META_CHOICES: Record<MetaKind, { label: string; value: string }[]> = {
-  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES, auth: AUTH_CHOICES,
+  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES,
 };
 // the live value of a meta kind for the active session
 function metaCurrent(kind: MetaKind, st: Status): string {
   return (kind === "model" ? st.model : kind === "effort" ? st.effort : kind === "fast" ? st.fast
-    : kind === "auth" ? st.auth : st.mode) || "";
+    : st.mode) || "";
 }
 
 // Is this menu entry the session's current value? Effort matches exactly; the
@@ -6895,7 +6934,6 @@ function metaCurrent(kind: MetaKind, st: Status): string {
 function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "effort") return (st.effort || "").toLowerCase() === value;
   if (kind === "fast") return (st.fast || "").toLowerCase() === value;   // "cooldown" marks neither entry
-  if (kind === "auth") return (st.auth || "").toLowerCase() === value;
   if (kind === "mode") {
     const m = (st.mode || "").toLowerCase();
     if (value === "default") return m === "" || m === "default" || m === "normal";
@@ -6940,7 +6978,6 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
   btn.title = kind === "model" ? "change model (sends /model)"
     : kind === "effort" ? "change thinking effort (sends /effort)"
     : kind === "fast" ? "toggle fast mode (sends /fast)"
-    : kind === "auth" ? "switch which account this session bills (login vs API key; reconnects to apply)"
     : "change permission mode (shift+tab cycle)";
   btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn); });
   return btn;
@@ -6959,10 +6996,10 @@ function metaColor(kind: MetaKind, st: Status): string {
 // Build or refresh the model/effort buttons inside #spinner-meta. Called from
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
 function syncMetaControls(meta: HTMLElement, st: Status) {
-  // order left→right: mode · model · effort · fast · auth — the mode selector sits LEFT of the model name
-  // (the user 2026-06-16); fast/auth exist only when the session reports them (SDK init / a both-auth
-  // machine), so a machine with one billing choice shows no dead selector (the user 2026-08-08).
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : "", (st.auth && st.authBoth) ? "auth" : ""].filter(Boolean).join();
+  // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name
+  // (the user 2026-06-16); fast exists only when the session reports it (SDK init). Billing moved to
+  // the tab's right-click menu (the user 2026-08-09) — no badge here.
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
@@ -6970,12 +7007,11 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     if (st.model) meta.appendChild(metaButton("model", st.model));
     if (st.effort) meta.appendChild(metaButton("effort", st.effort));
     if (st.fast) meta.appendChild(metaButton("fast", prettyFast(st.fast)));
-    if (st.auth && st.authBoth) meta.appendChild(metaButton("auth", prettyAuth(st)));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;
     const disp = kind === "mode" ? prettyMode(st.mode) : kind === "fast" ? prettyFast(st.fast)
-      : kind === "auth" ? prettyAuth(st) : metaCurrent(kind, st);
+      : metaCurrent(kind, st);
     const label = b.querySelector(".meta-label") as HTMLElement | null;
     // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
     // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
@@ -6984,8 +7020,8 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     // dots from the server (st.modelPending / st.effortPending), with isMetaPending covering the sub-second
     // before the first server push (the user 2026-07-06).
     const pending = (kind === "model" && !!st.modelPending) || (kind === "effort" && !!st.effortPending)
-      || (kind === "auth" && !!st.authPending) || isMetaPending(kind, st);
-    const showDots = pending && (kind === "model" || kind === "effort" || kind === "auth");   // all three apply via a resolve/reconnect the server tracks
+      || isMetaPending(kind, st);
+    const showDots = pending && (kind === "model" || kind === "effort");   // both apply via a resolve/reconnect the server tracks
     if (label) {
       if (showDots) {
         if (!label.querySelector(".meta-dots")) label.replaceChildren(metaDots());
@@ -7020,7 +7056,7 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
-        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : kind === "auth" ? "setAuth" : "setMode", id: activeId, value: c.value });
+        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: activeId, value: c.value });
         const was = metaCurrent(kind, s.status);
         metaPending.set(`${activeId}:${kind}`, { was, until: Date.now() + 20_000 });
         btn.classList.add("meta-pending");
