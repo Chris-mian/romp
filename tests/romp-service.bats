@@ -266,10 +266,12 @@ EOF2
     [ "$status" -eq 0 ]
     local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
     ! grep -q "ROMP_SERVE_PORT\|ROMP_KERNEL_PORT\|ROMP_POSTAL_PORT\|ROMP_MANAGER_PORT\|ROMP_STATE_DIR\|CLAUDE_CONFIG_DIR\|ROMP_TMUX_SOCKET" "$unit"
-    # ...and the file is still well-formed around the seam: blank line, then [Install].
+    # ...and the file is still well-formed around the seam: the always-present
+    # (optional, dash-prefixed) EnvironmentFile line, a blank line, then [Install].
     grep -q "^Environment=ROMP_SUPERVISED=1$" "$unit"
+    grep -q "^EnvironmentFile=-" "$unit"
     grep -q "^\[Install\]$" "$unit"
-    [ -z "$(sed -n '/^Environment=ROMP_SUPERVISED=1$/{n;p;}' "$unit")" ]
+    [ -z "$(sed -n '/^EnvironmentFile=-/{n;p;}' "$unit")" ]
     ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 0 ]
     ! grep -q "ROMP_SERVE_PORT\|ROMP_STATE_DIR\|ROMP_TMUX_SOCKET" "$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
@@ -296,4 +298,12 @@ EOF2
     closeline="$(grep -n '<key>RunAtLoad</key>' "$plist" | cut -d: -f1)"
     [ "$dictline" -lt "$portline" ]
     [ "$portline" -lt "$closeline" ]
+}
+
+@test "install (Linux): unit loads optional extra service env (service.env)" {
+    # EnvironmentFile=- (leading dash): missing file is a no-op, so a default
+    # install behaves exactly as before anyone creates service.env.
+    XDG_CONFIG_HOME="$HOME/.config" ROMP_OS_OVERRIDE=Linux run "$SVC" install
+    [ "$status" -eq 0 ]
+    grep -Fq "EnvironmentFile=-$HOME/.config/romp/service.env" "$ROMP_SYSTEMD_DIR/romp-manager.service"
 }

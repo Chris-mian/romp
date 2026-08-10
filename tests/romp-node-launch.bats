@@ -61,3 +61,22 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$status" -eq 0 ]
     [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]] # ran via the kept v1 copy, not aborted
 }
+
+@test "service.env: KEY=VALUE lines reach the manager; comments and junk skipped" {
+    # Parity with the systemd unit's EnvironmentFile=- : the launcher parses
+    # (never sources) ~/.config/romp/service.env before exec'ing the manager.
+    export XDG_CONFIG_HOME="$HOME/.config"
+    mkdir -p "$XDG_CONFIG_HOME/romp"
+    {
+        echo '# comment'
+        echo 'ROMP_TEST_SECRET=hunter2'
+        echo ''
+        echo 'not a valid line'
+    } > "$XDG_CONFIG_HOME/romp/service.env"
+    # Fake node prints the env var the launcher should have exported.
+    printf '#!/bin/sh\necho "SECRET=[$ROMP_TEST_SECRET] ran: $*"\n' > "$BIN/node"
+    chmod +x "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SECRET=[hunter2] ran: $MANAGER up"* ]]
+}
