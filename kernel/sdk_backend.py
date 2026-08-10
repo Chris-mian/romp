@@ -1712,6 +1712,12 @@ class SdkSession:
                 async with ClaudeSDKClient(options=opts) as client:
                     connected = True
                     self.client = client
+                    # The handshake IS the "this session is open" event (snapshot `connected`, the flip
+                    # the kernel's opening chip stands down on) — push THIS session now. Left to the
+                    # periodic cycle, a fresh session wore the opening dots seconds after its CLI was
+                    # ready to take a message (measured live 2026-08-10: connect done ~1.5s after
+                    # create, the ready chip landing at 5-12s with the cycle).
+                    self.backend._push_session(self.sid)
                     self._last_cost_total = 0.0   # a fresh CLI process starts its cumulative cost at zero
                     self._last_usage_totals = {}  # …and its cumulative token counters
                     # The CLI is demonstrably up, so any recorded launch failure is HISTORY — clear it
@@ -2544,6 +2550,7 @@ class SdkBackend:
     pushing to clients and a few launch parameters that mirror the tmux launch."""
 
     def __init__(self, state_dir, claude_bin: str, notify, poke=None, push=None,
+                 push_session=None,
                  mcp_config: str | None = None, append_prompt_path: str | None = None,
                  log=None, reconcile: bool = False):
         self.state_dir = Path(state_dir)
@@ -2551,6 +2558,9 @@ class SdkBackend:
         self._notify = notify              # notify(app, msg) -> push to clients (kernel._send_to_app)
         self._poke_cb = poke               # wake the kernel's producer/judges (optional)
         self._push_cb = push               # wake the kernel's PUSHER → immediate chat push (live tail)
+        self._push_session_cb = push_session   # targeted ONE-session push (kernel _push_session_now) for
+        #   per-session chip events (the connect handshake): a wake alone leaves the flip riding the next
+        #   full push cycle, which runs seconds on a busy fleet (the user 2026-08-10)
         self.mcp_config = mcp_config
         self.append_prompt_path = append_prompt_path
         self._log_cb = log
@@ -3955,6 +3965,22 @@ class SdkBackend:
                 self._push_cb()
             except Exception as e:
                 self._log("chat push wake failed: %s" % e)
+
+    def _push_session(self, sid: str) -> None:
+        """Targeted one-session push (kernel _push_session_now), for per-session events the chat chip
+        keys on — today the connect handshake, the exact flip the opening chip stands down on. THREADED:
+        the callback builds and serializes that session's payload, which must never run on the session's
+        asyncio loop thread (it would stall the stream it is reporting on). Falls back to the plain
+        pusher wake when the kernel didn't wire the callback (older kernel / tests)."""
+        if not self._push_session_cb:
+            self._wake_push()
+            return
+        def run():
+            try:
+                self._push_session_cb(sid)
+            except Exception as e:
+                self._log("session push (%s) failed: %s" % (sid, e))
+        threading.Thread(target=run, name="sdk-push-session", daemon=True).start()
 
     def live_atoms(self, sid: str) -> list:
         """The session's in-memory live-tail atoms (newest last), for build_session to merge ahead of disk."""
