@@ -58,7 +58,7 @@ class WsHeartbeat(unittest.TestCase):
         frames = self._fake_client()
         km.KEEPALIVE_S = 0.05
         wedge = threading.Event()                       # never set → the push never returns
-        km._push_all = lambda: wedge.wait()
+        km._push_all = lambda *a, **k: wedge.wait()   # accepts the cycle's snapshot kwarg
         threading.Thread(target=km._pusher, daemon=True).start()
         threading.Thread(target=km._heartbeat, daemon=True).start()
         deadline = time.time() + 3.0

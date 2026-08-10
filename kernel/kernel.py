@@ -5518,10 +5518,24 @@ def _num(x):
     return int(x) if x.lstrip("-").isdigit() else None
 
 
+# One liveness snapshot per PUSHER CYCLE (the 2026-08-10 CPU fix). Every Sessions.live() read forks
+# `tmux list-sessions` and sweeps the SDK reg registry — and the reads hide at every depth of the
+# build stack (_push, the tick jobs, _bg_live_norm, _compacting_now, build_feed's per-session gate…),
+# so one cycle was paying DOZENS of forks+sweeps: profiling attributed the pusher as the kernel's
+# hottest thread, ~50-90% of a core sustained. The scope is the EVENT (one cycle), not a TTL, and it
+# is THREAD-CONFINED: only the thread that opened the scope (the pusher, for exactly one cycle) reads
+# its snapshot; a WS handler or backend thread calling _tmux_sessions() concurrently still gets a
+# fresh read. Within a cycle the jobs always saw a snapshot aged by whatever ran before them — the
+# scope makes that one honest snapshot instead of dozens of marginally-different ones.
+_live_scope = threading.local()   # .snapshot = the current cycle's liveness map, else absent
+
+
 def _tmux_sessions():
     """Live lane metadata across both backends — the fleet-wide liveness merge. Thin delegator kept for its
-    ~20 call sites; the impl is Sessions.live() (tmux @claude-* vars + the SDK backend's live_sessions)."""
-    return Sessions.live()
+    ~20 call sites; the impl is Sessions.live() (tmux @claude-* vars + the SDK backend's live_sessions).
+    Inside a pusher cycle (this thread's _live_scope), the cycle's one snapshot is served instead."""
+    snap = getattr(_live_scope, "snapshot", None)
+    return snap if snap is not None else Sessions.live()
 
 
 # ── tunnel concierge: attach a remote kernel over SSH for the FEDERATED dashboard ────────────────
@@ -12394,8 +12408,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             "events": events, "status": status, "ledger": ledger,
             # SDK sessions gate the box on the backend's LIVE task set (the CLI's task lifecycle stream —
             # authoritative, terminal-cleared); the spawned_at heuristic remains the tmux/no-snapshot fallback.
+            # Reads the CALLER's snapshot — a fresh _tmux_sessions() here cost a tmux fork + a reg sweep
+            # per session build, on the pusher's hottest path (the 2026-08-10 CPU fix).
             "bgTasks": _bg_tasks(sess["path"], _sdk_spawned_at(sid),
-                                 live=(_tmux_sessions().get(str(sid)) or {}).get("bgTasks")),
+                                 live=(tmux.get(str(sid)) or {}).get("bgTasks")),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),
@@ -16575,16 +16591,18 @@ def _note_chat_divergence(sid, name, chat_state, row_state, now):
         pass
 
 
-def _push(targets, connect=False):
+def _push(targets, connect=False, tmux=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
     client (empty dedup) gets the full state; steady-state sends only diffs. Builds only the apps the
     targets actually need (no timeline parse with no timeline client). connect=True (a fresh client) serves
-    the pusher-warmed feed/timeline WITHOUT rebuilding, so a reload is instant (the user 2026-06-25)."""
+    the pusher-warmed feed/timeline WITHOUT rebuilding, so a reload is instant (the user 2026-06-25).
+    `tmux` lets the periodic pusher hand down its cycle's ONE liveness snapshot (see _pusher_cycle);
+    other callers (connect pushes, ad-hoc _push_all) leave it None and pay their own read."""
     if not targets:
         return
     now = int(time.time())
-    tmux = _tmux_sessions()                       # one tmux read per push, shared by all builders
+    tmux = _tmux_sessions() if tmux is None else tmux   # one liveness read per push, shared by all builders
     _seen_live.update(tmux)                       # remember who's been alive → keep their tab when they die
     want_chat = any(c["app"] == "chat" for c in targets)
     # The FLEET connects as its OWN app (the user 2026-06-29) so we build its per-session ledgers EVEN when no
@@ -16738,10 +16756,10 @@ def _push(targets, connect=False):
         _clients[:] = [c for c in _clients if c.get("alive", True)]
 
 
-def _push_all():
+def _push_all(tmux=None):
     with _clients_lock:
         clients = list(_clients)
-    _push(clients)
+    _push(clients, tmux=tmux)
 
 
 def _push_session_now(sid):
@@ -17421,49 +17439,76 @@ def _producer():
         _producer_wake.wait(3)
 
 
+def _pusher_cycle():
+    """ONE pusher cycle: the client push + every tick job, all sharing ONE liveness snapshot. Split out
+    of the loop so a test can run a single cycle and count the snapshot reads.
+
+    The snapshot hoist is the 2026-08-10 CPU fix: each _tmux_sessions() forks `tmux list-sessions`
+    (~15ms) and re-reads every SDK reg file (~7ms across a couple hundred), and this cycle used to
+    take NINE of them — one in _push plus one per tick job — at the 0.5s cadence: ~200-350ms of CPU
+    per cycle before any build work, sampled live as the kernel's single hottest thread (~50-90% of a
+    core, three quarters of total process CPU). Every job here already took the map as a parameter by
+    design; they now all receive the same one, taken once at cycle start. The jobs tolerate the
+    few-hundred-ms staleness by construction — they always saw a snapshot aged by however many jobs
+    ran before them."""
+    with _clients_lock:
+        any_client = bool(_clients)
+    now = int(time.time())
+    tmux = _tmux_sessions()               # THE cycle's liveness snapshot — one fork + one reg sweep
+    _live_scope.snapshot = tmux           # …served to every read on THIS thread until the cycle ends,
+    #                                       however deep it hides (_bg_live_norm, _compacting_now,
+    #                                       build_feed's per-session gates) — see _live_scope
+    try:
+        _pusher_cycle_jobs(now, tmux, any_client)
+    finally:
+        _live_scope.snapshot = None
+
+
+def _pusher_cycle_jobs(now, tmux, any_client):
+    if any_client:
+        _push_all(tmux=tmux)
+    # (the WS keepalive lives on its own _heartbeat thread — NOT here — so a slow push can't starve it)
+    try:                                  # Auto Nudge runs server-side even with no browser open (cheap when off)
+        _auto_nudge_tick(now, tmux)
+    except Exception:
+        sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+    try:                                  # EXACT retraction first: dispatches returned → the stamp is spent
+        _lift_spent_awaiting(now, tmux)
+    except Exception:
+        sys.stderr.write("awaiting-lift: %s\n" % traceback.format_exc())
+    try:                                  # slow one-shot wake for a session asleep behind a stale awaiting stamp
+        _awaiting_backstop_tick(now, tmux)
+    except Exception:
+        sys.stderr.write("awaiting-backstop: %s\n" % traceback.format_exc())
+    try:                                  # Interrupt → Blocked runs EVERY push, independent of the nudge toggle
+        _interrupt_block_tick(now, tmux)
+    except Exception:
+        sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
+    try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
+        _auto_pause_on_limit()
+    except Exception:
+        sys.stderr.write("auto-pause-on-limit: %s\n" % traceback.format_exc())
+    try:                                  # a monthly spend cap (no readable reset) also engages it — else it storms forever
+        _auto_pause_on_spend_limit(now, tmux)
+    except Exception:
+        sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
+    try:                                  # a paused retry auto-clears once any session serves a request again
+        _auto_resume_retry(now, tmux)
+    except Exception:
+        sys.stderr.write("auto-resume-retry: %s\n" % traceback.format_exc())
+    try:                                  # a per-session interrupt-suppressed retry re-arms once that thread lands a clean turn
+        _auto_resume_session_retry(now, tmux)
+    except Exception:
+        sys.stderr.write("auto-resume-session-retry: %s\n" % traceback.format_exc())
+    try:                                  # expire stale set_working notes once a session goes idle + done (cheap when no notes)
+        _clear_done_working_notes(now, tmux)
+    except Exception:
+        sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+
+
 def _pusher():
     while True:
-        with _clients_lock:
-            any_client = bool(_clients)
-        if any_client:
-            _push_all()
-        # (the WS keepalive lives on its own _heartbeat thread — NOT here — so a slow push can't starve it)
-        try:                                  # Auto Nudge runs server-side even with no browser open (cheap when off)
-            _auto_nudge_tick(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
-        try:                                  # EXACT retraction first: dispatches returned → the stamp is spent
-            _lift_spent_awaiting(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("awaiting-lift: %s\n" % traceback.format_exc())
-        try:                                  # slow one-shot wake for a session asleep behind a stale awaiting stamp
-            _awaiting_backstop_tick(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("awaiting-backstop: %s\n" % traceback.format_exc())
-        try:                                  # Interrupt → Blocked runs EVERY push, independent of the nudge toggle
-            _interrupt_block_tick(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
-        try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
-            _auto_pause_on_limit()
-        except Exception:
-            sys.stderr.write("auto-pause-on-limit: %s\n" % traceback.format_exc())
-        try:                                  # a monthly spend cap (no readable reset) also engages it — else it storms forever
-            _auto_pause_on_spend_limit(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
-        try:                                  # a paused retry auto-clears once any session serves a request again
-            _auto_resume_retry(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("auto-resume-retry: %s\n" % traceback.format_exc())
-        try:                                  # a per-session interrupt-suppressed retry re-arms once that thread lands a clean turn
-            _auto_resume_session_retry(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("auto-resume-session-retry: %s\n" % traceback.format_exc())
-        try:                                  # expire stale set_working notes once a session goes idle + done (cheap when no notes)
-            _clear_done_working_notes(int(time.time()), _tmux_sessions())
-        except Exception:
-            sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
+        _pusher_cycle()
         # Event-driven (woken by the SDK live-tail and by /tick on hook events) with a SHORT 0.5s backstop
         # poll, so tmux sessions — which have no per-message event for mid-turn streaming — still refresh
         # responsively as the model generates, instead of waiting out a multi-second tick (the user 2026-06-22).

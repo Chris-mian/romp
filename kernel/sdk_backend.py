@@ -952,18 +952,51 @@ def interrupt_action(level: int, channel_up: bool) -> tuple[str, int]:
     return ("sigkill", 3)
 
 
+# list_regs' per-file parse cache (the 2026-08-10 CPU fix). The registry holds a reg file for EVERY
+# session ever created — a couple hundred, all but a handful dormant — and list_regs sits on the
+# kernel's hottest path: every liveness snapshot (Sessions.live) sweeps it, several times a second.
+# Re-opening + json-parsing a few hundred unchanged files per sweep was a measurable slice of the
+# pusher thread's sustained CPU burn. The file IS the truth, so the cache keys on exactly what
+# changes when the file does — (mtime_ns, size, inode); write_reg's os.replace mints a new inode, so
+# even a same-size same-instant rewrite misses. Entries are handed out as SHALLOW COPIES: the common
+# mutation (_update_reg's reg.update) lands on the copy, never the cache; read_reg stays uncached on
+# purpose — it feeds read-modify-writes and must always be the fresh file.
+_REG_CACHE = {}   # path -> ((mtime_ns, size, ino), parsed reg)
+
+
 def list_regs(state_dir: Path) -> list[dict]:
     d = Path(state_dir) / "sdk"
     out = []
-    if not d.is_dir():
+    try:
+        entries = list(os.scandir(d))
+    except OSError:
         return out
-    for f in d.glob("*.json"):
-        try:
-            r = json.loads(f.read_text())
-            r.setdefault("sid", f.stem)
-            out.append(r)
-        except (OSError, ValueError):
+    seen = set()
+    for de in entries:
+        if not de.name.endswith(".json"):
             continue
+        try:
+            st = de.stat()
+        except OSError:
+            continue
+        key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        seen.add(de.path)
+        hit = _REG_CACHE.get(de.path)
+        if hit is not None and hit[0] == key:
+            out.append(dict(hit[1]))
+            continue
+        try:
+            r = json.loads(Path(de.path).read_text())
+        except (OSError, ValueError):
+            _REG_CACHE.pop(de.path, None)
+            continue
+        r.setdefault("sid", de.name[: -len(".json")])
+        _REG_CACHE[de.path] = (key, r)
+        out.append(dict(r))
+    if len(_REG_CACHE) > len(seen) + 64:          # deleted regs leave the cache once the drift is real
+        for p in list(_REG_CACHE):
+            if p not in seen:
+                _REG_CACHE.pop(p, None)
     return out
 
 

@@ -2882,6 +2882,44 @@ class LiveAtomKinds(unittest.TestCase):
         self.assertEqual(len(be._live[sid]), 3, "read-only: the live tail is untouched")
 
 
+class RegListCache(unittest.TestCase):
+    """list_regs' per-file parse cache (the 2026-08-10 CPU fix): the registry keeps a reg for every
+    session EVER created, and list_regs sits on the liveness snapshot the kernel takes several times
+    a second — re-parsing hundreds of unchanged files per sweep was a measured slice of the pusher's
+    CPU burn. The cache keys on (mtime_ns, size, inode) — the file stays the truth — and hands out
+    copies, so the _update_reg read-modify-write pattern can never corrupt it."""
+
+    def setUp(self):
+        self.sd = Path(tempfile.mkdtemp())
+        (self.sd / "sdk").mkdir()
+        sb.write_reg(self.sd, "aaaa", {"sid": "aaaa", "alive": True, "name": "web"})
+        sb.write_reg(self.sd, "bbbb", {"sid": "bbbb", "alive": False, "name": "api"})
+
+    def test_unchanged_files_serve_cached_parses_with_equal_content(self):
+        first = sorted(sb.list_regs(self.sd), key=lambda r: r["sid"])
+        second = sorted(sb.list_regs(self.sd), key=lambda r: r["sid"])
+        self.assertEqual(first, second)
+        self.assertEqual([r["sid"] for r in first], ["aaaa", "bbbb"])
+
+    def test_a_mutated_result_never_leaks_into_the_cache(self):
+        one = next(r for r in sb.list_regs(self.sd) if r["sid"] == "aaaa")
+        one["name"] = "clobbered"          # the _update_reg pattern mutates its read
+        again = next(r for r in sb.list_regs(self.sd) if r["sid"] == "aaaa")
+        self.assertEqual(again["name"], "web", "the cache hands out copies, never its own dict")
+
+    def test_a_rewrite_is_picked_up(self):
+        # write_reg replaces the file (new inode), so even a same-instant rewrite misses the cache
+        sb.list_regs(self.sd)              # warm
+        sb.write_reg(self.sd, "aaaa", {"sid": "aaaa", "alive": True, "name": "renamed"})
+        got = next(r for r in sb.list_regs(self.sd) if r["sid"] == "aaaa")
+        self.assertEqual(got["name"], "renamed")
+
+    def test_a_deleted_reg_drops_out(self):
+        sb.list_regs(self.sd)              # warm
+        (self.sd / "sdk" / "bbbb.json").unlink()
+        self.assertEqual([r["sid"] for r in sb.list_regs(self.sd)], ["aaaa"])
+
+
 class PushSessionCallback(unittest.TestCase):
     """_push_session — the connect handshake's targeted one-session push (2026-08-10). The handshake is
     the exact event the kernel's opening chip stands down on, and a plain pusher wake left that flip
