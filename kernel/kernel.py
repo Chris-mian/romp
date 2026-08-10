@@ -415,6 +415,7 @@ def _version_info():
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
             "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),  # current per-tier judge efforts ("" = default/none)
             "defaultDir": _tilde(_default_create_dir()),   # the resolved default new-session dir → the gear "Default directory" field
+            "nativeDialogs": _native_dialogs(),   # whether Browse… can draw a dialog HERE → the gear drops the button when it can't
             # The repo root ($HOME-collapsed), so the VS Code extension host can run vscode-extension/install.sh
             # to self-update a drifted VSIX (a webview reload can't — the code is baked into the on-disk VSIX).
             # ROMP_DIR is reliably exported by romp-serve/launchd; HERE.parent (kernel/ → repo root) backs it up.
@@ -16235,27 +16236,78 @@ def _open_file(p, sid=None):
         pass
 
 
-def _pick_file():
-    """Native file picker (macOS osascript) → the chosen POSIX path, or None if cancelled. Blocks, so
+# ── native file/folder dialogs ─────────────────────────────────────────────────────────────────────
+# These were macOS-only (osascript), which made the picker's "Browse…" and the chat's 📎 do NOTHING at
+# all on Linux: osascript is absent, the OSError was swallowed, no reply was sent, and the button sat
+# there looking functional. Two things follow.
+#
+# First, a Linux box with a desktop CAN open one — through whichever helper it happens to have — so ask
+# the desktop rather than assuming there is none. Second, a box with no desktop at all (a server, a
+# cloud VM, an SSH session) genuinely cannot, and that has to be SAID: `_native_dialogs()` tells the UI
+# up front so the button can present as unavailable, and the browseDir handler answers a click it
+# cannot serve with a warning rather than silence.
+#
+# A display is part of the test, not just the binary: zenity installed under a bare SSH login has no
+# screen to draw on and hangs or errors, which is the same silent nothing wearing a different hat.
+def _dialog_cmd(kind):
+    """argv for a native `kind` ("folder"|"file") picker on THIS machine, or None if it has no way to
+    show one. The dialog draws on the KERNEL's screen (where the paths live), so this is host-local."""
+    folder = kind == "folder"
+    prompt = "Pick a directory for the new session" if folder else "Attach a file"
+    if sys.platform == "darwin":
+        what = "choose folder" if folder else "choose file"
+        return ["osascript", "-e", 'POSIX path of (%s with prompt "%s")' % (what, prompt)]
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None            # no desktop to draw on — a headless server, or an SSH login with no forwarding
+    for exe in ("zenity", "qarma", "yad"):     # qarma/yad take zenity's flags
+        if shutil.which(exe):
+            return [exe, "--file-selection", "--title=" + prompt] + (["--directory"] if folder else [])
+    if shutil.which("kdialog"):
+        return ["kdialog", "--title", prompt,
+                "--getexistingdirectory" if folder else "--getopenfilename", os.path.expanduser("~")]
+    return None
+
+
+def _native_dialogs():
+    """Can this machine show a native folder/file dialog at all? Advertised to the UI (sessionList,
+    /version) so Browse… and 📎 present as unavailable instead of clicking into nothing."""
+    return _dialog_cmd("folder") is not None
+
+
+def _no_dialog_why(kind):
+    """Why this machine can't show a `kind` dialog, and what to do instead — shown to the user when a
+    click lands on a kernel that cannot serve it. Names the actual reason: a box with a desktop but no
+    helper is one `apt install` from working; a headless one is not, and should stop being told to try."""
+    what = "folder" if kind == "folder" else "file"
+    instead = ("Type the folder path instead — it completes as you type."
+               if kind == "folder" else "Drag the file in, or paste its path, instead.")
+    if sys.platform != "darwin" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return "No %s dialog: %s has no desktop session to open one on. %s" % (what, _self_host(), instead)
+    return ("No %s dialog: %s has a desktop but no picker installed (zenity or kdialog). %s"
+            % (what, _self_host(), instead))
+
+
+def _run_dialog(kind):
+    """Run the native `kind` picker → the chosen path, or None if cancelled or unavailable. Blocks, so
     callers run it off the message loop."""
+    argv = _dialog_cmd(kind)
+    if not argv:
+        return None
     try:
-        out = subprocess.run(["osascript", "-e", 'POSIX path of (choose file with prompt "Attach a file")'],
-                             capture_output=True, text=True, timeout=180)
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=180)
         return out.stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _pick_file():
+    """Native FILE picker → the chosen path, or None if cancelled/unavailable."""
+    return _run_dialog("file")
 
 
 def _pick_folder():
-    """Native FOLDER picker (macOS osascript) → the chosen POSIX path, or None if cancelled. The dialog opens
-    on the KERNEL's machine (where the dirs live), so this is host-local. Blocks → run off the message loop."""
-    try:
-        out = subprocess.run(
-            ["osascript", "-e", 'POSIX path of (choose folder with prompt "Pick a directory for the new session")'],
-            capture_output=True, text=True, timeout=180)
-        return out.stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        return None
+    """Native FOLDER picker → the chosen path, or None if cancelled/unavailable."""
+    return _run_dialog("folder")
 
 
 _CHAT_DIV_LAST = {}   # sid -> (chat_state, row_state) at the last logged transition — event-on-change, in-memory
@@ -21075,6 +21127,9 @@ class Handler(BaseHTTPRequestHandler):
             client["send"](json.dumps({"type": "sessionList",
                                        "items": _session_list(int(time.time()), _tmux_sessions()),
                                        "defaultDir": _tilde(_default_create_dir()),   # prefill the new-session dir field
+                                       # …and whether Browse… can do anything here, so a kernel with no
+                                       # desktop shows the button as unavailable rather than inert.
+                                       "nativeDialogs": _native_dialogs(),
                                        # billing choices THIS host can offer a new session — the picker
                                        # shows its auth control only when both are real (see _auth_avail)
                                        "authAvail": _auth_avail()}))
@@ -21204,11 +21259,14 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "openFile" and msg.get("path"):
             _open_file(str(msg["path"]), sid=msg.get("id"))       # caption / linkified path click → open it (relative → resolved vs the session cwd)
         elif msg and msg.get("type") == "pickFile":
-            def _pf(c=client):                                    # 📎 → native dialog (blocks) → insert the picked path
-                fp = _pick_file()
-                if fp:
-                    _reply(c, {"type": "droppedPath", "path": fp})
-            threading.Thread(target=_pf, daemon=True).start()
+            if not _native_dialogs():                             # same silent-nothing as Browse… — say it instead
+                client["send"](json.dumps({"type": "warn", "text": _no_dialog_why("file")}))
+            else:
+                def _pf(c=client):                                # 📎 → native dialog (blocks) → insert the picked path
+                    fp = _pick_file()
+                    if fp:
+                        _reply(c, {"type": "droppedPath", "path": fp})
+                threading.Thread(target=_pf, daemon=True).start()
         elif msg and msg.get("type") == "dirComplete":
             # Inline path completion for the new-session directory field. Answered by the kernel that will
             # own the session — federation routes this by the picker's Host selection — so completing a
@@ -21223,11 +21281,17 @@ class Handler(BaseHTTPRequestHandler):
                                 **_dir_completions(_val)))
         elif msg and msg.get("type") == "browseDir":
             tgt = str(msg.get("target") or "picker")          # which dir field to fill: the new-session picker or the gear
-            def _bd(c=client, t=tgt):                          # Browse → native FOLDER dialog (blocks) → fill that field
-                fp = _pick_folder()
-                if fp:
-                    _reply(c, {"type": "browseResult", "path": _tilde(fp), "target": t})
-            threading.Thread(target=_bd, daemon=True).start()
+            if not _native_dialogs():
+                # This kernel has no screen to draw a dialog on. Say so — a click that returns silence is
+                # the bug this replaced. The UI drops the button once it knows, so reaching here means an
+                # older client, or a desktop that went away since it was told.
+                client["send"](json.dumps({"type": "warn", "text": _no_dialog_why("folder")}))
+            else:
+                def _bd(c=client, t=tgt):                      # Browse → native FOLDER dialog (blocks) → fill that field
+                    fp = _pick_folder()
+                    if fp:
+                        _reply(c, {"type": "browseResult", "path": _tilde(fp), "target": t})
+                threading.Thread(target=_bd, daemon=True).start()
         elif msg and msg.get("type") == "setDefaultDir":      # gear/CLI persist the default new-session dir (a file)
             path, err = _set_default_dir(msg.get("value"))
             if err:

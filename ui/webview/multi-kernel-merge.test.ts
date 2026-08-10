@@ -134,6 +134,26 @@ test("routeOutbound: showAskPath routes by sid — a remote card's hover glow re
   assert.equal(routeOutbound({ type: "showAskPath", itemId: U + ":g4", sid: U, off: true })[0].host, "");
 });
 
+test("routeOutbound: dropFile routes by its session id — attachment bytes reach the OWNING kernel", () => {
+  // A composer attachment (📎 picker, drag-drop, paste) ships bytes as dropFile; the kernel that
+  // takes them saves under ITS drops/ and the saved path rides the prompt, read by the agent on
+  // that machine. So the bytes must land on the session's own kernel: saved anywhere else, the
+  // agent is handed a path that does not exist on its filesystem (before the id was stamped,
+  // every remote session's attachment was saved on the LOCAL kernel).
+  const routes = routeOutbound({ type: "dropFile", name: "screenshot.png", b64: "aGVsbG8=", id: "gpu1:" + U });
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].host, "gpu1", "the session id picks the owning kernel");
+  assert.equal(routes[0].msg.id, U, "id stripped back to bare for that kernel");
+  assert.equal(routes[0].msg.name, "screenshot.png", "payload rides through untouched");
+  assert.equal(routes[0].msg.b64, "aGVsbG8=");
+  // a local session's attachment (bare id) stays local, the single-kernel path unchanged
+  assert.equal(routeOutbound({ type: "dropFile", name: "a.png", b64: "eA==", id: U })[0].host, "");
+  // ...and the droppedPath REPLY carries no session field, so prefixInbound passes it through
+  // untouched — the pane attaches it to its own activeId, which is already host-prefixed.
+  const reply = { type: "droppedPath", path: "~/.local/state/romp/drops/1-screenshot.png" };
+  assert.deepEqual(prefixInbound("gpu1", reply), reply);
+});
+
 test("prefixInbound: glowTurns groups get sid-prefixed so the merged chat finds the remote pane", () => {
   // The return leg of the same highlight: the owning kernel answers with glowTurns keyed by its own
   // bare sids, but the merged chat page keys its views "host:sid" — unprefixed groups matched nothing.

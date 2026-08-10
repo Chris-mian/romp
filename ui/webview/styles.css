@@ -1858,6 +1858,11 @@ body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
   border: 1px solid var(--box-border); border-radius: 5px; padding: 5px 9px; font-size: 0.82em;
 }
 .picker-browse:hover { background: rgba(255, 255, 255, 0.12); }
+/* Disabled while a REMOTE host is selected — that machine's dialog can't open on this screen. It had no
+   disabled look, so it read as an ordinary button that ignored clicks; dim it and drop the hover lift so
+   it says unavailable. The title explains, and the field beside it still works. */
+.picker-browse:disabled { opacity: 0.4; cursor: not-allowed; }
+.picker-browse:disabled:hover { background: rgba(255, 255, 255, 0.06); }
 /* the typed path's one-line verdict from the kernel that would own the session (exists / will be
    created / is a file), so the answer arrives before the create does (the user 2026-07-28) */
 .picker-dir-status {

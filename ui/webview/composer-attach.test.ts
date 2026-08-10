@@ -1,10 +1,18 @@
-// The composer 📎 attach button. On DESKTOP it asks the host to run a native open
-// dialog (type:"pickFile") and the picked path comes back as droppedPath. On a
-// TOUCH device that dialog would pop on the desktop running the kernel, not the
-// phone — useless — so 📎 instead opens the phone's own photo picker (a hidden
-// <input type=file accept=image/*>) and ships the chosen image's bytes to the
-// host via shipFileToHost → dropFile, which saves them under the state dir and
-// posts the saved path back for insertion (the user 2026-06-17).
+// The composer 📎 attach button opens a file picker on the machine whose SCREEN
+// the user is looking at, routed by host the same way Browse… splits:
+//
+//   • VS Code webview → the host extension's native open dialog (type:"pickFile");
+//     the editor IS the local machine, so the dialog is on the right screen and
+//     the picked path comes back as droppedPath.
+//   • Web dashboard (http/https, any pointer) → the BROWSER's own picker (a
+//     hidden <input type=file>) and the bytes ship via shipFileToHost → dropFile.
+//     The old behavior posted pickFile to the kernel, whose native dialog opens
+//     on the KERNEL's machine — the wrong screen entirely from a remote browser,
+//     and on a headless kernel nothing but a warning.
+//   • TOUCH keeps the phone photo-picker UX (accept=image/*, the user 2026-06-17);
+//     a desktop browser gets an unscoped multi-select picker — attributes set per
+//     open, when the pointer type is known.
+//
 // The chat renderer has no jsdom harness, so — like the other webview tests —
 // pin the wiring at the source level.
 import { test } from "node:test";
@@ -14,26 +22,53 @@ import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
-test("📎 on touch opens an image file picker, not the desktop-only host dialog", () => {
-  // a hidden file input scoped to images
+test("📎 on the web (touch or desktop) opens the BROWSER's picker, never the kernel's dialog", () => {
+  // a hidden file input…
   assert.match(RENDER, /createElement\("input"\)/);
   assert.match(RENDER, /filePicker\.type = "file"/);
-  assert.match(RENDER, /filePicker\.accept = "image\/\*"/);
+  // …opened from the click handler (a real gesture, required by iOS) whenever the page
+  // is the web dashboard OR the pointer is touch; only VS Code desktop falls through
+  assert.match(RENDER, /const isWebPage = location\.protocol === "http:" \|\| location\.protocol === "https:";/);
+  assert.match(RENDER, /if \(!isTouch\(\) && !isWebPage\) return;\s*\/\/ VS Code desktop → the host-dialog path/);
   // touch is gated on pointer:coarse (a phone), NOT viewport width — desktop panes are narrow too
   assert.match(RENDER, /matchMedia\("\(pointer:coarse\)"\)\.matches/);
-  // the click handler (real gesture, required by iOS to open a file input) opens the picker on touch
-  assert.match(RENDER, /attach\?\.addEventListener\("click", \(e\) => \{ if \(isTouch\(\)\) \{ e\.preventDefault\(\); filePicker\.click\(\); \} \}\)/);
+  // picker scope is decided PER OPEN: photos-only single pick on touch (the phone photo-picker
+  // UX), any files + multi-select on a desktop browser
+  assert.match(RENDER, /if \(isTouch\(\)\) \{ filePicker\.accept = "image\/\*"; filePicker\.multiple = false; \}/);
+  assert.match(RENDER, /else \{ filePicker\.removeAttribute\("accept"\); filePicker\.multiple = true; \}/);
+  assert.match(RENDER, /filePicker\.click\(\);/);
 });
 
-test("📎 routes the chosen image through the existing dropFile pipeline (no new path)", () => {
+test("📎 routes the chosen files through the existing dropFile pipeline (no new path)", () => {
   // chosen files go to shipFileToHost, which already posts {type:"dropFile"} and
   // gets {type:"droppedPath"} back — we reuse it rather than add a second uploader
   assert.match(RENDER, /filePicker\.files \|\| \[\]\)\.forEach\(\(f\) => shipFileToHost\(f\)\)/);
-  assert.match(RENDER, /vscodeApi\)\s*vscodeApi\.postMessage\(\{ type: "dropFile"/);
+  assert.match(RENDER, /\{ type: "dropFile", name: f\.name \|\| "pasted\.png", b64 \}/);
 });
 
-test("📎 on desktop still uses the native host dialog (pickFile), unchanged", () => {
-  // mousedown bails on touch so the picker (click handler) owns the phone; desktop posts pickFile
-  assert.match(RENDER, /addEventListener\("mousedown", \(e\) => \{\s*if \(isTouch\(\)\) return;/);
+test("📎 in the VS Code webview still uses the native host dialog (pickFile)", () => {
+  // mousedown (keeps the textarea focused) bails on touch AND on the web page,
+  // so the browser picker owns those; only the VS Code webview posts pickFile
+  assert.match(RENDER, /addEventListener\("mousedown", \(e\) => \{\s*if \(isTouch\(\) \|\| isWebPage\) return;/);
   assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "pickFile" \}\)/);
+});
+
+test("shipFileToHost stamps the session id so federation routes the bytes to the OWNING kernel", () => {
+  // the saved drops/ path rides the prompt and is read by the agent on the session's own
+  // machine — bytes saved on any other kernel would hand the agent a nonexistent path.
+  // routeOutbound routes any `id` field by host prefix (SCALAR_ID); the stamp is what
+  // engages it (multi-kernel-merge.test.ts pins the routing itself).
+  assert.match(RENDER, /if \(activeId\) msg\.id = activeId;\s*\/\/ the owning session → the owning kernel/);
+});
+
+test("an oversize file is refused LOUDLY — named size and cap in a toast, never a silent return", () => {
+  // one cap constant, checked before the read; drag-drop, paste and both pickers all
+  // funnel through shipFileToHost, so the toast covers every arrival path
+  assert.match(RENDER, /const SHIP_MAX_BYTES = 50 \* 1024 \* 1024;/);
+  assert.match(RENDER, /if \(f\.size > SHIP_MAX_BYTES\) \{/);
+  // the refusal names the file, its actual size, and the 50 MB cap
+  assert.match(RENDER, /warnToast\(\(f\.name \|\| "This file"\) \+ " is " \+ \(f\.size \/ \(1024 \* 1024\)\)\.toFixed\(1\)/);
+  assert.match(RENDER, /attachments over 50 MB can't be shipped, so it was not attached\./);
+  // the bare silent return is gone
+  assert.doesNotMatch(RENDER, /too big to ship over postMessage/);
 });
