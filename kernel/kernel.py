@@ -2134,26 +2134,49 @@ def _mark_nudge_failed(gid, ev_t=None):
     if not rec or rec.get("failed") or rec.get("moot"):
         return None
     # MOOT, NOT FAILED (the user 2026-07-29): if a real judge FILED a verdict on this node after the
-    # response turn — an unblock ("answered in passing"), a fresh planner/closer block, a completion —
-    # then the judges have already ruled on evidence at least as new as ours, and "the response didn't
-    # resolve this" is a stale claim. Filing our procedural block anyway would overwrite that ruling AND
-    # resurface the node's LAST decision brief, which the later verdict may have just answered — the
-    # audited card sat in Needs-you presenting a question the user had answered and the unblocker had
-    # ruled answered, five minutes after the fact. Retire the record instead (`moot`, no `failed`, no
-    # block): the anti-loop gate keeps this arm from ever re-firing, and a genuinely still-stalled goal
-    # re-arms on the next GENUINE ended turn, judged against the post-verdict world. The verdict's
-    # FILING time (`at`; ev_t for legacy rows) is the event — same discipline as _nudge_fire_list's
-    # arm-time guard, applied at the eval end of the race. Rows the nudge pipeline itself wrote never
-    # count (jd.nudge_pipeline_row, the user 2026-07-30): placing the reply always files its own
-    # "reopened (nudge)" row after the response turn, and reading that as a fresh ruling mooted EVERY
-    # placed-but-unresolved reply — the ladder's escalation rung went dead and cards parked in Working
-    # with no chip, no block, and no reviver.
+    # response turn — an unblock ("answered in passing"), a completion — then the judges have already
+    # ruled on evidence at least as new as ours, and "the response didn't resolve this" is a stale
+    # claim. Filing our procedural block anyway would overwrite that ruling AND resurface the node's
+    # LAST decision brief, which the later verdict may have just answered — the audited card sat in
+    # Needs-you presenting a question the user had answered and the unblocker had ruled answered, five
+    # minutes after the fact. Retire the record instead (`moot`, no `failed`, no block): the anti-loop
+    # gate keeps this arm from ever re-firing, and a genuinely still-stalled goal re-arms on the next
+    # GENUINE ended turn, judged against the post-verdict world. The verdict's FILING time (`at`; ev_t
+    # for legacy rows) is the event — same discipline as _nudge_fire_list's arm-time guard, applied at
+    # the eval end of the race. Rows the nudge pipeline itself wrote never count (jd.nudge_pipeline_row,
+    # the user 2026-07-30): placing the reply always files its own "reopened (nudge)" row after the
+    # response turn, and reading that as a fresh ruling mooted EVERY placed-but-unresolved reply — the
+    # ladder's escalation rung went dead and cards parked in Working with no chip, no block, and no
+    # reviver.
+    #
+    # TWO row shapes never moot (2026-08-09, a card wedged in Working on an idle, finished session —
+    # both matched the bare filed-after test and together silenced the escalation with no reviver left):
+    # - a BLOCK row: it AGREES with the escalation ("the goal needs the user"), so it cannot mean stand
+    #   down. It only coexists with a still-'working' goal when a LATER unblock lifted it — judge that
+    #   unblock on its own merits — and a slow pass filing a block about pre-response evidence after the
+    #   response is not "a judge looked after the reply" (filing time as a proxy for a newer world — the
+    #   same-trigger lesson from the fire-side guard, met again at the eval end).
+    # - an UNBLOCK evidenced by the RESPONSE TURN ITSELF (ev_t == _ev): the unblocker judged the very
+    #   reply this evaluator is scoring and moved laterally — it lifted a block and resolved nothing, so
+    #   the stall stands and the escalation must proceed. The card's session had answered the status
+    #   check with a wrong claim that nothing was owed; the unblock believed it, the planner's nudge
+    #   unit declined to resolve, and moot then retired the one rung left — Working forever. An unblock
+    #   evidenced ELSEWHERE (the audited 2026-07-29 shape: the user's own earlier answer) still moots:
+    #   re-blocking there would re-present an answered brief.
     _ev = int(ev_t or now)
+
+    def _supersedes(e):
+        if (e.get("at") or e.get("ev_t") or 0) <= _ev or jd.nudge_pipeline_row(e):
+            return False               # predates the reply, or the machinery talking to itself
+        if e.get("kind") == "block":
+            return False               # agrees with the escalation — never a stand-down (see above)
+        if e.get("kind") == "unblock" and (e.get("ev_t") or 0) == _ev:
+            return False               # a lateral move off the reply itself — the stall stands
+        return True
+
     try:
         _nd0 = jd.load_goals(gid.rsplit(":", 1)[0]).get("nodes", {}).get(gid)
-        if _nd0 is not None and any((e.get("at") or e.get("ev_t") or 0) > _ev
-                                    and not jd.nudge_pipeline_row(e)
-                                    for e in _nd0.get("log") or []):
+        if _nd0 is not None and any(_supersedes(e) for e in _nd0.get("log") or []):
             nudged[gid] = dict(rec, moot=True)
             d["nudged"] = nudged
             _write_auto_nudge(d)
