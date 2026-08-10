@@ -1,0 +1,88 @@
+// Chat file links are filesystem-VERIFIED, and shortened mentions are FIXED.
+// The linkifier matched path-shaped tokens by SHAPE alone, so a bare `render.js` became a blue link
+// that 404'd on click — it resolved against the session's cwd, where no such file lives. The KERNEL
+// now resolves every shape-matched token at message-build time (build_session's _path_links: tier 1
+// exact stat, tiers 2/3 a UNIQUE match in `git ls-files -co --exclude-standard` run in the session's
+// cwd) and ships {token: open target} as `pathLinks` on user + assistant events. The client keeps
+// every shape gate it had and merely requires map membership; the map's value is what a click opens,
+// so a unique `sub/deep.py` mention opens the real kernel/sub/deep.py and hover shows that target.
+// Zero or several candidates → absent from the map → prose (a silently-wrong link is worse than no
+// link). render.ts has no jsdom harness → source pins + an executed tokenizer parity check over the
+// shared fixture (the kernel side runs the same fixture in tests/test_path_links.py).
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+
+test("the chat event carries the kernel's pathLinks verdict on user and assistant turns", () => {
+  assert.match(RENDER, /kind: "user";[^\n]*pathLinks\?: Record<string, string>/);
+  assert.match(RENDER, /kind: "assistant";[^\n]*pathLinks\?: Record<string, string>/);
+  assert.ok(KERNEL.includes('pl = _path_links(prompt, sid, a.get("uuid"), _pl_memo)'), "user events resolve their tokens");
+  assert.ok(KERNEL.includes('pl = _path_links(txt, sid, a.get("uuid"), _pl_memo)'), "assistant events resolve their tokens");
+  assert.ok(KERNEL.includes('ev["pathLinks"] = pl'), "the map rides the event");
+  // an EMPTY map still ships — its presence (not its size) is what tells the client a verdict exists
+  assert.ok(KERNEL.includes("if pl is not None:"), "None (no candidate tokens) ships nothing; {} ships");
+});
+
+test("membership in pathLinks gates the link, and the map's value is the OPEN target", () => {
+  // every existing shape gate stays — the map only ever narrows, never widens
+  assert.match(RENDER, /if \(!isUri && !looksLikeFilePath\(tok\) && !\(inCode && looksLikeBareFileName\(tok\)\)\) continue;/);
+  assert.match(RENDER, /const fixed = !isUri && pathLinks \? pathLinks\[tok\] : undefined;/);
+  assert.match(RENDER, /if \(!isUri && pathLinks && typeof fixed !== "string"\) continue;/);
+  // the fixed target is what opens (and openPathLink titles it, so hover shows where a fix points);
+  // with NO pathLinks key on the event (old kernel, cached payload) the token opens as written
+  assert.match(RENDER, /const open = isUri \? fileUriToPath\(tok\) : \(fixed \?\? tok\);/);
+  assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, open, true\)\);/);
+  assert.match(RENDER, /a\.title = "Open " \+ open;/);
+});
+
+test("file:// URIs are explicit absolute paths — never gated on the map", () => {
+  // both guards above test !isUri first, so a file:// token can't be dropped by the map…
+  assert.match(RENDER, /const isUri = \/\^file:\\\/\\\/\/i\.test\(tok\);/);
+  // …and the kernel never puts file:// tokens in it
+  assert.ok(KERNEL.includes('if not t.lower().startswith("file://")'), "kernel skips file:// tokens");
+});
+
+test("the kernel resolves in three tiers over the session repo's real file list", () => {
+  assert.ok(KERNEL.includes("def _path_links(md, sid, uuid, memo):"));
+  assert.ok(KERNEL.includes("def _resolve_path_token(tok, sid, memo):"));
+  assert.ok(KERNEL.includes('["git", "ls-files", "-co", "--exclude-standard"]'),
+    "untracked files count, ignored files never do");
+  // the asymmetric per-message cache: hits latch (no flapping), misses retry every build — a file
+  // mentioned before the Write that creates it links on the very rebuild that Write triggers
+  assert.ok(KERNEL.includes("_PATH_LINK_CACHE"), "per-message cache");
+  assert.ok(KERNEL.includes("misses = tuple(still)"), "misses are re-checked, not cached");
+  // one repo listing per build pass, built lazily, never keyed on .git/index mtime
+  assert.ok(KERNEL.includes("_pl_memo = {}"), "per-build memo");
+  assert.ok(KERNEL.includes("_REPO_LIST_MAX"), "a runaway listing skips tiers 2/3");
+});
+
+// executed: the Python tokenizer (_path_tokens) and CLICKABLE_PATH_RE must agree on what a token IS —
+// the map keys the kernel ships are what this client looks up, so drift silently unlinks. Same fixture
+// runs against the kernel in tests/test_path_links.py. The regex is EXTRACTED from render.ts, so this
+// pins the real one, not a copy.
+test("tokenizer parity: the client regex over the shared fixture", () => {
+  const m = RENDER.match(/const CLICKABLE_PATH_RE = \/(.*)\/gi;/);
+  assert.ok(m, "CLICKABLE_PATH_RE found in render.ts");
+  const fixture = JSON.parse(fs.readFileSync(
+    path.resolve(process.cwd(), "..", "tests", "fixtures", "path_token_parity.json"), "utf8"));
+  assert.ok(fixture.cases.length >= 10, "the fixture is the parity surface — keep it broad");
+  const re = new RegExp(m![1], "gi");
+  for (const c of fixture.cases as { text: string; tokens: string[] }[]) {
+    // replicate the client loop: match, strip trailing punctuation, resume after the STRIPPED token
+    const toks: string[] = [];
+    let pos = 0;
+    for (;;) {
+      re.lastIndex = pos;
+      const mm = re.exec(c.text);
+      if (!mm) break;
+      const tok = mm[0].replace(/[.,;:!?)\]}>"'`]+$/, "");
+      pos = Math.max(mm.index + tok.length, pos + 1);
+      if (tok && !toks.includes(tok)) toks.push(tok);
+    }
+    assert.deepEqual(toks, c.tokens, c.text);
+  }
+});
