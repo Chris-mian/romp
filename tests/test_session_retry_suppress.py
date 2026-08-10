@@ -117,7 +117,8 @@ class SessionRetrySuppressWiring(unittest.TestCase):
                       "the chat status exposes retrySuppressed so the client retry loop + card can read it")
 
     def test_pusher_runs_the_per_session_resume_sweep(self):
-        self.assertIn("_auto_resume_session_retry(int(time.time()), _tmux_sessions())", SRC,
+        # (now, tmux) — the cycle's ONE liveness snapshot, not a per-job fresh read (2026-08-10 CPU fix)
+        self.assertIn("_auto_resume_session_retry(now, tmux)", SRC,
                       "the pusher tick re-arms suppressed threads that land a clean turn")
 
 
