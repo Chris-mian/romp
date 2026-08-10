@@ -166,20 +166,22 @@ def _turn_romp_injected(turn):
 # The discriminating phrases in the resume notices romp injects to CONTINUE a machine-cut turn
 # (sdk_backend.BOOT_RESUME_NUDGE / CRASH_RESUME_NUDGE). A kernel restart or the session's own claude
 # process dying mid-turn ALSO mints a "[Request interrupted by user]" stop record — but romp, not the
-# user, caused that cut and immediately queued one of these notices as the very next user-role message
-# to pick the work back up. Matching on them (the SAME signal _stamp_interrupt_causes reads for the
-# chat seam's cause label) tells a MACHINE cut from a genuine user stop. Kept in lockstep with the
-# nudge text by test_kernel_interrupt_machine_cut.
+# user, caused that cut and immediately queued one of these notices to pick the work back up. The
+# notice is queued FIRST but is not always the very next user-role record on disk: a background task
+# the same restart killed can land its `<task-notification>` in between (the user 2026-08-10), which
+# is why _machine_cut_cause scans rather than peeking one atom. Matching on these phrases (the SAME
+# signal _stamp_interrupt_causes reads for the chat seam's cause label) tells a MACHINE cut from a
+# genuine user stop. Kept in lockstep with the nudge text by test_kernel_interrupt_machine_cut.
 INTR_RESTART_SIG = "kernel restarted and cut"        # BOOT_RESUME_NUDGE
 INTR_CRASH_SIG = "died mid-turn"                      # CRASH_RESUME_NUDGE
 
 
 def _interrupt_cause(nxt_atom):
-    """The MACHINE-cut cause named by the romp resume notice that FOLLOWS an interrupt record (its very
-    next user-role atom), or None for a genuine user stop. 'restart' = a kernel restart cut the turn;
-    'crash' = the session's own claude process died mid-turn. Both are cuts romp itself caused and is
-    already continuing (via the injected resume notice) — never a user-chosen stop, so they must not
-    suppress the nudge nor paint the "you stopped this" badge (the user 2026-07-14)."""
+    """The MACHINE-cut cause a romp resume notice names, or None for anything else. 'restart' = a
+    kernel restart cut the turn; 'crash' = the session's own claude process died mid-turn. Both are
+    cuts romp itself caused and is already continuing (via the injected resume notice) — never a
+    user-chosen stop, so they must not suppress the nudge nor paint the "you stopped this" badge (the
+    user 2026-07-14). Pure per-atom classifier; _machine_cut_cause owns FINDING the notice."""
     body = (_atom_user_text(nxt_atom) or "") if nxt_atom else ""
     if INTR_RESTART_SIG in body:
         return "restart"
@@ -188,18 +190,40 @@ def _interrupt_cause(nxt_atom):
     return None
 
 
+def _machine_cut_cause(users, i):
+    """The machine-cut cause for the interrupt record at users[i], or None for a genuine user stop.
+    Scans FORWARD for romp's resume notice instead of trusting users[i + 1] alone (the user
+    2026-08-10): the restart that cuts a turn kills its background tasks too, and their
+    `<task-notification>` records (author 'system') land BETWEEN the stop record and the notice — the
+    one-atom lookahead read the notification, found no signature, and filed the machine cut as a user
+    stop, so the focus card re-blocked on the user (INTERRUPT_BLOCK_WHY) at the very moment its
+    finished answer arrived. Only romp's OWN atoms can name a cause (both resume nudges carry the
+    romp-injected marker, so they always author 'romp' — and a task notification whose output tail
+    happens to QUOTE a signature never reads as a notice). The scan stops at the first genuine human
+    message or the next interrupt record: past either, a notice belongs to a LATER cut, never this
+    one. Everything else (system notifications, peers, sdk, tool_result-only) is wedge — read past."""
+    for nxt in users[i + 1:]:
+        if nxt.get("author") == "romp":
+            cause = _interrupt_cause(nxt)
+            if cause:
+                return cause
+        elif em.is_interrupt_record(nxt) or nxt.get("author") == "human":
+            return None
+    return None
+
+
 def _interrupt_marks(turns):
     """(newest genuine user STOP, newest genuine human PROMPT) on this thread, in transcript time —
     the one place the two are tallied, so the predicate below and the interrupt block's EVIDENCE stamp
     read the same events. A MACHINE cut (kernel restart / process death) mints the same stop record but
-    is romp's own, so it never counts as a stop (_interrupt_cause, via the resume notice that follows
+    is romp's own, so it never counts as a stop (_machine_cut_cause, via the resume notice that follows
     it). The interrupt record itself authors 'human', so it's classified FIRST."""
     users = [a for turn in turns for a in (turn.get("atoms") or []) if a.get("type") == "user"]
     last_intr = last_human = 0
     for i, a in enumerate(users):
         t = a.get("t", 0)
         if em.is_interrupt_record(a):
-            if _interrupt_cause(users[i + 1] if i + 1 < len(users) else None):
+            if _machine_cut_cause(users, i):
                 continue                                 # machine cut → romp re-engaged, not the user
             last_intr = max(last_intr, t)
         elif a.get("author") == "human":
@@ -11586,9 +11610,13 @@ def _interrupt_settle(events, txt, atom=None):
 def _stamp_interrupt_causes(events):
     """Label each interrupt marker with WHY the turn was cut, when the transcript itself says: after a
     kernel-restart cut (BOOT_RESUME_NUDGE) or a mid-turn process death (CRASH_RESUME_NUDGE) the resume
-    notice romp injects is the next user-role event, so the seam reads "interrupted — kernel restart"
-    instead of implying the user pressed stop (the user 2026-07-09). Event-based: keyed on the notice
-    record romp itself wrote, never a time window. No notice → a genuine user stop → unlabeled."""
+    notice romp injects follows the marker, so the seam reads "interrupted — kernel restart" instead
+    of implying the user pressed stop (the user 2026-07-09). Event-based: keyed on the notice record
+    romp itself wrote, never a time window. No notice → a genuine user stop → unlabeled. The scan
+    reads PAST non-human user records (the user 2026-08-10: a `<task-notification>` from a background
+    task the same restart killed wedged between the marker and the notice, and "first user-role event
+    decides" mislabeled the machine cut as a user stop) — only romp's own notice, the user speaking,
+    or the NEXT cut's marker decides the seam."""
     for i, ev in enumerate(events):
         if not ev.get("interruptMarker"):
             continue
@@ -11601,7 +11629,7 @@ def _stamp_interrupt_causes(events):
             if nxt.get("rompSystem"):
                 body = nxt.get("md") or ""
                 cause = ("restart" if INTR_RESTART_SIG in body else    # same signatures the nudge gate
-                         "crash" if INTR_CRASH_SIG in body else None)  # reads (_interrupt_cause)
+                         "crash" if INTR_CRASH_SIG in body else None)  # reads (_machine_cut_cause)
                 if cause:
                     ev["interruptCause"] = cause
                     # A MACHINE cut leaves no "no response — turn settled" line (the user 2026-07-22): romp
@@ -11612,7 +11640,12 @@ def _stamp_interrupt_causes(events):
                     # time-marker restampMarkers still measures (at y=0), throwing off the spacing pass.
                     for s in settles:
                         s["_dropSettle"] = True
-            break                                         # first user-role event decides; a typed prompt = user stop
+                break                                     # romp's own notice decides, matched or not
+            if nxt.get("interruptMarker") or nxt.get("human"):
+                break                                     # a typed prompt = user stop; a later marker owns
+                #                                           any notice past it (never this seam's)
+            # any other user record — a `<task-notification>` from a background task the same restart
+            # killed — is wedge between the marker and the notice (the user 2026-08-10): read past it
     if any(e.get("_dropSettle") for e in events):
         events[:] = [e for e in events if not e.get("_dropSettle")]
     return events

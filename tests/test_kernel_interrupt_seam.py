@@ -111,6 +111,27 @@ class StampInterruptCauses(unittest.TestCase):
         km._stamp_interrupt_causes(evs)
         self.assertEqual(evs[0].get("interruptCause"), "restart")
 
+    def test_a_wedged_task_notification_does_not_hide_the_notice(self):
+        # a `<task-notification>` from a background task the same restart killed lands BETWEEN the
+        # marker and the notice (the user 2026-08-10) — a non-human user record, so the scan reads
+        # past it instead of ruling "a typed prompt = user stop" on it
+        evs = self._events("[romp] The romp kernel restarted and cut this session's in-flight turn; …")
+        evs.insert(3, {"kind": "user", "md": "",
+                       "reminders": ["<task-notification>a background task stopped</task-notification>"]})
+        km._stamp_interrupt_causes(evs)
+        self.assertEqual(evs[0].get("interruptCause"), "restart")
+
+    def test_a_second_marker_before_the_notice_keeps_the_first_seam_a_user_stop(self):
+        # genuine stop, then a machine cut further down: the later cut's notice labels ITS OWN seam,
+        # never the earlier one — the scan for the first marker stops at the second marker
+        evs = self._events(None)
+        evs.append(dict(MARKER))
+        evs.append({"kind": "user", "romp": True, "rompSystem": True,
+                    "md": "[romp] The romp kernel restarted and cut this session's in-flight turn; …"})
+        km._stamp_interrupt_causes(evs)
+        self.assertNotIn("interruptCause", evs[0], "the notice belongs to the SECOND cut")
+        self.assertEqual(evs[-2].get("interruptCause"), "restart")
+
 
 class BuildSessionWiring(unittest.TestCase):
     """build_session is too dependency-heavy to run here (live backends) — source pins, matching the
