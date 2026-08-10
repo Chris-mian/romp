@@ -19346,7 +19346,10 @@ _LANDING_COLLAPSE_JS = """
     document.body.classList.toggle('po-timeline',!!po.timeline);
     Array.prototype.forEach.call(document.querySelectorAll('.rail-btn[data-pane]'),function(b){
       var k=b.getAttribute('data-pane');b.classList.toggle('on',!!po[k]);
-      b.title=(po[k]?'hide':'show')+' the '+(LBL[k]||k);});
+      // tooltip carries the pane command's CURRENT binding (hover discoverability, the user 2026-08-10) —
+      // __rompKeyHint is palette-main's, absent until it boots; the romp:keys nudge below re-applies then
+      var h=(window.__rompKeyHint&&window.__rompKeyHint('pane.'+(k==='fleet'?'outline':k)))||'';
+      b.title=(po[k]?'hide':'show')+' the '+(LBL[k]||k)+(h?' ('+h+')':'');});
     try{window.dispatchEvent(new Event('romp-panes'));}catch(e){}   // nudge the timeline band to auto-fit when toggled
   }
   function togglePane(k,to){if(!(k in po))return;var nv=(to===undefined)?!po[k]:!!to;
@@ -19356,6 +19359,8 @@ _LANDING_COLLAPSE_JS = """
   Array.prototype.forEach.call(document.querySelectorAll('.rail-btn[data-pane]'),function(b){
     b.addEventListener('click',function(){togglePane(b.getAttribute('data-pane'));});});
   apply();
+  window.addEventListener('romp:keys',apply);   // a rebind (or palette-main's boot nudge) refreshes the titles
+  window.addEventListener('storage',apply);     // …including one made in another tab
 })();
 """
 
@@ -20105,24 +20110,24 @@ def _landing():
             "<div class=rail-btn data-pane=feed>Feed</div>"
             # the Claude /usage rate-limit bars (Pro/Max): three compact vertical bar-pairs (used % colored +
             # elapsed % slate), %-label, full detail on hover — side-by-side in the bottom bar.
-            "<div id=rail-usage></div>"
+            "<div id=rail-usage data-keycmd=usage.open></div>"
             "</div>"   # /.rail-scroll
             # refresh + network + settings, pinned to the far RIGHT (settings last), always visible:
             "<div class=rail-acts>"
             # the log's warning triangle (a bell until 2026-07-28 — the bell now means the
             # notification toggles): monochrome outline like its neighbors; goes red with the unread
             # count drawn INSIDE the triangle when an entry lands (see _ERRS_SVG + _LANDING_ERRS_JS).
-            "<div class=rail-act id=rail-errs title='Log — click to open' aria-label=Log>"
+            "<div class=rail-act id=rail-errs data-keycmd=log.open title='Log — click to open' aria-label=Log>"
             + _ERRS_SVG +
             "</div>"
             # the refresh glyph is a REAL browser-style reload icon now (the user 2026-07-27: the ↻ text
             # glyph stopped at 11 o'clock and never read as refresh): a near-full circular arc sweeping
             # clockwise to 1 o'clock with the arrowhead there, drawn like its svg neighbors. QUOTED attrs.
-            "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>"
+            "<div class=rail-act id=rail-refresh data-keycmd=kernel.restart title='Restart the romp kernel' aria-label=Refresh>"
             + _REFRESH_SVG + "</div>"
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
             # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
-            "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
+            "<div class=rail-act id=rail-net data-keycmd=net.open title='Remote kernels' aria-label='Remote kernels'>"
             # A network tree: one node wired down a bus to two below. ATTRIBUTES MUST BE QUOTED — unquoted
             # `fill=currentColor/>` HTML-parses as the invalid color `currentColor/`, so the filled squares
             # render INVISIBLE and only the connector lines show (the whole "single square" saga, 2026-06-30).
@@ -20145,7 +20150,7 @@ def _landing():
             "<path d='M8 2 C5.7 2 4.3 3.8 4.3 6.2 L4.3 9 L3 11.2 L13 11.2 L11.7 9 L11.7 6.2 C11.7 3.8 10.3 2 8 2 Z'"
             " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
             "<path d='M6.5 13 A1.7 1.7 0 0 0 9.5 13' fill='none' stroke='currentColor' stroke-width='1.2'/></svg></div>"
-            "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
+            "<div class=rail-act id=rail-gear data-keycmd=settings.open title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
             "</div>"   # /.pane-rail (bottom bar)
             "</div>"
@@ -20161,13 +20166,13 @@ def _landing():
             # the ACTUAL rail icons, not words (the user 2026-07-11). Usage has no desktop icon (the rail
             # shows the live bars themselves) — its icon is the same motif: two stacked fill bars at
             # different levels. SVG ATTRIBUTES MUST BE QUOTED (the rail-net invisible-squares saga).
-            "<button class=mact data-act=usage aria-label=Usage title=Usage>"
+            "<button class=mact data-act=usage data-keycmd=usage.open aria-label=Usage title=Usage>"
             "<svg viewBox='0 0 16 16' width='18' height='18'>"
             "<rect x='1' y='3' width='14' height='4' rx='1' fill='none' stroke='currentColor' stroke-width='1'/>"
             "<rect x='1' y='3' width='9' height='4' rx='1' fill='currentColor'/>"
             "<rect x='1' y='9' width='14' height='4' rx='1' fill='none' stroke='currentColor' stroke-width='1'/>"
             "<rect x='1' y='9' width='6' height='4' rx='1' fill='currentColor'/></svg></button>"
-            "<button class=mact data-act=net aria-label='Remote kernels' title='Remote kernels'>"
+            "<button class=mact data-act=net data-keycmd=net.open aria-label='Remote kernels' title='Remote kernels'>"
             "<svg viewBox='0 0 16 16' width='18' height='18'>"
             "<path d='M8 5 L8 8 M3 11 L3 8 L13 8 L13 11' fill='none' stroke='currentColor' stroke-width='1' stroke-linejoin='round'/>"
             "<rect class=rn-me x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
@@ -20175,9 +20180,9 @@ def _landing():
             "<rect class=rn-b x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></button>"
             # restart the kernel (the user 2026-07-22): the rail's ↻ is hidden on mobile, so mirror it here.
             # Same glyph as the rail; wired to window.__rompRestart (POST /restart, poll /healthz, reload).
-            "<button class=mact data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
+            "<button class=mact data-act=restart data-keycmd=kernel.restart aria-label='Restart kernel' title='Restart kernel'>" + _REFRESH_SVG + "</button>"
             # the log triangle on mobile too (same glyph + in-body count; opens the same popover)
-            "<button class=mact id=merr data-act=errs aria-label=Log title='Log — click to open'>"
+            "<button class=mact id=merr data-act=errs data-keycmd=log.open aria-label=Log title='Log — click to open'>"
             + _ERRS_SVG +
             "</button>"
             # the push bell (plans/ios-app.md proposal 2): opt this DEVICE into needs-you notifications.
@@ -20189,7 +20194,7 @@ def _landing():
             " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
             "<path d='M6.5 13 A1.7 1.7 0 0 0 9.5 13' fill='none' stroke='currentColor' stroke-width='1.2'/></svg></button>"
             # settings wears the desktop rail's OWN gear glyph, ⛭ (U+26ED), not the outlined star it had.
-            "<button class=mact data-act=settings aria-label=Settings title=Settings>⛭</button>"
+            "<button class=mact data-act=settings data-keycmd=settings.open aria-label=Settings title=Settings>⛭</button>"
             "</nav>"
             # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
             "<div id=rnet-back hidden><div id=rnet-panel>"
