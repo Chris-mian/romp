@@ -16066,11 +16066,14 @@ def _dedup_sig(msg, s):
     return s
 
 
-def _send_client(c, key, msg, pre=None):
+def _send_client(c, key, msg, pre=None, sig=None):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
     `pre` is the already-serialized msg (json.dumps(msg)) when the caller has it cached — passing it lets
     a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache).
+    `sig` is the already-computed dedup signature for the same reason (the 2026-08-10 CPU fix, round
+    two): a volatile-keyed payload (feed, timeline bars) re-dumped its FILTERED self per client per
+    cycle just to compare; the pusher now computes both once per cycle and shares them.
 
     Dedup compares _dedup_sig, NOT the raw bytes: a field that ticks with the clock would otherwise make
     every payload look new. The bytes actually sent are still the full `s`, so the client keeps receiving a
@@ -16081,7 +16084,7 @@ def _send_client(c, key, msg, pre=None):
     and the only visible symptom is this dedup never hitting. Finding the last one took a hand-written
     WebSocket client; the log makes the next one obvious."""
     s = pre if pre is not None else json.dumps(msg)
-    sig = _dedup_sig(msg, s)
+    sig = sig if sig is not None else _dedup_sig(msg, s)
     prev = c.setdefault("sent", {}).get(key)
     now = time.time()
     if prev is not None and prev[0] == sig and (now - prev[1]) < _DEDUP_REPOST_S:
@@ -16106,7 +16109,12 @@ def _send_chat(c, m, ms, change_from, led_changed):
     fork) — the browser maps `from` through its own headFrom, truncates, and appends. Otherwise (a fresh
     connect, a fork, or a change down in the un-loaded head) it gets a full {type:session} TRIMMED to the last
     WIRE_TAIL events + `headFrom`/`headTotal` so the startup transfer is bounded; older history streams in on
-    scroll-back via loadOlder→chatHead. The LEDGER rides the tail ONLY when it changed (judge pass)."""
+    scroll-back via loadOlder→chatHead. The LEDGER rides the tail ONLY when it changed (judge pass).
+
+    `ms` is the payload's full serialization, LAZY (the 2026-08-10 CPU fix, round two): None until some
+    client actually takes the untrimmed full-send branch — the only consumer — at which point it is
+    materialized ONCE and RETURNED, so the caller can hand it to the next client and keep it in the build
+    cache. The steady-state delta path never serializes the whole payload at all."""
     sid = m["id"]
     evs = m.get("events") or []
     total = len(evs)
@@ -16120,14 +16128,17 @@ def _send_chat(c, m, ms, change_from, led_changed):
             tail["ledger"] = m.get("ledger")
         _send_client(c, ("chat", sid), tail)
         st[sid] = (pc[0], pc[1])                       # same tail base, now caught up through `total`
-        return
+        return ms
     head_from = max(0, total - WIRE_TAIL)
     if head_from == 0:
-        _send_client(c, ("chat", sid), m, pre=ms)     # whole thing fits → reuse the cached full serialization
+        if ms is None:
+            ms = json.dumps(m)                        # materialize the lazy serialization, once
+        _send_client(c, ("chat", sid), m, pre=ms)     # whole thing fits → reuse the full serialization
     else:                                             # trim to the tail + mark the offset (browser renders it partial)
         m_send = dict(m); m_send["events"] = evs[head_from:]; m_send["headFrom"] = head_from; m_send["headTotal"] = total
         _send_client(c, ("chat", sid), m_send)
     st[sid] = ((evs[head_from].get("uuid") if head_from < total else None), head_from)
+    return ms
 
 
 # The active recency colormap (the user 2026-06-16 wanted a chooser): persisted in STATE/colormap, read
@@ -16657,17 +16668,19 @@ def _push(targets, connect=False, tmux=None):
                 else:
                     _t0 = time.monotonic()
                     m = build_session(s["sid"], now, tmux)
-                    ms = json.dumps(m) if m is not None else None
-                    # Build + serialize together: the ACTIVE tab skips the cache above by design, so this
-                    # is what the watched session pays on every single push. If chat ever feels slow again,
-                    # this number and the deduped= on the matching send say which half is at fault.
+                    # The full serialization is LAZY (the 2026-08-10 CPU fix, round two): steady state
+                    # sends only chatTail suffixes, so an eager json.dumps of the WHOLE payload — multi-MB
+                    # for a busy active tab, re-dumped every cycle just to be discarded — was the largest
+                    # slice of the pusher's remaining burn (json-encode ≈ half its busy samples).
+                    # _send_chat materializes it on the first FULL send (a fresh client, a fork) and hands
+                    # it back; the post-send cache store below keeps whatever materialized.
+                    ms = None
+                    # The ACTIVE tab skips the cache above by design, so this build is what the watched
+                    # session pays on every single push. If chat ever feels slow again, this number and
+                    # the deduped= on the matching send say which half is at fault.
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=0, active=int(is_active),
                           ms=round((time.monotonic() - _t0) * 1000, 1),
-                          events=(len(m.get("events") or []) if m else 0), bytes=(len(ms) if ms else 0))
-                    if m is not None and sig is not None:
-                        if len(_built_chat) > 256:       # bounded by fleet size; a wholesale clear is fine
-                            _built_chat.clear()
-                        _built_chat[s["sid"]] = (sig, m, ms)
+                          events=(len(m.get("events") or []) if m else 0))
                 if not m:
                     continue
                 _note_chat_divergence(s["sid"], m.get("name") or "",
@@ -16692,7 +16705,15 @@ def _push(targets, connect=False, tmux=None):
                     _prev_chat_events[m["id"]] = m.get("events") or []
                     _prev_chat_ledger[m["id"]] = m.get("ledger")
                 for c in chat_clients:
-                    _send_chat(c, m, ms, change_from, led_changed)   # flush as built → the active tab lands first
+                    # flush as built → the active tab lands first; a full send materializes the lazy
+                    # serialization ONCE and every later client (and the cache below) reuses it
+                    ms = _send_chat(c, m, ms, change_from, led_changed)
+                # cache AFTER the sends, so a serialization a full send just paid for is kept — the next
+                # connect-push for this unchanged tab reuses it instead of dumping again
+                if sig is not None:
+                    if len(_built_chat) > 256:           # bounded by fleet size; a wholesale clear is fine
+                        _built_chat.clear()
+                    _built_chat[s["sid"]] = (sig, m, ms)
             shown_sids = {s["sid"] for s in chat_list}
             for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
                 if sid not in shown_sids:
@@ -16745,13 +16766,24 @@ def _push(targets, connect=False, tmux=None):
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
+    # Serialize the shared payloads ONCE per cycle (the 2026-08-10 CPU fix, round two): feed + bars both
+    # carry volatile top-level keys, so every _send_client used to pay TWO dumps per client per cycle —
+    # the full bytes and the filtered sort_keys dedup sig — even when nothing changed and the send
+    # deduped. One serialization + one sig per cycle now serves every client of that payload.
+    feed_ms = feed_sig = bars = bars_ms = bars_sig = None
     for c in targets:
         if c["app"] in ("feed", "fleet"):   # the feed pane AND the Fleet view both ride the feed payload (Fleet reads feed.ledgers)
-            _send_client(c, ("feed",), feed)
+            if feed_ms is None:
+                feed_ms = json.dumps(feed)
+                feed_sig = _dedup_sig(feed, feed_ms)
+            _send_client(c, ("feed",), feed, pre=feed_ms, sig=feed_sig)
         elif c["app"] == "timeline" and timeline is not None:
-            _send_client(c, ("timelinebars",), {"type": "bars", "turns": timeline["turns"],
-                         "judging": timeline["judging"], "messages": timeline["messages"],
-                         "now": timeline["now"], "warming": tl_warming})
+            if bars_ms is None:
+                bars = {"type": "bars", "turns": timeline["turns"], "judging": timeline["judging"],
+                        "messages": timeline["messages"], "now": timeline["now"], "warming": tl_warming}
+                bars_ms = json.dumps(bars)
+                bars_sig = _dedup_sig(bars, bars_ms)
+            _send_client(c, ("timelinebars",), bars, pre=bars_ms, sig=bars_sig)
     with _clients_lock:
         _clients[:] = [c for c in _clients if c.get("alive", True)]
 
@@ -16793,10 +16825,10 @@ def _push_session_now(sid):
         m = build_session(sid, now, tmux)
         if not m:
             return
-        ms = json.dumps(m)
+        ms = None                                    # lazy: the first full send materializes it, the rest reuse
         for c in targets:
             _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
-            _send_chat(c, m, ms, 0, True)            # change_from 0 → always the full-session form
+            ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
 

@@ -107,5 +107,56 @@ class OneSnapshotPerCycle(unittest.TestCase):
         self.assertEqual(reads, [], "a provided snapshot is enough — no fresh liveness reads")
 
 
+class LazyChatSerialization(unittest.TestCase):
+    """The chat payload's full serialization is LAZY (round two of the 2026-08-10 CPU fix): steady
+    state sends only chatTail suffixes, so eagerly json.dumps-ing the whole multi-MB active-tab
+    payload every cycle — profiled as ~half the pusher's remaining busy samples — bought nothing.
+    _send_chat materializes it only on the untrimmed full-send branch and hands it back for reuse."""
+
+    def _client(self, caught_up_from=None, sid="s1", head_uuid="e0"):
+        sent = []
+        c = {"app": "chat", "alive": True, "send": lambda s: sent.append(s), "sent": {}}
+        if caught_up_from is not None:
+            c["echat"] = {sid: (head_uuid, caught_up_from)}
+        return c, sent
+
+    def _payload(self, sid="s1", n=5):
+        return {"type": "session", "id": sid, "status": {"state": "working"},
+                "events": [{"uuid": "e%d" % i, "kind": "user", "text": "m%d" % i} for i in range(n)]}
+
+    def test_a_caught_up_client_gets_a_tail_and_no_full_serialization_happens(self):
+        m = self._payload()
+        c, sent = self._client(caught_up_from=0)
+        out = km._send_chat(c, m, None, 3, False)
+        self.assertIsNone(out, "no full send → the lazy serialization was never materialized")
+        self.assertEqual(len(sent), 1)
+        got = json.loads(sent[0])
+        self.assertEqual((got["type"], got["from"]), ("chatTail", 3))
+
+    def test_a_fresh_client_materializes_it_once_and_hands_it_back(self):
+        m = self._payload()
+        c, sent = self._client()                     # no echat state → the full-send branch
+        out = km._send_chat(c, m, None, 3, False)
+        self.assertIsInstance(out, str, "the full send materialized the serialization")
+        self.assertEqual(json.loads(out)["id"], "s1")
+        self.assertEqual(sent, [out], "the exact materialized bytes went to the client")
+        # a second full-send client REUSES the returned serialization verbatim
+        c2, sent2 = self._client()
+        out2 = km._send_chat(c2, m, out, 3, False)
+        self.assertIs(out2, out)
+
+    def test_send_client_honors_a_precomputed_dedup_sig(self):
+        # feed/bars carry volatile keys, so _dedup_sig re-dumps the FILTERED payload per call — the
+        # pusher now computes it once per cycle and passes it down. Prove the parameter is authoritative:
+        # two payloads differing in a NON-volatile field but sharing a passed sig must dedup.
+        sent = []
+        c = {"app": "feed", "alive": True, "send": lambda s: sent.append(s)}
+        m1 = {"type": "bars", "now": 1, "x": "a"}
+        m2 = {"type": "bars", "now": 2, "x": "b"}    # x differs → a recomputed sig would NOT dedup
+        km._send_client(c, ("t",), m1, pre=json.dumps(m1), sig="same")
+        km._send_client(c, ("t",), m2, pre=json.dumps(m2), sig="same")
+        self.assertEqual(len(sent), 1, "the passed sig, not a recomputation, drives the dedup")
+
+
 if __name__ == "__main__":
     unittest.main()
