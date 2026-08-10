@@ -122,6 +122,48 @@ class MachineCutSuppression(unittest.TestCase):
                              uatom(T0 + 40, "ok, take plan B")])
         self.assertFalse(km._interrupt_suppresses_nudge(turns))
 
+    # --- the wedge (the user 2026-08-10): the restart that cuts the turn kills its background tasks
+    # too, and their `<task-notification>` records land BETWEEN the stop record and the resume notice.
+    # The one-atom lookahead read the notification, found no signature, and filed the machine cut as a
+    # user stop — so the focus card re-blocked "you stopped this session mid-turn" at the very moment
+    # its finished answer arrived.
+
+    WEDGE = "<task-notification>the restart killed background task b0000000000</task-notification>"
+
+    def test_a_wedged_task_notification_does_not_hide_the_cut(self):
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 61, self.WEDGE, "system"),
+                             uatom(T0 + 62, sb.BOOT_RESUME_NUDGE, "romp")])
+        self.assertFalse(km._interrupt_suppresses_nudge(turns),
+                         "the notice past the wedged notification still names the cut as romp's")
+
+    def test_a_genuine_stop_with_a_trailing_notification_still_suppresses(self):
+        # same wedge, no notice anywhere: the stop is real — scanning past the notification must
+        # never invent a machine cut
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 61, self.WEDGE, "system")])
+        self.assertTrue(km._interrupt_suppresses_nudge(turns))
+
+    def test_a_notification_quoting_a_signature_is_not_a_notice(self):
+        # a background task's output tail can QUOTE the signature phrase (romp's own test runs echo the
+        # nudge texts) — only romp's OWN notice (author 'romp') names a cause, never a notification body
+        quoting = "<task-notification>test output: '%s'</task-notification>" % km.INTR_RESTART_SIG
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 61, quoting, "system")])
+        self.assertTrue(km._interrupt_suppresses_nudge(turns),
+                        "a genuine stop stays a stop even when a notification echoes the phrase")
+
+    def test_a_notice_past_the_next_stop_record_stays_a_user_stop(self):
+        # genuine stop → a romp nudge re-engages → the nudged turn is machine-cut and resumed: the scan
+        # for the FIRST record stops at the second record, so the later notice never reaches back to
+        # disown the real stop — and the user's stop is still the newest thing THEY did → suppressed
+        turns = self._turns([uatom(T0, "wire the thing"), intr(T0 + 10),
+                             uatom(T0 + 20, "status? pick it back up", "romp"),
+                             intr(T0 + 30),
+                             uatom(T0 + 31, sb.BOOT_RESUME_NUDGE, "romp")])
+        self.assertTrue(km._interrupt_suppresses_nudge(turns),
+                        "the notice belongs to the SECOND cut; the first stop is the user's")
+
 
 class _FeedHarness(unittest.TestCase):
     """Shared transcript + store + feed fixture for the tick-level classes below (no tests of its
@@ -158,14 +200,20 @@ class _FeedHarness(unittest.TestCase):
         km._autonudge_cache.clear()
         self.td.cleanup()
 
-    def _machine_cut(self, notice):
+    def _machine_cut(self, notice, wedge=None):
         # a genuine turn CUT mid-flight (interrupt record ends it), then romp's resume notice opens a
-        # fresh turn that ran and re-stalled with the goal still working
+        # fresh turn that ran and re-stalled with the goal still working. `wedge`: a user-role record
+        # (a `<task-notification>` from a background task the same restart killed) that lands BETWEEN
+        # the stop record and the notice (the user 2026-08-10)
         recs = [uline(T0, "wire the thing", "u1"),
                 aline(T0 + 20, "digging in", "a1", "u1", "tool_use"),
-                uline(T0 + 60, "[Request interrupted by user]", "u2", "a1"),
-                uline(T0 + 61, notice, "u3", "u2"),
-                aline(T0 + 80, "picked it back up; still on it", "a2", "u3", "end_turn")]
+                uline(T0 + 60, "[Request interrupted by user]", "u2", "a1")]
+        prev = "u2"
+        if wedge:
+            recs.append(uline(T0 + 61, wedge, "u2b", prev))
+            prev = "u2b"
+        recs += [uline(T0 + 62, notice, "u3", prev),
+                 aline(T0 + 80, "picked it back up; still on it", "a2", "u3", "end_turn")]
         self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
 
     def _genuine_stop(self):
@@ -245,6 +293,21 @@ class MachineCutFeedAndNudge(_FeedHarness):
         km._interrupt_block_tick(NOW, self.tmux)
         self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "working")
         self.assertFalse(self._card().get("interrupted"))
+
+    def test_restart_cut_with_a_wedged_task_notification_is_not_blocked(self):
+        # end to end through the real parse (author_of assigns the wedge 'system', the notice 'romp'):
+        # the notification a dying background task lands between the stop record and the notice must
+        # not turn the machine cut into "you stopped this session mid-turn" (the user 2026-08-10 — the
+        # audited card re-blocked at the very moment its finished answer arrived)
+        self._machine_cut(sb.BOOT_RESUME_NUDGE,
+                          wedge="<task-notification>the restart killed a background task"
+                                "</task-notification>")
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][SID + ":gw"], "working",
+                         "a machine cut is continued even when a notification wedges before the notice")
+        self.assertFalse(self._card().get("interrupted"))
+        self.assertEqual(self._card()["column"], "working")
 
     # --- genuine user stop: blocked (needs-you) even with auto-nudge OFF --------------------------
 
