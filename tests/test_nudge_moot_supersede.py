@@ -33,6 +33,17 @@ same reopen row — no chip, no needs-you block, the anti-loop arm pinned, the c
 with no reviver until the user happened to message the session. jd.nudge_pipeline_row names the
 machinery's own rows (src=="nudge" plus _reopen(by="nudge")'s two why strings) and the moot scan
 skips them.
+
+AND (2026-08-09): two more row shapes never moot — both matched the bare filed-after test on a
+finished idle session and together silenced the escalation with no reviver left, the card wedged in
+Working. A BLOCK row agrees with the escalation, so it can never mean stand down; a late-FILED block
+about pre-response evidence (a slow closer pass) is filing time masquerading as a newer world, the
+fire-side same-trigger lesson met again at the eval end. And an UNBLOCK evidenced by the RESPONSE
+TURN ITSELF is the unblocker judging the very reply this evaluator scores and moving laterally — it
+lifted a block and resolved nothing (the synthetic shape: the reply wrongly claimed a service restart
+was already queued and nothing was owed; the unblocker believed it, the planner's nudge unit resolved
+nothing), so the stall stands and the failed-nudge block must land. An unblock evidenced ELSEWHERE
+(the 2026-07-29 shape above: the user's own earlier answer) still moots.
 """
 import json
 import os
@@ -191,6 +202,39 @@ class NudgeFailedMootWhenSuperseded(unittest.TestCase):
         self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "moot")
         store = km.jd.load_goals(SID)
         self.assertFalse(store["nodes"][G1]["blocked"])
+
+    def test_an_unblock_evidenced_by_the_response_itself_does_not_moot(self):
+        # THE 2026-08-09 WEDGE (synthetic): the session finished its work; the closer blocked
+        # ("restarting the api service is left to you"); the status-check reply wrongly claimed the
+        # restart was already queued and nothing was owed; the unblocker believed it and unblocked —
+        # evidenced by that very reply — while the planner's nudge unit resolved nothing. The bare
+        # filed-after scan read the late closer block AND the reply-evidenced unblock as a moved
+        # story: moot, no chip, no block, and no reviver left — Working forever on an idle session.
+        self._write_store([
+            {"ev_t": ARM_T, "src": "planner", "kind": "block",
+             "why": "restart the api service yourself", "at": RESP_T - 25},
+            {"ev_t": ARM_T, "src": "unblocker", "kind": "unblock",
+             "why": "answered in passing: the work moved past the refusal", "at": RESP_T - 12},
+            {"ev_t": ARM_T, "src": "closer", "kind": "block",
+             "why": "the service restart is left to you", "at": RESP_T + 7},
+            {"ev_t": RESP_T, "src": "unblocker", "kind": "unblock",
+             "why": "answered in passing: the restart is already queued", "at": RESP_T + 80}])
+        self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "failed")
+        store = km.jd.load_goals(SID)
+        self.assertTrue(store["nodes"][G1]["blocked"],
+                        "the escalation lands: an unresolved status check on an idle session IS needs-you")
+        rec = km._auto_nudge_data()["nudged"][G1]
+        self.assertTrue(rec.get("failed"))
+        self.assertFalse(rec.get("moot"), "a lateral unblock off the reply itself is not a stand-down")
+
+    def test_a_late_filed_block_does_not_moot(self):
+        # a slow pass filing a BLOCK about pre-response evidence after the response turn: filing time
+        # is not a newer world (the fire-side same-trigger lesson, at the eval end) — and a block
+        # agrees with the escalation, so it can never mean stand down
+        self._write_store([{"ev_t": ARM_T, "src": "closer", "kind": "block",
+                            "why": "needs your credentials", "at": RESP_T + 40}])
+        self.assertEqual(km._mark_nudge_failed(G1, ev_t=RESP_T), "failed")
+        self.assertTrue(km._auto_nudge_data()["nudged"][G1].get("failed"))
 
     def test_a_moot_record_is_settled_and_never_reevaluated(self):
         self._write_store([{"ev_t": RESP_T - 10, "src": "unblocker", "kind": "unblock",
