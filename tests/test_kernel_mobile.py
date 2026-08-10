@@ -45,10 +45,10 @@ class LandingShell(unittest.TestCase):
         # ICONS, not words (the user 2026-07-11): settings wears the desktop rail's own gear glyph, net its
         # network-tree SVG; usage gets the theme's own motif — two stacked fill bars at different levels
         # the settings icon is the SAME gear the desktop rail uses (U+26ED ⛭), not the outlined star it had
-        self.assertIn("data-act=settings aria-label=Settings title=Settings>⛭</button>", html)
-        self.assertIn("id=rail-gear title=Settings aria-label=Settings>⛭</div>", html)  # matches the rail
+        self.assertIn("data-act=settings data-keycmd=settings.open aria-label=Settings title=Settings>⛭</button>", html)
+        self.assertIn("id=rail-gear data-keycmd=settings.open title=Settings aria-label=Settings>⛭</div>", html)  # matches the rail
         self.assertNotIn("&#9885;", html)                               # the old outlined-star glyph is gone
-        self.assertIn("data-act=net aria-label='Remote kernels'", html)
+        self.assertIn("data-act=net data-keycmd=net.open aria-label='Remote kernels'", html)
         self.assertIn("<rect x='1' y='3' width='9' height='4' rx='1' fill='currentColor'/>", html)   # the used-bar fill
         self.assertNotIn(">Gear</button>", html)
         self.assertIn("{romp:'openSettings'}", km._LANDING_MOBILE_JS)   # same path as the desktop gear
@@ -66,7 +66,7 @@ class LandingShell(unittest.TestCase):
         # (POST /restart, poll /healthz, reload) so both surfaces share one path, not a copy.
         html = km._landing()
         # …and it wears the SAME browser-style reload svg as the rail (the ↻ text glyph is gone, 2026-07-27)
-        self.assertIn("data-act=restart aria-label='Restart kernel' title='Restart kernel'>" + km._REFRESH_SVG + "</button>", html)
+        self.assertIn("data-act=restart data-keycmd=kernel.restart aria-label='Restart kernel' title='Restart kernel'>" + km._REFRESH_SVG + "</button>", html)
         self.assertIn("window.__rompRestart=function", km._LANDING_SETTINGS_JS)   # the shared restart path
         self.assertIn("fetch('/restart',{method:'POST'})", km._LANDING_SETTINGS_JS)
         self.assertIn("rf.onclick=function(){rf.style.pointerEvents='none';rf.style.opacity='0.5';window.__rompRestart();}", km._LANDING_SETTINGS_JS)

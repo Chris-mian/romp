@@ -14,10 +14,22 @@ export type PaletteCommand = {
   run: () => void;
 };
 
+// Every DEFAULT key binding, by command id — ONE table, so the palette registration below, the shell
+// dispatcher, and the hover hints (keybindings' titleWithKey) can never disagree about what a command
+// answers to out of the box. A command absent here ships unbound; the shortcuts dialog can still bind
+// it, and every surface reads the result from the overrides store.
+export const DEFAULT_CHORDS: Record<string, string> = {
+  "session.jump": "Mod+O",
+  "session.new": "Mod+Shift+O",
+  "palette.toggle": "Mod+P",
+};
+
 const commands = new Map<string, PaletteCommand>();
 
 export function registerCommand(cmd: PaletteCommand): void {
-  commands.set(cmd.id, cmd);   // re-registering an id replaces it, so a re-boot never duplicates
+  // re-registering an id replaces it, so a re-boot never duplicates; the default chord comes from the
+  // one table above unless the caller carries its own
+  commands.set(cmd.id, cmd.chord === undefined ? { ...cmd, chord: DEFAULT_CHORDS[cmd.id] } : cmd);
 }
 
 export function commandList(): PaletteCommand[] {

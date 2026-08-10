@@ -7,6 +7,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { DEFAULT_CHORDS } from "./commands";
 
 const read = (f: string) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", f), "utf8");
 const PALETTE = read("palette.ts");
@@ -57,12 +58,17 @@ test("session rows wear the TAB identity language: bold name in the session colo
 
 // ── the shell boot: the bindings dispatcher, wired into every pane ─────────────────────────
 test("the defaults hold — Mod+O jump, Mod+Shift+O picker, Mod+P palette — through the bindings store", () => {
-  // the chords are DEFAULTS on the commands now (the user 2026-08-09, configurable shortcuts):
-  // one dispatcher resolves keydown → chord → command through the user's overrides
-  assert.match(MAIN, /registerCommand\(\{ id: "session\.jump", title: "Jump to a session", chord: "Mod\+O", run: openSessionSwitcher \}\);/);
-  assert.match(MAIN, /registerCommand\(\{ id: "session\.new", title: "New session", chord: "Mod\+Shift\+O", run: openNewSessionPicker \}\);/);
+  // the chords are DEFAULTS on the commands now (the user 2026-08-09, configurable shortcuts), and
+  // since 2026-08-10 they live in commands.ts's DEFAULT_CHORDS — one table shared with the hover
+  // hints — with registerCommand filling them in by id; one dispatcher resolves keydown → chord →
+  // command through the user's overrides
+  assert.equal(DEFAULT_CHORDS["session.jump"], "Mod+O");
+  assert.equal(DEFAULT_CHORDS["session.new"], "Mod+Shift+O");
+  assert.equal(DEFAULT_CHORDS["palette.toggle"], "Mod+P");
+  assert.match(MAIN, /registerCommand\(\{ id: "session\.jump", title: "Jump to a session", run: openSessionSwitcher \}\);/);
+  assert.match(MAIN, /registerCommand\(\{ id: "session\.new", title: "New session", run: openNewSessionPicker \}\);/);
   // the palette toggle is itself bindable, hidden from its own list; Cmd+Shift+P stays the browser's
-  assert.match(MAIN, /id: "palette\.toggle", title: "Command palette", chord: "Mod\+P", hidden: true/);
+  assert.match(MAIN, /id: "palette\.toggle", title: "Command palette", hidden: true/);
   assert.match(MAIN, /if \(!dispatchable\(e, isTyping\(e\.target\)\)\) return;/);
   assert.match(MAIN, /byChord = chordMap\(commandList\(\), loadOverrides\(\), mac\);/);
   assert.match(MAIN, /e\.preventDefault\(\); e\.stopPropagation\(\);\s*\n\s*palette\.close\(\);.*\n\s*runCommand\(id\);/);

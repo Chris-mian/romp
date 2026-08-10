@@ -21,6 +21,7 @@ import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { writeViewOrder } from "./view-order";
+import { titleWithKey } from "./keybindings";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional } from "./provisional";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
@@ -3641,7 +3642,11 @@ function renderTabs() {
   }
   const add = el("div", "tab tab-add");
   add.textContent = "+";
-  add.title = "Open a session";
+  // tooltip carries the CURRENT binding (the user 2026-08-10: shortcuts discoverable by hover). True on
+  // every surface: the shell dispatches the effective chord from the same store this reads, and outside
+  // the shell (VS Code / standalone, their own localStorage → the default) the in-page Cmd+O fallback
+  // below answers it. Rebuilt with the strip each push, so a rebind shows on the next render.
+  add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).

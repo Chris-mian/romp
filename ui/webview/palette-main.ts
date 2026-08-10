@@ -9,7 +9,7 @@
 import { registerCommand, runCommand, commandList } from "./commands";
 import { initPalette, PickItem } from "./palette";
 import { initShortcutsModal } from "./shortcuts-modal";
-import { chordMap, chordOf, dispatchable, displayChord, effectiveChord, loadOverrides, KEYS_EVENT } from "./keybindings";
+import { chordMap, chordOf, dispatchable, displayChord, effectiveChord, keyHint, loadOverrides, titleWithKey, KEYS_EVENT } from "./keybindings";
 import { hostPrefix } from "./host-prefix";   // pure display helper — safe here (never federation.ts, which boots a manager on import)
 
 type SessionRow = { id: string; name: string; dir: string; bg: string };
@@ -97,8 +97,10 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   // ── the dashboard's actions, registered as commands ──────────────────────────────────────
   // Each calls the SAME code path its rail button uses; the palette adds reachability, not
   // behavior.
-  registerCommand({ id: "session.jump", title: "Jump to a session", chord: "Mod+O", run: openSessionSwitcher });
-  registerCommand({ id: "session.new", title: "New session", chord: "Mod+Shift+O", run: openNewSessionPicker });
+  // Default chords come from commands.ts's DEFAULT_CHORDS — one table for the palette, the
+  // dispatcher, and the hover hints — so none is declared at these call sites.
+  registerCommand({ id: "session.jump", title: "Jump to a session", run: openSessionSwitcher });
+  registerCommand({ id: "session.new", title: "New session", run: openNewSessionPicker });
   registerCommand({
     id: "settings.open", title: "Open settings",
     run: () => { try { pane("f-feed")!.contentWindow!.postMessage({ romp: "openSettings" }, "*"); } catch (e) { /* feed not loaded */ } },
@@ -129,7 +131,7 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   // The palette toggle is itself a bindable command — hidden from the palette's own list (running
   // "toggle the palette" from the palette would just blink it). Cmd+Shift+P deliberately stays
   // unbound: it is the browser's / VS Code's own palette.
-  registerCommand({ id: "palette.toggle", title: "Command palette", chord: "Mod+P", hidden: true, run: () => palette.toggle() });
+  registerCommand({ id: "palette.toggle", title: "Command palette", hidden: true, run: () => palette.toggle() });
 
   // The shortcuts dialog: every command above, rebindable — VS Code's grammar, the browser's home
   // (the user 2026-08-09). Reachable from the palette, the gear's customize link ({romp:'openKeys'}
@@ -139,6 +141,26 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   w.__rompKeysOpen = () => keys.open();
   w.__rompKeysClose = () => keys.close();   // false when not open — the Escape chain moves on
   window.addEventListener("message", (e) => { if (e.data && e.data.romp === "openKeys") keys.open(); });
+
+  // ── hover discoverability (the user 2026-08-10) ───────────────────────────────────────────────
+  // Every shell control that runs a command carries data-keycmd=<command id> (the rail buttons and
+  // the mobile bar's, in the landing HTML); this sweep appends the command's CURRENT binding to its
+  // tooltip and re-runs on every rebind, so shortcuts are discoverable by hovering the button that
+  // does the same thing — and a rebound command never advertises a stale chord. The original title
+  // is kept in data-kt0 so the sweep is idempotent. __rompKeyHint serves the landing page's inline
+  // scripts (the pane toggles, whose titles are rewritten per toggle), and the KEYS_EVENT nudge
+  // below hands them their first hints once this module has booted.
+  function syncKeyTitles(): void {
+    for (const el of Array.from(document.querySelectorAll("[data-keycmd]")) as HTMLElement[]) {
+      const base = el.dataset.kt0 !== undefined ? el.dataset.kt0 : (el.dataset.kt0 = el.title || "");
+      el.title = titleWithKey(base, el.dataset.keycmd || "");
+    }
+  }
+  w.__rompKeyHint = keyHint;
+  syncKeyTitles();
+  window.addEventListener(KEYS_EVENT, syncKeyTitles);
+  window.addEventListener("storage", syncKeyTitles);
+  try { window.dispatchEvent(new Event(KEYS_EVENT)); } catch (e) { /* nudge inline listeners once __rompKeyHint exists */ }
 
   // ONE dispatcher for every bound chord, rebuilt lazily when the store changes (KEYS_EVENT from
   // this document's saves, `storage` from another tab's).

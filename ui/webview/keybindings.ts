@@ -10,6 +10,8 @@
 // their KeyboardEvent.key spelling. Defaults are declared with the "Mod" placeholder ("Mod+O"), which
 // resolves to Meta on a Mac and Ctrl elsewhere — one declaration, both platforms.
 
+import { DEFAULT_CHORDS } from "./commands";
+
 export type Bindings = Record<string, string>;   // command id → chord ("" = deliberately unbound)
 
 const KEY = "romp:keys";
@@ -107,6 +109,25 @@ export function conflictOf(chord: string, forId: string, cmds: { id: string; cho
     if (effectiveChord(c.id, c.chord, overrides, mac) === resolveChord(chord, mac)) return c.id;
   }
   return null;
+}
+
+// ── hover discoverability (the user 2026-08-10) ───────────────────────────────────────────────────
+
+// The binding a command answers to RIGHT NOW, in display form ("⌘⇧O" on a Mac, "Ctrl+Shift+O"
+// elsewhere); "" when unbound. Reads the live overrides store, so a rebind changes what the next
+// hover says — a tooltip advertises the user's configuration, never a stale default.
+export function keyHint(id: string): string {
+  const mac = typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform || "");
+  const ch = effectiveChord(id, DEFAULT_CHORDS[id], loadOverrides(), mac);
+  return ch ? displayChord(ch, mac) : "";
+}
+
+// A control's tooltip with its command's current binding appended — "Open a session (⌘⇧O)" — so every
+// shortcut is discoverable by hovering the button that does the same thing (the user 2026-08-10).
+// The bare title when the command is unbound.
+export function titleWithKey(base: string, id: string): string {
+  const k = keyHint(id);
+  return k ? (base ? base + " (" + k + ")" : k) : base;
 }
 
 // ── the dispatch decision (pure: the wiring calls this per keydown) ───────────────────────────────
