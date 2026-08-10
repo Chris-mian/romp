@@ -490,7 +490,7 @@ body { display: flex; flex-direction: column; }
 body.composer-resizing { cursor: ns-resize; user-select: none; }
 .statusline {
   max-width: var(--chat-col); margin: 0 auto; padding: 7px 24px 0 44px;   /* left matches .thread's 44px gutter so the controls align with the transcript column */
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;   /* a narrow pane wraps the controls onto extra rows — every control stays visible (the user 2026-08-10, whose branch/model/mode badges vanished as the pane shrank) */
 }
 /* Signal-style compose ROW (the user 2026-07-30): paperclip · pill input · round send — the layout every
    phone messenger trained thumbs on. Laid out by flex `order` so the shared markup (input before the two
@@ -741,8 +741,8 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   font-family: var(--mono);
   font-size: 0.92em;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 8px;
+  white-space: nowrap;   /* each badge stays one line; the container wraps BETWEEN badges instead */
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0;
 }
 /* model / effort as click-to-change dropdowns */
 .meta-btn {
