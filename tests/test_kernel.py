@@ -4087,17 +4087,19 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._seen_live.clear(); km._seen_live.update(saved_seen); km._has_tmux = saved_has
 
-    def test_dead_kept_tab_excluded_once_hidden(self):
-        # ×-closing a dead-kept tab dismisses it for good.
-        saved_seen, saved_has = set(km._seen_live), km._has_tmux
+    def test_dead_kept_tab_excluded_once_forgotten(self):
+        # ×-closing a dead read-only tab discards it from _kept_open — dead is timeline-only again
+        # (the closeTab route's one remaining duty; hidden-tabs is gone, the user 2026-08-11).
+        saved_seen, saved_has, saved_kept = set(km._seen_live), km._has_tmux, set(km._kept_open)
         km._has_tmux = lambda: True
         try:
             km._seen_live.clear(); km._seen_live.add(SID)
-            km._set_hidden_tab(SID, True)
+            km._kept_open.discard(SID)
             tabs = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
-            self.assertNotIn(SID, tabs, "a ×-hidden dead tab is not shown")
+            self.assertNotIn(SID, tabs, "a forgotten dead tab is not shown")
         finally:
             km._seen_live.clear(); km._seen_live.update(saved_seen); km._has_tmux = saved_has
+            km._kept_open.clear(); km._kept_open.update(saved_kept)
 
     def test_rel_ago_buckets(self):
         self.assertEqual(km._rel_ago(1000, 1000), "just now")
@@ -5014,13 +5016,12 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
                          "ended turn -> ready even when tmux says working")
 
-    def test_close_session_hides_tab(self):
-        # the × hides the tab (reversible), does not kill the session
-        self.assertEqual(km._hidden_tabs(), set())
-        km._set_hidden_tab(SID, True)
-        self.assertIn(SID, km._hidden_tabs())
-        km._set_hidden_tab(SID, False)
-        self.assertNotIn(SID, km._hidden_tabs())
+    def test_no_hidden_tab_state_exists(self):
+        # hidden tabs are GONE (the user 2026-08-11): a running session is always visible — × means End
+        # session. The old _set_hidden_tab/_hidden_tabs pair must stay deleted, or a secret running
+        # session (no tab, no Fleet row, still judged and billed) comes back.
+        self.assertFalse(hasattr(km, "_hidden_tabs"))
+        self.assertFalse(hasattr(km, "_set_hidden_tab"))
 
     def test_open_dead_session_prompts_revive(self):
         # opening a DEAD session pops the chat's confirmRevive modal — no silent reopen — and now from
@@ -5048,14 +5049,13 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._reveal_chat_for = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
 
-    def test_revive_session_resumes_and_unhides_tab(self):
-        # confirming the modal's "Revive" must actually resume the session AND un-hide its tab. The
-        # kernel owns the resume now (`romp <name> --resume <sid> --detach`): the old
-        # `romp-postal-service revive` subcommand was REMOVED in 2b5e181 but _revive_session kept
-        # shelling it — the CLI exits 0 on unknown commands with output DEVNULL'd, so the picker's
-        # Revive silently did nothing (the user 2026-07-05). Full coverage: tests/test_kernel_revive.py.
+    def test_revive_session_resumes(self):
+        # confirming the modal's "Revive" must actually resume the session. The kernel owns the resume
+        # now (`romp <name> --resume <sid> --detach`): the old `romp-postal-service revive` subcommand
+        # was REMOVED in 2b5e181 but _revive_session kept shelling it — the CLI exits 0 on unknown
+        # commands with output DEVNULL'd, so the picker's Revive silently did nothing (the user
+        # 2026-07-05). Full coverage: tests/test_kernel_revive.py.
         import subprocess as _sp
-        km._set_hidden_tab("deadsid000", True)            # it was hidden when closed
         calls, saved = [], km.subprocess.run
         km.subprocess.run = (lambda *a, **k:
                              calls.append(list(a[0])) or _sp.CompletedProcess(a[0], 0, "", ""))
@@ -5069,7 +5069,6 @@ class ViewBuilder(unittest.TestCase):
                         "the kernel owns the resume (bin/romp), never the removed postal subcommand")
         # --name pins the recorded name; this fixture has none, so _name_of falls back to the sid
         self.assertEqual(argv[1:], ["resume", "deadsid000", "--name", "deadsid000", "--detach"])
-        self.assertNotIn("deadsid000", km._hidden_tabs(), "the revived tab is un-hidden")
 
     def test_split_reminders(self):
         p, r = km._split_reminders("do the thing <system-reminder>be careful</system-reminder> now")
@@ -5804,22 +5803,13 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(rows["fresh"]["model"], "Opus", "two live versions → a bare label stays bare")
         self.assertEqual(rows["s"]["model"], "Sonnet 5", "one live version → still borrows")
 
-    def test_timeline_lane_survives_hidden_tab(self):
-        # the user 2026-06-17 (reversing d52f69f): ×-hiding a tab is a tab-strip preference and must NOT
-        # erase the lane from the timeline — the timeline is a complete activity history. So a dead AND
-        # ×-hidden session still appears on the timeline (the render's active-filter alone gates it by
-        # window overlap); only the chat tab strip honors the hidden set.
-        km._set_hidden_tab(SID, True)
-        try:
-            self.assertIn(SID, km._hidden_tabs(), "SID is ×-hidden from the tab strip")
-            s = {x["id"]: x for x in km.build_timeline(NOW, tmux={})["sessions"]}
-            self.assertIn(SID, s, "a ×-hidden dead session is STILL a timeline lane")
-            self.assertFalse(s[SID]["live"], "and it's a dead (struck) lane")
-            # the tab strip still hides it (the hidden set is the tab-strip's, not the timeline's)
-            self.assertNotIn(SID, {x["sid"] for x in km._chat_tab_sessions(NOW, {})},
-                             "the tab strip still honors the hidden set")
-        finally:
-            km._set_hidden_tab(SID, False)
+    def test_timeline_keeps_dead_lanes(self):
+        # the timeline is a complete activity history (the user 2026-06-17): a dead session within the
+        # lane window is still a struck lane, with no tab needed. (The ×-hidden variant of this pin died
+        # with hidden tabs, the user 2026-08-11 — there is no tab state that could erase a lane anymore.)
+        s = {x["id"]: x for x in km.build_timeline(NOW, tmux={})["sessions"]}
+        self.assertIn(SID, s, "a dead session in-window is STILL a timeline lane")
+        self.assertFalse(s[SID]["live"], "and it's a dead (struck) lane")
 
     def test_dead_session_is_timeline_only_until_viewed(self):
         # the user 2026-06-17: a dead session is TIMELINE-ONLY — no auto chat tab. It gets a read-only
@@ -6884,11 +6874,11 @@ class SessionOrderStable(unittest.TestCase):
     pulled into a separate mtime-sorted block, so a session jumped slots the moment it died."""
     def setUp(self):
         self._saved = (km._ordered_alive, km._alive_sessions, km._sessions, km._session_order,
-                       set(km._kept_open), km._hidden_tabs)
+                       set(km._kept_open))
 
     def tearDown(self):
         (km._ordered_alive, km._alive_sessions, km._sessions, km._session_order,
-         kept, km._hidden_tabs) = self._saved
+         kept) = self._saved
         km._kept_open.clear(); km._kept_open.update(kept)
 
     def _fleet(self):
@@ -6914,7 +6904,6 @@ class SessionOrderStable(unittest.TestCase):
     def test_dead_chat_tab_keeps_its_slot(self):
         self._fleet()
         km._kept_open.clear(); km._kept_open.add("B")    # B's tab kept open (read-only) after death
-        km._hidden_tabs = lambda: set()
         got = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
         self.assertEqual(got, ["A", "B", "C"], "kept-open dead tab keeps its slot, same stable key as the timeline")
 

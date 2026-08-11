@@ -33,18 +33,15 @@ class SessionOrder(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         # redirect every state read/write (_session_order / _write_session_order) into a temp dir
         self._saved = {"STATE": km.jd.STATE, "_kept_open": km._kept_open,
-                       "_alive_sessions": km._alive_sessions, "_sessions": km._sessions,
-                       "_hidden_tabs": km._hidden_tabs}
+                       "_alive_sessions": km._alive_sessions, "_sessions": km._sessions}
         km.jd.STATE = Path(self.td.name)
         km._kept_open = set()
-        km._hidden_tabs = lambda: set()
 
     def tearDown(self):
         km.jd.STATE = self._saved["STATE"]
         km._kept_open = self._saved["_kept_open"]
         km._alive_sessions = self._saved["_alive_sessions"]
         km._sessions = self._saved["_sessions"]
-        km._hidden_tabs = self._saved["_hidden_tabs"]
         self.td.cleanup()
 
     def order_file(self):

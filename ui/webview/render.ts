@@ -410,9 +410,9 @@ const tabMeta = new Map<string, { name: string; color: Color | null }>();
 // swirl, looking like a shutdown you had to wait out (the user 2026-07-24, who wanted the tab to just go and
 // the shutdown to run behind it). Cleared on the kernel's ack — its push dropping the id — not on a timer.
 const closingTabs = new Map<string, number>();
-// …with a backstop for the ack that never comes. `closeTab` only flips a hidden flag kernel-side, so there is
-// no failure EVENT to key on: the sole evidence a close didn't take is the kernel still listing the tab long
-// after. Past this we say so and let the tab back, rather than hiding a session that's really still open.
+// …with a backstop for the ack that never comes. A refused/failed end leaves no failure EVENT to key on:
+// the sole evidence a close didn't take is the kernel still listing the tab long after. Past this we say
+// so and let the tab back, rather than hiding a session that's really still open.
 const CLOSE_ACK_MS = 15_000;
 // The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
@@ -3646,7 +3646,7 @@ function renderTabs() {
     // "End session?" confirm (the user 2026-06-16). A live session still routes through the host's
     // Close-tab / End-session confirm (closeSession → confirmClose).
     const dead = st === "closed";
-    close.title = dead ? "Close tab" : "Close tab (or end the session)";
+    close.title = dead ? "Close tab" : "End session";
     // Click-safe (see ./actions): renderTabs() does `#tabs`.replaceChildren() on every kernel push, so a
     // handler hung on this ✕ is destroyed mid-click and the click is dropped (the "had to click End session
     // several times" bug). The action lives on the stable #tabs delegate instead; this node just declares it.
@@ -4729,14 +4729,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       startCreate({ name, backend: beSel?.dataset.be || loadSettings().backend,
                     dir: dirInput.value.trim(), host: hostSel, ...(auth ? { auth } : {}) });
     });
-    const openAll = el("button", "picker-action");
-    openAll.textContent = "↗ Open all running sessions";
-    openAll.addEventListener("click", () => {
-      if (vscodeApi) vscodeApi.postMessage({ type: "openAll" });
-      closePicker();
-    });
     actions.appendChild(newSess);
-    actions.appendChild(openAll);
     box.appendChild(search);
     box.appendChild(errLine);
     box.appendChild(list);
@@ -8415,16 +8408,19 @@ window.addEventListener("message", (e: MessageEvent) => {
   // The host asks US to confirm (in-page, no native dialogs): ending a live
   // session on tab-close, and reviving a dead one on open.
   else if (m.type === "confirmClose" && m.id) {
+    // × = End session, full stop (the user 2026-08-11): the old "Close tab" branch hid a RUNNING session
+    // — no tab, no Fleet row, still judged and billed — a secret running session with no SDK-era use
+    // case. Close-and-reopen is End + Revive, which keeps the whole history.
     const nm = String(m.name || "");
     showConfirm(`End “${nm}”?`,
-      "“Close tab” just removes it from this panel and leaves the session running. “End session” shuts it down (the transcript stays on disk).",
-      [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+      "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline.",
+      [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
       (v) => {
-        if (v !== "close" && v !== "end") return;   // Cancel → nothing
+        if (v !== "end") return;   // Cancel → nothing
         // End session = shut it down AND remove the tab (the user 2026-06-16: an explicitly-ended session
         // shouldn't linger as a struck-through read-only tab — that's only for sessions that die on their
-        // own). closeTab must durably dismiss it so the death event doesn't re-add the struck tab.
-        if (v === "end") vscodeApi?.postMessage({ type: "endSession", id: m.id });
+        // own). closeTab durably forgets a kept read-only tab so the death event doesn't re-add it.
+        vscodeApi?.postMessage({ type: "endSession", id: m.id });
         vscodeApi?.postMessage({ type: "closeTab", id: m.id });
         closeTabLocally(m.id);   // same optimistic drop as the in-page ✕ — this path used to sit and wait
       });
@@ -9114,16 +9110,19 @@ setupSettings();
         closeTabLocally(id);
         return;
       }
-      // LIVE session: show the End/Close confirm IMMEDIATELY, client-side — NOT via a closeSession→confirmClose
+      // LIVE session: show the End confirm IMMEDIATELY, client-side — NOT via a closeSession→confirmClose
       // kernel round-trip, which made the ✕ feel unresponsive (and sometimes never opened the modal when the
       // kernel was busy). The dialog is static; the kernel doesn't need to decide it (the user 2026-06-24).
+      // × = End session, full stop (the user 2026-08-11): the old "Close tab" branch hid a RUNNING
+      // session — still judged and billed, but invisible — a tmux-era affordance with no SDK-era use
+      // case. Close-and-reopen is End + Revive, which keeps the whole history.
       const nm = sessions.get(id)?.name || "";
       showConfirm(`End “${nm}”?`,
-        "“Close tab” just removes it from this panel and leaves the session running. “End session” shuts it down (the transcript stays on disk).",
-        [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+        "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline.",
+        [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
         (v) => {
-          if (v !== "close" && v !== "end") return;   // Cancel → nothing
-          if (v === "end") vscodeApi?.postMessage({ type: "endSession", id });
+          if (v !== "end") return;   // Cancel → nothing
+          vscodeApi?.postMessage({ type: "endSession", id });
           vscodeApi?.postMessage({ type: "closeTab", id });
           closeTabLocally(id);   // drop the tab + reselect NOW, and keep it gone while the kernel catches up
         });

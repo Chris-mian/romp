@@ -43,10 +43,6 @@
         "title": "romp: Previous Tab"
       },
       {
-        "command": "rompChat.openAll",
-        "title": "romp: Open All Running Sessions"
-      },
-      {
         "command": "rompChat.pickSession",
         "title": "romp: Pick a Session"
       },

@@ -46,9 +46,8 @@ class CreateSessionAckFast(unittest.TestCase):
         self.fake = _FakeSdk()
         self.events = []
         self._saved = {n: getattr(km, n) for n in
-                       ("_sdk", "_set_hidden_tab", "_reveal_chat", "_mark_views_dirty", "_push_all")}
+                       ("_sdk", "_reveal_chat", "_mark_views_dirty", "_push_all")}
         km._sdk = lambda: self.fake
-        km._set_hidden_tab = lambda sid, hidden: self.events.append(("unhide", sid, hidden))
         km._reveal_chat = lambda m: self.events.append(("reveal", m))
         km._mark_views_dirty = lambda: self.events.append(("dirty",))
         km._push_all = lambda: self.events.append(("PUSH_ALL",))
