@@ -57,6 +57,23 @@ class BundleBuildMode(unittest.TestCase):
         self.assertIn("ROMP_EXT_DEV_BUILD", _read(EXT_INSTALL))
         self.assertIn("ROMP_EXT_DEV_BUILD", _read(KERNEL))
 
+    def test_a_failed_build_retries_once_after_npm_install(self):
+        """The common build failure is DEP DRIFT: a merged commit imports a package this machine's
+        node_modules predates, so every restart's rebuild fails and the kernel silently serves the
+        old bundle (2026-08-10: the katex import kept an eight-day-old render.js live — no fast
+        toggle, no attach fixes — with only a stderr line saying so). npm install is exactly the
+        cure for that class, so a failed build must refresh deps and retry once — and still be
+        loud when that isn't the cure."""
+        src = _read(KERNEL)
+        m = re.search(r"def _ensure_bundles\(\):.*?(?=\ndef )", src, re.S)
+        body = m.group(0)
+        self.assertIn('"npm", "install"', body,
+                      "a failed build must refresh UI deps — dep drift is the common cause")
+        self.assertEqual(body.count("subprocess.run(argv"), 2,
+                         "…and retry the same build command once after the refresh")
+        self.assertIn("UI may be stale", body,
+                      "a retry that still fails must stay loud")
+
     def test_the_staleness_scan_covers_every_source_root_esbuild_reads(self):
         """esbuild.js builds the webview entrypoints from ../ui/webview (render.ts, styles.css,
         feed.ts, …), but _ensure_bundles used to scan only vscode-extension/src — so a

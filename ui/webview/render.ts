@@ -7292,9 +7292,15 @@ function updateStatusline() {
   // INTERRUPTING (the stop is already in flight; re-pressing it is a lie — the user 2026-07-02).
   if (s.status.state === "working" || s.status.state === "compacting"
       || s.status.state === "retrying" || s.status.state === "blocked") sl.appendChild(stopButton(s.status.state));
+  // The right-side cluster — dir · branch · mode/model/effort/fast badges · ctx battery — grouped in ONE
+  // container (.sl-right) that carries the right-justify margin and wraps INTERNALLY with right-aligned
+  // rows. Grouped, not flat: when a narrow pane wraps the statusline, flat children restart each extra row
+  // at the LEFT edge (justify only reaches the row holding the auto margin) — the user 2026-08-10, on a
+  // phone, wanted the wrapped controls to stay clustered on the right.
+  const right = el("span", "sl-right");
   // The session's working directory (fixed at creation), leading the right-side cluster — just left of the
-  // mode/model/effort controls (the user 2026-06-23). Basename only; full path on hover. It carries the
-  // right-justify margin so it anchors the cluster; empty (rare, no cwd) it's a zero-width spacer.
+  // mode/model/effort controls (the user 2026-06-23). Basename only; full path on hover. Empty (rare, no
+  // cwd) it's a zero-width spacer.
   const dir = el("span", "status-dir");
   if (s.cwd) {
     dir.appendChild(folderIcon());
@@ -7305,7 +7311,7 @@ function updateStatusline() {
     // activeId rides along so a REMOTE session's click SSHes out instead of no-op'ing on a local path (2026-07-03).
     asFolderLink(dir, s.cwd, activeId || undefined);
   }
-  sl.appendChild(dir);
+  right.appendChild(dir);
   // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
   // (Settings → "Show git branch", on by default — the user 2026-06-23). Read from the TOP-LEVEL session field,
   // never the head system event: that event is windowed out of the wire tail on any >250-event session, which
@@ -7314,15 +7320,16 @@ function updateStatusline() {
     const br = el("span", "status-branch");
     br.textContent = "⎇ " + s.gitBranch;
     br.title = "git branch: " + s.gitBranch;
-    sl.appendChild(br);
+    right.appendChild(br);
   }
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
   syncMetaControls(meta, s.status);
-  sl.appendChild(meta);
+  right.appendChild(meta);
   const bar = ctxBar();
   setCtxBar(bar, s.status.ctx, s.status.state === "compacting", s.status.ctxColor);
-  sl.appendChild(bar);
+  right.appendChild(bar);
+  sl.appendChild(right);
 }
 
 // Unsent composer text, per session — a draft belongs to the tab it was typed
