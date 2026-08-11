@@ -3251,6 +3251,16 @@ function ackClosingTabs(kernelOrder: readonly string[]): void {
 }
 
 // Apply the kernel's authoritative tab order (its tabOrder push, also re-sent after a timeline drag).
+// Ids any kernel tabOrder push has EVER carried, for the page's whole life. A tab on this list is
+// kernel-owned: when a later push stops carrying it, that omission is the removal event and the tab is
+// dismissed below — the continuous push is the authority, the one-shot `closed` frame just the fast path.
+// Before this, `closed` was the ONLY remover: a client whose socket was down at the kill (a frozen webview
+// force-dropped at the send-queue cap, a sleep, a network blip) missed that single frame forever, and the
+// dead session's tab rode the reconcile keep on every later push — frozen on its last live status, fully
+// clickable, reading as a running session (the 2026-08-11 ghost: an ended session stayed on the strip
+// looking alive). Add-only, never pruned: dropping an entry would hand a late stale `session` frame the
+// never-listed keep and re-mint the ghost. Client-minted ids (the create placeholder) never enter it.
+const kernelListed = new Set<string>();
 function applyTabOrder(o: any, tabs?: any) {
   // name+color per tab → renderTabs paints placeholders for tabs whose session hasn't arrived yet (tabs-first).
   // The payload is the kernel's AUTHORITATIVE current tab set, so REBUILD (not merge) — a closed tab drops out
@@ -3267,9 +3277,19 @@ function applyTabOrder(o: any, tabs?: any) {
   // Adopt the kernel order verbatim, keeping any just-arrived tab the push doesn't carry yet (see tab-order.ts).
   const kernelOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
   ackClosingTabs(kernelOrder);
-  const next = reconcileTabOrder(kernelOrder, order, (id) => sessions.has(id) || tabMeta.has(id));
+  // A kernel-owned tab the push no longer carries gets the SAME teardown the `closed` event runs — the
+  // session map, its view, drafts and the active-tab reselect all go, not just the strip entry. Under
+  // federation the merged order only omits an id when its OWNING host affirmatively reported it gone
+  // (per-host slices persist across down/detached hosts), so this never fires on a tunnel blip.
+  const inKernel = new Set<string>(kernelOrder);
+  for (const id of order.slice()) {
+    if (kernelListed.has(id) && !inKernel.has(id)) dismissSession(id);
+  }
+  const next = reconcileTabOrder(kernelOrder, order, (id) => sessions.has(id) || tabMeta.has(id),
+                                 (id) => kernelListed.has(id));
   order.length = 0;
   for (const id of next) order.push(id);
+  for (const id of kernelOrder) kernelListed.add(id);
   renderTabs();
 }
 // Order-audit instrumentation (the user 2026-07-02): tabs STILL occasionally reorder themselves and code

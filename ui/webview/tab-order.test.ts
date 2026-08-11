@@ -88,3 +88,59 @@ test("output is deduped and string-only", () => {
   assert.deepEqual(reconcileTabOrder(["A", "A", "B"] as string[], ["B", "B"], () => true), ["A", "B"]);
   assert.deepEqual(reconcileTabOrder(["A", 7 as any, "B"], [], () => true), ["A", "B"]);
 });
+
+// ── kernel-owned tabs drop when the kernel's order stops carrying them (the 2026-08-11 ghost) ──────────
+// A session was ended while this client's socket was down, so the one-shot `closed` frame never arrived.
+// The dead tab's session is still in the client's maps (known(id) = true — JS state survives reconnects),
+// so the unconditional keep resurrected it on every later push: a live-looking tab for an ended session.
+// The kernelSeen predicate is the fix: an id ANY kernel push has carried is kernel-owned, and a later push
+// omitting it is the removal event — known or not, it drops out.
+
+// The model with kernelSeen tracking, mirroring render.ts's applyTabOrder bookkeeping (add-only set).
+function seenModel() {
+  let order: string[] = [];
+  const knownIds = new Set<string>();
+  const kernelListed = new Set<string>();
+  return {
+    onSession(id: string) { knownIds.add(id); if (!order.includes(id)) order.push(id); },
+    onKernelOrder(kernel: string[]) {
+      order = reconcileTabOrder(kernel, order, (id) => knownIds.has(id), (id) => kernelListed.has(id));
+      for (const id of kernel) kernelListed.add(id);
+    },
+    list() { return order.slice(); },
+  };
+}
+
+test("a tab the kernel once listed drops out when a later push omits it, even with its session still cached", () => {
+  const m = seenModel();
+  m.onSession("A"); m.onSession("B");
+  m.onKernelOrder(["A", "B"]);            // both kernel-owned now
+  assert.deepEqual(m.list(), ["A", "B"]);
+  // B is ended while this client's socket is down: the `closed` frame is lost, B's session stays cached
+  // (known), and the next push — the reconnect's resync — no longer carries B.
+  m.onKernelOrder(["A"]);
+  assert.deepEqual(m.list(), ["A"], "the missed one-shot closed heals on the next push");
+  m.onKernelOrder(["A"]);                 // and it stays healed
+  assert.deepEqual(m.list(), ["A"]);
+});
+
+test("an id the kernel has never listed keeps the just-arrived grace (create placeholder, session-first push)", () => {
+  const m = seenModel();
+  m.onSession("prov");                    // client-minted: the kernel has never carried it
+  m.onKernelOrder(["A"]);                 // pushes that predate its adoption must not drop it
+  assert.deepEqual(m.list(), ["A", "prov"]);
+  m.onKernelOrder(["A", "prov"]);         // the kernel adopts it → reconciled into place, now kernel-owned
+  assert.deepEqual(m.list(), ["A", "prov"]);
+  m.onKernelOrder(["A"]);                 // ...so from here an omission drops it like any other tab
+  assert.deepEqual(m.list(), ["A"]);
+});
+
+test("a revived session (same sid re-listed after a drop) is adopted back cleanly", () => {
+  const m = seenModel();
+  m.onSession("A"); m.onSession("B");
+  m.onKernelOrder(["A", "B"]);
+  m.onKernelOrder(["A"]);                 // B ended + dropped
+  assert.deepEqual(m.list(), ["A"]);
+  m.onKernelOrder(["A", "B"]);            // B revived (dead sessions revive with their history)
+  assert.deepEqual(m.list(), ["A", "B"]);
+});
