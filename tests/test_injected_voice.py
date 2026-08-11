@@ -95,7 +95,7 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
     def _bodies(self):
         """Every message romp injects, by name, rendered from the same synthetic store."""
         nodes = _nodes()
-        return {
+        bodies = {
             "auto-nudge": km.AUTO_NUDGE_TEXT,
             "fork nudge": km.AUTO_NUDGE_STALLED_TEXT,
             "nudge on a hierarchical goal":
@@ -118,7 +118,19 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
             "debt reminder (several)": km._debt_reminder_body(
                 [("web", T0, "question", "Which port should the staging server use?"),
                  ("api", T0 + 5, "delegate", "Take over the fixtures backfill.")]),
+            # the awaiting BACKSTOP (kernel AWAITING_BACKSTOP_TEXT): missed by the 2026-07-24 sweep's
+            # index, so it shipped saying "goal" twice and announcing "(Automated re-check…)" until
+            # 2026-08-11 — exactly the drift this index exists to catch
+            "awaiting backstop": km.AWAITING_BACKSTOP_TEXT,
         }
+        # every repeat-nudge variant wears the same voice as the first fire (the user 2026-08-11): the
+        # rotation exists so a re-ask doesn't read canned, so a variant that broke the voice rule would
+        # defeat its own purpose
+        for i, v in enumerate(km.AUTO_NUDGE_VARIANTS, 1):
+            bodies["auto-nudge variant %d" % i] = v
+        for i, v in enumerate(km.AUTO_NUDGE_STALLED_VARIANTS, 1):
+            bodies["fork nudge variant %d" % i] = v
+        return bodies
 
     def test_no_romp_vocabulary_reaches_the_session(self):
         for name, body in self._bodies().items():

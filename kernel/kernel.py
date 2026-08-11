@@ -799,11 +799,14 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             # agent's OWN to-do list still marks open, so instead of a per-piece status report the body asks
             # the agent to pick a branch — continue, or name the blockers (which the planner then applies as
             # blocks). The enumerated quote above already names the open pieces.
-            body = (("Those are still open on your own to-do list. Where does each one stand? Keep going "
-                     "on anything you can. If something's blocked, tell me which one and exactly what you "
-                     "need from me. If one is no longer needed, just say so.") if stalled else
+            # Both branches LEAD BACK TO WORK — explicit permission to continue without the user's
+            # go-ahead (the user 2026-08-11): a status ask alone buys a report turn and another stop.
+            body = (("Those are still open on your own to-do list. Keep going on anything you can; you "
+                     "don't need my go-ahead. If something's blocked, tell me which one and exactly what "
+                     "you need from me. If one is no longer needed, just say so.") if stalled else
                     ("Where does each of those stand? What's done, what's left, and is anything blocked "
-                     "waiting on a decision from me? If one is no longer needed, just say so."))
+                     "waiting on a decision from me? If nothing's actually blocking you, just keep going; "
+                     "you don't need my go-ahead. If one is no longer needed, just say so."))
         elif not injected and str(nd.get("summary") or nd.get("blockSummary") or "").strip():
             # A TYPED follow-up quotes the card's DISTILLED SUMMARY — the takeaway (completed) or decision brief
             # (blocked) that is the card's visible HEADLINE, the thing you're reading + clicked to follow up on
@@ -892,7 +895,8 @@ def _nudge_bundle_body(gids, nodes, stalled_gids):
         if gid in stalled_gids:
             stall_nums.append(i)
     body = ("Where do these %d stand? For each one: what's done, what's left, and is anything blocked "
-            "waiting on a decision from me? If one is already finished or no longer needed, just say so."
+            "waiting on a decision from me? If one is already finished or no longer needed, just say so. "
+            "Anywhere nothing's blocking you, just keep going; you don't need my go-ahead."
             % len(gids))
     if stall_nums:
         body += ("\n\nOn %s you've still got open items on your to-do list. Keep going on those unless "
@@ -1573,15 +1577,51 @@ def _prune_notify_cards(live_ids):
 #  "debtNudged": {"<askerSid>><debtorSid>:<askT>": fireT}}   # the DEBT reminder's once-per-ask dedup
 # (see _fire_debt_reminder); each goal-nudge
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
-AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anything blocked waiting on a decision from me?"   # the auto-nudge ask (the manual feed Nudge button was removed 2026-06-30); phrased like a person checking in, not a status form (g13)
+# The auto-nudge ask (the manual feed Nudge button was removed 2026-06-30): phrased like a person checking
+# in, not a status form (g13), and it ends by LEADING BACK TO WORK — explicit permission to continue without
+# the user's go-ahead (the user 2026-08-11, after Anthropic's riemann-zeta post, where the operator's whole
+# input was keep-going encouragement: a status ask alone buys a report turn and another stop, while
+# permission to persist is what unsticks an agent that talked itself out of continuing).
+AUTO_NUDGE_TEXT = ("Where does this stand? What's done, what's left, and is anything blocked waiting on "
+                   "a decision from me? If nothing's actually blocking you, just keep going; you don't "
+                   "need my go-ahead.")
 # The FORK nudge (plans/stalled-open-todos-nudge.md, the user 2026-07-01): sent INSTEAD of AUTO_NUDGE_TEXT
 # when the stalled goal has items the agent's OWN to-do list still marks open (authoritative-open). Claude
 # Code's to-do system has no "blocked" state, so a session routinely stops with open items and can't say why —
 # this asks the agent to pick a branch: continue the work, or name what it needs from the user (which the
 # planner's nudge-mode note then turns into a block + blockWhy → the block-distiller's decision brief).
-AUTO_NUDGE_STALLED_TEXT = ("You've still got open items on your to-do list. Where does each one stand? "
-                           "Keep going on anything you can. If something's blocked, tell me which one and "
-                           "exactly what you need from me. If one is no longer needed, just say so.")
+AUTO_NUDGE_STALLED_TEXT = ("You've still got open items on your to-do list. Keep going on anything you "
+                           "can; you don't need my go-ahead. If something's blocked, tell me which one "
+                           "and exactly what you need from me. If one is no longer needed, just say so.")
+# Repeat nudges wear DIFFERENT WORDS for the same ask (the user 2026-08-11): a goal that re-stalls across
+# genuine new turns climbs its count, and the identical sentence arriving a second or third time is the one
+# tell that the asker is canned — the injected voice must read as a person every time. Every variant carries
+# the SAME message: where things stand, keep going if you can (no go-ahead needed), what's blocked on me.
+# Variant 1 IS the canonical constant, so a first fire is byte-identical to before and counts past the end
+# wrap around. Rendered through tests/test_injected_voice.py and test_nudge_block_prompts.py like the rest.
+AUTO_NUDGE_VARIANTS = (
+    AUTO_NUDGE_TEXT,
+    "Checking in on this one again. If you can keep going, keep going; you don't need my go-ahead. "
+    "Otherwise: what's done, what's left, and is anything blocked waiting on a decision from me?",
+    "Still moving on this? If there's a clear next step, keep going; the open calls are yours to make. "
+    "If not: what's done, what's left, and is anything blocked waiting on a decision from me?",
+)
+AUTO_NUDGE_STALLED_VARIANTS = (
+    AUTO_NUDGE_STALLED_TEXT,
+    "Those to-do items are still open. If you can move any of them, keep going; that's your call, not "
+    "mine. If one's blocked, tell me which one and exactly what you need from me. If one is no longer "
+    "needed, just say so.",
+    "Your to-do list still shows open items. Keep going on whatever you can; you don't need my sign-off. "
+    "If something's blocked, say which one and exactly what you need from me. If one is no longer "
+    "needed, just say so.",
+)
+
+
+def _nudge_text(count, stalled=False):
+    """The nth nudge on the same goal: same ask, different words (see AUTO_NUDGE_VARIANTS). count is the
+    escalation count as fired (1-based), so the first fire is the canonical text."""
+    variants = AUTO_NUDGE_STALLED_VARIANTS if stalled else AUTO_NUDGE_VARIANTS
+    return variants[max(int(count) - 1, 0) % len(variants)]
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
@@ -2660,10 +2700,14 @@ def _auto_nudge_tick(now, tmux):
 # re-check its OWN async work. It is patient — a legitimate dispatched/external wait almost always resolves
 # well inside the window, so a stamp still open past it is very likely a lost wakeup.
 AWAITING_BACKSTOP_SECS = 6 * 3600
+# The TEXT reads as the person checking in (the user 2026-08-11): the first version said "goal" twice and
+# announced itself "(Automated re-check…)" — romp vocabulary plus an automated-origin disclosure, both
+# banned by the injected-voice rule — and sat outside tests/test_injected_voice.py's index, which is how it
+# survived the 2026-07-24 sweep. It is indexed there now.
 AWAITING_BACKSTOP_TEXT = (
-    "Checking in on the background work you set in motion for this goal. If it finished, pick the result up "
-    "and continue. If it stalled, died, or you are now waiting on me, say what you need. If it is genuinely "
-    "still running, a one-line status is enough. (Automated re-check: this goal has been awaiting a while.)")
+    "Checking in on the background work you set in motion here. If it finished, pick the result up and "
+    "keep going. If it stalled or died, relaunch it or find another way; your call. If you're now blocked, "
+    "say exactly what you need from me. If it's genuinely still running, a one-line status is enough.")
 
 
 def _mark_awaiting_backstop(gid, at):
@@ -3394,7 +3438,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
             pass
     if len(to_fire) == 1:
         gid, count, stalled = to_fire[0]
-        text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
+        text = _nudge_text(count, stalled)             # variant by escalation count — a repeat re-asks in fresh words
         Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
     elif to_fire:
         # BUNDLE (the user 2026-07-24): several goals due in the SAME tick → ONE message naming them all,
