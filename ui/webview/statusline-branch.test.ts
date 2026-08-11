@@ -31,7 +31,7 @@ test("updateStatusline appends a status-branch span from the top-level gitBranch
 
 test("the branch span sits right after the dir, before the meta cluster", () => {
   // ordering: status-dir append → branch block → spinner-meta
-  assert.match(RENDER, /sl\.appendChild\(dir\);[\s\S]*?status-branch[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
+  assert.match(RENDER, /right\.appendChild\(dir\);[\s\S]*?status-branch[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
 });
 
 test("styles define .status-branch (dim mono, shrinks before the dir)", () => {

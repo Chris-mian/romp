@@ -45,7 +45,7 @@ test("a session carries cwd, shown on the statusline just left of the mode/model
   // #spinner-meta (the controls cluster)
   assert.match(RENDER, /el\("span", "status-dir"\)/);
   assert.match(RENDER, /asFolderLink\(dir, s\.cwd, activeId \|\| undefined\)/);
-  assert.match(RENDER, /sl\.appendChild\(dir\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
+  assert.match(RENDER, /right\.appendChild\(dir\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
   // and NOT on the tab anymore (the user 2026-06-23)
   assert.doesNotMatch(RENDER, /tab-dir/);
 });
