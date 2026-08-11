@@ -567,6 +567,54 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(s.snapshot()["fastReason"], "Fast mode is org-disabled",
                          "a real refusal still hides the toggle")
 
+    def test_a_refusal_answering_the_users_ask_warns_clears_it_and_restores_the_badge(self):
+        """A disabled_reason that lands while the user's ask is ARMED (fast_opt — they picked On) is
+        the CLI ANSWERING that ask, not standing state to hide behind. Adopting it silently was the
+        vanishing-button bug (the user 2026-08-11, whose tap on a phone-width statusline was refused
+        with extra_usage_disabled): the reason hid the very toggle they had just clicked, no word
+        why, and the reg's ask stayed armed forever. The refusal is LOUD now — one warn toast naming
+        the humanized reason — the ask clears (fast_opt + reg, so the opt-in flag doesn't linger),
+        and a flagless reconnect is requested: its connect-time re-probe reports the blanked
+        sdk_opt_in_required, so the badge comes BACK instead of staying vanished."""
+        import asyncio
+        class _Sys:
+            def __init__(self, data): self.subtype = "init"; self.data = data
+        d = tempfile.mkdtemp()
+        notes = []
+        be = sb.SdkBackend(d, "/bin/true", lambda app, msg: notes.append((app, msg)))
+        sid = "11111111-2222-3333-4444-eeeeeeeeeeee"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        s.thread = type("T", (), {"is_alive": lambda self: True})()
+        be.sessions[sid] = s
+        async def _noop(): pass
+        s._do_refresh_context = _noop
+        reconnects = []
+        s.request_reconnect = lambda: reconnects.append(1)
+        async def run(data):
+            s._on_message(_Sys(data), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)
+
+        def warns():
+            return [m for _, m in notes if isinstance(m, dict) and m.get("type") == "warn"]
+
+        self.assertTrue(be.set_fast(sid, "on"))          # arms the ask (locked connection → reconnect)
+        self.assertEqual(len(reconnects), 1)
+        asyncio.run(run({"fast_mode_state": "off",
+                         "fast_mode_disabled_reason": "extra_usage_disabled"}))
+        self.assertEqual(len(warns()), 1, "ONE toast says why — a refusal is never a silent vanish")
+        self.assertIn("extra usage", warns()[0]["text"], "the reason is humanized, not the raw token")
+        self.assertFalse(s.fast_opt, "the ask is answered — cleared, not left armed forever")
+        self.assertFalse(sb.read_reg(d, sid)["fast"], "…and cleared on disk, so the next connect is plain")
+        self.assertEqual(len(reconnects), 2, "a flagless reconnect re-probes so the badge comes back")
+        # the same refusal WITHOUT an armed ask stays the quiet dead-control hide it always was
+        asyncio.run(run({"fast_mode_state": "off",
+                         "fast_mode_disabled_reason": "extra_usage_disabled"}))
+        self.assertEqual(len(warns()), 1, "no fresh ask → no re-warn")
+        self.assertEqual(len(reconnects), 2, "…and no reconnect churn")
+        self.assertEqual(s.snapshot()["fastReason"], "extra_usage_disabled",
+                         "the reason still hides the dead control when nobody asked")
+
     def test_the_toggle_turns_own_init_yields_to_the_sent_word_once(self):
         """A literal '/fast on' send opens a turn whose init still reports the state at turn START —
         one word stale, since the toggle applies after it. Taking it verbatim stomps set_fast's

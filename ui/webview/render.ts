@@ -6970,10 +6970,13 @@ const FAST_CHOICES: { label: string; value: string }[] = [
 // of the key, not even a last-4 tail, is shipped or shown (2026-08-08, evening). The tab hover's
 // Billing row keeps carrying the fact everywhere.
 // the fast-mode state ("on"/"off"/"cooldown") → the badge label. ONE WORD (the user 2026-08-10, on a
-// phone-width statusline): the on/off fact is carried by the tint — ON wears the CLI's fast orange
-// (metaColor), off the default dim — and the picker's ✓ names the state on click.
+// phone-width statusline), but the WORD carries the state: off reads "Slow", not a second "Fast" —
+// tint alone (orange on, dim off) didn't say which side the toggle was on (the user 2026-08-11).
+// ON keeps the CLI's fast orange (metaColor); the picker's ✓ names the state on click.
 function prettyFast(f: string | undefined): string {
-  return (f || "").toLowerCase() === "cooldown" ? "Cooldown" : "Fast";   // rate-limited: the CLI resumes fast mode when the limit resets
+  const s = (f || "").toLowerCase();
+  return s === "cooldown" ? "Cooldown"   // rate-limited: the CLI resumes fast mode when the limit resets
+    : s === "on" ? "Fast" : "Slow";
 }
 // Whether the session's MODEL can run fast mode at all (the CLI's /fast is an Opus-only research
 // preview). Gated HERE, on the model, because the CLI is no help: fast_mode_state arrives "off" with
