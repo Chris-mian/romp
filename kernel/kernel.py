@@ -22006,6 +22006,10 @@ class Handler(BaseHTTPRequestHandler):
             fp = _save_dropped_file(str(msg["name"]), str(msg["b64"]))   # bytes → saved file → insert its path
             if fp:
                 _reply(client, {"type": "droppedPath", "path": fp})
+            else:
+                # a failed save must be NACKED, not silent (fail loudly): the client keeps a pending
+                # chip up from the moment the file was picked, and only this reply can retire it
+                _reply(client, {"type": "dropSaveFailed", "name": str(msg["name"])})
         elif msg and msg.get("type") == "openFile" and msg.get("path"):
             _open_file(str(msg["path"]), sid=msg.get("id"))       # caption / linkified path click → open it (relative → resolved vs the session cwd)
         elif msg and msg.get("type") == "pickFile":

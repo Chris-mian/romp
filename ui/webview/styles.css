@@ -526,6 +526,18 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   color: var(--fg); font-size: 10px; cursor: pointer; display: none; }
 .composer-file:hover .composer-file-x { display: block; }   /* the tab-close idiom: no clutter until hover */
 .composer-file-x:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }   /* full-width block of its own, above the compose row; stacked chips each take a row (the user 2026-08-04) */
+/* An attachment still SHIPPING to the kernel: the doc-chip look, dashed + faint, with pulsing accent
+   dots until the droppedPath ack swaps in the real thumbnail (the user 2026-08-11: on a phone the
+   ship is seconds long, and a blank strip read as a dead click). Dots are the loader-dots motif. */
+.composer-file-pending { gap: 6px; padding: 4px 8px; border-radius: 6px; cursor: default;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent); }
+.composer-ship-dots { display: inline-flex; gap: 3px; }
+.composer-ship-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: ship-bnc 1.1s ease-in-out infinite; }
+.composer-ship-dots i:nth-child(2) { animation-delay: 0.16s; }
+.composer-ship-dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes ship-bnc { 0%, 75%, 100% { opacity: 0.25; } 38% { opacity: 1; } }
 .composer-chip {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
   background: color-mix(in srgb, var(--accent) 18%, transparent);

@@ -5102,6 +5102,12 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(os.path.isfile(fp))
         self.assertEqual(open(fp, "rb").read(), b"hello")
         self.assertIn("drops", fp)
+        # a save that fails returns None — and the WS handler NACKS it (dropSaveFailed) so the
+        # client's pending chip never pulses forever over a file that is not coming (fail loudly,
+        # the user 2026-08-11; source pin — the branch lives inline in the WS message loop)
+        self.assertIsNone(km._save_dropped_file("bad.png", "%%%not-base64%%%"), "undecodable bytes → None")
+        src = Path(BIN, "romp-kernel").read_text()
+        self.assertIn('_reply(client, {"type": "dropSaveFailed", "name": str(msg["name"])})', src)
 
     def test_permission_mode_cycle_presses(self):
         # shift+tab press count from current → target in the cycle (the user 2026-06-16): there's no

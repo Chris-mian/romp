@@ -36,7 +36,7 @@ test("every file arrival becomes an attachment, never raw path text in the box",
   assert.match(RENDER, /if \(p\) \{ addComposerFile\(activeId, p\); return; \}/);
   // paste-with-files and the host round-trip (dropped bytes, 📎 dialog, phone picker) too
   assert.match(RENDER, /if \(p\) addComposerFile\(activeId, p\);\s*\n\s*else shipFileToHost\(f\);/);
-  assert.match(RENDER, /m\.type === "droppedPath" && typeof m\.path === "string"\) addComposerFile\(activeId, m\.path\);/);
+  assert.match(RENDER, /m\.type === "droppedPath" && typeof m\.path === "string"\) \{[\s\S]{0,300}addComposerFile\(activeId, m\.path\);/);
   // the old insert-at-cursor path is gone with its last caller
   assert.doesNotMatch(RENDER, /function insertComposerText/);
 });

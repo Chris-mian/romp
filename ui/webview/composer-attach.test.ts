@@ -43,7 +43,8 @@ test("📎 routes the chosen files through the existing dropFile pipeline (no ne
   // chosen files go to shipFileToHost, which already posts {type:"dropFile"} and
   // gets {type:"droppedPath"} back — we reuse it rather than add a second uploader
   assert.match(RENDER, /filePicker\.files \|\| \[\]\)\.forEach\(\(f\) => shipFileToHost\(f\)\)/);
-  assert.match(RENDER, /\{ type: "dropFile", name: f\.name \|\| "pasted\.png", b64 \}/);
+  assert.match(RENDER, /const name = f\.name \|\| "pasted\.png";/);
+  assert.match(RENDER, /\{ type: "dropFile", name, b64 \}/);
 });
 
 test("📎 in the VS Code webview still uses the native host dialog (pickFile)", () => {
@@ -57,8 +58,11 @@ test("shipFileToHost stamps the session id so federation routes the bytes to the
   // the saved drops/ path rides the prompt and is read by the agent on the session's own
   // machine — bytes saved on any other kernel would hand the agent a nonexistent path.
   // routeOutbound routes any `id` field by host prefix (SCALAR_ID); the stamp is what
-  // engages it (multi-kernel-merge.test.ts pins the routing itself).
-  assert.match(RENDER, /if \(activeId\) msg\.id = activeId;\s*\/\/ the owning session → the owning kernel/);
+  // engages it (multi-kernel-merge.test.ts pins the routing itself). The sid is captured
+  // at SHIP time (with the pending chip), not at encode time — a tab switch mid-encode
+  // must not reroute the bytes away from the session the user attached them to.
+  assert.match(RENDER, /const sid = activeId;/);
+  assert.match(RENDER, /if \(sid\) msg\.id = sid;\s*\/\/ the owning session → the owning kernel/);
 });
 
 test("an oversize file is refused LOUDLY — named size and cap in a toast, never a silent return", () => {
