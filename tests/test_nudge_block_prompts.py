@@ -88,6 +88,13 @@ class AutoNudgePrompt(unittest.TestCase):
         for robotic in ("goal", "romp", "automated", "tracking"):
             self.assertNotIn(robotic, t, robotic)
 
+    def test_wake_block_why_is_procedural(self):
+        # The awaiting wake's escalation (kernel _mark_nudge_failed wake=True) files jd.WAKE_BLOCK_WHY.
+        # It must be registered as PROCEDURAL, or the briefer invents a decision brief from <work> —
+        # the 2026-07-22 cross-session leak is what exact-match registration prevents.
+        self.assertTrue(jd.procedural_block_why(jd.WAKE_BLOCK_WHY))
+        self.assertTrue(jd.procedural_block_why(jd.NUDGE_BLOCK_WHY), "the siblings stay registered")
+
 
 class PlannerBlockRule(unittest.TestCase):
     def test_block_rule_covers_awaiting_go_ahead(self):

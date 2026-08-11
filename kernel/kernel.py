@@ -749,7 +749,7 @@ CONTINUE_TEXT = ("Nothing needed from me here. If you're already on it, keep goi
                  "If you can't proceed without me, say exactly what you need in one line.")
 
 
-def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
+def _followup_body(iid, title, text, injected=False, auto=False, stalled=False, wake=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
     used verbatim; otherwise, for a TYPED follow-up, the quote PREFERS the card's DISTILLED SUMMARY — the
@@ -801,12 +801,18 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             # blocks). The enumerated quote above already names the open pieces.
             # Both branches LEAD BACK TO WORK — explicit permission to continue without the user's
             # go-ahead (the user 2026-08-11): a status ask alone buys a report turn and another stop.
-            body = (("Those are still open on your own to-do list. Keep going on anything you can; you "
-                     "don't need my go-ahead. If something's blocked, tell me which one and exactly what "
-                     "you need from me. If one is no longer needed, just say so.") if stalled else
-                    ("Where does each of those stand? What's done, what's left, and is anything blocked "
-                     "waiting on a decision from me? If nothing's actually blocking you, just keep going; "
-                     "you don't need my go-ahead. If one is no longer needed, just say so."))
+            # A WAKE keeps ITS OWN body: the generic status ask invites an answer from memory, and the
+            # audited session gave exactly that twice (a from-memory reassurance that the wait was
+            # deliberate and nothing was owed) while the pid its stamp named had been dead for hours —
+            # the wake's whole point is "go LOOK at the background work", and this replacement was
+            # silently discarding it (the user 2026-08-11).
+            if not wake:
+                body = (("Those are still open on your own to-do list. Keep going on anything you can; you "
+                         "don't need my go-ahead. If something's blocked, tell me which one and exactly what "
+                         "you need from me. If one is no longer needed, just say so.") if stalled else
+                        ("Where does each of those stand? What's done, what's left, and is anything blocked "
+                         "waiting on a decision from me? If nothing's actually blocking you, just keep going; "
+                         "you don't need my go-ahead. If one is no longer needed, just say so."))
         elif not injected and str(nd.get("summary") or nd.get("blockSummary") or "").strip():
             # A TYPED follow-up quotes the card's DISTILLED SUMMARY — the takeaway (completed) or decision brief
             # (blocked) that is the card's visible HEADLINE, the thing you're reading + clicked to follow up on
@@ -1573,10 +1579,12 @@ def _prune_notify_cards(live_ids):
 # (the user 2026-06-26: that produced two nudges ~6s apart in one stop before the agent had consumed the
 # first — the 2nd landed as a type:attachment as the session resumed, so it rendered without the romp logo).
 # On by default; an explicit {"enabled": false} in auto-nudge.json still turns it off. State: auto-nudge.json
-# {"enabled": bool, "nudged": {goalId: {count, lastTurnId}},
-#  "debtNudged": {"<askerSid>><debtorSid>:<askT>": fireT}}   # the DEBT reminder's once-per-ask dedup
+# {"enabled": bool, "nudged": {goalId: {count, lastTurnId}},          # + wake records: {wake, anchor,
+#  "debtNudged": {"<askerSid>><debtorSid>:<askT>": fireT}}            #   answeredAt, ...} (see _wake_goal)
 # (see _fire_debt_reminder); each goal-nudge
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
+# (A legacy `backstop` map — the retired one-shot awaiting wake's once-per-anchor marks — may persist in
+# older files; nothing reads it.)
 # The auto-nudge ask (the manual feed Nudge button was removed 2026-06-30): phrased like a person checking
 # in, not a status form (g13), and it ends by LEADING BACK TO WORK — explicit permission to continue without
 # the user's go-ahead (the user 2026-08-11, after Anthropic's riemann-zeta post, where the operator's whole
@@ -2146,6 +2154,14 @@ def _goal_awaiting_stamp(nodes, top, children=None, answered_at=0):
     predates a peer's answer to this session's ask/handoff is SUPERSEDED — the wait it described was met,
     and waiting for the closer's own lift left a card awaiting 5h after the reply (the user 2026-07-25).
     A stamp with no awaitingAt can't be ordered against the reply and is kept as before."""
+    full = _goal_awaiting_stamp_full(nodes, top, children, answered_at)
+    return full[1] if full else None
+
+
+def _goal_awaiting_stamp_full(nodes, top, children=None, answered_at=0):
+    """(awaitingAt, why) of the freshest live ⏳ stamp in `top`'s subtree, or None — _goal_awaiting_stamp
+    with the ANCHOR alongside the why. The awaiting wake's due-check needs the anchor (see the awaiting
+    branch of _auto_nudge_session's goal walk); every display consumer keeps the why-only twin above."""
     if children is None:
         children = {}
         for nid, nd in nodes.items():
@@ -2162,10 +2178,10 @@ def _goal_awaiting_stamp(nodes, top, children=None, answered_at=0):
                 cand = (at, nd["awaitingWhy"])
                 best = cand if best is None else max(best, cand)
         stack.extend(children.get(x, []))
-    return best[1] if best else None
+    return best
 
 
-def _mark_nudge_failed(gid, ev_t=None):
+def _mark_nudge_failed(gid, ev_t=None, wake=False):
     """Stamp `failed` on `gid`'s nudge record — the nudge-RESPONSE turn completed (closer-settled, so the
     planner has processed it too) and the goal is STILL working-stalled: the one ask didn't resolve it, and
     per the anti-loop rule we never re-ask. Event-based — stamped at the tick's re-arm gate, whose
@@ -2176,21 +2192,30 @@ def _mark_nudge_failed(gid, ev_t=None):
     won't ask again, so by definition the goal now needs the user. Record the block verdict so the card
     moves to Needs-you through the NORMAL ladder (decision brief and all) instead of sitting in Working
     wearing a chip; the user's reply then unblocks it exactly like any other block. (Previously only the
-    FORK flavor floored to needs-you read-side; the common case idled in Working — the user's complaint.)"""
+    FORK flavor floored to needs-you read-side; the common case idled in Working — the user's complaint.)
+
+    `wake=True` = the AWAITING WAKE's failure (see the awaiting branch of _auto_nudge_session): romp asked
+    the session to go check the background work its ⏳ stamp names, and NO answer landed within the
+    backstop. The stamp cannot stand that down — the wake fired BECAUSE of the stamp, so its no-answer
+    evidence postdates the stamp by at least the whole backstop window, and yielding to it is how a dead
+    wait slept 20h in Working behind three spent wakes (the ui session, 2026-08-11). The moot guard below
+    still applies in full: any REAL judge row filed after the wake is a newer ruling and stands us down."""
     # An AWAITING session isn't stalled — its nudge reply ("waiting on the experiment/watcher") DID
     # explain itself, so converting the nudge into a needs-you block manufactures a false interrupt
     # (nimbus, the user 2026-07-11). Normally unreachable (the tick's awaiting gate skips the whole
     # session first), but the gate and this writer read different moments — re-check at the write.
-    try:
-        _sid = gid.rsplit(":", 1)[0]
-        if _session_awaiting(_sid, _path_of(_sid) or "", True):
-            return None
-        if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid,
-                                answered_at=_peer_answered_at(_sid)):
-            return None                                # the judge's durable ⏳ stamp says the goal waits on
-            #                                            async work — same rule as above, restart-proof
-    except Exception:
-        pass
+    # WAKE failures skip this stand-down (docstring): for them the stamp is the trigger, not a veto.
+    if not wake:
+        try:
+            _sid = gid.rsplit(":", 1)[0]
+            if _session_awaiting(_sid, _path_of(_sid) or "", True):
+                return None
+            if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid,
+                                    answered_at=_peer_answered_at(_sid)):
+                return None                            # the judge's durable ⏳ stamp says the goal waits on
+                #                                        async work — same rule as above, restart-proof
+        except Exception:
+            pass
     now = int(time.time())
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
@@ -2258,8 +2283,9 @@ def _mark_nudge_failed(gid, ev_t=None):
         sid = gid.rsplit(":", 1)[0]
         store = jd.load_goals(sid)
         nd = store.get("nodes", {}).get(gid)
-        why = jd.NUDGE_BLOCK_WHY          # shared constant: the briefer recognizes it as PROCEDURAL and
-        #                                   writes no decision brief, rather than inventing one from <work>
+        why = jd.WAKE_BLOCK_WHY if wake else jd.NUDGE_BLOCK_WHY   # shared constants: the briefer recognizes
+        #                                   these as PROCEDURAL and writes no decision brief, rather than
+        #                                   inventing one from <work>
         # EVIDENCE TIME (_ev, hoisted above for the moot check) = the nudge RESPONSE turn, not wall-clock
         # `now` (the user 2026-07-22). The block's evidence IS that response; claiming `now` made the stamp
         # structurally outrank the user's own reply floor (_block_is_stale voids a block only when
@@ -2688,17 +2714,32 @@ def _auto_nudge_tick(now, tmux):
         _debt_backstop_tick(now)                       # reminder outcomes for debtors the walk can't reach
     except Exception:
         sys.stderr.write("debt-backstop: %s\n" % traceback.format_exc())
+    try:
+        fired = _awaiting_wake_outcomes(now) or fired  # wake outcomes for sessions the walk can't reach
+    except Exception:
+        sys.stderr.write("awaiting-wake outcomes: %s\n" % traceback.format_exc())
     if fired:
         _push_all()
 
 
-# The awaiting BACKSTOP (the user 2026-07-22): a durable ⏳ stamp can, in the worst case, outlive its story
-# — the agent scheduled its own check-back and that wakeup was lost (a kernel restart between arming and
-# firing, a watcher that silently died), so the session sleeps behind the stamp with nothing to wake it.
-# This is the ONE place a time threshold is unavoidable: we are detecting a MISSING event (the wake that
-# never came), which no other event announces. So, SLOWLY and ONCE per stamp episode, wake the session to
+# The awaiting WAKE (the user 2026-07-22, reworked 2026-08-11): a durable ⏳ stamp can, in the worst case,
+# outlive its story — the agent scheduled its own check-back and that wakeup was lost (a kernel restart
+# between arming and firing, a watcher that silently died), so the session sleeps behind the stamp with
+# nothing to wake it. This is the ONE place a time threshold is unavoidable: we are detecting a MISSING
+# event (the wake that never came), which no other event announces. So, SLOWLY, wake the session to
 # re-check its OWN async work. It is patient — a legitimate dispatched/external wait almost always resolves
 # well inside the window, so a stamp still open past it is very likely a lost wakeup.
+#
+# The wake is a FULL MEMBER of the nudge ladder (2026-08-11), not the fire-and-forget one-shot it began as:
+# it records itself in the same `nudged` ledger, its response rides the same _nudge_response_ready gates,
+# and a wake NOBODY answers escalates through _mark_nudge_failed(wake=True) to a real block — Needs-you —
+# instead of sleeping. The one-shot design marked itself spent at SEND time keyed on the stamp anchor
+# (auto-nudge.json's old `backstop` map, now unread): when a wake's response turn died on an API error the
+# anchor never moved (identical re-asserts coalesce, judge apply_close), the mark held forever, and the
+# card slept 20h in Working over a pid that was long dead — unreachable by every other mechanism, because
+# the stamp also stood down the whole nudge ladder (the ui session, 2026-08-11). Episodes re-arm on the
+# ANSWER (a judged response), not the anchor, so a genuinely long wait is re-checked every window and a
+# dead one surfaces after exactly one unanswered wake.
 AWAITING_BACKSTOP_SECS = 6 * 3600
 # The TEXT reads as the person checking in (the user 2026-08-11): the first version said "goal" twice and
 # announced itself "(Automated re-check…)" — romp vocabulary plus an automated-origin disclosure, both
@@ -2710,14 +2751,13 @@ AWAITING_BACKSTOP_TEXT = (
     "say exactly what you need from me. If it's genuinely still running, a one-line status is enough.")
 
 
-def _mark_awaiting_backstop(gid, at):
-    """Record the ONE backstop wake for a stamp EPISODE, keyed on the stamp anchor (awaitingAt): a new
-    episode (a fresh awaitingAt from the closer's next awaiting verdict) re-arms; a re-assert of the same
-    wait does not re-wake. Lives beside `nudged` in auto-nudge.json under its own `backstop` key."""
+def _put_nudged(gid, rec):
+    """Persist ONE nudge/wake record into auto-nudge.json's `nudged` ledger — the read-modify-write the
+    failed stamp already does inline, shared so the wake's answered/fired records take the same shape."""
     d = dict(_auto_nudge_data())
-    bs = dict(d.get("backstop", {}))
-    bs[gid] = at
-    d["backstop"] = bs
+    nudged = dict(d.get("nudged", {}))
+    nudged[gid] = rec
+    d["nudged"] = nudged
     _write_auto_nudge(d)
 
 
@@ -2786,7 +2826,8 @@ def _lift_spent_awaiting(now, tmux):
     awaiting flavors are untouched: we lift only when this goal DID dispatch background work of its own by
     stamp time and every one of those has come back. A stamp naming a CI run, a scheduled check-back or a
     peer handoff owns no such dispatches, so it never matches and keeps its stamp — those still rely on the
-    6h backstop below, which is exactly the case a timer is the only tool for.
+    6h awaiting wake (_wake_goal, in the nudge tick's goal walk), which is exactly the case a timer is the
+    only tool for.
 
     Dormant sessions are skipped: their tasks died with their CLI, so the death notice is the truth there,
     not a lift (same rule as _session_awaiting's source 0.75)."""
@@ -2864,43 +2905,130 @@ def _lift_spent_awaiting(now, tmux):
             sys.stderr.write("awaiting-lift (session %s): %s\n" % (sid or "?", traceback.format_exc()))
 
 
-def _awaiting_backstop_tick(now, tmux):
-    """Slow one-shot wake for a LIVE session asleep behind a stale awaiting stamp (see the block comment
-    above). NEVER a needs-you floor — the wait was legitimate; the agent re-checks and decides (proceed,
-    block, or ask). Rides the auto-nudge master toggle and reuses the nudge's idle / genuine-stop / queue
-    suppressions so it can never fire mid-turn or jump queued user input. The auto-nudge tick already SKIPS
-    awaiting-stamped goals, so this is the only writer that touches them, and at most once per 6h episode."""
-    if not _auto_nudge_on():
-        return
-    backstop = _auto_nudge_data().get("backstop", {})
+def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
+    """The AWAITING branch of _auto_nudge_session's goal walk — one stamped top goal. The stamp is a
+    judged wait, so the plain status nudge stays off; but a wait is not an exemption from the ladder
+    (the user 2026-08-11): fire the check-in past the backstop, track its outcome through the same record
+    + response gates as a nudge, and escalate a wake nobody answered. Returns True when something fired or
+    a failure stamped (the tick pushes once at the end). Episodes:
+      due       now - max(anchor, last ANSWERED wake) >= AWAITING_BACKSTOP_SECS → send AWAITING_BACKSTOP_TEXT,
+                record {wake, anchor, count, lastTurnId, armAtoms, at} in the shared `nudged` ledger.
+                lastTurnId is the NEWEST turn (romp-injected or not) — the wake isn't arm-keyed like a
+                nudge; the record only needs the growth yardstick _nudge_response_ready reads.
+      answered  the response landed and the judges ruled on it (same _nudge_response_ready gates) while
+                the stamp still stands → the wait was re-affirmed; keep the record with answeredAt so the
+                NEXT wake measures from the answer — NOT the anchor, which a same-why re-assert
+                deliberately freezes (judge apply_close's coalesce rule; keying episodes on the anchor is
+                what made the one-shot design terminal).
+      silent    no response within the same window (from the FIRE, rec["at"]) → _mark_nudge_failed(wake=True):
+                the block rides the normal ladder to Needs-you. A failed/moot record re-arms only on a
+                genuinely NEW stamp episode (anchor newer than the one that failed)."""
+    at, why = stamp
+    if tmux.get(sid) is None:
+        return False                                 # dormant CLI → its work died with it; the death notice
+        #                                              owns that story, not a wake (same rule as the lifts)
+    rec = nudged.get(gid) or {}
+    if not rec.get("wake"):
+        rec = {}                                     # a REGULAR nudge record (predates the stamp): the wake
+        #                                              keeps its own episodes; never misread its fields
+    if rec and not rec.get("answeredAt") and not rec.get("failed") and not rec.get("moot"):
+        # a wake is in flight — judge its outcome (the leg the one-shot backstop never had)
+        ready, resp = _nudge_response_ready(turns, store, rec, gid, now)
+        if not ready:
+            return False                             # response not arrived/ruled yet — re-check next tick,
+            #                                          bounded by the window from the fire time
+        if resp is not None:
+            # the judges ruled on the answer and the stamp still stands → the wait was re-affirmed
+            nudged[gid] = dict(rec, answeredAt=(resp.get("t") or int(now)))
+            _put_nudged(gid, nudged[gid])
+            return False
+        _sdefer = _revivers_pending(sid, store, turns, gid)
+        if _sdefer and not _nudge_deferred_ok(gid, _sdefer, now, sid):
+            return False                             # something else can still move it (judge pass, retry
+            #                                          pause) → inspectable deferral, 6h-backstopped
+        # EVIDENCE TIME: the fire itself (the injected message is a real transcript event) or any turn
+        # that ended after it — never the pre-stamp turn end, whose time PREDATES the stamp's own filing
+        # `at`, so the moot guard would read the stamp as "a judge ruled after the evidence" and the
+        # escalation would stand itself down on the very stamp it fired for.
+        _ev = max(rec.get("at") or 0, lt.get("end") or lt.get("t") or 0) or None
+        _fate = _mark_nudge_failed(gid, ev_t=_ev, wake=True)
+        if _fate:
+            nudged[gid] = dict(rec, **({"failed": True} if _fate == "failed" else {"moot": True}))
+        return _fate == "failed"
+    if rec.get("failed") or rec.get("moot"):
+        if (rec.get("anchor") or 0) >= at:
+            return False                             # this episode already escalated / was superseded —
+            #                                          the anti-loop rule; a user reply unblocks as usual
+        rec = {}                                     # a genuinely NEW wait (fresh anchor) re-arms the wake
+    since = max(at, rec.get("answeredAt") or 0, rec.get("at") or 0)
+    if now - since < AWAITING_BACKSTOP_SECS:
+        return False                                 # still patient
+    _defer = _revivers_pending(sid, store, turns, gid)
+    if _defer and not _nudge_deferred_ok(gid, _defer, now, sid):
+        return False
+    try:
+        # last-moment fresh-store re-read (the judges run concurrently with this tick): the wake's whole
+        # justification is "the stamp stands and the goal is open" — re-key on the store as written
+        _fresh = jd.load_goals(sid)
+        if (not _goal_awaiting_stamp(_fresh.get("nodes", {}), gid, answered_at=_peer_answered_at(sid))
+                or _fresh.get("status", {}).get(gid, "working") != "working"):
+            return False
+    except Exception:
+        pass
+    Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AWAITING_BACKSTOP_TEXT,
+                                                       injected=True, auto=True, wake=True))
+    _nudge_deferred_ok(gid, "", now, sid)            # the hold is over — drop any deferral record
+    nudged[gid] = {"wake": True, "anchor": at, "count": (rec.get("count") or 0) + 1,
+                   "lastTurnId": lt.get("id"), "armAtoms": len(lt.get("atoms") or []), "at": int(now)}
+    _put_nudged(gid, nudged[gid])
+    _log_nudge_event(sid, gid, now, 0)               # timeline romp-logo dot (count 0 marks a wake, not an escalation)
+    return True
+
+
+def _awaiting_wake_outcomes(now):
+    """Outcome sweep for wake records whose sessions the per-goal walk can't reach — mirrors
+    _debt_backstop_tick. The walk's own outcome leg is gentler (it waits for the judges), but it runs only
+    for sessions that pass the session gates, and a dead wake leaves its session in EXACTLY a gated state:
+    the ui case's response turn died on an API error, so the _api_error gate skipped the whole session
+    forever and no mechanism ever looked at the spent wake again (2026-08-11). Here: a wake past the
+    window with no ruled response escalates regardless of session state; an answered/ruled one is left to
+    the walk. Returns True when a failure stamped (the tick pushes)."""
     fired = False
-    for s in _alive_sessions(now, tmux):
-        sid = s["sid"]
+    nudged = _auto_nudge_data().get("nudged", {})
+    for gid, rec in list(nudged.items()):
         try:
-            if tmux.get(sid) is None:                # not a live CLI → a dormant session's work is gone, not asleep
+            if not (isinstance(rec, dict) and rec.get("wake")) or rec.get("failed") \
+                    or rec.get("moot") or rec.get("answeredAt"):
                 continue
-            gid, at, why = _session_stamp_full(sid)
-            if not gid or not at or now - at < AWAITING_BACKSTOP_SECS:
-                continue                             # no stamp, or still patient
-            if backstop.get(gid) == at:
-                continue                             # already woke for THIS stamp episode (once per anchor)
-            turns = jd.parsed_session(sid, [s["path"]], now).get("turns", [])
-            if not turns or _session_working(turns):
-                continue                             # actively producing → not asleep
-            ls_val, ls_t = _last_state(sid)          # authoritative state log: a progressing record at/after the
-            lt = turns[-1]                           # turn end is a mid-turn lull, not a real idle — same
-            if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
-                continue                             # genuine-stop discriminator the nudge uses
-            if _pending_ops.get(str(sid)) or _backend_queued(sid) or _backend_rewind_pending(sid):
-                continue                             # the user has input queued / a rewind armed → don't jump it
-            Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AWAITING_BACKSTOP_TEXT, injected=True, auto=True))
-            _mark_awaiting_backstop(gid, at)
-            _log_nudge_event(sid, gid, now, 0)       # timeline romp-logo dot (count 0 marks a backstop, not an escalation)
-            fired = True
+            if now - (rec.get("at") or 0) <= AWAITING_BACKSTOP_SECS:
+                continue                             # the walk still owns this one
+            sid = gid.rsplit(":", 1)[0]
+            store = jd.load_goals(sid)
+            nd = store.get("nodes", {}).get(gid)
+            if (nd is None or nd.get("cleared") or nd.get("nodeComplete") or nd.get("blocked")
+                    or store.get("status", {}).get(gid, "working") != "working"):
+                continue                             # the world moved on; the record is inert
+            path = _path_of(sid) or ""
+            turns = jd.parsed_session(sid, [path], now).get("turns", []) if path else []
+            if turns and _session_working(turns):
+                continue                             # actively producing — let the walk judge it
+            ready, resp = _nudge_response_ready(turns, store, rec, gid, now)
+            if ready and resp is not None:
+                # answered and ruled — re-arm from the answer, exactly as the walk's eval would have (the
+                # walk never got to: its session gates held, e.g. an api-error AFTER the judged response)
+                _put_nudged(gid, dict(rec, answeredAt=(resp.get("t") or int(now))))
+                continue
+            if resp is not None:
+                continue                             # visible but not ruled yet — the judges own it
+            # resp is None past the window: NOTHING answered the wake — not even the injected message's
+            # own segment grew the parse (a lost send, a response turn that died before landing). Silent.
+            _ev = max(rec.get("at") or 0,
+                      (turns[-1].get("end") or turns[-1].get("t") or 0) if turns else 0) or None
+            if _mark_nudge_failed(gid, ev_t=_ev, wake=True) == "failed":
+                fired = True
         except Exception:
-            sys.stderr.write("awaiting-backstop (session %s): %s\n" % (sid or "?", traceback.format_exc()))
-    if fired:
-        _push_all()
+            sys.stderr.write("awaiting-wake outcome (%s): %s\n" % (gid, traceback.format_exc()))
+    return fired
 
 
 def _launch_error(sid):
@@ -3353,13 +3481,16 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
             continue                                 # all open work handed to peers → nothing for THIS session
         if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
             continue                                 # awaiting a live peer's reply to a question this goal predates
-        if _goal_awaiting_stamp(nodes, gid, _kids, answered_at=_peer_answered_at(sid)):
-            continue                                 # the judge's durable ⏳ stamp (closer awaiting verdict):
-            #                                          the goal's latest audited turn ended waiting on async
-            #                                          work it dispatched — not a stall. Restart-proof, unlike
-            #                                          the session-level live gate above; lifted by exact
-            #                                          events (next audited turn / done / block / user reply /
-            #                                          a peer's answer superseding the stamp)
+        _stamp = _goal_awaiting_stamp_full(nodes, gid, _kids, answered_at=_peer_answered_at(sid))
+        if _stamp:
+            # The judge's durable ⏳ stamp (closer awaiting verdict): the goal's latest audited turn ended
+            # waiting on async work it dispatched — not a stall, so the status nudge stays off. Restart-
+            # proof, unlike the session-level live gate above; lifted by exact events (next audited turn /
+            # done / block / user reply / a peer's answer superseding the stamp). But a wait is not an
+            # exemption from the ladder (the user 2026-08-11): past the backstop the goal takes a WAKE —
+            # same records, same response gates, same escalation, its own copy (see _wake_goal).
+            fired = _wake_goal(sid, gid, _stamp, nudged, turns, store, now, lt, tmux) or fired
+            continue
         # LAST-RESORT GATE (the user 2026-07-22): every OTHER mechanism that could still move this card
         # off 'working' must be exhausted first. This is what the 2026-07-22 false interrupt needed: the
         # card's 'working' came from a STALE agent-to-do mirror, and the nudge fired before the sync that
@@ -8692,8 +8823,7 @@ def _session_stamp_read(sid):
 
 def _session_stamp_full(sid):
     """(gid, awaitingAt, why) of the freshest durable ⏳ awaiting stamp across ALL of a session's goals, or
-    (None, None, None). _session_stamp_cached returns just the why (the display surfaces); the awaiting
-    backstop needs the gid + awaitingAt too."""
+    (None, None, None). _session_stamp_cached returns just the why (the display surfaces)."""
     return _session_stamp_read(sid)[0]
 
 
@@ -8705,8 +8835,7 @@ def _session_stamped_tops(sid):
 
 
 def _session_stamp_cached(sid):
-    """The freshest durable ⏳ stamp's WHY for a session (or None) — the display surfaces' view; see
-    _session_stamp_full for the gid + awaitingAt the awaiting backstop consumes."""
+    """The freshest durable ⏳ stamp's WHY for a session (or None) — the display surfaces' view."""
     return _session_stamp_full(sid)[2]
 
 
@@ -12637,7 +12766,7 @@ def _mark_nodes_cleared(item_ids, value, src="user", why=None):
 # machines then carried them into the fresh, unrelated conversation: the closer's history-nominated
 # candidates, the unblocker's per-turn re-examines, the auto-nudge (quoting pre-clear goals at an agent
 # with no memory of them, then recording a "nudge failed" block when its reply couldn't resolve them),
-# and the awaiting backstop. The boundary tick makes the clear visible: it records each observed
+# and the awaiting wake. The boundary tick makes the clear visible: it records each observed
 # episode head in jd's episodes/<sid>.jsonl (also the durable map to past episodes' transcripts —
 # lastSid is overwritten per fork, so this log is the only attribution of old files to their session),
 # and settles the open cards that died with their episode — sealed like the mute path (cleared.jsonl +
@@ -17646,18 +17775,14 @@ def _pusher_cycle_jobs(now, tmux, any_client):
     if any_client:
         _push_all(tmux=tmux)
     # (the WS keepalive lives on its own _heartbeat thread — NOT here — so a slow push can't starve it)
-    try:                                  # Auto Nudge runs server-side even with no browser open (cheap when off)
-        _auto_nudge_tick(now, tmux)
-    except Exception:
-        sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
-    try:                                  # EXACT retraction first: dispatches returned → the stamp is spent
-        _lift_spent_awaiting(now, tmux)
+    try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
+        _lift_spent_awaiting(now, tmux)   # so the nudge tick below never wakes a wait that already ended
     except Exception:
         sys.stderr.write("awaiting-lift: %s\n" % traceback.format_exc())
-    try:                                  # slow one-shot wake for a session asleep behind a stale awaiting stamp
-        _awaiting_backstop_tick(now, tmux)
+    try:                                  # Auto Nudge runs server-side even with no browser open (cheap when
+        _auto_nudge_tick(now, tmux)       # off); the awaiting WAKE rides its goal walk (see _wake_goal)
     except Exception:
-        sys.stderr.write("awaiting-backstop: %s\n" % traceback.format_exc())
+        sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
     try:                                  # Interrupt → Blocked runs EVERY push, independent of the nudge toggle
         _interrupt_block_tick(now, tmux)
     except Exception:
