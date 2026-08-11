@@ -6758,7 +6758,7 @@ class WsLoopResilience(unittest.TestCase):
 
         seq = list(frames)
         saved = km._ws_recv
-        km._ws_recv = lambda rfile: seq.pop(0) if seq else (0x8, b"")   # script the frames; (0x8)=close
+        km._ws_recv = lambda rfile: seq.pop(0) if seq else (0x8, b"", True)   # script the frames; (0x8)=close
         try:
             with contextlib.redirect_stderr(io.StringIO()):             # swallow the logged traceback
                 km.Handler._ws(FakeSelf())                              # returns normally on close / socket error
@@ -6768,14 +6768,14 @@ class WsLoopResilience(unittest.TestCase):
 
     def test_a_throwing_handler_does_not_end_the_loop(self):
         TEXT = 0x1
-        frames = [(TEXT, b'{"type":"a"}'), (TEXT, b'{"type":"b"}'), (0x8, b"")]   # a raises, b must still run
+        frames = [(TEXT, b'{"type":"a"}', True), (TEXT, b'{"type":"b"}', True), (0x8, b"", True)]   # a raises, b must still run
         seen = self._run_loop(frames, lambda msg: (_ for _ in ()).throw(RuntimeError("boom"))
                               if msg.get("type") == "a" else None)
         self.assertEqual(seen["types"], ["a", "b"], "'b' still processed after 'a' raised — the socket survived")
 
     def test_a_socket_error_propagates_and_stops_the_loop(self):
         TEXT = 0x1
-        frames = [(TEXT, b'{"type":"a"}'), (TEXT, b'{"type":"b"}'), (0x8, b"")]
+        frames = [(TEXT, b'{"type":"a"}', True), (TEXT, b'{"type":"b"}', True), (0x8, b"", True)]
         seen = self._run_loop(frames, lambda msg: (_ for _ in ()).throw(BrokenPipeError("gone")))
         self.assertEqual(seen["types"], ["a"], "a real socket error ends the loop — 'b' never runs (genuine disconnect)")
 

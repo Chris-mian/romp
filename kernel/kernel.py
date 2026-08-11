@@ -15801,10 +15801,13 @@ def _ws_pong(wfile, lock, payload):
 
 
 def _ws_recv(rfile):
-    """Read one client (masked) frame → (opcode, payload bytes), or (None, None) on close/EOF."""
+    """Read one client (masked) frame → (opcode, payload bytes, fin), or (None, None, True) on
+    close/EOF. One FRAME, not one message: data messages may span several frames (FIN clear until
+    the last) — _ws_recv_message below reassembles them."""
     b = rfile.read(2)
     if len(b) < 2:
-        return None, None
+        return None, None, True
+    fin = bool(b[0] & 0x80)
     opcode = b[0] & 0x0F
     masked = b[1] & 0x80
     ln = b[1] & 0x7F
@@ -15816,7 +15819,47 @@ def _ws_recv(rfile):
     payload = bytearray(rfile.read(ln))
     for i in range(len(payload)):
         payload[i] ^= mask[i % 4]
-    return opcode, bytes(payload)
+    return opcode, bytes(payload), fin
+
+
+# Reassembly ceiling for one fragmented client message — comfortably above the UI's 50 MB attachment
+# ship cap (SHIP_MAX_BYTES in render.ts) after base64 + JSON overhead; a client streaming past it is
+# broken or hostile, and the connection ends rather than the kernel buffering without bound.
+_WS_MAX_MESSAGE = 80 * 1024 * 1024
+
+
+def _ws_recv_message(rfile, on_ping):
+    """Read frames until one COMPLETE data message is assembled → (opcode, payload), or (None, None)
+    on close/EOF/overrun. Browsers FRAGMENT large sends (RFC 6455 §5.4 — Chrome splits at ~128 KB),
+    and the old per-frame loop handed each fragment straight to json.loads: a phone photo's dropFile
+    (a multi-MB base64 message) dissolved into one unparseable JSON prefix plus a train of silently
+    dropped continuation frames, so the 📎 pick looked like it did nothing (the user 2026-08-10,
+    Chrome on a phone; small desktop files sat under the threshold, which is why it never surfaced).
+    Control frames may interleave between fragments: pings are answered via on_ping, pongs are
+    dropped, close ends the read."""
+    frag_op, frag = None, None
+    while True:
+        op, payload, fin = _ws_recv(rfile)
+        if op is None or op == 0x8:            # EOF / close
+            return None, None
+        if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
+            on_ping(payload or b"")
+            continue
+        if op == 0xA:                          # unsolicited pong — nothing to do
+            continue
+        if op == 0x0:                          # continuation of an in-flight fragmented message
+            if frag is None:
+                continue                       # stray continuation with no opening frame — drop it
+            frag += payload
+            if len(frag) > _WS_MAX_MESSAGE:
+                return None, None
+            if fin:
+                out = bytes(frag)
+                return frag_op, out
+            continue
+        if fin:                                # the common case: a whole message in one frame
+            return op, payload
+        frag_op, frag = op, bytearray(payload)  # a data frame OPENING a fragmented message
 
 
 def _send_to_app(app, msg):
@@ -21843,12 +21886,12 @@ class Handler(BaseHTTPRequestHandler):
             _clients.append(client)
         try:
             while client["alive"]:
-                op, payload = _ws_recv(self.rfile)
-                if op is None or op == 0x8:           # EOF / close
+                # one COMPLETE message per iteration — fragments reassembled, pings answered inline
+                # (browsers fragment large sends: a phone photo's dropFile spans dozens of frames)
+                op, payload = _ws_recv_message(
+                    self.rfile, lambda payload: _ws_pong(self.wfile, lock, payload or b""))
+                if op is None:                         # EOF / close / a client overran the reassembly cap
                     break
-                if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
-                    _ws_pong(self.wfile, lock, payload or b"")
-                    continue
                 # webview→kernel messages: on "ready", push the initial state to this client
                 try:
                     msg = json.loads(payload.decode("utf-8", "replace"))
