@@ -4303,13 +4303,15 @@ class ViewBuilder(unittest.TestCase):
 
     def test_gear_has_show_git_branch_toggle(self):
         # the user 2026-06-23: a "Show git branch" checkbox controls whether the chat bottom-bar shows the
-        # session's git branch beside the dir. ON by default (showBranch !== false). It mirrors render.ts'
+        # session's git branch beside the dir. OFF by default since 2026-08-10 (the user, trimming the
+        # statusline for narrow panes): an explicit stored true opts in. It mirrors render.ts'
         # loadSettings().showBranch read, persisted in romp:settings.
         self.assertIn("id=rs-branch", _gear_src())
         self.assertIn("Show git branch", _gear_src())
         self.assertIn("s.showBranch = gb.checked", _gear_src())        # change → persist
-        self.assertIn("gb.checked = s.showBranch !== false", _gear_src())  # open → reflect (default ON)
-        self.assertIn("showBranch: true", _gear_src())                # load() default ON, both branches
+        self.assertIn("gb.checked = s.showBranch === true", _gear_src())  # open → reflect (default OFF)
+        self.assertIn("showBranch: false", _gear_src())               # load() default OFF, both branches
+        self.assertNotIn("showBranch: true", _gear_src())             # the old default must not linger
 
     def test_chat_body_has_an_explicit_send_button(self):
         # The web-dashboard composer (kernel _chat_body, a SECOND copy of vscode-extension/src/page-skeleton.chatBody)
