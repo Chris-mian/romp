@@ -43,7 +43,10 @@ class ApiRetryRendersAsRomp(unittest.TestCase):
         # (blue bubble) and let the planner mint a junk goal per bare "retry". See
         # tests/test_kernel_retry_authorship.py for the authorship end-to-end.
         ap = SRC.split('t == "apiRetry"', 1)[1].split("elif t ==", 1)[0]
-        self.assertIn("be.send(sid, RETRY_MSG)", ap, "the handler sends the shared RETRY_MSG constant")
+        self.assertIn("_fire_api_retry(sid, be, manual=", ap,
+                      "the route delegates to the ONE shared retry decision")
+        fn = SRC.split("def _fire_api_retry(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("be.send(sid, RETRY_MSG)", fn, "the shared decision sends the shared RETRY_MSG constant")
         # the constant itself carries the romp-injected marker → never a bare retry on either backend
         self.assertEqual(km.RETRY_MSG, RETRY, "RETRY_MSG is the marked retry text")
         self.assertIn("romp-injected", km.RETRY_MSG)
@@ -52,8 +55,8 @@ class ApiRetryRendersAsRomp(unittest.TestCase):
         # the gate (global pause / interrupted-thread suppression) stops the AUTO-retry loop only; a MANUAL
         # "Retry now" click (msg.manual) is an explicit one-shot override that ALWAYS fires, so the button is
         # never a dead no-op on a suppressed/paused thread (the user 2026-07-06, SDK backend)
-        ap = SRC.split('t == "apiRetry"', 1)[1].split("elif t ==", 1)[0]
-        self.assertIn('if not msg.get("manual") and (_retry_paused_on() or _session_retry_suppressed(sid)):', ap,
+        fn = SRC.split("def _fire_api_retry(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn('if not manual and (_retry_paused_on() or _session_retry_suppressed(sid)):', fn,
                       "the auto-retry gate is skipped for a manual click")
 
     def test_that_injected_retry_is_authored_romp_not_human(self):
@@ -126,6 +129,93 @@ class ApiRetryIdempotency(unittest.TestCase):
         be = FakeBackend(pending=[RETRY])
         self._drive_retry(be, manual=True)
         self.assertEqual(be.sent, [RETRY], "a manual retry is not deduped by the pending-queue guard")
+
+
+class KernelAutoRetryTick(unittest.TestCase):
+    """_auto_retry_tick (the user 2026-08-11): the KERNEL drives the transient-api-error retry itself.
+    Before it, the only clock was apiRetryTick in each open dashboard — a session that died on a transient
+    error with no client open never retried at all (the ui session sat 7.5h on an overnight ENOTFOUND,
+    invisible AND gating its awaiting wake, since the nudge walk skips api-errored sessions). Same
+    decision, same gates: the tick calls the shared _fire_api_retry."""
+
+    SID = "11111111-2222-3333-4444-888888888888"
+
+    def setUp(self):
+        self._saved = (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
+                       km._api_error, km._path_of, km._alive_sessions)
+        km._retry_paused_on = lambda: False
+        km._session_retry_suppressed = lambda sid: False
+        km._alive_sessions = lambda now, tmux: [{"sid": self.SID, "path": "/TESTDIR/x.jsonl"}]
+        km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
+        self.aerr = {"text": "Unable to connect to API (ENOTFOUND)", "status": None,
+                     "category": "network", "uuid": "ep-1",
+                     "tooLong": False, "spendLimit": False, "modelLimit": False, "authErr": False}
+        km._api_error = lambda path: self.aerr
+        self.be = FakeBackend(pending=[])
+        km.Sessions = types.SimpleNamespace(backend_for=lambda sid: self.be)
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+
+    def tearDown(self):
+        (km.Sessions, km._retry_paused_on, km._session_retry_suppressed,
+         km._api_error, km._path_of, km._alive_sessions) = self._saved
+        km._auto_retried.clear()
+        km._auto_retry_state.clear()
+
+    def _tick(self, tmux=None):
+        km._auto_retry_tick(1_000_000, {self.SID: {"state": ""}} if tmux is None else tmux)
+
+    def test_fires_unattended_with_no_client(self):
+        # THE live wedge: a transient-errored idle session, zero clients. The kernel now asks for itself.
+        self._tick()
+        self.assertEqual(self.be.sent, [RETRY], "the kernel retries a transient error with no client open")
+        self.assertEqual(km._auto_retried.get(self.SID), "ep-1", "the episode is stamped")
+        self.assertGreater(km._retry_gate_state(self.SID)[1], 0, "the backoff ladder steps")
+
+    def test_once_per_error_episode(self):
+        self._tick(); self._tick()
+        self.assertEqual(self.be.sent, [RETRY], "the same error record never collects a second retry")
+
+    def test_a_new_episode_retries_after_the_backoff(self):
+        self._tick()
+        self.aerr = dict(self.aerr, uuid="ep-2")     # the attempt ran and failed again → a new error record
+        km._auto_retry_state[self.SID]["next"] = 0   # …and its backoff rung has come due
+        self._tick()
+        self.assertEqual(self.be.sent, [RETRY, RETRY], "a fresh episode past its rung retries again")
+
+    def test_on_you_classes_are_never_auto_retried(self):
+        # a retry cannot compact a prompt, raise a cap, refill an allowance, or mend a credential — the
+        # kernel driver must carry the skip the client tick used to provide (server-side twin)
+        for k in ("tooLong", "spendLimit", "modelLimit", "authErr"):
+            with self.subTest(cls=k):
+                self.be.sent.clear()
+                km._auto_retried.clear(); km._auto_retry_state.clear()
+                self.aerr = dict(self.aerr, **{k: True})
+                self._tick()
+                self.assertEqual(self.be.sent, [], "%s is on-you; auto-retry stands down" % k)
+                self.aerr = dict(self.aerr, **{k: False})
+        # …while a MANUAL Retry-now through the shared decision still fires (explicit user override)
+        self.aerr = dict(self.aerr, tooLong=True)
+        km._fire_api_retry(self.SID, self.be, manual=True)
+        self.assertEqual(self.be.sent, [RETRY])
+
+    def test_dormant_sessions_are_skipped(self):
+        self._tick(tmux={})                          # SID not in the live set → no live CLI
+        self.assertEqual(self.be.sent, [], "a dead CLI's api-error is settled history, not retried into")
+
+    def test_global_pause_stands(self):
+        km._retry_paused_on = lambda: True
+        self._tick()
+        self.assertEqual(self.be.sent, [], "the tick rides the same global pause as every auto path")
+
+    def test_recovered_session_is_left_alone(self):
+        km._api_error = lambda path: None
+        self._tick()
+        self.assertEqual(self.be.sent, [], "no api error → nothing to retry")
+
+    def test_the_pusher_cycle_runs_the_tick(self):
+        self.assertIn("_auto_retry_tick(now, tmux)", SRC,
+                      "the pusher cycle drives retries server-side — unattended recovery")
 
 
 if __name__ == "__main__":
