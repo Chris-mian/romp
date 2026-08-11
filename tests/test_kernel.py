@@ -2649,10 +2649,12 @@ class ViewBuilder(unittest.TestCase):
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 1, "the stalled goal is nudged")
             # the fork ask (both the flat and the hierarchical-enumeration form carry these sentences):
-            # per-item progress + the continue-or-name-the-blocker fork (the user 2026-07-02)
+            # the continue-or-name-the-blocker fork (the user 2026-07-02), leading with permission to
+            # continue instead of a per-item report (the user 2026-08-11)
             self.assertIn("Keep going on anything you can", sent[0][1],
                           "the FORK text, not the plain status check")
-            self.assertIn("Where does each one stand?", sent[0][1], "asks for per-item progress")
+            self.assertIn("you don't need my go-ahead", sent[0][1],
+                          "licenses continuing without checking in first")
             self.assertIn("tell me which one and exactly what you need from me", sent[0][1])
             self.assertIn("hook up the adapter", sent[0][1], "the open item is named in the quote")
             self.assertNotIn(km.AUTO_NUDGE_TEXT, sent[0][1])
@@ -2684,7 +2686,8 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("migrate stores and land the branch", body, "open to-do #2 is named")
         self.assertNotIn("a genuinely done step", body, "a done step is not")
         self.assertIn("still open on your own to-do list", body, "the fork body rides the enumeration")
-        self.assertIn("Where does each one stand?", body, "and asks for per-item progress")
+        self.assertIn("you don't need my go-ahead", body,
+                      "and licenses continuing without a per-item report first (the user 2026-08-11)")
 
     def test_auto_nudge_stamps_failed_when_its_response_leaves_the_goal_stalled(self):
         # plans/stalled-open-todos-nudge.md: after the ONE nudge, the agent's response turn ends (judged —

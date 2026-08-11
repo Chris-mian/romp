@@ -13,6 +13,10 @@ unfinished, deferred, delegated, or blocked — list it as a short bulleted
 complete while pieces remain. Finishing a preliminary step — reading,
 mapping, or planning — is not finishing the work it was for.
 
+Don't talk yourself out of work because it looks too big or uncertain: if you
+can see a way to make progress, take it, and check in only when a decision is
+genuinely mine to make.
+
 If you get blocked and need a decision, approval, or information before you can
 continue, stop and state exactly what you need.
 

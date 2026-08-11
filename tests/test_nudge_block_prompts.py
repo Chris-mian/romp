@@ -37,22 +37,56 @@ class AutoNudgePrompt(unittest.TestCase):
         self.assertNotRegex(src, r'nudge\.onclick', "the manual Nudge button stays removed")
 
     def test_prompt_elicits_done_and_blocked_on_user(self):
-        t = km.AUTO_NUDGE_TEXT.lower()
+        # every VARIANT must elicit the same split — the rotation re-asks the same question in fresh
+        # words, so a variant that dropped "done" or "blocked" would break the working/blocked filing
         self.assertNotEqual(km.AUTO_NUDGE_TEXT, OLD_BARE_STATUS,
                             "the bare status question is what caused the working/blocked mis-classification")
-        self.assertIn("done", t, "nudge should ask what's done")
-        self.assertIn("blocked", t, "nudge should ask what's blocked")
-        self.assertTrue("me" in t or "you" in t,
-                        "nudge should ask whether anything is blocked waiting on the user")
+        for v in km.AUTO_NUDGE_VARIANTS:
+            t = v.lower()
+            with self.subTest(variant=v[:40]):
+                self.assertIn("done", t, "nudge should ask what's done")
+                self.assertIn("blocked", t, "nudge should ask what's blocked")
+                self.assertTrue("me" in t or "you" in t,
+                                "nudge should ask whether anything is blocked waiting on the user")
 
     def test_prompt_reads_like_a_person_not_a_status_form(self):
         # g13 (the user 2026-07-01): the nudge must read like an ordinary user turn, never disclose an
         # automated/tracking origin, and not open with a form-like "Status on the goal above:" header.
-        t = km.AUTO_NUDGE_TEXT.lower()
-        for robotic in ("status on the goal above", "romp", "automated", "tracking"):
+        for v in km.AUTO_NUDGE_VARIANTS:
+            t = v.lower()
+            with self.subTest(variant=v[:40]):
+                for robotic in ("status on the goal above", "romp", "automated", "tracking"):
+                    self.assertNotIn(robotic, t, robotic)
+                self.assertTrue(v[0].isupper() and "?" in v,
+                                "a natural question, addressed to the session")
+
+    def test_every_nudge_text_licenses_continuing_without_permission(self):
+        # the user 2026-08-11 (after Anthropic's riemann-zeta post, where the operator's whole input was
+        # keep-going encouragement): a nudge must LEAD BACK TO WORK, not just buy a report turn — every
+        # variant, plain and fork, carries explicit permission to continue without the user's go-ahead.
+        for v in km.AUTO_NUDGE_VARIANTS + km.AUTO_NUDGE_STALLED_VARIANTS:
+            with self.subTest(variant=v[:40]):
+                self.assertIn("keep going", v.lower(),
+                              "every nudge variant must license just continuing the work")
+
+    def test_first_fire_is_canonical_and_repeats_vary(self):
+        # variant 1 IS the constant, so the first nudge is byte-identical to the pre-variant behavior
+        # (test_kernel's verbatim-carry assertions ride on this); repeats rotate, and counts past the
+        # list wrap around rather than erroring.
+        self.assertEqual(km._nudge_text(1), km.AUTO_NUDGE_TEXT)
+        self.assertEqual(km._nudge_text(1, stalled=True), km.AUTO_NUDGE_STALLED_TEXT)
+        self.assertEqual(len({km._nudge_text(c) for c in (1, 2, 3)}), 3,
+                         "repeat nudges wear different words for the same ask")
+        self.assertEqual(km._nudge_text(4), km.AUTO_NUDGE_TEXT, "counts wrap around the variant list")
+        self.assertEqual(km._nudge_text(0), km.AUTO_NUDGE_TEXT, "a defensive floor for a malformed count")
+
+    def test_awaiting_backstop_reads_like_a_person(self):
+        # the user 2026-08-11: the backstop text said "goal" twice and ANNOUNCED itself automated — the
+        # exact disclosures g13 bans — and sat outside test_injected_voice's index, which is how it
+        # survived the 2026-07-24 sweep. Indexed there now; belt-and-suspenders ban here too.
+        t = km.AWAITING_BACKSTOP_TEXT.lower()
+        for robotic in ("goal", "romp", "automated", "tracking"):
             self.assertNotIn(robotic, t, robotic)
-        self.assertTrue(km.AUTO_NUDGE_TEXT[0].isupper() and "?" in km.AUTO_NUDGE_TEXT,
-                        "a natural question, addressed to the session")
 
 
 class PlannerBlockRule(unittest.TestCase):
