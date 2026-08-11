@@ -4473,6 +4473,102 @@ def _clear_retry_backoff(sid):
     _auto_retry_state.pop(sid, None)   # recovered: the next outage starts at the bottom rung again
 
 
+def _fire_api_retry(sid, be, manual=False):
+    """Inject a "retry" into an API-error-blocked session, behind every retry gate — the ONE retry
+    decision, shared by the apiRetry route (a client's ask: the dashboard's countdown tick or the manual
+    Retry-now button) and the kernel's own _auto_retry_tick (the unattended driver, 2026-08-11). Every
+    gate below was already kernel state; a client ask contributes nothing but the asking, so the kernel
+    asking itself is the same decision on the same state.
+
+    The GATE block is for the AUTO path only: a global pause or a thread the user interrupted must not
+    relapse into the storm. A MANUAL Retry-now is an explicit one-shot override — it ALWAYS fires so the
+    button is never a dead no-op on a suppressed/paused thread (the user 2026-07-06). It fires ONE retry
+    without clearing the suppression, so it doesn't re-arm the auto-loop the user turned off."""
+    if not manual and (_retry_paused_on() or _session_retry_suppressed(sid)):
+        return
+    # IDEMPOTENCY (the user 2026-07-08): don't stack a fresh auto-"retry" when the one romp already sent is
+    # still QUEUED and unconsumed — the session is blocked, so the previous retry hasn't run yet and another
+    # only piles up. Without this the auto-loop enqueued N bare "retry"s into the SDK queue during one
+    # API-error storm — the "retry retry retry retry…" card. A MANUAL "Retry now" still ALWAYS fires: it's an
+    # explicit user override (mirrors the pause/suppression gate above), and it resets the client countdown.
+    if not manual:
+        try:
+            if any(q == RETRY_MSG for q in be.pending_queued(sid)):
+                return
+        except Exception:
+            pass                                          # a backend without a live queue → fall through, send
+    # ONE RETRY PER ERROR EPISODE (the user 2026-07-20, the retry-storm root cause): the queued check
+    # above goes blind the moment a retry FORWARDS into the CLI — pending_queued empties while the
+    # session still reads blocked (the same mid-turn-forward seam as the echo-durability fixes) — and
+    # the client tick runs PER OPEN VIEW, so every connected client stacked another "retry" into the
+    # CLI's belly each cycle; a wedged session collected hundreds, delivered as one flood when its
+    # turn finally opened. Event-based fix: the CURRENT error record's uuid IS the episode. An
+    # auto-retry fires once per episode; the next fires only when a NEW error record lands (the
+    # attempt actually ran and failed again) or the error cleared (then there is nothing to retry —
+    # a stale ask into a recovered session sends nothing). A manual Retry-now always fires,
+    # and stamps the episode too, so the auto loop never stacks a second attempt behind the user's.
+    _rk = None
+    _rerr = None
+    try:
+        _rerr = _api_error(_path_of(sid) or "")
+        _rk = (_rerr.get("uuid") or _rerr.get("text") or "") if _rerr else None
+    except Exception:
+        pass                                              # unreadable state → manual still fires below
+    if _rk is None:
+        _clear_retry_backoff(sid)                         # recovered (or never blocked): reset the ladder
+    if not manual:
+        if _rk is None:
+            return                                        # not api-blocked right now → nothing to retry
+        # ON-YOU classes are never auto-retried (server-side twin of the client tick's skip, and the
+        # kernel driver's own guard): a retry cannot compact a too-long prompt, raise a spend cap, refill
+        # a model allowance, or mend a credential — the card names the real fix. Manual keeps firing:
+        # the button is only rendered where a retry can work, and an explicit click is the user's call.
+        if _rerr and (_rerr.get("tooLong") or _rerr.get("spendLimit")
+                      or _rerr.get("modelLimit") or _rerr.get("authErr")):
+            return
+        if _auto_retried.get(sid) == _rk:
+            return                                        # this episode already got its retry
+        if time.time() < _retry_gate_state(sid)[1]:
+            return                                        # backing off: this outage's next rung isn't due
+    if _rk is not None:
+        if len(_auto_retried) > 256:
+            _auto_retried.clear()
+        _auto_retried[sid] = _rk
+    # ALWAYS mark the retry romp-injected → GRAY romp bubble on BOTH backends (the user 2026-06-30): an
+    # auto-retry is romp's action, not the human's. Without the marker the SDK retry was authored 'human'
+    # (promptSource 'sdk' + sdk_human → blue bubble) AND the planner mis-read each bare "retry" as a user
+    # message, force-pinning a junk goal per retry via the never-skip hard guard ("retry — kept on the
+    # board…", 71 of them in one API-error storm). The marker makes author_of return 'romp' (ROMP_INJECT_RE)
+    # so the echo + transcript render gray and the planner skips a work-less retry instead of minting a goal.
+    be.send(sid, RETRY_MSG)
+    _note_retry_sent(sid, manual=manual)
+
+
+def _auto_retry_tick(now, tmux):
+    """KERNEL-side driver for the transient-api-error auto-retry (the user 2026-08-11). The ladder, the
+    episode gate and every suppression were already the kernel's — but the clock that ASKED lived in each
+    open dashboard (apiRetryTick, ui/webview/render.ts), so a session that died on a transient error with
+    no client open never retried at all: the ui session sat 7.5h on an overnight ENOTFOUND — invisible
+    (transient = Working + chip), unrecoverable, and, because the nudge walk skips api-errored sessions,
+    its awaiting wake could never fire either. The kernel asks for itself now, every pusher cycle; the
+    client tick stays as the countdown display and a redundant asker (harmless: the decision in
+    _fire_api_retry is idempotent against double-asking, and an older kernel still needs the client).
+    Dormant sessions are skipped — a dead CLI's api-error is settled history, and reviving a session is
+    the nudge machinery's call, not a retry's."""
+    for s in _alive_sessions(now, tmux):
+        sid = s["sid"]
+        try:
+            if tmux.get(sid) is None:
+                continue                                  # dormant CLI → nothing live to retry into
+            if not _api_error(s["path"]):
+                continue                                  # (mtime-cached) not api-blocked → nothing to do
+            be = Sessions.backend_for(sid)
+            if be is not None:
+                _fire_api_retry(sid, be)
+        except Exception:
+            sys.stderr.write("auto-retry (session %s): %s\n" % (sid or "?", traceback.format_exc()))
+
+
 def _predict_working(flavor, ids=None, sid=None):
     """Instant cross-view cue (the user 2026-07-20): a context-carrying reply just fired — a follow-up (feed
     composer or chat citation chip), a Move to Working, or a picker/permission answer — so tell every FEED
@@ -4791,61 +4887,10 @@ def _drive(msg, client):
             client["send"](json.dumps({"type": "warn", "text": derr}))
         _push_soon()
     elif t == "apiRetry":
-        # The GATE is for the AUTO-retry loop only (romp's 10s tick): a global pause or a thread the user
-        # interrupted must not relapse into the storm. But a MANUAL "Retry now" click (msg.manual) is an
-        # explicit one-shot override — it ALWAYS fires so the button is never a dead no-op on a suppressed/
-        # paused thread (the user 2026-07-06, who reported Retry now doing nothing on the SDK backend). It fires ONE retry
-        # without clearing the suppression, so it doesn't re-arm the auto-loop the user turned off.
-        if not msg.get("manual") and (_retry_paused_on() or _session_retry_suppressed(sid)):
-            return
-        # IDEMPOTENCY (the user 2026-07-08): don't stack a fresh auto-"retry" when the one romp already sent is
-        # still QUEUED and unconsumed — the session is blocked, so the previous retry hasn't run yet and another
-        # only piles up. Without this the 10s auto-loop enqueued N bare "retry"s into the SDK queue during one
-        # API-error storm — the "retry retry retry retry…" card. A MANUAL "Retry now" still ALWAYS fires: it's an
-        # explicit user override (mirrors the pause/suppression gate above), and it resets the client countdown.
-        if not msg.get("manual"):
-            try:
-                if any(q == RETRY_MSG for q in be.pending_queued(sid)):
-                    return
-            except Exception:
-                pass                                          # a backend without a live queue → fall through, send
-        # ONE RETRY PER ERROR EPISODE (the user 2026-07-20, the retry-storm root cause): the queued check
-        # above goes blind the moment a retry FORWARDS into the CLI — pending_queued empties while the
-        # session still reads blocked (the same mid-turn-forward seam as the echo-durability fixes) — and
-        # the 10s tick runs PER OPEN VIEW, so every connected client stacked another "retry" into the
-        # CLI's belly each cycle; a wedged session collected hundreds, delivered as one flood when its
-        # turn finally opened. Event-based fix: the CURRENT error record's uuid IS the episode. An
-        # auto-retry fires once per episode; the next fires only when a NEW error record lands (the
-        # attempt actually ran and failed again) or the error cleared (then there is nothing to retry —
-        # a stale client tick into a recovered session sends nothing). A manual Retry-now always fires,
-        # and stamps the episode too, so the auto loop never stacks a second attempt behind the user's.
-        _rk = None
-        try:
-            _rerr = _api_error(_path_of(sid) or "")
-            _rk = (_rerr.get("uuid") or _rerr.get("text") or "") if _rerr else None
-        except Exception:
-            pass                                              # unreadable state → manual still fires below
-        if _rk is None:
-            _clear_retry_backoff(sid)                         # recovered (or never blocked): reset the ladder
-        if not msg.get("manual"):
-            if _rk is None:
-                return                                        # not api-blocked right now → nothing to retry
-            if _auto_retried.get(sid) == _rk:
-                return                                        # this episode already got its retry
-            if time.time() < _retry_gate_state(sid)[1]:
-                return                                        # backing off: this outage's next rung isn't due
-        if _rk is not None:
-            if len(_auto_retried) > 256:
-                _auto_retried.clear()
-            _auto_retried[sid] = _rk
-        # ALWAYS mark the retry romp-injected → GRAY romp bubble on BOTH backends (the user 2026-06-30): an
-        # auto-retry is romp's action, not the human's. Without the marker the SDK retry was authored 'human'
-        # (promptSource 'sdk' + sdk_human → blue bubble) AND the planner mis-read each bare "retry" as a user
-        # message, force-pinning a junk goal per retry via the never-skip hard guard ("retry — kept on the
-        # board…", 71 of them in one API-error storm). The marker makes author_of return 'romp' (ROMP_INJECT_RE)
-        # so the echo + transcript render gray and the planner skips a work-less retry instead of minting a goal.
-        be.send(sid, RETRY_MSG)
-        _note_retry_sent(sid, manual=bool(msg.get("manual")))
+        # ONE retry decision, all of it kernel state — see _fire_api_retry (shared with the kernel's own
+        # _auto_retry_tick, which drives recovery unattended since 2026-08-11; this route remains for the
+        # manual Retry-now button and the dashboard tick's redundant asks, both idempotent against it).
+        _fire_api_retry(sid, be, manual=bool(msg.get("manual")))
     elif t == "setModel" and msg.get("value"):
         _set_model_or_park(be, sid, str(msg["value"])); _push_soon()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):
@@ -17803,6 +17848,10 @@ def _pusher_cycle_jobs(now, tmux, any_client):
         _auto_resume_session_retry(now, tmux)
     except Exception:
         sys.stderr.write("auto-resume-session-retry: %s\n" % traceback.format_exc())
+    try:                                  # the kernel drives the transient-api-error retry itself (unattended;
+        _auto_retry_tick(now, tmux)       # the dashboard tick is just the countdown + a redundant asker)
+    except Exception:
+        sys.stderr.write("auto-retry-tick: %s\n" % traceback.format_exc())
     try:                                  # expire stale set_working notes once a session goes idle + done (cheap when no notes)
         _clear_done_working_notes(now, tmux)
     except Exception:

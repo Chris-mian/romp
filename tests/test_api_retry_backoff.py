@@ -93,23 +93,23 @@ class Ladder(unittest.TestCase):
 
 class Wiring(unittest.TestCase):
     def test_the_route_refuses_an_auto_retry_inside_the_backoff_window(self):
-        src = inspect.getsource(km._drive)
+        src = inspect.getsource(km._fire_api_retry)
         self.assertIn("if time.time() < _retry_gate_state(sid)[1]:", src)
-        self.assertIn("_note_retry_sent(sid, manual=bool(msg.get(\"manual\")))", src)
+        self.assertIn("_note_retry_sent(sid, manual=manual)", src)
         # …and the send happens BEFORE the stamp, so a refused send doesn't burn a rung
         self.assertLess(src.index("be.send(sid, RETRY_MSG)"), src.index("_note_retry_sent(sid"))
 
     def test_recovery_clears_the_ladder_on_the_next_tick(self):
-        src = inspect.getsource(km._drive)
+        src = inspect.getsource(km._fire_api_retry)
         self.assertIn("_clear_retry_backoff(sid)", src)
 
     def test_a_manual_retry_is_never_gated_by_the_backoff(self):
-        src = inspect.getsource(km._drive)
+        src = inspect.getsource(km._fire_api_retry)
         gate = src[src.index("if time.time() < _retry_gate_state(sid)[1]:")]
         self.assertTrue(gate)
-        # the whole gate block sits under `if not msg.get("manual")`
+        # the whole gate block sits under `if not manual:`
         head = src[:src.index("if time.time() < _retry_gate_state(sid)[1]:")]
-        self.assertIn('if not msg.get("manual"):', head.split("elif t ==")[-1])
+        self.assertIn('if not manual:', head)
 
     def test_the_status_payload_publishes_the_schedule(self):
         src = inspect.getsource(km.build_session)
