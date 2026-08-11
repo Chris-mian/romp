@@ -119,13 +119,16 @@ code {dir}                          # VS Code instead
 ### Fast mode, from the chat statusline
 
 The statusline's badges — permission mode, model, effort — are each a small
-dropdown. A fourth, **Fast**, appears when the session reports Claude Code's
-fast-mode state (an Opus-only research preview, billed at a premium). Picking
-On or Off sends the CLI's own `/fast` command; the badge reads the state the
-CLI reports — orange while on, and a cooldown label while fast requests are
-rate-limited — and never appears on a session that cannot run fast mode.
-Turning it on while the session is on a non-Opus model makes the CLI switch to
-a fast-capable one, which the chat shows as the command's own confirmation.
+dropdown. A fourth appears when the session reports Claude Code's fast-mode
+state (an Opus-only research preview, billed at a premium): it reads **Fast**
+in orange while fast mode is on, **Slow** while it's off, and **Cooldown**
+while fast requests are rate-limited. Picking On or Off sends the CLI's own
+`/fast` command; the badge never appears on a session that cannot run fast
+mode. Turning it on while the session is on a non-Opus model makes the CLI
+switch to a fast-capable one, which the chat shows as the command's own
+confirmation. If the CLI refuses the toggle (for example, the account has
+extra usage turned off), a toast says why and the pick reverts to off —
+the control never silently disappears.
 
 ### Per-session billing (login vs API key)
 

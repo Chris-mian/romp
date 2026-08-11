@@ -1012,6 +1012,13 @@ def list_regs(state_dir: Path) -> list[dict]:
 
 FLAG_SETTINGS_DIR = "sdk-flag-settings"   # per-session --settings payloads, one file per sid
 
+# fast_mode_disabled_reason tokens humanized for the refusal toast (_adopt_fast_state's refused-ask
+# path). An unmapped token is shown raw — a loud unfamiliar word beats a silent vanish.
+_FAST_REFUSALS = {
+    "extra_usage_disabled": "the account has extra usage turned off, and fast mode bills through it "
+                            "(claude.ai → Settings → Usage)",
+}
+
 
 def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bool = False) -> str:
     """The settings file handed to the CLI (options.settings — the flag-settings layer, the CLI's
@@ -1577,17 +1584,42 @@ class SdkSession:
         # 2.1.226: opus/fable/sonnet headless connects all report off + this reason). Keeping
         # it in fast_reason hid the chat toggle on every SDK session — the control that
         # GRANTS the opt-in was gated on already having it (the user 2026-08-10, who switched
-        # to Opus and looked for the toggle). Blank it: the badge shows "Fast off" and a
+        # to Opus and looked for the toggle). Blank it: the badge shows "Slow" and a
         # click cures the reason; every OTHER reason still hides the dead control.
         reason = "" if reason == "sdk_opt_in_required" else reason
+        # A refusal that lands while the user's ask is ARMED (fast_opt — they picked On) is the CLI
+        # ANSWERING that ask, not standing state to hide behind: adopting it silently made the toggle
+        # the user had just clicked vanish without a word, with the ask left armed on disk forever
+        # (the user 2026-08-11, whose tap on a phone was refused with extra_usage_disabled). Fail
+        # loudly instead: tell the user WHY in a warn toast, clear the ask (reg + fast_opt) so the
+        # opt-in flag doesn't stay armed, and reconnect — the flagless connect reports
+        # sdk_opt_in_required, which blanks the reason above, so the badge comes BACK instead of
+        # disappearing under the dead-control rule.
+        refused_ask = bool(reason) and self.fast_opt and fast != "on"
+        if refused_ask:
+            self.fast_opt = False
         changed = fast != self.fast or reason != self.fast_reason
         self.fast, self.fast_reason = fast, reason
-        if changed:
+        if changed or refused_ask:
             try:
-                self.backend._update_reg(self.sid, liveFast=fast, liveFastReason=reason)
+                kw = dict(liveFast=fast, liveFastReason=reason)
+                if refused_ask:
+                    kw["fast"] = False
+                self.backend._update_reg(self.sid, **kw)
             except Exception as e:
                 self.backend._log("fast-state persist (%s): registry write failed: %s" % (self.name, e))
-        return changed
+        if refused_ask:
+            why = _FAST_REFUSALS.get(reason, "the CLI reports %r" % reason)
+            self.backend._log("fast mode (%s): the CLI refused the toggle — %s" % (self.name, reason),
+                              problem=True)
+            try:
+                self.backend._notify("chat", {"type": "warn", "text":
+                    "fast mode isn't available for %s — %s; the pick is back off" % (self.name, why)})
+            except Exception as e:
+                self.backend._log("fast mode (%s): could not tell the chat about the refusal: %s"
+                                  % (self.name, e))
+            self.request_reconnect()
+        return changed or refused_ask
 
     async def _do_adopt_server_info(self):
         """Fast-mode state at CONNECT, before any turn. The init message _adopt_fast_state feeds on
