@@ -4725,6 +4725,17 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
     document.body.appendChild(overlay);
     document.addEventListener("keydown", pickerKey);
+    // SHORT-WINDOW FOLD (the user 2026-08-10, Chrome on a phone): with the on-screen keyboard up, the
+    // picker's lower rows sat behind it and nothing gave. The shell sizes this lifted iframe to the
+    // VISIBLE height (--app-h ← the top-level visualViewport, which the keyboard shrinks), so the
+    // keyboard opening/closing lands here as this window's own resize — the exact event to key on, no
+    // timers, no UA sniffing. Short window → kb-tight folds the advanced create rows (dir, backend,
+    // billing, host — styles.css) so the essentials share the height with the keyboard; the same
+    // resize expands them back the moment there is room again (a genuinely small screen folds too,
+    // which is the right call there as well).
+    const kbFit = () => document.getElementById("picker")?.classList.toggle("kb-tight", window.innerHeight < 480);
+    window.addEventListener("resize", kbFit);
+    kbFit();
   }
   overlay.style.display = "flex";
   signalPickerOverlay(true);   // lift the chat iframe full-window so the picker covers the whole screen
@@ -6949,13 +6960,21 @@ const FAST_CHOICES: { label: string; value: string }[] = [
 // so a one-auth machine shows no dead selector, and still labelled plainly 'API key' — no fragment
 // of the key, not even a last-4 tail, is shipped or shown (2026-08-08, evening). The tab hover's
 // Billing row keeps carrying the fact everywhere.
-// the fast-mode state ("on"/"off"/"cooldown") → the badge label
+// the fast-mode state ("on"/"off"/"cooldown") → the badge label. ONE WORD (the user 2026-08-10, on a
+// phone-width statusline): the on/off fact is carried by the tint — ON wears the CLI's fast orange
+// (metaColor), off the default dim — and the picker's ✓ names the state on click.
 function prettyFast(f: string | undefined): string {
-  switch ((f || "").toLowerCase()) {
-    case "on": return "Fast on";
-    case "cooldown": return "Fast cooldown";   // rate-limited: the CLI resumes fast mode when the limit resets
-    default: return "Fast off";
-  }
+  return (f || "").toLowerCase() === "cooldown" ? "Cooldown" : "Fast";   // rate-limited: the CLI resumes fast mode when the limit resets
+}
+// Whether the session's MODEL can run fast mode at all (the CLI's /fast is an Opus-only research
+// preview). Gated HERE, on the model, because the CLI is no help: fast_mode_state arrives "off" with
+// an EMPTY fast_mode_disabled_reason on a non-Opus session (verified 2026-08-10 against 2.1.226 on a
+// fable session), so state alone would leave a dead toggle on every model /fast refuses (the user
+// 2026-08-10). Unknown/default stays visible: the account default may be Opus, and hiding a live
+// control is worse than a rare dead one.
+function fastAvailable(st: Status): boolean {
+  const m = (st.model || "").toLowerCase();
+  return !m || m === "default" || m.includes("opus");
 }
 // the @claude-permission-mode var → a short readable badge label
 function prettyMode(m: string | undefined): string {
@@ -7045,16 +7064,18 @@ function metaColor(kind: MetaKind, st: Status): string {
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
 function syncMetaControls(meta: HTMLElement, st: Status) {
   // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name
-  // (the user 2026-06-16); fast exists only when the session reports it (SDK init). Billing moved to
-  // the tab's right-click menu (the user 2026-08-09) — no badge here.
-  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", st.fast ? "fast" : ""].filter(Boolean).join();
+  // (the user 2026-06-16); fast exists only when the session reports it (SDK init) AND the model can
+  // run it (fastAvailable). Billing moved to the tab's right-click menu (the user 2026-08-09) — no
+  // badge here.
+  const fast = st.fast && fastAvailable(st) ? st.fast : "";   // reported AND the model can run it — else no dead control
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : "", fast ? "fast" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
     if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode)));
     if (st.model) meta.appendChild(metaButton("model", st.model));
     if (st.effort) meta.appendChild(metaButton("effort", st.effort));
-    if (st.fast) meta.appendChild(metaButton("fast", prettyFast(st.fast)));
+    if (fast) meta.appendChild(metaButton("fast", prettyFast(fast)));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;
@@ -7312,11 +7333,12 @@ function updateStatusline() {
     asFolderLink(dir, s.cwd, activeId || undefined);
   }
   right.appendChild(dir);
-  // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
-  // (Settings → "Show git branch", on by default — the user 2026-06-23). Read from the TOP-LEVEL session field,
+  // The session's git branch, just right of the dir — only when known and only if the user has OPTED IN
+  // (Settings → Chat → "Show git branch"; off by default — the user 2026-08-10, trimming the statusline
+  // for narrow panes; it shipped on by default 2026-06-23). Read from the TOP-LEVEL session field,
   // never the head system event: that event is windowed out of the wire tail on any >250-event session, which
   // used to blank the branch on most sessions (the user 2026-06-30).
-  if (loadSettings().showBranch !== false && s.gitBranch) {
+  if (loadSettings().showBranch === true && s.gitBranch) {
     const br = el("span", "status-branch");
     br.textContent = "⎇ " + s.gitBranch;
     br.title = "git branch: " + s.gitBranch;

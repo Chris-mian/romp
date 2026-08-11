@@ -437,7 +437,11 @@ class SdkMetadataParity(unittest.TestCase):
         d = tempfile.mkdtemp()
         # -c identity so this never depends on (or is polluted by) the machine's global git config.
         git = ["git", "-C", d, "-c", "user.email=romp-test@example.invalid", "-c", "user.name=romp test"]
-        subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
+        # --template= (empty): a machine-global init.templateDir would otherwise copy its hooks into
+        # this repo — a maintainer's gitleaks pre-commit hook failed the commit below whenever the
+        # scanner wasn't on the test shell's PATH (2026-08-10). The test is about branch derivation;
+        # no machine hook belongs in it.
+        subprocess.run(["git", "init", "-q", "--template=", d], check=True, capture_output=True)
         open(os.path.join(d, "f"), "w").write("x")
         subprocess.run(git + ["add", "f"], check=True, capture_output=True)
         subprocess.run(git + ["commit", "-qm", "c"], check=True, capture_output=True)

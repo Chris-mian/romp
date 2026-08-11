@@ -15801,10 +15801,13 @@ def _ws_pong(wfile, lock, payload):
 
 
 def _ws_recv(rfile):
-    """Read one client (masked) frame → (opcode, payload bytes), or (None, None) on close/EOF."""
+    """Read one client (masked) frame → (opcode, payload bytes, fin), or (None, None, True) on
+    close/EOF. One FRAME, not one message: data messages may span several frames (FIN clear until
+    the last) — _ws_recv_message below reassembles them."""
     b = rfile.read(2)
     if len(b) < 2:
-        return None, None
+        return None, None, True
+    fin = bool(b[0] & 0x80)
     opcode = b[0] & 0x0F
     masked = b[1] & 0x80
     ln = b[1] & 0x7F
@@ -15816,7 +15819,47 @@ def _ws_recv(rfile):
     payload = bytearray(rfile.read(ln))
     for i in range(len(payload)):
         payload[i] ^= mask[i % 4]
-    return opcode, bytes(payload)
+    return opcode, bytes(payload), fin
+
+
+# Reassembly ceiling for one fragmented client message — comfortably above the UI's 50 MB attachment
+# ship cap (SHIP_MAX_BYTES in render.ts) after base64 + JSON overhead; a client streaming past it is
+# broken or hostile, and the connection ends rather than the kernel buffering without bound.
+_WS_MAX_MESSAGE = 80 * 1024 * 1024
+
+
+def _ws_recv_message(rfile, on_ping):
+    """Read frames until one COMPLETE data message is assembled → (opcode, payload), or (None, None)
+    on close/EOF/overrun. Browsers FRAGMENT large sends (RFC 6455 §5.4 — Chrome splits at ~128 KB),
+    and the old per-frame loop handed each fragment straight to json.loads: a phone photo's dropFile
+    (a multi-MB base64 message) dissolved into one unparseable JSON prefix plus a train of silently
+    dropped continuation frames, so the 📎 pick looked like it did nothing (the user 2026-08-10,
+    Chrome on a phone; small desktop files sat under the threshold, which is why it never surfaced).
+    Control frames may interleave between fragments: pings are answered via on_ping, pongs are
+    dropped, close ends the read."""
+    frag_op, frag = None, None
+    while True:
+        op, payload, fin = _ws_recv(rfile)
+        if op is None or op == 0x8:            # EOF / close
+            return None, None
+        if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
+            on_ping(payload or b"")
+            continue
+        if op == 0xA:                          # unsolicited pong — nothing to do
+            continue
+        if op == 0x0:                          # continuation of an in-flight fragmented message
+            if frag is None:
+                continue                       # stray continuation with no opening frame — drop it
+            frag += payload
+            if len(frag) > _WS_MAX_MESSAGE:
+                return None, None
+            if fin:
+                out = bytes(frag)
+                return frag_op, out
+            continue
+        if fin:                                # the common case: a whole message in one frame
+            return op, payload
+        frag_op, frag = op, bytearray(payload)  # a data frame OPENING a fragmented message
 
 
 def _send_to_app(app, msg):
@@ -19729,7 +19772,12 @@ def _landing():
             # iframe over the whole window (body.picker-open) so the overlay fills the screen and the list gets
             # the full height to scroll. Restored on close.
             "body.picker-open #chat-pane{display:block!important}"
-            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}"   # same transparency as the settings lift above
+            # Height = --app-h (the shell's live VISIBLE height, fed by the top-level visualViewport),
+            # not inset:0: the layout viewport ignores the phone keyboard, so a bottom-anchored lift sat
+            # half behind it — and, sized this way, the keyboard opening/closing reaches the iframe as
+            # its own resize event, which is what render.ts keys the picker's short-window fold on
+            # (the user 2026-08-10, Chrome on a phone).
+            "body.picker-open #f-chat{display:block;position:fixed;left:0;right:0;top:0;height:var(--app-h,100dvh);z-index:200;background:transparent}"   # same transparency as the settings lift above
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
             # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
@@ -21843,12 +21891,12 @@ class Handler(BaseHTTPRequestHandler):
             _clients.append(client)
         try:
             while client["alive"]:
-                op, payload = _ws_recv(self.rfile)
-                if op is None or op == 0x8:           # EOF / close
+                # one COMPLETE message per iteration — fragments reassembled, pings answered inline
+                # (browsers fragment large sends: a phone photo's dropFile spans dozens of frames)
+                op, payload = _ws_recv_message(
+                    self.rfile, lambda payload: _ws_pong(self.wfile, lock, payload or b""))
+                if op is None:                         # EOF / close / a client overran the reassembly cap
                     break
-                if op == 0x9:                          # ping → pong (libraries ping by default and hang up without one)
-                    _ws_pong(self.wfile, lock, payload or b"")
-                    continue
                 # webview→kernel messages: on "ready", push the initial state to this client
                 try:
                     msg = json.loads(payload.decode("utf-8", "replace"))
