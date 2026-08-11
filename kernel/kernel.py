@@ -22012,7 +22012,13 @@ def _ensure_bundles():
     (render.ts, styles.css, feed.ts, …), so an edit there never marked the bundle stale — a
     render.ts-only fix could sit unshipped through every kernel restart, with the ?v= cache token
     frozen so browsers kept the old bundle as well (found 2026-08-09 hunting the optimistic-echo
-    bug: the docstring promised a rebuild the check couldn't see)."""
+    bug: the docstring promised a rebuild the check couldn't see).
+
+    A failed build gets ONE retry after `npm install`: the common failure is dep drift — a merged
+    commit imports a package this machine's node_modules predates (2026-08-10: the katex import
+    broke every restart's rebuild for a day, and the kernel served an eight-day-old bundle — no
+    fast toggle, no attach fixes — with only a stderr line saying so). npm install is exactly the
+    cure for that class, cheap when it's a no-op, and the retry stays loud when it isn't the cure."""
     cv = ROOT / "vscode-extension"
     render = DIST / "render.js"
     if not (cv / "node_modules").exists():
@@ -22033,8 +22039,15 @@ def _ensure_bundles():
         try:
             subprocess.run(argv, cwd=str(cv), check=True,
                            capture_output=True, timeout=120)
-        except Exception as e:
-            sys.stderr.write("romp-kernel: bundle build failed (%s) — UI may be stale\n" % e)
+        except Exception:
+            sys.stderr.write("romp-kernel: bundle build failed — refreshing UI deps (npm install) and retrying…\n")
+            try:
+                subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=str(cv), check=True,
+                               capture_output=True, timeout=300)
+                subprocess.run(argv, cwd=str(cv), check=True,
+                               capture_output=True, timeout=120)
+            except Exception as e:
+                sys.stderr.write("romp-kernel: bundle build failed (%s) — UI may be stale\n" % e)
 
 
 def _pid_alive(pid):
