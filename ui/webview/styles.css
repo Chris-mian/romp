@@ -1814,6 +1814,16 @@ body.picker-lifted.pane-gone::before { display: none; }
 /* centred, like every other modal. Top-aligned made sense when this filled the screen and the list
    wanted every pixel of height; as a dialog over the dashboard it should sit in the middle. */
 body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
+/* SHORT WINDOW (the on-screen keyboard is up — the shell's --app-h sizing turns that into this
+   window's own height — or a genuinely small screen; render.ts toggles kb-tight on resize): the
+   ADVANCED create rows fold so the essentials — name box, session list, actions — share the height
+   with the keyboard, and expand back on the resize that restores the room (the user 2026-08-10,
+   Chrome on a phone). !important: these rows' visibility is otherwise driven by inline styles
+   (pick-mode, auth availability), and the fold must win while it holds. */
+body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 16px; }
+.picker-overlay.kb-tight .picker-dir,
+.picker-overlay.kb-tight .picker-backend { display: none !important; }
+.picker-overlay.kb-tight .picker-box { max-height: calc(100vh - 24px); }
 
 .picker-box {
   /* two thirds of the window, not a narrow column: it is a dialog over the whole dashboard now, and the

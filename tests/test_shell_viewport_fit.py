@@ -55,7 +55,13 @@ class OneHeightBasis(unittest.TestCase):
         # (background:transparent rides the same rules: an opaque lifted iframe blacks out the window —
         # see test_kernel.test_settings_is_a_fullscreen_modal.)
         self.assertIn("body.settings-open #f-feed{display:block;position:fixed;inset:0;z-index:200;background:transparent}", self.html)
-        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}", self.html)
+        # The PICKER lift is the one exception on the VERTICAL axis: its height follows --app-h (the
+        # shell's live visible height) because the layout viewport ignores the phone keyboard — inset:0
+        # left the picker's lower rows behind it — and the --app-h sizing is also what turns the keyboard
+        # into an in-iframe resize event for the picker's short-window fold (the user 2026-08-10).
+        # Horizontally it stays inset-sized (left:0;right:0), no 100vw.
+        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;left:0;right:0;top:0;"
+                      "height:var(--app-h,100dvh);z-index:200;background:transparent}", self.html)
 
     def test_an_unpainted_pane_is_dark_not_white(self):
         # a pane whose document has not painted is a white rectangle in a dark frame (Firefox shows it

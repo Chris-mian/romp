@@ -4725,6 +4725,17 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
     document.body.appendChild(overlay);
     document.addEventListener("keydown", pickerKey);
+    // SHORT-WINDOW FOLD (the user 2026-08-10, Chrome on a phone): with the on-screen keyboard up, the
+    // picker's lower rows sat behind it and nothing gave. The shell sizes this lifted iframe to the
+    // VISIBLE height (--app-h ← the top-level visualViewport, which the keyboard shrinks), so the
+    // keyboard opening/closing lands here as this window's own resize — the exact event to key on, no
+    // timers, no UA sniffing. Short window → kb-tight folds the advanced create rows (dir, backend,
+    // billing, host — styles.css) so the essentials share the height with the keyboard; the same
+    // resize expands them back the moment there is room again (a genuinely small screen folds too,
+    // which is the right call there as well).
+    const kbFit = () => document.getElementById("picker")?.classList.toggle("kb-tight", window.innerHeight < 480);
+    window.addEventListener("resize", kbFit);
+    kbFit();
   }
   overlay.style.display = "flex";
   signalPickerOverlay(true);   // lift the chat iframe full-window so the picker covers the whole screen

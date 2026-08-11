@@ -19772,7 +19772,12 @@ def _landing():
             # iframe over the whole window (body.picker-open) so the overlay fills the screen and the list gets
             # the full height to scroll. Restored on close.
             "body.picker-open #chat-pane{display:block!important}"
-            "body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}"   # same transparency as the settings lift above
+            # Height = --app-h (the shell's live VISIBLE height, fed by the top-level visualViewport),
+            # not inset:0: the layout viewport ignores the phone keyboard, so a bottom-anchored lift sat
+            # half behind it — and, sized this way, the keyboard opening/closing reaches the iframe as
+            # its own resize event, which is what render.ts keys the picker's short-window fold on
+            # (the user 2026-08-10, Chrome on a phone).
+            "body.picker-open #f-chat{display:block;position:fixed;left:0;right:0;top:0;height:var(--app-h,100dvh);z-index:200;background:transparent}"   # same transparency as the settings lift above
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
             # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is

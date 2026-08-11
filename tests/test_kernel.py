@@ -6305,8 +6305,12 @@ class ServeSecurity(unittest.TestCase):
         # render.ts posts {romp:'picker',on} and the shell lifts the chat iframe over the whole window
         # (body.picker-open), so the overlay fills the screen and the list gets the full height to scroll.
         html = km._landing()
-        # background:transparent — same as the settings lift: the opaque iframe element was the black-out
-        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;inset:0;z-index:200;background:transparent}", html)
+        # background:transparent — same as the settings lift: the opaque iframe element was the black-out.
+        # Height rides --app-h (the shell's live VISIBLE height): the layout viewport ignores the phone
+        # keyboard, so an inset:0 lift sat half behind it, and the --app-h sizing is what delivers the
+        # keyboard to the iframe as its own resize — the event the picker's fold keys on (2026-08-10).
+        self.assertIn("body.picker-open #f-chat{display:block;position:fixed;left:0;right:0;top:0;"
+                      "height:var(--app-h,100dvh);z-index:200;background:transparent}", html)
         self.assertIn("body.picker-open #chat-pane{display:block!important}", html)         # un-hide it even if chat is toggled off
         self.assertIn("m.romp==='picker'", html)                                            # the shell listens for the picker post
         self.assertIn("document.body.classList.toggle('picker-open',!!m.on)", html)
