@@ -4,9 +4,12 @@
 restarts, where the LIVE awaiting sources (in-memory subagents/bgTasks) go dark. Consumers here:
 
   * _goal_awaiting_stamp — the subtree scan both the feed floor and the nudge gates share;
-  * _mark_nudge_failed — a stamped goal's nudge is never converted into a needs-you block (the
+  * _mark_nudge_failed — a stamped goal's NUDGE is never converted into a needs-you block (the
     restart-proof twin of the session-level awaiting re-check): this is exactly the false "stalled"
-    a genuinely-waiting session showed after a kernel restart.
+    a genuinely-waiting session showed after a kernel restart. The awaiting WAKE (wake=True) is the
+    deliberate exception: it fires BECAUSE of the stamp, so an unanswered wake escalates through it;
+  * _wake_goal / _awaiting_wake_outcomes — the wake itself (2026-08-11): the stamped goal's seat in
+    the nudge ladder, with the outcome leg the retired one-shot backstop never had.
 
 SYNTHETIC fixtures only (placeholder UUIDs, invented text)."""
 import json
@@ -345,18 +348,21 @@ class _FakeBackend:
     def pending_queued(self, sid): return False       # → _backend_queued False; no pending_cut → rewind False
 
 
-class AwaitingBackstop(unittest.TestCase):
-    """The slow one-shot wake for a session asleep behind a STALE awaiting stamp whose own wakeup was lost
-    (the user 2026-07-22). Patient (6h), once per stamp episode (keyed on awaitingAt), never a needs-you
-    floor. The one place a time threshold is unavoidable: detecting a MISSING event (the wake that never
-    came). SYNTHETIC fixtures only."""
+class AwaitingWake(unittest.TestCase):
+    """The awaiting WAKE (2026-08-11, replacing the one-shot backstop): a stamped goal past the 6h window
+    takes a check-in through the NUDGE ladder — recorded in the shared `nudged` ledger, its response judged
+    by the same gates, and a wake NOBODY answers escalated to a real block (Needs-you). The one-shot design
+    marked itself spent at SEND time keyed on the stamp anchor, so a wake whose response turn died (an API
+    error) left the card asleep in Working forever: the anchor never moves (identical re-asserts coalesce)
+    and the stamp also stood down the whole ladder. Episodes re-arm on the ANSWER, not the anchor.
+    SYNTHETIC fixtures only."""
 
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
         self.saved = {k: getattr(km, k) for k in
-                      ("_alive_sessions", "_session_working", "_last_state", "_log_nudge_event",
-                       "_push_all", "_followup_body")}
+                      ("_session_working", "_log_nudge_event", "_push_all", "_revivers_pending",
+                       "_peer_answered_at", "_path_of", "_session_awaiting")}
         self.saved_jd = (km.jd.STATE, km.jd.GOALDIR, km.jd.parsed_session)
         self.saved_backend = km.Sessions.backend_for
         km.jd.STATE = td
@@ -365,15 +371,17 @@ class AwaitingBackstop(unittest.TestCase):
         (td / "auto-nudge.json").write_text(json.dumps({"enabled": True, "nudged": {}}))
         self.fb = _FakeBackend()
         km.Sessions.backend_for = lambda sid: self.fb
-        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": "/p"}]
         km._session_working = lambda turns: False           # idle by default
-        km._last_state = lambda sid: ("waiting", 0)         # not a progressing state → genuine idle
-        km.jd.parsed_session = lambda sid, paths, now: {"turns": [{"id": "t1", "ended": True, "end": 100, "atoms": []}]}
         km._log_nudge_event = lambda *a, **k: None
         km._push_all = lambda *a, **k: None
-        km._followup_body = lambda *a, **k: "wake body"
+        km._revivers_pending = lambda *a, **k: ""           # no other reviver holds the wake
+        km._peer_answered_at = lambda sid: 0
+        km._path_of = lambda sid, now=None: "/p"
+        km._session_awaiting = lambda sid, path, idle, stamp=False: None
         km._pending_ops.pop(SID, None)
         self.gid = SID + ":g1"
+        self.turns = [{"id": "t1", "ended": True, "end": 100, "t": 90, "atoms": []}]
+        km.jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -383,76 +391,262 @@ class AwaitingBackstop(unittest.TestCase):
         km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()
         self.td.cleanup()
 
-    def _seed(self, at):
+    def _seed(self, at, row_at=1):
         nd = _node(self.gid, why="the trace it dispatched; reports when it returns", at=at)
+        nd["log"][0]["at"] = row_at                  # when the closer FILED the stamp (arrival time)
         (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
 
-    def _tick(self, now, tmux=None):
-        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()   # deterministic: never hit a stale cache
-        km._awaiting_backstop_tick(now, {SID: {"state": ""}} if tmux is None else tmux)
+    def _wake(self, now, rec=None, tmux=None):
+        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()   # deterministic: never a stale cache
+        if rec is not None:
+            d = json.loads((Path(self.td.name) / "auto-nudge.json").read_text())
+            d["nudged"] = {self.gid: rec}
+            (Path(self.td.name) / "auto-nudge.json").write_text(json.dumps(d))
+        store = km.jd.load_goals(SID)
+        nudged = dict(km._auto_nudge_data().get("nudged", {}))
+        stamp = km._goal_awaiting_stamp_full(store.get("nodes", {}), self.gid)
+        self.assertIsNotNone(stamp, "fixture: the goal must be stamped")
+        out = km._wake_goal(SID, self.gid, stamp, nudged, self.turns, store, now,
+                            self.turns[-1], {SID: {"state": ""}} if tmux is None else tmux)
+        km._autonudge_cache.clear()
+        return out
 
     def test_stamp_full_exposes_gid_and_at(self):
         self._seed(at=500)
         self.assertEqual(km._session_stamp_full(SID), (self.gid, 500, "the trace it dispatched; reports when it returns"))
 
-    def test_fires_once_for_a_stale_stamp(self):
+    def test_fires_past_the_window_and_records_the_episode(self):
         now = 1_000_000
         self._seed(at=now - 7 * 3600)                # older than the 6h window
-        self._tick(now)
-        self.assertEqual(len(self.fb.sent), 1, "a stamp open past the window gets one wake")
-        self.assertEqual(km._auto_nudge_data().get("backstop", {}).get(self.gid), now - 7 * 3600,
-                         "the wake is recorded against the stamp anchor")
+        self.assertTrue(self._wake(now))
+        self.assertEqual(len(self.fb.sent), 1, "a stamp open past the window gets a wake")
+        rec = km._auto_nudge_data()["nudged"][self.gid]
+        self.assertTrue(rec.get("wake"))
+        self.assertEqual(rec.get("anchor"), now - 7 * 3600)
+        self.assertEqual(rec.get("at"), now)
+        self.assertEqual(rec.get("lastTurnId"), "t1")
 
-    def test_stays_patient_for_a_fresh_stamp(self):
+    def test_stays_patient_inside_the_window(self):
         now = 1_000_000
         self._seed(at=now - 3600)                    # only an hour old
-        self._tick(now)
+        self.assertFalse(self._wake(now))
         self.assertEqual(self.fb.sent, [], "a legitimate wait inside the window is left alone")
 
-    def test_does_not_wake_twice_for_the_same_anchor(self):
+    def test_in_flight_wake_does_not_refire(self):
         now = 1_000_000
-        self._seed(at=now - 7 * 3600)
-        self._tick(now); self._tick(now + 60)
-        self.assertEqual(len(self.fb.sent), 1, "once per stamp episode, not every tick")
+        self._seed(at=now - 20 * 3600)
+        rec = {"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t1",
+               "armAtoms": 0, "at": now - 3600}      # fired an hour ago, response not judged yet
+        self.assertFalse(self._wake(now, rec=rec))
+        self.assertEqual(self.fb.sent, [], "one wake in flight — never a second while unjudged")
 
-    def test_re_arms_for_a_new_stamp_episode(self):
+    def test_silent_wake_escalates_to_a_needs_you_block(self):
+        # THE 2026-08-11 ui wedge: wake fired, its response turn died on an API error, nothing ever
+        # landed — under the one-shot design the spent anchor-mark slept forever and the stamp stood
+        # down the ladder. Now: past the window with no response, the wake fails and files a real block.
         now = 1_000_000
-        self._seed(at=now - 7 * 3600)
-        self._tick(now)
-        self._seed(at=now - 6 * 3600 - 1)            # a NEW awaitingAt (the closer re-classified) → new anchor
-        self._tick(now)
-        self.assertEqual(len(self.fb.sent), 2, "a fresh awaiting episode re-arms the backstop")
+        self._seed(at=now - 20 * 3600)
+        rec = {"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
+               "armAtoms": 0, "at": now - 7 * 3600}  # fired 7h ago, nothing since
+        self.assertTrue(self._wake(now, rec=rec))
+        store = km.jd.load_goals(SID)
+        self.assertTrue(store["nodes"][self.gid]["blocked"],
+                        "an unanswered wake IS a block — the card must reach Needs-you")
+        self.assertEqual(store["nodes"][self.gid].get("blockWhy"), km.jd.WAKE_BLOCK_WHY)
+        self.assertTrue(km._auto_nudge_data()["nudged"][self.gid].get("failed"))
 
-    def test_skips_when_the_master_toggle_is_off(self):
-        (Path(self.td.name) / "auto-nudge.json").write_text(json.dumps({"enabled": False, "nudged": {}}))
-        self._seed(at=1_000_000 - 7 * 3600)
-        self._tick(1_000_000)
-        self.assertEqual(self.fb.sent, [], "the backstop rides the auto-nudge master toggle")
+    def test_silent_escalation_evidence_is_the_fire_not_the_stale_turn(self):
+        # The stamp's own diary row is FILED (at) after the sleeping session's last turn END — anchoring
+        # the block at the turn end would let the moot guard read the stamp itself as "a judge ruled
+        # after the evidence" and the escalation would stand itself down on the very stamp it fired for.
+        now = 1_000_000
+        fire = now - 7 * 3600
+        self._seed(at=now - 20 * 3600, row_at=5000)  # stamp filed AFTER the turn end (100), before the fire
+        rec = {"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
+               "armAtoms": 0, "at": fire}
+        self.assertTrue(self._wake(now, rec=rec), "the stamp row must not moot the silent escalation")
+        nd = km.jd.load_goals(SID)["nodes"][self.gid]
+        rows = [e for e in nd["log"] if e.get("kind") == "block"]
+        self.assertEqual(rows[-1].get("ev_t"), fire, "the block's evidence time is the unanswered fire")
 
-    def test_skips_a_working_session(self):
-        km._session_working = lambda turns: True
-        self._seed(at=1_000_000 - 7 * 3600)
-        self._tick(1_000_000)
-        self.assertEqual(self.fb.sent, [], "a session actively producing is not asleep")
+    def test_answered_wake_re_arms_from_the_answer(self):
+        now = 1_000_000
+        self._seed(at=now - 20 * 3600)
+        rec = {"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t1",
+               "armAtoms": 0, "at": now - 7 * 3600}
+        saved = km._nudge_response_ready
+        km._nudge_response_ready = lambda *a, **k: (True, {"id": "s9", "t": now - 6 * 3600})
+        try:
+            self.assertFalse(self._wake(now, rec=rec), "an answered wake never escalates")
+        finally:
+            km._nudge_response_ready = saved
+        rec2 = km._auto_nudge_data()["nudged"][self.gid]
+        self.assertEqual(rec2.get("answeredAt"), now - 6 * 3600,
+                         "the episode re-arms from the ANSWER — the anchor may never move (coalesced "
+                         "re-asserts keep the original stamp), so it cannot be the episode key")
+        self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid]["blocked"])
+        # ...and the next wake fires once the ANSWER goes stale, same stamp anchor throughout
+        self.assertFalse(self._wake(now - 6 * 3600 + 60, rec=rec2), "still patient after the answer")
+        self.assertTrue(self._wake(now + 3600, rec=rec2), "re-armed: 6h past the answer it asks again")
 
-    def test_skips_a_mid_turn_lull_per_the_state_log(self):
-        km._last_state = lambda sid: ("working", 200)   # authoritative state progressing AT/AFTER turn end (100)
-        self._seed(at=1_000_000 - 7 * 3600)
-        self._tick(1_000_000)
-        self.assertEqual(self.fb.sent, [], "a progressing state record means a lull, not a real stop")
+    def test_failed_episode_never_refires_until_a_new_anchor(self):
+        now = 1_000_000
+        anchor = now - 20 * 3600
+        self._seed(at=anchor)
+        rec = {"wake": True, "anchor": anchor, "count": 1, "lastTurnId": "t0",
+               "armAtoms": 0, "at": now - 8 * 3600, "failed": True, "failedAt": now - 3600}
+        self.assertFalse(self._wake(now, rec=rec))
+        self.assertEqual(self.fb.sent, [], "a failed episode is settled — the anti-loop rule")
+        self._seed(at=now - 7 * 3600)                # the closer filed a genuinely NEW wait
+        self.assertTrue(self._wake(now, rec=rec), "a fresh anchor re-arms the wake")
 
     def test_dormant_session_is_not_woken(self):
-        self._seed(at=1_000_000 - 7 * 3600)
-        self._tick(1_000_000, tmux={})               # SID not in the live set → not a live CLI
-        self.assertEqual(self.fb.sent, [], "a dormant session's dispatched work is gone, not asleep")
-
-    def test_never_writes_a_block(self):
         now = 1_000_000
         self._seed(at=now - 7 * 3600)
-        self._tick(now)
-        nd = km.jd.load_goals(SID)["nodes"][self.gid]
-        self.assertFalse(nd.get("blocked"), "the backstop wakes, it never floors to needs-you")
+        self.assertFalse(self._wake(now, tmux={}))   # SID not in the live set → not a live CLI
+        self.assertEqual(self.fb.sent, [], "a dormant session's dispatched work is gone, not asleep")
+
+    def test_wake_that_judges_resolved_mid_tick_stands_down(self):
+        now = 1_000_000
+        self._seed(at=now - 7 * 3600)
+        store = km.jd.load_goals(SID)
+        stamp = km._goal_awaiting_stamp_full(store["nodes"], self.gid)
+        # the fresh-store re-read at send time sees the goal already blocked → no wake
+        d = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())
+        d["status"] = {self.gid: "blocked"}
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(d))
+        self.assertFalse(km._wake_goal(SID, self.gid, stamp, {}, self.turns, store, now,
+                                       self.turns[-1], {SID: {"state": ""}}))
+        self.assertEqual(self.fb.sent, [], "the last-moment store re-read keys on the judges' landing")
+
+
+class AwaitingWakeOutcomeSweep(unittest.TestCase):
+    """_awaiting_wake_outcomes: the outcome leg for wake records whose sessions the goal walk can't reach.
+    A dead wake leaves its session in EXACTLY a walk-gated state (the ui case: the response turn died on an
+    API error, so the _api_error session gate skipped every later evaluation) — the sweep escalates a wake
+    past the window with no response regardless of session gates, and re-arms an answered one."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self.saved = {k: getattr(km, k) for k in
+                      ("_session_working", "_path_of", "_session_awaiting", "_peer_answered_at",
+                       "_log_nudge_event", "_push_all")}
+        self.saved_jd = (km.jd.STATE, km.jd.GOALDIR, km.jd.parsed_session)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"; km.jd.GOALDIR.mkdir(parents=True)
+        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()
+        km._session_working = lambda turns: False
+        km._path_of = lambda sid, now=None: "/p"
+        km._session_awaiting = lambda sid, path, idle, stamp=False: None
+        km._peer_answered_at = lambda sid: 0
+        km._log_nudge_event = lambda *a, **k: None
+        km._push_all = lambda *a, **k: None
+        self.gid = SID + ":g1"
+        self.turns = [{"id": "t1", "ended": True, "end": 100, "t": 90, "atoms": []}]
+        km.jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(km, k, v)
+        km.jd.STATE, km.jd.GOALDIR, km.jd.parsed_session = self.saved_jd
+        km._SESSION_STAMP_CACHE.clear(); km._autonudge_cache.clear()
+        self.td.cleanup()
+
+    def _seed_goal(self, at):
+        nd = _node(self.gid, why="the reinstaller it detached; reports when the box is quiet", at=at)
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
+
+    def _seed_rec(self, rec):
+        (Path(self.td.name) / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "nudged": {self.gid: rec}}))
+        km._autonudge_cache.clear()
+
+    def test_sweep_escalates_a_silent_wake_the_walk_cannot_reach(self):
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
+                        "armAtoms": 0, "at": now - 7 * 3600})
+        self.assertTrue(km._awaiting_wake_outcomes(now))
+        store = km.jd.load_goals(SID)
+        self.assertTrue(store["nodes"][self.gid]["blocked"],
+                        "the sweep runs without the walk's session gates — an api-errored session's dead "
+                        "wake still surfaces")
+        self.assertEqual(store["nodes"][self.gid].get("blockWhy"), km.jd.WAKE_BLOCK_WHY)
+
+    def test_sweep_leaves_a_fresh_wake_to_the_walk(self):
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t1",
+                        "armAtoms": 0, "at": now - 3600})
+        self.assertFalse(km._awaiting_wake_outcomes(now))
+        self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid]["blocked"])
+
+    def test_sweep_ignores_a_goal_the_world_moved_past(self):
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        d = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())
+        d["nodes"][self.gid]["nodeComplete"] = True
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(d))
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
+                        "armAtoms": 0, "at": now - 7 * 3600})
+        self.assertFalse(km._awaiting_wake_outcomes(now))
+        self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid].get("blocked"),
+                         "a completed goal's stale record is inert")
+
+    def test_sweep_re_arms_an_answered_wake_the_walk_never_saw(self):
+        now = 1_000_000
+        self._seed_goal(at=now - 20 * 3600)
+        self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t1",
+                        "armAtoms": 0, "at": now - 7 * 3600})
+        saved = km._nudge_response_ready
+        km._nudge_response_ready = lambda *a, **k: (True, {"id": "s9", "t": now - 6 * 3600})
+        try:
+            self.assertFalse(km._awaiting_wake_outcomes(now))
+        finally:
+            km._nudge_response_ready = saved
+        self.assertEqual(km._auto_nudge_data()["nudged"][self.gid].get("answeredAt"), now - 6 * 3600)
+        self.assertFalse(km.jd.load_goals(SID)["nodes"][self.gid]["blocked"])
+
+
+class WakeBodyKeepsItsCopy(unittest.TestCase):
+    """_followup_body(wake=True): the wake's ask survives the hierarchical enumeration branch. The generic
+    status ask invites an answer from memory — the audited session twice reassured from memory that its
+    wait was deliberate while the pid its stamp named was long dead — and the enumeration branch was
+    silently REPLACING the wake's 'go check the background work' body with exactly that generic ask
+    (the user 2026-08-11)."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self.saved_jd = (km.jd.STATE, km.jd.GOALDIR)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"; km.jd.GOALDIR.mkdir(parents=True)
+        self.gid = SID + ":g1"
+        nodes = {self.gid: _node(self.gid),
+                 SID + ":s1": _node(SID + ":s1", parent=self.gid),
+                 SID + ":s2": _node(SID + ":s2", parent=self.gid)}
+        nodes[self.gid]["text"] = "fix the pusher burn"
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
+
+    def tearDown(self):
+        km.jd.STATE, km.jd.GOALDIR = self.saved_jd
+        self.td.cleanup()
+
+    def test_wake_body_survives_the_hierarchical_branch(self):
+        body = km._followup_body(self.gid, None, km.AWAITING_BACKSTOP_TEXT,
+                                 injected=True, auto=True, wake=True)
+        self.assertIn("Still open on this:", body, "the enumerated quote still rides along")
+        self.assertIn(km.AWAITING_BACKSTOP_TEXT, body, "the wake's own ask is never replaced")
+        self.assertNotIn("Where does each of those stand?", body)
+
+    def test_plain_nudge_keeps_the_status_ask(self):
+        body = km._followup_body(self.gid, None, km.AUTO_NUDGE_TEXT, injected=True, auto=True)
+        self.assertIn("Where does each of those stand?", body,
+                      "the regular nudge's hierarchical replacement is unchanged")
 
 
 if __name__ == "__main__":

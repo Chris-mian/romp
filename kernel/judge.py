@@ -7624,7 +7624,12 @@ def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None)
 NUDGE_BLOCK_WHY = ("romp followed up once and the response didn't resolve this; "
                    "it won't be re-asked — it needs your direction")
 INTERRUPT_BLOCK_WHY = "you stopped this session mid-turn — it's waiting on your next instruction"
-_PROCEDURAL_BLOCK_WHYS = (NUDGE_BLOCK_WHY, INTERRUPT_BLOCK_WHY)
+# The awaiting WAKE's failure (kernel _mark_nudge_failed wake=True): the session was asked to go check the
+# background work its ⏳ stamp names and no answer landed within the backstop — the wait itself is now the
+# thing that needs eyes (the session may be unreachable, or the awaited work long dead).
+WAKE_BLOCK_WHY = ("romp checked in on the background work this was waiting on and got no answer; "
+                  "the wait looks dead and needs your direction")
+_PROCEDURAL_BLOCK_WHYS = (NUDGE_BLOCK_WHY, INTERRUPT_BLOCK_WHY, WAKE_BLOCK_WHY)
 # The DEBT escalation's why (the user 2026-07-26) carries the unresponsive PEER'S NAME, so it can't be an
 # exact constant: the fixed head is the recognizer (kernel debt_block_why builds it; procedural_block_why
 # prefix-matches it). Still kernel-authored bookkeeping — the variable tail is a session name, never

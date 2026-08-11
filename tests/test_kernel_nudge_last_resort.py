@@ -350,7 +350,7 @@ class StampEvidenceTime(unittest.TestCase):
     def test_the_stamp_passes_an_evidence_time_through(self):
         import inspect
         src = inspect.getsource(km._mark_nudge_failed)
-        self.assertIn("def _mark_nudge_failed(gid, ev_t=None):", src)
+        self.assertIn("def _mark_nudge_failed(gid, ev_t=None, wake=False):", src)
         self.assertIn("_ev = int(ev_t or now)", src)
         self.assertIn('jd.record_verdict(store, nd, "nudge", "block", _ev', src)
         self.assertIn('jd.append_block(sid, gid, "nudge", why, _ev)', src)
