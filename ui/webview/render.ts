@@ -7400,6 +7400,49 @@ const composerCitations = new Map<string, Citation[]>();
 // insert-at-cursor produced, now legible while you compose.
 const composerFiles = new Map<string, string[]>();   // sid -> attachment paths, in drop order
 
+// Files whose BYTES are still in flight to the kernel (shipFileToHost → dropFile → droppedPath ack).
+// On a phone that round trip is seconds long — base64 + a fragmented WS send + the kernel write — and
+// with nothing on screen it reads as a dead click (the user 2026-08-11). So the strip shows a pending
+// chip (name + pulsing dots) from the instant the file is picked, replaced by the real thumbnail when
+// the ack lands, or removed with a loud toast when the kernel nacks (dropSaveFailed). In-memory only,
+// NOT persisted with drafts: a reload kills the page whose socket the ack would ride.
+const pendingShips = new Map<string, string[]>();    // sid -> shipped names awaiting droppedPath
+
+// The kernel saves a shipped file as drops/<ms>-<sanitized name> (_save_dropped_file). Mirror its
+// sanitizer so an ack can be matched back to the pending chip it retires by basename suffix; the
+// FIFO fallback in resolvePendingShip covers any mismatch (e.g. non-ASCII, where Python's \w and
+// JS's \w disagree).
+function shipSafeName(name: string): string {
+  return (name.replace(/[^\w.-]+/g, "_").slice(-80)) || "drop";
+}
+
+function addPendingShip(id: string | null, name: string): void {
+  if (!id) return;
+  const list = pendingShips.get(id) || [];
+  list.push(name);
+  pendingShips.set(id, list);
+  if (id === activeId) renderComposerFiles(id);
+}
+
+// An ack (or nack) retires ONE pending chip: the entry whose sanitized name `key` ends with — `key`
+// is the saved path on ack (basename <ms>-<safe name>) or the raw name on nack, and both end with
+// the sanitized original — else the oldest (the kernel answers a connection's dropFiles in order).
+// Searched active-tab-first across all sessions because the ack carries no session id — like the
+// attachment itself, it lands wherever the user now is.
+function retirePendingShip(key: string): void {
+  const k = "-" + shipSafeName(key.split("/").pop() || key);
+  const ids = activeId ? [activeId, ...pendingShips.keys()] : [...pendingShips.keys()];
+  for (const id of ids) {
+    const list = pendingShips.get(id);
+    if (!list || !list.length) continue;
+    const i = list.findIndex((n) => k.endsWith("-" + shipSafeName(n)));
+    list.splice(i >= 0 ? i : 0, 1);
+    if (!list.length) pendingShips.delete(id);
+    if (id === activeId) renderComposerFiles(id);
+    return;
+  }
+}
+
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
 // only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
 // that remembers the active tab — and reload it at startup. restoreActiveDraftOnce() drops the active tab's
@@ -7527,8 +7570,9 @@ function renderComposerFiles(id: string | null): void {
   const strip = document.getElementById("composer-files");
   if (!strip) return;
   strip.replaceChildren();
-  const paths = id ? composerFiles.get(id) : undefined;
-  if (!paths || !paths.length) { strip.style.display = "none"; return; }
+  const paths = (id ? composerFiles.get(id) : undefined) || [];
+  const pending = (id ? pendingShips.get(id) : undefined) || [];
+  if (!paths.length && !pending.length) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
   paths.forEach((p, i) => {
     const box = el("span", "composer-file");
@@ -7558,6 +7602,31 @@ function renderComposerFiles(id: string | null): void {
     x.setAttribute("aria-label", "Remove attachment");
     x.textContent = "\u2715";
     x.addEventListener("click", (e) => { e.stopPropagation(); if (id) removeComposerFile(id, i); });
+    box.appendChild(x);
+    strip.appendChild(box);
+  });
+  // In-flight ships, after the real thumbnails: name + pulsing dots until the droppedPath ack swaps
+  // in the thumbnail above. The ✕ removes just the CHIP (there is no cancelling a send in flight) —
+  // the escape hatch for an ack lost to a mid-ship disconnect, so a stuck chip is never trapped.
+  pending.forEach((n, i) => {
+    const box = el("span", "composer-file composer-file-pending");
+    box.title = n + " — uploading";
+    const nm = el("span", "composer-file-name");
+    nm.textContent = n;
+    const dots = el("span", "composer-ship-dots");
+    dots.append(el("i"), el("i"), el("i"));
+    box.append(nm, dots);
+    const x = el("button", "composer-file-x");
+    x.setAttribute("aria-label", "Dismiss pending attachment");
+    x.textContent = "✕";
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const list = id ? pendingShips.get(id) : undefined;
+      if (!list) return;
+      list.splice(i, 1);
+      if (!list.length && id) pendingShips.delete(id);
+      renderComposerFiles(id);
+    });
     box.appendChild(x);
     strip.appendChild(box);
   });
@@ -8459,7 +8528,15 @@ window.addEventListener("message", (e: MessageEvent) => {
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
-  else if (m.type === "droppedPath" && typeof m.path === "string") addComposerFile(activeId, m.path);   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
+  else if (m.type === "droppedPath" && typeof m.path === "string") {   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
+    retirePendingShip(m.path);                                         // the in-flight chip this ack answers (no-op for pickFile, which never ships)
+    addComposerFile(activeId, m.path);
+  } else if (m.type === "dropSaveFailed" && typeof m.name === "string") {
+    // the kernel could not SAVE the shipped bytes — clear the pending chip and say so loudly,
+    // never leave dots pulsing over a file that is not coming (fail loudly, don't degrade silently)
+    retirePendingShip(m.name);
+    warnToast(m.name + " couldn't be saved on the kernel, so it was not attached — try again.");
+  }
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
   // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
   else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim() && activeId)
@@ -8967,15 +9044,22 @@ function shipFileToHost(f: File) {
       + " MB — attachments over 50 MB can't be shipped, so it was not attached.");
     return;
   }
+  // The pending chip goes up NOW, before the encode even starts — on a phone the encode + fragmented
+  // WS send + kernel round trip is seconds of otherwise-blank time that read as a dead click (the
+  // user 2026-08-11). Retired by the droppedPath ack / dropSaveFailed nack (see retirePendingShip).
+  const name = f.name || "pasted.png";
+  const sid = activeId;
+  addPendingShip(sid, name);
   const reader = new FileReader();
   reader.onload = () => {
     const b64 = String(reader.result || "").split(",")[1] || "";
-    if (!b64 || !vscodeApi) return;
+    if (!b64 || !vscodeApi) { retirePendingShip(name); return; }
     const msg: { type: string; name: string; b64: string; id?: string } =
-      { type: "dropFile", name: f.name || "pasted.png", b64 };
-    if (activeId) msg.id = activeId;   // the owning session → the owning kernel
+      { type: "dropFile", name, b64 };
+    if (sid) msg.id = sid;   // the owning session → the owning kernel
     vscodeApi.postMessage(msg);
   };
+  reader.onerror = () => retirePendingShip(name);   // an unreadable file must not leave a stuck chip
   reader.readAsDataURL(f);
 }
 
