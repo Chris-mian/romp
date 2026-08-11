@@ -1,7 +1,8 @@
 // The new-session DIRECTORY field + per-session dir display (the user 2026-06-22). A session's working
-// directory is fixed at creation, so the picker lets you choose it (prefilled from the gear default, recent
-// dirs autocompleting), and every session shows its dir — dimmed basename on the lane tab (full path on
-// hover) and in the system-context card's collapsed summary. Source-level pins (no jsdom for the renderer).
+// directory is fixed at creation, so the picker lets you choose it (prefilled from the gear default, the
+// kernel-fed completer offering real folders), and every session shows its dir — dimmed basename on the
+// lane tab (full path on hover) and in the system-context card's collapsed summary. Source-level pins
+// (no jsdom for the renderer).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -11,12 +12,19 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const SETTINGS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "settings.ts"), "utf8");
 
-test("the picker has a directory field with a recent-dirs datalist", () => {
+test("the picker has a directory field — with ONE suggestion surface, the kernel-fed completer", () => {
   assert.match(RENDER, /el\("input", "picker-dir-input"\)/);
-  assert.match(RENDER, /dirInput\.setAttribute\("list", "picker-dir-list"\)/);
-  assert.match(RENDER, /createElement\("datalist"\); dirList\.id = "picker-dir-list"/);
   // appended into the picker box
   assert.match(RENDER, /box\.appendChild\(dirWrap\);/);
+  // The recent-dirs datalist is GONE, not merely hidden (the user 2026-08-11): it was superseded by the
+  // completer (2026-07-28) but stayed wired, and autocomplete="off" does not suppress a list-attribute
+  // dropdown in Chromium — so TWO boxes popped over the field, the native one offering session-history
+  // dirs that no longer exist on disk (a recorded dir outlives a rename). The completer asks the OWNING
+  // kernel (dirComplete), the authoritative source for what a path IS.
+  assert.doesNotMatch(RENDER, /picker-dir-list/);
+  assert.doesNotMatch(RENDER, /createElement\("datalist"\)/);
+  assert.match(RENDER, /dirInput\.setAttribute\("autocomplete", "off"\)/,
+    "…and the browser's own form-history dropdown stays off the field too");
 });
 
 test("createSession carries the chosen dir, alongside name + backend", () => {
@@ -32,10 +40,10 @@ test("the dir field is prefilled with the gear default and hidden in pick-mode",
   assert.match(RENDER, /dirWrap\.style\.display = pick \? "none" : ""/);
 });
 
-test("renderPicker populates the datalist from items' dirs (unique, non-empty)", () => {
-  assert.match(RENDER, /getElementById\("picker-dir-list"\)/);
-  assert.match(RENDER, /const d = \(it\.dir \|\| ""\)\.trim\(\);/);
-  assert.match(RENDER, /seen\.has\(d\)/);
+test("renderPicker no longer refills a recent-dirs list — the completer owns suggestions", () => {
+  assert.doesNotMatch(RENDER, /Recent dirs → the new-session field's autocomplete/);
+  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "dirComplete", value, reqId: \+\+dirReq, host: dirAskedHost \}\)/,
+    "the live kernel-fed completer is the one suggestion path");
 });
 
 test("a session carries cwd, shown on the statusline just left of the mode/model/effort controls", () => {

@@ -4634,17 +4634,21 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       if (row) setActiveRow(row as HTMLElement);
     });
     // Directory for a NEW session — fixed once the session starts, so it's chosen here. Prefilled with the
-    // gear's "Default directory" on open; recent dirs autocomplete from the datalist; the kernel expands
-    // ~ / $VARs and validates it exists. Hidden in pick-mode (choosing an existing session).
+    // gear's "Default directory" on open; the kernel-fed completer below offers real folders as you type
+    // and the kernel expands ~ / $VARs and validates it exists. Hidden in pick-mode (choosing an existing
+    // session). ONE suggestion surface, deliberately: this field once ALSO carried a native datalist of
+    // every listed session's recorded dir, superseded by the completer (2026-07-28) but left wired — and
+    // autocomplete="off" does NOT suppress a list-attribute dropdown in Chromium, so TWO boxes popped over
+    // the field, the native one offering dirs that no longer exist (a session's dir outlives a rename; the
+    // user 2026-08-11, offered a long-gone folder next to the real one). The completer asks the OWNING
+    // kernel — the authoritative source — so the stale-capable history list is gone, not merely hidden.
     const dirWrap = el("div", "picker-dir");
     const dirInput = el("input", "picker-dir-input") as HTMLInputElement;
     dirInput.id = "picker-dir";
     dirInput.spellcheck = false;
     dirInput.placeholder = "New-session directory (blank = default)";
     dirInput.title = "Working directory for a NEW session — fixed once it starts. Blank uses the kernel's default. ~ and $VARs expand; type to complete folders (Tab walks into one), on this machine or the selected host.";
-    dirInput.setAttribute("list", "picker-dir-list");
-    dirInput.setAttribute("autocomplete", "off");   // the browser's own dropdown would fight the completer
-    const dirList = document.createElement("datalist"); dirList.id = "picker-dir-list";
+    dirInput.setAttribute("autocomplete", "off");   // belt: no browser dropdown of past form values either
     const browseBtn = el("button", "picker-browse") as HTMLButtonElement;
     browseBtn.type = "button"; browseBtn.textContent = "Browse…";
     browseBtn.title = "Pick a folder with the native dialog (opens on the kernel's machine — host-local)";
@@ -4655,7 +4659,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     dirInput.addEventListener("input", () => askDirComplete(dirInput.value));
     dirInput.addEventListener("focus", () => askDirComplete(dirInput.value));
     dirInput.addEventListener("blur", () => closeDirMenu());   // a row's mousedown preventDefaults, so it never blurs
-    dirWrap.appendChild(dirInput); dirWrap.appendChild(dirList); dirWrap.appendChild(browseBtn);
+    dirWrap.appendChild(dirInput); dirWrap.appendChild(browseBtn);
     dirWrap.appendChild(dirMenu); dirWrap.appendChild(dirStat);
     // per-session BACKEND picker (the user 2026-06-23): a tmux | SDK segmented toggle, defaulting to the
     // gear's Default backend but overridable for THIS new session. Hidden in pick-mode (like dirWrap).
@@ -5187,16 +5191,8 @@ function renderPicker(items: any[]) {
     });
     list.appendChild(row);
   }
-  // Recent dirs → the new-session field's autocomplete (unique, non-empty, in list order).
-  const dl = document.getElementById("picker-dir-list");
-  if (dl) {
-    dl.replaceChildren();
-    const seen = new Set<string>();
-    for (const it of items) {
-      const d = (it.dir || "").trim();
-      if (d && !seen.has(d)) { seen.add(d); const o = document.createElement("option"); o.value = d; dl.appendChild(o); }
-    }
-  }
+  // (The recent-dirs datalist that was refilled here is gone — the kernel-fed completer is the ONE
+  // suggestion surface for the dir field; see the field's construction for the two-boxes story.)
   // Prefill the dir field with the kernel's real default path once it arrives (only if untouched + no gear
   // default) — so the actual default is written in there as an editable starting point (the user 2026-06-23).
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
