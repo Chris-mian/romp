@@ -148,16 +148,9 @@ class PushSessionNow(_Base):
         km._push_session_now(SID)
         self.assertEqual(len(self.sent), n, "unchanged payloads dedup — no re-send storm")
 
-    def test_a_hidden_or_unknown_sid_sends_nothing(self):
-        km._set_hidden_tab(SID, True)
-        try:
-            km._push_session_now(SID)
-            self.assertEqual(self.sent, [], "a ×-hidden tab stays hidden — the pusher owns the rest")
-            self.sent.clear()
-            km._push_session_now("99999999-8888-7777-6666-555555555555")
-            self.assertEqual(self.sent, [], "an unknown sid is not an error, just a no-op")
-        finally:
-            km._set_hidden_tab(SID, False)
+    def test_an_unknown_sid_sends_nothing(self):
+        km._push_session_now("99999999-8888-7777-6666-555555555555")
+        self.assertEqual(self.sent, [], "an unknown sid is not an error, just a no-op")
 
     def test_the_shared_delta_baseline_is_left_alone(self):
         # only a push that reaches EVERY client may advance _prev_chat_events (the 2026-07-28

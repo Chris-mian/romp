@@ -45,18 +45,17 @@ class ReviveSession(unittest.TestCase):
 
     def setUp(self):
         self.saved = (km._sdk, km._name_of, km._cwd_of, km._push_all, km._reveal_chat,
-                      km._send_to_app, km._set_hidden_tab, subprocess.run)
+                      km._send_to_app, subprocess.run)
         self.sent, self.focused, self.runs = [], [], []
         km._name_of = lambda sid: "testsess"
         km._cwd_of = lambda sid: "/nonexistent-dir-for-test"
         km._push_all = lambda: None
         km._reveal_chat = lambda msg: self.focused.append(msg)
         km._send_to_app = lambda app, msg: self.sent.append((app, msg))
-        km._set_hidden_tab = lambda sid, hidden: None
 
     def tearDown(self):
         (km._sdk, km._name_of, km._cwd_of, km._push_all, km._reveal_chat,
-         km._send_to_app, km._set_hidden_tab, subprocess.run) = self.saved
+         km._send_to_app, subprocess.run) = self.saved
 
     def _stub_run(self, returncode=0, stderr=""):
         def run(cmd, **kw):

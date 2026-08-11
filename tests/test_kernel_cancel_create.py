@@ -42,7 +42,6 @@ class CancelCreateTest(unittest.TestCase):
     def setUp(self):
         self.be = FakeBackend()
         self.sent = []        # (app, msg) handed to the chat view
-        self.hidden = []      # (sid, hidden) tab-hide calls
         self._live = {}       # sid -> meta; drives the monkeypatched name lookup
         self._saved = {}
 
@@ -50,7 +49,6 @@ class CancelCreateTest(unittest.TestCase):
             self._saved[nm] = getattr(km, nm)
             setattr(km, nm, fn)
 
-        patch("_set_hidden_tab", lambda sid, hidden: self.hidden.append((sid, hidden)))
         patch("_send_to_app", lambda app, m: self.sent.append((app, m)))
         patch("_push_soon", lambda: None)
         patch("_push_all", lambda: None)
@@ -75,9 +73,8 @@ class CancelCreateTest(unittest.TestCase):
         self._live = {SID: {}}                                 # the session already materialized
         self._cancel(NAME)
         self.assertEqual(self.be.killed, [SID], "the live pending session is killed on its backend")
-        self.assertIn((SID, True), self.hidden, "its tab is hidden")
         self.assertTrue(any(m.get("type") == "closed" and m.get("id") == SID for _a, m in self.sent),
-                        "the live view is told to prune it")
+                        "the live view is told to prune it (no tab-hide state anymore — the kill is the event)")
         self.assertNotIn(NAME, km._cancel_pending, "a resolved cancel never arms the pending set")
 
     def test_not_yet_live_arms_then_reaped_on_arrival(self):
@@ -123,7 +120,6 @@ class CancelCreateTest(unittest.TestCase):
         self._live = {SID: {}}
         self._cancel(NAME)
         self.assertEqual(self.be.killed, [], "a session with a human turn is work, never a pending spawn")
-        self.assertEqual(self.hidden, [], "its tab stays visible")
         self.assertEqual(self.sent, [], "and the live view is not told to prune it")
 
     def test_a_fresh_spawn_with_only_init_lines_is_still_torn_down(self):
@@ -133,7 +129,6 @@ class CancelCreateTest(unittest.TestCase):
         self._live = {SID: {}}
         self._cancel(NAME)
         self.assertEqual(self.be.killed, [SID], "only system/init lines → a genuine pending spawn")
-        self.assertIn((SID, True), self.hidden)
 
     def test_an_unreadable_transcript_fails_toward_refusing(self):
         self._saved["_path_of"] = km._path_of

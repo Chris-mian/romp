@@ -1354,21 +1354,11 @@ def _ordered_alive(now, tmux):
     return _ordered(_alive_sessions(now, tmux))
 
 
-def _hidden_tabs():
-    """SIDs the user closed (×) from the chat tab strip — hidden from the tabs but NOT killed: the
-    session keeps running, and clicking it in the feed/timeline (openSession) reopens the tab. A view
-    preference, deliberately not a session kill."""
-    try:
-        a = json.loads((jd.STATE / "hidden-tabs.json").read_text())
-        return set(x for x in a if isinstance(x, str)) if isinstance(a, list) else set()
-    except Exception:
-        return set()
-
-
-def _set_hidden_tab(sid, hidden):
-    cur = _hidden_tabs()
-    cur.add(sid) if hidden else cur.discard(sid)
-    _atomic_write(jd.STATE / "hidden-tabs.json", json.dumps(sorted(cur)))
+# (Hidden tabs are GONE — the user 2026-08-11. ×-closing used to write the sid to hidden-tabs.json and
+# leave the session running with no chat tab and no Fleet-pane section while it kept being judged,
+# carded and billed: a secret running session, a tmux-era affordance (sessions lived outside romp) with
+# no SDK-era use case. Every running session now always shows; × means End session, and close-and-reopen
+# is End + Revive, which keeps history. A stale hidden-tabs.json on disk is inert, like web-kernel.json.)
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
@@ -3757,11 +3747,11 @@ def _clear_done_working_notes(now, tmux):
 
 
 def _chat_tab_sessions(now, tmux):
-    """The sessions shown as CHAT TABS, in the shared session order: living sessions PLUS only the dead
-    sessions the user explicitly opened READ-ONLY (_kept_open). A dead session is otherwise TIMELINE-ONLY
-    — it does NOT auto-keep a tab when it dies (the user 2026-06-17 reversed the old 'keep a tab when it
-    dies'); reopen it from the timeline instead. ×-hidden tabs are excluded."""
-    hidden = _hidden_tabs()
+    """The sessions shown as CHAT TABS, in the shared session order: EVERY living session PLUS only the
+    dead sessions the user explicitly opened READ-ONLY (_kept_open). A dead session is otherwise
+    TIMELINE-ONLY — it does NOT auto-keep a tab when it dies (the user 2026-06-17 reversed the old 'keep
+    a tab when it dies'); reopen it from the timeline instead. There is no hidden/open tab subset (the
+    user 2026-08-11): alive = visible, and × ends the session."""
     live = _alive_sessions(now, tmux)
     live_sids = {s["sid"] for s in live}
     all_sessions = _sessions(now)
@@ -3772,7 +3762,7 @@ def _chat_tab_sessions(now, tmux):
     # — the reorder this fix prevents (the user 2026-06-29). Order is purely the persisted session-order.json
     # (see _ordered) — no activity reshuffle; a dying tab keeps its slot. live + dead_kept resolve through the
     # SAME index map _timeline_sessions uses, so chat tabs and timeline lanes stay in lockstep.
-    result = _ordered([s for s in live + dead_kept if s["sid"] not in hidden])
+    result = _ordered(live + dead_kept)
     # Prune sids that are GONE — not alive AND no transcript left in the discover window — so
     # session-order.json stays bounded and a closed / aged-out session drops out on its own (the user
     # 2026-06-24). A session merely dead-but-in-window (or explicitly kept-open) stays known and keeps its slot.
@@ -3796,12 +3786,10 @@ def _timeline_sessions(now, tmux, live_only=False):
     fleet comes up at once without reading any dead session; the producer then adds the dead-within-12h lanes
     on its next pass (the user 2026-06-26, who wanted the main UI up with the live sessions first, dead in background).
 
-    The timeline is a COMPLETE activity history, so ×-hiding a tab does NOT drop its lane (the user
-    2026-06-17 reversed the earlier rule that X-ing a tab in the chat also dropped the timeline lane): closing a tab is a
-    tab-strip view preference and must never erase the session from the timeline. A now-dead session that
-    was active during the visible span appears on scrollback regardless of tab/hidden state — the active
-    filter alone gates it. So `_hidden_tabs()` is deliberately NOT consulted here (it still gates the
-    chat tab strip in _chat_tab_sessions)."""
+    The timeline is a COMPLETE activity history: a session that ended must never be erased from it (the
+    user 2026-06-17 reversed the earlier rule that ×-ing a chat tab also dropped the timeline lane). A
+    now-dead session that was active during the visible span appears on scrollback regardless of tab
+    state — the active filter alone gates it."""
     live = _alive_sessions(now, tmux)
     if live_only:
         return _ordered(live)                          # cold-start first paint: live sessions only, no dead reads
@@ -4080,7 +4068,6 @@ def _end_pending_sid(sid):
             sys.stderr.write("kill: %s via cancelCreate (Opening-cue teardown)\n" % sid)
         except Exception:
             sys.stderr.write("cancelCreate kill '%s': %s\n" % (sid, traceback.format_exc()))
-    _set_hidden_tab(sid, True)
     _send_to_app("chat", {"type": "closed", "id": sid})
     _push_soon()
 
@@ -4163,7 +4150,6 @@ def _create_sdk_session(nm, cwd, auth=""):
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth)
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
-    _set_hidden_tab(sid, False)
     _reveal_chat({"type": "focus", "id": sid})
     _mark_views_dirty()
     _push_session_now(sid)   # the tab the user is staring at, ahead of the woken cycle
@@ -5113,12 +5099,11 @@ def _split_host_id(sid):
 
 
 def _open_or_revive(sid, live=False):
-    """openSession routing: a LIVE session → un-hide its tab + focus the chat; a DEAD one → the
+    """openSession routing: a LIVE session → focus the chat (its tab is always shown); a DEAD one → the
     confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17). `live` (the user
     2026-07-08): land the chat on its LIVE TAIL, not the last scroll — a blocked card's picker/permission
     prompt is the live bottom, so its feed chip drops you right on it."""
     if sid in _tmux_sessions():
-        _set_hidden_tab(sid, False)
         be = _sdk()
         if be:
             be.connect(sid)   # SDK: eager-connect on OPEN (idempotent; no-op for tmux/unknown sids) so the
@@ -5168,7 +5153,6 @@ def _revive_session(sid):
                               "text": detail or "unknown error"})
         return
     _kept_open.discard(sid)       # it's live again → no longer a read-only kept tab
-    _set_hidden_tab(sid, False)   # it was hidden when closed; show the revived tab
     _push_all()                   # surface it promptly (the 4s pusher would catch it anyway)
     _reveal_chat({"type": "focus", "id": sid})
 
@@ -18102,8 +18086,8 @@ if(s.working){var wd=document.createElement('span');wd.className='workdot';row.a
 else if(s.awaitbg){var wd=document.createElement('span');wd.className='workdot await';row.appendChild(wd);}
 var lbl=document.createElement('span');lbl.className='nm';fillName(lbl,s);if(s.bg)lbl.style.color=s.bg;
 row.appendChild(lbl);
-// End-session x: clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog (Close tab /
-// End session / Cancel) + endSession/closeTab plumbing — the mobile picker's only way to end a session
+// End-session x: clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog (End session /
+// Cancel) + endSession plumbing — the mobile picker's only way to end a session
 // (the user 2026-07-22). stopPropagation so it doesn't also switch to the session.
 var x=document.createElement('span');x.className='mclose';x.textContent='×';x.title='End session';
 x.addEventListener('click',function(e){e.stopPropagation();hide();var rt=realTab(s.id);var c=rt&&rt.querySelector('.tab-close');if(c)c.click();});
@@ -21857,8 +21841,7 @@ class Handler(BaseHTTPRequestHandler):
                                                    "dir": str(msg.get("dir") or ""), "status": st}))
                     else:
                         client["send"](json.dumps({"type": "warn", "text": derr}))
-                elif nm in live:                 # already running → just (re)open it, don't re-spawn
-                    _set_hidden_tab(live[nm], False)
+                elif nm in live:                 # already running → its tab is already up; just focus it
                     _reveal_chat_for(client, {"type": "focus", "id": live[nm]})
                     _mark_views_dirty()          # pusher ships the tab; never a synchronous fleet build here
                 elif msg.get("backend") == "sdk":   # non-tmux: drive via the Agent SDK
@@ -21904,24 +21887,23 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
             if sid:
-                _set_hidden_tab(sid, False); _push_all()
                 _reveal_chat_for(client, {"type": "focus", "id": sid})
-        elif msg and msg.get("type") == "openAll":
-            for s in _alive_sessions(int(time.time()), _tmux_sessions()):
-                _set_hidden_tab(s["sid"], False)
-            _push_all()
         elif msg and msg.get("type") == "closeSession" and msg.get("id"):
-            # × → ask (Close tab vs End session) instead of hiding straightaway (the user 2026-06-15)
+            # × → confirm End session (the user 2026-08-11: no more Close-tab/hide — a running session is
+            # always visible; close-and-reopen is End + Revive, which keeps history)
             client["send"](json.dumps({"type": "confirmClose", "id": msg["id"],
                                        "name": _name_of(msg["id"]) or msg["id"]}))
         elif msg and msg.get("type") == "closeTab" and msg.get("id"):
-            _set_hidden_tab(msg["id"], True)     # hide the tab; session keeps running
-            _kept_open.discard(msg["id"])        # ×-closing a read-only dead tab forgets it (timeline-only again)
-            _send_to_app("chat", {"type": "closed", "id": msg["id"]})   # prune it in the live view now
+            # Only a DEAD read-only tab has anything to close now (the user 2026-08-11): forget it
+            # (timeline-only again). For a live sid this is a stale client's hide ask — ignored; ending
+            # a live session is endSession's job. The `closed` frame still prunes the client promptly
+            # (and covers the endSession companion post, so an ended session never lingers as a tab).
+            _kept_open.discard(msg["id"])
+            _send_to_app("chat", {"type": "closed", "id": msg["id"]})
             _push_all()
         elif msg and msg.get("type") == "openSession" and msg.get("id"):
-            # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal. `live` lands on the
-            # chat's LIVE TAIL (a blocked card's picker chip → right on the prompt, the user 2026-07-08).
+            # live → focus its (always-shown) tab; dead → the chat's confirmRevive modal. `live` lands on
+            # the chat's LIVE TAIL (a blocked card's picker chip → right on the prompt, the user 2026-07-08).
             _open_or_revive(msg["id"], live=bool(msg.get("live")))
         elif msg and msg.get("type") == "openFolder" and msg.get("cwd"):
             # A REMOTE session's folder icon must SSH out, not open a local path that doesn't exist here
@@ -21939,7 +21921,7 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_revive_session, args=(msg["id"],), daemon=True).start()
         elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
             _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
-            _set_hidden_tab(msg["id"], False)    # gets a (struck) read-only tab now, without resuming it
+            #                                      gets a (struck) read-only tab now, without resuming it
             _push_all()
             _reveal_chat_for(client, {"type": "focus", "id": msg["id"]})
         elif msg and msg.get("type") == "deepLink" and msg.get("session"):

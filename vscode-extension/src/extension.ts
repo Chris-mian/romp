@@ -220,7 +220,6 @@ export function activate(context: vscode.ExtensionContext) {
         typeof arg === "string" ? { prompt: arg }
           : arg && typeof arg === "object" ? (arg as { prompt?: string; allowNew?: boolean })
           : {})),
-    vscode.commands.registerCommand("rompChat.openAll", () => { openPanel(); chatPipe?.send({ type: "openAll" }); }),
     vscode.commands.registerCommand("rompChat.nextTab", () => panel?.webview.postMessage({ type: "nextTab" })),
     vscode.commands.registerCommand("rompChat.prevTab", () => panel?.webview.postMessage({ type: "prevTab" })),
     vscode.commands.registerCommand("rompChat.openCurrent", () => {
