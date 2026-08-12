@@ -27,6 +27,7 @@ import threading
 import unittest
 from unittest import mock
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 try:
     from cryptography.hazmat.primitives import hashes
@@ -41,6 +42,10 @@ except ImportError:                                   # pragma: no cover — CI 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 # Belt over conftest's suspenders. Under pytest, conftest.py rebinds XDG_STATE_HOME to a tempdir
@@ -49,7 +54,6 @@ jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module
 # LIVE store, wiping the maintainer's phone subscription and rotating the real VAPID key (which
 # orphans every subscription bound to it). Rebind the state root here, unconditionally, BEFORE the
 # kernel module loads and captures jd.STATE into its path constants.
-import tempfile
 from pathlib import Path
 _STATE_TD = tempfile.TemporaryDirectory()
 jd.STATE = Path(_STATE_TD.name)

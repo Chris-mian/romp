@@ -15,11 +15,16 @@ import inspect
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 km = SourceFileLoader("romp_kernel_sdkerr", os.path.join(BIN, "romp-kernel")).load_module()
 sb = SourceFileLoader("romp_sdk_backend_sdkerr", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
 SB_SRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()

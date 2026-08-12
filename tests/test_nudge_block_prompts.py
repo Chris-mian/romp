@@ -13,6 +13,7 @@ import os
 import re
 import unittest
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -20,6 +21,10 @@ BIN = os.path.join(ROOT, "bin")
 
 # romp-kernel imports romp-judge as `jd` at load, which imports romp-event-model — load deps first
 # (mirrors tests/test_kernel_cachebust.py).
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 km = SourceFileLoader("romp_kernel_nudge", os.path.join(BIN, "romp-kernel")).load_module()

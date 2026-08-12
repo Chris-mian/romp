@@ -17,6 +17,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 # One live local session ("web") via the sessions-file seam (no live kernel needed).
 _SESS = os.path.join(os.environ["XDG_STATE_HOME"], "sessions.json")
 Path(_SESS).write_text(json.dumps([{"id": "sess-web", "name": "web", "dir": "/tmp/notes-api",

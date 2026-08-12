@@ -25,6 +25,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 # Hermetic state dir; the sessions-file seam signals "no live kernel" to the bus.
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 _SESS = os.path.join(os.environ["XDG_STATE_HOME"], "sessions.json")
 Path(_SESS).write_text("[]")
 os.environ["ROMP_SESSIONS_FILE"] = _SESS

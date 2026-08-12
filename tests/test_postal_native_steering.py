@@ -17,7 +17,10 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 SKILL = os.path.join(ROOT, "claude", "skills", "romp-postal", "SKILL.md")
 
-os.environ.setdefault("XDG_STATE_HOME", tempfile.mkdtemp())
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 pm = SourceFileLoader("romp_postal_steering", os.path.join(BIN, "romp-postal-service")).load_module()
 
 

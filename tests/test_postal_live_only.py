@@ -17,6 +17,7 @@ BIN = os.path.join(ROOT, "bin")
 SKILL = os.path.join(ROOT, "claude", "skills", "romp-postal", "SKILL.md")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
 
 ALPHA = "11111111-2222-3333-4444-555555555555"

@@ -8,6 +8,7 @@ import os
 import unittest
 from unittest import mock
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -16,6 +17,10 @@ os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 # host explicitly so they assert the same thing on a machine without tmux installed, where the
 # backend is otherwise inert by design (see TmuxBackend.available).
 os.environ["ROMP_TMUX_AVAILABLE"] = "1"
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 km = SourceFileLoader("romp_kernel_inj", os.path.join(BIN, "romp-kernel")).load_module()
 
 
