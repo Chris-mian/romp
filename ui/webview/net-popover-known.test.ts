@@ -17,7 +17,9 @@ test("web popover renders remembered hosts with re-attach + forget", () => {
   // pmode rides along as a PARAM: it is computed in refresh()'s callback, and reading it as a free
   // variable in render() threw ReferenceError on every draw (see tests/test_remotes_panel_render.py)
   assert.match(KERNEL, /function render\(ts,known,pmode,via,rholds,tiers\)/, "render takes the known list + pmode + via-reach + remote holds + peer tiers");
-  assert.match(KERNEL, /if\(!back\.hidden\)render\(ts,\(d&&d\.known\)\|\|\[\],pmode,\(d&&d\.viaReach\)\|\|\[\],\(d&&d\.remoteHolds\)\|\|\[\],\(d&&d\.peerTiers\)\|\|\{\}\);/, "refresh passes them through");
+  // refresh passes them through — via the cached-args form, which also lets a pairs answer repaint
+  assert.match(KERNEL, /_lastArgs=\[ts,\(d&&d\.known\)\|\|\[\],pmode,\(d&&d\.viaReach\)\|\|\[\],\(d&&d\.remoteHolds\)\|\|\[\],\(d&&d\.peerTiers\)\|\|\{\}\];/);
+  assert.match(KERNEL, /if\(!back\.hidden\)\{render\.apply\(null,_lastArgs\);refreshPairs\(\);\}/);
   assert.match(KERNEL, /Held for approval elsewhere/, "remote holds get their own section");
   assert.match(KERNEL, /rnet-from/, "the add box offers which machine owns the tunnel (attach-on-behalf)");
   assert.match(KERNEL, /Reachable via relay/, "via-reach hosts get their own section (trust-by-origin rows)");
@@ -31,7 +33,7 @@ test("web popover renders remembered hosts with re-attach + forget", () => {
 
 test("VS Code strip renders remembered hosts with re-attach + forget", () => {
   assert.match(STRIP, /function renderList\(ts: any\[\], known: any\[\] = \[\]\)/);
-  assert.match(STRIP, /renderList\(ts, \(d && d\.known\) \|\| \[\]\)/);
+  assert.match(STRIP, /lastList = \[ts, \(d && d\.known\) \|\| \[\]\];\s*\n\s*renderList\(lastList\[0\], lastList\[1\]\);/);
   assert.match(STRIP, /Previously attached/);
   assert.match(STRIP, /"Re-attach"/);
   assert.match(STRIP, /"Forget"/);
