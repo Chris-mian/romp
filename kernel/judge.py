@@ -50,6 +50,8 @@ PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's 
 MESSAGES = STATE / "timeline" / "messages.jsonl"
 ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp judges`
 USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
+JUDGE_AUTH = STATE / "judge-auth.json"   # judge-auth-down latch {fsid: {t, mode, note}}: set by a credential-class error
+                                         #   envelope, cleared by the session's next successful call — build_feed floors from it
 SDKDIR   = STATE / "sdk"                 # the SDK backend's per-session registry — lastSid tracks the CURRENT transcript fsid
 # Judge scratch cwd (the user 2026-07-20): every one-shot `claude -p` judge call writes a transcript
 # under the project dir of its CWD. With cwd=/tmp those piled into the SHARED -private-tmp project
@@ -535,7 +537,126 @@ def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None):
         pass
 
 
-def _judge_env(tier):
+_WORK_KEY_FN = None   # the kernel wires this to sdk_backend.work_api_key when it loads that module
+                      # (_sdk_locked), so judges read the SAME once-per-process stash sessions bill from
+
+
+def _work_key():
+    """The manager-environment API key available for key-mode judge billing — READ, never claimed.
+    In the kernel process the SDK backend is the one claimer (work_api_key pops os.environ so its
+    transport can't hand session CLIs an ambient key), and the kernel wires _WORK_KEY_FN to that
+    stash; until that wire lands — or standalone (romp-judge --once/--test, tests) — the key is
+    still sitting in os.environ and the plain read returns the same value. Neither path mutates the
+    environment: _judge_env strips the ambient var from every child env itself, and a second claimer
+    would only race the backend's pop (whoever popped second would stash "" — sessions or judges
+    losing the key on thread timing). This is what broke on 2026-08-12: judges inherited the
+    post-claim environment on a host with no login, and every call refused "Not logged in" for
+    13 hours (~53k errors) while the cards sat parked in Working."""
+    if _WORK_KEY_FN is not None:
+        try:
+            return _WORK_KEY_FN() or ""
+        except Exception:
+            return ""
+    return os.environ.get("ANTHROPIC_API_KEY", "") or ""
+
+
+def _judge_auth(fsid):
+    """'key' or 'login' — which account THIS judge call bills: the judged session's own billing (the
+    user 2026-08-12: a judge rides the account of the session it judges, never a third choice and
+    never a silent fall to the other one — a judge quietly billing the login on a session the user
+    put on the key is the same wrong-account failure the per-session picker exists to prevent).
+    Same resolution as the picker (sdk_backend default_auth / effective_auth), read from the same
+    registry file: an explicit 'login' pick → login; anything else → the key when the environment
+    carries one, else login. A call with no session (fleet-level rows) takes the same default a
+    fresh session would."""
+    a = ""
+    if fsid:
+        try:
+            a = json.loads((SDKDIR / (fsid + ".json")).read_text()).get("auth") or ""
+        except Exception:
+            a = ""
+    if a == "login":
+        return "login"
+    return "key" if _work_key() else "login"
+
+
+def _is_auth_error(text):
+    """A credential-class failure — the latch trigger: no retry can fix it, only the user can (fix the
+    key / sign in / switch the session's billing). Mirror of the kernel's _is_auth_error over session
+    transcripts, kept in sync by tests rather than imports (judge.py loads standalone)."""
+    low = (text or "").lower()
+    return ("not logged in" in low
+            or "api key is invalid" in low
+            or "invalid x-api-key" in low
+            or "failed to authenticate" in low
+            or ("oauth token" in low and ("expired" in low or "revoked" in low))
+            or "authentication_error" in low)
+
+
+_auth_lock = threading.Lock()            # guards the read-modify-write of JUDGE_AUTH
+_auth_cache = [None, {}]                 # (mtime_ns_or_None, dict) — one stat per read, like _DEBUG_CACHE
+
+
+def _auth_down_map():
+    """{fsid: {"t": first-failure, "mode": "key"|"login", "note": the CLI's own words}} — the
+    judge-auth-down latch build_feed floors cards from. mtime-cached; {} when absent/unreadable."""
+    try:
+        key = JUDGE_AUTH.stat().st_mtime_ns
+    except OSError:
+        return {}
+    if _auth_cache[0] != key:
+        try:
+            d = json.loads(JUDGE_AUTH.read_text())
+            _auth_cache[:] = [key, d if isinstance(d, dict) else {}]
+        except Exception:
+            _auth_cache[:] = [key, {}]
+    return _auth_cache[1]
+
+
+def _auth_write_locked(d):
+    """Atomic tmp+rename (callers hold _auth_lock). Best-effort like every latch write: a failed write
+    means a stale latch, and the next mark/clear retries it."""
+    try:
+        tmp = JUDGE_AUTH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(d))
+        os.replace(tmp, JUDGE_AUTH)
+    except Exception:
+        pass
+
+
+def _auth_down_mark(fsid, mode, note):
+    """LATCH judge-auth-down for one session: its judge call just failed with a credential-class error.
+    That error is the deciding event — credentials are binary state, not noise, so the FIRST one is
+    decisive (the user 2026-08-12: loud and quick, on the card) — and the latch holds until the
+    deciding event in the other direction (_auth_down_clear on a successful call), never re-derived
+    per build. Keeps the first failure time across repeats so the card can say how long judging has
+    been down; skips the write when the evidence is unchanged (no mtime churn at retry rate). No-op
+    without a session to pin it on (fleet-level rows stay in judge-errors.jsonl)."""
+    if not fsid:
+        return
+    note = str(note or "")[:300]
+    with _auth_lock:
+        d = dict(_auth_down_map())
+        row = d.get(fsid) or {}
+        if row.get("mode") == mode and row.get("note") == note:
+            return
+        d[fsid] = {"t": int(row.get("t") or time.time()), "mode": mode, "note": note}
+        _auth_write_locked(d)
+
+
+def _auth_down_clear(fsid):
+    """Unlatch on the deciding event in the other direction: a judge call for this session SUCCEEDED,
+    so its billing works again — the floored card returns to its judged column on the next build.
+    Cheap when unlatched (one cached read, zero writes): this runs on every successful call."""
+    if not fsid or fsid not in _auth_down_map():
+        return
+    with _auth_lock:
+        d = dict(_auth_down_map())
+        if d.pop(fsid, None) is not None:
+            _auth_write_locked(d)
+
+
+def _judge_env(tier, auth="login"):
     """The subprocess env for ONE judge call. Drops the TMUX vars (so the child isn't taken for a live
     pane) and trips the Stop-hook recursion guard. For the INDEX tier it also disables extended thinking
     (MAX_THINKING_TOKENS=0): the captioner + archiver do mechanical one-shot summarization, where Haiku's
@@ -543,13 +664,24 @@ def _judge_env(tier):
     caption (722 -> 24 output tokens, 7.1s -> 0.9s per call, ~92% cheaper, identical caption). TRIAGE keeps
     thinking: the planner / closer / grouper / distiller make real placement + closure judgments. Output is
     the expensive half (Haiku $5/Mtok out) AND the latency driver (~58 tok/s, serial), so this is the
-    captioner's biggest single lever — and it's what makes any future batching latency-safe."""
+    captioner's biggest single lever — and it's what makes any future batching latency-safe.
+
+    `auth` is the call's resolved billing (_judge_auth). The ambient ANTHROPIC_API_KEY is stripped
+    unconditionally — in the kernel process the SDK backend already claimed it out of os.environ, and
+    standalone the var is still there, where a login-mode child would otherwise bill the key by mere
+    inheritance — and injected back EXPLICITLY for a key-mode call only. Removal, not blanking, same
+    rule as sdk_backend._options: the CLI treats even an empty var as key-mode-without-a-key and
+    refuses with "Not logged in"."""
+    wk = _work_key()                                  # read before the strip (standalone: same env)
     env = dict(os.environ)
+    env.pop("ANTHROPIC_API_KEY", None)                # never ambient: billing is an explicit choice per call
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
     env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard
     if tier == "index":
         env["MAX_THINKING_TOKENS"] = "0"              # no thinking for mechanical summarization (the cost lever)
+    if auth == "key" and wk:
+        env["ANTHROPIC_API_KEY"] = wk
     return env
 
 
@@ -587,12 +719,13 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
                 return ""
     except Exception:
         pass
-    env = _judge_env(tier)
+    fsid = getattr(_judge_ctx, "fsid", None)
+    auth = _judge_auth(fsid)                          # this call bills what the judged session bills
+    env = _judge_env(tier, auth)
     # Per-tier effort from the gear (STATE/judge-effort | index-effort) when the caller didn't pass one — "" or
     # None means NO --effort flag, the long-standing default. An explicit caller effort (the plan A/B) still wins.
     if effort is None:
         effort = (_index_effort() if tier == "index" else _triage_effort()) or None
-    fsid = getattr(_judge_ctx, "fsid", None)
     # Stash this call for the debug view: if the CALLER later rejects the reply, _log_judge_error attaches
     # this input+reply pair to the failure row (debug mode only), so a rejection is inspectable from the
     # card modal. Per-thread and overwritten per call: only the failing call's pair can ever be attached.
@@ -622,13 +755,19 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
                 # on 07-06: every parser rejected the error text, every caller retried. Log the truth (a
                 # CALL failure, message attached) and return "" so callers treat it like any failed call.
                 # No usage row: a zero-cost error envelope is not a model call the cost rollup should count.
+                msg = str(wrap.get("result") or wrap.get("subtype") or "")
                 _judge_ctx.last["reply"] = str(wrap.get("result") or "")[:2000]
                 _log_judge_error(judge or tier, fsid, "call",
-                                 note="error envelope: %r" % str(wrap.get("result") or wrap.get("subtype") or "")[:160])
+                                 note="error envelope: %r" % msg[:160])
+                if _is_auth_error(msg):
+                    # credential-class: only the user can fix it — latch, so build_feed floors this
+                    # session's focus card instead of leaving the board silently frozen (2026-08-12)
+                    _auth_down_mark(fsid, auth, msg[:160])
                 return ""
             if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
                 _judge_ctx.last["reply"] = _mid_elide(wrap["result"])
                 _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
+                _auth_down_clear(fsid)                # billing works → unlatch (cheap no-op when unlatched)
                 return wrap["result"]
         except Exception:
             pass

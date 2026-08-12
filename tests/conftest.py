@@ -13,6 +13,17 @@ import pytest
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="romp-tests-state-")
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel exports this to its sessions; it outranks the XDG floor
 
+# No test may reach the REAL `claude` CLI (2026-08-12): _judge_claude_bin honors ROMP_CLAUDE_BIN
+# first, so this floors every judge call a test forgot to stub at /bin/false — empty stdout, the
+# dead-CLI row, byte-for-byte what a claude-less CI runner produces. Found when an unstubbed
+# _judge_run in the kernel suite exec'd the live CLI on a dev machine: run alone it made a real
+# (billed!) model call and passed; in the full suite the process env's key had already been claimed
+# by an sdk-backend construction, the live CLI refused "Not logged in", and the judge-auth latch
+# that refusal now correctly feeds floored the synthetic session's cards — 25 stays-in-Working
+# tests red locally, green on CI, purely machine-dependent. Tests that assert _judge_claude_bin's
+# own resolution pop this var themselves (test_judge.py), as they always had to.
+os.environ["ROMP_CLAUDE_BIN"] = "/bin/false"
+
 
 @pytest.fixture(autouse=True)
 def _stub_place_llm(monkeypatch):

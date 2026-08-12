@@ -262,6 +262,34 @@ While the account usage window is exhausted, the rate gate skips every call
 across every session and logs one `rate-limited` row per window; gate skips count
 toward nothing.
 
+## Billing, and when the credential itself is broken
+
+A judge call bills **the account of the session it judges** — the same pick the
+session's own Billing selector holds, read from the same registry, with the same
+fallback (an explicit login pick → the login; anything else → the manager env's
+API key when one exists, else the login). The key itself has exactly one claimer:
+the SDK backend pops it out of the kernel's environment at first use so no
+session CLI inherits it ambiently, and judges read that same stash through a wire
+the kernel installs (`judge._WORK_KEY_FN`) — before the wire lands, or standalone
+(`romp-judge --once`), the key is still sitting in the environment and is read in
+place. Every judge child env is built with the ambient variable stripped and the
+key injected back only for a key-mode call: billing is an explicit choice per
+call, never inheritance. (Before this, judges inherited the post-claim
+environment: on a host with no login, every call refused "Not logged in" for 13
+hours — ~53k errors — while the board sat frozen in Working with nothing saying
+why.)
+
+A **credential-class** failure (not logged in, an invalid key, an expired OAuth
+token) is one no retry can fix — only the user can. The first such error
+envelope latches judge-auth-down for that session (`STATE/judge-auth.json`), and
+the session's next successful call clears it; both edges are events, nothing is
+re-derived per build. While latched, the feed floors the session's focus card to
+needs-you wearing a filled-red "Can't analyze" chip that names the refused
+credential, and the card face carries the story and the fix — the session may be
+fine; it is romp's analysis of it that is down, and every card of that session is
+frozen until the credential works again. The floor yields to the live
+permission/API-error floors: one interrupt at a time, the present event first.
+
 ## Other machinery that reads the same data
 
 - **rollup_status**: pure code. Folds each node's diary into its state and
@@ -303,6 +331,8 @@ toward nothing.
   Models: `STATE/judge-model` (triage), `STATE/index-model`.
 - Logs: `STATE/judge-usage.jsonl` (per-call cost, one name per prompt),
   `STATE/judge-errors.jsonl` (the row contract above; kinds are parse,
-  call, give-up, cite-miss, rate-limited, task-store, history-unreadable).
+  call, give-up, cite-miss, rate-limited, task-store, history-unreadable),
+  `STATE/judge-auth.json` (the per-session judge-auth-down latch — see
+  "Billing" above).
 - Debugging: run the judge's own code against the live store
   (`SourceFileLoader` on `kernel/judge.py`) rather than inferring from logs.
