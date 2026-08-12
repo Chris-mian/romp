@@ -6462,7 +6462,7 @@ def checkin_set(host, on):
         except Exception:
             pass
     _tunnel_wake.set()
-    _known_note(host, share=bool(on))      # …and REMEMBER it, so a detach + re-attach keeps publishing
+    _known_note(host, share=bool(on), attached=True)   # …and REMEMBER it, so a detach + re-attach keeps publishing
     _remotes_save()
     with _remotes_lock:
         return _remote_public(_remotes[host]) if host in _remotes else None
@@ -6773,7 +6773,7 @@ def checkin_apply(body):
                           "bus_port": bp, "token": str((body or {}).get("token") or ""),
                           "trust": trust,
                           "proc": None, "status": "connecting", "detail": "", "sids": []}
-    _known_note(host, trust)                   # …and remember it, so a later re-check-in finds it again
+    _known_note(host, trust, attached=True)    # …and remember it, so a later re-check-in finds it again
     _remotes_save()
     _tunnel_wake.set()                     # poll it now: the row reads up within one supervisor pass
     return {"ok": True, "host": host}, 200
@@ -7113,7 +7113,7 @@ def attach_remote(host, kernel_port=None):
         r["fails"], r["next_try"] = 0, 0
         r.pop("gave_up", None)
         _attach_trust = r.get("trust")
-    _known_note(host, _attach_trust)               # remember it for the popover's past-hosts list
+    _known_note(host, _attach_trust, attached=True)   # remember it for the popover's past-hosts list
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
     # SAME MACHINE, SECOND NAME (the user 2026-07-27, whose box sat in the registry as both its
     # hostname and its ssh alias — every session listed twice, bare postal names ambiguous). The serve
@@ -7141,7 +7141,7 @@ def attach_remote(host, kernel_port=None):
         if _postal_peers_on():                     # the old peer NAME is gone on purpose — tell the bus
             _notify_bus_peer(absorbed["host"], absorbed.get("bus_port"), False, absorbed.get("token") or "")
         known_forget(absorbed["host"])             # never re-offer the duplicate name in the popover
-        _known_note(host, _attach_trust)           # the surviving name carries the machine's trust level
+        _known_note(host, _attach_trust, attached=True)   # the surviving name carries the machine's trust level
     # BOOTSTRAP: no token yet (the kernel there never ran) or nothing listening on its port → start
     # romp-serve over ssh and wait for the port, so "install romp on the box, click attach" is the
     # whole story. A healthy remote costs one extra ssh probe; a romp-less host gets a next-step
@@ -7209,6 +7209,8 @@ def _known_load():
                                        "lastAttachedAt": row.get("lastAttachedAt") or 0,
                                        "trust": row.get("trust") or "directed",
                                        "share": bool(row.get("share"))}
+                if row.get("attached"):               # set only when proven (absent = trust-only row)
+                    _known[row["host"]]["attached"] = True
 
 
 def _known_save():
@@ -7220,7 +7222,7 @@ def _known_save():
         sys.stderr.write("known-hosts save: %s\n" % traceback.format_exc())
 
 
-def _known_note(host, trust=None, share=None):
+def _known_note(host, trust=None, share=None, attached=None):
     """Record (or refresh) a host you attached. Called on attach and whenever its trust changes, so the
     remembered entry always carries the level you last chose for it.
 
@@ -7228,7 +7230,13 @@ def _known_note(host, trust=None, share=None):
     box kept coming back unchecked. Detach POPS the live row, so the flag lived nowhere else and a
     re-attach rebuilt the row without it — the identical disease trust had before known_trust, and it
     reads exactly the same way from the outside: a setting you deliberately turned on, silently off
-    again later. None means "don't touch" (an attach that only refreshes trust must not clear it)."""
+    again later. None means "don't touch" (an attach that only refreshes trust must not clear it).
+
+    `attached=True` marks that a real connection existed here (attach/detach/check-in paths); the
+    trust-only writers never pass it. A row without the flag records ONLY a remembered mail-trust
+    tier (a relayed origin the user tiered), and the popover labels it that way instead of
+    "previously attached" — that label sent the user hunting for an ssh session that never happened
+    (2026-08-12). Absent-on-legacy reads as not-proven-attached: the softer claim is the true one."""
     host = (host or "").strip()
     if not host:
         return
@@ -7239,6 +7247,8 @@ def _known_note(host, trust=None, share=None):
             e["trust"] = trust
         if share is not None:
             e["share"] = bool(share)
+        if attached:
+            e["attached"] = True
     _known_save()
 
 
@@ -7303,7 +7313,7 @@ def detach_remote(host):
         # Remember it, its level AND its publish flag on the way out — this is the moment the live row
         # (the only place `checkin` lived) is destroyed, so a row carried in from remotes.json and never
         # re-toggled this process is captured here rather than lost.
-        _known_note(host, r.get("trust"), share=bool(r.get("checkin")))
+        _known_note(host, r.get("trust"), share=bool(r.get("checkin")), attached=True)
     if r and r.get("proc"):
         try:
             r["proc"].terminate()
@@ -19773,7 +19783,7 @@ list.appendChild(item);});
 // one click away instead of something you retype. Dimmed, and each remembers the trust
 // level you last set for it — re-attaching a box you marked `trusted` will not silently drop to directed.
 if(known.length){var hd=document.createElement('div');hd.className='rnet-khead';
-hd.textContent='Previously attached';hd.title='Hosts you have attached before. They keep the trust level you last chose, so re-attaching restores it. Forget removes a host from this list.';
+hd.textContent='Previously attached';hd.title='Hosts romp remembers. Most were attached before and keep the trust level you last chose, so re-attaching restores it. A row marked \\u201ctrust remembered\\u201d was never attached from this machine \\u2014 it only records how to hold that host\\u2019s mail. Forget removes a host from this list.';
 list.appendChild(hd);
 known.forEach(function(k){var kr=document.createElement('div');kr.className='rnet-row rnet-known';
 var kpd=pendLvl(_pendTrust,k.host,k.trust||'directed');
@@ -19783,9 +19793,18 @@ var kcur=kpd||k.trust||'directed';
 // no tunnel required to set it (the user 2026-07-25).
 var ktrust='<select class=\"rnet-trust'+(kpd?' rnet-applying':'')+'\"'+(kpd?' disabled':'')+' data-t=\"'+k.host+'\" title=\"What happens to postal mail from '+k.host+', however it arrives (a direct tunnel later, or relayed through a hub now): trusted = delivered straight to your sessions; directed = held for your approval; isolated = none.\">'+
 ['trusted','directed','isolated'].map(function(v){return '<option value='+v+(kcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(kpd?'<span class=rnet-pend>'+spin()+'applying\\u2026</span>':'');
+// A row that only remembers a mail-trust tier must SAY so (the user 2026-08-12, who read
+// "Previously attached: <host>" on a machine that never held that tunnel and went looking for an
+// ssh session that never happened). k.attached is stamped by the attach/detach/check-in writers
+// (_known_note attached=True); a trust-only row never gets it, and its button says Attach.
+// strip.ts's known rows carry the same split (both-copies discipline).
+var kwas=!!k.attached;
+var kst=kwas?'not attached':'trust remembered \\u00b7 never attached here';
+var kstt=kwas?'Not attached; the trust level applies to its mail by origin, and re-attaching keeps it.'
+:'No tunnel to '+k.host+' has ever been attached from this machine \\u2014 this row only records how its mail is held (trust is judged by origin, e.g. for a relayed peer). Attaching is still one click.';
 kr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #5a5a5a\" title=\"Not attached right now.\"></span>'+
-'<span class=nm><b>'+k.host+'</b> <span class=st title=\"Not attached; the trust level applies to its mail by origin, and re-attaching keeps it.\">not attached</span></span>'+ktrust+
-'<button data-ra=\"'+k.host+'\" title=\"Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.\">Re-attach</button>'+
+'<span class=nm><b>'+k.host+'</b> <span class=st title=\"'+kstt+'\">'+kst+'</span></span>'+ktrust+
+'<button data-ra=\"'+k.host+'\" title=\"'+(kwas?'Open the ssh tunnel to '+k.host+' again, restoring its remembered trust level.':'Open an ssh tunnel to '+k.host+' (first attach from this machine); its remembered trust level rides along.')+'\">'+(kwas?'Re-attach':'Attach')+'</button>'+
 '<button data-fg=\"'+k.host+'\" title=\"Remove '+k.host+' from this list. It does not touch the host itself; attaching again will re-add it.\">Forget</button>';
 list.appendChild(kr);});}
 // REACHABLE VIA RELAY (the user 2026-07-25): machines with no direct tunnel from here, one relay hop

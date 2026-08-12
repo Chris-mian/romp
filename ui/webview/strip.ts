@@ -692,8 +692,9 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       const hd = document.createElement("div");
       hd.className = "sn-khead";
       hd.textContent = "Previously attached";
-      hd.title = "Hosts you have attached before. They keep the trust level you last chose, so re-attaching "
-        + "restores it. Forget removes a host from this list.";
+      hd.title = "Hosts romp remembers. Most were attached before and keep the trust level you last chose, "
+        + "so re-attaching restores it. A row marked “trust remembered” was never attached from this "
+        + "machine — it only records how to hold that host's mail. Forget removes a host from this list.";
       list.appendChild(hd);
       for (const k of known) {
         const r = document.createElement("div");
@@ -705,12 +706,23 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         dot.title = "Not attached right now.";
         const nm = document.createElement("span");
         nm.className = "sn-name";
-        nm.textContent = `${k.host} — not attached · ${k.trust || "directed"}`;
-        nm.title = "Trust level remembered from the last time this host was attached; re-attaching restores it.";
+        // A row that only remembers a mail-trust tier says so (the user 2026-08-12, who read
+        // "Previously attached" on a machine that never held that tunnel). k.attached is stamped by
+        // the attach/detach/check-in writers; a trust-only row never gets it.
+        const kwas = !!k.attached;
+        nm.textContent = kwas
+          ? `${k.host} — not attached · ${k.trust || "directed"}`
+          : `${k.host} — trust remembered · never attached here · ${k.trust || "directed"}`;
+        nm.title = kwas
+          ? "Trust level remembered from the last time this host was attached; re-attaching restores it."
+          : `No tunnel to ${k.host} has ever been attached from this machine — this row only records how `
+            + "its mail is held (trust is judged by origin, e.g. for a relayed peer). Attaching is still one click.";
         r.append(dot, nm);
         const ra = document.createElement("button");
-        ra.textContent = "Re-attach";
-        ra.title = `Open the ssh tunnel to ${k.host} again, restoring its remembered trust level.`;
+        ra.textContent = kwas ? "Re-attach" : "Attach";
+        ra.title = kwas
+          ? `Open the ssh tunnel to ${k.host} again, restoring its remembered trust level.`
+          : `Open an ssh tunnel to ${k.host} (first attach from this machine); its remembered trust level rides along.`;
         ra.addEventListener("click", () => act("/tunnels", k.host, ra, "Attaching…"));
         const fg = document.createElement("button");
         fg.textContent = "Forget";
