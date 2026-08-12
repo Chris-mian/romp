@@ -17,11 +17,10 @@
 import { kernelUrl } from "./media";
 
 export type UsageWindow = {
-  readout?: string;     // overrides the % readout (a spend row shows dollars)
   key: string;
   label: string;        // the rail's expanded label
   short: string;        // the compressed tag a narrow strip swaps in ("5h" / "7d" / "F5")
-  pct: number | null;   // used % of the limit / budget (LAST-KNOWN when unknown — drawn faded); null = no honest denominator (a spend row with no budget)
+  pct: number | null;   // used % of the limit (LAST-KNOWN when unknown — drawn faded)
   elapsedPct: number | null;  // % of the window elapsed (pace comparison)
   unknown: boolean;     // the window reset since the last report — the reading no longer describes the present
   title: string;        // hover detail
@@ -92,48 +91,38 @@ export function fmtTok(n: number): string {
   return String(n);
 }
 
-// API-key SPEND windows mirror the subscription bars' grammar exactly — same rows, same labels,
-// same twin tracks — so flipping between the two auth modes reads instantly (the user 2026-08-04, who
-// asked for "5 hours / week / month, visually similar"). A row FILLS only when spend-budgets.json names
-// that window's budget: the fill is spend-over-budget, and without a cap there is no honest fraction —
-// the row then carries plain dollars in the readout slot and no used-track. Rolling windows (5h/7d)
-// have no reset boundary, so only month-to-date draws the elapsed track. Keyed on the spend windows'
-// PRESENCE, not the apiKey flag: with per-session auth a host's payload carries bars AND its key's
-// spend at once (the user 2026-08-08), and the strip should show both, not silently drop the dollars.
-export const SPEND_WINS: Array<[string, string, string]> = [
-  ["fiveHour", "5 hours", "5h"],
-  ["sevenDay", "7 days", "7d"],
-  ["month", "Month", "mo"],
-];
-export function spendWindows(usage: any, nowS: number): UsageWindow[] {
+// API-key spend is ONE compact CELL, the strip twin of the web rail's apiCellHTML (the user
+// 2026-08-11: the rail moved to this presentation and the strip must reflect it — spend rendered as
+// three bar-less window rows was the OLD grammar, and on a key-billed machine it read as broken).
+// Spend is NUMBERS, never bars (the user 2026-08-08: the spend bar graphs told you nothing): a
+// constant "API" label — no fragment of any key, not even a last-4 tail, reaches a surface — then the
+// 5-hour burn and the month-to-date, dollars AND tokens (the user 2026-08-09), each designator the
+// window's ONE display name to the LEFT of its value. The full per-window breakdown (7 days and turn
+// counts included) rides the cell's hover title. Keyed on the spend windows' PRESENCE, not the legacy
+// apiKey flag — the same hasSpend branch the rail runs; rail-spend.test.ts holds the two in step.
+export function fmtUsd(v: number): string { return "$" + String(Math.round(v)); }   // whole dollars everywhere — no cents (the user 2026-08-09)
+export type ApiCell = {
+  segs: Array<{ key: string; label: string; short: string; usd: number; tok: number }>;
+  title: string;
+};
+export function apiCell(usage: any): ApiCell | null {
   const sp = usage && usage.spend;
-  if (!sp) return [];
-  const out: UsageWindow[] = [];
-  for (const [key, label, short] of SPEND_WINS) {
+  if (!sp || !sp.fiveHour) return null;
+  const segs: ApiCell["segs"] = [];
+  for (const [key, label, short] of [["fiveHour", "5 hours", "5h"], ["month", "Month", "mo"]] as const) {
     const seg = sp[key];
     if (!seg || typeof seg.usd !== "number") continue;
-    const budget = typeof seg.budget === "number" && seg.budget > 0 ? seg.budget : null;
-    const pct = budget != null ? Math.max(0, Math.min(100, Math.round((seg.usd / budget) * 100))) : null;
-    let elapsedPct: number | null = null;
-    if (key === "month" && budget != null) {
-      const d = new Date(nowS * 1000);
-      const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-      elapsedPct = Math.max(0, Math.min(100, Math.round(((d.getDate() - 1 + d.getHours() / 24) / dim) * 100)));
-    }
-    const turns = seg.turns || 0;
-    out.push({
-      key, label, short, pct, elapsedPct, unknown: false,
-      // dollars AND tokens stay VISIBLE (the user 2026-08-05 — the hover-only split hid them again);
-      // WHOLE dollars, no cents, matching the rail everywhere (the user 2026-08-09)
-      readout: "$" + Math.round(seg.usd) + " · " + fmtTok(seg.tok || 0) + " tok",
-      title: label + " — $" + Math.round(seg.usd) + " · " + fmtTok(seg.tok || 0) + " tokens · "
-        + turns + " turn" + (turns === 1 ? "" : "s")
-        + (budget != null ? " · " + pct + "% of the $" + budget + " budget"
-           : " · no budget set — dollars only, no fill (set one in spend-budgets.json)")
-        + " · API-key billing",
-    });
+    segs.push({ key, label, short, usd: seg.usd, tok: seg.tok || 0 });
   }
-  return out;
+  if (!segs.length) return null;
+  const lines = ["API-key spend"];
+  for (const [key, label] of [["fiveHour", "5 hours"], ["sevenDay", "7 days"], ["month", "Month"]] as const) {
+    const seg = sp[key];
+    if (!seg || typeof seg.usd !== "number") continue;
+    const turns = seg.turns || 0;
+    lines.push(`${label} — ${fmtUsd(seg.usd)} · ${fmtTok(seg.tok || 0)} tok · ${turns} turn${turns === 1 ? "" : "s"}`);
+  }
+  return { segs, title: lines.join("\n") };
 }
 
 // Which panes get a quick-open label when hidden (the user 2026-07-13, who wanted chat,
@@ -245,9 +234,8 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
   function render(usage: any) {
     const nowS = Math.floor(Date.now() / 1000);
     usageWrap.textContent = "";
-    // ONE loop, one row builder: subscription windows and API spend windows are the same element, so
-    // the two auth modes cannot drift apart visually (the user 2026-08-04)
-    for (const w of usageWindows(usage, nowS).concat(spendWindows(usage, nowS))) {
+    // the subscription windows render as bar rows; key spend follows as ONE API cell (the rail's order)
+    for (const w of usageWindows(usage, nowS)) {
       const box = document.createElement("span");
       box.className = "ru-w" + (w.unknown ? " ru-unk" : "");
       box.title = w.title;
@@ -287,18 +275,46 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
         bars.appendChild(q);
         box.append(name, bars);
       } else {
-        if (w.pct != null) bars.appendChild(mkTrack(w.pct, usageColor(w.pct)));   // no honest denominator → no fill
+        if (w.pct != null) bars.appendChild(mkTrack(w.pct, usageColor(w.pct)));
         if (w.elapsedPct != null) bars.appendChild(mkTrack(w.elapsedPct, "#6b7a8c"));
         const pct = document.createElement("span");
         pct.className = "ru-pct";
-        pct.textContent = w.readout ?? `${w.pct}%`;
-        // A row with no tracks (a spend window with no budget: dollars only, no honest fill) is
-        // TEXT-ONLY. Appending its empty bar slot anyway held 54px of nothing open — and once the
-        // narrow tiers hid the readout too, the row was pure ghost space: a wide feed pane showed a
-        // bare "?", naked bars, and a fake dead gap (the user 2026-08-11). No empty slot, and the
-        // class lets the tier ladder drop the whole row once its text is gone (strip.css).
-        if (bars.childElementCount) box.append(name, bars, pct);
-        else { box.classList.add("ru-textonly"); box.append(name, pct); }
+        pct.textContent = `${w.pct}%`;
+        box.append(name, bars, pct);
+      }
+      usageWrap.appendChild(box);
+    }
+    // The API cell — the rail's apiCellHTML twin (see apiCell above): "API", then designator → value
+    // pairs. The dollars are the cell's own class (.ru-apiv), NOT .ru-pct: they are the information on
+    // a key-billed machine, so the compress tiers fold the tokens (tier 2) and the labels (tier 3,
+    // like every row) but never the dollars themselves.
+    const cell = apiCell(usage);
+    if (cell) {
+      const box = document.createElement("span");
+      box.className = "ru-w ru-api";
+      box.title = cell.title;
+      const lbl = document.createElement("span");
+      lbl.className = "ru-name";
+      lbl.textContent = "API";
+      box.appendChild(lbl);
+      for (const s of cell.segs) {
+        const name = document.createElement("span");
+        name.className = "ru-name";
+        const nameFull = document.createElement("span");
+        nameFull.className = "ru-name-full";
+        nameFull.textContent = s.label;
+        const nameShort = document.createElement("span");
+        nameShort.className = "ru-name-short";
+        nameShort.textContent = s.short;
+        name.append(nameFull, nameShort);
+        const val = document.createElement("span");
+        val.className = "ru-apiv";
+        val.textContent = fmtUsd(s.usd);
+        const tok = document.createElement("span");
+        tok.className = "ru-apitok";
+        tok.textContent = " · " + fmtTok(s.tok) + " tok";
+        val.appendChild(tok);
+        box.append(name, val);
       }
       usageWrap.appendChild(box);
     }

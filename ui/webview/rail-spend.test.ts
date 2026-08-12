@@ -46,16 +46,21 @@ test("the kernel serves spend windows for BOTH payload shapes, keyed-only beside
   assert.ok(BACKEND.includes("_fold(hours, hour, 192)"), "8 days of hour buckets feed the rolling windows");
 });
 
-test("VS Code strip: spend rows key on the windows' PRESENCE, one row builder for both kinds", () => {
-  assert.match(STRIP, /export function spendWindows\(usage: any, nowS: number\): UsageWindow\[\]/);
-  // presence, not the apiKey flag: a mixed host's payload carries bars AND spend at once
+test("VS Code strip: spend is ONE API cell keyed on the windows' PRESENCE — the rail's twin", () => {
+  // the strip mirrors apiCellHTML (the user 2026-08-11: the rail moved to the cell and the strip must
+  // reflect it): constant 'API' label, 5-hour burn + month-to-date as designator → dollars·tokens
+  // pairs, the full breakdown (7 days, turn counts) on the hover title. Spend-as-rows is gone.
+  assert.match(STRIP, /export function apiCell\(usage: any\): ApiCell \| null/);
+  // presence, not the apiKey flag: a mixed host's payload carries bars AND spend at once — and the
+  // 5h window is the whole test, the same hasSpend branch the rail runs
   assert.ok(STRIP.includes("const sp = usage && usage.spend;"));
+  assert.ok(STRIP.includes("if (!sp || !sp.fiveHour) return null;"));
   assert.doesNotMatch(STRIP, /usage\.apiKey && usage\.spend/);
-  assert.match(STRIP, /usageWindows\(usage, nowS\)\.concat\(spendWindows\(usage, nowS\)\)/);
-  // labels mirror the subscription table's two-tier form; dollars AND tokens stay visible
-  assert.match(STRIP, /\["fiveHour", "5 hours", "5h"\]/);
-  assert.match(STRIP, /\["month", "Month", "mo"\]/);
-  assert.match(STRIP, /\+ " · " \+ fmtTok\(seg\.tok \|\| 0\) \+ " tok"/);
+  assert.doesNotMatch(STRIP, /spendWindows/, "spend never renders as window rows any more");
+  // the collapsed cell carries 5h + month (like the rail's seg('fiveHour')+seg('month')); one display
+  // name per window, dollars AND tokens beside each other
+  assert.match(STRIP, /\[\["fiveHour", "5 hours", "5h"\], \["month", "Month", "mo"\]\]/);
+  assert.match(STRIP, /tok\.textContent = " · " \+ fmtTok\(s\.tok\) \+ " tok";/);
   // the old one-off chip is gone, and with it any minted style
   assert.doesNotMatch(STRIP, /spendChip/);
   assert.doesNotMatch(STRIPCSS, /\.ru-spend/);
@@ -103,8 +108,8 @@ test("dollars are WHOLE everywhere — no cents on any spend surface", () => {
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
   assert.ok(usageJS.includes("function fmtUsd(v){return '$'+String(Math.round(v));}"));
   assert.ok(!usageJS.includes("toFixed(2)"), "no cents anywhere in the rail JS");
-  assert.match(STRIP, /readout: "\$" \+ Math\.round\(seg\.usd\)/);
-  assert.match(STRIP, /title: label \+ " — \$" \+ Math\.round\(seg\.usd\)/);
+  assert.match(STRIP, /export function fmtUsd\(v: number\): string \{ return "\$" \+ String\(Math\.round\(v\)\); \}/,
+    "the strip rounds through the same one formatter");
   assert.doesNotMatch(STRIP, /usd\.toFixed\(2\)/);
 });
 
