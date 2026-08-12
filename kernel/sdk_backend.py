@@ -581,6 +581,35 @@ def append_effort_applied(state_dir: Path, sid: str, effort: str, t: int | None 
         f.write(json.dumps(rec) + "\n")
 
 
+def append_machine_cut(state_dir: Path, sid: str, cause: str, t: float | None = None) -> None:
+    """Record that ROMP cut this session's turn and is continuing it — written at the instant a resume
+    notice is QUEUED (boot reconcile → "restart"; _heal_cut_session → "crash"), which is the event the
+    kernel's transcript scan can only INFER later, once that notice reaches disk.
+
+    Why this marker exists (the user 2026-08-12, who sees the false block "again and again"): a machine
+    cut mints the same "[Request interrupted by user]" record as a real Esc, and _machine_cut_cause tells
+    them apart by scanning FORWARD for the resume notice. But the stop record is on disk the moment the
+    turn is cut, while the notice only lands once the resumed CLI writes it — seconds later. Every
+    _interrupt_block_tick inside that window reads a bare stop with nothing after it, concludes the user
+    stopped the session, and blocks the focus card on them with INTERRUPT_BLOCK_WHY. Measured on the live
+    machine: 30 such false blocks in 30 hours, each one an interrupt/block row the user never caused,
+    followed by an unblock once the notice landed — a card round-trip on an event that carried no new
+    information at all (CLAUDE.md: cards move on new information, never on inference flaps).
+
+    Time-ordering is what makes the marker exact, so no grace period is needed: the cut always precedes
+    the resume we are queueing here, so an interrupt record at or before `t` belongs to THIS cut, and a
+    genuine stop the user makes later is always past it. That also makes the marker self-limiting — a
+    stale one can never relabel a newer stop — so nothing has to expire or be swept. `t` stays a FLOAT
+    (the other appenders truncate to int, which would move the bound EARLIER and could drop a stop record
+    written in the same second). Its own "machineCut" key, so the state/awaiting/recovery readers, which
+    filter by their own keys, skip it."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": time.time() if t is None else float(t), "machineCut": str(cause)}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def append_awaiting(state_dir: Path, sid: str, awaiting: bool, why: str = "") -> None:
     """Append an "awaiting" OVERLAY record to states/<sid>.jsonl (interleaved with the state
     records; the kernel reader scans for the latest line carrying an "awaiting" key). "Awaiting" =
@@ -2812,6 +2841,12 @@ class SdkBackend:
                             if dead_tasks:
                                 reg["bgTasks"] = []   # reported — never re-notify for the same deaths
                             write_reg(self.state_dir, sid, reg)
+                    if cut:
+                        # Durable "romp cut this, romp is continuing it" stamp, written with the resume
+                        # notice rather than waiting for it to reach disk — so the interrupt-block tick
+                        # cannot read the intervening bare stop record as the user stopping the session
+                        # (see append_machine_cut).
+                        append_machine_cut(self.state_dir, sid, "restart")
                     resumed += 1 if cut else 0
                     notified += 1 if dead_tasks else 0
                     restored += len(queued)
@@ -4326,6 +4361,7 @@ class SdkBackend:
                 reg["queue"] = [CRASH_RESUME_NUDGE] + [t for t in (reg.get("queue") or [])
                                                        if isinstance(t, str) and t and t != CRASH_RESUME_NUDGE]
                 write_reg(self.state_dir, sid, reg)
+            append_machine_cut(self.state_dir, sid, "crash")   # romp's cut, romp's resume — never a user stop
             self._ensure(sid)
         except Exception:
             self._log("session %s: crash-resume FAILED (turn left cut for the next kernel restart): %s"

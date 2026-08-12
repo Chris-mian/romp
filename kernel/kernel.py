@@ -190,7 +190,45 @@ def _interrupt_cause(nxt_atom):
     return None
 
 
-def _machine_cut_cause(users, i):
+_machine_cut_cache = {}   # str(path) -> ((mtime_ns, size), (t, cause))
+
+
+def _last_machine_cut(sid):
+    """(t, cause) of the newest machineCut marker in states/<sid>.jsonl — the backend's own record that
+    ROMP cut this session's turn and queued a resume notice (sdk_backend.append_machine_cut) — or (0, "").
+    The authoritative answer to "whose stop was this?", written by the component that did the cutting,
+    instead of inferred from the transcript.
+
+    mtime+size cached (one stat per call while the file is quiet, the _jerr_cache idiom): the callers run
+    per session on EVERY push, and these files reach ~1MB / 4k lines on a long-lived session, so an
+    uncached scan would add megabytes of reading per push cycle to a loop that is already CPU-bound."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return 0.0, ""
+    hit = _machine_cut_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    t, cause = 0.0, ""
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"machineCut"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(o, dict) and o.get("machineCut"):
+                    t, cause = float(o.get("t") or 0), str(o["machineCut"])
+    except OSError:
+        return 0.0, ""
+    _machine_cut_cache[str(p)] = (key, (t, cause))
+    return t, cause
+
+
+def _machine_cut_cause(users, i, cut_t=0.0, cut_cause=""):
     """The machine-cut cause for the interrupt record at users[i], or None for a genuine user stop.
     Scans FORWARD for romp's resume notice instead of trusting users[i + 1] alone (the user
     2026-08-10): the restart that cuts a turn kills its background tasks too, and their
@@ -201,29 +239,44 @@ def _machine_cut_cause(users, i):
     romp-injected marker, so they always author 'romp' — and a task notification whose output tail
     happens to QUOTE a signature never reads as a notice). The scan stops at the first genuine human
     message or the next interrupt record: past either, a notice belongs to a LATER cut, never this
-    one. Everything else (system notifications, peers, sdk, tool_result-only) is wedge — read past."""
+    one. Everything else (system notifications, peers, sdk, tool_result-only) is wedge — read past.
+
+    `cut_t`/`cut_cause` (from _last_machine_cut) settle the case the scan CANNOT: the notice does not
+    exist yet. The stop record hits disk the instant the turn is cut; romp's notice only lands once the
+    resumed CLI writes it, seconds later — and a tick inside that window saw a bare trailing stop and
+    blamed the user, 30 times in 30 hours on the live machine (the user 2026-08-12). So when the scan
+    runs off the end INCONCLUSIVE — no notice, and no human message or later interrupt to prove the stop
+    was theirs — defer to the backend's stamp: an interrupt at or before the moment romp queued a resume
+    IS that cut. Ordering alone makes this exact (the cut always precedes its resume), so a genuine stop
+    made later is always past the stamp and still reads as the user's; no window, no expiry. A scan that
+    reaches a terminator never consults the stamp: there the transcript already answered."""
     for nxt in users[i + 1:]:
         if nxt.get("author") == "romp":
             cause = _interrupt_cause(nxt)
             if cause:
                 return cause
         elif em.is_interrupt_record(nxt) or nxt.get("author") == "human":
-            return None
+            return None                                  # the transcript settled it — the stamp says nothing new
+    if cut_cause and (users[i].get("t") or 0) <= cut_t:   # notice not on disk yet → the backend's own record
+        return cut_cause
     return None
 
 
-def _interrupt_marks(turns):
+def _interrupt_marks(turns, sid=""):
     """(newest genuine user STOP, newest genuine human PROMPT) on this thread, in transcript time —
     the one place the two are tallied, so the predicate below and the interrupt block's EVIDENCE stamp
     read the same events. A MACHINE cut (kernel restart / process death) mints the same stop record but
     is romp's own, so it never counts as a stop (_machine_cut_cause, via the resume notice that follows
-    it). The interrupt record itself authors 'human', so it's classified FIRST."""
+    it, or — before that notice reaches disk — the backend's machineCut stamp). The interrupt record
+    itself authors 'human', so it's classified FIRST. `sid` is optional only so the pure-atom callers in
+    the tests stay pure: pass it wherever it is known, or a cut still on its way to disk reads as a stop."""
     users = [a for turn in turns for a in (turn.get("atoms") or []) if a.get("type") == "user"]
+    cut_t, cut_cause = _last_machine_cut(sid) if sid else (0.0, "")
     last_intr = last_human = 0
     for i, a in enumerate(users):
         t = a.get("t", 0)
         if em.is_interrupt_record(a):
-            if _machine_cut_cause(users, i):
+            if _machine_cut_cause(users, i, cut_t, cut_cause):
                 continue                                 # machine cut → romp re-engaged, not the user
             last_intr = max(last_intr, t)
         elif a.get("author") == "human":
@@ -231,7 +284,7 @@ def _interrupt_marks(turns):
     return last_intr, last_human
 
 
-def _interrupt_suppresses_nudge(turns):
+def _interrupt_suppresses_nudge(turns, sid=""):
     """True while the session's most recent USER action is a GENUINE user INTERRUPT: the user stopped
     the agent and hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until
     their NEXT message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never
@@ -245,8 +298,9 @@ def _interrupt_suppresses_nudge(turns):
     work, so it must never suppress the nudge nor paint "you stopped this — romp won't follow up" (the
     user 2026-07-14: restart-cut SDK sessions sat inertly in Working wearing that false badge, and
     auto-nudge stayed off so a genuine RE-stall was never caught). Such a cut is identified by the romp
-    resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally."""
-    last_intr, last_human = _interrupt_marks(turns)
+    resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally —
+    or, in the window before that notice reaches disk, by the backend's machineCut stamp (pass `sid`)."""
+    last_intr, last_human = _interrupt_marks(turns, sid)
     return last_intr > last_human
 
 
@@ -2461,7 +2515,7 @@ def _interrupt_block_tick(now, tmux):
             turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         except Exception:
             continue
-        stop_t, human_t = _interrupt_marks(turns)        # the two EVENTS this tick reasons about — and the
+        stop_t, human_t = _interrupt_marks(turns, sid)   # the two EVENTS this tick reasons about — and the
         #                                                  evidence times both writes are stamped with
         block_it = bool(turns) and not _session_working(turns) and stop_t > human_t
         if block_it:                                     # a GENUINE user stop → block the focus goal on them,
@@ -3390,7 +3444,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     lt = turns[-1]
     if _session_working(turns):                      # still actively working (event model) → not orphaned
         return False
-    if _interrupt_suppresses_nudge(turns):           # the user's LAST action was a GENUINE interrupt → they're
+    if _interrupt_suppresses_nudge(turns, sid):      # the user's LAST action was a GENUINE interrupt → they're
         return False                                # driving; suppressed until their NEXT message. The stopped
         #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
         #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
@@ -13968,7 +14022,7 @@ def build_feed(now, tmux=None):
         # the working card wears an "interrupted" badge saying so (the user 2026-07-05). Cache-only,
         # like the working dot: the badge snaps in once _warm_fleet_bg fills the parse.
         try:
-            sess_interrupted = bool(ps) and not who_working and _interrupt_suppresses_nudge(ps["turns"])
+            sess_interrupted = bool(ps) and not who_working and _interrupt_suppresses_nudge(ps["turns"], fsid)
         except Exception:
             sess_interrupted = False
         # A user interrupt still IN FLIGHT (dispatched, not yet settled): the card wears a steady
