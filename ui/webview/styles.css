@@ -1823,9 +1823,13 @@ body.picker-lifted::before { content: ""; position: absolute; inset: 0; backgrou
 body.picker-lifted.pane-gone > * { visibility: hidden; }
 body.picker-lifted.pane-gone > #picker { visibility: visible; }
 body.picker-lifted.pane-gone::before { display: none; }
-/* centred, like every other modal. Top-aligned made sense when this filled the screen and the list
-   wanted every pixel of height; as a dialog over the dashboard it should sit in the middle. */
-body.picker-lifted > #picker { align-items: center; padding: 24px 16px; }
+/* TOP-ANCHORED, like the base overlay rule and the command palette (the user 2026-08-12): vertical
+   centering re-centered the whole card every time typing re-filtered the resume list — the create
+   controls at the top slid up and down exactly while being used. With the top pinned, the card only
+   ever grows or collapses at its BOTTOM edge, which since the 2026-08-12 reorder is the list's edge:
+   the controls hold perfectly still. (Same 56px anchor as the un-lifted rule, so the two contexts
+   agree; kb-tight below keeps its tighter fold.) */
+body.picker-lifted > #picker { align-items: flex-start; padding: 56px 16px 16px; }
 /* SHORT WINDOW (the on-screen keyboard is up — the shell's --app-h sizing turns that into this
    window's own height — or a genuinely small screen; render.ts toggles kb-tight on resize): the
    ADVANCED create rows fold so the essentials — name box, session list, actions — share the height

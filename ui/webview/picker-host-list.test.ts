@@ -87,8 +87,10 @@ test("the page keeps painting in place while the shell has it lifted", () => {
   assert.match(STYLES, /body\.picker-lifted\.pane-gone > #picker \{ visibility: visible; \}/);
   // visibility, not display: nothing reflows, so the chat is exactly where it was when the picker closes
   assert.doesNotMatch(STYLES, /body\.picker-lifted\.pane-gone > \* \{ display: none/);
-  // …and it centres like a modal instead of hugging the top edge
-  assert.match(STYLES, /body\.picker-lifted > #picker \{ align-items: center;/);
+  // …and it TOP-ANCHORS (the user 2026-08-12, superseding the 2026-08-08 centering): vertical
+  // centering re-centered the card every time typing re-filtered the resume list, sliding the create
+  // controls mid-use. Pinned top → the card only grows/collapses at its bottom edge, the list's edge.
+  assert.match(STYLES, /body\.picker-lifted > #picker \{ align-items: flex-start; padding: 56px 16px 16px; \}/);
   // two thirds of the window: the list is what you came to read
   assert.match(STYLES, /width: min\(66vw, 900px\); min-width: min\(560px, 96vw\);/);
 });
