@@ -69,10 +69,10 @@ var GEAR_HTML =
   '<option value=sdk>SDK</option><option value=tmux>tmux (terminal)</option>' +
   '</select></span></div>' +
   '<div class=rs-sec>Judges</div>' +
-  "<div class='rs-row rs-jrow'><b>Triage model</b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, distiller, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart.</span><select id=rs-judgemodel></select></div>" +
-  "<div class='rs-row rs-jrow'><b>Triage effort</b><span class=rs-sub>Thinking effort for the triage judges. Default = no effort flag (the judges' standard behavior). Not every model accepts every level.</span><select id=rs-judgeeffort></select></div>" +
-  "<div class='rs-row rs-jrow'><b>Indexing model</b><span class=rs-sub>The model the indexing judges use — captioner + archiver (high-volume, low-stakes summarization). Haiku by default for cost.</span><select id=rs-indexmodel></select></div>" +
-  "<div class='rs-row rs-jrow'><b>Indexing effort</b><span class=rs-sub>Thinking effort for the indexing judges. Default = none (indexing runs with thinking disabled as a cost lever; leave Default unless you know you want it).</span><select id=rs-indexeffort></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Triage model</b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, distiller, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart. A pick here follows to every connected machine's kernel.</span><select id=rs-judgemodel></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Triage effort</b><span class=rs-sub>Thinking effort for the triage judges. Default = no effort flag (the judges' standard behavior). Not every model accepts every level. Follows to every connected machine's kernel.</span><select id=rs-judgeeffort></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Indexing model</b><span class=rs-sub>The model the indexing judges use — captioner + archiver (high-volume, low-stakes summarization). Haiku by default for cost. Follows to every connected machine's kernel.</span><select id=rs-indexmodel></select></div>" +
+  "<div class='rs-row rs-jrow'><b>Indexing effort</b><span class=rs-sub>Thinking effort for the indexing judges. Default = none (indexing runs with thinking disabled as a cost lever; leave Default unless you know you want it). Follows to every connected machine's kernel.</span><select id=rs-indexeffort></select></div>" +
   '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
   '<div class=rs-sec>Chat</div>' +
   '<label class=rs-row><input type=checkbox id=rs-compact>' +

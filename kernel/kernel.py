@@ -16910,6 +16910,48 @@ def _set_judge_effort(v): _set_judge_state("judge-effort", v, _EFFORT_VALUES, al
 def _set_index_effort(v): _set_judge_state("index-effort", v, _EFFORT_VALUES, allow_empty=True)
 
 
+# The four judge-tier settings PROPAGATE: a pick made here follows to every linked kernel (the user
+# 2026-08-12, who set the triage model to a new family and wanted all machines on it — per-machine
+# judge tiers are a surprise, not a feature). The gear's WS ops apply locally and then fan out
+# (_propagate_judge_settings) to each up remote over its tunnel + its own serve token —
+# mirror_trust's transport and trust boundary: only the human holding the tokens can set another
+# machine's judges. The receiving kernel's /judge-settings route applies WITHOUT re-propagating, so
+# the machines converge in one hop from the machine the user touched and can never ping-pong. A
+# machine reachable only through a relay holds no admin path from here; it adopts when the pick is
+# made from (or forwarded via) the machine that owns its tunnel.
+
+_JUDGE_SETTING_FIELDS = (("judgeModel", _set_judge_model), ("indexModel", _set_index_model),
+                         ("judgeEffort", _set_judge_effort), ("indexEffort", _set_index_effort))
+
+
+def _apply_judge_settings(body):
+    """Apply any of the four judge-tier fields in `body` through the validated setters (garbage
+    never reaches the state files or `claude --model`), and answer with the CURRENT four values —
+    the ack shows what actually landed, since an invalid value is deliberately ignored."""
+    for key, setter in _JUDGE_SETTING_FIELDS:
+        if isinstance(body, dict) and key in body:
+            setter(str(body.get(key) or ""))
+    return {"ok": True, "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),
+            "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort()}
+
+
+def _propagate_judge_settings(body):
+    """Fan `body` (already applied locally) to every up linked kernel's /judge-settings — one call
+    per machine over its tunnel + its own token. Callers run this on a daemon thread: the pick
+    itself never blocks on the machines. A miss is LOUD (a machine that missed the pick would
+    silently run its judges on another model forever) but not retried — the next change re-fans,
+    and /judge-settings with {"propagate": true} re-syncs on demand."""
+    with _remotes_lock:
+        rows = [dict(r) for r in _remotes.values()
+                if r.get("status") == "up" and r.get("local_port") and r.get("token")]
+    for r in rows:
+        st, _j, err = _remote_kernel_call(r, "POST", "/judge-settings", body, timeout=8)
+        if err or st != 200:
+            sys.stderr.write("judge-settings: %s did not take the pick (%s) — its judges keep "
+                             "their old model/effort until the next change\n"
+                             % (r.get("host"), err or ("HTTP %s" % st)))
+
+
 def _reply(c, msg):
     """Send a one-shot reply to ONE client (no per-key dedup; for request/response like imgData)."""
     try:
@@ -22213,6 +22255,22 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 ok, detail = _start_remote(host)
                 return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
+            if u.path == "/judge-settings":
+                # The judge-tier settings surface a peer kernel drives when a pick propagates —
+                # mirror_trust's trust boundary: only the human's own tunnels + tokens reach here.
+                # Applies via the validated setters, answers with the CURRENT four values.
+                # {"propagate": true} additionally fans the pick out from THIS machine (the manual /
+                # scripted re-sync); forwarded bodies never carry it, so propagation is one hop and
+                # can never ping-pong around the mesh.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                res = _apply_judge_settings(body if isinstance(body, dict) else {})
+                if isinstance(body, dict) and body.get("propagate"):
+                    fwd = {k: v for k, v in body.items() if k != "propagate"}
+                    threading.Thread(target=_propagate_judge_settings, args=(fwd,), daemon=True).start()
+                return self._send(200, json.dumps(res), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -22686,12 +22744,20 @@ class Handler(BaseHTTPRequestHandler):
             _set_palette(str(msg["name"]))     # gear "Session colors" → remap the fleet onto the chosen set
         elif msg and msg.get("type") == "setJudgeModel" and msg.get("model"):
             _set_judge_model(str(msg["model"]))     # gear "Triage model" dropdown → the judge uses it next pass
+            threading.Thread(target=_propagate_judge_settings,   # …and every linked kernel's judges with it
+                             args=({"judgeModel": str(msg["model"])},), daemon=True).start()
         elif msg and msg.get("type") == "setIndexModel" and msg.get("model"):
             _set_index_model(str(msg["model"]))     # gear "Indexing model" dropdown
+            threading.Thread(target=_propagate_judge_settings,
+                             args=({"indexModel": str(msg["model"])},), daemon=True).start()
         elif msg and msg.get("type") == "setJudgeEffort":
             _set_judge_effort(str(msg.get("effort") or ""))   # gear "Triage effort" ("" = default/none)
+            threading.Thread(target=_propagate_judge_settings,
+                             args=({"judgeEffort": str(msg.get("effort") or "")},), daemon=True).start()
         elif msg and msg.get("type") == "setIndexEffort":
             _set_index_effort(str(msg.get("effort") or ""))   # gear "Indexing effort"
+            threading.Thread(target=_propagate_judge_settings,
+                             args=({"indexEffort": str(msg.get("effort") or "")},), daemon=True).start()
 
     def _ws(self):
         key = self.headers.get("Sec-WebSocket-Key")
