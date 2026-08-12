@@ -6972,10 +6972,13 @@ const MODE_CHOICES: { label: string; value: string }[] = [
 // Fast mode (the CLI's /fast — Opus-only research preview): a two-state toggle offered as the same
 // dropdown shape as the other badges. The badge exists only when the session REPORTS a fast state
 // (st.fast, from the SDK init's fast_mode_state) — a session that can't run it, or a tmux session
-// whose statusline doesn't publish it yet, shows no dead control.
+// whose statusline doesn't publish it yet, shows no dead control. The options speak the BADGE's two
+// words — Fast/Slow, never On/Off (the user 2026-08-11: a badge reading "Slow" opened a menu of
+// "On"/"Off", two vocabularies for one toggle; prettyFast is the one wording, the values stay the
+// wire's on/off).
 const FAST_CHOICES: { label: string; value: string }[] = [
-  { label: "On", value: "on" },
-  { label: "Off", value: "off" },
+  { label: "Fast", value: "on" },
+  { label: "Slow", value: "off" },
 ];
 // Per-session billing (the user 2026-08-08) — the Claude login vs the API key the manager's
 // environment carries — is no longer a statusline badge: the SWITCHING control lives in the tab's
