@@ -34,3 +34,15 @@ test("folded, the box hugs the short viewport instead of centering into the keyb
   assert.match(CSS, /body\.picker-lifted > #picker\.kb-tight \{ align-items: flex-start; padding: 12px 16px; \}/);
   assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-box \{ max-height: calc\(100vh - 24px\); \}/);
 });
+
+test("the name box opts the phone keyboard out of predictions and autofill", () => {
+  // the keyboard's prediction bar had learned the user's own session names and offered them over
+  // this box (the user 2026-08-12, Samsung keyboard) — redundant next to the picker's real list,
+  // and mistakable for romp UI. These are the standard opt-out hints; a keyboard may still ignore
+  // them (its predictive-text setting is the only sure switch), so the code comment must keep
+  // saying so rather than claiming the bar is gone.
+  assert.match(RENDER, /search\.setAttribute\("autocomplete", "off"\)/);
+  assert.match(RENDER, /search\.autocapitalize = "none"/);
+  assert.match(RENDER, /search\.setAttribute\("autocorrect", "off"\)/);
+  assert.match(RENDER, /its predictive-text setting is the only sure/);
+});
