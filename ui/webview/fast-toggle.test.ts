@@ -36,9 +36,12 @@ test("the badge label is one word, and the word carries the state: Fast on, Slow
   assert.doesNotMatch(pf, /Fast on|Fast off/);
 });
 
-test("the picker offers On/Off and posts setFast; ON wears the CLI's fast orange", () => {
-  assert.match(RENDER, /\{ label: "On", value: "on" \}/);
-  assert.match(RENDER, /\{ label: "Off", value: "off" \}/);
+test("the picker speaks the badge's words — Fast/Slow, never On/Off — and posts setFast", () => {
+  // one vocabulary for one toggle (the user 2026-08-11: a badge reading "Slow" opened a menu of
+  // "On"/"Off"); the VALUES stay the wire's on/off — only the labels wear the badge's words
+  assert.match(RENDER, /\{ label: "Fast", value: "on" \}/);
+  assert.match(RENDER, /\{ label: "Slow", value: "off" \}/);
+  assert.doesNotMatch(RENDER, /\{ label: "On", value: "on" \}/);
   assert.match(RENDER, /fast: FAST_CHOICES/);
   assert.match(RENDER, /kind === "fast" \? "setFast"/);                      // the pick posts the op
   assert.match(RENDER, /"on" \? "var\(--fast\)" : ""/);                      // ON tint, off/cooldown default
