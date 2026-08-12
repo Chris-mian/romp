@@ -29,6 +29,11 @@
 #romp-strip[data-tier="2"] .ru-pct, #romp-strip[data-tier="3"] .ru-pct { display: none; }
 #romp-strip[data-tier="3"] .ru-name { display: none; }
 #romp-strip[data-tier="2"] #strip-usage, #romp-strip[data-tier="3"] #strip-usage { gap: 10px; }
+/* a TEXT-ONLY row (strip.ts: no tracks — a spend window with no budget carries dollars, no fill) says
+   nothing once tier 2 hides the readout, its only content: the whole row drops out instead of holding
+   ghost space open (the user 2026-08-11 — three invisible rows drew a fake dead gap mid-strip), and
+   the reclaimed width lets fit() settle on a more legible tier */
+#romp-strip[data-tier="2"] .ru-textonly, #romp-strip[data-tier="3"] .ru-textonly { display: none; }
 #strip-gear { flex: 0 0 auto; background: transparent; border: 1px solid transparent; border-radius: 5px;
   color: var(--vscode-descriptionForeground, #9aa0a6); font-size: 15px; line-height: 1; cursor: pointer;
   padding: 2px 6px; opacity: .8; }

@@ -292,7 +292,13 @@ export function initStrip(openSettings: () => void, post?: (m: Record<string, un
         const pct = document.createElement("span");
         pct.className = "ru-pct";
         pct.textContent = w.readout ?? `${w.pct}%`;
-        box.append(name, bars, pct);
+        // A row with no tracks (a spend window with no budget: dollars only, no honest fill) is
+        // TEXT-ONLY. Appending its empty bar slot anyway held 54px of nothing open — and once the
+        // narrow tiers hid the readout too, the row was pure ghost space: a wide feed pane showed a
+        // bare "?", naked bars, and a fake dead gap (the user 2026-08-11). No empty slot, and the
+        // class lets the tier ladder drop the whole row once its text is gone (strip.css).
+        if (bars.childElementCount) box.append(name, bars, pct);
+        else { box.classList.add("ru-textonly"); box.append(name, pct); }
       }
       usageWrap.appendChild(box);
     }

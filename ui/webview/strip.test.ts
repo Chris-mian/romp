@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { usageColor, fmtAgo, fmtReset, usageWindows, STRIP_PANES } from "./strip";
+import { usageColor, fmtAgo, fmtReset, usageWindows, spendWindows, STRIP_PANES } from "./strip";
 
 test("usageColor mirrors the rail's green/amber/red ramp", () => {
   assert.equal(usageColor(0), "#54B204");
@@ -145,6 +145,28 @@ test("both bundles init the strip; the web pages never opt in", () => {
   assert.ok(read("feed.ts").includes("initStrip("), "feed bundle must init the strip");
   const kernel = fs.readFileSync(path.join(ROOT, "bin", "romp-kernel"), "utf8");
   assert.ok(!kernel.includes("__rompShowStrip"), "the web shell keeps its own rail — no strip opt-in kernel-side");
+});
+
+test("a spend window with no budget has no honest fraction — dollars in the readout, no fill", () => {
+  const ws = spendWindows({ spend: { fiveHour: { usd: 12.34, tok: 3_456_000, turns: 5 } } }, 100_000);
+  assert.equal(ws.length, 1);
+  assert.equal(ws[0].pct, null, "no budget → no fraction to fill");
+  assert.equal(ws[0].elapsedPct, null, "a rolling window has no reset boundary to pace against");
+  assert.equal(ws[0].readout, "$12 · 3.5M tok");
+});
+
+test("a readout-only row holds no empty bar slot, and drops out with its text (the user 2026-08-11)", () => {
+  // A wide feed pane showed a bare "?", naked unlabeled bars, and a fake dead gap mid-strip: six
+  // windows forced the ladder to tier 3, where the three budget-less spend rows — no tracks, readout
+  // hidden — each kept an invisible 54px bar slot open. A row with no tracks appends no bars element
+  // at all, and .ru-textonly lets tiers 2/3 (which hide .ru-pct, the row's only content) drop the
+  // whole row, so the reclaimed width lets fit() settle on a legible tier instead.
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  assert.match(src, /if \(bars\.childElementCount\) box\.append\(name, bars, pct\);/);
+  assert.match(src, /else \{ box\.classList\.add\("ru-textonly"\); box\.append\(name, pct\); \}/);
+  const css = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.css"), "utf8");
+  assert.match(css, /#romp-strip\[data-tier="2"\] \.ru-textonly, #romp-strip\[data-tier="3"\] \.ru-textonly \{ display: none; \}/);
 });
 
 test("an unknown window draws NO bars — just a '?' in their slot (the user 2026-07-31, round 2)", () => {
