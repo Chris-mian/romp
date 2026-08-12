@@ -1,12 +1,13 @@
-// The new-session directory field (the user 2026-07-28): what the status line says about a typed path,
-// how the keyboard walks the folder list, and how the "that folder isn't there" dialog reads. EXECUTES
-// ./dir-complete; the picker plumbing (the request/reply pacing, the create fork, the host routing) is
-// source-pinned against render.ts below.
+// The new-session directory field (the user 2026-07-28): what the verdict says about a typed path
+// (the full sentence, and the compact form shown inside the field), how the keyboard walks the folder
+// list, and how the "that folder isn't there" dialog reads. EXECUTES ./dir-complete; the picker
+// plumbing (the request/reply pacing, the create fork, the host routing) is source-pinned against
+// render.ts below.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
+import { dirStatusLine, dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8")
   + fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
@@ -53,6 +54,60 @@ test("an unreachable path says so rather than offering to create it", () => {
 
 test("no answer yet says nothing at all", () => {
   assert.deepEqual(dirStatusLine(null), { text: "", cls: "" });
+});
+
+// ── the compact in-box form (the user 2026-08-11): the verdict sits inside the field, so it never
+// repeats the path sitting right beside it — unless the kernel's expansion ADDS something — and the
+// full sentence (dirStatusLine, wording history above) rides on hover as `title`.
+test("an existing folder's hint is a bare ✓ when the kernel's path IS what was typed", () => {
+  const said = dirStatusHint(st({}));
+  assert.deepEqual(said, { text: "✓", cls: "", title: "✓ ~/GitRepos/api" });
+  assert.equal(dirStatusHint(st({ value: "~/GitRepos/api/" })).text, "✓",
+    "a trailing slash is not an expansion worth echoing");
+});
+
+test("…and shows the expansion when ~ / $VARs resolved to something new", () => {
+  assert.equal(dirStatusHint(st({ value: "$REPOS/api" })).text, "✓ ~/GitRepos/api");
+});
+
+test("a blank field's hint names the default that blank stands for", () => {
+  const said = dirStatusHint(st({ value: "", isDefault: true }));
+  assert.equal(said.text, "~/GitRepos/api (the default)");
+  assert.equal(said.cls, "");
+});
+
+test("a missing folder's hint is the offer, with the named-path sentence a hover away", () => {
+  const said = dirStatusHint(st({ exists: false, isDir: false, canCreate: true, missing: 1 }));
+  assert.equal(said.cls, "warn");
+  assert.equal(said.text, "will be created");
+  assert.match(said.title, /Starting will create ~\/GitRepos\/api$/,
+    "the 2026-07-29 'which folder, where' answer still exists — on hover");
+  const deep = dirStatusHint(st({ exists: false, isDir: false, canCreate: true, missing: 3 }));
+  assert.equal(deep.text, "will be created (3 folders)");
+});
+
+test("bad paths read as verdicts, not path echoes — the path is already in the box", () => {
+  const file = dirStatusHint(st({ isDir: false, isFile: true, canCreate: false }));
+  assert.deepEqual([file.text, file.cls], ["a file, not a folder", "bad"]);
+  const gone = dirStatusHint(st({ exists: false, isDir: false, canCreate: false, nearest: "" }));
+  assert.deepEqual([gone.text, gone.cls], ["invalid path", "bad"]);
+});
+
+test("no answer yet: the hint says nothing and carries no stale title", () => {
+  assert.deepEqual(dirStatusHint(null), { text: "", cls: "", title: "" });
+});
+
+test("the hint lives IN the field — no second row under it", () => {
+  assert.match(RENDER, /el\("span", "picker-dir-hint"\); dirHint\.id = "picker-dir-hint"/);
+  assert.match(RENDER, /hint\.title = said\.title;/, "the full sentence rides on hover");
+  // the typed text must stop where the hint starts: the input's right padding is measured off the
+  // rendered hint, never guessed
+  assert.match(RENDER, /input\.style\.paddingRight = said\.text && w \? w \+ 16 \+ "px" : ""/);
+  // a press on the hint belongs to the input underneath
+  assert.match(RENDER, /dirHint\.addEventListener\("mousedown"/);
+  assert.doesNotMatch(RENDER, /picker-dir-status/, "the old status row is gone, not merely hidden");
+  assert.match(STYLES, /\.picker-dir-hint \{/);
+  assert.doesNotMatch(STYLES, /picker-dir-status/);
 });
 
 test("walking the list passes through 'nothing chosen' at both ends", () => {
@@ -128,8 +183,8 @@ test("opening the picker asks about the path but does NOT drop a folder list ove
 });
 
 test("the field itself goes red for a path that cannot work, amber for one that isn't there yet", () => {
-  assert.match(RENDER, /box\.classList\.toggle\("bad", said\.cls === "bad"\)/);
-  assert.match(RENDER, /box\.classList\.toggle\("warn", said\.cls === "warn"\)/);
+  assert.match(RENDER, /input\.classList\.toggle\("bad", said\.cls === "bad"\)/);
+  assert.match(RENDER, /input\.classList\.toggle\("warn", said\.cls === "warn"\)/);
   assert.match(STYLES, /\.picker-dir-input\.bad \{ border-color: #e5484d;/);
   assert.match(STYLES, /\.picker-dir-input\.warn \{ border-color: #e0a030; \}/);
 });
