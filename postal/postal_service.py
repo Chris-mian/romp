@@ -1092,11 +1092,23 @@ class Handler(BaseHTTPRequestHandler):
                 # Peer-bus fleet view (DISPLAY only — all_agents() itself stays local so the delivery
                 # paths can never mistake a peer entry for a local maildir): each peer's last-gossiped
                 # presence, with honest staleness. Address cross-host with 'host:name' on collisions.
+                # Gossip that duplicates a direct peer's row is folded (_via_duplicate), and a session
+                # already listed never lists again under a second path — the doubled '[remote]' rows
+                # (the user 2026-08-12).
                 now = time.time()
+                direct_bus = _direct_bus_ids()
+                listed = {a["id"] for a in agents if a.get("id")}
                 for host, st in PEER_STATE.items():
                     age = int(now - (st.get("seenAt") or 0))
                     for pa in st.get("presence") or []:
-                        agents.append({"name": pa.get("name") or "?", "id": pa.get("id") or "",
+                        if _via_duplicate(pa, direct_bus):
+                            continue
+                        sid = pa.get("id") or ""
+                        if sid and sid in listed:
+                            continue
+                        if sid:
+                            listed.add(sid)
+                        agents.append({"name": pa.get("name") or "?", "id": sid,
                                        "remote": True, "peer": host, "seenAgo": age})
             return self._send({"agents": agents, "me": me})
         if u.path == "/sent":
@@ -1463,19 +1475,49 @@ def peer_update(data):
     _peer_threads_reconcile(host)                    # an up peer gets its dialer; a down one is woken to exit
     return {"ok": True, "up": sum(1 for p in PEERS.values() if p["up"])}, 200
 
+def _direct_bus_ids():
+    """The bus ids of every DIRECTLY-peered bus (a dialable PEERS row): the identity set the
+    via-row consumers test gossip against. The id — proven by the peer exchange itself — is what
+    "same box" means; a NICKNAME can't say it, because the same machine wears different ssh
+    aliases on different hosts (the user 2026-08-12, whose directly connected box was also listed
+    "reachable via relay" under the hub's name for it, and whose mail could hop the hub)."""
+    out = set()
+    for h, st in PEER_STATE.items():
+        if (PEERS.get(h) or {}).get("port") and st.get("busId"):
+            out.add(st["busId"])
+    return out
+
+
+def _via_duplicate(pa, direct_bus):
+    """True when a GOSSIPED presence row (via set) names a box that is also a direct peer here —
+    by bus id when the hub gossips it (viaBus, the nickname-proof identity), by name for a hub
+    that predates the field. Duplicates are folded everywhere gossip is consumed: display
+    (via_reach), addressing (peer_route), and the agent list — a direct link always wins over a
+    relay hop, and never renders beside it."""
+    far = pa.get("via")
+    if not far:
+        return False
+    if (PEERS.get(far) or {}).get("port"):
+        return True
+    return bool(pa.get("viaBus")) and pa.get("viaBus") in direct_bus
+
+
 def via_reach():
     """Hosts reachable only THROUGH a directly-peered hub: the far spokes whose sessions a hub
     gossips with `via` labels (fleet_presence — one hop, never re-gossiped). One row per far host:
     {"host", "via", "agents", "seenAgo", "trust"} — the popover's "reachable via relay" section, and
-    the hook a trust-by-origin tier hangs on even though no tunnel to that host exists here."""
+    the hook a trust-by-origin tier hangs on even though no tunnel to that host exists here.
+    A spoke we ALSO hold a direct link to is folded (_via_duplicate: bus-id identity, so a nickname
+    difference can't sneak the duplicate back in)."""
     now, out = int(time.time()), {}
+    direct_bus = _direct_bus_ids()
     for hub, st in PEER_STATE.items():
         age = int(now - (st.get("seenAt") or 0))
         for pa in st.get("presence") or []:
             far = pa.get("via")
             if not far:      # a hub's exchange never gossips OUR sessions back (fleet_presence
                 continue     # excludes the asking host), so no self-row can appear here
-            if (PEERS.get(far) or {}).get("port"):    # directly peered here → its own row, not via
+            if _via_duplicate(pa, direct_bus):        # directly peered here → its own row, not via
                 continue
             e = out.setdefault(far, {"host": far, "via": hub, "agents": 0, "seenAgo": age,
                                      "trust": (PEERS.get(far) or {}).get("trust") or "directed"})
@@ -1819,7 +1861,10 @@ def fleet_presence(exclude_host):
     """Presence for an exchange payload: local agents + ONE hop of gossip from our other peers, each
     labeled `via` (plans/postal-peer-buses.md 3b) — so a spoke can address the far spoke through the
     hub. A via-entry is never re-gossiped (one-hop reach only; a topology needing two hops should
-    check the second spoke in to the hub directly)."""
+    check the second spoke in to the hub directly). Each via row also carries the far bus's own id
+    (`viaBus`): the receiver folds gossip about a box it ALREADY peers with directly, and the id is
+    the identity that survives nickname drift — the same machine wears different ssh aliases on
+    different hosts, so a name can't say "same box" (the user 2026-08-12; see _via_duplicate)."""
     out = list(local_agents())
     for h, st in PEER_STATE.items():
         if h == exclude_host:
@@ -1827,7 +1872,7 @@ def fleet_presence(exclude_host):
         for pa in st.get("presence") or []:
             if pa.get("via"):
                 continue
-            out.append(dict(pa, via=h))
+            out.append(dict(pa, via=h, viaBus=st.get("busId") or ""))
     return out
 
 # ── quarantine (per-host trust model) ───────────────────────────────────────────
@@ -2162,17 +2207,34 @@ def peer_exchange_apply(host, req_sent, resp):
 
 def peer_route(to):
     """Where a non-local name lives: (host, agent) for exactly ONE peer match; (None, candidates) on
-    ambiguity; (None, []) when unknown. Accepts the explicit 'host:name' form to break ties."""
+    ambiguity; (None, []) when unknown. Accepts the explicit 'host:name' form to break ties.
+    Gossiped duplicates are folded BEFORE the ambiguity count: a session on a directly-peered box
+    also arrives via a hub's gossip (under the hub's nickname for that box), and counting both read
+    as two sessions — a false ambiguity — or, picked, would relay mail through the hub a direct
+    link already covers (the user 2026-08-12). Same session seen from two hubs folds too (one id,
+    one candidate); the direct row always wins."""
     want_host = None
     if ":" in to:
         want_host, to = to.split(":", 1)
-    hits = []
+    direct_bus = _direct_bus_ids()
+    hits, seen_ids = [], {}
     for host, st in PEER_STATE.items():
         if want_host and host != want_host:
             continue
         for a in st.get("presence") or []:
-            if a.get("name") == to:
-                hits.append((host, a))
+            if a.get("name") != to or _via_duplicate(a, direct_bus):
+                continue
+            sid = a.get("id") or ""
+            if sid and sid in seen_ids:                # one session, two gossip paths → one candidate;
+                if a.get("via") and not hits[seen_ids[sid]][1].get("via"):
+                    continue                           # …and a direct row beats a relayed one
+                if not a.get("via") and hits[seen_ids[sid]][1].get("via"):
+                    hits[seen_ids[sid]] = (host, a)
+                    continue
+                continue
+            if sid:
+                seen_ids[sid] = len(hits)
+            hits.append((host, a))
     if len(hits) == 1:
         return hits[0]
     return None, hits
