@@ -7,6 +7,7 @@
 // future draw()-level crash trips.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 
@@ -205,6 +206,56 @@ test("draw() also survives with an active hover set (atom-id highlight path)", (
   panel._hover = { ids: ["S1:1:aa#w", "S2:1:cc#p"] };
   assert.doesNotThrow(() => panel.draw(), "draw() must not throw while a hover highlight is active");
   assert.equal(panel._vis.length, 2);
+});
+
+// "Show active sessions only" (the user 2026-08-12, default ON): a lane draws only when the session
+// has activity intersecting the VISIBLE window — a live-but-idle session thins out (its chat tab is
+// untouched) and returns when zoom/pan reaches a range where it worked. Toggled off (the gear), the
+// old rule stands: live lanes always show. Recomputed per draw off the window — pure view state.
+test("an idle live lane thins out under active-only, and returns when the toggle is off", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  // beta's only activity is ~25h before the window — with gap-collapse off it is genuinely off-screen
+  const old = data.turns.S2[0];
+  data.turns.S2 = [Object.assign({}, old, { start: data.now - 90000, end: data.now - 89000 })];
+  panel._collapseGaps = false;   // a collapsed axis SHOWS that old period on screen — defeat it for determinism
+  panel.data = data;
+  panel.draw();
+  assert.deepEqual(panel._vis.map((s: any) => s.id), ["S1"], "the idle live lane is hidden by default");
+  panel._activeOnly = false;     // the gear toggle writes romp:settings.activeOnly; the storage event re-reads it
+  panel.draw();
+  assert.equal(panel._vis.length, 2, "toggled off, a live-but-idle session keeps its lane");
+  // …and zooming out to cover the old work brings the lane back WITH the toggle on (the window rule,
+  // not a latch): widen the window past the 25h-old turn.
+  panel._activeOnly = true;
+  panel._winSec = 200000; panel._offDirty = true; panel._pinned = true;
+  panel.draw();
+  assert.equal(panel._vis.length, 2, "zoomed out over its past work, the lane returns");
+});
+
+test("an ALL-quiet window falls back to the live lanes — never a blank, un-grabbable band", () => {
+  // Panning into a stretch where nothing happened must not empty the timeline: a blank band reads as
+  // broken, and the per-lane row space is the only mouse-drag pan surface, so an empty _vis would
+  // strand the pan gesture there (caught by the drag-pan test when active-only first landed).
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  panel._collapseGaps = false;
+  panel.data = data;
+  panel._winSec = 600; panel._offSec = 50000; panel._pinned = false; panel._offDirty = true;
+  panel.draw();
+  assert.equal(panel._vis.length, 2, "both LIVE lanes stand in an all-quiet window");
+  const src = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+  assert.match(src, /if \(this\._activeOnly && !vis\.length\) vis = data\.sessions\.filter\(\(s\) => s\.live \|\| hasWork\(s\)\)/);
+});
+
+test("the active-only flag rides romp:settings like collapseGaps (source pins)", () => {
+  const src = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+  assert.match(src, /this\._activeOnly = true;/, "default ON");
+  assert.match(src, /if \(raw\) this\._activeOnly = JSON\.parse\(raw\)\.activeOnly !== false/, "constructor read");
+  assert.match(src, /this\._activeOnly = s2\.activeOnly !== false/, "storage live-sync");
+  assert.match(src, /const active = \(s\) => \(s\.live && !this\._activeOnly\) \|\| hasWork\(s\)/, "the gate");
+  assert.match(src, /overlaps\(t\.start, barEndT\(t, nowS, data\.now\)\)/,
+    "an OPEN turn counts to the live edge, exactly as its bar is drawn — a working session never hides");
 });
 
 // A romp NUDGE prompt marks its dot as a ROMP MESSAGE: a BLACK-filled dot with the romp favicon swirl

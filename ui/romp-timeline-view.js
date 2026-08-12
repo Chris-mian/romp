@@ -535,6 +535,12 @@ class TimelinePanel {
     // broken-axis: collapse long idle gaps (no work on any lane — e.g. overnight) into a thin squiggle
     // break, so the active periods get the width. ON by default; the checkbox below the axis toggles it.
     this._collapseGaps = true;
+    // "Show active sessions only" (the user 2026-08-12): at any zoom, a lane only draws if that session
+    // has activity intersecting the VISIBLE window — a live-but-idle session (no bar in view) drops out
+    // and its row space is reclaimed, reappearing the moment you pan/zoom to a range where it did work.
+    // The session stays fully in the chat; this only thins the timeline. ON by default. Read fresh here
+    // + on the 'storage' event, exactly like collapseGaps; draw()'s `active()` gate reads _activeOnly.
+    this._activeOnly = true;
     // 🔒 lock-to-now (the user 2026-06-11): the live edge is pinned PERMANENTLY — pan gestures can't
     // leave it, and a focus that's off-screen ZOOMS OUT (window widens leftward, right edge stays at
     // now, target lands ~mid-window) instead of panning away. OFF by default; checkbox far right.
@@ -550,6 +556,7 @@ class TimelinePanel {
       const raw = localStorage.getItem('romp:settings');
       if (raw) this._collapseGaps = JSON.parse(raw).collapseGaps !== false;
       else if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false;
+      if (raw) this._activeOnly = JSON.parse(raw).activeOnly !== false;   // default ON; a stored false opts out
     } catch (e) {}
     try { if (localStorage.getItem(this.LSTORE) === '1') this._lockNow = true; } catch (e) {}
     try { const v = localStorage.getItem(this.WSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) { this._winSec = +v; this.fitted = true; } } catch (e) {}
@@ -780,7 +787,8 @@ class TimelinePanel {
     try {
       window.addEventListener('storage', (e) => {
         if (!e || e.key !== 'romp:settings') return;
-        try { this._collapseGaps = JSON.parse(e.newValue || localStorage.getItem('romp:settings') || '{}').collapseGaps !== false; } catch (e2) {}
+        try { const s2 = JSON.parse(e.newValue || localStorage.getItem('romp:settings') || '{}');
+          this._collapseGaps = s2.collapseGaps !== false; this._activeOnly = s2.activeOnly !== false; } catch (e2) {}
         this.draw();
       });
     } catch (e) {}
@@ -2461,12 +2469,25 @@ class TimelinePanel {
     const turnsOf = (sid) => data.turns[sid] || [];
     const colorOf = (sid) => { const s = data.sessions.find((x) => x.id === sid); return s ? s.color : '#888'; };
 
-    // live sessions ALWAYS get a lane (even with no activity in this window);
-    // closed sessions appear only when the window covers their past activity
-    const active = (s) => s.live ||
-      turnsOf(s.id).some((t) => overlaps(t.start, t.end)) ||
+    // A lane shows when it has activity intersecting THIS window — a turn bar or a message endpoint.
+    // Normally a live session ALSO always gets a lane (even idle, so you can see who's running); with
+    // "Show active sessions only" ON (the user 2026-08-12, default) that unconditional pass is dropped,
+    // so a live-but-idle session with nothing in view thins out and its row space is reclaimed, and it
+    // returns the instant the window covers work it did. Closed sessions were always window-gated; this
+    // makes live ones obey the same rule. The session is untouched in the chat — this is a view filter.
+    // barEndT extends an OPEN (still-working) turn to the live edge, exactly as the bar is drawn — so a
+    // session working RIGHT NOW counts as active whenever the window reaches now, and never blinks out
+    // from under a live-follow just because its last poll's end lags a hair behind t0.
+    const hasWork = (s) =>
+      turnsOf(s.id).some((t) => overlaps(t.start, barEndT(t, nowS, data.now))) ||
       data.messages.some((m) => (m.fromId === s.id || m.toId === s.id) && overlaps(Math.min(m.sent, m.exec), Math.max(m.sent, m.exec)));
+    const active = (s) => (s.live && !this._activeOnly) || hasWork(s);
     let vis = data.sessions.filter(active);
+    // …but never hide EVERYONE: with every lane idle in this window the filter would blank the whole
+    // band — which reads as broken (the loading rule), and leaves no row space to grab-drag back out
+    // of the quiet stretch (rowHit is the only mouse-pan surface). An all-quiet window falls back to
+    // the live lanes (the old rule), so active-only only ever THINS a view that has activity to show.
+    if (this._activeOnly && !vis.length) vis = data.sessions.filter((s) => s.live || hasWork(s));
     // while a row is being dragged, honor the transient drag order so the lanes shuffle live under
     // the cursor (data.sessions still holds the persisted order; _dragOrder overrides until drop).
     if (this._dragOrder) {
