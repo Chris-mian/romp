@@ -120,3 +120,10 @@
 /* the live auto-push phase on a row: accent while it works, red when it failed and needs a look */
 .sn-ap { color: var(--accent, #9cd2ff); font-size: 11px; margin: 2px 0 0 16px; }
 .sn-ap.bad { color: #E5534B; }
+/* "connections" sub-rows: an up host's OWN attached list, indented one level under its row —
+   compact by default (the ▸ toggle), rows read live from that machine. The failed forwarded
+   action wears red on the button itself (its refusal has no status row of its own here). */
+.sn-row.sn-sub { margin-left: 20px; }
+.sn-sub.sn-empty { margin-left: 20px; text-align: left; padding: 4px 0; }
+.sn-subtoggle { flex: 0 0 auto; }
+.sn-actfail { border-color: #E5534B; color: #E5534B; }

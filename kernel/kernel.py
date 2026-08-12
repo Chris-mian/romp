@@ -6552,6 +6552,68 @@ def pairs_snapshot():
     return {"ok": True, "hosts": hosts, "pairs": pairs}
 
 
+def tunnels_of(host):
+    """ONE attached host's own /tunnels payload, read live through its tunnel + serve token
+    (pairs_snapshot's transport, single host, FULL rows) — the popover's per-host "connections"
+    expand: the dashboard renders THAT machine's attached-host list with the same fields its own
+    popover uses (status, kernelVer/kernelSha, outOfDate/behindBy/aheadBy, fastForward/fastPull/
+    askPull, trust, autoPush…), so what's connected to what is managed from one place (the user
+    2026-08-11). Fetched on demand — expand, or after a forwarded action — never in the popover's
+    3s poll, the /tunnels/pairs rule. Loud errors, never a silent empty list."""
+    host = str(host or "").strip()
+    if not host:
+        return {"ok": False, "error": "host required"}
+    with _remotes_lock:
+        r = dict(_remotes.get(host) or {})
+    if not r:
+        return {"ok": False, "error": "no attached tunnel to '%s'" % host}
+    if (r.get("status") or "") != "up":
+        return {"ok": False, "error": "'%s' is %s — its connections are readable only while it is up"
+                                      % (host, r.get("status") or "down")}
+    st, j, err = _remote_kernel_call(r, "GET", "/tunnels", timeout=6)
+    if err or not isinstance(j, dict):
+        return {"ok": False, "error": err or ("HTTP %s from %s" % (st, host))}
+    j = dict(j)
+    j["ok"] = True
+    j["of"] = host
+    return j
+
+
+# Forwarded row actions block on the via machine's own ssh work; update/start push code and wait
+# out a boot, so they get the long leash — everything else is a quick local flip there.
+_VIA_TIMEOUT = {"/tunnels/update": 180, "/tunnels/pull": 120, "/tunnels/askpull": 120,
+                "/tunnels/start": 120}
+
+def _via_forward(body, path):
+    """A popover action carrying {"via": <attached host>} is relayed to THAT machine's kernel over
+    its tunnel + its own serve token — the attach route's "from" forwarding (2026-07-25),
+    generalized to the rest of the row controls so every machine's connections are manageable from
+    one dashboard (the user 2026-08-11). The via machine owns the tunnel being acted on and judges
+    the action itself — ssh reachability, credentials, dirty-tree refusals all happen THERE; we
+    only relay the ask and bubble its answer back tagged with `via`. Same trust boundary as
+    mirror_trust: this only ever dials a tunnel THIS user attached, with the token they already
+    hold. Returns None when the body carries no via — the caller handles the action locally,
+    exactly as before."""
+    via = str((body or {}).get("via") or "").strip() if isinstance(body, dict) else ""
+    if not via:
+        return None
+    with _remotes_lock:
+        r = dict(_remotes.get(via) or {})
+    if not r or r.get("status") != "up":
+        return {"ok": False, "via": via,
+                "error": "'%s' is not an attached, connected host — its connections can't be driven "
+                         "from here until it is" % via}
+    fwd = {k: v for k, v in body.items() if k != "via"}
+    st, j, err = _remote_kernel_call(r, "POST", path, fwd, timeout=_VIA_TIMEOUT.get(path, 15))
+    if err:
+        return {"ok": False, "error": err, "via": via}
+    res = j if isinstance(j, dict) else {"error": "bad answer (HTTP %s) from %s" % (st, via)}
+    if "ok" not in res:
+        res["ok"] = (st == 200)
+    res["via"] = via
+    return res
+
+
 def _checkin_payload(r):
     return {"host": _self_host(), "kernelPort": r.get("rk_port"), "busPort": r.get("rb_port"),
             "token": _load_token()}
@@ -19297,6 +19359,20 @@ var _pendTrust={},_pendMirror={};
 // tunnel, so it never rides the 3s poll itself: refresh() kicks it, one in flight at a time
 // (_pairsBusy), and the answer repaints from the poll's cached args (_lastArgs) — no fetch loop.
 var _pendPair={},_pairs=null,_pairsBusy=false,_lastArgs=null,_lastUp=0;
+// ITS CONNECTIONS (the user 2026-08-11): every up host's row expands into THAT machine's own
+// attached-host list — same row treatment, working controls — so what's connected to what is
+// managed from one dashboard. Rows come from /tunnels/of (its own /tunnels over your tunnel + its
+// serve token), fetched on EXPAND and after a forwarded action, never in the 3s poll (the
+// /tunnels/pairs rule). Actions post the normal routes with {via}; the kernel relays them to the
+// machine that owns the tunnel (_via_forward). Keyed expand state + a via|host pending-trust
+// latch survive re-renders. strip.ts carries the same feature; the copies must stay in step
+// (net-remote-controls.test.ts pins both).
+var _openSub={},_subInfo={},_subBusy={},_pendSub={};
+function fetchSub(h){if(_subBusy[h])return;_subBusy[h]=1;
+fetch('/tunnels/of?host='+encodeURIComponent(h),{cache:'no-store'}).then(function(r){return r.json();})
+.catch(function(e){return {ok:false,error:String((e&&(e.message||e.name))||e)};})
+.then(function(d){delete _subBusy[h];_subInfo[h]=d||{ok:false,error:'empty answer'};
+if(_openSub[h])repaint();});}
 function pendLvl(map,host,current){var p=map[host];if(p&&current===p){delete map[host];p=null;}return p;}
 function fillHosts(){if(!dl)return;var hs=[];
 [[mruHost()],_seen,_cfg].forEach(function(g){(g||[]).forEach(function(h){if(h&&hs.indexOf(h)<0)hs.push(h);});});   // most-recently-connected first, not just ssh-config order
@@ -19460,6 +19536,41 @@ via=via.filter(function(v){return !live[v.host];});
 var viaHosts={};via.forEach(function(v){viaHosts[v.host]=1;});
 known=known.filter(function(k){return !viaHosts[k.host];});   // a relay row shows the SAME trust select, plus live reach
 var TRUSTW={trusted:'trusted (auto-accept)',directed:'directed (held for you)',isolated:'isolated (no mail)'};
+// The expanded "connections" block under an up host: THAT machine's attached rows, indented, with
+// the controls its own popover would offer — drift there is measured between the via machine and
+// its remote (its own numbers), and every action rides the normal route + {via}. Loading and a
+// failed read say so (with Retry), never a silent blank.
+function subBlock(via){var box=document.createElement('div');box.className='rnet-subwrap';
+var d=_subInfo[via];
+if(!d){box.innerHTML='<div class=\"rnet-empty rnet-sub\">'+spin()+'Reading '+via+'\\u2019s connections\\u2026</div>';return box;}
+if(!d.ok){box.innerHTML='<div class=\"rnet-empty rnet-sub\">Couldn\\u2019t read '+via+'\\u2019s connections: '+(d.error||'unknown error')+' <button data-xr=\"'+via+'\">Retry</button></div>';return box;}
+var rows=d.tunnels||[];
+if(!rows.length){box.innerHTML='<div class=\"rnet-empty rnet-sub\">'+via+' has no hosts attached.</div>';return box;}
+rows.forEach(function(s){
+var sr=document.createElement('div');sr.className='rnet-row rnet-sub';
+var sdot=s.status==='up'?'background:var(--accent)':(s.status==='error'||s.status==='no-kernel')?'background:#E5534B':(s.status==='down')?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
+var sver='',sbw=buildWord(s.kernelVer,s.kernelSha);
+if(s.outOfDate){var sar=driftCounts(s);
+sver=' \\u00b7 <span class=rnet-old title=\"'+s.host+' runs '+(sbw||'?')+'; '+via+' is at '+(buildWord(s.localVer,s.localSha)||'?')+' \\u2014 drift here is between THOSE two machines, not this one.\">'+(sbw?sbw+' ':'')+(sar?'('+sar+')':driftWord(s))+'</span>';}
+else if(sbw){sver=' \\u00b7 <span class=rnet-sha title=\"same build as '+via+'\">'+sbw+'</span>';}
+var vk=via+'|'+s.host;
+var spd=pendLvl(_pendSub,vk,s.trust||'directed');
+var scur=spd||s.trust||'directed';
+var strust='<select class=\"rnet-trust'+(spd?' rnet-applying':'')+'\"'+(spd?' disabled':'')+' data-vt=\"'+vk+'\" title=\"What '+via+' does with postal mail from '+s.host+'. Set on '+via+', over your tunnel + its own token \\u2014 the you-with-both-tokens boundary.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(scur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(spd?'<span class=rnet-pend>'+spin()+'applying\\u2026</span>':'');
+// the same provably-possible gating as the top rows, judged with the fields VIA computed about
+// ITS remote (fastForward/fastPull/askPull are relative to via's own build).
+var sapx=s.autoPush&&apBusy(s.autoPush.phase);
+var sb='';
+if(s.status==='up'&&s.fastForward&&!sapx&&!s.checkinPeer)sb+='<button class=rnet-upd data-vu=\"'+vk+'\" title=\"Push '+via+'\\u2019s committed romp to '+s.host+' and restart its kernel \\u2014 the work runs on '+via+'.\">Push</button>';
+if(s.status==='up'&&s.askPull&&!sapx)sb+='<button class=rnet-upd data-va=\"'+vk+'\" title=\"'+s.host+' checked in to '+via+' over its own tunnel, so '+via+' cannot push to it. This asks it to pull '+via+'\\u2019s commits over the link it already holds.\">Update</button>';
+if(s.status==='up'&&s.fastPull&&!sapx&&!s.checkinPeer)sb+='<button class=rnet-upd data-vp=\"'+vk+'\" title=\"Pull '+s.host+'\\u2019s newer commits into '+via+'\\u2019s romp (fast-forward only) \\u2014 the work runs on '+via+'.\">Pull</button>';
+if(s.status==='no-kernel')sb+='<button class=rnet-upd data-vs=\"'+vk+'\" title=\"No kernel answers '+via+'\\u2019s tunnel to '+s.host+'. This has '+via+' push its romp there and boot it.\">Start</button>';
+sr.innerHTML='<span class=rnet-dot style=\"'+sdot+'\" title=\"'+(TIP[s.status]||'')+'\"></span>'+
+'<span class=nm><b>'+s.host+'</b> <span class=st title=\"'+via+'\\u2019s tunnel to '+s.host+'. '+(TIP[s.status]||'')+'\">'+(busyStatus(s.status)?spin():'')+(LBL[s.status]||s.status)+sver+'</span></span>'+
+strust+sb+'<button data-vh=\"'+vk+'\" title=\"Close '+via+'\\u2019s ssh tunnel to '+s.host+'. It stays in '+via+'\\u2019s previously-attached list.\">Detach</button>';
+box.appendChild(sr);});
+return box;}
 // Every host romp knows about feeds the add box's completions, so a machine you typed in once is a
 // couple of keystrokes the next time even after you forget its exact spelling.
 _seen=ts.map(function(t){return t.host;}).concat(known.map(function(k){return k.host;}));fillHosts();
@@ -19558,7 +19669,10 @@ row.innerHTML='<span class=rnet-dot style=\"'+dot+'\" title=\"'+(TIP[t.status]||
 // the status word, so "connecting" reads as something HAPPENING rather than a label that might be stuck.
 // The repo's loading rule spelled small: same glyph, same reverse spin as the composer's slash spinner.
 '<span class=nm><b>'+t.host+'</b> <span class=st title=\"'+(TIP[t.status]||'')+'\">'+(busyStatus(t.status)?spin():'')+(LBL[t.status]||t.status)+(t.checkinPeer?' \\u00b7 checked in here':'')+(t.token?'':' \\u00b7 no token')+(again?' \\u00b7 '+again:'')+ver+'</span></span>'+
-retry+pull+ask+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>';
+retry+pull+ask+upd+strt+'<button data-h=\"'+t.host+'\" title=\"Close the ssh tunnel to '+t.host+'. It stays in this list as a previously-attached host, keeping its trust level, so you can re-attach in one click.\">Detach</button>'+
+// ITS CONNECTIONS toggle — the keyed expand (progressive disclosure): compact row by default,
+// that machine's own attached list one click deeper, fetched on the click, never the poll.
+(t.status==='up'?'<button class=rnet-subtoggle data-x=\"'+t.host+'\" title=\"'+t.host+'\\u2019s own attached hosts \\u2014 see and manage what IT is connected to, from here. Rows read live from its kernel over your tunnel + its own token; actions run there.\">'+(_openSub[t.host]?'\\u25be':'\\u25b8')+' connections</button>':'');
 item.appendChild(row);
 // Live automatic-update phase, on its own line under the row — this is the whole reason the modal could
 // go away: the work still announces itself, it just does it here instead of over your screen. A FAILURE
@@ -19575,6 +19689,7 @@ ap.title=t.autoPush.phase==='failed'?'romp tried to update this host automatical
 item.appendChild(ap);}
 var r2=document.createElement('div');r2.className='rnet-row2';r2.innerHTML=trust+keep;
 item.appendChild(r2);
+if(t.status==='up'&&_openSub[t.host])item.appendChild(subBlock(t.host));
 list.appendChild(item);});
 // PREVIOUSLY ATTACHED (the user 2026-07-22): hosts you attached before, kept after detach so they are
 // one click away instead of something you retype. Dimmed, and each remembers the trust
@@ -19714,7 +19829,32 @@ b.disabled=true;b.textContent='Asking\\u2026';   // the work runs on the PEER, o
 fetch('/tunnels/askpull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
 if(d&&d.ok){b.textContent='Updating';schedule(2000);}   // it pulled + is restarting → its next /version clears the flag
 else{b.disabled=false;b.textContent='Retry';alert('Updating '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
-}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Updating '+h+' failed to reach the kernel.');});};});}
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Updating '+h+' failed to reach the kernel.');});};});
+// ITS CONNECTIONS wiring: the expand toggle, the failed-read Retry, and the forwarded row actions —
+// one shape (vact) for all five, posting the normal route + {via} and re-reading the via machine's
+// list when it lands. Refusals alert with the via machine named (fail LOUDLY, CLAUDE.md).
+list.querySelectorAll('button[data-x]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-x');
+if(_openSub[h])delete _openSub[h];else{_openSub[h]=1;if(!_subInfo[h])fetchSub(h);}
+repaint();};});
+list.querySelectorAll('button[data-xr]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-xr');
+delete _subInfo[h];fetchSub(h);repaint();};});
+function vparts(s){var i=s.indexOf('|');return [s.slice(0,i),s.slice(i+1)];}
+function vact(b,attr,path,busyT,doneT,word){var vp=vparts(b.getAttribute(attr)),via=vp[0],h=vp[1];
+b.disabled=true;b.textContent=busyT;
+fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,via:via})}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.ok){b.textContent=doneT;fetchSub(via);schedule(1000);}
+else{b.disabled=false;b.textContent='Retry';alert(word+' on '+via+'\\u2019s '+h+' failed: '+((d&&(d.detail||d.error))||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert(word+' on '+via+'\\u2019s '+h+' failed to reach the kernel.');});}
+list.querySelectorAll('button[data-vu]').forEach(function(b){b.onclick=function(){vact(b,'data-vu','/tunnels/update','Pushing\\u2026','Pushed','Push');};});
+list.querySelectorAll('button[data-va]').forEach(function(b){b.onclick=function(){vact(b,'data-va','/tunnels/askpull','Asking\\u2026','Updating','Update');};});
+list.querySelectorAll('button[data-vp]').forEach(function(b){b.onclick=function(){vact(b,'data-vp','/tunnels/pull','Pulling\\u2026','Pulled','Pull');};});
+list.querySelectorAll('button[data-vs]').forEach(function(b){b.onclick=function(){vact(b,'data-vs','/tunnels/start','Starting\\u2026','Started','Start');};});
+list.querySelectorAll('button[data-vh]').forEach(function(b){b.onclick=function(){vact(b,'data-vh','/tunnels/detach','\\u2026','Detached','Detach');};});
+list.querySelectorAll('select[data-vt]').forEach(function(s){s.onchange=function(){var vp=vparts(s.getAttribute('data-vt')),via=vp[0],h=vp[1],vk=via+'|'+h;
+_pendSub[vk]=s.value;s.disabled=true;s.classList.add('rnet-applying');releaseTrust();
+fetch('/tunnels/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,via:via,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){delete _pendSub[vk];alert('trust change on '+via+' for '+h+'\\u2019s mail failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+fetchSub(via);}).catch(function(){delete _pendSub[vk];alert('trust change on '+via+' for '+h+'\\u2019s mail failed to reach the kernel.');fetchSub(via);});};});}
 attach.onclick=function(){var h=(hostIn.value||'').trim();if(!h)return;
 try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}   // remember for MRU-first ordering next time
 attach.disabled=true;attach.textContent='Attaching\\u2026';
@@ -20457,6 +20597,11 @@ def _landing():
             # the live auto-push phase on a row: accent while it works, red when it failed and needs a look
             ".rnet-ap{display:block;color:var(--accent);font-size:11px;margin:2px 0 0 16px}"
             ".rnet-ap.bad{color:#E5534B}"
+            # "connections" sub-rows: an up host's OWN attached list, indented one level under its row —
+            # compact by default (the toggle), rows read live from that machine (strip.css parity)
+            ".rnet-row.rnet-sub{margin-left:20px}"
+            ".rnet-empty.rnet-sub{margin-left:20px;text-align:left;padding:4px 0}"
+            ".rnet-subtoggle{flex:0 0 auto}"
             # usage rate-limit bars in the bottom bar (the user 2026-06-26; HORIZONTAL redesign 2026-07-05): per
             # window, an expanded label ("5 hours" / "7 days" / "Fable 5"), then TWO stacked horizontal tracks — the
             # used-% bar (.ru-fill in the colormap colour) OVER the elapsed-% bar (slate) so you can compare pace at
@@ -21240,6 +21385,11 @@ class Handler(BaseHTTPRequestHandler):
                 # machines" rows). Fetched on demand, never folded into /tunnels: this one fans out
                 # over ssh and must not tax the popover's 3s poll.
                 return self._send(200, json.dumps(pairs_snapshot()), "application/json", cache="no-cache")
+            if p == "/tunnels/of":                            # ONE attached host's own /tunnels, live through
+                # its tunnel + token — the popover's per-host "connections" expand (fetched on demand,
+                # never in the 3s poll; same rule as /tunnels/pairs).
+                return self._send(200, json.dumps(tunnels_of((q.get("host") or [""])[0])),
+                                  "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):
@@ -21721,11 +21871,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(500, json.dumps({"ok": False, "error": str(e)}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
             if u.path == "/tunnels/detach":
-                # Detach a remote: kill its tunnel + forget it. Body: {"host": <ssh alias>}.
+                # Detach a remote: kill its tunnel + forget it. Body: {"host": <ssh alias>}. With
+                # {"via": <attached host>} the action runs on THAT machine's kernel (_via_forward)
+                # — the pattern every row-action route below follows.
                 try:
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/detach")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
@@ -21736,6 +21891,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/checkin")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
@@ -21750,6 +21908,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/autoupdate")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 if not isinstance(body, dict) or "on" not in body:
                     return self._send(400, json.dumps({"ok": False, "error": "on required"}), "application/json")
                 _set_auto_update_remotes(bool(body.get("on")))
@@ -21762,6 +21923,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/forget")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
@@ -21774,6 +21938,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/trust")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 level = str((body or {}).get("trust") or "").strip() if isinstance(body, dict) else ""
                 if not host:
@@ -21846,6 +22013,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/update")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
@@ -21860,6 +22030,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/pull")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
@@ -21874,6 +22047,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/askpull")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
@@ -21888,6 +22064,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(raw_body or b"{}")
                 except Exception:
                     body = None
+                fw = _via_forward(body, "/tunnels/start")
+                if fw is not None:
+                    return self._send(200, json.dumps(fw), "application/json")
                 host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
