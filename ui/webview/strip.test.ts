@@ -6,7 +6,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { usageColor, fmtAgo, fmtReset, usageWindows, spendWindows, STRIP_PANES } from "./strip";
+import { usageColor, fmtAgo, fmtReset, fmtUsd, usageWindows, apiCell, STRIP_PANES } from "./strip";
 
 test("usageColor mirrors the rail's green/amber/red ramp", () => {
   assert.equal(usageColor(0), "#54B204");
@@ -147,26 +147,45 @@ test("both bundles init the strip; the web pages never opt in", () => {
   assert.ok(!kernel.includes("__rompShowStrip"), "the web shell keeps its own rail — no strip opt-in kernel-side");
 });
 
-test("a spend window with no budget has no honest fraction — dollars in the readout, no fill", () => {
-  const ws = spendWindows({ spend: { fiveHour: { usd: 12.34, tok: 3_456_000, turns: 5 } } }, 100_000);
-  assert.equal(ws.length, 1);
-  assert.equal(ws[0].pct, null, "no budget → no fraction to fill");
-  assert.equal(ws[0].elapsedPct, null, "a rolling window has no reset boundary to pace against");
-  assert.equal(ws[0].readout, "$12 · 3.5M tok");
+// ── the API spend CELL (the user 2026-08-11): the rail moved key spend to one compact cell — "API",
+// then the 5-hour burn and the month-to-date as designator → dollars·tokens pairs, no bars — and the
+// strip must mirror it. Spend-as-rows was the old grammar; on a key-billed machine it read as broken.
+test("apiCell arms on the spend windows' presence and carries the 5-hour burn + month-to-date", () => {
+  const cell = apiCell({ spend: {
+    fiveHour: { usd: 12.34, tok: 3_456_000, turns: 5 },
+    sevenDay: { usd: 40.2, tok: 9_000_000, turns: 21 },
+    month: { usd: 87.9, tok: 20_500_000, turns: 60 },
+  } });
+  assert.ok(cell);
+  assert.deepEqual(cell!.segs.map((s) => [s.key, s.label, s.short]),
+    [["fiveHour", "5 hours", "5h"], ["month", "Month", "mo"]],
+    "the collapsed cell shows 5h + month only — 7 days lives in the hover");
+  assert.deepEqual(cell!.segs.map((s) => fmtUsd(s.usd)), ["$12", "$88"], "whole dollars, no cents");
+  assert.match(cell!.title, /^API-key spend\n/);
+  assert.match(cell!.title, /7 days — \$40 · 9M tok · 21 turns/, "the hover keeps the full breakdown");
+  assert.match(cell!.title, /5 hours — \$12 · 3\.5M tok · 5 turns/);
 });
 
-test("a readout-only row holds no empty bar slot, and drops out with its text (the user 2026-08-11)", () => {
-  // A wide feed pane showed a bare "?", naked unlabeled bars, and a fake dead gap mid-strip: six
-  // windows forced the ladder to tier 3, where the three budget-less spend rows — no tracks, readout
-  // hidden — each kept an invisible 54px bar slot open. A row with no tracks appends no bars element
-  // at all, and .ru-textonly lets tiers 2/3 (which hide .ru-pct, the row's only content) drop the
-  // whole row, so the reclaimed width lets fit() settle on a legible tier instead.
+test("no key spend → no cell; and no fragment of any key ever reaches the strip", () => {
+  assert.equal(apiCell(null), null);
+  assert.equal(apiCell({ spend: {} }), null, "presence of the 5h window is the whole test — the rail's hasSpend branch");
   const ROOT = path.resolve(process.cwd(), "..");
   const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
-  assert.match(src, /if \(bars\.childElementCount\) box\.append\(name, bars, pct\);/);
-  assert.match(src, /else \{ box\.classList\.add\("ru-textonly"\); box\.append\(name, pct\); \}/);
+  assert.ok(!src.includes("apiTail") && !src.includes("authTail"), "constant 'API' label — no key-tail plumbing");
+});
+
+test("the cell's dollars survive every tier; tokens fold at tier 2, labels at 3 (source pins)", () => {
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  assert.match(src, /box\.className = "ru-w ru-api";/);
+  assert.match(src, /lbl\.textContent = "API";/);
+  assert.match(src, /val\.className = "ru-apiv";/, "dollars wear their own class, never .ru-pct");
+  assert.match(src, /tok\.className = "ru-apitok";/);
+  assert.doesNotMatch(src, /spendWindows/, "spend-as-rows is gone, not merely unused");
   const css = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.css"), "utf8");
-  assert.match(css, /#romp-strip\[data-tier="2"\] \.ru-textonly, #romp-strip\[data-tier="3"\] \.ru-textonly \{ display: none; \}/);
+  assert.match(css, /\.ru-apiv \{ font: 600 10px/);
+  assert.match(css, /#romp-strip\[data-tier="2"\] \.ru-apitok, #romp-strip\[data-tier="3"\] \.ru-apitok \{ display: none; \}/);
+  assert.doesNotMatch(css, /ru-textonly/, "the ghost-row mechanism died with spend-as-rows");
 });
 
 test("an unknown window draws NO bars — just a '?' in their slot (the user 2026-07-31, round 2)", () => {
