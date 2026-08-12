@@ -80,10 +80,20 @@ test("VS Code popover: the same expand, same on-demand read, same via actions", 
 });
 
 test("both copies indent the sub-rows and keep the toggle compact by default", () => {
-  assert.match(KERNEL, /\.rnet-row\.rnet-sub\{margin-left:20px\}/);
+  assert.match(KERNEL, /\.rnet-row\.rnet-subrow\{margin-left:20px\}/);
   assert.match(STRIPCSS, /\.sn-row\.sn-sub \{ margin-left: 20px; \}/);
   assert.match(STRIPCSS, /\.sn-actfail \{ border-color: #E5534B; color: #E5534B; \}/);
   // the toggle glyphs: closed ▸, open ▾ — one keyed expand per host
   assert.match(KERNEL, /_openSub\[t\.host\]\?'\\\\u25be':'\\\\u25b8'/);
   assert.match(STRIP, /\(openSub\.has\(t\.host\) \? "▾" : "▸"\) \+ " connections"/);
+});
+
+test("the web sub-rows never wear the panel's pre-existing .rnet-sub explainer class", () => {
+  // .rnet-sub is the panel's DESCRIPTION block, styled margin:-6px 0 11px — a sub-ROW wearing it
+  // is pulled up over the element above it (the user 2026-08-12, whose expanded connections
+  // painted over the parent row's settings line). The rows and notes carry their own names.
+  assert.match(KERNEL, /sr\.className='rnet-row rnet-subrow';/);
+  assert.match(KERNEL, /rnet-empty rnet-subnote/);
+  assert.doesNotMatch(KERNEL, /className='rnet-row rnet-sub'/, "the colliding class name must not return");
+  assert.doesNotMatch(KERNEL, /rnet-empty rnet-sub\\"/, "sub notes must not wear .rnet-sub either");
 });

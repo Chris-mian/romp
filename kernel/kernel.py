@@ -19542,12 +19542,12 @@ var TRUSTW={trusted:'trusted (auto-accept)',directed:'directed (held for you)',i
 // failed read say so (with Retry), never a silent blank.
 function subBlock(via){var box=document.createElement('div');box.className='rnet-subwrap';
 var d=_subInfo[via];
-if(!d){box.innerHTML='<div class=\"rnet-empty rnet-sub\">'+spin()+'Reading '+via+'\\u2019s connections\\u2026</div>';return box;}
-if(!d.ok){box.innerHTML='<div class=\"rnet-empty rnet-sub\">Couldn\\u2019t read '+via+'\\u2019s connections: '+(d.error||'unknown error')+' <button data-xr=\"'+via+'\">Retry</button></div>';return box;}
+if(!d){box.innerHTML='<div class=\"rnet-empty rnet-subnote\">'+spin()+'Reading '+via+'\\u2019s connections\\u2026</div>';return box;}
+if(!d.ok){box.innerHTML='<div class=\"rnet-empty rnet-subnote\">Couldn\\u2019t read '+via+'\\u2019s connections: '+(d.error||'unknown error')+' <button data-xr=\"'+via+'\">Retry</button></div>';return box;}
 var rows=d.tunnels||[];
-if(!rows.length){box.innerHTML='<div class=\"rnet-empty rnet-sub\">'+via+' has no hosts attached.</div>';return box;}
+if(!rows.length){box.innerHTML='<div class=\"rnet-empty rnet-subnote\">'+via+' has no hosts attached.</div>';return box;}
 rows.forEach(function(s){
-var sr=document.createElement('div');sr.className='rnet-row rnet-sub';
+var sr=document.createElement('div');sr.className='rnet-row rnet-subrow';
 var sdot=s.status==='up'?'background:var(--accent)':(s.status==='error'||s.status==='no-kernel')?'background:#E5534B':(s.status==='down')?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
 var sver='',sbw=buildWord(s.kernelVer,s.kernelSha);
 if(s.outOfDate){var sar=driftCounts(s);
@@ -20599,8 +20599,8 @@ def _landing():
             ".rnet-ap.bad{color:#E5534B}"
             # "connections" sub-rows: an up host's OWN attached list, indented one level under its row —
             # compact by default (the toggle), rows read live from that machine (strip.css parity)
-            ".rnet-row.rnet-sub{margin-left:20px}"
-            ".rnet-empty.rnet-sub{margin-left:20px;text-align:left;padding:4px 0}"
+            ".rnet-row.rnet-subrow{margin-left:20px}"
+            ".rnet-empty.rnet-subnote{margin-left:20px;text-align:left;padding:4px 0}"
             ".rnet-subtoggle{flex:0 0 auto}"
             # usage rate-limit bars in the bottom bar (the user 2026-06-26; HORIZONTAL redesign 2026-07-05): per
             # window, an expanded label ("5 hours" / "7 days" / "Fable 5"), then TWO stacked horizontal tracks — the
