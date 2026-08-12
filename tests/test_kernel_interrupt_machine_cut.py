@@ -188,6 +188,7 @@ class _FeedHarness(unittest.TestCase):
         km._downtime[:] = []
         km._parse_cache.clear()
         km._autonudge_cache.clear()
+        km._machine_cut_cache.clear()
         km._pending_ops.clear()
         km._write_auto_nudge({"enabled": True, "nudged": {}, "intrBlocked": {}})
         self.tmux = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
@@ -440,6 +441,212 @@ class ResumeNudgeDisarmsTheStopRecord(unittest.TestCase):
         self.assertIn(km.INTR_CRASH_SIG, sb.CRASH_RESUME_NUDGE)
         self.assertNotIn(km.INTR_RESTART_SIG, sb.CRASH_RESUME_NUDGE,
                          "the two causes stay distinguishable")
+
+
+# ── the race: the cut is real, its resume notice has not reached disk yet ─────────────────────────
+# Every test above hands the classifier a transcript that ALREADY contains romp's resume notice. On the
+# live machine that notice arrives seconds after the stop record, and every _interrupt_block_tick inside
+# that window read a bare trailing stop and blocked the focus card on the user: 30 false interrupt/block
+# rows in 30 hours, each followed by an unblock once the notice landed (the user 2026-08-12, for whom this
+# came up "again and again"). The backend's machineCut stamp — written when the resume is QUEUED, not when
+# it lands — is what closes the window.
+
+class MachineCutStampClassifier(unittest.TestCase):
+    """_machine_cut_cause defers to the backend's stamp ONLY where the transcript is inconclusive, and
+    time-ordering keeps that exact: the cut precedes the resume it is stamped with, so a stop the user
+    makes later is always past the stamp."""
+
+    def _users(self, atoms):
+        return atoms
+
+    def test_a_bare_trailing_stop_with_a_stamp_is_the_machine_cut(self):
+        users = self._users([uatom(T0, "wire the thing"), intr(T0 + 60)])
+        self.assertEqual(km._machine_cut_cause(users, 1, T0 + 62, "restart"), "restart",
+                         "romp queued a resume at +62 for the stop at +60 — its own cut, notice or no notice")
+
+    def test_the_stamped_cause_is_reported_verbatim(self):
+        users = self._users([uatom(T0, "wire the thing"), intr(T0 + 60)])
+        self.assertEqual(km._machine_cut_cause(users, 1, T0 + 61, "crash"), "crash")
+
+    def test_a_bare_trailing_stop_with_no_stamp_is_still_a_user_stop(self):
+        users = self._users([uatom(T0, "wire the thing"), intr(T0 + 60)])
+        self.assertIsNone(km._machine_cut_cause(users, 1),
+                          "no stamp, no notice → the user stopped it; the default must not move")
+
+    def test_a_stop_AFTER_the_stamp_is_the_user_stopping_the_resumed_turn(self):
+        # the restart's cut was resumed at +62; the user then hit Esc on that resumed turn at +90.
+        # Nothing follows it on disk, so only the ordering tells them apart.
+        users = self._users([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 62, sb.BOOT_RESUME_NUDGE, "romp"), intr(T0 + 90)])
+        self.assertIsNone(km._machine_cut_cause(users, 3, T0 + 62, "restart"),
+                          "a stop past the resume romp queued is the user's, and a stale stamp must not eat it")
+
+    def test_the_stamp_never_overrides_a_transcript_that_already_answered(self):
+        # a human message after the stop proves it was theirs — the scan terminates there and the stamp,
+        # however recent, is never consulted
+        users = self._users([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 70, "actually, try the other approach")])
+        self.assertIsNone(km._machine_cut_cause(users, 1, T0 + 9999, "restart"))
+
+    def test_the_notice_still_wins_when_it_has_landed(self):
+        users = self._users([uatom(T0, "wire the thing"), intr(T0 + 60),
+                             uatom(T0 + 62, sb.CRASH_RESUME_NUDGE, "romp")])
+        self.assertEqual(km._machine_cut_cause(users, 1), "crash",
+                         "the transcript answers on its own once the notice is there — no stamp needed")
+
+
+class MachineCutStampWiring(unittest.TestCase):
+    """The stamp is written where romp QUEUES a resume — both choke points — and read back by the kernel.
+    Pinned so a future edit cannot move the queueing without the stamp, which would silently reopen the
+    window this whole mechanism closes."""
+
+    def test_boot_reconcile_stamps_the_restart_cut(self):
+        src = Path(BIN, "romp_sdk_backend.py").read_text()
+        cut = src.index("prepend = ([BOOT_RESUME_NUDGE] if cut else [])")
+        self.assertIn('append_machine_cut(self.state_dir, sid, "restart")', src[cut:cut + 2000],
+                      "the boot reconcile that queues BOOT_RESUME_NUDGE must stamp the cut it is resuming")
+
+    def test_crash_resume_stamps_the_crash_cut(self):
+        src = Path(BIN, "romp_sdk_backend.py").read_text()
+        cut = src.index("reg[\"queue\"] = [CRASH_RESUME_NUDGE]")
+        self.assertIn('append_machine_cut(self.state_dir, sid, "crash")', src[cut:cut + 1200],
+                      "the crash resume must stamp its cut too")
+
+    def setUp(self):
+        km._machine_cut_cache.clear()      # the reader is mtime+size cached — never read a sibling's file
+
+    def tearDown(self):
+        km._machine_cut_cache.clear()
+
+    def test_the_reader_and_the_writer_agree(self):
+        # round-trip through the real appender and the real reader: one key, one cause, newest wins
+        with tempfile.TemporaryDirectory() as td:
+            saved = jd.STATE
+            try:
+                jd.STATE = Path(td)
+                self.assertEqual(km._last_machine_cut(SID), (0.0, ""), "no marker → no claim")
+                sb.append_machine_cut(Path(td), SID, "restart", T0 + 10)
+                km._machine_cut_cache.clear()
+                self.assertEqual(km._last_machine_cut(SID), (float(T0 + 10), "restart"))
+                sb.append_machine_cut(Path(td), SID, "crash", T0 + 99)
+                km._machine_cut_cache.clear()
+                self.assertEqual(km._last_machine_cut(SID), (float(T0 + 99), "crash"),
+                                 "the newest cut is the one in force")
+            finally:
+                jd.STATE = saved
+
+    def test_the_cache_refreshes_when_a_new_cut_is_appended(self):
+        # the cache must key on the file's identity, not just its path: a fresh cut written into a file
+        # already read this push has to be seen (mtime+size both move), or the window reopens
+        with tempfile.TemporaryDirectory() as td:
+            saved = jd.STATE
+            try:
+                jd.STATE = Path(td)
+                sb.append_machine_cut(Path(td), SID, "restart", T0 + 10)
+                self.assertEqual(km._last_machine_cut(SID), (float(T0 + 10), "restart"))
+                sb.append_machine_cut(Path(td), SID, "crash", T0 + 99)   # no manual cache clear
+                self.assertEqual(km._last_machine_cut(SID), (float(T0 + 99), "crash"),
+                                 "an appended cut must invalidate the cached read")
+            finally:
+                jd.STATE = saved
+
+    def test_the_stamp_keeps_sub_second_precision(self):
+        # int() truncation would move the bound EARLIER and drop a stop record written in the same second
+        with tempfile.TemporaryDirectory() as td:
+            saved = jd.STATE
+            try:
+                jd.STATE = Path(td)
+                sb.append_machine_cut(Path(td), SID, "restart", T0 + 10.75)
+                self.assertEqual(km._last_machine_cut(SID)[0], float(T0) + 10.75)
+            finally:
+                jd.STATE = saved
+
+    def test_the_marker_is_skipped_by_the_other_keyed_readers(self):
+        # it shares states/<sid>.jsonl with the state and awaiting records — its own key keeps them apart
+        with tempfile.TemporaryDirectory() as td:
+            sb.append_state(Path(td), SID, "working", T0)
+            sb.append_machine_cut(Path(td), SID, "restart", T0 + 1)
+            self.assertEqual(sb.last_state_value(Path(td), SID), "working",
+                             "the state reader must read past a machineCut record")
+
+
+class MachineCutBeforeItsNoticeLands(_FeedHarness):
+    """THE REGRESSION, end to end through the real parse and the real tick: a restart-cut session whose
+    resume notice has not been written yet must not be blocked on the user, must not wear the badge, and
+    must not have its focus card flipped out of Working."""
+
+    def _cut_awaiting_its_notice(self, cause="restart"):
+        """The window: the CLI wrote the stop record when the turn was cut; romp has queued the resume
+        (stamped) but the resumed CLI has not written the notice to the transcript yet."""
+        recs = [uline(T0, "wire the thing", "u1"),
+                aline(T0 + 20, "digging in", "a1", "u1", "tool_use"),
+                uline(T0 + 60, "[Request interrupted by user]", "u2", "a1")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        sb.append_machine_cut(jd.STATE, SID, cause, T0 + 62)
+
+    def test_the_focus_card_is_not_blocked_on_the_user(self):
+        self._cut_awaiting_its_notice()
+        g = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][g], "working",
+                         "romp cut this turn and is resuming it — the user is owed nothing")
+
+    def test_no_interrupt_block_row_is_filed_at_all(self):
+        # the row itself is the damage the user sees repeatedly: an interrupt/block verdict in the card's
+        # log claiming they stopped a session they never touched
+        self._cut_awaiting_its_notice()
+        g = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        log = jd.load_goals(SID)["nodes"][g].get("log") or []
+        self.assertEqual([r for r in log if r.get("src") == "interrupt"], [],
+                         "no interrupt verdict may be written for a cut romp itself caused")
+        self.assertNotIn(jd.INTERRUPT_BLOCK_WHY, json.dumps(log))
+
+    def test_the_card_stays_in_working(self):
+        self._cut_awaiting_its_notice()
+        self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        card = self._card()
+        self.assertEqual(card["column"], "working")
+        self.assertFalse(card.get("interrupted"), "and wears no 'you stopped this' badge")
+
+    def test_a_crash_cut_awaiting_its_notice_is_also_continued(self):
+        self._cut_awaiting_its_notice("crash")
+        g = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][g], "working")
+
+    def test_auto_nudge_still_fires_so_a_real_re_stall_is_caught(self):
+        # the false block's other half: a machine cut must not suppress the nudge (the 2026-07-14 rule)
+        self._cut_awaiting_its_notice()
+        turns = jd.parsed_session(SID, [str(self.tpath)], NOW)["turns"]
+        self.assertFalse(km._interrupt_suppresses_nudge(turns, SID),
+                         "romp caused the cut — the nudge must stay armed")
+
+    def test_the_same_transcript_with_no_stamp_still_blocks(self):
+        # the guard on the guard: without the backend's stamp this shape IS a genuine user stop, and must
+        # still reach the user. If this ever goes green-by-default the mechanism has stopped discriminating.
+        self._genuine_stop()
+        g = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][g], "blocked",
+                         "a real Esc with no machine-cut stamp still needs the user")
+
+    def test_a_user_stop_after_the_resumed_turn_still_blocks(self):
+        # the restart's cut (+60) was stamped at +62 and resumed; the user then genuinely stopped the
+        # resumed turn at +200. The stale stamp must not swallow that stop.
+        recs = [uline(T0, "wire the thing", "u1"),
+                aline(T0 + 20, "digging in", "a1", "u1", "tool_use"),
+                uline(T0 + 60, "[Request interrupted by user]", "u2", "a1"),
+                uline(T0 + 62, sb.BOOT_RESUME_NUDGE, "u3", "u2"),
+                aline(T0 + 80, "picked it back up", "a2", "u3", "tool_use"),
+                uline(T0 + 200, "[Request interrupted by user]", "u4", "a2")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        sb.append_machine_cut(jd.STATE, SID, "restart", T0 + 62)
+        g = self._goal()
+        km._interrupt_block_tick(NOW, self.tmux)
+        self.assertEqual(jd.load_goals(SID)["status"][g], "blocked",
+                         "the user stopped the RESUMED turn — that one is theirs and belongs in needs-you")
 
 
 if __name__ == "__main__":
