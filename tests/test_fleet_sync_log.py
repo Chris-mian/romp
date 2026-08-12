@@ -234,7 +234,9 @@ class SharePublishMemory(unittest.TestCase):
         self.assertTrue(km.known_share("web"), "the memory is on disk, not just in this process")
 
     def test_setting_the_box_records_it_and_detach_captures_it_on_the_way_out(self):
-        self.assertIn("_known_note(host, share=bool(on))", inspect.getsource(km.checkin_set))
+        # attached=True rides along since the known store split attach-path rows from
+        # trust-only ones (test_known_attached_flag) — the share memory itself is unchanged
+        self.assertIn("_known_note(host, share=bool(on), attached=True)", inspect.getsource(km.checkin_set))
         self.assertIn('share=bool(r.get("checkin"))', inspect.getsource(km.detach_remote))
 
     def test_re_attaching_restores_the_publish_and_its_ports(self):
