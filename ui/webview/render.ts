@@ -27,7 +27,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
-import { hostNameNodes, hostPrefix, hostIsDown, hostDownNote } from "./host-prefix";
+import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
@@ -8952,10 +8952,17 @@ function setupComposer() {
   // group ("drop to open", which is why a bare drop opened the PNG) before the
   // webview sees them — hold SHIFT while dropping to suppress the overlay and
   // hand the drop here. Pasting (below) is overlay-free and covers the same
-  // need. Best path source first: File.path (Electron, when exposed), then
-  // text/uri-list file:// entries (explorer drags), else the bytes go to the
-  // host, which saves them and posts the saved path back ("droppedPath") —
-  // sandboxed webviews expose NO filesystem path for OS drags, only content.
+  // need. Best path source first — but ONLY for a session this machine owns:
+  // File.path (Electron, when exposed), then text/uri-list file:// entries
+  // (explorer drags), else the bytes go to the owning kernel, which saves them
+  // and posts the saved path back ("droppedPath") — sandboxed webviews expose
+  // NO filesystem path for OS drags, only content. A REMOTE host's session
+  // (hostOf) never takes the path branches: a path on this machine means
+  // nothing on that kernel's disk — the user 2026-08-11 dragged a laptop
+  // screenshot into a server session and the agent there got a path it could
+  // not open. Its drops/pastes ship the BYTES instead, the same dropFile route
+  // federation already carries for the phone, and the saved path comes back
+  // valid on the machine the agent actually reads.
   ta.addEventListener("dragover", (e) => {
     e.preventDefault(); e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
@@ -8967,20 +8974,33 @@ function setupComposer() {
     ta.classList.remove("drop-target");
     const dt = e.dataTransfer;
     if (!dt) return;
+    const remote = hostOf(activeId || "");
     const uris = (dt.getData("text/uri-list") || "").split(/\r?\n/).filter((u) => u && !u.startsWith("#"));
     const fromUri = (u: string) => addComposerFile(activeId, decodeURIComponent(u.replace(/^file:\/\//, "")));
     const files = Array.from(dt.files || []);
-    if (!files.length) { for (const u of uris) if (u.startsWith("file://")) fromUri(u); return; }
+    if (!files.length) {
+      // a path-only drag (no File objects) can't be shipped — a browser can't read file:// bytes.
+      // For a remote session that is a dead end, and it must be said, not silently mis-attached.
+      for (const u of uris) if (u.startsWith("file://")) {
+        if (remote) warnToast("That drag carried only this machine's path, which " + remote
+          + " can't read — drop the file itself (or paste it) and the bytes will be shipped over.");
+        else fromUri(u);
+      }
+      return;
+    }
     files.forEach((f, i) => {
-      const p = (f as any).path as string | undefined;
-      if (p) { addComposerFile(activeId, p); return; }
-      if (uris[i] && uris[i].startsWith("file://")) { fromUri(uris[i]); return; }
+      if (!remote) {
+        const p = (f as any).path as string | undefined;
+        if (p) { addComposerFile(activeId, p); return; }
+        if (uris[i] && uris[i].startsWith("file://")) { fromUri(uris[i]); return; }
+      }
       shipFileToHost(f);
     });
   });
 
   // Cmd+V a copied file (Finder "Copy") or a clipboard screenshot → insert its
-  // path, same pipeline as drops. Plain text pastes have no files on the
+  // path, same pipeline as drops (including the remote rule: a local path only
+  // for a locally-owned session). Plain text pastes have no files on the
   // clipboard and keep the default behavior.
   ta.addEventListener("paste", (e) => {
     const files = Array.from(e.clipboardData?.files || []);
@@ -8988,7 +9008,7 @@ function setupComposer() {
     e.preventDefault();
     files.forEach((f) => {
       const p = (f as any).path as string | undefined;
-      if (p) addComposerFile(activeId, p);
+      if (p && !hostOf(activeId || "")) addComposerFile(activeId, p);
       else shipFileToHost(f);
     });
   });
