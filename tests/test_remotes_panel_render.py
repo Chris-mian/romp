@@ -68,11 +68,16 @@ const document = {
 };
 const localStorage = { getItem(){return null;}, setItem(){} };
 const TUNNELS = __TUNNELS__;
+const PAIRS = __PAIRS__;        // /tunnels/pairs answer; null = the read never lands (loader-state test)
 const POSTS = [];               // every write the panel makes, so a test can assert what Attach sent
 function fetch(url, opts){
   if (opts && opts.method === 'POST') {
     POSTS.push({url:url, body:JSON.parse(opts.body || '{}')});
     return Promise.resolve({ ok:true, json(){ return Promise.resolve({ok:true}); } });
+  }
+  if (url.indexOf('/tunnels/pairs') >= 0) {
+    if (PAIRS === null) return new Promise(function(){});
+    return Promise.resolve({ ok:true, json(){ return Promise.resolve(PAIRS); } });
   }
   const body = url.indexOf('/ssh-hosts') >= 0 ? {hosts:['TESTHOST']} : TUNNELS;
   return Promise.resolve({ ok:true, json(){ return Promise.resolve(body); } });
@@ -113,9 +118,10 @@ setTimeout_(() => {
 
 
 class RemotesPanelRender(unittest.TestCase):
-    def _run(self, drive="", tunnels=None):
+    def _run(self, drive="", tunnels=None, pairs=None):
         js = (HARNESS.replace("__PANEL_JS__", km._LANDING_REMOTES_JS)
                      .replace("__TUNNELS__", json.dumps(tunnels if tunnels is not None else TUNNELS))
+                     .replace("__PAIRS__", json.dumps(pairs))
                      .replace("__DRIVE__", drive))
         p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, "panel JS crashed:\n%s" % p.stderr[-2000:])
@@ -136,7 +142,9 @@ class RemotesPanelRender(unittest.TestCase):
     def test_render_is_given_pmode_rather_than_reading_it_free(self):
         js = km._LANDING_REMOTES_JS
         self.assertIn("function render(ts,known,pmode,via,rholds,tiers)", js)
-        self.assertIn("render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{})", js)
+        # pmode rides the cached args (which also let a pairs answer repaint without a new /tunnels)
+        self.assertIn("_lastArgs=[ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{}]", js)
+        self.assertIn("render.apply(null,_lastArgs)", js)
 
     def test_reverse_trust_mismatch_renders_the_direction_and_a_match_button(self):
         # Both directions of the pair on one row (the user 2026-07-26): ours is the select, theirs is
@@ -298,6 +306,55 @@ class RemotesPanelRender(unittest.TestCase):
         tun = json.loads(json.dumps(TUNNELS))
         tun["tunnels"][0].update({"status": "down", "fails": 1, "nextTry": 0})
         self.assertIn("retrying", self._run(tunnels=tun).get("html", ""))
+
+    # ---- between your machines (the user 2026-08-11) ----------------------------------------------
+    # The pair link a↔b appears on NONE of the rows above: every list in the panel manages only this
+    # machine's own gates, so making two remote boxes trust each other used to mean opening each
+    # box's own dashboard. The section reads each machine's table live (/tunnels/pairs) and writes
+    # back through the kernel's trust-remote proxy.
+
+    def _two_hosts(self):
+        tn = json.loads(json.dumps(TUNNELS))
+        b = json.loads(json.dumps(tn["tunnels"][0]))
+        b["host"] = "PEERBOX"
+        tn["tunnels"].append(b)
+        return tn
+
+    def test_one_host_offers_no_pair_section(self):
+        out = self._run()
+        self.assertNotIn("Between your machines", out.get("html", ""))
+
+    def test_two_hosts_render_a_row_per_direction_with_the_shared_select(self):
+        pairs = {"ok": True, "hosts": {"PEERBOX": {"ok": True}, "TESTHOST": {"ok": True}},
+                 "pairs": [{"a": "PEERBOX", "b": "TESTHOST", "ab": "trusted", "ba": ""}]}
+        out = self._run(tunnels=self._two_hosts(), pairs=pairs)
+        html = out.get("html", "")
+        self.assertIn("Between your machines", html)
+        self.assertIn("<b>PEERBOX</b> holds <b>TESTHOST</b>", html)
+        self.assertIn("<b>TESTHOST</b> holds <b>PEERBOX</b>", html)
+        self.assertIn("data-pt-on=", html, "the write control is the same trust select, keyed per direction")
+        # a direction with no explicit row renders as directed and says it was never set
+        self.assertIn("directed is its default", html)
+
+    def test_an_unreadable_holder_names_its_error_instead_of_a_select(self):
+        pairs = {"ok": True, "hosts": {"PEERBOX": {"ok": False, "error": "not connected"},
+                                       "TESTHOST": {"ok": True}},
+                 "pairs": [{"a": "PEERBOX", "b": "TESTHOST", "ab": None, "ba": "directed"}]}
+        out = self._run(tunnels=self._two_hosts(), pairs=pairs)
+        html = out.get("html", "")
+        self.assertIn("unreadable", html)
+        self.assertIn("not connected", html)
+
+    def test_the_pair_read_in_flight_shows_the_loader_not_a_blank(self):
+        # PAIRS null = the fetch never settles; the section must say it is working, not sit empty.
+        out = self._run(tunnels=self._two_hosts(), pairs=None)
+        self.assertIn("reading how your machines hold each other", out.get("html", ""))
+
+    def test_pair_binding_posts_the_trust_remote_route(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("select[data-pt-on]", js)
+        self.assertIn("/tunnels/trust-remote", js)
+        self.assertIn("/tunnels/pairs", js)
 
 
 if __name__ == "__main__":

@@ -435,6 +435,21 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   // event — no timer). A refused write deletes the entry, so the next render honestly reverts.
   const pendingTrust = new Map<string, string>();
 
+  // BETWEEN YOUR MACHINES (the user 2026-08-11): how attached machines hold EACH OTHER's mail — a
+  // pair link appears nowhere else in this popover; every other row manages only this machine's own
+  // gate. Read live from each machine's kernel via /tunnels/pairs (kicked once per refresh, one dial
+  // in flight — it fans out over the tunnels and must not ride the 3s poll itself), written back
+  // through the kernel's /tunnels/trust-remote proxy: your tunnel + that machine's own serve token,
+  // the same you-with-both-tokens boundary as the web popover's Match. Pending per direction (keyed
+  // holder|sender), confirmed only when a later pairs read shows the level on the holder's own
+  // table — never a timer. A pairs answer repaints from the poll's cached args (lastList), so it
+  // costs no extra /tunnels round trip and cannot loop.
+  const pendingPair = new Map<string, string>();
+  let pairs: any = null;          // last /tunnels/pairs answer; null = not read yet this opening
+  let pairsBusy = false;
+  let lastUp = 0;
+  let lastList: [any[], any[]] | null = null;
+
   // A native <select>'s open dropdown dies with its DOM node, and renderList rebuilds every row each
   // poll — at the connecting-phase 600ms cadence (schedule below) the trust picker's options dismissed
   // the instant they opened (the user 2026-08-04: click it and "it just immediately unclicks"; fine
@@ -456,6 +471,12 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     if (trustEngaged) { deferredRender = () => renderList(ts, known); return; }   // mid-pick — land it after
     list.textContent = "";
     button.classList.toggle("on", ts.some((t) => t.status === "up"));
+    // Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
+    // dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
+    // (Shared by the per-host selects and the pair rows below.)
+    const TRUSTW: Record<string, string> = {
+      trusted: "trusted (auto-accept)", directed: "directed (held for you)", isolated: "isolated (no mail)",
+    };
     if (!ts.length && !known.length) {
       const e = document.createElement("div");
       e.className = "sn-empty";
@@ -511,11 +532,6 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       trust.className = "sn-trust";
       trust.title = `What happens to postal mail from ${t.host}. trusted: delivered straight to `
         + "your sessions. directed: held for your approval. isolated: none, dashboard only.";
-      // Each option carries its own plain gloss: the bare words are romp's vocabulary, not English, and a
-      // dropdown whose meaning only appears on hover makes you uncover every option before you can choose.
-      const TRUSTW: Record<string, string> = {
-        trusted: "trusted (auto-accept)", directed: "directed (held for you)", isolated: "isolated (no mail)",
-      };
       let pend = pendingTrust.get(t.host);
       if (pend && (t.trust || "directed") === pend) { pendingTrust.delete(t.host); pend = undefined; }
       for (const lvl of ["trusted", "directed", "isolated"]) {
@@ -643,6 +659,107 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         list.appendChild(r);
       }
     }
+    // BETWEEN YOUR MACHINES — one row per direction; mechanics on the state block above. Only offered
+    // when two machines are live: with fewer there is no pair to speak of.
+    if (ts.filter((t) => t.status === "up").length >= 2) {
+      const hd = document.createElement("div");
+      hd.className = "sn-khead";
+      hd.textContent = "Between your machines";
+      hd.title = "How your attached machines hold each other's postal mail, one line per direction, read live "
+        + "from each machine's own kernel. Changing a line writes to the holding machine through your tunnel "
+        + "and its own access token: you are acting on both ends; the machines never set each other's trust.";
+      list.appendChild(hd);
+      if (pairs && pairs.pairs) {
+        for (const pr of pairs.pairs) {
+          const dirs: [string, string, string | null][] = [[pr.a, pr.b, pr.ab], [pr.b, pr.a, pr.ba]];
+          for (const [hold, frm, tier] of dirs) {
+            const r = document.createElement("div");
+            r.className = "sn-row sn-known";
+            const nm = document.createElement("span");
+            nm.className = "sn-name";
+            // null = that machine's table was unreadable this pass (named error, retried on the next
+            // kick); "" = no explicit row there yet, which its bus treats as directed for a relayed origin.
+            if (tier === null) {
+              const he = (pairs.hosts && pairs.hosts[hold] && pairs.hosts[hold].error) || "unreadable";
+              nm.textContent = `${hold} holds ${frm}'s mail: unreadable — ${he}`;
+              nm.title = `Could not read ${hold}'s trust table over the tunnel: ${he}. It keeps gating mail `
+                + `by its own last-set levels; retried on the next refresh.`;
+              r.appendChild(nm);
+              list.appendChild(r);
+              continue;
+            }
+            nm.textContent = `${hold} holds ${frm}'s mail`;
+            r.appendChild(nm);
+            const pk = `${hold}|${frm}`;
+            let pend = pendingPair.get(pk);
+            if (pend && (tier || "") === pend) { pendingPair.delete(pk); pend = undefined; }
+            const sel = document.createElement("select");
+            sel.className = "sn-trust";
+            const imp = !tier && !pend ? " Never set explicitly — directed is its default." : "";
+            sel.title = `What ${hold} does with postal mail from ${frm}.${imp} trusted: delivered straight `
+              + `to its sessions. directed: held on ${hold} for your approval. isolated: none.`;
+            for (const lvl of ["trusted", "directed", "isolated"]) {
+              const o = document.createElement("option");
+              o.value = lvl; o.textContent = TRUSTW[lvl];
+              if ((pend || tier || "directed") === lvl) o.selected = true;
+              sel.appendChild(o);
+            }
+            if (pend) { sel.disabled = true; sel.classList.add("sn-applying"); }
+            sel.addEventListener("focus", () => { trustEngaged = true; });      // keyboard path
+            sel.addEventListener("mousedown", () => { trustEngaged = true; });  // pointer path
+            sel.addEventListener("blur", releaseTrust);
+            sel.addEventListener("change", () => {
+              pendingPair.set(pk, sel.value);   // ack on the click; re-renders show the chosen level
+              sel.disabled = true;
+              sel.classList.add("sn-applying");
+              releaseTrust();   // the choice is made — land any deferred snapshot (pendingPair keeps it painted)
+              fetch(kernelUrl("/tunnels/trust-remote"), { method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ onHost: hold, host: frm, trust: sel.value }) })
+                .then((rp) => rp.json())
+                .then((d) => { if (!(d && d.ok)) pendingPair.delete(pk); refreshPairs(); })
+                .catch(() => { pendingPair.delete(pk); refreshPairs(); });
+            });
+            r.appendChild(sel);
+            if (pend) {
+              const pn = document.createElement("span");
+              pn.className = "sn-pend";
+              pn.textContent = "applying…";
+              r.appendChild(pn);
+            }
+            list.appendChild(r);
+          }
+        }
+      } else if (pairs && pairs.error) {
+        const e = document.createElement("div");
+        e.className = "sn-empty";
+        e.textContent = `Couldn't read how your machines hold each other: ${pairs.error} — retrying.`;
+        list.appendChild(e);
+      } else {
+        const e = document.createElement("div");
+        e.className = "sn-empty";
+        e.textContent = "Reading how your machines hold each other…";
+        list.appendChild(e);
+      }
+    }
+  }
+
+  // The pair table is read OUTSIDE the poll (each read dials every live machine's kernel over its
+  // tunnel): refresh() kicks it, at most one in flight, and the answer repaints from the cached poll
+  // args. Fewer than two live hosts means no pairs — clear and skip the dial.
+  function refreshPairs(ts?: any[]) {
+    if (ts) lastUp = ts.filter((t) => t.status === "up").length;
+    if (lastUp < 2) { pairs = null; return; }
+    if (pairsBusy) return;
+    pairsBusy = true;
+    fetch(kernelUrl("/tunnels/pairs"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+      pairsBusy = false;
+      pairs = d && d.ok ? d : { error: (d && d.error) || "unreadable" };
+      if (!pop.hidden && lastList) renderList(lastList[0], lastList[1]);
+    }).catch((err) => {
+      pairsBusy = false;
+      pairs = { error: String(err) };
+      if (!pop.hidden && lastList) renderList(lastList[0], lastList[1]);
+    });
   }
 
   let diagPending = false;   // report the first /tunnels outcome of each open, not every 3s poll
@@ -651,7 +768,9 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
       if (!autoCb.disabled) autoCb.checked = !!(d && d.autoUpdate);   // mirror the kernel; never clobber a write in flight
-      renderList(ts, (d && d.known) || []);
+      lastList = [ts, (d && d.known) || []];
+      renderList(lastList[0], lastList[1]);
+      refreshPairs(ts);
       // An automatic push in flight counts as busy: the button marches while romp works in the background,
       // and the poll runs fast so the phase reads live.
       const pushing = ts.some((t: any) => t.autoPush && (t.autoPush.phase === "pushing" || t.autoPush.phase === "waiting" || t.autoPush.phase === "pulling"));
@@ -697,6 +816,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
       const strip = document.getElementById("romp-strip");
       if (strip) pop.style.bottom = `${strip.offsetHeight + 6}px`;
       diagPending = true;
+      pairs = null;   // fresh read per opening — the loader line, then live data (never a stale table)
       loadHosts();
       refresh();
     }

@@ -275,5 +275,177 @@ class MirrorTrust(unittest.TestCase):
         self.assertIn("no admin path", err)
 
 
+def _stub_kernel(cleanup_with, seen=None, tunnels=None):
+    """A pretend remote kernel on a loopback port: records any POST into `seen` (mirror/remote-trust
+    tests) and answers GET /tunnels with `tunnels` (pairs tests)."""
+    from http.server import BaseHTTPRequestHandler
+
+    class H(BaseHTTPRequestHandler):
+        def _out(self, payload):
+            out = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def do_POST(self):
+            if seen is not None:
+                seen["path"] = self.path
+                seen["token"] = self.headers.get("X-Romp-Token")
+                seen["body"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            self._out({"ok": True})
+
+        def do_GET(self):
+            self._out(tunnels or {})
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    cleanup_with(srv.shutdown)
+    return srv.server_address[1]
+
+
+class RemoteTrust(unittest.TestCase):
+    """remote_trust (the user 2026-08-11): the hub sets ON one attached machine ITS trust level for
+    another host — the popover's 'Between your machines' rows. Same boundary as mirror_trust: the
+    write crosses the on-host tunnel with that machine's own serve token, and that machine's own
+    /tunnels/trust route persists it; a peer can never raise its own standing."""
+
+    def tearDown(self):
+        with km._remotes_lock:
+            km._remotes.pop("boxa", None)
+
+    def test_writes_the_pair_level_through_the_holders_tunnel(self):
+        seen = {}
+        port = _stub_kernel(self.addCleanup, seen=seen)
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=port, token="remote-tok", trust="directed")
+        res, err = km.remote_trust("boxa", "boxb", "trusted")
+        self.assertIsNone(err)
+        self.assertEqual(res, {"onHost": "boxa", "host": "boxb", "trust": "trusted"})
+        self.assertEqual(seen["path"], "/tunnels/trust", "the holder's own persisting route does the write")
+        self.assertEqual(seen["token"], "remote-tok", "authorized with the HOLDING machine's serve token")
+        self.assertEqual(seen["body"], {"host": "boxb", "trust": "trusted"},
+                         "boxa is told to hold boxb at the chosen level")
+
+    def test_bad_level_refused_before_any_dial(self):
+        res, err = km.remote_trust("boxa", "boxb", "bogus")
+        self.assertIsNone(res)
+        self.assertIn("trust must be one of", err)
+
+    def test_without_a_tunnel_errors_plainly(self):
+        res, err = km.remote_trust("nosuchhost", "boxb", "trusted")
+        self.assertIsNone(res)
+        self.assertTrue(err.startswith("no attached"), err)
+
+    def test_a_machine_never_tiers_its_own_mail(self):
+        res, err = km.remote_trust("boxa", "boxa", "trusted")
+        self.assertIsNone(res)
+        self.assertIn("own mail", err)
+
+
+class PairsSnapshot(unittest.TestCase):
+    """pairs_snapshot: the hub reads each attached machine's own trust table over its tunnel and
+    assembles per-pair directions. '' = the holder has no explicit row (the bus treats a relayed
+    origin as directed); None + a named per-host error = that machine was unreadable this pass —
+    surfaced, never silently dropped (fail loudly)."""
+
+    def tearDown(self):
+        with km._remotes_lock:
+            for h in ("boxa", "boxb"):
+                km._remotes.pop(h, None)
+
+    def test_pairs_read_both_directions_from_each_machines_own_table(self):
+        # boxa holds boxb via an attached-tunnel row; boxb holds boxa via a relay (viaReach) row —
+        # the three row kinds a tier can live on are all consulted.
+        pa = _stub_kernel(self.addCleanup, tunnels={"tunnels": [{"host": "boxb", "trust": "trusted"}],
+                                                    "known": [], "viaReach": []})
+        pb = _stub_kernel(self.addCleanup, tunnels={"tunnels": [], "known": [],
+                                                    "viaReach": [{"host": "boxa", "trust": "isolated"}]})
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=pa, token="ta")
+            km._remotes["boxb"] = _row("boxb", local_port=pb, token="tb")
+        snap = km.pairs_snapshot()
+        self.assertTrue(snap["ok"])
+        self.assertEqual(snap["hosts"], {"boxa": {"ok": True}, "boxb": {"ok": True}})
+        self.assertEqual(snap["pairs"], [{"a": "boxa", "b": "boxb", "ab": "trusted", "ba": "isolated"}])
+
+    def test_no_explicit_row_reads_empty_never_an_invented_level(self):
+        pa = _stub_kernel(self.addCleanup, tunnels={"tunnels": [], "known": [], "viaReach": []})
+        pb = _stub_kernel(self.addCleanup, tunnels={"tunnels": [],
+                                                    "known": [{"host": "boxa", "trust": "trusted"}],
+                                                    "viaReach": []})
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=pa, token="ta")
+            km._remotes["boxb"] = _row("boxb", local_port=pb, token="tb")
+        snap = km.pairs_snapshot()
+        self.assertEqual(snap["pairs"], [{"a": "boxa", "b": "boxb", "ab": "", "ba": "trusted"}])
+
+    def test_an_unreadable_machine_carries_its_error_not_a_guess(self):
+        pa = _stub_kernel(self.addCleanup, tunnels={"tunnels": [{"host": "boxb", "trust": "directed"}]})
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=pa, token="ta")
+            km._remotes["boxb"] = _row("boxb", status="down")
+        snap = km.pairs_snapshot()
+        self.assertEqual(snap["hosts"]["boxb"], {"ok": False, "error": "not connected"})
+        self.assertEqual(snap["pairs"], [{"a": "boxa", "b": "boxb", "ab": "directed", "ba": None}])
+
+
+class PairRoutes(unittest.TestCase):
+    """Route wiring for the pair section: GET /tunnels/pairs answers the snapshot; POST
+    /tunnels/trust-remote proxies the write and maps errors to honest statuses."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def setUp(self):
+        with km._remotes_lock:
+            km._remotes.clear()
+
+    def _call(self, method, path, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request(method, path, None if body is None else json.dumps(body),
+                  {"Content-Type": "application/json", "X-Romp-Token": km.TOKEN})
+        r = c.getresponse()
+        data = json.loads(r.read().decode() or "{}")
+        c.close()
+        return r.status, data
+
+    def test_pairs_route_answers_empty_world(self):
+        code, data = self._call("GET", "/tunnels/pairs")
+        self.assertEqual(code, 200)
+        self.assertEqual(data, {"ok": True, "hosts": {}, "pairs": []})
+
+    def test_trust_remote_route_round_trips_to_the_stub(self):
+        seen = {}
+        port = _stub_kernel(self.addCleanup, seen=seen)
+        with km._remotes_lock:
+            km._remotes["boxa"] = _row("boxa", local_port=port, token="remote-tok")
+        code, data = self._call("POST", "/tunnels/trust-remote",
+                                {"onHost": "boxa", "host": "boxb", "trust": "trusted"})
+        self.assertEqual(code, 200)
+        self.assertEqual(data, {"ok": True, "set": {"onHost": "boxa", "host": "boxb", "trust": "trusted"}})
+        self.assertEqual(seen["body"], {"host": "boxb", "trust": "trusted"})
+
+    def test_trust_remote_route_maps_errors_to_statuses(self):
+        code, data = self._call("POST", "/tunnels/trust-remote",
+                                {"onHost": "boxa", "host": "boxb", "trust": "bogus"})
+        self.assertEqual((code, data["ok"]), (400, False))
+        code, data = self._call("POST", "/tunnels/trust-remote",
+                                {"onHost": "ghost", "host": "boxb", "trust": "trusted"})
+        self.assertEqual((code, data["ok"]), (404, False))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

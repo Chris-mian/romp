@@ -6323,6 +6323,31 @@ def set_trust(host, level):
         return (_remote_public(_remotes[host]) if host in _remotes else None), None
 
 
+def _remote_kernel_call(r, method, path, payload=None, timeout=8):
+    """One HTTP call to an attached host's kernel: through the tunnel's local forward, authorized with
+    THAT machine's own serve token (the admin access the user already holds). This is mirror_trust's
+    transport, shared by the pair-trust routes. `r` is a remotes-row snapshot.
+    Returns (status, parsed_json, None) or (None, None, error)."""
+    host = r.get("host") or "?"
+    port, tok = r.get("local_port") or 0, r.get("token") or ""
+    if not port or not tok:
+        return None, None, "no admin path to '%s' (missing forward or token)" % host
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=timeout)
+        hdrs = {"X-Romp-Token": tok}
+        body = None
+        if payload is not None:
+            body = json.dumps(payload)
+            hdrs["Content-Type"] = "application/json"
+        conn.request(method, path, body, hdrs)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        return resp.status, json.loads(data.decode() or "{}"), None
+    except Exception as e:
+        return None, None, "could not reach %s's kernel: %s" % (host, e)
+
+
 def mirror_trust(host):
     """Set OUR current trust level for `host` as ITS trust level for US — through the admin access the
     user already holds on that machine (the attached tunnel's local forward + that machine's serve
@@ -6338,23 +6363,90 @@ def mirror_trust(host):
     if not r:
         return None, "no attached tunnel to '%s' — set trust from that machine's own dashboard" % host
     level = r.get("trust") or "directed"
-    port, tok = r.get("local_port") or 0, r.get("token") or ""
-    if not port or not tok:
-        return None, "no admin path to '%s' (missing forward or token) — set trust from its dashboard" % host
-    try:
-        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=8)
-        conn.request("POST", "/tunnels/trust",
-                     json.dumps({"host": _self_host(), "trust": level}),
-                     {"Content-Type": "application/json", "X-Romp-Token": tok})
-        resp = conn.getresponse()
-        data = resp.read()
-        conn.close()
-        j = json.loads(data.decode() or "{}")
-    except Exception as e:
-        return None, "could not reach %s's kernel: %s" % (host, e)
+    st, j, err = _remote_kernel_call(r, "POST", "/tunnels/trust", {"host": _self_host(), "trust": level})
+    if err:
+        return None, err + (" — set trust from its dashboard" if err.startswith("no admin path") else "")
     if not j.get("ok"):
-        return None, j.get("error") or ("HTTP %s from %s" % (resp.status, host))
+        return None, j.get("error") or ("HTTP %s from %s" % (st, host))
     return {"host": host, "trust": level}, None
+
+
+def remote_trust(on_host, of_host, level):
+    """Set ON one attached machine ITS trust level for another host — the popover's 'Between your
+    machines' rows (the user 2026-08-11, who wanted to say from the laptop that two of their machines
+    trust each other, instead of opening each machine's own dashboard). The write crosses the on-host
+    tunnel with that machine's own serve token and lands on its /tunnels/trust, so it persists there
+    exactly like a locally-set level (remotes row, or origin-only known entry — a pair usually has no
+    direct tunnel between its ends, only relay reach). Same trust boundary as mirror_trust: the human
+    holding admin on the machine acts; a peer can never raise its own standing.
+    Returns ({onHost, host, trust}, None) or (None, error)."""
+    if level not in TRUST_LEVELS:
+        return None, "trust must be one of %s" % ", ".join(TRUST_LEVELS)
+    on_host, of_host = (on_host or "").strip(), (of_host or "").strip()
+    if not on_host or not of_host:
+        return None, "onHost and host required"
+    if on_host == of_host:
+        return None, "a machine does not tier its own mail"
+    with _remotes_lock:
+        r = dict(_remotes.get(on_host) or {})
+    if not r:
+        return None, "no attached tunnel to '%s' — its trust table is set through your own tunnel" % on_host
+    st, j, err = _remote_kernel_call(r, "POST", "/tunnels/trust", {"host": of_host, "trust": level})
+    if err:
+        return None, err
+    if not j.get("ok"):
+        return None, j.get("error") or ("HTTP %s from %s" % (st, on_host))
+    return {"onHost": on_host, "host": of_host, "trust": level}, None
+
+
+def pairs_snapshot():
+    """How each pair of attached machines holds EACH OTHER's mail, read live from each machine's own
+    kernel through its tunnel + token — the authoritative tables (the bus gossip only carries how
+    peers hold THIS machine's mail, so a third-party link is invisible to it). Feeds the popover's
+    'Between your machines' section; /tunnels/trust-remote writes back. Hosts are read in parallel,
+    and one that cannot be read carries its error instead of silently dropping its directions (fail
+    loudly). A direction with no explicit row on the holding machine reads "" — effectively directed,
+    the inbound default for a relayed origin."""
+    with _remotes_lock:
+        rows = {h: dict(r) for h, r in _remotes.items()}
+    hosts, tables = {}, {}
+
+    def one(h, r):
+        if (r.get("status") or "") != "up":
+            hosts[h] = {"ok": False, "error": "not connected"}
+            return
+        st, j, err = _remote_kernel_call(r, "GET", "/tunnels", timeout=6)
+        if err or not isinstance(j, dict):
+            hosts[h] = {"ok": False, "error": err or ("HTTP %s" % st)}
+            return
+        t = {}
+        for row in (j.get("tunnels") or []):          # attached rows are that kernel's authority…
+            if row.get("host"):
+                t[row["host"]] = row.get("trust") or "directed"
+        for row in (j.get("known") or []):            # …then remembered hosts, then relay-known rows
+            if row.get("host"):
+                t.setdefault(row["host"], row.get("trust") or "directed")
+        for row in (j.get("viaReach") or []):
+            if row.get("host"):
+                t.setdefault(row["host"], row.get("trust") or "directed")
+        hosts[h] = {"ok": True}
+        tables[h] = t
+
+    ths = [threading.Thread(target=one, args=(h, r), daemon=True) for h, r in rows.items()]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(timeout=8)
+    for h in rows:
+        if h not in hosts:                            # a reader still past the join deadline
+            hosts[h] = {"ok": False, "error": "timed out"}
+    pairs, names = [], sorted(rows)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            pairs.append({"a": a, "b": b,
+                          "ab": (tables.get(a) or {}).get(b, "") if hosts[a]["ok"] else None,
+                          "ba": (tables.get(b) or {}).get(a, "") if hosts[b]["ok"] else None})
+    return {"ok": True, "hosts": hosts, "pairs": pairs}
 
 
 def _checkin_payload(r):
@@ -19052,7 +19144,7 @@ function showAdd(on){if(!addBox)return;addBox.hidden=!on;hint.hidden=!on;plus.hi
 if(on&&hostIn){hostIn.value=hostIn.value||mruHost();try{hostIn.focus();hostIn.select();}catch(e){}}}
 var _autoAdd=false;
 var _auto=false;   // "Automatically update" — mirrored from the KERNEL each refresh, never a local guess
-function open(){back.hidden=false;_autoAdd=false;showAdd(false);trustEngaged=false;deferredRender=null;loadHosts();refresh();}
+function open(){back.hidden=false;_autoAdd=false;showAdd(false);trustEngaged=false;deferredRender=null;_pairs=null;loadHosts();refresh();}
 function close(){back.hidden=true;trustEngaged=false;deferredRender=null;}
 if(plus)plus.onclick=function(){showAdd(true);};
 // "How it works" — the gist reads by itself; the mechanics are one click under it.
@@ -19076,6 +19168,12 @@ var _cfg=[],_seen=[];
 // (the user 2026-07-27). Pending is keyed per host and survives re-renders: rows show the CHOSEN
 // level, disabled with an applying cue, until a snapshot agrees (the confirming EVENT — no timer).
 var _pendTrust={},_pendMirror={};
+// BETWEEN YOUR MACHINES state (the user 2026-08-11): _pairs is the last /tunnels/pairs answer (null =
+// not read yet this opening), _pendPair the per-direction pending map (keyed holder|sender — a host
+// name cannot contain '|' — with _pendTrust's confirm-by-snapshot discipline). Reading pairs dials EACH machine's kernel over its
+// tunnel, so it never rides the 3s poll itself: refresh() kicks it, one in flight at a time
+// (_pairsBusy), and the answer repaints from the poll's cached args (_lastArgs) — no fetch loop.
+var _pendPair={},_pairs=null,_pairsBusy=false,_lastArgs=null,_lastUp=0;
 function pendLvl(map,host,current){var p=map[host];if(p&&current===p){delete map[host];p=null;}return p;}
 function fillHosts(){if(!dl)return;var hs=[];
 [[mruHost()],_seen,_cfg].forEach(function(g){(g||[]).forEach(function(h){if(h&&hs.indexOf(h)<0)hs.push(h);});});   // most-recently-connected first, not just ssh-config order
@@ -19186,7 +19284,9 @@ icon.title=ts.length?('Remote kernels \\u00b7 '+_head+'\\n'+ts.map(function(t){v
 var ap=t.autoPush?('\\n    auto-update: '+(t.autoPush.detail||t.autoPush.phase)):'';
 var dw=t.outOfDate?(' \\u00b7 '+(t.status==='up'?'':'last known ')+driftWord(t)):'';
 return '\\u2022 '+t.host+': '+(LBL[t.status]||t.status)+' ('+n+' session'+(n===1?'':'s')+')'+dw+(t.token?'':' \\u00b7 no token')+ap;}).join('\\n')):'Remote kernels \\u2014 none attached (click to connect)';
-if(!back.hidden)render(ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{});   // pmode is refresh-local — render must be GIVEN it
+_lastArgs=[ts,(d&&d.known)||[],pmode,(d&&d.viaReach)||[],(d&&d.remoteHolds)||[],(d&&d.peerTiers)||{}];
+_lastUp=ts.filter(function(t){return t.status==='up';}).length;
+if(!back.hidden){render.apply(null,_lastArgs);refreshPairs();}   // pmode is refresh-local — render must be GIVEN it (it rides _lastArgs)
 // while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
 // are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
 schedule((busy||pushing.length)?600:3000);   // poll fast while an auto-push runs, so its progress reads live
@@ -19213,6 +19313,15 @@ function releaseTrust(){trustEngaged=false;var f=deferredRender;deferredRender=n
 list.addEventListener('mousedown',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('rnet-trust'))trustEngaged=true;},true);
 list.addEventListener('focusin',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('rnet-trust'))trustEngaged=true;});
 list.addEventListener('focusout',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('rnet-trust'))releaseTrust();});
+// Fetch the pair table when it can mean anything (two live hosts), at most one dial in flight; the
+// answer repaints from the poll's cached args rather than forcing another /tunnels round trip.
+function refreshPairs(){if(_lastUp<2){_pairs=null;return;}
+if(_pairsBusy)return;
+_pairsBusy=true;
+fetch('/tunnels/pairs',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+_pairsBusy=false;_pairs=(d&&d.ok)?d:{error:(d&&d.error)||'unreadable'};repaint();
+}).catch(function(e){_pairsBusy=false;_pairs={error:String((e&&(e.message||e.name))||e)};repaint();});}
+function repaint(){if(!back.hidden&&_lastArgs)render.apply(null,_lastArgs);}
 function render(ts,known,pmode,via,rholds,tiers){
 if(trustEngaged){deferredRender=function(){render(ts,known,pmode,via,rholds,tiers);};return;}
 list.innerHTML='';known=known||[];via=via||[];rholds=rholds||[];tiers=tiers||{};
@@ -19371,6 +19480,38 @@ var vtrust='<select class=\"rnet-trust'+(vpd?' rnet-applying':'')+'\"'+(vpd?' di
 vr.innerHTML='<span class=rnet-dot style=\"background:transparent;box-shadow:inset 0 0 0 1.5px #7a6a3a\" title=\"No direct tunnel; reachable one hop through '+v.via+'.\"></span>'+
 '<span class=nm><b>'+v.host+'</b> <span class=st title=\"Its sessions are gossiped one hop by '+v.via+'; attach it directly for full control.\">via '+v.via+' \\u00b7 '+(v.agents||0)+' session'+((v.agents||0)===1?'':'s')+'</span></span>'+vtrust;
 list.appendChild(vr);});}
+// BETWEEN YOUR MACHINES (the user 2026-08-11): how attached machines hold EACH OTHER's mail. The
+// pair link a\\u2194b appears nowhere above — every list in this panel manages only THIS machine's own
+// gates — so making two remote boxes trust each other used to mean opening each box's own dashboard.
+// One row per direction, read live from each machine's kernel (/tunnels/pairs) and written back
+// through your tunnel + that machine's own serve token (/tunnels/trust-remote): the same
+// you-with-both-tokens boundary as Match, so a peer still can never raise its own standing.
+var upn=ts.filter(function(t){return t.status==='up';});
+if(upn.length>=2){
+var bh=document.createElement('div');bh.className='rnet-khead';bh.textContent='Between your machines';
+bh.title='How your attached machines hold each other\\u2019s postal mail, one line per direction, read live from each machine\\u2019s own kernel. Changing a line writes to the holding machine through your tunnel and its own access token (like Match): you are acting on both ends; the machines never set each other\\u2019s trust.';
+list.appendChild(bh);
+if(_pairs&&_pairs.pairs){_pairs.pairs.forEach(function(pr){
+[[pr.a,pr.b,pr.ab],[pr.b,pr.a,pr.ba]].forEach(function(dd){var hold=dd[0],frm=dd[1],tier=dd[2];
+var br=document.createElement('div');br.className='rnet-row rnet-known';
+// null = that machine's table was unreadable this pass (named error, retried next kick); '' = no
+// explicit row there yet, which the receiving bus treats as directed for a relayed origin.
+if(tier===null){var he=(_pairs.hosts&&_pairs.hosts[hold]&&_pairs.hosts[hold].error)||'unreadable';
+br.innerHTML='<span class=nm><b>'+hold+'</b> holds <b>'+frm+'</b>\\u2019s mail: <span class=st title=\"Could not read '+hold+'\\u2019s trust table over the tunnel: '+he+'. It keeps gating mail by its own last-set levels; retried on the next refresh.\">unreadable \\u2014 '+he+'</span></span>';
+list.appendChild(br);return;}
+var pk=hold+'|'+frm;
+var ppd=pendLvl(_pendPair,pk,tier||'');   // confirmed when the holder's own table shows the chosen level
+var pcur=ppd||tier||'directed';
+var imp=(!tier&&!ppd)?' Never set explicitly \\u2014 directed is its default.':'';
+br.innerHTML='<span class=nm><b>'+hold+'</b> holds <b>'+frm+'</b>\\u2019s mail</span>'+
+'<span class=rnet-set><select class=\"rnet-trust'+(ppd?' rnet-applying':'')+'\"'+(ppd?' disabled':'')+' data-pt-on=\"'+hold+'\" data-pt-of=\"'+frm+'\" title=\"What '+hold+' does with postal mail from '+frm+'.'+imp+' trusted: delivered straight to its sessions. directed: held on '+hold+' for your approval. isolated: none.\">'+
+['trusted','directed','isolated'].map(function(v){return '<option value='+v+(pcur===v?' selected':'')+'>'+TRUSTW[v]+'</option>';}).join('')+'</select>'+(ppd?'<span class=rnet-pend>'+spin()+'applying\\u2026</span>':'')+'</span>';
+list.appendChild(br);});});}
+else if(_pairs&&_pairs.error){var be=document.createElement('div');be.className='rnet-row rnet-known';
+be.innerHTML='<span class=st>Could not read how your machines hold each other: '+_pairs.error+' \\u2014 retrying.</span>';list.appendChild(be);}
+else{var bl=document.createElement('div');bl.className='rnet-row rnet-known';
+bl.innerHTML='<span class=st>'+spin()+'reading how your machines hold each other\\u2026</span>';list.appendChild(bl);}
+}
 // HELD ELSEWHERE (the user 2026-07-25): mail waiting for approval on OTHER machines — direct peers
 // and one relay hop — which used to be visible only on the holding machine's own dashboard. One
 // line per machine (count first, gists on hover); acting on them still happens on that machine.
@@ -19398,6 +19539,14 @@ _pendMirror[h]=b.getAttribute('data-lvl')||'';b.disabled=true;b.textContent='Mat
 fetch('/tunnels/trust-mirror',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){delete _pendMirror[h];alert('trust match on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
 refresh();}).catch(function(){delete _pendMirror[h];alert('trust match on '+h+' failed to reach the kernel.');refresh();});};});
+// A pair direction: pending on the click (ack now), written to the HOLDING machine via the kernel's
+// trust-remote proxy, confirmed only when a later pairs read shows the level on that machine's table.
+list.querySelectorAll('select[data-pt-on]').forEach(function(s){s.onchange=function(){
+var on=s.getAttribute('data-pt-on'),of=s.getAttribute('data-pt-of');
+_pendPair[on+'|'+of]=s.value;s.disabled=true;s.classList.add('rnet-applying');releaseTrust();
+fetch('/tunnels/trust-remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({onHost:on,host:of,trust:s.value})}).then(function(r){return r.json();}).then(function(d){
+if(!(d&&d.ok)){delete _pendPair[on+'|'+of];alert('trust change on '+on+' for '+of+'\\u2019s mail failed: '+((d&&d.error)||'unknown'));repaint();}   // fail LOUDLY (CLAUDE.md)
+refreshPairs();}).catch(function(){delete _pendPair[on+'|'+of];alert('trust change on '+on+' for '+of+'\\u2019s mail failed to reach the kernel.');repaint();refreshPairs();});};});
 list.querySelectorAll('input[data-k]').forEach(function(c){c.onchange=function(){var h=c.getAttribute('data-k');
 c.disabled=true;fetch('/tunnels/checkin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,on:c.checked})}).then(function(r){return r.json();}).then(function(d){
 if(!(d&&d.ok)){c.checked=!c.checked;alert('keep-connected on '+h+' failed: '+((d&&d.error)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
@@ -20957,6 +21106,11 @@ class Handler(BaseHTTPRequestHandler):
                                                              "host": _self_host()},
                                                    "peersMode": _postal_peers_on()}),
                                   "application/json", cache="no-cache")
+            if p == "/tunnels/pairs":                         # how attached machines hold EACH OTHER's mail —
+                # read live from each machine's kernel through its tunnel (the popover's "Between your
+                # machines" rows). Fetched on demand, never folded into /tunnels: this one fans out
+                # over ssh and must not tax the popover's 3s poll.
+                return self._send(200, json.dumps(pairs_snapshot()), "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):
@@ -21516,6 +21670,27 @@ class Handler(BaseHTTPRequestHandler):
                     code = 404 if err.startswith("no attached") else 502
                     return self._send(code, json.dumps({"ok": False, "error": err}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "mirrored": res}), "application/json")
+            if u.path == "/tunnels/trust-remote":
+                # Set on ONE attached machine its trust level for ANOTHER host — the popover's
+                # "Between your machines" rows (the user 2026-08-11). Body: {"onHost", "host",
+                # "trust"}. The write crosses onHost's tunnel with its own serve token: the human
+                # with admin on that machine acting, exactly like Match; a peer can never set
+                # another machine's trust, and this route never lets one (it only ever dials a
+                # tunnel THIS user attached).
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                on_h = str((body or {}).get("onHost") or "").strip() if isinstance(body, dict) else ""
+                of_h = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                level = str((body or {}).get("trust") or "").strip() if isinstance(body, dict) else ""
+                res, err = remote_trust(on_h, of_h, level)
+                if err:
+                    code = (404 if err.startswith("no attached")
+                            else 400 if (err.startswith("trust must be") or err.endswith("required")
+                                         or err.endswith("own mail")) else 502)
+                    return self._send(code, json.dumps({"ok": False, "error": err}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "set": res}), "application/json")
             if u.path == "/checkin":
                 # A mobile machine's check-in handshake arriving through its own reverse forward.
                 try:

@@ -77,3 +77,29 @@ test("an engaged trust select DEFERS the rebuild — its open dropdown survives 
   assert.match(KERNEL, /rnet-applying'\);releaseTrust\(\);/);
   assert.match(KERNEL, /function close\(\)\{back\.hidden=true;trustEngaged=false;deferredRender=null;\}/);
 });
+
+test("pair rows (Between your machines) wear the same pending discipline in both copies (the user 2026-08-11)", () => {
+  // Web copy: per-direction pending map (holder|sender — '|' cannot appear in a host name), recorded
+  // on the click, cleared only when a later pairs read agrees, honest revert on a refused write.
+  assert.match(KERNEL, /var _pendPair=\{\},_pairs=null,_pairsBusy=false/, "pair state outlives render()");
+  assert.match(KERNEL, /var pk=hold\+'\|'\+frm;/);
+  assert.match(KERNEL, /var ppd=pendLvl\(_pendPair,pk,tier\|\|''\)/, "cleared by agreement with the holder's table");
+  assert.match(KERNEL, /_pendPair\[on\+'\|'\+of\]=s\.value;s\.disabled=true;s\.classList\.add\('rnet-applying'\);releaseTrust\(\);/);
+  assert.match(KERNEL, /delete _pendPair\[on\+'\|'\+of\];alert\('trust change on '/, "refused write reverts AND alerts");
+  // the pair select is a .rnet-trust, so the engaged-defer above covers it too
+  assert.match(KERNEL, /select class=\\"rnet-trust'\+\(ppd\?' rnet-applying':''\)/);
+  // the write crosses to the HOLDING machine via the kernel proxy; reads come from /tunnels/pairs
+  assert.match(KERNEL, /'\/tunnels\/trust-remote'/);
+  assert.match(KERNEL, /fetch\('\/tunnels\/pairs',\{cache:'no-store'\}\)/);
+  // Strip copy: same map, same ack-on-click, same honest revert, same engage/defer paths.
+  assert.match(STRIP, /const pendingPair = new Map<string, string>\(\);/);
+  assert.match(STRIP, /const pk = `\$\{hold\}\|\$\{frm\}`;/);
+  assert.match(STRIP, /if \(pend && \(tier \|\| ""\) === pend\) \{ pendingPair\.delete\(pk\); pend = undefined; \}/);
+  assert.match(STRIP, /pendingPair\.set\(pk, sel\.value\);/, "recorded on the click");
+  assert.match(STRIP, /if \(!\(d && d\.ok\)\) pendingPair\.delete\(pk\)/, "refused write reverts honestly");
+  assert.match(STRIP, /sel\.addEventListener\("focus", \(\) => \{ trustEngaged = true; \}\);/);
+  assert.match(STRIP, /sel\.addEventListener\("mousedown", \(\) => \{ trustEngaged = true; \}\);/);
+  assert.match(STRIP, /sel\.addEventListener\("blur", releaseTrust\);/);
+  assert.match(STRIP, /\/tunnels\/trust-remote/);
+  assert.match(STRIP, /\/tunnels\/pairs/);
+});
