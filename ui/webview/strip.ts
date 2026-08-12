@@ -419,12 +419,25 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
     }).catch(() => { sel.innerHTML = `<option value="">(kernel unreachable)</option>`; });   // loud, never silently empty
   }
 
-  function act(path: string, host: string, b: HTMLButtonElement, busyText: string) {
+  function act(path: string, host: string, b: HTMLButtonElement, busyText: string, via?: string) {
     b.disabled = true;
     const prev = b.textContent;
     b.textContent = busyText;
-    fetch(kernelUrl(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) })
-      .then(() => schedule(600))
+    fetch(kernelUrl(path), { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(via ? { host, via } : { host }) })
+      .then((rp) => rp.json().catch(() => null))
+      .then((d) => {
+        if (via && d && d.ok === false) {
+          // a forwarded refusal has no status row of its own to land on — name it HERE (fail loudly)
+          b.disabled = false;
+          b.textContent = prev;
+          b.classList.add("sn-actfail");
+          b.title = String(d.error || d.detail || "refused");
+          return;
+        }
+        schedule(600);
+        if (via) fetchSub(via);   // the sub-list's state lives on the via machine — re-read it
+      })
       .catch(() => { b.disabled = false; b.textContent = prev; });
   }
 
@@ -449,6 +462,32 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   let pairsBusy = false;
   let lastUp = 0;
   let lastList: [any[], any[]] | null = null;
+
+  // ITS CONNECTIONS (the user 2026-08-11): every up host's row expands into THAT machine's own
+  // attached-host list — same row treatment, working controls — so what's connected to what is
+  // managed from one dashboard. Rows come from /tunnels/of (the machine's own /tunnels, read over
+  // your tunnel + its serve token), fetched on EXPAND and after a forwarded action, never in the
+  // 3s poll — the /tunnels/pairs rule. Actions post the normal routes with {via}: the kernel
+  // relays them to the machine that owns the tunnel (_via_forward), which judges the action
+  // itself; a refusal is named on the button. Keyed expand state and a via|host pending-trust
+  // latch survive re-renders (the progressive-disclosure and pending-confirm rules).
+  const openSub = new Set<string>();
+  const subInfo = new Map<string, any>();       // via-host -> last /tunnels/of answer
+  const subBusy = new Set<string>();
+  const pendingSub = new Map<string, string>(); // `${via}|${host}` -> chosen trust, confirmed by a later read
+
+  function fetchSub(host: string) {
+    if (subBusy.has(host)) return;
+    subBusy.add(host);
+    fetch(kernelUrl("/tunnels/of?host=" + encodeURIComponent(host)), { cache: "no-store" })
+      .then((r) => r.json())
+      .catch(() => ({ ok: false, error: "kernel unreachable" }))
+      .then((d) => {
+        subBusy.delete(host);
+        subInfo.set(host, d || { ok: false, error: "empty answer" });
+        if (openSub.has(host) && lastList) renderList(...lastList);
+      });
+  }
 
   // A native <select>'s open dropdown dies with its DOM node, and renderList rebuilds every row each
   // poll — at the connecting-phase 600ms cadence (schedule below) the trust picker's options dismissed
@@ -615,6 +654,21 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         + `keeping its trust level, so you can re-attach in one click.`;
       d.addEventListener("click", () => act("/tunnels/detach", t.host, d, "…"));
       r.appendChild(d);
+      if (t.status === "up") {
+        // ITS CONNECTIONS — the keyed expand (progressive disclosure): compact row by default,
+        // that machine's own attached list one click deeper, fetched on the click, never the poll.
+        const xp = document.createElement("button");
+        xp.className = "sn-subtoggle";
+        xp.textContent = (openSub.has(t.host) ? "▾" : "▸") + " connections";
+        xp.title = `${t.host}'s own attached hosts — see and manage what IT is connected to, from here. `
+          + `Rows read live from its kernel over your tunnel + its own token; actions run there.`;
+        xp.addEventListener("click", () => {
+          if (openSub.has(t.host)) openSub.delete(t.host);
+          else { openSub.add(t.host); if (!subInfo.has(t.host)) fetchSub(t.host); }
+          if (lastList) renderList(...lastList);
+        });
+        r.appendChild(xp);
+      }
       list.appendChild(r);
       // Live automatic-update phase under the row — the work still announces itself, it just does it here
       // instead of over your screen. A FAILURE stays put and red (fail loudly) rather than vanishing into a
@@ -629,6 +683,7 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
           : "romp is updating this host in the background.";
         list.appendChild(ap);
       }
+      if (t.status === "up" && openSub.has(t.host)) renderSub(t.host);
     }
     // PREVIOUSLY ATTACHED (the user 2026-07-22): hosts attached before, kept after detach so they are one
     // click away instead of buried in the ssh-config dropdown. Dimmed, each remembering the trust level
@@ -747,6 +802,155 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         list.appendChild(e);
       }
     }
+  }
+
+  // The expanded "connections" block under an up host: THAT machine's attached rows, indented,
+  // with the controls its own popover would offer — status/version drift from the fields IT
+  // computed (drift there is measured between the via machine and its remote, so the numbers are
+  // its own), and every action riding the normal route + {via}. Loading and errors say so; a
+  // failed read gets a Retry, never a silent blank.
+  function renderSub(via: string) {
+    const d = subInfo.get(via);
+    if (!d) {
+      const e = document.createElement("div");
+      e.className = "sn-sub sn-empty";
+      e.textContent = `Reading ${via}'s connections…`;
+      list.appendChild(e);
+      return;
+    }
+    if (!d.ok) {
+      const e = document.createElement("div");
+      e.className = "sn-sub sn-empty";
+      e.textContent = `Couldn't read ${via}'s connections: ${d.error || "unknown error"} `;
+      const rt = document.createElement("button");
+      rt.textContent = "Retry";
+      rt.addEventListener("click", () => {
+        subInfo.delete(via);
+        fetchSub(via);
+        if (lastList) renderList(...lastList);
+      });
+      e.appendChild(rt);
+      list.appendChild(e);
+      return;
+    }
+    const rows = d.tunnels || [];
+    if (!rows.length) {
+      const e = document.createElement("div");
+      e.className = "sn-sub sn-empty";
+      e.textContent = `${via} has no hosts attached.`;
+      list.appendChild(e);
+      return;
+    }
+    for (const s of rows) subRow(via, s);
+  }
+
+  function subRow(via: string, s: any) {
+    const TRUSTW: Record<string, string> = {
+      trusted: "trusted (auto-accept)", directed: "directed (held for you)", isolated: "isolated (no mail)",
+    };
+    const r = document.createElement("div");
+    r.className = "sn-row sn-sub";
+    const dot = document.createElement("span");
+    dot.className = "sn-dot";
+    dot.style.background = s.status === "up" ? "var(--accent, #9cd2ff)"
+      : (s.status === "error" || s.status === "no-kernel") ? "#E5534B"
+      : (s.status === "down") ? "#8a8a8a" : "transparent";
+    if (dot.style.background === "transparent") dot.style.boxShadow = "inset 0 0 0 1.5px var(--accent, #9cd2ff)";
+    dot.title = TIP[s.status] || "";
+    const nm = document.createElement("span");
+    nm.className = "sn-name";
+    let ver = "";
+    if (s.outOfDate) {
+      const bb = s.behindBy, ab = s.aheadBy;
+      ver = " · different build";
+      if (typeof bb === "number" && typeof ab === "number") {
+        ver = bb > 0 && ab > 0 ? " · diverged"
+          : ab > 0 ? ` · ahead ${ab} commit${ab === 1 ? "" : "s"}`
+          : bb > 0 ? ` · behind ${bb} commit${bb === 1 ? "" : "s"}` : ver;
+      }
+    }
+    nm.textContent = `${s.host} — ${LBL[s.status] || s.status}${ver}`;
+    nm.title = `${via}'s tunnel to ${s.host}. ` + (TIP[s.status] || "")
+      + (s.outOfDate ? `\n\n${s.host} runs ${s.kernelSha || "?"}; ${via} is at ${s.localSha || "?"} — `
+        + `drift here is between THOSE two machines, not this one.` : "");
+    r.append(dot, nm);
+    // trust: what VIA does with this host's mail — written on via over your tunnel + its token,
+    // the same you-with-both-tokens boundary as the pair rows. Pending latches per via|host until
+    // a later /tunnels/of read agrees (the confirming event, never a timer).
+    const pk = `${via}|${s.host}`;
+    let pend = pendingSub.get(pk);
+    if (pend && (s.trust || "directed") === pend) { pendingSub.delete(pk); pend = undefined; }
+    const sel = document.createElement("select");
+    sel.className = "sn-trust";
+    sel.title = `What ${via} does with postal mail from ${s.host}. trusted: delivered straight to its `
+      + `sessions. directed: held on ${via} for approval. isolated: none.`;
+    for (const lvl of ["trusted", "directed", "isolated"]) {
+      const o = document.createElement("option");
+      o.value = lvl; o.textContent = TRUSTW[lvl];
+      if ((pend || s.trust || "directed") === lvl) o.selected = true;
+      sel.appendChild(o);
+    }
+    if (pend) { sel.disabled = true; sel.classList.add("sn-applying"); }
+    sel.addEventListener("focus", () => { trustEngaged = true; });
+    sel.addEventListener("mousedown", () => { trustEngaged = true; });
+    sel.addEventListener("blur", releaseTrust);
+    sel.addEventListener("change", () => {
+      pendingSub.set(pk, sel.value);
+      sel.disabled = true;
+      sel.classList.add("sn-applying");
+      releaseTrust();
+      fetch(kernelUrl("/tunnels/trust"), { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ via, host: s.host, trust: sel.value }) })
+        .then((rp) => rp.json())
+        .then((dd) => { if (!(dd && dd.ok)) pendingSub.delete(pk); fetchSub(via); })
+        .catch(() => { pendingSub.delete(pk); fetchSub(via); });
+    });
+    r.appendChild(sel);
+    if (pend) {
+      const pn = document.createElement("span");
+      pn.className = "sn-pend";
+      pn.textContent = "applying…";
+      r.appendChild(pn);
+    }
+    // The same provably-possible gating as the top rows, judged with the fields VIA computed
+    // about ITS remote (fastForward/fastPull/askPull are relative to via's own build).
+    const apx = !!(s.autoPush && (s.autoPush.phase === "pushing" || s.autoPush.phase === "waiting"
+      || s.autoPush.phase === "pulling" || s.autoPush.phase === "asking"));
+    if (s.status === "up" && s.fastForward && !apx && !s.checkinPeer) {
+      const u = document.createElement("button");
+      u.textContent = "Push";
+      u.title = `Push ${via}'s committed romp to ${s.host} and restart its kernel — the work runs on ${via}.`;
+      u.addEventListener("click", () => act("/tunnels/update", s.host, u, "Pushing…", via));
+      r.appendChild(u);
+    }
+    if (s.status === "up" && s.askPull && !apx) {
+      const a = document.createElement("button");
+      a.textContent = "Update";
+      a.title = `${s.host} checked in to ${via} over its own tunnel, so ${via} cannot push to it. This asks `
+        + `it to pull ${via}'s commits over the link it already holds.`;
+      a.addEventListener("click", () => act("/tunnels/askpull", s.host, a, "Asking…", via));
+      r.appendChild(a);
+    }
+    if (s.status === "up" && s.fastPull && !apx && !s.checkinPeer) {
+      const pl = document.createElement("button");
+      pl.textContent = "Pull";
+      pl.title = `Pull ${s.host}'s newer commits into ${via}'s romp (fast-forward only) — the work runs on ${via}.`;
+      pl.addEventListener("click", () => act("/tunnels/pull", s.host, pl, "Pulling…", via));
+      r.appendChild(pl);
+    }
+    if (s.status === "no-kernel") {
+      const st = document.createElement("button");
+      st.textContent = "Start";
+      st.title = `No kernel answers ${via}'s tunnel to ${s.host}. This has ${via} push its romp there and boot it.`;
+      st.addEventListener("click", () => act("/tunnels/start", s.host, st, "Starting…", via));
+      r.appendChild(st);
+    }
+    const dt = document.createElement("button");
+    dt.textContent = "Detach";
+    dt.title = `Close ${via}'s ssh tunnel to ${s.host}. It stays in ${via}'s previously-attached list.`;
+    dt.addEventListener("click", () => act("/tunnels/detach", s.host, dt, "…", via));
+    r.appendChild(dt);
+    list.appendChild(r);
   }
 
   // The pair table is read OUTSIDE the poll (each read dials every live machine's kernel over its
