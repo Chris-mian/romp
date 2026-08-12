@@ -14036,6 +14036,7 @@ def build_feed(now, tmux=None):
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
     _stalls = _stalled_goals()                       # goals romp's nudge gate is holding → the card's Stalled section
     _jauth_map = jd._auth_down_map()                 # judge-auth-down latch → the per-session card floor below
+    _jactive = {r.get("fsid") for r in jd.active_runs()}   # judge calls in flight NOW → the Analyzing… prong
     cold_parse = False                               # any living session not yet parsed → warm it in the background
     for s in alive:
         fsid, name = s["sid"], s["name"]
@@ -14080,13 +14081,24 @@ def build_feed(now, tmux=None):
         sess_retrying = _session_retrying(fsid, tm)
         store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
                                                  # status never shows a half-applied intermediate (atomic visibility)
-        # ANALYZING gap (the user 2026-07-13): the turn just SETTLED but the closer hasn't delivered its
-        # verdict yet — without this the card sits inertly in Working after the session finished, until the
-        # judge's pass lands. Session-scoped (we don't know WHICH goal the turn resolved until the verdict);
-        # each working card wears the Analyzing… swirl meanwhile (feed.ts spinCaption). Cache-warm only,
-        # like the working dot: a cold start paints plain and the swirl snaps in after _warm_fleet_bg.
-        sess_judging = bool(live and ps and not who_working
-                            and _closer_pending(fsid, s["path"], now, store))
+        # ANALYZING (the user 2026-07-13; broadened 2026-08-12): the card must say when romp is working
+        # on it. Two prongs, either lights the swirl:
+        #   * the SETTLE GAP — the turn just settled but the closer hasn't delivered its verdict yet
+        #     (cache-warm only: it needs the parse; the swirl snaps in after _warm_fleet_bg);
+        #   * a judge call for this session ACTUALLY IN FLIGHT — jd.active_runs(), the same in-process
+        #     registry the nudge gate trusts (_revivers_pending), whose comment always claimed "the
+        #     Analyzing… swirl already says so"; now it does. This is what a backlog drain looks like:
+        #     when the judge-auth outage healed, 201 calls swept an 18-hour backlog while every card
+        #     sat inertly in Working (the user 2026-08-12, who asked for the queue to be visible on
+        #     the card) — planner/grouper work on OLDER turns never trips the settle gap, and a fresh
+        #     kernel's caches are cold exactly when the drain runs, so the closer prong alone stayed
+        #     dark. The active prong deliberately needs neither `live` nor a warm parse: the registry
+        #     is an in-process fact, free to read.
+        # Session-scoped (we don't know WHICH goal a verdict will land on until it does); each working
+        # card wears the Analyzing… swirl meanwhile (feed.ts spinCaption).
+        sess_judging = bool(not who_working
+                            and (fsid in _jactive
+                                 or (live and ps and _closer_pending(fsid, s["path"], now, store))))
         nodes, status = store.get("nodes", {}), store.get("status", {})
         confirming = set(store.get("confirming") or ())   # rollup export: done verdict in, settle pending (judge rollup_status, the user 2026-07-24)
         # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
