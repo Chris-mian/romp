@@ -9,7 +9,9 @@ export interface DirStatus {
   canCreate: boolean; nearest: string; missing: number; isDefault: boolean;
 }
 
-/** One line saying what the typed path IS, and the tone to say it in. "" = say nothing (no answer yet). */
+/** The full sentence saying what the typed path IS, and the tone to say it in. "" = say nothing (no
+ *  answer yet). This is the hint's hover title (and the wording history below still governs it);
+ *  what sits IN the field is dirStatusHint's compact form. */
 export function dirStatusLine(s: DirStatus | null): { text: string; cls: string } {
   if (!s) return { text: "", cls: "" };
   if (s.isDefault) return { text: s.path + "  (the default)", cls: "" };
@@ -27,6 +29,28 @@ export function dirStatusLine(s: DirStatus | null): { text: string; cls: string 
     return { text: `no such folder yet. Starting will create ${s.path}${above}`, cls: "warn" };
   }
   return { text: "invalid path: " + s.path, cls: "bad" };
+}
+
+/** The compact verdict shown INSIDE the field, at its right edge (the user 2026-08-11, folding the
+ *  status line into the box to save the row). The path itself is the text sitting beside the hint, so
+ *  the hint only repeats it when the kernel's expansion ADDS something (~ / $VARs resolved, or the
+ *  default a blank field stands for); everything longer — the full sentence, with the path named
+ *  outright — rides in `title` for hover, so the 2026-07-29 "which folder, where" answer is one hover
+ *  away instead of a second line. */
+export function dirStatusHint(s: DirStatus | null): { text: string; cls: string; title: string } {
+  const full = dirStatusLine(s);
+  if (!s) return { ...full, title: "" };
+  if (s.isDefault) return { text: s.path + " (the default)", cls: "", title: full.text };
+  if (s.isDir) {
+    const typed = s.value.replace(/\/+$/, "") || s.value;
+    return { text: s.path === typed ? "✓" : "✓ " + s.path, cls: "", title: full.text };
+  }
+  if (s.isFile) return { text: "a file, not a folder", cls: "bad", title: full.text };
+  if (s.canCreate) {
+    const n = s.missing > 1 ? ` (${s.missing} folders)` : "";
+    return { text: `will be created${n}`, cls: "warn", title: full.text };
+  }
+  return { text: "invalid path", cls: "bad", title: full.text };
 }
 
 /** Walk the completion list. -1 ("nothing chosen") is part of the cycle in BOTH directions, so walking

@@ -1868,10 +1868,13 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   border-bottom: 1px solid var(--box-border);
 }
 .picker-error.show { display: block; }
-/* the row wraps so the completer's status line gets its own line under the field; the folder menu is
+/* one line: the verdict lives inside the field now, not on a second row; the folder menu is
    absolutely positioned so it lays OVER the rows below instead of shoving the dialog around */
-.picker-dir { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--box-border); position: relative; }
+.picker-dir { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--box-border); position: relative; }
 .picker-dir::before { content: "📁"; opacity: 0.55; font-size: 0.9em; flex: 0 0 auto; }
+/* the input and its in-box verdict share one box: the hint overlays the input's right end, and
+   render.ts reserves that much input padding so the typed path never runs under it */
+.picker-dir-field { position: relative; flex: 1 1 auto; display: flex; min-width: 0; }
 .picker-dir-input {
   flex: 1 1 auto; min-width: 0;
   background: rgba(255, 255, 255, 0.05);
@@ -1898,15 +1901,18 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
    it says unavailable. The title explains, and the field beside it still works. */
 .picker-browse:disabled { opacity: 0.4; cursor: not-allowed; }
 .picker-browse:disabled:hover { background: rgba(255, 255, 255, 0.06); }
-/* the typed path's one-line verdict from the kernel that would own the session (exists / will be
-   created / is a file), so the answer arrives before the create does (the user 2026-07-28) */
-.picker-dir-status {
-  flex: 1 0 100%; margin-top: 4px; min-width: 0;
+/* the typed path's verdict from the kernel that would own the session (exists / will be created / is
+   a file), so the answer arrives before the create does (the user 2026-07-28) — folded into the
+   field's right end as non-editable text (the user 2026-08-11): compact by default, the full sentence
+   on hover. cursor:text because a press on it falls through to the input. */
+.picker-dir-hint {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  max-width: 55%; cursor: text;
   color: var(--dim); font-family: var(--mono, monospace); font-size: 0.82em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.picker-dir-status.warn { color: #e0a030; }
-.picker-dir-status.bad { color: #e5484d; }
+.picker-dir-hint.warn { color: #e0a030; }
+.picker-dir-hint.bad { color: #e5484d; }
 /* folder completions: Tab walks into one, so a path is assembled without a modal or a native dialog */
 .picker-dir-menu {
   position: absolute; left: 14px; right: 14px; top: calc(100% - 4px); z-index: 6;

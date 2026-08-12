@@ -28,7 +28,7 @@ import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
 import { hostNameNodes, hostPrefix, hostIsDown, hostDownNote } from "./host-prefix";
-import { dirStatusLine, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
+import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
@@ -4483,30 +4483,35 @@ function closeDirMenu(): void {
   dirActive = -1;
 }
 
-// The status line is the one-glance version: what this path is right now. The menu underneath is the
-// deeper level, and it only exists while there is something to choose.
+// The verdict is the one-glance version: what this path is right now, folded INTO the field's right
+// end (the user 2026-08-11, trading the second row for an in-box hint) — the full sentence rides on
+// hover. The menu underneath is the deeper level, and it only exists while there is something to choose.
 function renderDirMenu(truncated: boolean): void {
-  const line = document.getElementById("picker-dir-status");
-  const said = dirStatus || !dirInFlight ? dirStatusLine(dirStatus)
-    : { text: dirAskedHost ? `checking on ${dirAskedHost}…` : "checking…", cls: "" };
-  if (line) {
-    line.className = "picker-dir-status" + (said.cls ? " " + said.cls : "");
-    line.textContent = said.text;
+  const hint = document.getElementById("picker-dir-hint");
+  const said = dirStatus || !dirInFlight ? dirStatusHint(dirStatus)
+    : { text: dirAskedHost ? `checking on ${dirAskedHost}…` : "checking…", cls: "", title: "" };
+  const input = document.getElementById("picker-dir") as HTMLInputElement | null;
+  if (hint) {
+    hint.className = "picker-dir-hint" + (said.cls ? " " + said.cls : "");
+    hint.textContent = said.text;
+    hint.title = said.title;
+    // the hint borrows the box's right end, so the typed text must stop where it starts — measured,
+    // not guessed (the width varies by verdict and ellipsis cap; 0 = the field is folded away)
+    const w = hint.offsetWidth;
+    if (input) input.style.paddingRight = said.text && w ? w + 16 + "px" : "";
   }
   // and the FIELD itself carries it (the user 2026-07-29): a path that cannot work goes red where the
-  // path is, not only in a line under it, so the problem is visible without reading anything.
-  const box = document.getElementById("picker-dir");
-  if (box) {
-    box.classList.toggle("bad", said.cls === "bad");
-    box.classList.toggle("warn", said.cls === "warn");
+  // path is, not only in a hint at its edge, so the problem is visible without reading anything.
+  if (input) {
+    input.classList.toggle("bad", said.cls === "bad");
+    input.classList.toggle("warn", said.cls === "warn");
   }
-  const input = document.getElementById("picker-dir");
   const menu = document.getElementById("picker-dir-menu");
   if (!menu) return;
   menu.replaceChildren();
   // Only when you are IN the field (the user 2026-07-29): opening the + picker asks the kernel about the
-  // prefilled path so the status line can vet it straight away, and that answer used to drop a folder
-  // list over the dialog before anyone had touched it. The status is the passive half; the menu is the
+  // prefilled path so the hint can vet it straight away, and that answer used to drop a folder
+  // list over the dialog before anyone had touched it. The hint is the passive half; the menu is the
   // half you asked for by putting the cursor there.
   if (!dirItems.length || document.activeElement !== input) { menu.style.display = "none"; return; }
   dirItems.forEach((it, i) => {
@@ -4643,6 +4648,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     // user 2026-08-11, offered a long-gone folder next to the real one). The completer asks the OWNING
     // kernel — the authoritative source — so the stale-capable history list is gone, not merely hidden.
     const dirWrap = el("div", "picker-dir");
+    const dirField = el("span", "picker-dir-field");   // input + its in-box verdict share one box
     const dirInput = el("input", "picker-dir-input") as HTMLInputElement;
     dirInput.id = "picker-dir";
     dirInput.spellcheck = false;
@@ -4653,14 +4659,21 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     browseBtn.type = "button"; browseBtn.textContent = "Browse…";
     browseBtn.title = "Pick a folder with the native dialog (opens on the kernel's machine — host-local)";
     browseBtn.addEventListener("click", () => { if (vscodeApi) vscodeApi.postMessage({ type: "browseDir" }); });
-    // the completer's dropdown + the one-line status of whatever is typed, both fed by the owning kernel
+    // the completer's dropdown + the typed path's verdict, both fed by the owning kernel. The verdict
+    // sits IN the box, right-aligned and non-editable (the user 2026-08-11); a press on it belongs to
+    // the input underneath, so it hands the focus (and the caret's usual click-the-empty-end spot) over.
     const dirMenu = el("div", "picker-dir-menu"); dirMenu.id = "picker-dir-menu"; dirMenu.style.display = "none";
-    const dirStat = el("div", "picker-dir-status"); dirStat.id = "picker-dir-status";
+    const dirHint = el("span", "picker-dir-hint"); dirHint.id = "picker-dir-hint";
+    dirHint.addEventListener("mousedown", (e) => {
+      e.preventDefault(); dirInput.focus();
+      dirInput.setSelectionRange(dirInput.value.length, dirInput.value.length);
+    });
     dirInput.addEventListener("input", () => askDirComplete(dirInput.value));
     dirInput.addEventListener("focus", () => askDirComplete(dirInput.value));
     dirInput.addEventListener("blur", () => closeDirMenu());   // a row's mousedown preventDefaults, so it never blurs
-    dirWrap.appendChild(dirInput); dirWrap.appendChild(browseBtn);
-    dirWrap.appendChild(dirMenu); dirWrap.appendChild(dirStat);
+    dirField.appendChild(dirInput); dirField.appendChild(dirHint);
+    dirWrap.appendChild(dirField); dirWrap.appendChild(browseBtn);
+    dirWrap.appendChild(dirMenu);
     // per-session BACKEND picker (the user 2026-06-23): a tmux | SDK segmented toggle, defaulting to the
     // gear's Default backend but overridable for THIS new session. Hidden in pick-mode (like dirWrap).
     const beWrap = el("div", "picker-backend");
