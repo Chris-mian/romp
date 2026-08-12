@@ -74,6 +74,14 @@ test("the popup + selected-row accent + loader spin are styled", () => {
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.slash-spin \{ animation: none; \} \}/);
 });
 
+test("descriptions WRAP — the whole line is readable, never ellipsized (the user 2026-08-12)", () => {
+  // the popup is pinned to the composer's width (positionSlash), so wrapping grows the row, not the menu
+  const desc = CSS.match(/\.slash-desc \{[\s\S]*?\}/)?.[0] ?? "";
+  assert.ok(desc, "styles.css must style .slash-desc");
+  assert.doesNotMatch(desc, /nowrap|ellipsis/);
+  assert.match(desc, /overflow-wrap: break-word/);
+});
+
 test("the composer placeholder hints that / opens commands (the user 2026-06-30)", () => {
   // the resting placeholder now comes from composerRestingPlaceholder(); its DESKTOP form keeps the "type /
   // for commands" hint (mobile drops the ⏎/⇧⏎ part — see the composer-send mobile test)
