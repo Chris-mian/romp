@@ -4715,7 +4715,10 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     const actions = el("div", "picker-actions");
     const newSess = el("button", "picker-action");
     newSess.id = "picker-new-btn";
-    newSess.textContent = "✛ New session";
+    // "Create session", not "New session" (the user 2026-08-12): you already pressed New session to
+    // open this dialog — the button here is the ACT, not the door. (The palette command that opens
+    // the picker keeps the New session name; that one IS the door.)
+    newSess.textContent = "✛ Create session";
     newSess.title = "create a fresh romp session, named by the search box, and open it as a tab";
     newSess.addEventListener("click", () => {
       // The search box doubles as the name field — no native dialog.
@@ -4753,7 +4756,9 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     // label hides with the create rows (openPicker below).
     const altHead = el("div", "picker-alt-head");
     altHead.id = "picker-alt-head";
-    altHead.textContent = "Or reopen an existing session";
+    // "(last 30 days)" is the kernel's real reach — PICKER_WINDOW in kernel.py; picker-order.test.ts
+    // holds the two in step so a widened window can't leave this label lying.
+    altHead.textContent = "Or reopen an existing session (last 30 days)";
     box.appendChild(search);
     box.appendChild(errLine);
     box.appendChild(dirWrap);
@@ -5062,7 +5067,7 @@ function setActiveRow(row: HTMLElement | null) {
   syncNewButton();   // an active row and an armed New-session button are mutually exclusive Enter targets
 }
 
-// Arm the "✛ New session" button exactly when Enter should CREATE: create mode (the + flow), a name
+// Arm the "✛ Create session" button exactly when Enter should CREATE: create mode (the + flow), a name
 // typed, and no row explicitly active. A typed name belongs to "create" (the user 2026-07-28) — it
 // must never be re-routed onto a fuzzy match — so matches don't steal the arm; stepping onto a row
 // with ArrowDown (or hovering one) is the explicit act that hands Enter to that row instead.
