@@ -201,8 +201,10 @@ def _mailbox(sid):
     return mb
 
 def _unique():
-    host = socket.gethostname().split(".")[0] or "host"
-    return f"{int(time.time())}.{os.getpid()}_{random.randint(0, 99999)}.{host}"
+    # self_host(), not raw gethostname: the mid is a path component under mail/ and the peer's
+    # outbox (_safe_id-checked at outbox_put), so a stomped hostname baked in here silently killed
+    # every OUTBOUND cross-host send too — same 2026-08-11 breakage as self_host's docstring.
+    return f"{int(time.time())}.{os.getpid()}_{random.randint(0, 99999)}.{self_host()}"
 
 def _mark_pending(sid):
     """Reconcile the on-disk pending-mail marker with reality: mail-pending/<sid>
@@ -1555,10 +1557,82 @@ _peer_threads = {}                         # host -> Thread (one dialer loop per
 _peer_pending = {}                         # host -> {"acks": [mid], "bounces": [{mid, why}]} for the NEXT request
 _peer_lock = threading.Lock()
 
+def _host_name_candidates():
+    """Raw machine-name candidates for the self_host fallback, most meaningful first. macOS keeps
+    user-set names in scutil (LocalHostName is mDNS-restricted, ComputerName is free-form);
+    elsewhere there is no second authority — the minted id below is the fallback."""
+    if sys.platform != "darwin":
+        return []
+    out = []
+    for key in ("LocalHostName", "ComputerName"):
+        try:
+            r = subprocess.run(["scutil", "--get", key], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and r.stdout.strip():
+                out.append(r.stdout.strip())
+        except Exception:
+            pass
+    return out
+
+def _sanitize_host_name(name):
+    """A candidate machine name reduced to a _safe_id-safe label: first dot-label, runs of unsafe
+    chars folded to '-', trimmed. "" when nothing meaningful survives (a 1-char remnant of junk is
+    an unstable identity, not a name)."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(name or "").split(".")[0]).strip("-._")
+    return name if len(name) >= 2 and _safe_id(name) else ""
+
+_HOST_ID_FILE = STATE.parent / "self-host"   # minted-once stable identity; the kernel's _self_host shares it
+
+def _minted_host_id():
+    """Last-resort stable identity: mint once, persist, reuse. O_EXCL so two processes (bus and
+    kernel) racing to mint converge on whoever wrote first."""
+    try:
+        name = _HOST_ID_FILE.read_text().strip()
+        if _safe_id(name):
+            return name
+    except OSError:
+        pass
+    name = "host-%08x" % random.getrandbits(32)
+    try:
+        _HOST_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(_HOST_ID_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        os.write(fd, (name + "\n").encode())
+        os.close(fd)
+    except FileExistsError:
+        try:
+            prior = _HOST_ID_FILE.read_text().strip()
+            if _safe_id(prior):
+                return prior
+        except OSError:
+            pass
+    except OSError:
+        pass                                 # unwritable state root: stable per-process only, still safe
+    return name
+
+_self_host_fb = None                         # resolved fallback identity, cached after the first (logged) resolve
+
 def self_host():
     """This machine's postal identity: short hostname (each side keys the OTHER by its own name for
-    it, so exact agreement across machines is not required). ROMP_POSTAL_HOST overrides (tests)."""
-    return os.environ.get("ROMP_POSTAL_HOST") or socket.gethostname().split(".")[0]
+    it, so exact agreement across machines is not required). ROMP_POSTAL_HOST overrides (tests).
+    The name MUST clear _safe_id: peers key the outbox that holds mail FOR us by it, as a path
+    component, so an unkeyable kernel hostname half-works — presence still crosses (PEER_STATE is a
+    dict), but outbox_put on the peer refuses every message back, parked "unreachable" forever with
+    the only trace a server-log line (2026-08-11, a kern.hostname stomped with control bytes). An
+    unsafe name falls back, loudly: the platform's user-set machine name, else a minted persisted
+    id. gethostname stays first and live, so fixing the machine's hostname takes effect on the next
+    call with no restart."""
+    env = os.environ.get("ROMP_POSTAL_HOST")
+    if env:
+        return env
+    name = socket.gethostname().split(".")[0]
+    if _safe_id(name):
+        return name
+    global _self_host_fb
+    if _self_host_fb is None:
+        _self_host_fb = next((s for s in map(_sanitize_host_name, _host_name_candidates()) if s),
+                             "") or _minted_host_id()
+        _log("self_host: kernel hostname %r fails path-safety; declaring %r to peers instead "
+             "(fix the machine's hostname to control the name)" % (name, _self_host_fb))
+    return _self_host_fb
 
 def _peer_wake(host):
     with _peer_lock:
@@ -1958,6 +2032,15 @@ def peer_exchange_handle(data):
     # session rows), and the relays below are trust-judged under the alias the user actually tiered.
     bus_id = str((data or {}).get("busId") or "")
     host = _canon_peer_name(host, bus_id)
+    if not _safe_id(host):
+        # An unkeyable name would HALF-work: presence lands (PEER_STATE is a dict), but outbox_put
+        # refuses it as a path component, so every reply parks "unreachable" with no error anywhere
+        # (2026-08-11). Refuse the whole exchange instead — loud on the dialer's side (_peer_loop
+        # logs the refusal) — unless the canonicalization above already folded the junk into a
+        # checked-in alias, which is the existing self-heal and still works. Updated dialers never
+        # declare such a name (self_host falls back); this guards against un-updated ones.
+        return {"error": "unsafe host name %r — this machine's hostname fails path-safety; fix its "
+                         "hostname (or set ROMP_POSTAL_HOST) and redial" % host}, 400
     PEER_STATE[host] = {"presence": data.get("presence") or [], "epoch": data.get("epoch"),
                         "holds": data.get("holds") or [], "seenAt": int(time.time())}
     if bus_id:
@@ -2101,6 +2184,15 @@ def _peer_loop(host):
                 _peer_wake(host).clear()
                 _peer_wake(host).wait(60)
                 continue
+            body = ""
+            try:
+                body = " ".join((e.read() or b"").decode("utf-8", "replace").split())[:200]
+            except Exception:
+                pass
+            st = PEER_STATE.setdefault(host, {})
+            if st.get("refused") != (e.code, body):      # each DISTINCT refusal once, not per retry —
+                st["refused"] = (e.code, body)           # a 4xx (e.g. the unsafe-host gate) otherwise
+                _log("peer %s: exchange refused (HTTP %s) %s" % (host, e.code, body))   # retries silently forever
             fails += 1
             _peer_wake(host).clear()
             _peer_wake(host).wait(min(30, 2 ** min(fails, 5)))

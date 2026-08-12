@@ -11,7 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
-import json, os, queue, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -6251,11 +6251,99 @@ def _bus_quarantine_act(body):
 # except it owns no ssh — the mobile supervises its own tunnel, so the attach supervisor's keep-alive IS
 # the keep-connected behavior. Unchecking = checkout: the hub forgets the row + token.
 
+# ── self-host safety (KEEP IN SYNC with postal_service.py: _safe_id, _host_name_candidates,
+# _sanitize_host_name, _minted_host_id, self_host — the postal copy is the reference and carries
+# the full 2026-08-11 story). Peers key the mail they hold FOR this machine by the name we declare,
+# as a path component, so a kern.hostname stomped with junk that fails path-safety half-breaks
+# peering: presence crosses, every reply back is refused and parks "unreachable". Kernel and bus
+# must fall back IDENTICALLY — the minted last-resort id is persisted at jd.STATE/"self-host", the
+# SAME file the bus uses (its STATE.parent == jd.STATE) — so this machine can never check in under
+# one name while its bus declares another.
+
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+def _safe_id(s):
+    """True iff `s` is safe as a single path component (postal_service._safe_id, duplicated)."""
+    if not s or len(s) > 128:
+        return False
+    if "/" in s or "\\" in s or "\x00" in s or s.startswith("."):
+        return False
+    return bool(_SAFE_ID_RE.match(s))
+
+def _host_name_candidates():
+    """Raw machine-name candidates for the self-host fallback, most meaningful first. macOS keeps
+    user-set names in scutil (LocalHostName is mDNS-restricted, ComputerName is free-form);
+    elsewhere there is no second authority — the minted id below is the fallback."""
+    if sys.platform != "darwin":
+        return []
+    out = []
+    for key in ("LocalHostName", "ComputerName"):
+        try:
+            r = subprocess.run(["scutil", "--get", key], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and r.stdout.strip():
+                out.append(r.stdout.strip())
+        except Exception:
+            pass
+    return out
+
+def _sanitize_host_name(name):
+    """A candidate machine name reduced to a _safe_id-safe label: first dot-label, runs of unsafe
+    chars folded to '-', trimmed. "" when nothing meaningful survives (a 1-char remnant of junk is
+    an unstable identity, not a name)."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(name or "").split(".")[0]).strip("-._")
+    return name if len(name) >= 2 and _safe_id(name) else ""
+
+_HOST_ID_FILE = jd.STATE / "self-host"   # minted-once stable identity; the bus's STATE.parent/"self-host" — the SAME file
+
+def _minted_host_id():
+    """Last-resort stable identity: mint once, persist, reuse. O_EXCL so two processes (bus and
+    kernel) racing to mint converge on whoever wrote first."""
+    try:
+        name = _HOST_ID_FILE.read_text().strip()
+        if _safe_id(name):
+            return name
+    except OSError:
+        pass
+    name = "host-%08x" % random.getrandbits(32)
+    try:
+        _HOST_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(_HOST_ID_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        os.write(fd, (name + "\n").encode())
+        os.close(fd)
+    except FileExistsError:
+        try:
+            prior = _HOST_ID_FILE.read_text().strip()
+            if _safe_id(prior):
+                return prior
+        except OSError:
+            pass
+    except OSError:
+        pass                                 # unwritable state root: stable per-process only, still safe
+    return name
+
+_self_host_fb = None                         # resolved fallback identity, cached after the first (logged) resolve
+
 def _self_host():
-    """This machine's name in a check-in handshake (the hub's key for us). Short hostname;
-    ROMP_HOST_NAME overrides (tests; unusual naming)."""
-    import socket
-    return os.environ.get("ROMP_HOST_NAME") or socket.gethostname().split(".")[0]
+    """This machine's name to peers (the check-in handshake, trust pushes, usage rows). Short
+    hostname; ROMP_HOST_NAME overrides (tests; unusual naming). The name MUST clear _safe_id — the
+    hub keys the mail it holds for us by it, as a path component — so an unsafe kernel hostname
+    falls back loudly, exactly like the bus's self_host(): the platform's user-set machine name,
+    else the minted id persisted in the SHARED file above (kernel and bus converge on one identity).
+    gethostname stays first and live — fixing the machine's hostname takes effect on the next call
+    with no restart."""
+    env = os.environ.get("ROMP_HOST_NAME")
+    if env:
+        return env
+    name = socket.gethostname().split(".")[0]
+    if _safe_id(name):
+        return name
+    global _self_host_fb
+    if _self_host_fb is None:
+        _self_host_fb = next((s for s in map(_sanitize_host_name, _host_name_candidates()) if s),
+                             "") or _minted_host_id()
+        sys.stderr.write("self-host: kernel hostname %r fails path-safety; using %r for peering "
+                         "(fix the machine's hostname to control the name)\n" % (name, _self_host_fb))
+    return _self_host_fb
 
 
 def checkin_set(host, on):
