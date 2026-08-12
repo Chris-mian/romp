@@ -4787,9 +4787,10 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     // VISIBLE height (--app-h ← the top-level visualViewport, which the keyboard shrinks), so the
     // keyboard opening/closing lands here as this window's own resize — the exact event to key on, no
     // timers, no UA sniffing. Short window → kb-tight folds the advanced create rows (dir, backend,
-    // billing, host — styles.css) so the essentials share the height with the keyboard; the same
-    // resize expands them back the moment there is room again (a genuinely small screen folds too,
-    // which is the right call there as well).
+    // billing, host) and rearranges the essentials for the keyboard — the list flexes to fill the
+    // middle under the name box and the actions row pins to the bottom edge (styles.css, the user
+    // 2026-08-12); the same resize expands it all back the moment there is room again (a genuinely
+    // small screen folds too, which is the right call there as well).
     const kbFit = () => document.getElementById("picker")?.classList.toggle("kb-tight", window.innerHeight < 480);
     window.addEventListener("resize", kbFit);
     kbFit();
@@ -4820,7 +4821,11 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     hostWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.remove());
     for (const h of ["", ...hosts]) {
       const b = el("button", "picker-be-opt" + (h === "" ? " sel" : "")) as HTMLButtonElement;
-      b.type = "button"; b.textContent = h || "local"; b.dataset.host = h;
+      // This machine wears its REAL name, like the remote options wear theirs (the user 2026-08-12):
+      // "local" made the row read as one named machine plus an unnamed one. The name rides the local
+      // sessionList reply (selfHost), so the very first open may briefly say "local" until it lands —
+      // the handler below relabels the button in place.
+      b.type = "button"; b.textContent = h || localSelfHost || "local"; b.dataset.host = h;
       b.title = h ? `Create the session on ${h} (its kernel spawns it; the tab shows as ${h}:name).`
                   : "Create the session on this machine.";
       b.addEventListener("click", () => {
@@ -5133,6 +5138,10 @@ function pickerKey(e: KeyboardEvent) {
 // The kernel's real default new-session directory (its serve cwd, ~-ified), from the sessionList payload —
 // prefilled into the dir field when there's no gear default, so "the default path is written in there".
 let kernelDefaultDir = "";
+// This machine's name as the kernel's peers know it (_self_host — short hostname, ROMP_HOST_NAME
+// override), from the same payload. The + picker's Host row labels its first option with it, so the
+// row reads as a list of machines by name rather than named hosts plus a "local" (the user 2026-08-12).
+let localSelfHost = "";
 // Is this session already an open tab in THIS dashboard? (loaded session, or a not-yet-loaded placeholder tab
 // the kernel's order carries.) The + picker uses it to hide sessions you can already reach by a tab-click.
 function isOpenTab(id: string): boolean {
@@ -8486,6 +8495,17 @@ window.addEventListener("message", (e: MessageEvent) => {
     // host the picker has since switched away from is dropped rather than painted over the current one
     // (the user 2026-07-29) — two kernels answer at their own speeds, so order is not a given.
     const from = typeof m.host === "string" ? m.host : "";
+    // The LOCAL kernel's own machine name — adopted BEFORE the stale-list drop below, on purpose:
+    // the name is this machine's identity, not list data, so it must not die with a reply whose
+    // LIST is stale (picker already switched to a remote host — the drop's one job). The Host row
+    // is built before this reply lands (its options rebuild on every open), so also relabel the
+    // this-machine button in place — the row's first-ever open is the only one that shows the
+    // "local" placeholder.
+    if (typeof m.selfHost === "string" && m.selfHost && !from) {
+      localSelfHost = m.selfHost;
+      const lb = document.querySelector('#picker .picker-host .picker-be-opt[data-host=""]') as HTMLElement | null;
+      if (lb) lb.textContent = localSelfHost;
+    }
     if (from !== pickerListHost) return;
     if (typeof m.defaultDir === "string" && !from) kernelDefaultDir = m.defaultDir;   // the LOCAL default dir
     // …and whether that kernel can open a folder dialog at all. It arrives after the picker is already on

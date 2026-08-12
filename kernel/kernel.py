@@ -22495,7 +22495,11 @@ class Handler(BaseHTTPRequestHandler):
                                        "nativeDialogs": _native_dialogs(),
                                        # billing choices THIS host can offer a new session — the picker
                                        # shows its auth control only when both are real (see _auth_avail)
-                                       "authAvail": _auth_avail()}))
+                                       "authAvail": _auth_avail(),
+                                       # this machine's name (the identity peers see) — the picker's
+                                       # Host row labels its this-machine option with it, so every
+                                       # option is a machine by name (the user 2026-08-12)
+                                       "selfHost": _self_host()}))
         elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
             if sid:
