@@ -4631,6 +4631,16 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     search.id = "picker-search";
     search.placeholder = "Search sessions…";
     search.spellcheck = false;
+    // The phone keyboard's prediction bar had learned the user's session names and offered them over
+    // this box — redundant next to the real session list right below it, and mistakable for romp UI
+    // (the user 2026-08-12, Samsung keyboard). These are the standard opt-out HINTS: autocomplete
+    // also keeps the browser's own form-history dropdown off (the dir field wears the same belt),
+    // autocapitalize suits session names anyway ("dev", not "Dev"), autocorrect is iOS's spelling of
+    // the same ask. A keyboard may still ignore them — its predictive-text setting is the only sure
+    // switch, so nothing here may claim the bar is gone, only unrequested.
+    search.setAttribute("autocomplete", "off");
+    search.autocapitalize = "none";
+    search.setAttribute("autocorrect", "off");
     search.addEventListener("input", () => { filterPicker(search.value); pickerError(null); });
     const errLine = el("div", "picker-error"); errLine.id = "picker-error";
     const list = el("div", "picker-list"); list.id = "picker-list";
