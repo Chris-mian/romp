@@ -78,6 +78,15 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("collapseGaps: true", _gear_src())
         self.assertIn("s.collapseGaps = cg.checked", _gear_src())
 
+    def test_show_active_only_is_wired_to_the_shared_activeOnly_setting(self):
+        # "Show active sessions only" (the user 2026-08-12): a Timeline-section checkbox, default ON,
+        # persisted as romp:settings.activeOnly; the timeline hides lanes with no activity in the
+        # visible window and re-shows them when zoom/pan reaches their work (romp-timeline-view.js).
+        self.assertIn("id=rs-activeonly checked", _gear_src())
+        self.assertIn("activeOnly: true", _gear_src())
+        self.assertIn("s.activeOnly = ao.checked", _gear_src())
+        self.assertIn("ao.checked = s.activeOnly !== false", _gear_src())
+
     def test_section_header_styling_exists(self):
         self.assertIn("#rsettings .rs-sec {", _gear_css_src())
         self.assertIn("#rsettings .rs-sec-first { border-top: 0;", _gear_css_src())

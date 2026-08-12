@@ -72,6 +72,8 @@ function remoteLanes(): any {
 
 test("a remote-first merge (no data.now) must not latch a NaN window; the first clock sample heals it", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
+  panel._activeOnly = false;   // this test is about the NaN heal, and `loc` below has no turns — keep the
+  //                              always-show-live rule so both lanes render (active-only has its own tests)
   panel.update(remoteLanes());
   panel.applyBars({ type: "bars", turns: { "r1:aaa": [{ id: "x", start: NOW - 3000, end: NOW - 2000 }] },
                     messages: [], judging: [] });
