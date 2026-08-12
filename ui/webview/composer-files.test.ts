@@ -34,8 +34,9 @@ test("every file arrival becomes an attachment, never raw path text in the box",
   // the drop handler's three path sources all land in addComposerFile
   assert.match(RENDER, /const fromUri = \(u: string\) => addComposerFile\(activeId, decodeURIComponent\(u\.replace\(\/\^file:\\\/\\\/\/, ""\)\)\);/);
   assert.match(RENDER, /if \(p\) \{ addComposerFile\(activeId, p\); return; \}/);
-  // paste-with-files and the host round-trip (dropped bytes, 📎 dialog, phone picker) too
-  assert.match(RENDER, /if \(p\) addComposerFile\(activeId, p\);\s*\n\s*else shipFileToHost\(f\);/);
+  // paste-with-files and the host round-trip (dropped bytes, 📎 dialog, phone picker) too — the
+  // paste's path branch is gated on LOCAL ownership (composer-attach.test.ts owns the remote rule)
+  assert.match(RENDER, /if \(p && !hostOf\(activeId \|\| ""\)\) addComposerFile\(activeId, p\);\s*\n\s*else shipFileToHost\(f\);/);
   assert.match(RENDER, /m\.type === "droppedPath" && typeof m\.path === "string"\) \{[\s\S]{0,300}addComposerFile\(activeId, m\.path\);/);
   // the old insert-at-cursor path is gone with its last caller
   assert.doesNotMatch(RENDER, /function insertComposerText/);
