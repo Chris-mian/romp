@@ -3,8 +3,10 @@
 // lifted chat iframe to the VISIBLE height (--app-h ← the top-level visualViewport, pinned in
 // tests/test_kernel.py + test_shell_viewport_fit.py), so the keyboard opening/closing lands in the
 // iframe as its own resize event — render.ts keys the kb-tight fold on exactly that, no timers, no UA
-// sniffing. Folded: the advanced create rows (dir, backend, billing, host) hide; the essentials (name
-// box, session list, actions) share the height with the keyboard. The same resize expands them back.
+// sniffing. Folded: the advanced create rows (dir, backend, billing, host) hide, and the essentials
+// rearrange for the keyboard (the user 2026-08-12, after the resume list moved to the dialog's
+// bottom): the list flexes to fill the middle directly under the name box, and the actions row pins
+// to the box's bottom edge, right above the keyboard. The same resize expands it all back.
 // Source-level pins (no jsdom for the renderer).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -25,12 +27,28 @@ test("kb-tight folds the advanced create rows and keeps the essentials", () => {
   // the advanced rows fold — !important because pick-mode / auth availability drive these rows'
   // visibility via inline styles, and the fold must win while it holds
   assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-dir,\s*\n\.picker-overlay\.kb-tight \.picker-backend \{ display: none !important; \}/);
-  // .picker-backend covers billing + host too (they wear the class); actions/list/search have no fold rule
-  assert.doesNotMatch(CSS, /kb-tight \.picker-actions/);
-  assert.doesNotMatch(CSS, /kb-tight \.picker-list \{ display/);
+  // the essentials never fold: no display rule hides actions, list, or search while kb-tight holds
+  assert.doesNotMatch(CSS, /kb-tight \.picker-actions \{[^}]*display/);
+  assert.doesNotMatch(CSS, /kb-tight \.picker-list \{[^}]*display/);
 });
 
 test("folded, the box hugs the short viewport instead of centering into the keyboard", () => {
-  assert.match(CSS, /body\.picker-lifted > #picker\.kb-tight \{ align-items: flex-start; padding: 12px 16px; \}/);
-  assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-box \{ max-height: calc\(100vh - 24px\); \}/);
+  // both contexts tighten to the same 12px frame — the fixed-height box below assumes exactly it,
+  // and the standalone overlay's 56px anchor would otherwise push the pinned actions row off-screen
+  assert.match(CSS, /#picker\.kb-tight,\s*\nbody\.picker-lifted > #picker\.kb-tight \{ align-items: flex-start; padding: 12px 16px; \}/);
+  // a FIXED height, not just a cap: the pinned actions row below the list must not shift as typing
+  // re-filters the list's height. dvh, not vh — standalone on a phone, vh is the LARGEST viewport
+  // while the fold keys on the current innerHeight, and the mismatch clipped the pinned actions row
+  assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-box \{ height: calc\(100dvh - 24px\); max-height: calc\(100dvh - 24px\); \}/);
+});
+
+test("folded, the list fills the middle and the actions row pins to the bottom edge", () => {
+  // the tall layout is controls-first, list last (picker-order.test.ts); the short window inverts
+  // exactly that — the filtered matches sit directly under the name box being typed in, and the
+  // Create button holds still at the bottom, above the keyboard, where a thumb expects it
+  assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-list \{ flex: 1 1 auto; min-height: 0; \}/);
+  assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-actions \{ order: 1; \}/);
+  // with the create rows between them hidden, the heading sits directly under the name box — its
+  // border-top would double the search box's own border-bottom into a thick seam
+  assert.match(CSS, /\.picker-overlay\.kb-tight \.picker-alt-head \{ border-top: none; \}/);
 });
