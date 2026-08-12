@@ -22,6 +22,7 @@ STABLE = "11111111-2222-3333-4444-555555555555"
 FORK = "99999999-8888-7777-6666-555555555555"
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 _SESS = os.path.join(os.environ["XDG_STATE_HOME"], "sessions.json")
 Path(_SESS).write_text(json.dumps([
     {"id": STABLE, "name": "web", "dir": "/tmp/notes-api", "state": "waiting",

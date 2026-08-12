@@ -12,8 +12,13 @@ import sys
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
+import os
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 jd = SourceFileLoader("romp_judge_stall", str(ROOT / "kernel" / "judge.py")).load_module()
 
 FSID = "11111111-2222-3333-4444-555555555555"

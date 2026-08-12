@@ -10,10 +10,15 @@ import json
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 km = SourceFileLoader("romp_kernel_debt", os.path.join(BIN, "romp-kernel")).load_module()
 
 DEBTOR = "11111111-2222-3333-4444-555555555555"     # the idle session that owes replies

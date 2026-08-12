@@ -2,8 +2,13 @@
 render.ts COLORMAPS (ledger). They MUST stay identical, else the feed and ledger disagree. cividis was
 mis-sampled (over-saturated middle, ~33/255 off matplotlib) until 2026-06-17. These guard both."""
 import os, re, importlib.util, unittest
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 spec = importlib.util.spec_from_file_location("romp_colormap", os.path.join(ROOT, "bin", "romp_colormap.py"))
 cm = importlib.util.module_from_spec(spec); spec.loader.exec_module(cm)
 

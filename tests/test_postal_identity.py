@@ -8,8 +8,13 @@ timeline icon (keyed on the real fsid) correctly showed it un-isolated. Syntheti
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 pm = SourceFileLoader("romp_postal_id", os.path.join(BIN, "romp-postal-service")).load_module()
 
 FSID = "11111111-2222-3333-4444-555555555555"

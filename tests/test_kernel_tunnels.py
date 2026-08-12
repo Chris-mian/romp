@@ -23,6 +23,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 # Hermetic STATE (so remotes.json + serve-token never touch real state) BEFORE import, and a token so
 # _load_token() returns early. NO_OPEN so importing never launches a browser. Mirrors test_kernel_ws_auth.
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()

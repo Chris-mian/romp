@@ -11,6 +11,7 @@ import tempfile
 import pytest
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="romp-tests-state-")
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel exports this to its sessions; it outranks the XDG floor
 
 
 @pytest.fixture(autouse=True)

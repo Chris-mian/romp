@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 _STATE_TMP = tempfile.mkdtemp()
 os.environ["XDG_STATE_HOME"] = _STATE_TMP
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 sb = SourceFileLoader("romp_sdk_backend_ile", os.path.join(BIN, "romp_sdk_backend.py")).load_module()
 km = SourceFileLoader("romp_kernel_ile", os.path.join(BIN, "romp-kernel")).load_module()

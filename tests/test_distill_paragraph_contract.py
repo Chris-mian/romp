@@ -26,8 +26,14 @@ changes only what the audit named.
 import pathlib
 import unittest
 from importlib.machinery import SourceFileLoader
+import os
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 jd = SourceFileLoader("romp_judge_paras", str(ROOT / "kernel" / "judge.py")).load_module()
 
 PROMPTS = {

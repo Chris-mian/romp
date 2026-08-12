@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 pm = SourceFileLoader("romp_postal_undelivered", os.path.join(BIN, "romp-postal-service")).load_module()
 
 SENDER = "11111111-1111-1111-1111-111111111111"

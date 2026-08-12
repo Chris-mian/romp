@@ -19,9 +19,14 @@ why as <holding>) — see ProceduralBlockStillSpeaks in test_judge.py. SYNTHETIC
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
+import tempfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
+# Hermetic state BEFORE the loads — they resolve their state root at import time, and only
+# pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 jd = SourceFileLoader("romp_judge_procbrief", os.path.join(BIN, "romp-judge")).load_module()
 
 REAL_Q = "Python on the server is still 3.8; upgrade it the same no-sudo way, or leave it as secondary?"
