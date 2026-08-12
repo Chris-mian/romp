@@ -4744,14 +4744,25 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
                     dir: dirInput.value.trim(), host: hostSel, ...(auth ? { auth } : {}) });
     });
     actions.appendChild(newSess);
+    // CREATE controls first, the resume list LAST (the user 2026-08-12): typing in the name box
+    // re-filters the list, whose height changes with every keystroke — with the list mid-dialog the
+    // controls below it jumped around exactly when you were reaching for them. The stable, most-used
+    // half (name → directory → backend → billing → host → New session) now holds still at the top,
+    // and the list — the occasional alternative, not the main act — grows and shrinks harmlessly at
+    // the bottom, under a label that says what it is. In pick-mode the list IS the dialog, so the
+    // label hides with the create rows (openPicker below).
+    const altHead = el("div", "picker-alt-head");
+    altHead.id = "picker-alt-head";
+    altHead.textContent = "Or reopen an existing session";
     box.appendChild(search);
     box.appendChild(errLine);
-    box.appendChild(list);
     box.appendChild(dirWrap);
     box.appendChild(beWrap);
     box.appendChild(auWrap);
     box.appendChild(hostWrap);
     box.appendChild(actions);
+    box.appendChild(altHead);
+    box.appendChild(list);
     overlay.appendChild(box);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
     document.body.appendChild(overlay);
@@ -4772,6 +4783,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   signalPickerOverlay(true);   // lift the chat iframe full-window so the picker covers the whole screen
   const actions = overlay.querySelector(".picker-actions") as HTMLElement | null;
   if (actions) actions.style.display = pick ? "none" : "";
+  const altHeadEl = document.getElementById("picker-alt-head");
+  if (altHeadEl) altHeadEl.style.display = pick ? "none" : "";   // pick-mode: the list IS the dialog, not an alternative
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
   const beWrapEl = overlay.querySelector(".picker-backend:not(.picker-host):not(.picker-auth)") as HTMLElement | null;
