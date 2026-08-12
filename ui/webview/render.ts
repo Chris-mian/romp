@@ -27,6 +27,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
+import { pastedFilePath } from "./paste-path";
 import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
@@ -9000,17 +9001,57 @@ function setupComposer() {
 
   // Cmd+V a copied file (Finder "Copy") or a clipboard screenshot → insert its
   // path, same pipeline as drops (including the remote rule: a local path only
-  // for a locally-owned session). Plain text pastes have no files on the
-  // clipboard and keep the default behavior.
+  // for a locally-owned session). Plain text pastes keep the default behavior —
+  // EXCEPT a paste that IS a local file's path (pastedFilePath: the whole paste
+  // one line, absolute or ~, a kind /file serves). The user (2026-08-11) pasted
+  // a screenshot's PATH into a remote session's box: the text rode the prompt
+  // to a machine where that path doesn't exist, while dragging the same file
+  // worked. A path-shaped paste is verified against the PAGE's own kernel
+  // (/file — the machine the paste came from, auth-gated, existence-checked;
+  // no sid, so it never routes to some other kernel's disk) and converted to
+  // the same visible attachment chip a drop produces: the zero-copy path for a
+  // locally-owned session, shipped bytes for a remote one. A miss puts the
+  // EXACT text back at the cursor, so a path that isn't a local file pastes as
+  // plain text exactly like today. Web dashboard only (canPreview): the
+  // VS Code webview can't reach /file, and its Electron drops carry File.path.
   ta.addEventListener("paste", (e) => {
     const files = Array.from(e.clipboardData?.files || []);
-    if (!files.length) return;
+    if (files.length) {
+      e.preventDefault();
+      files.forEach((f) => {
+        const p = (f as any).path as string | undefined;
+        if (p && !hostOf(activeId || "")) addComposerFile(activeId, p);
+        else shipFileToHost(f);
+      });
+      return;
+    }
+    const raw = e.clipboardData?.getData("text/plain") || "";
+    const pasted = pastedFilePath(raw);
+    if (!pasted || !canPreview()) return;              // ordinary text → default paste
     e.preventDefault();
-    files.forEach((f) => {
-      const p = (f as any).path as string | undefined;
-      if (p && !hostOf(activeId || "")) addComposerFile(activeId, p);
-      else shipFileToHost(f);
-    });
+    const sid = activeId;
+    const selS = ta.selectionStart, selE = ta.selectionEnd;
+    const putBack = () => {                            // miss → the default outcome, a beat late
+      if (activeId === sid && document.contains(ta)) {
+        ta.setRangeText(raw, selS, selE, "end");
+        ta.dispatchEvent(new Event("input", { bubbles: true }));   // draft/grow/slash stay in sync
+      } else if (sid) {                                // tab switched mid-verify → land in that draft
+        drafts.set(sid, (drafts.get(sid) || "") + raw);
+        persistDrafts();
+      }
+    };
+    const remote = hostOf(sid || "");
+    fetch(fileUrl(pasted.path), { method: remote ? "GET" : "HEAD" }).then(async (r) => {
+      if (r.status === 413) {                          // refused LOUDLY, like every oversize arrival
+        warnToast((pasted.path.split("/").pop() || "That file") + " is too large to attach from a "
+          + "pasted path — it was pasted as text instead.");
+        return putBack();
+      }
+      if (!r.ok) return putBack();
+      if (!remote) { addComposerFile(sid, pasted.path); return; }  // zero-copy, like a local drop
+      const blob = await r.blob();                     // ship the BYTES — the remote can't read our path
+      shipFileToHost(new File([blob], pasted.path.split("/").pop() || "pasted", { type: blob.type }), sid);
+    }).catch(putBack);
   });
   wirePasteFallback(ta); // belt-and-braces: native paste disarms it, so no double-insert
 
@@ -9067,7 +9108,7 @@ function setupComposer() {
 // agent on THAT machine, so bytes saved on any other kernel would hand the agent
 // a path that does not exist there.
 const SHIP_MAX_BYTES = 50 * 1024 * 1024;   // payload ceiling for shipped attachment bytes
-function shipFileToHost(f: File) {
+function shipFileToHost(f: File, sidAt: string | null = activeId) {
   if (f.size > SHIP_MAX_BYTES) {
     // an oversize file must be REFUSED VISIBLY, never dropped silently — name the
     // file, its size and the cap, on the same loud surface a failed federation
@@ -9080,8 +9121,8 @@ function shipFileToHost(f: File) {
   // WS send + kernel round trip is seconds of otherwise-blank time that read as a dead click (the
   // user 2026-08-11). Retired by the droppedPath ack / dropSaveFailed nack (see retirePendingShip).
   const name = f.name || "pasted.png";
-  const sid = activeId;
-  addPendingShip(sid, name);
+  const sid = sidAt;   // captured at CALL (= ship) time via the default param — a tab switch
+  addPendingShip(sid, name);   // mid-encode (or mid-verify, for a pasted path) must not reroute
   const reader = new FileReader();
   reader.onload = () => {
     const b64 = String(reader.result || "").split(",")[1] || "";

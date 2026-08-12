@@ -23,8 +23,9 @@ const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kern
 test("the pending chip goes up BEFORE the encode starts — pick-to-feedback is immediate", () => {
   // registry keyed by session, like composerFiles beside it
   assert.match(RENDER, /const pendingShips = new Map<string, string\[\]>\(\);/);
-  // registered at the TOP of shipFileToHost (before new FileReader), with the sid captured once
-  assert.match(RENDER, /const name = f\.name \|\| "pasted\.png";\s*\n\s*const sid = activeId;\s*\n\s*addPendingShip\(sid, name\);\s*\n\s*const reader = new FileReader\(\);/);
+  // registered at the TOP of shipFileToHost (before new FileReader), with the sid captured once —
+  // at call time via the sidAt default (a pasted-path caller passes the sid it verified against)
+  assert.match(RENDER, /const name = f\.name \|\| "pasted\.png";\s*\n\s*const sid = sidAt;.*\n\s*addPendingShip\(sid, name\);.*\n\s*const reader = new FileReader\(\);/);
 });
 
 test("the strip renders pending chips (name + pulsing dots) and shows even with no real attachments", () => {
