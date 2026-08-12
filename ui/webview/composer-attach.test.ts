@@ -60,8 +60,11 @@ test("shipFileToHost stamps the session id so federation routes the bytes to the
   // routeOutbound routes any `id` field by host prefix (SCALAR_ID); the stamp is what
   // engages it (multi-kernel-merge.test.ts pins the routing itself). The sid is captured
   // at SHIP time (with the pending chip), not at encode time — a tab switch mid-encode
-  // must not reroute the bytes away from the session the user attached them to.
-  assert.match(RENDER, /const sid = activeId;/);
+  // must not reroute the bytes away from the session the user attached them to. Callers
+  // that already verified against a session (the pasted-path flow) pass THEIR captured
+  // sid; the default keeps ship-time capture for everyone else.
+  assert.match(RENDER, /function shipFileToHost\(f: File, sidAt: string \| null = activeId\)/);
+  assert.match(RENDER, /const sid = sidAt;/);
   assert.match(RENDER, /if \(sid\) msg\.id = sid;\s*\/\/ the owning session → the owning kernel/);
 });
 
