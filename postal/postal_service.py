@@ -525,6 +525,24 @@ def _kernel_post(path, body, timeout=2):
         return None
 
 
+def _kernel_up():
+    """True when THIS machine's kernel answers /healthz (auth-exempt, so no token dance). The
+    autostop gate reads it: a machine whose kernel is up is a live romp installation — peer buses
+    dial ITS bus for presence and INBOUND mail — so the bus must keep listening even with zero
+    local sessions. A quiet hub's bus used to self-stop on local-session count alone, and every
+    cross-host message through it silently parked until a manual `ensure` (verified twice,
+    2026-08-12); local sessions are the wrong liveness signal for a hub. False under the
+    ROMP_SESSIONS_FILE seam, like _kernel_post: that seam means a test with no live kernel."""
+    if os.environ.get("ROMP_SESSIONS_FILE"):
+        return False
+    import urllib.request
+    try:
+        with urllib.request.urlopen(KERNEL_BASE + "/healthz", timeout=2) as r:
+            return getattr(r, "status", 200) // 100 == 2
+    except Exception:
+        return False
+
+
 def _publish_working(sid, text):
     """Publish/clear THIS session's working-note via the kernel's backend-agnostic store (POST /working) — no
     tmux. The kernel owns the store and both backends read it (it appears in GET /sessions' `working` field),
@@ -1244,6 +1262,16 @@ def _maybe_restart_for_code(boot_fp):
         return True
     return False
 
+def _idle_tick(n, idle):
+    """One autostop decision: (new_idle, stop). Factored out so the gate is unit-testable (the
+    monitor loop sleeps). Local clients OR a live local kernel reset the count — a hub with zero
+    local sessions still serves inbound peer exchanges as long as its kernel runs (_kernel_up)."""
+    if n > 0 or _kernel_up():
+        return 0, False
+    idle += 1
+    return idle, idle >= IDLE_GRACE
+
+
 def _monitor(httpd, boot_fp=""):
     idle = 0
     while True:
@@ -1261,14 +1289,11 @@ def _monitor(httpd, boot_fp=""):
             n = present_count()
         except Exception:
             n = 1   # on error, err on the side of staying up
-        if n <= 0:
-            idle += 1
-            if idle >= IDLE_GRACE:
-                _log("no romp clients remain; shutting down")
-                threading.Thread(target=httpd.shutdown, daemon=True).start()
-                return
-        else:
-            idle = 0
+        idle, stop = _idle_tick(n, idle)
+        if stop:
+            _log("no romp clients remain (and no local kernel); shutting down")
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+            return
 
 def _retry_pending():
     """RETRY deferred deliveries — the fix for stranded mail. _push (and the revive

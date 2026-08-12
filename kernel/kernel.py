@@ -5985,6 +5985,26 @@ def _ensure_postal_bus():
         sys.stderr.write("postal bus ensure failed:\n%s" % traceback.format_exc())
 
 
+_bus_revive_lock = threading.Lock()
+_bus_reviving = [False]                      # one ensure in flight at a time; concurrent kicks coalesce
+
+def _revive_postal_bus():
+    """Re-ensure the bus when a bus call is REFUSED — the bus died under a running kernel (it
+    self-stopped in a window its gate didn't cover, or crashed), and boot-time ensure can't help a
+    kernel that is already up. Event-based: the refusal IS the signal (never a poll). Single-flight
+    so a burst of refused notifies — one per tunnel per supervisor pass — coalesces into one ensure.
+    A quiet hub went dark exactly this way twice on 2026-08-12: bus gone, kernel up, every /peer
+    notify failing silently, cross-host mail parked until a manual ensure."""
+    with _bus_revive_lock:
+        if _bus_reviving[0]:
+            return
+        _bus_reviving[0] = True
+    try:
+        _ensure_postal_bus()
+    finally:
+        _bus_reviving[0] = False
+
+
 def _ssh_config_hosts():
     """Host aliases declared in ~/.ssh/config (the 'find the things' for the attach UI). Concrete 'Host'
     patterns only — wildcards/negations are skipped (not connectable targets). Best-effort: a missing or
@@ -6144,7 +6164,9 @@ def _notify_bus_peer(host, port, up, peer_token="", trust="directed"):
     local bus with OUR serve token; peer_token is the PEER machine's serve token (r["token"]), which the
     bus needs to dial that peer's /peer-exchange through the tunnel — both buses are token-gated now.
     trust rides too: the bus gates inbound mail from a 'directed' peer into quarantine and drops an
-    'isolated' peer's mail — it needs the per-host level to make that call at delivery time."""
+    'isolated' peer's mail — it needs the per-host level to make that call at delivery time.
+    A refusal ALSO kicks _revive_postal_bus: a dead bus must not stay dead until the next kernel
+    boot while the supervisor retries into it forever (the 2026-08-12 quiet-hub outage)."""
     try:
         conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "port": port, "up": bool(up),
@@ -6154,6 +6176,7 @@ def _notify_bus_peer(host, port, up, peer_token="", trust="directed"):
         conn.close()
         return ok
     except Exception:
+        threading.Thread(target=_revive_postal_bus, daemon=True).start()
         return False
 
 
@@ -6162,7 +6185,7 @@ def _notify_bus_origin_trust(host, trust):
     reads when mail from `host` arrives RELAYED through a hub (trust is judged by true origin, never
     by the tunnel it rode in on — the user 2026-07-25). Guarded like _notify_bus_peer: postal being
     down never breaks the caller; the supervisor re-pushes, and a restarted bus re-seeds from
-    /tunnels' `known` rows."""
+    /tunnels' `known` rows. A refusal kicks _revive_postal_bus, like _notify_bus_peer's."""
     try:
         conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=2)
         conn.request("POST", "/peer", json.dumps({"host": host, "trust": trust or "directed",
@@ -6172,6 +6195,7 @@ def _notify_bus_origin_trust(host, trust):
         conn.close()
         return ok
     except Exception:
+        threading.Thread(target=_revive_postal_bus, daemon=True).start()
         return False
 
 
