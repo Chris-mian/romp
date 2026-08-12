@@ -28,7 +28,7 @@ class ApiErrorWorking(unittest.TestCase):
         # user 2026-08-08); a transient error does NOT move the card (it auto-retries in Working).
         self.assertIn('api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")', src)
         self.assertIn('or aerr.get("modelLimit") or aerr.get("authErr"))))', src)
-        self.assertIn('column = ("needs_input" if (api_block or nid == perm_top', src)   # stalled_floor retired 2026-07-07
+        self.assertIn('column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top', src)   # stalled_floor retired 2026-07-07; jauth_top = the judge-auth floor (2026-08-12)
         self.assertIn('or (col == "blocked" and not recheck and not rejudging))', src)
 
     def test_spend_cap_is_classified_and_floors_like_tooLong(self):

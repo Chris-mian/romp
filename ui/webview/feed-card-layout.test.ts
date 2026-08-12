@@ -89,8 +89,8 @@ test("session-STATE badges (⏸ approval / ⚠ API error) ride the name row; the
   // the bug: ⏸ approval + buttons + Clear in the SAME footer row shoved them off a narrow card.
   // Fix: the state badges move up beside the session name; the action row holds only the buttons.
   // The ⏳ "awaiting" chip was REMOVED (the user 2026-07-04) — the body "Awaiting background agents" box says it.
-  assert.match(FEED, /idwrap\.append\(retryBadge, apiBadge, blkBadge\)/,
-    "state badges sit beside the name (no awaiting chip; retrying joined 2026-07-09)");
+  assert.match(FEED, /idwrap\.append\(retryBadge, apiBadge, jauthBadge, blkBadge\)/,
+    "state badges sit beside the name (no awaiting chip; retrying joined 2026-07-09, judge-auth 2026-08-12)");
   assert.doesNotMatch(FEED, /waitBadge/, "the redundant awaiting chip element is gone entirely");
   assert.match(FEED, /actions\.append\(apiRetry, revive,/, "action row = Retry/Revive (+ resume-gate) only (Clear moved to the name row 2026-07-07)");
   assert.match(FEED, /a\._blocked = blkBadge;/);

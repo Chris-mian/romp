@@ -679,6 +679,14 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   color: #e5484d; border: 1px solid rgba(229, 72, 77, 0.6); border-radius: 5px; padding: 1px 6px;
   opacity: 0.85;
 }
+/* ⚠ Can't analyze · API key / login — judge-auth-down (the user 2026-08-12): romp's OWN analysis of
+   this session is refused on its credential, so nothing here can move without the user. FILLED red —
+   a deliberately new chip, same size as its api-trouble siblings (same information type) but
+   inverted: the outlined chips say "the session hit trouble", this one says "romp can't even look". */
+.fask-jauth {
+  flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
+  color: #fff; background: #c0392b; border: 1px solid #c0392b; border-radius: 5px; padding: 1px 6px;
+}
 .fdismiss.fretry { color: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
 .fdismiss.fretry:disabled { opacity: 0.55; cursor: default; }

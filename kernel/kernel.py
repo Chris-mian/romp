@@ -4303,6 +4303,13 @@ def _sdk_locked():
                 # that, a fresh install whose romp-sdk-setup had bailed looked like romp silently eating
                 # every message (the user 2026-07-28).
             sbmod = SourceFileLoader("romp_sdk_backend", str(HERE / "sdk_backend.py")).load_module()
+            # ONE claimer for the manager env's API key: the backend's work_api_key pops it out of
+            # os.environ (so no session CLI inherits it ambiently), and judges read that same stash
+            # through this wire. Before it lands the key is still in os.environ and judge._work_key
+            # reads it there — the handoff is order-independent, no second claim to race (2026-08-12:
+            # the unwired judges inherited the post-claim env on a login-less host and every call
+            # refused "Not logged in" for 13 hours while the cards sat parked in Working).
+            jd._WORK_KEY_FN = sbmod.work_api_key
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_producer_wake.set, push=_pusher_wake.set,
@@ -14018,6 +14025,7 @@ def build_feed(now, tmux=None):
     alive = _alive_sessions(now, tmux)               # hard filter: living sessions only
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
     _stalls = _stalled_goals()                       # goals romp's nudge gate is holding → the card's Stalled section
+    _jauth_map = jd._auth_down_map()                 # judge-auth-down latch → the per-session card floor below
     cold_parse = False                               # any living session not yet parsed → warm it in the background
     for s in alive:
         fsid, name = s["sid"], s["name"]
@@ -14284,6 +14292,22 @@ def build_feed(now, tmux=None):
                 f = nodes[f]["parentId"]
             if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
                 api_top = f
+        # JUDGE-AUTH floor (the user 2026-08-12): this session's judges are failing on their CREDENTIAL
+        # (judge.py latched a credential-class error envelope; its next successful call clears it) — romp
+        # cannot analyze the session, so no card here can move on its own, and only the user can fix it
+        # (the key, the login, or the session's billing pick). Floor the focus top to needs-you wearing
+        # the story: the alternative was a board silently frozen in Working, which is exactly how a
+        # login-less host spent 13 hours and ~53k refused calls without a pixel changing. Yields to the
+        # LIVE floors (a permission prompt, the session's own API error): one interrupt at a time, the
+        # present event first — and the api floor's authErr copy already names the same credential fix.
+        jerr = _jauth_map.get(fsid)
+        jauth_top = None
+        if jerr and api_top is None and perm_top is None:
+            f = store.get("lastNode")
+            while f and nodes.get(f, {}).get("parentId") is not None:
+                f = nodes[f]["parentId"]
+            if f in nodes and status.get(f) not in ("completed", "cleared"):
+                jauth_top = f
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         had_awaiting = False                         # …and does any of them read AWAITING? → the session's straw dot (below)
@@ -14516,7 +14540,7 @@ def build_feed(now, tmux=None):
             # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
             # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
             # client files by it.column, and the distiller line shows (the user 2026-06-29).
-            column = ("needs_input" if (api_block or nid == perm_top
+            column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top
                                         or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
@@ -14529,7 +14553,8 @@ def build_feed(now, tmux=None):
             # perm_top / col=="blocked"), so the brief/takeaway stays put through the re-judge window; the
             # column still moves for placement. Completed is stable (never recheck/rejudged), so it matches.
             distill_state = ("completed" if col == "completed"
-                             else "blocked" if (api_block or nid == perm_top or col == "blocked")
+                             else "blocked" if (api_block or nid == jauth_top or nid == perm_top
+                                                or col == "blocked")
                              else None)
             # summaryAnchorUuid: where a click on the distilled summary line lands.
             # COMPLETED goals pin to the COMPLETION TURN'S wrap-up — event-derived, not a guess: the
@@ -14643,6 +14668,13 @@ def build_feed(now, tmux=None):
                                       # (per-session auth, the user 2026-08-08)
                                       else "this session's sign-in or API key isn't working — fix the login (claude /login) or the key, or switch which one it bills" if aerr.get("authErr")
                                       else "this session stopped on an API error — Retry to resume")} if nid == api_top
+                            # the session itself is fine — it's romp's ANALYSIS of it whose credential is
+                            # refused, so the copy blames the judges, not the session (the user 2026-08-12)
+                            else {"state": "judgeAuth", "mode": jerr.get("mode"),
+                                  "since": jerr.get("t"), "text": jerr.get("note") or "",
+                                  "what": ("romp can't analyze this session — the API key its judges bill is being refused. Fix the key (service.env) or switch which account this session bills"
+                                           if jerr.get("mode") == "key" else
+                                           "romp can't analyze this session — the login its judges bill is being refused. Sign in again (claude /login) or switch which account this session bills")} if nid == jauth_top
                             else {"state": perm_state,
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                            else "this session is stopped awaiting your approval")} if nid == perm_top

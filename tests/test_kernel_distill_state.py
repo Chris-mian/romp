@@ -22,10 +22,12 @@ class DistillState(unittest.TestCase):
     def test_distill_state_is_computed_from_the_genuine_block_not_the_column(self):
         src = inspect.getsource(km.build_feed)
         # "completed" mirrors col; "blocked" fires for the SAME hard blocks that make the card genuinely
-        # needs-you (api_block / a live perm_top / a soft col=="blocked") — but WITHOUT the recheck/rejudging
-        # suppression that `column` carries, so the brief survives the Working flip.
+        # needs-you (api_block / the judge-auth floor / a live perm_top / a soft col=="blocked") — but
+        # WITHOUT the recheck/rejudging suppression that `column` carries, so the brief survives the
+        # Working flip.
         self.assertIn('distill_state = ("completed" if col == "completed"', src)
-        self.assertIn('else "blocked" if (api_block or nid == perm_top or col == "blocked")', src)
+        self.assertIn('else "blocked" if (api_block or nid == jauth_top or nid == perm_top', src)
+        self.assertIn('or col == "blocked")', src)
         self.assertIn("else None)", src)
 
     def test_distill_state_drops_the_recheck_rejudging_suppression_that_column_keeps(self):
