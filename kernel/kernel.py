@@ -489,6 +489,21 @@ def _load_token():
 
 TOKEN = _load_token()
 
+def _persist_repo_root():
+    """The kernel's own repo root, written into state at boot (state/romp/repo-root). This is the
+    AUTHORITATIVE answer for a peer kernel's clone-discovery probes (_start_remote_kernel,
+    _discover_remote_clone): the running kernel knows exactly where it lives, so probes read this
+    file over ssh FIRST instead of guessing conventional dirs — the guess list missed a clone at
+    ~/projects/romp while that machine's kernel was literally up, reporting "romp not installed"
+    (the user 2026-08-11). Best-effort, like the serve-token mint above."""
+    try:
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "repo-root").write_text(str(ROOT) + "\n")
+    except OSError:
+        pass
+
+_persist_repo_root()
+
 def _ct_eq(a, b):
     """Constant-time string compare (no timing oracle on the serve token); never
     raises on odd input."""
@@ -6650,12 +6665,18 @@ def _remote_kernel_up(host, port):
 
 
 def _start_remote_kernel(host):
-    """Start the remote kernel: nohup romp-serve, found on PATH or in conventional clone locations
-    (a non-login ssh shell often lacks the user's PATH additions). romp-serve itself picks the right
-    python (its pick_python) and self-builds stale UI bundles, so a plain clone is enough. Returns
-    (started, detail) — detail names the next step when romp isn't installed there."""
-    cmd = ('S="$(command -v romp-serve || true)"; '
-           'if [ -z "$S" ]; then for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
+    """Start the remote kernel: nohup romp-serve, found via the remote's OWN authority first — the
+    repo-root file its kernel persists at boot (_persist_repo_root; ROMP_REPO_ROOT on the target
+    overrides), never a guess (the authoritative-sources rule; the old guess list missed a clone at
+    ~/projects/romp, the user 2026-08-11) — then PATH (non-login, then a login shell: a non-login
+    ssh shell often lacks the user's PATH additions), then conventional clone locations. romp-serve
+    itself picks the right python (its pick_python) and self-builds stale UI bundles, so a plain
+    clone is enough. Returns (started, detail) — detail names everything the probe tried when romp
+    isn't installed there. KEEP the source order IN SYNC with _discover_remote_clone."""
+    cmd = ('S=""; SR="${ROMP_REPO_ROOT:-$(cat "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/repo-root" 2>/dev/null)}"; '
+           'if [ -n "$SR" ] && [ -x "$SR/bin/romp-serve" ]; then S="$SR/bin/romp-serve"; fi; '
+           'if [ -z "$S" ]; then S="$(command -v romp-serve || bash -lc "command -v romp-serve" 2>/dev/null || true)"; fi; '
+           'if [ -z "$S" ]; then for d in "$HOME/projects/romp" "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
            'if [ -x "$d/bin/romp-serve" ]; then S="$d/bin/romp-serve"; break; fi; done; fi; '
            'if [ -z "$S" ]; then echo NOROMP; exit 0; fi; '
            'LOGDIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"; mkdir -p "$LOGDIR"; '
@@ -6666,7 +6687,11 @@ def _start_remote_kernel(host):
         if "STARTED" in out:
             return True, out.partition(":")[2]
         if "NOROMP" in out:
-            return False, "romp not installed on %s — clone it and run ./install.sh" % host
+            return False, ("romp not installed on %s — no repo-root state file (a kernel that has "
+                           "run there writes one; ROMP_REPO_ROOT on that machine also works), no "
+                           "romp-serve on PATH (login shell included), and no clone in "
+                           "~/projects/romp, ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp. "
+                           "Clone romp there and run ./install.sh." % host)
         return False, (_ssh_err(r.stderr) or out or "ssh failed").strip()[:200]
     except Exception as e:
         return False, str(e)
@@ -7577,12 +7602,20 @@ _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its 
 
 
 def _discover_remote_clone(host):
-    """ssh-discover the remote romp clone (conventional dirs, mirrors _start_remote_kernel) and its
-    state. Returns (dir, head, dirty, error) — error set (and the rest blank) on any failure. Shared
-    by the push (_update_remote) and pull (_pull_remote) directions."""
+    """ssh-discover the remote romp clone and its state. The remote's OWN authority first — the
+    repo-root file its kernel persists at boot (_persist_repo_root; ROMP_REPO_ROOT on the target
+    overrides) — then a romp-serve found on PATH (non-login, then login shell) resolved to the repo
+    that holds it, then conventional dirs. KEEP the source order IN SYNC with _start_remote_kernel.
+    Returns (dir, head, dirty, error) — error set (and the rest blank) on any failure, naming
+    everything tried. Shared by the push (_update_remote) and pull (_pull_remote) directions."""
     disc = (
-        'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
-        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
+        'R=""; SR="${ROMP_REPO_ROOT:-$(cat "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/repo-root" 2>/dev/null)}"; '
+        'if [ -n "$SR" ] && [ -d "$SR/.git" ]; then R="$SR"; fi; '
+        'if [ -z "$R" ]; then B="$(command -v romp-serve || bash -lc "command -v romp-serve" 2>/dev/null || true)"; '
+        'if [ -n "$B" ]; then B="$(readlink -f "$B" 2>/dev/null || echo "$B")"; D="$(dirname "$(dirname "$B")")"; '
+        'if [ -d "$D/.git" ]; then R="$D"; fi; fi; fi; '
+        'if [ -z "$R" ]; then for d in "$HOME/projects/romp" "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
+        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; fi; '
         'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
         'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
         'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
@@ -7592,7 +7625,9 @@ def _discover_remote_clone(host):
         return "", "", "", str(e)[:200]
     out = d.stdout or ""
     if "NOROMP" in out:
-        return "", "", "", "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
+        return "", "", "", ("romp not installed on %s (no repo-root state file, no romp-serve on "
+                            "PATH — login shell included — and no clone in ~/projects/romp, "
+                            "~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host)
     info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
     rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
     if not rdir:
