@@ -516,9 +516,15 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
         }
         if (stale) ver = ver.replace(" · ", " · last known: ");
       }
+      // A connected host reporting NO build at all runs a plain file copy (no git checkout): it cannot
+      // name a release or commit, and drift can't be measured — it may be months behind and never say
+      // so (the user 2026-08-11, devbox). Say it where the build word sits, matching the web popover.
+      const unversioned = t.status === "up" && !t.outOfDate && !t.kernelSha && !t.kernelVer;
+      if (unversioned) ver = " · unversioned copy";
       nm.textContent = `${t.host} — ${LBL[t.status] || t.status}` + ver;
       nm.title = (TIP[t.status] || "")
         + (t.outOfDate ? `\n\nRunning ${t.kernelSha || "?"}${t.kernelDate ? " from " + t.kernelDate : ""}; this machine is at ${t.localSha || "?"}.` : "")
+        + (unversioned ? `\n\n${t.host} is running romp from a plain file copy — not a git checkout — so it cannot name its release or commit, and how far it is from this machine cannot be measured: it may be far behind and never say so. Reinstall it as a git clone to restore the build name and updates.` : "")
         + (stale && t.outOfDate ? `\nLast confirmed ${seen || "not since this kernel started"}; not re-checked while ${LBL[t.status] || t.status}.` : "")
         + (t.outOfDate && t.checkinPeer
           ? (t.askPull

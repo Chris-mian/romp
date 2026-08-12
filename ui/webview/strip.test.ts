@@ -102,6 +102,17 @@ test("the strip compresses by measurement: fluid bars, fit()-stepped tiers, wrap
   assert.ok(!src.includes("strip-spacer"), "no spacer item — margin-left:auto keeps the pin across wrapped rows");
 });
 
+test("a buildless connected host reads 'unversioned copy', matching the web popover", () => {
+  // a plain file copy (no git checkout) reports no sha/version, so drift detection is blind to it —
+  // the row must say so where the build word sits, never a bare "connected" that reads as in-sync
+  // (the user 2026-08-11, devbox). test_kernel_remote_update.py pins the web popover's twin wording.
+  const ROOT = path.resolve(process.cwd(), "..");
+  const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
+  assert.match(src, /const unversioned = t\.status === "up" && !t\.outOfDate && !t\.kernelSha && !t\.kernelVer;/);
+  assert.match(src, /if \(unversioned\) ver = " · unversioned copy";/);
+  assert.match(src, /Reinstall it as a git clone to restore the build name and updates\./);
+});
+
 // The network button must acknowledge and fail LOUDLY (the user 2026-07-14
 // reported it "doing nothing" in VS Code while every repro elsewhere works):
 // instant .open chrome on the button, instant popover content before any

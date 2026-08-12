@@ -19371,6 +19371,12 @@ var tt='running '+(buildWord(t.kernelVer,t.kernelSha)||'?')+(t.kernelDate?' from
 +(t.checkinPeer?(t.askPull?' No ssh path from this machine (it checked in over its own tunnel), so Update asks it to fast-forward itself over the link it holds.':' No ssh path from this machine (it checked in over its own tunnel) \\u2014 sync from its own dashboard.'):'');
 ver=' \\u00b7 <span class=\"rnet-old'+(stl?' rnet-stale':'')+'\" title=\"'+tt+sq+'\">'+(stl?'last known: ':'')+(bw?bw+' ':'')+(ar?'('+ar+')':w)+'</span>';}
 else if(bw){ver=' \\u00b7 <span class=\"rnet-sha'+(stl?' rnet-stale':'')+'\" title=\"'+(stl?'same build as this machine when last reached.'+sq:'same build as this machine')+'\">'+(stl?'last known: ':'')+bw+'</span>';}
+// A connected host that reports NO build at all is running a plain file copy — no git checkout, so its
+// kernel cannot name a release or commit, and drift against this machine cannot be measured (it may be
+// months behind and never say so; the user 2026-08-11, whose devbox ran months-old code beside a bare
+// "connected"). Fail loudly where the build word would sit, never a silent blank that reads as fine.
+// strip.ts's popover row carries the same word (rnet parity pins).
+else if(t.status==='up'){ver=' \\u00b7 <span class=\"rnet-old\" title=\"'+t.host+' is running romp from a plain file copy \\u2014 not a git checkout \\u2014 so it cannot name its release or commit, and how far it is from this machine cannot be measured: it may be far behind and never say so. Reinstall it as a git clone to restore the build name and updates.\">unversioned copy</span>';}
 // A push romp is ALREADY doing needs no button — offering one would just invite a duplicate of the work in
 // flight. The row shows the live phase instead (below), and the manual Push returns if it fails.
 var apx=t.autoPush&&(t.autoPush.phase==='pushing'||t.autoPush.phase==='waiting'||t.autoPush.phase==='pulling'||t.autoPush.phase==='asking');
