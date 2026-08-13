@@ -54,7 +54,7 @@ test("AWAITING uses the kernel's why verbatim (capitalized) when it reads 'waiti
 });
 
 test("a peer wait (waitingOn chip) and a bg-TASK wait (pill) both defer — no generic awaiting box", () => {
-  // the "Awaiting <peer>" chip / the "Waiting on task" pill already carry these; the box would double up
+  // the "Awaiting <peer>" chip / the "Awaiting task" pill already carry these; the box would double up
   assert.equal(spinFor({ awaiting: { why: "x" }, waitingOn: "peer" }, false, false).caption, null);
   assert.equal(spinFor({ awaiting: { why: "x", tasks: ["t1"] } }, false, false).caption, null);
 });

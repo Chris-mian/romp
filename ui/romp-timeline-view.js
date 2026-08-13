@@ -2680,7 +2680,7 @@ class TimelinePanel {
       // segment (BAR_H, the work-bar reference) in the lane color from the last work period's end to the
       // live edge, but FADED to 0.4 alpha — "something is pending here", a faded continuation of the work
       // bar rather than active work (which stays the solid ~0.9 bar). Its own hover lists the task(s),
-      // consistent with the feed's "Waiting on task" pill. Event-gated on the SAME live signal the lane
+      // consistent with the feed's "Awaiting task" pill. Event-gated on the SAME live signal the lane
       // badge reads (s.awaitingBg — kernel _session_awaiting, non-null only while the turn is CLOSED), so
       // it appears with the wait and vanishes the moment the tasks settle or a new turn opens.
       if (s.live && s.awaitingBg) {
@@ -2694,7 +2694,7 @@ class TimelinePanel {
           const rows = ((s.awaitingTasks && s.awaitingTasks.length) ? s.awaitingTasks : [s.awaitingBg])
             .map((d) => '<div class="b" style="opacity:.85">' + esc(d) + '</div>').join('');
           const tip = '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name)
-            + '</span><span class="t">' + clock(anchor) + '– waiting…</span></div>' + rows;
+            + '</span><span class="t">' + clock(anchor) + '– awaiting…</span></div>' + rows;
           const wh = el('rect', { x: lx1, y: y - 7, width: lx2 - lx1, height: 14, fill: 'transparent' }); wh.style.cursor = 'grab';
           wh.addEventListener('mouseenter', (e) => { ln.setAttribute('stroke-width', String(BAR_H + 2)); ln.setAttribute('opacity', '0.6'); this.showTip(tip, e); });
           wh.addEventListener('mousemove', (e) => this.moveTip(e));

@@ -13473,6 +13473,13 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         # error (auto-retrying → the tab renders amber/retrying, not alarm-red). chip stays "blocked" either way
         # so the client auto-retry still fires + recovers the transient ones (the user 2026-06-29).
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
+                  # WHAT the session is awaiting, beside the chip (the user 2026-08-13: the chat pane said
+                  # "Awaiting" with the reason nowhere in sight — the feed pill and timeline hover had it,
+                  # the statusline didn't). The why is _session_awaiting's own phrasing; awaitingTasks are
+                  # the live AWAITED task descriptions behind it (same source as the timeline lane + feed
+                  # pill), so a multi-task wait can list them all on hover.
+                  "awaitingWhy": awaiting_why or None,
+                  "awaitingTasks": (_awaiting_task_descs(sid, sess["path"]) if awaiting_why else []),
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
                   # the client's apiRetryTick skips it, and the global pause it engages stops the loop too
@@ -16874,11 +16881,20 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                 state = tm["state"] or "idle"
                 if state == "compacting" and not _compacting(sid, state, {"turns": []}, now, tm.get("since")):
                     state = "working" if open_now else "waiting"
+            # The awaitingBg WHY below must read the SAME working signal the chip just derived (the
+            # 2026-07-03 same-INPUT rule). In the skeleton build `open_now` is the RAW snapshot state
+            # while the chip reads the event model over the cached+merged parse — feeding the raw bit
+            # to _session_awaiting shipped payloads that disagreed with themselves: a lane whose badge
+            # said Awaiting (chip) with a null why beside it, so the hover/stretch had nothing to show
+            # (audited live 2026-08-13). Cold cache (comp_sess None) falls back to the raw signal —
+            # exactly then the chip fell back to the raw state too, so the pair stays aligned.
+            aw_open = _session_working(comp_sess["turns"]) if comp_sess is not None else open_now
         else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
                                           # turn that never returned a ResultMessage, then ended) must not read as
                                           # active (the user 2026-06-23); badgeFor dims a dead lane anyway.
             blocked = "blocked" in goals.get("status", {}).values() and not _session_flag(sid, "hideFromFeed")
             state = "awaiting" if blocked else "idle"   # muted → no 'awaiting'/background-task badge on the lane
+            aw_open = open_now                          # unused (awaitingBg is None for a dead lane) — kept defined
         bars, last_t, seg_ends = [], None, {}            # seg_ends: seg-start t → work-END t (for completion marks)
         for ti, turn in enumerate(st_turns):
             turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
@@ -16943,8 +16959,9 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         # of a bare READY (the user 2026-07-01: the surfaces must share one working model; this was the
         # last designed chat/timeline split). Named awaitingBg: the lane's legacy 'awaiting' STATE and the
         # `awaiting` intervals field below both mean blocked-on-YOU. Cheap (live subagent snapshot + states
-        # overlay), so both the skeleton and the bars build carry it.
-        awaiting_bg = (_session_awaiting(sid, s["path"], not open_now, stamp=True) if live else None)
+        # overlay), so both the skeleton and the bars build carry it. Idle input = `aw_open`, the chip's
+        # own event-model signal (see its derivation above), NOT the raw-snapshot `open_now`.
+        awaiting_bg = (_session_awaiting(sid, s["path"], not aw_open, stamp=True) if live else None)
         sessions.append({
             "id": sid, "name": name, "live": live, "state": state, "awaitingBg": awaiting_bg,
             # the live bg-task descriptions behind awaitingBg (the user 2026-07-13): the lane draws the

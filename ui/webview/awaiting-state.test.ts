@@ -58,3 +58,28 @@ test("the kernel split happens in the ONE shared derivation (_session_chip), not
   assert.match(KERNEL, /"working" if open_now else\n/);
   assert.match(KERNEL, /"awaitingBg" if awaiting_why else "ready"\)/);
 });
+
+test("the statusline says WHAT the session is awaiting, beside the chip (the user 2026-08-13)", () => {
+  // the kernel ships the why + the live awaited task descriptions in the chat status payload…
+  assert.match(KERNEL, /"awaitingWhy": awaiting_why or None,/);
+  assert.match(KERNEL, /"awaitingTasks": \(_awaiting_task_descs\(sid, sess\["path"\]\) if awaiting_why else \[\]\),/);
+  // …and the awaitingBg statusline branch renders it: verb stripped (the chip already says Awaiting),
+  // full why + every task description on hover
+  const branch = RENDER.split('state === "awaitingBg") {')[1].split("} else if")[0];
+  assert.match(branch, /el\("span", "sl-await-why"\)/);
+  assert.match(branch, /why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\)/);
+  assert.match(branch, /det\.title = why \+ \(tasks\.length > 1/);
+  // one ellipsized line that shrinks instead of pushing the right-side cluster off
+  assert.match(STYLES, /\.sl-await-why \{[\s\S]*?min-width: 0;[\s\S]*?text-overflow: ellipsis/);
+});
+
+test("the timeline lane's awaitingBg why reads the SAME working signal as its badge (same input, 2026-07-03 rule)", () => {
+  // the skeleton build's raw-snapshot open_now fed _session_awaiting while the chip read the event
+  // model — a lane badge could say Awaiting with a null why beside it (audited live 2026-08-13)
+  assert.match(KERNEL, /aw_open = _session_working\(comp_sess\["turns"\]\) if comp_sess is not None else open_now/);
+  assert.match(KERNEL, /_session_awaiting\(sid, s\["path"\], not aw_open, stamp=True\) if live else None/);
+  // the awaiting stretch's hover labels the wait with the state's one word
+  const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+  assert.match(TL, /– awaiting…/);
+  assert.doesNotMatch(TL, /– waiting…/);
+});

@@ -58,7 +58,7 @@ function workingFor(secs: number): string {
 
 export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boolean, nowS?: number): Spin {
   const aw = it.awaiting;
-  // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Waiting on task" pill
+  // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Awaiting task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
   if (aw && !it.waitingOn && !awTasks.length) {
@@ -81,7 +81,7 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // judge has nothing to classify yet; once the turn settles (kernel `judging`) the planner's pass is
     // due/in flight and only THEN does the chip say Analyzing…. An AWAITING placeholder (a bg-task wait with
     // no goal to floor, the user 2026-07-13) is provisional too but NOT working: !aw defers it to the boxed
-    // why (branch above) or, when tasks exist, to the "Waiting on task" pill — never a false "Working…".
+    // why (branch above) or, when tasks exist, to the "Awaiting task" pill — never a false "Working…".
     return {
       caption: it.judging ? "Analyzing…" : "Working…",
       tip: it.judging
