@@ -1201,6 +1201,14 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .romp-bubble .nudge-full { display: none; }
 .romp-bubble.expanded .nudge-full { display: block; }
 .romp-bubble.expanded .nudge-gist { display: none; }
+/* The Continue button's reply wears the SAME fold in the USER family (the user 2026-08-13): your
+   gesture in your colour — blue, judge-filed as your reply — but not your prose, so the gist speaks
+   and the canned words sit one click deeper. White-on-blue, not the dim gray of romp bookkeeping. */
+.user-bubble.nudge-collapsible { cursor: pointer; }
+.user-bubble .nudge-gist, .user-bubble .nudge-caret { color: rgba(255, 255, 255, 0.92); }
+.user-bubble .nudge-full { display: none; }
+.user-bubble.expanded .nudge-full { display: block; }
+.user-bubble.expanded .nudge-gist { display: none; }
 /* QUEUED: the user's messages submitted while the session is still working — pending,
    not yet a turn. Right-aligned like his sent bubbles, but faint + dashed to read
    as "waiting", with a header count. (Mirrors the queue Claude Code shows.) */
