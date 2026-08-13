@@ -31,7 +31,7 @@ test("backend is a plain labelled FIELD ROW under the others — no coloured top
 });
 
 test("v4: git branch + context battery + Summary row + the last 5 worked-on items, recency-coloured (the user 2026-06-24)", () => {
-  assert.match(RENDER, /rows\.push\(\["Branch", s\.gitBranch\]\)/);                   // git branch from the top-level session field (resident even when the head system event is windowed out — the user 2026-06-30)
+  assert.match(RENDER, /rows\.push\(\["⎇", s\.gitBranch\]\)/);                       // git branch from the top-level session field (resident even when the head system event is windowed out — the user 2026-06-30); the ⎇ glyph IS the label now (the user 2026-08-13)
   assert.match(RENDER, /const bar = ctxBar\(\); setCtxBar\(bar, s\.status\.ctx/);     // the battery widget, not "X%"
   assert.match(RENDER, /const lg = ledgers\.get\(s\.id\)/);
   assert.match(RENDER, /k\.textContent = "Summary"[\s\S]*?v\.textContent = lg\.summary/);   // labelled Summary row
@@ -75,8 +75,14 @@ test("the tall context battery gets vertical breathing room", () => {
   assert.match(CSS, /\.tab-tip-ctx \{ margin: 4px 0/);
 });
 
-test("the tooltip still shows the full path + mode/model/effort", () => {
-  assert.match(RENDER, /el\("div", "tab-tip-path"\); d\.textContent = s\.cwd/);
+test("the tooltip still shows the full path + mode/model/effort — path and branch as aligned icon rows", () => {
+  // one visual grammar (the user 2026-08-13): the directory is a ROW like the others — 📁 in the label
+  // slot, path right-aligned with its siblings — not a naked line floating on top; the branch row wears
+  // the ⎇ glyph in its label slot; the worktree row shows where the work actually lands when it differs.
+  assert.match(RENDER, /rows\.push\(\["📁", s\.cwd\]\)/);
+  assert.match(RENDER, /rows\.push\(\["⎇", s\.gitBranch\]\)/);
+  assert.match(RENDER, /rows\.push\(\["Worktree", s\.workTree\.dir/);
+  assert.doesNotMatch(RENDER, /tab-tip-path/, "the naked top path line is gone — the grid row replaced it");
   assert.match(RENDER, /rows\.push\(\["Mode", prettyMode\(s\.status\.mode\)\]\)/);
   assert.match(RENDER, /rows\.push\(\["Model", s\.status\.model\]\)/);
   assert.match(RENDER, /rows\.push\(\["Effort", s\.status\.effort\]\)/);

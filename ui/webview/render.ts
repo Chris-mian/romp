@@ -191,7 +191,7 @@ type ChatEvent = (
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
-  | { kind: "system"; model?: string; cwd?: string; gitBranch?: string; version?: string; mode?: string;
+  | { kind: "system"; model?: string; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; version?: string; mode?: string;
       claudemd?: { path: string; scope: string; text: string }[]; uuid?: string; ts?: string }
 ) & { tlId?: string };   // tlId: the timeline atom this event's hover lights — a prompt → the DOT, work → the BAR
 
@@ -209,7 +209,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; notify?: boolean; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; notify?: boolean; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -1958,6 +1958,10 @@ function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
   if (ev.mode) rows.push(["Permission mode", ev.mode]);
   if (ev.cwd) rows.push(["Directory", ev.cwd]);
   if (ev.gitBranch) rows.push(["Git branch", ev.gitBranch]);
+  // where the work ACTUALLY lands (the user 2026-08-13): the repo convention here does real work on
+  // per-session worktrees beside the registered clone, so the Directory/branch rows alone read 'main'
+  // forever; the kernel derives this from the newest edit event and sends it only when it differs.
+  if (ev.workTree) rows.push(["Worktree", ev.workTree.dir + (ev.workTree.branch ? "  ⎇ " + ev.workTree.branch : "")]);
   if (ev.version) rows.push(["Claude Code", ev.version]);
   if (rows.length) {
     const grid = el("div", "sys-meta");
@@ -3341,11 +3345,15 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   tip.replaceChildren();
   const now = Date.now() / 1000;
   const be = s.status.backend;
-  if (s.cwd) { const d = el("div", "tab-tip-path"); d.textContent = s.cwd; tip.appendChild(d); }
-  // labelled rows: git branch (top-level session field, resident even when the head system event is windowed
-  // out of the wire tail — the user 2026-06-30) + mode / model / effort + backend
+  // labelled rows, one visual grammar (the user 2026-08-13): the directory is a ROW like the others —
+  // the 📁 glyph in the label slot, path right of it, aligned — not a naked line floating on top; the
+  // branch row wears the ⎇ glyph in its label slot for the same consistency. Branch is the top-level
+  // session field, resident even when the head system event is windowed out of the wire tail (the user
+  // 2026-06-30), and the worktree row shows where the work actually lands when that differs.
   const rows: Array<[string, string]> = [];
-  if (s.gitBranch) rows.push(["Branch", s.gitBranch]);
+  if (s.cwd) rows.push(["📁", s.cwd]);
+  if (s.gitBranch) rows.push(["⎇", s.gitBranch]);
+  if (s.workTree) rows.push(["Worktree", s.workTree.dir + (s.workTree.branch ? "  ⎇ " + s.workTree.branch : "")]);
   if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
   if (s.status.model) rows.push(["Model", s.status.model]);
   if (s.status.effort) rows.push(["Effort", s.status.effort]);
@@ -7405,10 +7413,11 @@ function updateStatusline() {
   // for narrow panes; it shipped on by default 2026-06-23). Read from the TOP-LEVEL session field,
   // never the head system event: that event is windowed out of the wire tail on any >250-event session, which
   // used to blank the branch on most sessions (the user 2026-06-30).
-  if (loadSettings().showBranch === true && s.gitBranch) {
+  if (loadSettings().showBranch === true && ((s.workTree && s.workTree.branch) || s.gitBranch)) {
     const br = el("span", "status-branch");
-    br.textContent = "⎇ " + s.gitBranch;
-    br.title = "git branch: " + s.gitBranch;
+    const liveBr = (s.workTree && s.workTree.branch) || s.gitBranch;
+    br.textContent = "⎇ " + liveBr;
+    br.title = s.workTree ? `worktree ${s.workTree.dir} — git branch: ${liveBr}` : "git branch: " + liveBr;
     right.appendChild(br);
   }
   const meta = el("span", "spinner-meta");
@@ -8053,6 +8062,7 @@ function upsert(msg: any) {
     // system event — that event lives at events[0] and the WIRE_TAIL window drops it on any >250-event session,
     // so the branch used to vanish there. A chatTail delta omits it → keep the last-known via prev.
     gitBranch: msg.gitBranch ?? (prev ? prev.gitBranch : ""),
+    workTree: msg.workTree ?? (prev ? prev.workTree : null),
     // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
     headFrom: msg.headFrom ?? 0,
     headTotal: msg.headTotal ?? ((msg.events || (prev ? prev.events : [])).length),

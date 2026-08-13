@@ -466,7 +466,7 @@ class SdkMetadataParity(unittest.TestCase):
         oor = src.split("def _open_or_revive", 1)[1].split("\ndef ", 1)[0]
         self.assertIn("be.connect(sid)", oor)
         # sysinfo branch falls back to the folder when the transcript lacks it
-        self.assertIn('meta.get("gitBranch") or _git_branch(scwd)', src)
+        self.assertIn('_norm_branch(meta.get("gitBranch")) or _git_branch(scwd)', src)   # detached 'HEAD' normalized at the merge point (the user 2026-08-13)
         # the SDK merge passes the backend's context-fill % through (was hardcoded None)
         self.assertIn('ctx = st.get("ctx")', src)
         self.assertIn("ctx if isinstance(ctx, (int, float)) else None", src)
