@@ -2637,6 +2637,14 @@ class SdkSession:
                 #   ready the moment it can take a message instead of wearing the opening dots until
                 #   its first turn writes a transcript (the user 2026-08-08, whose fresh session sat
                 #   on animated dots for minutes while fully up)
+                "spawning": not self.client,   # the spawn/handshake window is open RIGHT NOW (this
+                #   thread is up, the client isn't yet) — the ONLY window the kernel's opening chip
+                #   may cover. Its ABSENCE must mean "not opening": the chip once keyed on `connected`
+                #   being falsy, which a DORMANT created session also reports (a kernel restart kills
+                #   idle CLIs, boot reconcile leaves them lazy, and a never-messaged session has no
+                #   transcript either) — so the dots outlived the create by hours when one message
+                #   would wake it in seconds (the user 2026-08-13). Dormant rows carry no spawning
+                #   key at all, so they read ready.
                 "fast": self.fast,   # fast-mode state from init ("on"/"off"/"cooldown"; "" = unknown → no badge)
                 "fastReason": self.fast_reason,   # init's disabled_reason — non-empty hides the chat toggle
                 "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element
