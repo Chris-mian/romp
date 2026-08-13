@@ -557,6 +557,24 @@ function feedConfirm(message: string, confirmLabel: string, onConfirm: () => voi
 // failed" chip label and the modal's Try again (the user 2026-08-13); other anomaly kinds stay "warning".
 const DISTILL_FAIL_RE = /^(summary|brief|stall)-failed$/;
 
+// Feedback for the modal's Try again (the user 2026-08-13, round 2: the first cut leaned on the card's
+// Distilling… swirl, which only shows where the done-side line is the visible one — on a Working card
+// the click looked like a silent no-op even as the retry SUCCEEDED). Success and refusal both toast,
+// and silence itself is caught: a kernel that predates the redistill op drops it with no result at all,
+// so a backstop timer names that case instead of leaving the click unanswered (the ack event is the
+// signal; the timer only speaks when it never comes).
+let redistillWatch: { itemId: string; timer: number } | null = null;
+function armRedistillWatch(itemId: string): void {
+  if (redistillWatch) window.clearTimeout(redistillWatch.timer);
+  redistillWatch = {
+    itemId,
+    timer: window.setTimeout(() => {
+      redistillWatch = null;
+      feedToast("no answer from the kernel about the summary retry — it may predate this feature (restart romp to update it)");
+    }, 6000),
+  };
+}
+
 function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg: string; detail: string }[],
                        ctx?: { itemId: string; sid: string }): void {
   const back = el("div", "fconfirm-back fwarn-back");
@@ -582,6 +600,7 @@ function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg:
     retry.onclick = (e) => {
       e.stopPropagation();
       retry.disabled = true; retry.textContent = "retrying…";   // acknowledged before any round-trip
+      armRedistillWatch(ctx.itemId);                            // silence gets named, never swallowed
       vscodeApi?.postMessage({ type: "redistill", itemId: ctx.itemId, sid: ctx.sid });
       window.setTimeout(close, 300);   // cosmetic beat so the pressed label registers; the op is already posted
     };
@@ -3744,9 +3763,16 @@ window.addEventListener("message", (e: MessageEvent) => {
       feedToast("couldn't mark that sub-goal done: " + (String(m.error || "") || "the kernel refused it"));
     }
   } else if (m.type === "redistillResult" && typeof m.itemId === "string") {
-    // The kernel's verdict on the warn modal's Try again. Success is silent — the re-armed line reads
-    // pending, so the card's own "Distilling…" swirl takes over. A refusal says why, out loud.
-    if (!m.ok) feedToast("couldn't retry the summary: " + (String(m.error || "") || "the kernel refused it"));
+    // The kernel's verdict on the warn modal's Try again — BOTH answers toast (the user 2026-08-13,
+    // round 2: success used to lean on the Distilling… swirl, which a Working card withholds, so a
+    // WORKING retry read as a silent no-op). The success copy promises what is actually true in every
+    // column: the line regenerates on the next judge pass over this card.
+    if (redistillWatch && redistillWatch.itemId === m.itemId) {
+      window.clearTimeout(redistillWatch.timer);
+      redistillWatch = null;
+    }
+    if (m.ok) feedToast("summary retry armed — it regenerates on the next judge pass over this card");
+    else feedToast("couldn't retry the summary: " + (String(m.error || "") || "the kernel refused it"));
   } else if (m.type === "revealCards") {
     // chat rail CLICK → scroll to the card(s) covering that turn and pulse them (the user 2026-07-23).
     // Distinct from hoverCards, which only outlines whatever is already on screen: this one MOVES the

@@ -55,6 +55,19 @@ test("a given-up summarizer wears its NAME — 'distill failed' — and its moda
   assert.match(FEED, /couldn't retry the summary: /);
 });
 
+test("Try again answers OUT LOUD in every column — success, refusal, and silence (the user 2026-08-13, round 2)", () => {
+  // the first cut leaned on the Distilling… swirl, which a Working card withholds — the retry SUCCEEDED
+  // and still read as a silent no-op. Success now toasts a promise true in every column…
+  assert.match(FEED, /feedToast\("summary retry armed — it regenerates on the next judge pass over this card"\)/);
+  // …and SILENCE is named too: a kernel that predates the redistill op drops it with no result at all,
+  // so the click arms a backstop watch that only speaks when the ack never comes
+  assert.match(FEED, /armRedistillWatch\(ctx\.itemId\);/);
+  assert.match(FEED, /let redistillWatch: \{ itemId: string; timer: number \} \| null = null;/);
+  assert.match(FEED, /no answer from the kernel about the summary retry — it may predate this feature/);
+  // the ack — either verdict — disarms the watch before it can cry wolf
+  assert.match(FEED, /if \(redistillWatch && redistillWatch\.itemId === m\.itemId\) \{\s*\n\s*window\.clearTimeout\(redistillWatch\.timer\);/);
+});
+
 test("the overlay lists each warn's kind/age and full detail", () => {
   assert.match(FEED, /function feedWarnModal\(cardTitle: string/);
   assert.match(FEED, /meta\.textContent = w\.kind \+ " · " \+ relAge\(/);
