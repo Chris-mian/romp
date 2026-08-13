@@ -26,12 +26,15 @@ test("settings carry showBranch, defaulting OFF", () => {
 
 test("updateStatusline appends a status-branch span from the top-level gitBranch, gated on the setting", () => {
   // gated on the live setting (default-OFF: only an explicit true shows it) AND on a known branch
-  assert.match(RENDER, /loadSettings\(\)\.showBranch === true && s\.gitBranch/);
-  // reads the branch off the TOP-LEVEL session field, NOT the windowed head system event
-  assert.match(RENDER, /br\.textContent = "⎇ " \+ s\.gitBranch/);
+  assert.match(RENDER, /loadSettings\(\)\.showBranch === true && \(\(s\.workTree && s\.workTree\.branch\) \|\| s\.gitBranch\)/);
+  // reads the branch off the TOP-LEVEL session fields, NOT the windowed head system event — preferring
+  // the WORKTREE the session actually works in over the registered dir's branch (the user 2026-08-13)
+  assert.match(RENDER, /const liveBr = \(s\.workTree && s\.workTree\.branch\) \|\| s\.gitBranch/);
+  assert.match(RENDER, /br\.textContent = "⎇ " \+ liveBr/);
   assert.match(RENDER, /el\("span", "status-branch"\)/);
   // upsert carries the top-level field, falling back to the last-known on a chatTail delta that omits it
   assert.match(RENDER, /gitBranch: msg\.gitBranch \?\? \(prev \? prev\.gitBranch : ""\)/);
+  assert.match(RENDER, /workTree: msg\.workTree \?\? \(prev \? prev\.workTree : null\)/);
 });
 
 test("the branch span sits right after the dir, before the meta cluster", () => {

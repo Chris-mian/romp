@@ -11699,6 +11699,41 @@ def _tilde(p):
     return p
 
 
+def _norm_branch(br):
+    """Claude Code stamps the transcript's gitBranch verbatim — a detached checkout stamps the literal
+    string 'HEAD', which is not a branch and was displayed as one on every surface (the user 2026-08-13:
+    "HEAD isn't a branch"). The folder-derived path (_git_branch below) already maps detached to '' —
+    this applies the same rule to the transcript path, at the one merge point."""
+    br = (br or "").strip()
+    return "" if br == "HEAD" else br
+
+
+_tree_cache = {}   # dir -> git toplevel ("" = not a repo) — where a path's tree ROOT is; branch stays live
+
+
+def _tree_of(d):
+    """(toplevel, branch) of the git tree containing directory `d`, ("", "") when not in one. The toplevel
+    mapping is cached per directory (it changes only if the tree is moved/deleted — then the branch read
+    below comes back empty and every consumer hides the row); the branch rides _git_branch's own
+    HEAD-mtime cache so it stays current without a second discipline."""
+    if not d:
+        return "", ""
+    top = _tree_cache.get(d)
+    if top is None:
+        top = ""
+        try:
+            r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=2)
+            if r.returncode == 0:
+                top = r.stdout.strip()
+        except Exception:
+            top = ""
+        if len(_tree_cache) > 512:                     # bounded: distinct edit dirs, not unbounded growth
+            _tree_cache.clear()
+        _tree_cache[d] = top
+    return top, (_git_branch(top) if top else "")
+
+
 _branch_cache = {}   # cwd -> (branch, head_mtime) — git branch derived straight from the FOLDER
 
 
@@ -11733,10 +11768,17 @@ def _git_branch(cwd):
     return br
 
 
+_EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")   # tools whose file_path proves WHERE work lands
+
+
 def _session_meta(path):
-    """Latest cwd / gitBranch / Claude Code version / permission mode for a session, read straight from the
-    raw transcript (the event model drops these). Cached by (mtime,size) like _parse/_api_error, since
-    build_session runs per push."""
+    """Latest cwd / gitBranch / Claude Code version / permission mode / last EDITED file for a session, read
+    straight from the raw transcript (the event model drops these). Cached by (mtime,size) like
+    _parse/_api_error, since build_session runs per push. lastEditPath is the newest write-tool file_path —
+    the event that proves where the session actually works (repo convention puts real work on per-session
+    worktrees beside the registered clone, so the registered dir alone reads 'main' forever; the user
+    2026-08-13). Zero extra parsing: every assistant record already passes the line filter (each carries
+    cwd/version stamps), so this only walks content blocks of lines the loop was parsing anyway."""
     try:
         sti = os.stat(path)
         key = (sti.st_mtime, sti.st_size)
@@ -11745,7 +11787,7 @@ def _session_meta(path):
     hit = _session_meta_cache.get(path)
     if hit is not None and key is not None and hit[0] == key:
         return hit[1]
-    meta = {"cwd": "", "gitBranch": "", "version": "", "permissionMode": ""}
+    meta = {"cwd": "", "gitBranch": "", "version": "", "permissionMode": "", "lastEditPath": ""}
     try:
         with open(path, errors="replace") as f:
             for line in f:
@@ -11763,6 +11805,17 @@ def _session_meta(path):
                     meta["version"] = o["version"]
                 if o.get("type") == "user" and o.get("permissionMode"):
                     meta["permissionMode"] = o["permissionMode"]
+                if o.get("type") == "assistant":
+                    try:
+                        for blk in (o.get("message") or {}).get("content") or []:
+                            if (isinstance(blk, dict) and blk.get("type") == "tool_use"
+                                    and blk.get("name") in _EDIT_TOOLS):
+                                fp = (blk.get("input") or {}).get("file_path") or \
+                                     (blk.get("input") or {}).get("notebook_path")
+                                if isinstance(fp, str) and fp.startswith("/"):
+                                    meta["lastEditPath"] = fp
+                    except Exception:
+                        pass
     except OSError:
         pass
     if key is not None:
@@ -12979,10 +13032,23 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
     meta = _session_meta(sess["path"])
     scwd = _cwd_of(sid) or meta.get("cwd") or ""    # the session's fixed dir — known even before the first turn
     docs = _claudemd_docs(meta.get("cwd") or scwd)
+    # The WORKTREE the session actually works in (the user 2026-08-13): the repo convention here puts real
+    # work on per-session worktrees beside the registered clone, so the registered dir's branch read 'main'
+    # forever and the real location showed nowhere. The newest write-tool file_path names the tree — the
+    # edit EVENT is the proof of where work happens (no declared source exists; the CLI doesn't know
+    # either) — and it latches until a newer edit lands elsewhere. Shown only when that tree differs from
+    # the registered dir's own: same-tree work needs no second row.
+    _wt_top, _wt_br = _tree_of(os.path.dirname(meta.get("lastEditPath") or "") or "")
+    _reg_top, _ = _tree_of(os.path.expanduser(scwd)) if scwd else ("", "")
+    work_tree = ({"dir": _tilde(_wt_top), "branch": _wt_br}
+                 if _wt_top and os.path.realpath(_wt_top) != os.path.realpath(_reg_top or "/nonexistent")
+                 else None)
     sysinfo = {"kind": "system", "model": last_model, "cwd": _tilde(meta.get("cwd") or scwd),
-               # branch from the transcript if present, else derived straight from the folder so it shows on
-               # open (the user 2026-06-24) — works for a never-run session of EITHER backend.
-               "gitBranch": meta.get("gitBranch") or _git_branch(scwd), "version": meta.get("version") or "",
+               # branch from the transcript if present (normalized: a detached stamp says 'HEAD', not a
+               # branch), else derived straight from the folder so it shows on open (the user 2026-06-24) —
+               # works for a never-run session of EITHER backend.
+               "gitBranch": _norm_branch(meta.get("gitBranch")) or _git_branch(scwd),
+               "workTree": work_tree, "version": meta.get("version") or "",
                "mode": meta.get("permissionMode") or "", "claudemd": docs}
     # The /clear boundary card (the user 2026-07-27): a session whose episodes log records ≥2 episodes had
     # its conversation cleared — the chat's fresh episode opens with a collapsed "Conversation cleared"
@@ -13012,6 +13078,8 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             # system event (and its branch) fell off the wire and the branch vanished (the user 2026-06-30). A
             # top-level field is never windowed, so the branch is always resident.
             "gitBranch": sysinfo["gitBranch"],
+            # the detected worktree rides top-level for the same windowing reason as gitBranch above
+            "workTree": sysinfo["workTree"],
             "events": events, "status": status, "ledger": ledger,
             # SDK sessions gate the box on the backend's LIVE task set (the CLI's task lifecycle stream —
             # authoritative, terminal-cleared); the spawned_at heuristic remains the tmux/no-snapshot fallback.
