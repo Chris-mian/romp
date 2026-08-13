@@ -4866,7 +4866,13 @@ def _drive(msg, client):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
         sid = _sid_of(str(msg["name"]))                   # the timeline keys these by session NAME
-    elif t == "askFollowUp" and (msg.get("itemId") or msg.get("id")) and msg.get("text"):
+    elif t == "askFollowUp" and (msg.get("itemId") or msg.get("id")) and (msg.get("text") or msg.get("cont")):
+        # cont:true is the Continue button (2026-08-08), which deliberately carries NO text — the kernel
+        # supplies CONTINUE_TEXT in the handler body below. The old text-only guard turned every Continue
+        # press into a dropped message: no send, no reopen, no cardMoveAck — so the feed's optimistic move
+        # timed out and bounced the card back with "romp didn't confirm that move" on EVERY click (the
+        # user 2026-08-13, who reasonably concluded the button was useless). The handler always supported
+        # cont; its front door never let it in.
         sid = str(msg["itemId"]).rsplit(":", 1)[0] if msg.get("itemId") else str(msg["id"])
     else:
         return False                                      # not a drive op (UI/nav) → _dispatch_ws handles it
