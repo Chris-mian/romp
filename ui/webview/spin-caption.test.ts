@@ -152,6 +152,15 @@ test("an ordinary working card with its turn open narrates: tool count + running
   assert.equal(long.caption, "Working — 400 tool uses · 1h 35m", "hours split out past sixty minutes");
 });
 
+test("zero tool uses says nothing — the timer alone narrates until the first call", () => {
+  // "0 tool uses" was noise (the user 2026-08-13): the count earns its place at one
+  const z = spinFor({ column: "working", working: { since: 1000, toolUses: 0 } },
+                    false, false, 1000 + 3 * 60);
+  assert.equal(z.caption, "Working — 3m");
+  const bare = spinFor({ column: "working", working: { since: null, toolUses: 0 } }, false, false);
+  assert.equal(bare.caption, "Working…", "no count, no clock → the plain swirl still says in-motion");
+});
+
 test("the narration is the FLOOR — every richer story still wins", () => {
   const w = { since: 1000, toolUses: 5 };
   assert.equal(spinFor({ column: "working", working: w, judging: true }, false, false, 2000).caption,
