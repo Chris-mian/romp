@@ -1154,6 +1154,12 @@ class SdkSession:
         self.cwd = reg.get("cwd") or os.path.expanduser("~")
         self.mode = reg.get("mode") or "acceptEdits"
         self.resume_sid = reg.get("lastSid") or None  # resume target after a restart/crash
+        # A FORK being born (backend.fork): lastSid points at the PARENT's transcript and forkOf marks the
+        # resume as a fork, so _options adds fork_session (+ the resume-session-at cut) and the CLI copies
+        # the conversation into a NEW file pinned to THIS sid instead of continuing the parent's. One-shot:
+        # cleared the moment the init's lastSid flip says the fork landed (see _on_message).
+        self._fork_of = reg.get("forkOf") or ""
+        self._fork_at = reg.get("forkAt") or ""
         # Heal STRANDED pending-switch flags (the user 2026-07-11, who reported the three dots sitting there
         # forever): a /model or /effort switch that was mid-flight when the previous kernel/process
         # died can never be cleared by its in-memory switch path — but the persisted flags keep the
@@ -2078,6 +2084,12 @@ class SdkSession:
                 # A lastSid flip IS a fork landing — for a /clear, the fresh conversation now exists, so the
                 # clearing bracket ends here (event-based; the ResultMessage below is only the backstop).
                 self._clearing = False
+            if self._fork_of and fsid == self.sid:
+                # The BORN-AS-A-FORK session's copy landed (the CLI now owns a transcript pinned to this
+                # sid). Spend the fork flags: a later reconnect must resume the fork's OWN conversation
+                # plainly — re-applying fork_session would copy it into yet another session.
+                self._fork_of = self._fork_at = ""
+                self.backend._update_reg(self.sid, forkOf="", forkAt="")
             cli_cwd = d.get("cwd")
             if isinstance(cli_cwd, str) and cli_cwd and cli_cwd != self.cwd:
                 # The CLI's own cwd is the AUTHORITATIVE string: its projects-dir/transcript encoding
@@ -3321,6 +3333,16 @@ class SdkBackend:
             kw["model"] = sess.chosen_model    # keep the picked model across a reconnect (runtime set_model is per-connection)
         if sess.resume_sid:
             kw["resume"] = sess.resume_sid
+            if sess._fork_of:
+                # A FORK resume (backend.fork): fork_session makes the CLI copy the loaded conversation
+                # into a NEW session instead of continuing the parent's, and session_id pins the new
+                # fsid to the romp sid (the SDK's typed contract: session_id combines with resume only
+                # under fork_session — types.py). The optional cut rides the CLI's designed
+                # --resume-session-at, same passthrough the rewind uses.
+                kw["fork_session"] = True
+                kw["session_id"] = sess.sid
+                if sess._fork_at:
+                    kw.setdefault("extra_args", {})["resume-session-at"] = sess._fork_at
         else:
             kw["session_id"] = sess.sid
         # A pending conversation REWIND (the chat's edit-message branch) rides --resume-session-at —
@@ -3334,7 +3356,7 @@ class SdkBackend:
         disp = rewind_disposition(sess._rewind_to, sess._rewind_leaf,
                                   last_record_uuid(transcript_path(sess.cwd, sess.resume_sid or sess.sid)))
         if disp == "apply":
-            kw["extra_args"] = {"resume-session-at": sess._rewind_to}
+            kw.setdefault("extra_args", {})["resume-session-at"] = sess._rewind_to   # merge-safe beside the fork's args
             sess._rewind_armed = True
         elif disp == "spent":
             sess._rewind_to = sess._rewind_leaf = ""
@@ -3396,6 +3418,39 @@ class SdkBackend:
         if a:
             reg["auth"] = a
         write_reg(self.state_dir, sid, reg)
+        append_state(self.state_dir, sid, "waiting")
+        self._poke()
+        return sid
+
+    def fork(self, name: str, parent_sid: str, cut_uuid: str = "", bg: str = "", fg: str = "",
+             sid: str | None = None) -> str:
+        """Mint a NEW session that is a FORK of `parent_sid`'s conversation — up to `cut_uuid` when given
+        (a transcript record uuid; empty = the whole conversation), the parent untouched either way (the
+        user 2026-08-13). The new session gets its OWN sid, registry, name and identity colour — a fork
+        with the parent's title would be discovered as a fork LANE of the parent and hidden. Mechanism:
+        the reg is born with lastSid = the parent's newest fsid plus forkOf/forkAt, which _options turns
+        into resume + fork_session + session_id (+ resume-session-at) on first connect; the init's
+        lastSid flip to this sid spends the flags. Model / effort / mode / auth inherit from the parent —
+        it is that conversation, continued elsewhere. Resumable by construction: a fork whose CLI dies
+        before init still carries the flags and retries on the next connect."""
+        parent = read_reg(self.state_dir, parent_sid) or {}
+        cwd = parent.get("cwd") or os.path.expanduser("~")
+        sid = sid or str(uuid.uuid4())      # the kernel pre-mints it so the judge seeds can precede us
+        if not bg:
+            bg, fg = pick_identity_color(sid, self.state_dir)
+        reg = {"sid": sid, "name": name, "cwd": cwd,
+               "mode": parent.get("mode", "acceptEdits"),
+               "effort": parent.get("effort", DEFAULT_EFFORT),
+               "lastSid": parent.get("lastSid") or parent_sid,
+               "forkOf": parent_sid, "forkAt": cut_uuid or "", "alive": True}
+        if parent.get("model") and parent["model"] != "default":
+            reg["model"] = parent["model"]
+        if parent.get("auth") in ("login", "key"):
+            reg["auth"] = parent["auth"]
+        write_reg(self.state_dir, sid, reg)
+        # the names/ entry LAST — it is the discoverability trigger (discover() iterates names/), and
+        # everything above must exist before any judge pass can see the session
+        write_name(self.state_dir, sid, name, cwd, bg, fg)
         append_state(self.state_dir, sid, "waiting")
         self._poke()
         return sid

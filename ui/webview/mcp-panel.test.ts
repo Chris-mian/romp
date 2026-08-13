@@ -35,7 +35,7 @@ test("the panel reads the SDK's designed control requests through the kernel", (
   assert.ok(KERNEL.includes('if p == "/mcp":'));
   assert.ok(KERNEL.includes('json.dumps({"servers": servers, "error": err})'));
   assert.ok(KERNEL.includes('elif t == "mcpAction" and msg.get("server"):'));
-  assert.ok(KERNEL.includes('"mcpAction")'), "routes by session id like every session op");
+  assert.ok(KERNEL.includes('"mcpAction"'), "routes by session id like every session op (ID_OPS)");
   // tmux says so explicitly rather than returning a misleading empty list
   assert.ok(ABC.includes("def mcp_status(self, sid: str):"));
   assert.ok(ABC.includes("use /mcp there"));

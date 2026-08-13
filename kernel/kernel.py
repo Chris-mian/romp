@@ -4298,6 +4298,121 @@ def _create_sdk_session(nm, cwd, auth=""):
     return sid
 
 
+def _fork_session(parent_sid, cut_msg_uuid, new_name, now=None):
+    """Fork `parent_sid`'s conversation into a NEW parallel session named `new_name` — from just BEFORE
+    user message `cut_msg_uuid` when given (the chat's fork button; same _rewind_target resolution and
+    guards as the edit/delete rewind, so "before this message" means the same thing everywhere), the
+    whole conversation otherwise (the palette's fork-from-tip). The parent is untouched: both continue
+    as separate threads (the user 2026-08-13). Returns an error string for the caller to warn-toast
+    (fail loudly), None on success. SDK sessions only in v1 — the mechanism IS the SDK's
+    resume+fork_session contract; a tmux session says so instead of degrading.
+
+    ORDER MATTERS: the judge stores are seeded BEFORE be.fork writes the names/ entry — discover()
+    iterates names/, so an unseeded fork must not be discoverable even for one judge pass (the replay
+    storm: every copied prompt re-minted as a fresh card, every turn re-captioned). Seeding failure
+    aborts the fork loudly rather than creating an unprotected session. Then the same ACK-FAST shape
+    as _create_sdk_session: focus first, dirty-mark wake, one direct push of the new tab."""
+    nm = (new_name or "").strip()
+    if not NAME_RE.match(nm):
+        return "session names use letters, digits, . _ - only."
+    be = Sessions.backend_for(parent_sid)
+    if not (hasattr(be, "fork") and _sdk_ready()):
+        return "fork needs the SDK backend — this session runs on tmux, so there is nothing to fork from."
+    now = now or time.time()
+    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    if not sess:
+        return "no transcript for this session yet — nothing to fork."
+    cut_uuid = ""
+    if cut_msg_uuid:
+        cut_uuid, err = _rewind_target(sess["path"], parent_sid, str(cut_msg_uuid))
+        if err:
+            return err
+    sid = str(uuid.uuid4())
+    err = _seed_fork_stores(parent_sid, sid, sess["path"], cut_uuid)
+    if err:
+        return err
+    bg, fg = _pick_identity_color()
+    be.fork(nm, parent_sid, cut_uuid, bg, fg, sid=sid)
+    be.connect(sid)          # eager-connect: the CLI copies the conversation and the tab fills in
+    _reveal_chat({"type": "focus", "id": sid})
+    _mark_views_dirty()
+    _push_session_now(sid)
+    return None
+
+
+def _seed_fork_stores(parent_sid, sid, path, cut_uuid):
+    """Judge-store hygiene for a session born as a FORK: its transcript carries the parent's history
+    VERBATIM (uuids + timestamps survive the CLI's fork copy — verified live 2026-08-13), which the
+    judges must not re-judge as fresh work. Three seeds, each preventing a distinct storm:
+      1. episodes/<sid>.jsonl seed+boundary rows → episode_floor(sid) = the cut record's t, so the
+         planner retires every copied unit before any model call (units are time-keyed, so this
+         survives seg-id derivation drift). The seed row carries the conversation ROOT uuid — the
+         boundary tick dedups on it when it sights the fork's head (same uuid, copied), and a
+         chained-head fork (root:false) skips the tick entirely; either way the floor stands.
+      2. captions/<sid>.jsonl transform-copied from the parent (non-live rows at/before the cut, id
+         prefix resid'd) → no Haiku re-caption storm, and the copied history's hovers arrive filled.
+      3. goals/<sid>.json born with the parent's placements SEALED (keys resid'd, every value None =
+         "processed, no goal") — covers the courier, which scans unplaced peer segments, and
+         belts-and-braces the planner. No nodes are copied: copied cards would duplicate across the
+         parent and fork boards.
+    Returns an error string (the fork is aborted) or None — a fork without this seeding re-judges the
+    whole copied history, so failing loudly beats creating it unprotected."""
+    try:
+        cands = [path]
+        anchor = os.path.join(os.path.dirname(path), parent_sid + ".jsonl")
+        if os.path.basename(path) != parent_sid + ".jsonl" and os.path.exists(anchor):
+            cands.append(anchor)
+        ad = em.FileAdapter(cands, path)
+        u, root, hops = ad.leaf_uuid, None, 0
+        while u is not None and hops < 500000:          # active chain leaf → oldest record = the root
+            root = u
+            u = ad.parent_of.get(u); hops += 1
+        if not root:
+            return "no transcript records yet — nothing to fork."
+        cut = cut_uuid or ad.leaf_uuid
+        cut_rec = ad.by_uuid.get(cut) or {}
+        cut_t = int(em.parse_z(cut_rec.get("timestamp")) or time.time())
+        root_rec = ad.by_uuid.get(root) or {}
+        root_t = int(em.parse_z(root_rec.get("timestamp")) or cut_t)
+        parent_fsid = jd._sdk_last_sid(parent_sid) or parent_sid
+        # 1) the episode floor: seed (conversation root) + boundary (the cut) — floor = cut_t
+        jd.append_episode(sid, root, parent_fsid, root_t)
+        jd.append_episode(sid, cut, sid, cut_t)
+        # 2) captions: transform-copy the parent's settled rows at/before the cut
+        src = jd.CAPDIR / (parent_sid + ".jsonl")
+        pref = parent_sid + ":"
+        rows = []
+        if src.exists():
+            for line in src.read_text(errors="replace").splitlines():
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                cid = o.get("id") or ""
+                if o.get("live") or not cid.startswith(pref):
+                    continue
+                parts = cid.rsplit(":", 2)              # <sid>:<t>:<hash> — sids may contain ':', so rsplit
+                try:
+                    if len(parts) != 3 or int(parts[1]) > cut_t:
+                        continue                        # after the cut (not copied), or not id-shaped
+                except ValueError:
+                    continue
+                o["id"] = sid + cid[len(parent_sid):]
+                rows.append(json.dumps(o))
+        if rows:
+            jd.CAPDIR.mkdir(parents=True, exist_ok=True)
+            (jd.CAPDIR / (sid + ".jsonl")).write_text("\n".join(rows) + "\n")
+        # 3) the goal store: fresh skeleton whose placements are the parent's, sealed
+        pstore = jd.load_goals(parent_sid)
+        store = jd.load_goals(sid)                      # the fresh-skeleton path (rompUuid=sid, CAS base set)
+        store["placements"] = {sid + k[len(parent_sid):]: None
+                               for k in (pstore.get("placements") or {}) if k.startswith(pref)}
+        jd.save_goals(sid, store)
+    except Exception as e:
+        return "fork not created — seeding its judge state failed: %s" % e
+    return None
+
+
 # --- optional SDK (non-tmux) session backend (docs/sdk-backend.md) --------------------
 # A second SessionBackend that drives Claude via the Agent SDK instead of a tmux TUI,
 # selectable per session. Built lazily so the tmux-only path never imports the SDK and the
@@ -4835,7 +4950,7 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode", "setFast",
-              "setAuth", "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction")
+              "setAuth", "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction", "forkSession")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -5070,6 +5185,13 @@ def _drive(msg, client):
             client["send"](json.dumps({"type": "warn",
                                        "text": "Couldn't restore files — this session's backend doesn't support it or isn't connected."}))
         _push_soon()
+    elif t == "forkSession" and msg.get("name"):
+        # Fork this conversation into a NEW parallel session (the user 2026-08-13). uuid (optional) is the
+        # user message the fork cuts just BEFORE — absent means the whole conversation. LOUD on refusal;
+        # on success the new tab arrives focused via _fork_session's own push.
+        err = _fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
         be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()

@@ -102,6 +102,12 @@ type SessionRow = { id: string; name: string; dir: string; bg: string };
   registerCommand({ id: "session.jump", title: "Jump to a session", run: openSessionSwitcher });
   registerCommand({ id: "session.new", title: "New session", run: openNewSessionPicker });
   registerCommand({
+    id: "session.fork", title: "Fork this session…",
+    // the chat pane owns the modal (it knows the active session); from the palette the fork is
+    // from-the-tip — the whole conversation (per-message forks live on the message's own hover row)
+    run: () => { try { pane("f-chat")!.contentWindow!.postMessage({ romp: "forkSession" }, "*"); } catch (e) { /* chat not loaded */ } },
+  });
+  registerCommand({
     id: "settings.open", title: "Open settings",
     run: () => { try { pane("f-feed")!.contentWindow!.postMessage({ romp: "openSettings" }, "*"); } catch (e) { /* feed not loaded */ } },
   });
