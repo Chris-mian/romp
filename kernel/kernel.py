@@ -22793,6 +22793,27 @@ class Handler(BaseHTTPRequestHandler):
                 _clear_all([str(msg["nodeId"])])
                 _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["nodeId"]), "itemIds": _gone})
                 _mark_views_dirty()
+        elif msg and msg.get("type") == "redistill" and msg.get("sid") and msg.get("itemId"):
+            # The warn modal's "Try again" (the user 2026-08-13): re-arm this card's GIVEN-UP summary
+            # line(s) so the next triage pass re-runs the distiller. Journal FIRST (jd.append_override):
+            # a concurrent pass holds the store across a model call and its save is last-writer-wins —
+            # the journaled row replays the flip on every load, so the click can't be silently erased.
+            # The re-armed line reads None = pending, so the card's "Distilling…" swirl is the live
+            # acknowledgement; the ACK below is the failure path's voice (fail loudly).
+            _dsid, _dnid = str(msg["sid"]), str(msg["itemId"])
+            try:
+                jd.append_override(_dsid, _dnid, "redistill", int(time.time()))
+                _dst = jd.load_goals(_dsid)              # load replays the journal → the flip is applied
+                if _dst.get("nodes", {}).get(_dnid) is None:
+                    _dok, _derr = False, "that card is no longer in this session's goal store"
+                else:
+                    jd.save_goals(_dsid, _dst)
+                    _dok, _derr = True, ""
+                    _mark_views_dirty()
+            except Exception as _e:
+                _dok, _derr = False, (str(_e) or _e.__class__.__name__)
+                sys.stderr.write("redistill: %s\n" % traceback.format_exc())
+            _send_to_app("feed", {"type": "redistillResult", "itemId": _dnid, "ok": _dok, "error": _derr})
         elif msg and msg.get("type") == "clearAll":
             d = build_feed(int(time.time()))
             _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
