@@ -1739,7 +1739,11 @@ def load_goals(fsid):
                  "placementsV": PLACEMENTS_V}
         store["_baseRev"] = 0            # no file yet; a writer that CREATES one still trips the CAS
         return store
-    _replay_overrides(fsid, store)
+    if _replay_overrides(fsid, store):
+        # the replay WROTE (a clobbered user resolve/clear re-flagged): the published status/confirming
+        # predate it, and every reader now trusts those exports as the one truth (no raw-flag second
+        # opinions since 2026-08-13) — so re-derive them at the replay's own write, never serve stale
+        rollup_status(store, session_closed=False)
     # OPTIMISTIC-CONCURRENCY BASE (the user 2026-07-22): remember the revision we read, so save_goals can
     # tell whether anyone else published while we were away (a judge pass holds its store across a
     # minutes-long model call). Transient — popped before the store is ever serialized.
@@ -1772,10 +1776,45 @@ def _rebase_onto_disk(fsid, store):
     except Exception:
         return                                       # nothing readable to rebase onto → publish as-is
     d_nodes, m_nodes = disk.get("nodes") or {}, store.get("nodes") or {}
+    # MERGE TOMBSTONES (2026-08-13): presence-in-a-snapshot is not truth — a stale pre-merge writer
+    # publishing across a grouper merge used to RESURRECT the merged-away node (its id absent from the
+    # newer side, so the adopt-wholesale branch below re-minted it), and the twin then held a duplicate
+    # agentTask key that wedged plan-sync + the open_task veto for 19 hours (g17's g32/g40, 2026-08-12).
+    # The merge already records its own deletion event durably — surv["mergedFrom"] — so key on that
+    # exact event: an id named there, on EITHER side, is deleted; its unseen log rows fold into the
+    # survivor (the append-only covenant: both writers' EVENTS survive, the dead identity does not) and
+    # its placements re-point to the survivor, mirroring _merge_nodes' own rewiring.
+    tomb = {}                                        # dead id -> surviving id
+    for nmap in (d_nodes, m_nodes):
+        for sid_, snd in nmap.items():
+            for rec in (snd.get("mergedFrom") or []):
+                if rec.get("id"):
+                    tomb[rec["id"]] = sid_
+
+    def _fold_log(dead, surv):
+        seen = {(e.get("ev_t"), e.get("src"), e.get("kind")) for e in (surv.get("log") or [])}
+        add = [e for e in (dead.get("log") or [])
+               if (e.get("ev_t"), e.get("src"), e.get("kind")) not in seen]
+        if add:
+            with _authority():
+                surv["log"] = sorted((surv.get("log") or []) + add,
+                                     key=lambda e: (int(e.get("ev_t") or 0), int(e.get("at") or 0)))
+
+    for nid in [n for n in list(m_nodes) if n in tomb]:
+        dead = m_nodes.pop(nid)
+        surv = m_nodes.get(tomb[nid]) or d_nodes.get(tomb[nid])
+        if surv is not None:
+            _fold_log(dead, surv)
+        store.get("status", {}).pop(nid, None)
     for nid, dnd in d_nodes.items():
         mnd = m_nodes.get(nid)
-        if mnd is None:                              # a node the OTHER writer minted → adopt it wholesale
-            m_nodes[nid] = dnd
+        if mnd is None:
+            if nid in tomb:                          # deleted by a merge, not minted by the other writer
+                surv = m_nodes.get(tomb[nid])
+                if surv is not None:
+                    _fold_log(dnd, surv)
+                continue
+            m_nodes[nid] = dnd                       # a node the OTHER writer minted → adopt it wholesale
             continue
         seen = {(e.get("ev_t"), e.get("src"), e.get("kind")) for e in (mnd.get("log") or [])}
         add = [e for e in (dnd.get("log") or [])
@@ -1791,6 +1830,9 @@ def _rebase_onto_disk(fsid, store):
             mnd["mt"] = int(dnd["mt"])
     store["nodes"] = m_nodes
     pl = dict(disk.get("placements") or {}); pl.update(store.get("placements") or {})
+    for k, v in list(pl.items()):                    # a tombstoned target re-points to its survivor —
+        if v in tomb:                                # mirrors _merge_nodes' own rewiring; a dangling
+            pl[k] = tomb[v]                          # target would read as unplaced and re-mint the twin
     store["placements"] = pl                         # union: neither writer's dedup bookkeeping is lost
     store["seq"] = max(int(store.get("seq") or 0), int(disk.get("seq") or 0))   # never reuse a gid
     ct = list(disk.get("closedTurns") or [])
@@ -1798,6 +1840,8 @@ def _rebase_onto_disk(fsid, store):
         if t not in ct:
             ct.append(t)
     store["closedTurns"] = ct
+    if store.get("lastNode") in tomb:
+        store["lastNode"] = tomb[store["lastNode"]]
     if store.get("lastNode") not in (store.get("nodes") or {}):
         store["lastNode"] = disk.get("lastNode") or store.get("lastNode")
     rollup_status(store, session_closed=False)       # re-derive every flag + the status map from the merged logs
@@ -1879,13 +1923,14 @@ def _replay_overrides(fsid, store):
     user reply in the same second as a nudge stamp genuinely answers it."""
     fp = _overrides_dir() / (fsid + ".jsonl")
     if not fp.is_file():
-        return
+        return False
     try:
         lines = fp.read_text().splitlines()
     except OSError as e:
         _log_judge_error("romp", fsid, "history-unreadable",
                          note="override journal unreadable: %s — user actions may show undone until it reads" % e)
-        return
+        return False
+    applied = False                                    # any write → load_goals re-runs rollup (one truth)
     arch_nodes = None                                  # the archive is read once, only if a restore entry needs it
     for ln in lines:
         try:
@@ -1900,9 +1945,24 @@ def _replay_overrides(fsid, store):
                 if nid in store.get("nodes", {}) or nid in arch_nodes:
                     continue                           # alive, or re-cleared into the archive → nothing lost
                 store.setdefault("nodes", {})[nid] = GuardedNode(dict(nddata))
+                applied = True
                 st = (ev.get("status") or {}).get(nid)
                 if st is not None:
                     store.setdefault("status", {})[nid] = st
+                # the journaled status must survive rollup (one truth, 2026-08-13): rollup derives
+                # completion from the LOG ("verdicts only — completion needs an author"), and a
+                # restored card's compacted log may lack its done evidence entirely. The journal is
+                # the durable record of what the user restored — re-record what it attests: the done
+                # row (when none survived) and the settle (the unclear branch's existing move for
+                # exactly this shape), so any later rollup re-derives completed instead of quietly
+                # waking the card up as Working.
+                if st == "completed":
+                    nd_r = store["nodes"][nid]
+                    if not any(e.get("kind") == "done" for e in (nd_r.get("log") or [])):
+                        record_verdict(store, nd_r, "romp", "done", t,
+                                       why="restored by undo — the journal recorded it completed")
+                    if not nd_r.get("settledDone"):
+                        record_verdict(store, nd_r, "romp", "settle", t)
             continue
         nd = store.get("nodes", {}).get(ev.get("node"))
         if nd is None:
@@ -1919,6 +1979,7 @@ def _replay_overrides(fsid, store):
             if record_verdict(store, nd, "user", "done", t,
                               why=nd.get("doneWhy") or "Resolved by the user."):
                 nd["mt"] = t
+                applied = True
         elif op in ("followup", "move"):
             if later or _twin("reopen", msg=(op == "followup"), undo=False):
                 continue
@@ -1929,6 +1990,7 @@ def _replay_overrides(fsid, store):
             _unblock_subtree(store, ev["node"], t,
                              "answered by the user's reply to the card" if op == "followup"
                              else "moved to Working by the user")
+            applied = True
         elif op == "unclear":
             # The undo-clear's un-seal (_mark_nodes_cleared value=False), replayed so a pre-restore
             # snapshot/clobbered store un-clears exactly as the live one did (the user 2026-07-23: the
@@ -1943,6 +2005,7 @@ def _replay_overrides(fsid, store):
             was_done = nd.get("parentId") is None and (
                 store.get("status", {}).get(ev.get("node")) == "completed" or nd.get("nodeComplete"))
             if record_verdict(store, nd, "user", "reopen", t, why="undo clear", undo=True):
+                applied = True
                 if was_done and not nd.get("settledDone"):
                     record_verdict(store, nd, "romp", "settle", t)
         elif op == "block":
@@ -1956,6 +2019,8 @@ def _replay_overrides(fsid, store):
                 continue                               # answered since, or the original write survived
             if record_verdict(store, nd, src, "block", t, why=ev.get("why")):
                 nd["mt"] = max(int(nd.get("mt") or 0), t)
+                applied = True
+    return applied
 
 
 _NONCONTENT_KEYS = ("rev", "_baseRev")   # the revision counter + the transient CAS base: not store CONTENT
@@ -3104,56 +3169,76 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
         plan = em.declared_plan(session)                    # no store dir → legacy transcript fold
     items = {it["key"]: it for it in plan}
     nodes = store["nodes"]
-    has_child, by_key = set(), {}
+    has_child, key_nodes = set(), {}                    # key -> [nids]: EVERY holder, not a last-wins pick
     for nid, nd in nodes.items():
         if nd.get("parentId") is not None:
             has_child.add(nd["parentId"])
         k = (nd.get("agentTask") or {}).get("key")
         if k is not None:
-            by_key[k] = nid
-    if not items and not by_key:
+            key_nodes.setdefault(k, []).append(nid)
+    if not items and not key_nodes:
         return False
 
     def _is_open(it):
         return bool(it) and it["status"] not in ("completed", "cancelled", "deleted")
 
     changed = False
-    # 1) reconcile the agentTask nodes we already track against the current declared plan
-    for key, nid in list(by_key.items()):
-        it, nd = items.get(key), nodes[nid]
-        at = nd.get("agentTask") or {}
-        if _is_open(it):
-            if at.get("status") != "open" or at.get("raw") != it["status"] or not nd.get("agentBornOpen"):
-                nd["agentTask"] = {"key": key, "status": "open", "raw": it["status"]}
-                nd["agentBornOpen"] = True                  # adopt: watched-open now → protected from the done-heal
-                if nd.get("agentDone"):                     # agent RE-OPENED it → an agent reopen EVENT (an
-                    record_verdict(store, nd, "agent", "reopen", seg_t,   # eventless un-done would be re-DONE'd
-                                   why="the agent re-opened its own to-do")   # by the next materialize)
-                    nd["agentDone"] = False
-                nd["mt"] = seg_t
+    # 1) reconcile EVERY agentTask node against the current declared plan — per NODE, not per key. A
+    # grouper merge once left two nodes claiming one key, and the old key→nid dict silently kept only
+    # the LAST: the shadowed OPEN mirror never heard its item complete, and is_complete's open_task
+    # authority veto held its umbrella at 'working' for 19 hours with no mover and no indication (g17,
+    # 2026-08-12). The dict was the lossy compression; reconciling each holder is strictly less
+    # mechanism (this loop already existed) and a duplicated key now heals toward done on the next
+    # pass — the done twin is never re-opened, and the collision itself surfaces loudly below.
+    for key, nids in list(key_nodes.items()):
+        it = items.get(key)
+        if len(nids) > 1 and any((nodes[n].get("agentTask") or {}).get("status") == "open" for n in nids):
+            # a wedge-capable shape the merge/rebase tombstones should have prevented — say so while
+            # self-healing (fail loudly, never freeze silently)
+            _log_judge_error("planner", store.get("rompUuid") or "", "task-key-collision",
+                             note="to-do key %r held by %d nodes (%s) — reconciling each; the done "
+                                  "twin is never re-opened" % (key, len(nids), ", ".join(sorted(nids))))
+        for nid in list(nids):
+            nd = nodes[nid]
+            at = nd.get("agentTask") or {}
+            if _is_open(it):
+                if len(nids) > 1 and at.get("status") == "done":
+                    continue                            # a DONE twin of a duplicated key: the agent
+                    #                                     reopened nothing — the duplicate did; heal
+                    #                                     toward done, never resurrect a completed card
+                if at.get("status") != "open" or at.get("raw") != it["status"] or not nd.get("agentBornOpen"):
+                    nd["agentTask"] = {"key": key, "status": "open", "raw": it["status"]}
+                    nd["agentBornOpen"] = True              # adopt: watched-open now → protected from the done-heal
+                    if nd.get("agentDone"):                 # agent RE-OPENED it → an agent reopen EVENT (an
+                        record_verdict(store, nd, "agent", "reopen", seg_t,   # eventless un-done would be re-DONE'd
+                                       why="the agent re-opened its own to-do")   # by the next materialize)
+                        nd["agentDone"] = False
+                    nd["mt"] = seg_t
+                    changed = True
+            elif nd.get("agentBornOpen"):                   # watched-open item that has now COMPLETED → authoritative-done (kept)
+                if at.get("status") != "done" and record_verdict(store, nd, "agent", "done", seg_t,
+                                                                 why="the agent crossed it off its own list"):
+                    nd["agentTask"] = {"key": key, "status": "done", "raw": (it or {}).get("status") or "completed"}
+                    nd["agentDone"] = True; nd["mt"] = seg_t
+                    if seg_id and seg_id not in (nd.get("trail") or []):
+                        # DONE-ANCHOR, plan-sync edition (the user 2026-07-14): the syncing segment holds the
+                        # work that crossed the item off — ride the trail so the distiller reads that work and
+                        # the summary link can land on it, mirroring the closer's recap append. Without it a
+                        # mirror completed only here kept its mint-time trail, so the distiller saw nothing but
+                        # the announcement segment and the summary anchored on a stub.
+                        nd.setdefault("trail", []).append(seg_id)
+                    changed = True
+            elif nid not in has_child:                      # born-DONE backlog leaf (pre-fix) → self-heal it away
+                nodes.pop(nid, None)
+                store.get("status", {}).pop(nid, None)
+                key_nodes[key].remove(nid)
+                if not key_nodes[key]:
+                    del key_nodes[key]
                 changed = True
-        elif nd.get("agentBornOpen"):                       # watched-open item that has now COMPLETED → authoritative-done (kept)
-            if at.get("status") != "done" and record_verdict(store, nd, "agent", "done", seg_t,
-                                                             why="the agent crossed it off its own list"):
-                nd["agentTask"] = {"key": key, "status": "done", "raw": (it or {}).get("status") or "completed"}
-                nd["agentDone"] = True; nd["mt"] = seg_t
-                if seg_id and seg_id not in (nd.get("trail") or []):
-                    # DONE-ANCHOR, plan-sync edition (the user 2026-07-14): the syncing segment holds the
-                    # work that crossed the item off — ride the trail so the distiller reads that work and
-                    # the summary link can land on it, mirroring the closer's recap append. Without it a
-                    # mirror completed only here kept its mint-time trail, so the distiller saw nothing but
-                    # the announcement segment and the summary anchored on a stub.
-                    nd.setdefault("trail", []).append(seg_id)
-                changed = True
-        elif nid not in has_child:                          # born-DONE backlog leaf (pre-fix) → self-heal it away
-            nodes.pop(nid, None)
-            store.get("status", {}).pop(nid, None)
-            del by_key[key]
-            changed = True
 
     # 2) mint the OPEN items we don't track yet (a done item is NEVER minted retroactively)
     for key, it in items.items():
-        if key in by_key or not _is_open(it):
+        if key in key_nodes or not _is_open(it):
             continue
         store["seq"] = store.get("seq", 0) + 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
@@ -3162,7 +3247,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
                       "trail": [seg_id] if seg_id else [], "promptUuid": prompt_uuid, "t": seg_t, "mt": seg_t,
                       "why": "declared in the agent's own to-do list",
                       "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "log": []})
-        by_key[key] = nid
+        key_nodes[key] = [nid]
         changed = True
 
     # 3) BACKSTOP (the user 2026-07-21): an OPEN to-do link belongs on a LEAF the card can render, never
@@ -3173,7 +3258,8 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
     # visible, and revert the container to a plain node. A node BORN a to-do renders its OWN row (its
     # text IS the step) — leaving those alone is exactly what keeps a legit to-do that grew sub-steps
     # from being split. Idempotent: the split leaf is a placed to-do child the grouper leaves put.
-    for key, nid in list(by_key.items()):
+    for key, nids in list(key_nodes.items()):
+      for nid in list(nids):
         nd = nodes.get(nid)
         if (not nd or (nd.get("agentTask") or {}).get("status") != "open"
                 or nd.get("why") == "declared in the agent's own to-do list"):
@@ -3192,7 +3278,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t, prompt_uuid=None):
                       "agentTask": dict(nd["agentTask"]), "agentBornOpen": True, "log": []})
         for f in ("agentTask", "agentBornOpen", "agentDone"):
             nd.pop(f, None)
-        by_key[key] = leaf
+        key_nodes[key][key_nodes[key].index(nid)] = leaf
         changed = True
     return changed
 
@@ -6264,6 +6350,11 @@ def _merge_nodes(store, dupe_id, surv_id, t, why):
         surv["promptUuid"] = dupe["promptUuid"]
     surv["t"] = min(surv.get("t") or t, dupe.get("t") or t)
     surv["mt"] = t
+    # chained merges keep every tombstone: the dupe's own mergedFrom rides along, so an id merged
+    # A→B→C stays deleted even when B itself is gone (the rebase tombstone gate keys on these records)
+    for _rec in (dupe.get("mergedFrom") or []):
+        if _rec.get("id") and all(r.get("id") != _rec["id"] for r in (surv.get("mergedFrom") or [])):
+            surv.setdefault("mergedFrom", []).append(_rec)
     surv.setdefault("mergedFrom", []).append({"id": dupe_id, "text": dupe.get("text"), "why": why, "at": t})
     for k, v in list((store.get("placements") or {}).items()):
         if v == dupe_id:

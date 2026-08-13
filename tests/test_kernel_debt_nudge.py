@@ -247,9 +247,11 @@ class DebtEscalate(DebtBase):
     def test_nothing_eligible_is_a_quiet_no_op(self):
         import json as _json
         p = km.jd.GOALDIR / (ASKER + ".json")
-        s = _json.loads(p.read_text())
-        for nd in s["nodes"].values():
-            nd["nodeComplete"] = True
+        s = km.jd._guard_nodes(_json.loads(p.read_text()))
+        # coherent completion is a VERDICT in the log (one truth, 2026-08-13), never a bare flag
+        for nd in list(s["nodes"].values()):
+            km.jd.record_verdict(s, nd, "closer", "done", NOW - 10, why="test done")
+        km.jd.rollup_status(s, session_closed=False)
         p.write_text(_json.dumps(s))
         self.assertFalse(km._debt_escalate(ASKER, DEBTOR, T_ASK, NOW))
 
