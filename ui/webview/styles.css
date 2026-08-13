@@ -723,6 +723,11 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .chip-idle { background: rgba(255, 255, 255, 0.08); color: var(--dim); }
 .chip-closed { background: rgba(255, 255, 255, 0.07); color: var(--dim); }
 .status-timer { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 0.92em; }
+/* WHAT an awaitingBg session is waiting on, beside the Awaiting chip + clock (the user 2026-08-13).
+   One ellipsized line (full why + task list on hover) — min-width 0 so the flex row can shrink it
+   instead of pushing the right-side cluster off. Same size/color as the timer it sits next to. */
+.sl-await-why { color: var(--dim); font-size: 0.92em; flex: 0 1 auto; min-width: 0;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* stop/interrupt button beside the state badge (the user 2026-06-19): sends the SAME interrupt as the
    composer's Ctrl+C. It renders ONLY while the session is busy (updateStatusline omits it when idle), so
    it's always the live control — a crisp white square, and ONLY on hover does it reveal the pale-red

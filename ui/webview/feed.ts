@@ -97,7 +97,7 @@ interface AskItem {
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25)
-  awaiting?: { why?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Waiting on task" pill (expands the list, like Sub-goals) replaces the boxed why.
+  awaiting?: { why?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why.
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -956,7 +956,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // point is that something is wrong. Filled in applySections.
   const stallBtn = el("button", "fask-secbtn fask-stallbtn"); stallBtn.textContent = "Stalled"; stallBtn.style.display = "none";
   const stallBody = el("div", "fask-stall-body");
-  // "Waiting on task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
+  // "Awaiting task" — the FOURTH mutually-exclusive section (the user 2026-07-13): a compact pill (with
   // the mini spinning swirl inside) that replaces the old boxed awaiting caption when live bg TASKS exist;
   // click expands the task list in the checklist spot, same interaction as Sub-goals. Filled in applySections.
   const taskBtn = el("button", "fask-secbtn fask-taskbtn"); taskBtn.style.display = "none";
@@ -1227,7 +1227,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   }
   const hasSubs = subCount > 0;
   // live background tasks (the user 2026-07-13): when the card is AWAITING on tasks, the compact
-  // "Waiting on task" pill joins the section toggles and expands this list (the old boxed caption is gone)
+  // "Awaiting task" pill joins the section toggles and expands this list (the old boxed caption is gone)
   const taskList = ((it.awaiting && it.awaiting.tasks) || []).filter(Boolean);
   const hasTasks = taskList.length > 0;
   // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
@@ -1290,11 +1290,13 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
   subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
   subBtn.onclick = pick("subgoals");
-  // "Waiting on task" pill (the user 2026-07-13) — visible only while live bg tasks exist; the mini swirl
+  // "Awaiting task" pill (the user 2026-07-13) — visible only while live bg tasks exist; the mini swirl
   // inside keeps the "in flight" cue; pressed when the task list is showing. No preachy tooltip.
+  // "Awaiting", not "Waiting on": the chat chip and timeline badge already label this exact state
+  // Awaiting, and two words for one state read as two states (the user 2026-08-13).
   const taskBtn = a._taskBtn as HTMLElement;
   taskBtn.style.display = hasTasks ? "" : "none";
-  (a._taskLbl as HTMLElement).textContent = taskList.length === 1 ? "Waiting on task" : "Waiting on " + taskList.length + " tasks";
+  (a._taskLbl as HTMLElement).textContent = taskList.length === 1 ? "Awaiting task" : "Awaiting " + taskList.length + " tasks";
   taskBtn.classList.toggle("on", choice === "tasks");
   taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
   taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
