@@ -38,7 +38,7 @@ test("the menu OWNS ↑/↓/⏎/Tab/Esc while open, so they don't send / leave t
   assert.match(RENDER, /if \(e\.key === "ArrowDown"\) \{ e\.preventDefault\(\); if \(items\.length\) \{ sel = \(sel \+ 1\) % items\.length/);
   assert.match(RENDER, /if \(e\.key === "ArrowUp"\)/);
   assert.match(RENDER, /if \(\(e\.key === "Enter" \|\| e\.key === "Tab"\) && items\.length\) \{ e\.preventDefault\(\); pickSlash\(items\[sel\]\); return true; \}/);
-  assert.match(RENDER, /if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); slashDismissed = true; closeSlash\(\); return true; \}/);
+  assert.match(RENDER, /e\.preventDefault\(\); slashDismissed = true; closeSlash\(\); return true;/);   // Esc (list layer) dismisses
   // when the menu is closed, slashKey returns false so Enter still sends and Esc still leaves the box
   assert.match(RENDER, /const slashKey = \(e: KeyboardEvent\): boolean => \{\s*\n\s*if \(!pop\) return false;/);
 });
@@ -74,12 +74,39 @@ test("the popup + selected-row accent + loader spin are styled", () => {
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.slash-spin \{ animation: none; \} \}/);
 });
 
-test("descriptions WRAP — the whole line is readable, never ellipsized (the user 2026-08-12)", () => {
-  // the popup is pinned to the composer's width (positionSlash), so wrapping grows the row, not the menu
+test("rows are strictly ONE LINE: name capped + ellipsized, description ellipsized in the rest (the user 2026-08-13)", () => {
+  // the first cut let the description wrap in place; .slash-name never shrank, so /code-review's long arg
+  // hint squeezed the description to a one-letter-wide column hundreds of lines tall. The list is compact,
+  // and the full text lives behind → instead.
+  const name = CSS.match(/\.slash-name \{[\s\S]*?\}/)?.[0] ?? "";
   const desc = CSS.match(/\.slash-desc \{[\s\S]*?\}/)?.[0] ?? "";
-  assert.ok(desc, "styles.css must style .slash-desc");
-  assert.doesNotMatch(desc, /nowrap|ellipsis/);
-  assert.match(desc, /overflow-wrap: break-word/);
+  assert.match(name, /max-width: 68%/);
+  assert.match(name, /text-overflow: ellipsis/);
+  assert.match(desc, /white-space: nowrap/);
+  assert.match(desc, /text-overflow: ellipsis/);
+});
+
+test("→ expands the selected row to its full wrapped text; ←/Esc return to the list (the user 2026-08-13)", () => {
+  assert.match(RENDER, /let slashExpanded = false/);
+  // → only with the caret at the END of the query, so arrow-editing the "/token" still works
+  assert.match(RENDER, /e\.key === "ArrowRight" && items\.length && !slashExpanded\s*&& ta\.selectionStart === ta\.value\.length && ta\.selectionEnd === ta\.value\.length/);
+  assert.match(RENDER, /if \(e\.key === "ArrowLeft" && slashExpanded\) \{ e\.preventDefault\(\); slashExpanded = false; paintSlash\(\); return true; \}/);
+  // Esc peels one layer (full text → list → dismissed), and closing the menu resets the mode
+  assert.match(RENDER, /if \(slashExpanded\) \{ e\.preventDefault\(\); slashExpanded = false; paintSlash\(\); return true; \}/);
+  assert.match(RENDER, /slashExpanded = false; \};/);
+  // the expanded row stacks name over description, both wrapping at the popup's width
+  assert.match(RENDER, /i === sel && slashExpanded \? " expanded" : ""/);
+  assert.match(CSS, /\.slash-row\.expanded \{ display: block; \}/);
+  assert.match(CSS, /\.slash-row\.expanded \.slash-name, \.slash-row\.expanded \.slash-desc \{ display: block;[\s\S]*?white-space: normal/);
+  // hover-select is frozen while expanded (repaints re-flow heights under the cursor and would flap the mode)
+  assert.match(RENDER, /if \(!slashExpanded && sel !== i\)/);
+});
+
+test("a footer hint teaches the keys, in place, and follows the state (the user 2026-08-13)", () => {
+  assert.match(RENDER, /hint\.className = "slash-hint"/);
+  assert.match(RENDER, /slashExpanded \? "← back · ⏎ fill" : "→ full description · ⏎ fill"/);
+  assert.match(RENDER, /hint\.addEventListener\("mousedown", \(ev\) => ev\.preventDefault\(\)\)/);   // a click on it must not blur/close
+  assert.match(CSS, /\.slash-hint \{ padding: 4px 9px 2px; font-size: 0\.82em; opacity: 0\.6;/);   // menu sub-line size/opacity
 });
 
 test("the composer placeholder hints that / opens commands (the user 2026-06-30)", () => {

@@ -8844,6 +8844,11 @@ function setupComposer() {
   // out, typing more of the same "/token" must NOT re-pop it — only deleting back past the "/" (slashQuery →
   // null) re-arms it. Latched here; set on Esc, cleared the moment the "/token" context is gone.
   let slashDismissed = false;
+  // The list is strictly one line per command; → on the selected row opens its FULL name + arg hint +
+  // description, wrapped, and ←/Esc return to the list (the user 2026-08-13, after /code-review's long arg
+  // hint squeezed a wrapping description into a one-letter-wide column). A mode, not a per-row bit: ↑/↓
+  // while expanded browse the full texts.
+  let slashExpanded = false;
   const loadCmds = (sid: string, then?: () => void) => {
     fetch(kernelUrl("/commands?sid=" + encodeURIComponent(sid)), { cache: "no-store" })
       .then((r) => r.json())
@@ -8871,7 +8876,7 @@ function setupComposer() {
       .sort((a, b) => b.best - a.best || a.c.name.localeCompare(b.c.name))
       .map((x) => x.c).slice(0, 60);
   };
-  const closeSlash = () => { if (pop) { pop.remove(); pop = null; } if (slashPoll) { clearTimeout(slashPoll); slashPoll = undefined; } };
+  const closeSlash = () => { if (pop) { pop.remove(); pop = null; } if (slashPoll) { clearTimeout(slashPoll); slashPoll = undefined; } slashExpanded = false; };
   const positionSlash = () => {
     if (!pop) return;
     const r = ta.getBoundingClientRect();
@@ -8902,15 +8907,23 @@ function setupComposer() {
       pop.appendChild(e); positionSlash(); return;
     }
     items.forEach((c, i) => {
-      const row = document.createElement("div"); row.className = "slash-row" + (i === sel ? " sel" : "");
+      const row = document.createElement("div");
+      row.className = "slash-row" + (i === sel ? " sel" : "") + (i === sel && slashExpanded ? " expanded" : "");
       const nm = document.createElement("span"); nm.className = "slash-name"; nm.textContent = "/" + c.name;
       if (c.argumentHint) { const a = document.createElement("span"); a.className = "slash-arg"; a.textContent = " " + c.argumentHint; nm.appendChild(a); }
       const ds = document.createElement("span"); ds.className = "slash-desc"; ds.textContent = c.description || "";
       row.append(nm, ds);
       row.addEventListener("mousedown", (ev) => { ev.preventDefault(); pickSlash(c); });   // mousedown keeps focus
-      row.addEventListener("mousemove", () => { if (sel !== i) { sel = i; paintSlash(); } });
+      // hover-select is frozen while expanded: the tall row re-flows heights under the cursor, and a repaint
+      // per crossed row would flap the expansion around; ↑/↓ still browse
+      row.addEventListener("mousemove", () => { if (!slashExpanded && sel !== i) { sel = i; paintSlash(); } });
       pop!.appendChild(row);
     });
+    // a dim one-line footer teaches the keys (the user 2026-08-13: the expand must be discoverable in place)
+    const hint = document.createElement("div"); hint.className = "slash-hint";
+    hint.textContent = slashExpanded ? "← back · ⏎ fill" : "→ full description · ⏎ fill";
+    hint.addEventListener("mousedown", (ev) => ev.preventDefault());   // not a row: a click must not blur/close
+    pop.appendChild(hint);
     positionSlash();
     (pop.querySelector(".slash-row.sel") as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
   };
@@ -8932,7 +8945,18 @@ function setupComposer() {
     if (e.key === "ArrowDown") { e.preventDefault(); if (items.length) { sel = (sel + 1) % items.length; paintSlash(); } return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); if (items.length) { sel = (sel - 1 + items.length) % items.length; paintSlash(); } return true; }
     if ((e.key === "Enter" || e.key === "Tab") && items.length) { e.preventDefault(); pickSlash(items[sel]); return true; }
-    if (e.key === "Escape") { e.preventDefault(); slashDismissed = true; closeSlash(); return true; }   // stays dismissed until the "/" is cleared
+    // → expands the selected row — but only with the caret at the END of the query, where the key has no
+    // text left to cross; anywhere else it stays an ordinary caret move. ← is consumed only while expanded.
+    if (e.key === "ArrowRight" && items.length && !slashExpanded
+        && ta.selectionStart === ta.value.length && ta.selectionEnd === ta.value.length) {
+      e.preventDefault(); slashExpanded = true; paintSlash(); return true;
+    }
+    if (e.key === "ArrowLeft" && slashExpanded) { e.preventDefault(); slashExpanded = false; paintSlash(); return true; }
+    if (e.key === "Escape") {
+      // Esc peels one layer: the full text first, then the menu (which stays dismissed until the "/" is cleared)
+      if (slashExpanded) { e.preventDefault(); slashExpanded = false; paintSlash(); return true; }
+      e.preventDefault(); slashDismissed = true; closeSlash(); return true;
+    }
     return false;
   };
   ta.addEventListener("focus", () => { if (slashSid !== (activeId || "")) loadCmds(activeId || ""); });   // pre-warm the cache before "/"
