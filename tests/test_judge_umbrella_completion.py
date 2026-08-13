@@ -10,8 +10,9 @@ connection" child closed, though the experiment never ran. Now:
     never the children;
   - all-children-done NOMINATES the node to the CLOSER (_subtree_done_candidates rides the turn
     menu with a steps-finished note), whose done/block/considered-omission is the ruling;
-  - a landed reply stamps the candidate's completion-set signature (store["umbSig"]) so an
-    unchanged set is never re-asked — the set changing is the re-arm event.
+  - a landed reply stamps the candidate's LOOK watermark (nd["closerLookT"], 2026-08-13 — the
+    retired umbSig/starvedSig signatures could not see a verdict LANDING on an existing child,
+    which orphaned a finished card for a day); a new FILING in the top subtree re-arms the ask.
 All fixtures synthetic (placeholder UUIDs, invented text)."""
 import json
 import os
@@ -130,16 +131,29 @@ class SubtreeDoneCandidates(unittest.TestCase):
         self.assertEqual(cands, {SID + ":g1"},
                          "only the open, unruled, all-children-done, unsealed, no-open-todo parent")
 
-    def test_sig_stamp_gates_and_the_set_change_rearms(self):
+    def test_look_stamp_gates_and_a_new_filing_rearms(self):
         s = _store()
         _node(s, "g1", "all steps finished, unruled")
-        _node(s, "g2", "finished step", parent="g1", done=True)
-        kidmap = {None: [SID + ":g1"], SID + ":g1": [SID + ":g2"]}
-        s["umbSig"] = {SID + ":g1": jd._umb_sig(s["nodes"], kidmap, SID + ":g1")}
+        _node(s, "g2", "finished step", parent="g1", done=True)           # done row at=T1
+        s["nodes"][SID + ":g1"]["closerLookT"] = T1                       # the closer looked at this world
         self.assertEqual(jd._subtree_done_candidates(s), [],
-                         "a stamped, unchanged completion set is never re-asked")
-        _node(s, "g3", "a newly finished step", parent="g1", done=True)   # the set changed → re-arm
+                         "nothing filed since the look → never re-asked")
+        _node(s, "g3", "a newly finished step", parent="g1", done=True,
+              log=[_row("done", T1 + 50)])                                # a NEW filing → re-arm
         self.assertEqual([nd["id"] for nd in jd._subtree_done_candidates(s)], [SID + ":g1"])
+
+    def test_a_verdict_landing_on_an_existing_child_rearms(self):
+        # THE g7 defect (2026-08-12): the retired child-id-set signature promised "a child's state
+        # flipped" re-arms, but an id-only set never delivered it — a done verdict FILED on an
+        # already-listed child left the umbrella orphaned forever. The filing watermark sees it.
+        s = _store()
+        _node(s, "g1", "all steps finished, unruled")
+        g2 = _node(s, "g2", "finished step", parent="g1", done=True)
+        s["nodes"][SID + ":g1"]["closerLookT"] = T1
+        self.assertEqual(jd._subtree_done_candidates(s), [], "looked, nothing new")
+        g2["log"].append(_row("done", T1 + 80, src="agent"))              # same child SET, new FILING
+        self.assertEqual([nd["id"] for nd in jd._subtree_done_candidates(s)], [SID + ":g1"],
+                         "the filing is the event — the id set never changed and must not matter")
 
 
 class CloserRulesTheCandidate(unittest.TestCase):
@@ -172,14 +186,16 @@ class CloserRulesTheCandidate(unittest.TestCase):
         self.assertTrue(top["trail"], "DONE-ANCHOR: the ruling turn's recap segment lands on the trail")
         self.assertIn("Run long soak experiment", seen["mt"])
         self.assertIn("is finished", seen["mt"], "the steps-finished note rides the menu")
-        self.assertIn(SID + ":g1", s.get("umbSig", {}), "the landed reply stamps the signature")
+        self.assertGreaterEqual(s["nodes"][SID + ":g1"].get("closerLookT") or 0, T1,
+                                "the landed reply stamps the look watermark (below apply, so the "
+                                "reply's own filing is covered)")
 
     def test_considered_omission_stamps_and_the_goal_stays_open(self):
         s = self._cand_store()
         jd.closer_llm = lambda tt, mt, *_a: '{"done": [], "block": []}'
         self.assertEqual(jd._close_turn(s, self.turn), [])
         self.assertFalse(s["nodes"][SID + ":g1"].get("nodeComplete"), "left open — steps are not the ask")
-        self.assertIn(SID + ":g1", s.get("umbSig", {}))
+        self.assertGreaterEqual(s["nodes"][SID + ":g1"].get("closerLookT") or 0, T1)
         jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(
             AssertionError("an unchanged completion set must not re-run the closer"))
         self.assertEqual(jd._close_turn(s, self.turn), [], "stamped + nothing touched → no LLM call")
@@ -188,7 +204,8 @@ class CloserRulesTheCandidate(unittest.TestCase):
         s = self._cand_store()
         jd.closer_llm = lambda tt, mt, *_a: ""                            # call failed → retry next pass
         self.assertIsNone(jd._close_turn(s, self.turn))
-        self.assertNotIn(SID + ":g1", s.get("umbSig", {}), "no ruling landed → the candidate stays armed")
+        self.assertIsNone(s["nodes"][SID + ":g1"].get("closerLookT"),
+                          "no ruling landed → the candidate stays armed")
 
 
 class StarvedCandidates(unittest.TestCase):
@@ -235,18 +252,28 @@ class StarvedCandidates(unittest.TestCase):
         self.assertEqual(jd._starved_candidates(s), [],
                          "nothing settled since the mint → nothing to judge the card against")
 
-    def test_sig_stamp_gates_and_a_new_settle_rearms(self):
+    def test_look_stamp_gates_and_a_new_filing_rearms(self):
         s = self._board()
-        kidmap = {}
-        for nid, nd in s["nodes"].items():
-            kidmap.setdefault(nd.get("parentId"), []).append(nid)
-        s["starvedSig"] = {nid: jd._starved_sig(s["nodes"], kidmap, nid)
-                           for nid in (SID + ":g2", SID + ":g3")}
+        for nid in (SID + ":g2", SID + ":g3"):
+            s["nodes"][nid]["closerLookT"] = T1                # the closer looked at this world (g4's done)
         self.assertEqual(jd._starved_candidates(s), [],
-                         "a stamped, unchanged settled set is never re-asked")
-        _node(s, "g8", "Verified detection in offline mode", parent="g1", done=True, mt=T1 + 50)
+                         "nothing filed since the look → never re-asked")
+        _node(s, "g8", "Verified detection in offline mode", parent="g1", done=True,
+              log=[_row("done", T1 + 50)])                     # a new FILING in the subtree → re-arm
         self.assertEqual({nd["id"] for nd in jd._starved_candidates(s)},
-                         {SID + ":g2", SID + ":g3"}, "another piece settling re-arms the ask")
+                         {SID + ":g2", SID + ":g3"}, "another piece filing re-arms the ask")
+
+    def test_a_post_outage_filing_with_old_evidence_still_rearms(self):
+        # the retired settled-set signature compared EVIDENCE times (mt >= mint) — a backlog sweep's
+        # verdict carries an OLD ev_t but a brand-new FILING (`at`); the watermark keys on the filing
+        s = self._board()
+        for nid in (SID + ":g2", SID + ":g3"):
+            s["nodes"][nid]["closerLookT"] = T1
+        old_evidence = {"ev_t": T0 - 500, "src": "closer", "kind": "done", "at": T1 + 90}
+        _node(s, "g9", "Swept-backlog completion", parent="g1", done=True, log=[old_evidence])
+        self.assertEqual({nd["id"] for nd in jd._starved_candidates(s)},
+                         {SID + ":g2", SID + ":g3"},
+                         "old evidence, new information — the arrival domain sees it")
 
 
 class CloserRulesTheStarved(unittest.TestCase):
@@ -281,14 +308,15 @@ class CloserRulesTheStarved(unittest.TestCase):
                          "the completion has an author and a diary row")
         self.assertIn("Deployed improved metric-trend detection fix", seen["mt"])
         self.assertIn("no work filed since creation", seen["mt"], "the no-work-filed note rides the menu")
-        self.assertIn(SID + ":g2", s.get("starvedSig", {}), "the landed reply stamps the signature")
+        self.assertGreaterEqual(s["nodes"][SID + ":g2"].get("closerLookT") or 0, T1,
+                                "the landed reply stamps the look watermark")
 
     def test_considered_omission_stamps_and_never_reasks(self):
         s = self._board()
         jd.closer_llm = lambda tt, mt, *_a: '{"done": [], "block": []}'
         self.assertEqual(jd._close_turn(s, self.turn), [])
         self.assertFalse(s["nodes"][SID + ":g2"].get("nodeComplete"), "left open on purpose")
-        self.assertIn(SID + ":g2", s.get("starvedSig", {}))
+        self.assertGreaterEqual(s["nodes"][SID + ":g2"].get("closerLookT") or 0, T1)
         jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(
             AssertionError("an unchanged settled set must not re-run the closer"))
         self.assertEqual(jd._close_turn(s, self.turn), [], "stamped + nothing new settled → no LLM call")
@@ -297,7 +325,8 @@ class CloserRulesTheStarved(unittest.TestCase):
         s = self._board()
         jd.closer_llm = lambda tt, mt, *_a: ""                            # call failed → retry next pass
         self.assertIsNone(jd._close_turn(s, self.turn))
-        self.assertNotIn(SID + ":g2", s.get("starvedSig", {}), "no ruling landed → the card stays armed")
+        self.assertIsNone(s["nodes"][SID + ":g2"].get("closerLookT"),
+                          "no ruling landed → the card stays armed")
 
 
 class PromptPins(unittest.TestCase):
