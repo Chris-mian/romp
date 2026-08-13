@@ -13,7 +13,7 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
 import json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, urlencode
@@ -640,8 +640,16 @@ _cancel_pending = set()
 
 # ───────────────────────── helpers ─────────────────────────
 def iso(t):
+    """Epoch → the ISO-8601 UTC ('…Z') form the CLI's own transcript records wear.
+
+    The offset suffix is LOAD-BEARING: these strings ship in chat-event payloads and the client
+    recovers the epoch with Date.parse (render.ts eventEpoch), which reads an OFFSET-LESS string in
+    the BROWSER's timezone. The old naive form (box-local wall clock, no suffix) therefore rendered
+    every rail stamp at the kernel's wall time instead of the viewer's — invisible while both sat in
+    one timezone, wrong by the whole UTC offset the moment they didn't (found reading a UTC box's
+    dashboard from a laptop in another timezone)."""
     try:
-        return datetime.fromtimestamp(t).strftime("%Y-%m-%dT%H:%M:%S")
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception:
         return ""
 
