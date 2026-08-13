@@ -528,5 +528,83 @@ class CancelBackendQueued(unittest.TestCase):
                          "too late to cancel /model — the session already has it")
 
 
+class SlashCommandParksWhileTurnOpen(unittest.TestCase):
+    """A typed SLASH COMMAND parks whenever a turn is open — even on a forwards_sends (SDK) backend — and
+    fires ALONE at turn end (the user 2026-08-13): forwarded mid-turn, "/autocompact auto" reached the
+    model as plain text, the model politely replied, and the setting never changed. Plain messages keep
+    the forward-now path; slash-SHAPED paths ("/tmp/x") are not commands and keep it too."""
+
+    def setUp(self):
+        self.be = _FakeBackend()
+        self.be.forwards_sends = lambda: True          # an SDK-like backend: takes sends mid-turn
+        self.echoes = []
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+                       km._working_now)
+        km._push_all = lambda: None
+        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
+        km._compacting_now = lambda sid: False
+        km._working_now = lambda sid: True             # a turn is OPEN throughout, unless a test says otherwise
+        km._pending_ops.clear()
+
+    def tearDown(self):
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+         km._working_now) = self._saved
+        km._pending_ops.clear()
+
+    def test_shape_matcher_commands_yes_paths_and_prose_no(self):
+        for t in ("/autocompact auto", "/compact", "/model opus", "/mcp__srv__tool go", "/loop 5m /foo"):
+            self.assertTrue(km._is_slash_command(t), t)
+        for t in ("/tmp/x is broken", "/Users/nobody/file.txt", "hello /compact", "", "  ", "/"):
+            self.assertFalse(km._is_slash_command(t), t)
+
+    def test_plain_text_still_forwards_mid_turn_but_a_command_parks(self):
+        km._send_or_park(self.be, SID, "keep going, and also check the logs", echo="human")
+        self.assertEqual(self.be.calls, [("send", "keep going, and also check the logs")],
+                         "plain text keeps the forward-now path — get messages in ASAP")
+        km._send_or_park(self.be, SID, "/autocompact auto", echo="human")
+        self.assertEqual(self.be.calls[1:], [], "the command did NOT go into the running turn")
+        self.assertEqual(km._pending_ops.get(SID), [("command", "/autocompact auto", "human")])
+        self.assertEqual(self.echoes, [("keep going, and also check the logs", "human")],
+                         "the parked command has not echoed yet — it renders as a queued bubble instead")
+
+    def test_parked_command_fires_alone_at_turn_end_with_its_echo_and_ends_the_pass(self):
+        km._pending_ops[SID] = [("command", "/autocompact auto", "human"), ("send", "then this", None)]
+        km.Sessions.backend_for = lambda sid: self.be
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [], "turn still open → still parked")
+        km._working_now = lambda sid: False
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [("send", "/autocompact auto")],
+                         "the command fires ALONE — never folded into a send batch")
+        self.assertEqual(self.echoes, [("/autocompact auto", "human")], "echo stamps at fire time")
+        self.assertEqual(km._pending_ops.get(SID), [("send", "then this", None)],
+                         "the pass ends at the command — its turn must finish first")
+
+    def test_typed_compact_marks_compacting_like_the_buttons_op(self):
+        marked = []
+        _saved_mark = km._mark_compacting
+        km._mark_compacting = lambda sid: marked.append(sid)
+        try:
+            km._pending_ops[SID] = [("command", "/compact", None)]
+            km.Sessions.backend_for = lambda sid: self.be
+            km._working_now = lambda sid: False
+            km._apply_pending_ops()
+            self.assertEqual(self.be.calls, [("send", "/compact")])
+            self.assertEqual(marked, [SID], "a typed /compact gets the same instant compacting cue")
+        finally:
+            km._mark_compacting = _saved_mark
+
+    def test_parked_md_renders_the_command_itself(self):
+        self.assertEqual(km._parked_md(("command", "/autocompact auto", "human")), "/autocompact auto")
+
+    def test_idle_command_goes_straight_through(self):
+        km._working_now = lambda sid: False
+        km._send_or_park(self.be, SID, "/autocompact auto", echo="human")
+        self.assertEqual(self.be.calls, [("send", "/autocompact auto")],
+                         "idle → a fresh top-level prompt already, nothing to park")
+        self.assertEqual(self.echoes, [("/autocompact auto", "human")])
+        self.assertNotIn(SID, km._pending_ops)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4858,7 +4858,7 @@ def _drive(msg, client):
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
-        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_soon()  # idle → instant echo; SDK busy → queued bubble forwarded mid-turn + folded; tmux busy → held + merged at turn end
+        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_soon()  # idle → instant echo; SDK busy → queued bubble forwarded mid-turn + folded (but a SLASH COMMAND parks to fire alone at turn end — mid-turn it would land as text, not execute); tmux busy → held + merged at turn end
     elif t == "rewindSend" and msg.get("uuid") and msg.get("text"):
         # Edit a past message (SDK sessions): rewind the conversation to just before it and send the
         # edited text as the branch's next turn. NO optimistic kernel echo — the edit lands mid-chat
@@ -11519,6 +11519,8 @@ def _parked_md(op):
     matches the park slot before removing it (the user 2026-07-08)."""
     if op[0] == "send":
         return _split_followup(op[1])[1]
+    if op[0] == "command":
+        return op[1]                     # the typed slash command IS the bubble (so the running-/compact fold matches it too)
     if op[0] == "compact":
         return "/compact"
     return "/%s %s" % (op[0], op[1])
@@ -11602,6 +11604,18 @@ def _forwards_sends(be):
         return False
 
 
+# A leading slash-COMMAND token ("/autocompact auto", "/compact"), not a path ("/tmp/x is broken",
+# "/Users/…"): the token must end at whitespace/EOL before any second "/". Shape-matched, not matched
+# against the session's command list, deliberately — the CLI owns what executes; romp only decides WHEN
+# it can execute (as a fresh top-level prompt). A slash-shaped non-command just arrives at turn end as
+# text, same as it always did, a beat later.
+_SLASH_CMD_RE = re.compile(r"^/[A-Za-z0-9][\w:-]*(\s|$)")
+
+
+def _is_slash_command(text):
+    return bool(_SLASH_CMD_RE.match((text or "").strip()))
+
+
 def _send_or_park(be, sid, text, echo=None):
     """Deliver `text` now — or PARK it in the sid's FIFO. Park when: (a) the session is COMPACTING (the user
     2026-07-02: a mid-compaction send's live-tail echo opened a turn that KILLED the 'compacting' cue — a
@@ -11616,12 +11630,20 @@ def _send_or_park(be, sid, text, echo=None):
     boundary, folds several queued sends into one turn, and holds them across an interrupt (the user
     2026-07-17: "get user messages in as soon as possible; we don't have to interrupt but get them in"); the
     still-waiting message renders as a queued bubble (its echo is suppressed) until it forwards. `echo` is
-    the _optimistic_echo author stamped when the send actually fires (None = the backend echoes for itself)."""
+    the _optimistic_echo author stamped when the send actually fires (None = the backend echoes for itself).
+
+    EXCEPTION to the forward-now rule: a typed SLASH COMMAND ("/autocompact auto") parks whenever a turn is
+    open, even on a forwards_sends backend (the user 2026-08-13): the CLI only EXECUTES a slash command
+    arriving as a fresh top-level prompt — forwarded into a running turn it lands as plain user text, the
+    model politely replies to it, and the setting never changes. Parked as a ("command",) op, it fires ALONE
+    at turn end (never folded into a send batch, which would bury it as text the same way)."""
+    cmd = _is_slash_command(text)
+    op = ("command", text, echo) if cmd else ("send", text, echo)
     if _compacting_now(sid) or _pending_ops.get(sid) or _limit_hold(sid):
-        _park_op(sid, ("send", text, echo))
+        _park_op(sid, op)
         return
-    if _working_now(sid) and not _forwards_sends(be):
-        _park_op(sid, ("send", text, echo))
+    if _working_now(sid) and (cmd or not _forwards_sends(be)):
+        _park_op(sid, op)
         return
     be.send(sid, text)
     if echo:
@@ -11723,6 +11745,18 @@ def _apply_pending_ops():
                         run.append(ops.pop(0))
                     _deliver_send_batch(be, sid, run)
                     break                             # the delivered turn must END before any op behind it fires
+                elif op[0] == "command":
+                    # a typed slash command fires ALONE as its own fresh top-level prompt — folded into a
+                    # send batch (or forwarded mid-turn) it reaches the model as text instead of executing
+                    # (the user 2026-08-13: /autocompact absorbed mid-turn got a polite reply and no
+                    # setting change). Echo stamped at fire time, like a delivered send.
+                    be.send(sid, op[1])
+                    if len(op) > 2 and op[2]:
+                        _optimistic_echo(sid, op[1], author=op[2])
+                    if op[1].strip().split()[0] == "/compact":
+                        _mark_compacting(sid)         # a TYPED /compact gets the same instant cue as the button's op
+                    ops.pop(0)
+                    break                             # its turn must end before anything behind it fires
                 elif op[0] == "compact":
                     be.send(sid, "/compact")
                     _mark_compacting(sid)
