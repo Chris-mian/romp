@@ -1834,37 +1834,32 @@ body.picker-lifted.pane-gone::before { display: none; }
 body.picker-lifted > #picker { align-items: flex-start; padding: 56px 16px 16px; }
 /* SHORT WINDOW (the on-screen keyboard is up — the shell's --app-h sizing turns that into this
    window's own height — or a genuinely small screen; render.ts toggles kb-tight on resize): the
-   ADVANCED create rows fold so the essentials share the height with the keyboard, and expand back on
-   the resize that restores the room (the user 2026-08-10, Chrome on a phone). !important: these rows'
-   visibility is otherwise driven by inline styles (pick-mode, auth availability), and the fold must
-   win while it holds.
-   Folded, the ESSENTIALS rearrange for the keyboard (the user 2026-08-12): with the resume list moved
-   to the dialog's bottom, the tall layout's order left the short window showing the name box, the
-   Create button, a heading — and one row of the list, the thing you type to filter. So while folded:
-   the box takes the WHOLE short viewport (a fixed height, so nothing below shifts as typing
-   re-filters the list), the list flexes to fill the middle directly under the name box, and the
-   actions row orders to the bottom edge — pinned still, right above the keyboard where a thumb
-   expects the button. The tall layout keeps its controls-first order; this reorder exists only while
-   the keyboard (or a genuinely small screen) makes the viewport the scarce thing. */
-/* BOTH contexts — lifted and standalone — tighten to the same 12px frame: the box below takes a
-   FIXED height of the viewport minus exactly that frame, so a context still wearing the tall 56px
-   anchor would push the bottom-pinned actions row off-screen. (The lifted selector must keep its
-   own line: the base lifted rule carries #picker, which outweighs a class-only override.) */
+   frame tightens and the RESUME LIST is what gives way (the user 2026-08-12, revising two earlier
+   folds that each hid the wrong half — 2026-08-10 hid the advanced create rows, then the first cut
+   of this rule let the list fill the screen instead). The keyboard is up because you are TYPING a
+   new session's name, so every create control — name, directory, backend, billing, host, Create —
+   stays on screen exactly as laid out; the list of previous sessions is the occasional alternative,
+   already shrinkable (it scrolls), and it collapses to whatever height is left. No row hides and
+   nothing reorders: the tall layout and the folded one differ only in frame and cap, so the resize
+   that restores the room changes nothing but how much list you see. */
+/* BOTH contexts — lifted and standalone — tighten to the same 12px frame: a context still wearing
+   the tall 56px anchor would push the bottom of the box off-screen. (The lifted selector must keep
+   its own line: the base lifted rule carries #picker, which outweighs a class-only override.) */
 #picker.kb-tight,
 body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 16px; }
-.picker-overlay.kb-tight .picker-dir,
-.picker-overlay.kb-tight .picker-backend { display: none !important; }
 /* dvh, not vh: lifted, the shell sizes this iframe to the visible height so the two agree, but
    STANDALONE on a phone 100vh is the largest viewport (URL bar collapsed) while the fold keys on
    the current innerHeight — a vh-sized box ran past the visible bottom by exactly the browser
-   chrome, clipping the bottom-pinned actions row this rule exists to keep on screen. dvh tracks
-   the real visible height in both contexts (the shell's own --app-h fallback unit). */
-.picker-overlay.kb-tight .picker-box { height: calc(100dvh - 24px); max-height: calc(100dvh - 24px); }
-.picker-overlay.kb-tight .picker-list { flex: 1 1 auto; min-height: 0; }
-.picker-overlay.kb-tight .picker-actions { order: 1; }
-/* the heading sits directly under the name box while folded (the create rows between them are
-   hidden), so its seam would double the search box's own border-bottom */
-.picker-overlay.kb-tight .picker-alt-head { border-top: none; }
+   chrome. dvh tracks the real visible height in both contexts (the shell's own --app-h fallback
+   unit). overflow-y:auto is the backstop for a window too short for even the control rows alone
+   (a landscape phone): the box scrolls rather than the Create button becoming unreachable. */
+.picker-overlay.kb-tight .picker-box { max-height: calc(100dvh - 24px); overflow-y: auto; }
+/* …the list gives way, but never to NOTHING. In the backstop geometry the control rows alone
+   overflow the cap, and the list — the only child with a zero flex floor — would resolve to 0px
+   while its "Or reopen…" heading still rendered: a labeled section with no way to see, scroll,
+   or click a single row (a dead-end, which a compact view must never be). One row's floor keeps
+   the resume path alive at every height; the list scrolls the rest within itself. */
+.picker-overlay.kb-tight .picker-list { min-height: 52px; }
 
 .picker-box {
   /* two thirds of the window, not a narrow column: it is a dialog over the whole dashboard now, and the

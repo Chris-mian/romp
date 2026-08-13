@@ -4786,11 +4786,12 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     // picker's lower rows sat behind it and nothing gave. The shell sizes this lifted iframe to the
     // VISIBLE height (--app-h ← the top-level visualViewport, which the keyboard shrinks), so the
     // keyboard opening/closing lands here as this window's own resize — the exact event to key on, no
-    // timers, no UA sniffing. Short window → kb-tight folds the advanced create rows (dir, backend,
-    // billing, host) and rearranges the essentials for the keyboard — the list flexes to fill the
-    // middle under the name box and the actions row pins to the bottom edge (styles.css, the user
-    // 2026-08-12); the same resize expands it all back the moment there is room again (a genuinely
-    // small screen folds too, which is the right call there as well).
+    // timers, no UA sniffing. Short window → kb-tight tightens the frame and lets the RESUME LIST
+    // give way (styles.css; the user 2026-08-12, after two folds that each hid the wrong half): the
+    // keyboard is up because a new session's name is being typed, so every create control stays on
+    // screen and the list collapses to the leftover height. The same resize expands the list back the
+    // moment there is room again (a genuinely small screen folds too, which is the right call there
+    // as well).
     const kbFit = () => document.getElementById("picker")?.classList.toggle("kb-tight", window.innerHeight < 480);
     window.addEventListener("resize", kbFit);
     kbFit();
