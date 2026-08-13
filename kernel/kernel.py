@@ -5115,7 +5115,11 @@ def _drive(msg, client):
         # messageless cardMove is the cautionary tale: a move with no message adds no information, so
         # its natural end state was parked-in-Working. Human-authored like the modal's canned Check
         # status (no romp-injected marker): the gesture asserts the USER's own state, in their voice.
-        text = CONTINUE_TEXT if msg.get("cont") else str(msg["text"])
+        # The romp-canned marker (the user 2026-08-13) tells the CHAT ONLY that these are canned words
+        # behind a gesture, not typed prose — the bubble stays blue and folds to a "Continue" gist.
+        # Comment form (the markers rule); the agent ignores it like every romp-* comment; authorship,
+        # judge filing, and the planner's view are all unchanged.
+        text = (CONTINUE_TEXT + "\n\n<!-- romp-canned: continue -->") if msg.get("cont") else str(msg["text"])
         body = (_followup_body(iid, msg.get("title"), text, injected=bool(msg.get("nudge")))
                 if iid else text)
         # Optimistic echo for a tmux follow-up/nudge (the user 2026-06-29): without it, a follow-up sent while
@@ -12820,6 +12824,11 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                                     ev["goal"] = fu_goal
                                 if fu_ctx:                       # the FULL stripped quote — the ↩ header expands to show it
                                     ev["fuCtx"] = fu_ctx
+                            if author == "human" and "<!-- romp-canned: continue -->" in text:
+                                # the card's Continue button (the user 2026-08-13): the USER's gesture with
+                                # romp's canned words — still blue, but the chat folds it to a gist instead
+                                # of posing the prose as typed. Comment form only, like romp-system above.
+                                ev["canned"] = "continue"
                             if author == "romp":         # a feed nudge/follow-up romp injected → gray romp bubble
                                 ev["romp"] = True
                                 if a.get("rompAuto"):    # an AUTO-nudge (not the Nudge button) → the chat draws the romp swirl
