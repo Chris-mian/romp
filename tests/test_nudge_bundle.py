@@ -172,6 +172,9 @@ class NudgeFireList(unittest.TestCase):
 
     def test_cleared_and_vanished_goals_drop(self):
         fresh = _store({G1: _node(G1, "crossed off", cleared=True)})
+        fresh["status"][G1] = "cleared"                # the rollup's export (one truth, 2026-08-13):
+        #                                                every writer rollups before save, and a cleared
+        #                                                node's status IS "cleared" (judge rollup_status)
         self.assertEqual(km._nudge_fire_list(fresh, [(G1, 1, False), (G2, 1, False)]), [],
                          "a cleared card and a compacted-away card both lose their nudge")
 

@@ -331,7 +331,9 @@ permission/API-error floors: one interrupt at a time, the present event first.
   Models: `STATE/judge-model` (triage), `STATE/index-model`.
 - Logs: `STATE/judge-usage.jsonl` (per-call cost, one name per prompt),
   `STATE/judge-errors.jsonl` (the row contract above; kinds are parse,
-  call, give-up, cite-miss, rate-limited, task-store, history-unreadable),
+  call, give-up, cite-miss, rate-limited, task-store, history-unreadable,
+  task-key-collision — a duplicated to-do mirror key, reconciled per node
+  and surfaced loudly),
   `STATE/judge-auth.json` (the per-session judge-auth-down latch — see
   "Billing" above).
 - Debugging: run the judge's own code against the live store

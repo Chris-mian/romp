@@ -591,8 +591,11 @@ class AwaitingWakeOutcomeSweep(unittest.TestCase):
     def test_sweep_ignores_a_goal_the_world_moved_past(self):
         now = 1_000_000
         self._seed_goal(at=now - 20 * 3600)
-        d = json.loads((km.jd.GOALDIR / (SID + ".json")).read_text())
-        d["nodes"][self.gid]["nodeComplete"] = True
+        d = km.jd._guard_nodes(json.loads((km.jd.GOALDIR / (SID + ".json")).read_text()))
+        # a COHERENT completed goal (one truth, 2026-08-13): completion is a VERDICT in the log —
+        # rollup re-derives the flags from it — never a bare hand-set nodeComplete
+        km.jd.record_verdict(d, d["nodes"][self.gid], "closer", "done", now - 3600, why="test done")
+        km.jd.rollup_status(d, session_closed=False)
         (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(d))
         self._seed_rec({"wake": True, "anchor": now - 20 * 3600, "count": 1, "lastTurnId": "t0",
                         "armAtoms": 0, "at": now - 7 * 3600})

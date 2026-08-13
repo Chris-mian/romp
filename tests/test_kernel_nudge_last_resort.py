@@ -200,8 +200,18 @@ class OtherReviverGates(Base):
         self.assertIn("reply", km._revivers_pending(SID, st, _turns(), GID))
 
     def test_a_complete_but_unsettled_card_defers(self):
+        # ONE completion truth (2026-08-13): "complete and merely unsettled" is the rollup's own
+        # `confirming` export, not the raw nodeComplete flag — a store the rollup actually settled
         st = _store(nodeComplete=True)
+        st["confirming"] = [GID]
         self.assertIn("complete", km._revivers_pending(SID, st, _turns(), GID))
+
+    def test_a_vetoed_umbrella_stays_nudgeable(self):
+        # the g17 shape (2026-08-12): done-flagged but REFUSED by the rollup (open to-do authority
+        # veto) — status 'working', NOT confirming. Under the old raw-flag read this deferred forever,
+        # dark, while the same flag dropped its nudge every tick: no mover, no indication, 19 hours.
+        st = _store(nodeComplete=True)                # rollup refused: no confirming export
+        self.assertEqual(km._revivers_pending(SID, st, _turns(), GID), "")
 
     def test_a_quiet_store_does_not_defer(self):
         # the guard against the WORSE bug: absent markers must never read as "pending" and suppress

@@ -1080,9 +1080,10 @@ def _debt_escalate(asker, debtor, ask_ts, now):
     try:
         store = jd.load_goals(asker)
         nodes, status = store.get("nodes", {}), store.get("status", {})
+        _confirming = set(store.get("confirming") or ())
         cands = [nd for gid, nd in nodes.items()
                  if nd.get("parentId") is None and status.get(gid) == "working"
-                 and not nd.get("blocked") and not nd.get("cleared") and not nd.get("nodeComplete")
+                 and gid not in _confirming            # one completion truth: the rollup exports (2026-08-13)
                  and (nd.get("t") or 0) <= ask_ts]
         if not cands:
             return False
@@ -3064,9 +3065,10 @@ def _awaiting_wake_outcomes(now):
             sid = gid.rsplit(":", 1)[0]
             store = jd.load_goals(sid)
             nd = store.get("nodes", {}).get(gid)
-            if (nd is None or nd.get("cleared") or nd.get("nodeComplete") or nd.get("blocked")
-                    or store.get("status", {}).get(gid, "working") != "working"):
-                continue                             # the world moved on; the record is inert
+            if (nd is None or store.get("status", {}).get(gid, "working") != "working"
+                    or gid in set(store.get("confirming") or ())):
+                continue                             # the world moved on; the record is inert (one
+                #                                      completion truth: the rollup exports, 2026-08-13)
             path = _path_of(sid) or ""
             turns = jd.parsed_session(sid, [path], now).get("turns", []) if path else []
             if turns and _session_working(turns):
@@ -3236,7 +3238,11 @@ def _revivers_pending(sid, store, turns, gid):
             return jd.WHY_JUDGING
         if nd.get("followupPending"):
             return "your reply to the card is still being judged"
-        if nd.get("nodeComplete"):
+        if gid in set(store.get("confirming") or ()):
+            # the rollup's own export of exactly this sentence (done verdict in, settle pending). NOT the
+            # raw nodeComplete flag (2026-08-13): a vetoed umbrella — done-flagged but refused by the
+            # open_task authority — read "complete and merely unsettled" here forever, deferring the very
+            # nudge that was its only path to completion (g17's 20h dark deferral)
             return "the card is already complete and merely unsettled"
         if _plan_sync_pending(sid, nodes):
             return "the agent's to-do sync is due"
@@ -3715,18 +3721,27 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
     hold as a DEFERRAL instead of a silent drop — every other nudge hold leaves a why and rides the 6h
     backstop, and this one leaving nothing is what made the deadlock unreadable from the state dir."""
     nodes, status = fresh.get("nodes", {}) or {}, fresh.get("status", {}) or {}
+    confirming = set(fresh.get("confirming") or ())
     cut = max(arm_t or 0, seen_t or 0)
     keep = []
     for f in to_fire:
         if f[0] not in nodes:
             continue                                 # gone from the fresh store: cleared + compacted mid-tick
         nd = nodes[f[0]]
-        if status.get(f[0], "working") != "working" or nd.get("cleared") \
-                or nd.get("nodeComplete") or nd.get("blocked"):
+        if status.get(f[0], "working") != "working" or f[0] in confirming:
             continue                                 # the judges resolved it since the tick's snapshot: no
             #                                          status check, and nothing to hold either — a RESOLVED
             #                                          goal must never reach `held`, or the backstop below
-            #                                          would eventually nudge a card that is already done
+            #                                          would eventually nudge a card that is already done.
+            #                                          ONE completion truth (2026-08-13): the rollup's own
+            #                                          exports — status + confirming — never the raw flags.
+            #                                          The raw nodeComplete arm silently dropped a VETOED
+            #                                          umbrella (done-flagged, to-do still open, status
+            #                                          'working') every tick, which killed the one backstop
+            #                                          the wedged g17 had; a done-but-unsettled top keeps
+            #                                          its no-nudge behavior via `confirming`, and every
+            #                                          verdict writer runs rollup_status before save_goals,
+            #                                          so the exports are never staler than the flags
         if cut and any(e.get("src") not in NUDGE_HOLD_EXEMPT_SRC
                        and (e.get("ev_t") or e.get("at") or 0) > cut
                        for e in nd.get("log") or []):
