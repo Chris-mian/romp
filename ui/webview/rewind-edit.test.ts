@@ -109,7 +109,8 @@ test("kernel: rewindSend validates against the transcript and the SDK backend ap
   const BACKEND = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "sdk_backend.py"), "utf8");
   assert.match(KERNEL, /elif t == "rewindSend" and msg\.get\("uuid"\) and msg\.get\("text"\):/);
   assert.match(KERNEL, /def _rewind_target\(path, sid, user_uuid\):/);
-  assert.match(BACKEND, /kw\["extra_args"\] = \{"resume-session-at": sess\._rewind_to\}/);
+  // merge-safe beside the fork's extra_args (both write the same designed --resume-session-at passthrough)
+  assert.match(BACKEND, /kw\.setdefault\("extra_args", \{\}\)\["resume-session-at"\] = sess\._rewind_to/);
 });
 
 test("a restore-files affordance rides each editable bubble — workspace only, armed like delete (the user 2026-08-04)", () => {

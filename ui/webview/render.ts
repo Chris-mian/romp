@@ -1800,10 +1800,20 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         });
         rf.addEventListener("blur", rfDisarm);
         rf.addEventListener("pointerleave", rfDisarm);
+        // FORK affordance (the user 2026-08-13): branch a NEW parallel session from just before this
+        // message — old and new then run as separate threads (the rewind family above edits THIS
+        // session; fork leaves it untouched). Non-destructive, so no two-click arm: the name modal is
+        // the confirmation.
+        const fk = el("button", "msg-fork") as HTMLButtonElement;
+        fk.type = "button";
+        fk.textContent = "fork";
+        fk.title = "Fork the session from just before this message — a new parallel session carries the conversation up to here; this one is untouched";
+        fk.addEventListener("click", (e) => { e.stopPropagation(); showForkPrompt(editSid, uuid); });
         const acts = el("div", "msg-acts");   // one row under the bubble (the turn is a column flex)
         acts.appendChild(edit);
         acts.appendChild(del);
         acts.appendChild(rf);
+        acts.appendChild(fk);
         turn.appendChild(acts);
       }
     }
@@ -4971,6 +4981,51 @@ function showConfirm(title: string, detail: string, buttons: Array<{ label: stri
   document.addEventListener("keydown", onKey, true);
   (actions.firstElementChild as HTMLElement | null)?.focus();
 }
+// THE FORK MODAL (the user 2026-08-13): fork this conversation into a NEW parallel session — from just
+// before a given user message (the bubble's fork button) or from the tip (the palette command, uuid "").
+// One small dialog on the confirm chrome: a name box prefilled "<session>-fork" (editable), Fork/Cancel.
+// The kernel owns the mechanics (forkSession op); the provisional tab is the instant acknowledgement,
+// joined by NAME when the real session lands — exactly the picker-create flow.
+function showForkPrompt(sid: string, uuid: string): void {
+  const sess = sessions.get(sid);
+  const base = (sess?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-");
+  document.getElementById("fork-prompt")?.remove();
+  const overlay = el("div", "picker-overlay confirm-overlay"); overlay.id = "fork-prompt";
+  const box = el("div", "picker-box confirm-box");
+  const h = el("div", "confirm-title"); h.textContent = "Fork session";
+  const d = el("div", "confirm-detail");
+  d.textContent = uuid
+    ? "A new session continues from just before this message; this one is untouched."
+    : "A new session continues this whole conversation; this one is untouched.";
+  const input = document.createElement("input");
+  input.type = "text"; input.className = "fork-name"; input.value = base + "-fork";
+  input.setAttribute("autocapitalize", "off"); input.setAttribute("autocomplete", "off");
+  input.setAttribute("autocorrect", "off"); input.setAttribute("spellcheck", "false");
+  const actions = el("div", "confirm-actions");
+  const cancel = el("button", "picker-action confirm-btn"); cancel.textContent = "Cancel";
+  const create = el("button", "picker-action confirm-btn"); create.textContent = "Fork";
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey, true); };
+  const go = () => {
+    const name = input.value.trim();
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) { input.classList.add("bad"); input.focus(); return; }
+    vscodeApi?.postMessage({ type: "forkSession", id: sid, uuid, name });
+    close();
+    openProvisional({ name, backend: "sdk", dir: "", host: hostOf(sid) });
+  };
+  cancel.addEventListener("click", close);
+  create.addEventListener("click", go);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  input.addEventListener("input", () => input.classList.remove("bad"));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  box.append(h, d, input, actions);
+  actions.append(cancel, create);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", onKey, true);
+  input.focus(); input.setSelectionRange(0, input.value.length);
+}
+
 // THE MCP PANEL (the user 2026-08-05). `/mcp` in a romp session used to be a dead end: the CLI's own
 // panel is an interactive TUI an SDK-driven session cannot render, so it replied "use a terminal". The
 // SDK exposes the same facts and repairs as control requests (get_mcp_status / toggle_mcp_server /
@@ -8397,6 +8452,11 @@ function pipeBanner(up: boolean, queued: number): void {
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
+  // the shell's palette: "Fork this session…" → the fork modal for the ACTIVE session, from the tip
+  if (m.romp === "forkSession") {
+    if (activeId && !isProvisionalId(activeId) && sessions.get(activeId)) showForkPrompt(activeId, "");
+    return;
+  }
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {

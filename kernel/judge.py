@@ -9061,9 +9061,17 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         cstore = load_goals(fsid)
         closed[fsid] = _session_settled(fsid, str(path), session, cstore)
         placed_ids = cstore["placements"]
+        floor = episode_floor(fsid)
         for turn in session["turns"]:
             for seg in _segs(turn, cstore):
                 if seg["id"] in placed_ids:
+                    continue
+                if floor and seg["t"] < floor:
+                    # pre-episode: conversation the agent can no longer see. The planner retires these
+                    # before any model call; the courier needs its own guard because a FORK's copied
+                    # history is the first shape that leaves OLD peer segments visible here (a /clear's
+                    # null-rooted head drops pre-clear history from the parse for free, so this never
+                    # fired before). Defense in depth beside the fork's sealed-placements seed.
                     continue
                 pm = _seg_peer(seg)
                 if not pm or not pm[0]:                # peer-triggered with a known sender only

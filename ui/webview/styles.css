@@ -1126,7 +1126,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* edit + delete share one row under the bubble (the turn is a column flex; the row is the flex item) */
 .msg-acts { display: flex; gap: 4px; align-self: flex-end; }
 /* the DELETE affordance wears the edit button's exact clothes (one size, one shape — labels differ) */
-.msg-del, .msg-restorefiles {
+.msg-del, .msg-restorefiles, .msg-fork {
   align-self: flex-end; margin-top: 3px;
   font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
   border: 1px solid var(--box-border); background: var(--code-bg); color: var(--dim);
@@ -1134,11 +1134,19 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .turn-user:hover .msg-del, .msg-del:focus-visible,
-.turn-user:hover .msg-restorefiles, .msg-restorefiles:focus-visible { opacity: 0.9; }
+.turn-user:hover .msg-restorefiles, .msg-restorefiles:focus-visible,
+.turn-user:hover .msg-fork, .msg-fork:focus-visible { opacity: 0.9; }
 .msg-del:hover, .msg-restorefiles:hover { color: var(--fg); border-color: #ff6a6a; }
+.msg-fork:hover { color: var(--fg); border-color: var(--accent); }   /* non-destructive: accent, never the rewind red */
 /* armed = one click from rolling back: destructive red, holds until blur/pointerleave/re-render */
 .msg-del.armed, .msg-restorefiles.armed { color: #ff6a6a; border-color: #ff6a6a; opacity: 0.95; }
-@media (hover: none) { .msg-del, .msg-restorefiles { opacity: 0.6; } }   /* touch: no hover state, so keep it visible */
+@media (hover: none) { .msg-del, .msg-restorefiles, .msg-fork { opacity: 0.6; } }   /* touch: no hover state, so keep it visible */
+/* the fork modal's name box (the user 2026-08-13): the confirm chrome + one text input */
+.fork-name { display: block; width: 100%; box-sizing: border-box; margin: 10px 0 2px; padding: 7px 9px;
+  font: inherit; color: var(--fg); background: var(--code-bg);
+  border: 1px solid var(--box-border); border-radius: 6px; outline: none; }
+.fork-name:focus { border-color: var(--accent); }
+.fork-name.bad { border-color: #ff6a6a; }
 /* pending-rewind overlay: turns after an edited message belong to the branch being abandoned — they
    dim until the kernel's rewound payload replaces them (reconcileRewind retires the flag then). */
 .turn.rewound { opacity: 0.35; transition: opacity 0.2s ease; }
