@@ -16773,13 +16773,24 @@ def _ws_recv(rfile):
     masked = b[1] & 0x80
     ln = b[1] & 0x7F
     if ln == 126:
-        ln = struct.unpack(">H", rfile.read(2))[0]
+        ext = rfile.read(2)
+        if len(ext) < 2:
+            return None, None, True
+        ln = struct.unpack(">H", ext)[0]
     elif ln == 127:
-        ln = struct.unpack(">Q", rfile.read(8))[0]
+        ext = rfile.read(8)
+        if len(ext) < 8:
+            return None, None, True
+        ln = struct.unpack(">Q", ext)[0]
     mask = rfile.read(4) if masked else b"\x00\x00\x00\x00"
-    payload = bytearray(rfile.read(ln))
-    for i in range(len(payload)):
-        payload[i] ^= mask[i % 4]
+    payload = rfile.read(ln)
+    if len(mask) < 4 or len(payload) < ln:   # EOF mid-frame → a clean close, not a struct.error crash
+        return None, None, True
+    if masked and ln:
+        # C-speed unmask via big-int XOR: a per-byte Python loop takes seconds on a multi-MB
+        # attachment frame, blocking this client's reader thread the whole time.
+        rep = (mask * (ln // 4 + 1))[:ln]
+        payload = (int.from_bytes(payload, "big") ^ int.from_bytes(rep, "big")).to_bytes(ln, "big")
     return opcode, bytes(payload), fin
 
 
