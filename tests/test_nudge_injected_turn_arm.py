@@ -101,8 +101,10 @@ class FireListSeenTurn(unittest.TestCase):
         held = []
         self.assertEqual(km._nudge_fire_list(self._fresh(), [(G1, 1, False)],
                                              arm_t=ARM_T, seen_t=ARM_T, held=held), [])
-        self.assertEqual([f[0] for f in held], [G1],
+        self.assertEqual([f[0] for f, _ev in held], [G1],
                          "the hold must reach the caller so it can be recorded, not silently dropped")
+        self.assertTrue(all(isinstance(_ev, int) and _ev for _f, _ev in held),
+                        "…with the offending evidence time riding along (the sweep's retire event)")
 
     def test_a_resolved_goal_is_never_held(self):
         # the status re-read runs FIRST: a goal the judges finished mid-tick is out of the tick
@@ -118,9 +120,10 @@ class FireListSeenTurn(unittest.TestCase):
         self.assertEqual(km._nudge_fire_list(self._fresh(), [(G1, 1, False)], arm_t=ARM_T), [],
                          "the arm alone stays the floor — the pre-fix contract for existing callers")
 
-    def test_the_hold_why_never_presents_as_a_stall(self):
-        self.assertFalse(jd.stall_why_stands(jd.WHY_TURN_IN_FLIGHT, SID),
-                         "a wait that ends on the turn's own end event is not a wedge to act on")
+    def test_the_hold_why_is_in_flight_class(self):
+        self.assertIn(jd.WHY_TURN_IN_FLIGHT, jd.WHY_IN_FLIGHT,
+                      "a wait that ends on the turn's own end event presents as the Analyzing… "
+                      "swirl, never the stalled chip (routing replaced the screen, 2026-08-13)")
 
 
 class InjectedTurnDeadlockEndToEnd(unittest.TestCase):

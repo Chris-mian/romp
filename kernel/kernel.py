@@ -3140,10 +3140,6 @@ def _backend_rewind_pending(sid):
 # threshold is the backstop below, and only for the reason the awaiting backstop already admits: a
 # WEDGED reviver is a MISSING event, and no event announces it.
 NUDGE_DEFER_BACKSTOP_SECS = 6 * 3600     # mirrors AWAITING_BACKSTOP_SECS, and for the same reason
-_STALL_SEEN = jd.STALL_SEEN               # consecutive gate runs reporting the SAME deferral reason before the
-                                          # card calls itself stalled (see jd.STALL_SEEN — one definition, since
-                                          # the kernel WRITES the record and the judge READS it)
-
 _task_plan_cache = {}                    # fsid -> ((mtime, count), plan | None)
 
 
@@ -3279,31 +3275,19 @@ def _deferral_why(rec):
     return (rec.get("why") or "") if isinstance(rec, dict) else ""
 
 
-def _deferral_seen(rec):
-    """How many CONSECUTIVE gate runs have reported this same reason. A legacy int record predates the
-    counter, and it only ever existed because the reason kept repeating, so read it as settled (2)."""
-    if isinstance(rec, dict):
-        try:
-            return int(rec.get("seen") or 1)
-        except (TypeError, ValueError):
-            return 1
-    return 2
-
-
-def _nudge_deferred_ok(gid, reason, now, sid=None):
+def _nudge_deferred_ok(gid, reason, now, sid=None, ev_t=None):
     """True when a deferral has run past the backstop and the nudge must go anyway. A reviver that never
     clears is a MISSING event — exactly the case the awaiting backstop exists for — and "never miss a
     nudge" outranks "wait for everything" once the wait itself looks wedged.
 
-    Records WHY it deferred and how many consecutive gate runs have said the same thing, not just when it
-    started (the user 2026-07-23, who wanted a stalled card to say what the wait is on). The why is what
-    the stall brief is grounded in; `seen` is what separates a real stall from the churn. A reason still
-    standing on the NEXT run is one no mechanism is retiring, which is the wedge worth explaining. That
-    second observation is the event; nothing here consults a clock (the backstop above is the one
-    deliberate exception). `sid` rides the record so the stall readers can live-verify a session-scoped
-    reason (jd.stall_why_stands) — the record freezes whenever the gate walk stops running for its
-    session, and a frozen claim must be verifiable or it is not presented. (No reason currently
-    verifies against it: the judging hold, which did, never presents at all since 2026-07-31.)"""
+    Records WHY it deferred (the user 2026-07-23, who wanted a stalled card to say what the wait is
+    on). ONE writer per duty (2026-08-13): the WALK here mints the record and updates a changed why
+    (keeping the original clock — the card has been stuck since `first` either way); the per-tick
+    DEFERRAL SWEEP (_deferral_sweep_tick) owns retirement, popping each record on its reason's own
+    event — so a record's existence IS the standing hold and every stall surface presents it without
+    a seen counter or a screen (both retired; a frozen record can no longer hide a stale claim,
+    because nothing freezes). `ev_t` rides WHY_TURN_IN_FLIGHT records: the newest diary evidence the
+    hold is waiting to see END, which is exactly the event the sweep retires it on."""
     d = _auto_nudge_data()
     dd = dict(d.get("deferred") or {})
     if not reason:
@@ -3315,19 +3299,14 @@ def _nudge_deferred_ok(gid, reason, now, sid=None):
     rec = dd.get(gid)
     first = _deferral_at(rec)
     if first is None:
-        dd[gid] = {"at": int(now), "why": reason, "seen": 1, "sid": sid}
+        dd[gid] = {"at": int(now), "why": reason, "sid": sid,
+                   **({"evT": int(ev_t)} if ev_t else {})}
         d["deferred"] = dd
         _write_auto_nudge(d)
         return False
-    if _deferral_why(rec) != reason:                     # the wait moved to a DIFFERENT reviver: keep the
-        # clock (the card has been stuck since `first` either way) but restart the run count, so a goal
-        # bouncing between two momentary reasons never reads as wedged on either one.
-        dd[gid] = {"at": first, "why": reason, "seen": 1, "sid": sid}
-        d["deferred"] = dd
-        _write_auto_nudge(d)
-    elif _deferral_seen(rec) < _STALL_SEEN:              # same reason again → it is not self-clearing.
-        # Stops counting at the threshold so a long wedge isn't a write per tick.
-        dd[gid] = {"at": first, "why": reason, "seen": _deferral_seen(rec) + 1, "sid": sid}
+    if _deferral_why(rec) != reason:                     # the wait moved to a DIFFERENT reviver: keep the clock
+        dd[gid] = {"at": first, "why": reason, "sid": sid,
+                   **({"evT": int(ev_t)} if ev_t else {})}
         d["deferred"] = dd
         _write_auto_nudge(d)
     return (now - first) > NUDGE_DEFER_BACKSTOP_SECS
@@ -3340,24 +3319,98 @@ def _stalled_goals():
     is NOT here: that one is visibly in flight, and it escalates to a real block through _mark_nudge_failed,
     which carries its own decision brief.
 
-    A hold on romp's OWN review (jd.WHY_JUDGING) is screened out entirely (the user 2026-07-31): that is
-    romp working the card, not a stall — the Analyzing… swirl carries it (spin-caption.ts), and a yellow
-    chip there drew the eye to a state nobody needs to act on. Reasons whose truth is checkable right now
-    must check out, or the record is skipped (it still pops normally on the next gate walk — a deferral
-    record only pops when the gate walk re-runs, and the walk stops the moment its session leaves
-    idle-and-due, so a record freezes with whatever reason it last held); reasons whose truth lives in
-    the stores pass through — their own passes reconcile them."""
+    Every record with a why presents (2026-08-13): the per-tick sweep (_deferral_sweep_tick) pops each
+    record on its reason's own event, so existence IS the standing hold — no seen counter, no screen,
+    no live re-verification (all three were heuristics compensating for records that could freeze; the
+    sweep is why they can't). The READERS route by class: an in-flight-class why (jd.WHY_IN_FLIGHT)
+    presents as the card's Analyzing… swirl — romp working the card, not a stall — and every other why
+    paints the Stalled section as before (build_feed does the routing)."""
     out = {}
     for gid, rec in (_auto_nudge_data().get("deferred") or {}).items():
         why, at = _deferral_why(rec), _deferral_at(rec)
-        if not (why and at and _deferral_seen(rec) >= _STALL_SEEN):
-            continue
-        if not jd.stall_why_stands(why, rec.get("sid") if isinstance(rec, dict) else None):
-            continue                                     # a judging hold (presents as Analyzing, never a stall)
-        if why.startswith("the judge tiers are paused") and not _retry_paused_on():
-            continue                                     # tiers resumed while the record was frozen
-        out[gid] = {"why": why, "since": at}
+        if why and at:
+            out[gid] = {"why": why, "since": at}
     return out
+
+
+def _deferral_sweep_tick(now):
+    """Retire deferral records on their reasons' OWN events — one sweep over auto-nudge.json's deferred
+    map per pusher tick, independent of the auto-nudge toggle (the records also feed the stall/swirl
+    surfaces, which run regardless). This is retirement's SINGLE owner (2026-08-13): the goal walk
+    mints records and updates a changed why, and this sweep pops them — the per-walk seen counter and
+    the presentation screen are both retired, because the failure they compensated for (a record
+    frozen wherever the walk stopped, holding a stale claim) cannot happen when retirement rides the
+    records file itself rather than the walk's position. Modeled on _debt_backstop_tick. Per reason,
+    the exact event:
+      * the goal left plain 'working' (resolved/cleared/gone) — pop, whatever the why;
+      * WHY_TURN_IN_FLIGHT — the held-on evidence's turn has ENDED: newest ended-turn watermark
+        >= the record's evT (stamped at mint from the offending diary row);
+      * WHY_JUDGING (+ legacy) — no judge call in flight for the session (jd.active_runs, the
+        registry that deregisters in a finally);
+      * "the judge tiers are paused" — retry-paused.json cleared;
+      * "your reply to the card is still being judged" — the fold's followupPending ended;
+      * "the card is already complete and merely unsettled" — the rollup no longer exports it as
+        confirming (the settle landed, or completion was refused and the card must nudge again);
+      * "the agent's to-do sync is due" — the mirror sync ran (plan-sync pending no more).
+    An unknown/future why stands (and presents) until the walk re-runs it — the honest default. The
+    sweep only POPS; it never rewrites a why (one writer per duty: rewriting here raced the walk and
+    could re-dress a durable hold as in-flight whenever any judge call happened to be running)."""
+    d = _auto_nudge_data()
+    dd = dict(d.get("deferred") or {})
+    if not dd:
+        return
+    by_sid = {}
+    for gid, rec in dd.items():
+        sid = (rec.get("sid") if isinstance(rec, dict) else None) or str(gid).rsplit(":", 1)[0]
+        by_sid.setdefault(sid, []).append((gid, rec))
+    active = {r.get("fsid") for r in jd.active_runs()}
+    changed = False
+    for sid, recs in by_sid.items():
+        try:
+            store = jd.load_goals(sid)
+        except Exception:
+            continue                                   # unreadable store → records stand; nothing silent
+        nodes, status = store.get("nodes", {}) or {}, store.get("status", {}) or {}
+        confirming = set(store.get("confirming") or ())
+        turns = None
+        for gid, rec in recs:
+            why = _deferral_why(rec)
+            nd = nodes.get(gid)
+            top = gid
+            while nd is not None and nd.get("parentId") is not None:
+                top = nd["parentId"]
+                nd = nodes.get(top)
+            gone = gid not in nodes
+            resolved = status.get(top, "working") != "working" if not gone else True
+            pop = gone or resolved
+            if not pop and why == jd.WHY_TURN_IN_FLIGHT:
+                ev = int(rec.get("evT") or 0) if isinstance(rec, dict) else 0
+                if ev:
+                    if turns is None:
+                        path = _path_of(sid) or ""
+                        turns = (jd.parsed_session(sid, [path], now).get("turns", [])
+                                 if path else [])
+                    seen_t = max((t.get("end") or 0) for t in turns if t.get("ended"))                         if any(t.get("ended") for t in turns) else 0
+                    pop = seen_t >= ev                 # the held-on turn ENDED — the exact event
+            elif not pop and why in jd.WHY_IN_FLIGHT:  # judging-class (incl. legacy): the call returned
+                pop = sid not in active
+            elif not pop and why and why.startswith("the judge tiers are paused"):
+                pop = not _retry_paused_on()
+            elif not pop and why == "your reply to the card is still being judged":
+                pop = not (nodes.get(gid) or {}).get("followupPending")
+            elif not pop and why == "the card is already complete and merely unsettled":
+                pop = gid not in confirming
+            elif not pop and why == "the agent's to-do sync is due":
+                try:
+                    pop = not _plan_sync_pending(sid, nodes)
+                except Exception:
+                    pop = False
+            if pop:
+                dd.pop(gid, None)
+                changed = True
+    if changed:
+        d["deferred"] = dd
+        _write_auto_nudge(d)
 
 
 def _nudge_response_ready(turns, store, rec, gid, now):
@@ -3629,7 +3682,8 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
             held = []
             to_fire = _nudge_fire_list(jd.load_goals(sid), to_fire, arm_t=arm.get("t") or 0,
                                        seen_t=(seen.get("t") or 0) if seen else 0, held=held)
-            to_fire += [f for f in held if _nudge_deferred_ok(f[0], jd.WHY_TURN_IN_FLIGHT, now, sid)]
+            to_fire += [f for f, _ev in held
+                        if _nudge_deferred_ok(f[0], jd.WHY_TURN_IN_FLIGHT, now, sid, ev_t=_ev)]
         except Exception:
             pass
     if len(to_fire) == 1:
@@ -3742,11 +3796,15 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
             #                                          its no-nudge behavior via `confirming`, and every
             #                                          verdict writer runs rollup_status before save_goals,
             #                                          so the exports are never staler than the flags
-        if cut and any(e.get("src") not in NUDGE_HOLD_EXEMPT_SRC
-                       and (e.get("ev_t") or e.get("at") or 0) > cut
-                       for e in nd.get("log") or []):
+        _offending = [int(e.get("ev_t") or e.get("at") or 0) for e in nd.get("log") or []
+                      if e.get("src") not in NUDGE_HOLD_EXEMPT_SRC
+                      and (e.get("ev_t") or e.get("at") or 0) > cut] if cut else []
+        if _offending:
             if held is not None:                     # a ruling on EVIDENCE from a turn romp hasn't seen end —
-                held.append(f)                       # the stall read is a world old; hold it, don't lose it
+                held.append((f, max(_offending)))    # the stall read is a world old; hold it, don't lose it.
+                #                                      The max offending ev_t rides along: the deferral
+                #                                      record stamps it (evT) so the sweep can retire the
+                #                                      hold on that turn's own END event (2026-08-13)
             continue
         keep.append(f)
     return keep
@@ -14612,6 +14670,21 @@ def build_feed(now, tmux=None):
             # still win (the present event).
             nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
             _stall_rec = _stalls.get(nid)             # romp is holding this card (see "stalled" in the payload)
+            # ROUTING (2026-08-13): an in-flight-class hold (jd.WHY_IN_FLIGHT — romp's own review is the
+            # wait) presents as the Analyzing… swirl, never the stalled chip; every other hold paints the
+            # Stalled section. The old screen hid the in-flight records from BOTH surfaces, so one frozen
+            # between retries showed nothing — now the sweep retires them on their events and whatever
+            # stands presents somewhere by definition.
+            _stall_inflight = bool(_stall_rec and _stall_rec.get("why") in jd.WHY_IN_FLIGHT)
+            if _stall_inflight:
+                _stall_rec = None
+            # HARD RULE (the user 2026-08-13): a stalled card on a session that isn't doing anything
+            # files under BLOCKED — it needs eyes, whoever's bottleneck it is; Working is where it hid.
+            # This supersedes the 2026-07-23 "Working column only" stance. Keyed on the stall RECORD
+            # (event-latched: minted by the walk, popped by the sweep) plus the session's idle read —
+            # the same displacement precedent as recheck/rejudging's de-urgent smoothing: the session
+            # taking a turn IS new information, and the card returns to Blocked if the hold outlives it.
+            _stall_block = bool(_stall_rec and not who_working and not sess_awaiting_why)
             # the chip shows while the failure is the live story: the goal still working, OR blocked BY the
             # failure itself (the diary's latest block has src "nudge", 2026-07-07). A real judge verdict
             # (planner/closer block, or completion) takes the story over and the chip yields.
@@ -14645,7 +14718,7 @@ def build_feed(now, tmux=None):
             # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
             # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
             # client files by it.column, and the distiller line shows (the user 2026-06-29).
-            column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top
+            column = ("needs_input" if (api_block or nid == jauth_top or nid == perm_top or _stall_block
                                         or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
@@ -14793,14 +14866,16 @@ def build_feed(now, tmux=None):
                 # wait clears, without anyone having to erase it. Working column only: a stall is romp being
                 # the bottleneck, never the user, so it must not read as needs-you.
                 "stalled": ({"why": _stall_rec["why"], "since": _stall_rec["since"],
-                             "note": nodes[nid].get("stallSummary") or None}
-                            if (_stall_rec and column == "working" and not nudge_failed) else None),
+                             "note": nodes[nid].get("stallSummary") or None,
+                             "blocked": _stall_block}
+                            if (_stall_rec and not nudge_failed
+                                and (column == "working" or _stall_block)) else None),
                 "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
                 "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
-                "judging": bool(sess_judging and column == "working"),   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
+                "judging": bool((sess_judging or _stall_inflight) and column == "working"),   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
                 "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
                                              store.get("placements") or {}) or None)
                             if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section
@@ -18342,6 +18417,10 @@ def _pusher_cycle_jobs(now, tmux, any_client):
         _lift_spent_awaiting(now, tmux)   # so the nudge tick below never wakes a wait that already ended
     except Exception:
         sys.stderr.write("awaiting-lift: %s\n" % traceback.format_exc())
+    try:                                  # deferral records retire on their reasons' own events — BEFORE
+        _deferral_sweep_tick(now)         # the walk, independent of the nudge toggle (the stall/swirl
+    except Exception:                     # surfaces read these records regardless)
+        sys.stderr.write("deferral-sweep: %s\n" % traceback.format_exc())
     try:                                  # Auto Nudge runs server-side even with no browser open (cheap when
         _auto_nudge_tick(now, tmux)       # off); the awaiting WAKE rides its goal walk (see _wake_goal)
     except Exception:
