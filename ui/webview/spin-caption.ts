@@ -146,9 +146,12 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // how a silent regression becomes visible at a glance. Every richer story above (awaiting,
     // provisional, re-check, re-judging, the settle gap, distilling) still wins; this is the floor.
     const n = it.working.toolUses || 0;
-    const dur = nowS && it.working.since ? ` · ${workingFor(nowS - it.working.since)}` : "";
+    const dur = nowS && it.working.since ? workingFor(nowS - it.working.since) : "";
+    // zero tool uses says nothing worth reading ("0 tool uses" was noise — the user 2026-08-13):
+    // the count appears once there is one, and until then the timer alone carries the narration
+    const parts = [n >= 1 ? `${n} tool ${n === 1 ? "use" : "uses"}` : "", dur].filter(Boolean);
     return {
-      caption: `Working — ${n} tool ${n === 1 ? "use" : "uses"}${dur}`,
+      caption: parts.length ? `Working — ${parts.join(" · ")}` : "Working…",
       tip: "The open turn's live progress: tool calls made so far, and how long this stretch has been "
          + "running. If the count freezes while the timer climbs, something is worth a look.",
       awaitingBg: false,
