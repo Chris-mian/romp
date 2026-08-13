@@ -8510,7 +8510,14 @@ window.addEventListener("message", (e: MessageEvent) => {
     // id, no anchor) and would otherwise leave a scrolled-up chat parked in history, not at the prompt.
     if (m.live) { const v = views.get(m.id); if (v) v.stick = true; }
     if (m.live && activeId === m.id) {
-      const c = document.getElementById("content"); if (c) c.scrollTop = c.scrollHeight;
+      // one frame LATER, not now: when this focus is what un-hid the pane (the shell's reveal lands a
+      // task after revealSelfPane's postMessage), the pane is still display:none here and scrollHeight
+      // is 0 — the jump read as a no-op (the user 2026-08-13). Next frame the layout is real; when the
+      // pane was already visible the deferral is invisible. Anchored jumps need nothing: landOn's
+      // ResizeObserver realign already re-lands them when the pane sizes in.
+      window.requestAnimationFrame(() => {
+        const c = document.getElementById("content"); if (c) c.scrollTop = c.scrollHeight;
+      });
     } else {
       setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
     }
