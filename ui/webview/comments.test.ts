@@ -86,26 +86,55 @@ test("the selection menu offers Comment, gated on a real transcript turn", () =>
   assert.match(UI, /q\?\.uuid && activeId && !isProvisionalId\(activeId\)/);
 });
 
-test("marks and badges open threads through the stable document.body delegate", () => {
+test("marks, badges AND every popover button ride the stable document.body delegate", () => {
   assert.match(UI, /cmtopen: \(elx\) =>/, "delegated — marks are re-created on every rebuild");
   assert.match(UI, /m\.dataset\.act = "cmtopen"/);
   assert.match(UI, /b\.dataset\.act = "cmtopen"/);
+  for (const act of ["cmtclose", "cmtsend", "cmtbreak", "cmtresolve", "cmtdelete", "cmtopensession"]) {
+    assert.ok(UI.includes(`${act}:`), `${act} handler missing from the body delegate`);
+    assert.ok(UI.includes(`dataset.act = "${act}"`), `${act} button missing its data-act`);
+  }
 });
 
-test("highlights re-apply after every payload that rebuilds transcript DOM", () => {
+test("highlights re-apply after every render path", () => {
   assert.match(UI, /m\.type === "session" \|\| m\.type === "chatTail" \|\| m\.type === "chatHead" \|\| m\.type === "chatEpisode"\)\)\s*\n\s*applyCommentMarks\(String\(m\.id\)\)/);
   assert.match(UI, /applyCommentMarks\(activeId\);\s+\/\/ the re-window rebuilt turns/,
                "the scroll re-window path re-anchors too");
+  // the syncView wrapper covers renders that run OFF the message handlers (tab switch, prebuild)
+  assert.match(UI, /function syncView\(id: string, atBottom\?: boolean\): View \{\s*\n\s*const v = syncViewInner\(id, atBottom\);\s*\n\s*applyCommentMarks\(id\);/);
+});
+
+test("a comments frame refreshes the open popover IN PLACE — composer and caret survive", () => {
+  assert.match(UI, /prev\.dataset\.mode === mode && prev\.dataset\.tid === \(th \? th\.tid : create!\.uuid\)\s*\n\s*&& prev\.dataset\.status === status/);
+  assert.match(UI, /function fillCommentMsgs\(list: HTMLElement, th: CommentThread\)/);
 });
 
 test("the popover send acknowledges before any round-trip", () => {
-  assert.match(UI, /send\.disabled = true;\s+\/\/ acknowledged before any round-trip/);
-  assert.match(UI, /send\.textContent = "Sending…"/);
+  assert.match(UI, /send\.disabled = true; send\.textContent = "Starting…"; \}\s+\/\/ ack before the round-trip/);
+  assert.match(UI, /the pending bubble IS the acknowledgement/);
 });
 
 test("create adopts exactly the thread the kernel named — never a guess", () => {
   assert.match(UI, /m\.type === "commentCreated"/);
+  assert.match(UI, /function adoptCommentThread\(sid: string, tid: string\)/);
   assert.match(KERNEL, /"type": "commentCreated", "id": sid, "tid": tid/);
+  // the FRAME rides ahead of the ack, so adoption always finds the thread in the map
+  assert.match(KERNEL, /fr = _comments_frame\(sid\)\s*\n\s*if fr:\s*\n\s*client\["send"\]\(json\.dumps\(fr\)\)\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "commentCreated"/);
+});
+
+test("a refused reply hands the words back instead of thinking forever", () => {
+  assert.match(KERNEL, /"type": "commentSendFailed", "id": sid, "tid": str\(msg\["tid"\]\)/);
+  assert.match(UI, /m\.type === "commentSendFailed"/);
+  assert.match(UI, /commentDrafts\.set\(String\(m\.tid\), lost\.text\)/);
+});
+
+test("ending the parent sweeps its threads' CLIs — no unreachable running sessions", () => {
+  assert.match(KERNEL, /_comment_kill_all\(sid, be\)/);
+  assert.match(KERNEL, /def _comment_kill_all\(parent_sid, be\):/);
+});
+
+test("the projection never reads the parent transcript pre-fork", () => {
+  assert.match(KERNEL, /if reg\.get\("forkOf"\):\s*\n\s*return \[\]/);
 });
 
 test("break out posts commentPromote and acks with a provisional tab", () => {

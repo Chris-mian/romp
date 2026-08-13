@@ -5069,6 +5069,7 @@ const commentPending = new Map<string, { text: string; t: number }[]>(); // tid 
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
 let pendingCommentAnchor: { sid: string; uuid: string; exact: string } | null = null; // create mode
+let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
 
 function closeCommentPop(): void {
@@ -5184,6 +5185,21 @@ function openCommentPopover(sid: string, tid: string, x?: number, y?: number): v
   applyCommentMarks(sid);
 }
 
+/** commentCreated's adoption: swap the create popover for the named thread's (never a guess — the
+ *  kernel sends the frame first, then the ack naming the tid). When the frame hasn't landed yet
+ *  (a dropped/reordered leg), the tid parks in pendingAdoptTid and the next frame adopts it. */
+function adoptCommentThread(sid: string, tid: string): void {
+  if (pendingCommentAnchor && pendingCommentAnchor.sid === sid) {
+    commentDrafts.delete("new:" + pendingCommentAnchor.uuid);
+    pendingCommentAnchor = null;
+  }
+  pendingAdoptTid = null;
+  openCommentKey = { sid, tid };
+  vscodeApi?.postMessage({ type: "commentSeen", id: sid, tid });
+  renderCommentPopover();
+  applyCommentMarks(sid);
+}
+
 function commentMsgEl(who: "you" | "agent", text: string): HTMLElement {
   const n = el("div", "cmt-msg " + who);
   if (who === "agent") n.innerHTML = md(text);
@@ -5191,31 +5207,112 @@ function commentMsgEl(who: "you" | "agent", text: string): HTMLElement {
   return n;
 }
 
-/** The popover — ONE pane-local card (no backdrop: the conversation stays readable beside it),
- *  rebuilt from state so a comments frame landing mid-conversation just re-renders it in place. */
+/** The open thread + parent sid behind the popover, resolved fresh (delegated handlers must never
+ *  close over a stale thread object). */
+function openCommentThread(): { sid: string; th: CommentThread } | null {
+  if (!openCommentKey) return null;
+  const th = (commentThreads.get(openCommentKey.sid) || []).find((t) => t.tid === openCommentKey!.tid);
+  return th ? { sid: openCommentKey.sid, th } : null;
+}
+
+/** The popover's conversation area, (re)filled in place — shared by the full build and the
+ *  frame-driven refresh so an update never rebuilds the composer under the user's caret. */
+function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
+  const prevScroll = list.scrollTop;
+  const atTail = list.scrollTop >= list.scrollHeight - list.clientHeight - 8;
+  list.replaceChildren();
+  const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
+  commentPending.set(th.tid, pend);
+  for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
+  for (const p of pend) {
+    const n = commentMsgEl("you", p.text);
+    n.classList.add("pending");
+    list.appendChild(n);
+  }
+  if (th.status === "open" && (threadBusy(th.state) || pend.length)) {
+    const dots = el("div", "cmt-dots");
+    dots.append(el("span"), el("span"), el("span"));
+    list.appendChild(dots);
+  }
+  if (th.status === "open" && threadStuck(th.state)) {
+    const note = el("div", "cmt-note");
+    note.textContent = "This thread hit a prompt it can't answer from here. Break it out to continue.";
+    list.appendChild(note);
+  }
+  list.scrollTop = atTail ? list.scrollHeight : prevScroll;
+}
+
+function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
+  return create ? "New thread"
+    : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
+    : th!.status === "resolved" ? "Thread (resolved)" : "Thread";
+}
+
+/** Send the popover composer's text — the Enter key and the delegated Send button share this. The
+ *  button acknowledges instantly; a thread reply also renders its optimistic pending bubble. */
+function commentSendFromPop(pop: HTMLElement): void {
+  const box = pop.querySelector(".cmt-input") as HTMLTextAreaElement | null;
+  const send = pop.querySelector('[data-act="cmtsend"]') as HTMLButtonElement | null;
+  const text = box?.value.trim();
+  if (!box || !text || !vscodeApi) return;
+  const create = pendingCommentAnchor;
+  if (create) {
+    if (send) { send.disabled = true; send.textContent = "Starting…"; }   // ack before the round-trip;
+    //                                       the draft survives until commentCreated adopts the thread
+    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact, text });
+    return;
+  }
+  const cur = openCommentThread();
+  if (!cur) return;
+  vscodeApi.postMessage({ type: "commentReply", id: cur.sid, tid: cur.th.tid, text });
+  const pl = commentPending.get(cur.th.tid) || [];
+  pl.push({ text, t: Date.now() / 1000 });
+  commentPending.set(cur.th.tid, pl);
+  commentDrafts.delete(cur.th.tid);
+  box.value = "";
+  const list = pop.querySelector(".cmt-msgs") as HTMLElement | null;
+  if (list) fillCommentMsgs(list, cur.th);      // the pending bubble IS the acknowledgement
+}
+
+/** The popover — ONE pane-local card (no backdrop: the conversation stays readable beside it).
+ *  Same thread still open → the conversation refreshes IN PLACE: the composer, its caret and the
+ *  action row survive every comments frame (a full rebuild per push ate mid-press clicks and
+ *  jumped the caret — the click-safety rule). Identity or status changed → full rebuild. Buttons
+ *  carry data-act only; their actions live on the document.body delegate. */
 function renderCommentPopover(): void {
-  const prev = document.getElementById("cmt-pop");
-  const prevScroll = (prev?.querySelector(".cmt-msgs") as HTMLElement | null)?.scrollTop ?? null;
-  const hadFocus = !!prev?.querySelector(".cmt-input:focus-within, .cmt-input:focus");
-  prev?.remove();
   const create = pendingCommentAnchor;
   const key = openCommentKey;
-  if (!create && !key) return;
+  const prev = document.getElementById("cmt-pop");
+  if (!create && !key) { prev?.remove(); return; }
   const sid = create ? create.sid : key!.sid;
   const th = key ? (commentThreads.get(sid) || []).find((t) => t.tid === key.tid) : null;
   if (key && !th) { closeCommentPop(); return; }
+  const mode = create ? "create" : "thread";
+  const status = th ? th.status : "";
+  if (prev && prev.dataset.mode === mode && prev.dataset.tid === (th ? th.tid : create!.uuid)
+      && prev.dataset.status === status) {
+    // in-place refresh: conversation + title only
+    const t = prev.querySelector(".cmt-title") as HTMLElement | null;
+    if (t) t.textContent = commentPopTitle(!!create, th);
+    const list = prev.querySelector(".cmt-msgs") as HTMLElement | null;
+    if (th && list) fillCommentMsgs(list, th);
+    return;
+  }
+  const hadFocus = !!prev?.querySelector(".cmt-input:focus-within, .cmt-input:focus");
+  prev?.remove();
   const pop = el("div", "cmt-pop");
   pop.id = "cmt-pop";
+  pop.dataset.mode = mode;
+  pop.dataset.tid = th ? th.tid : create!.uuid;
+  pop.dataset.status = status;
   const head = el("div", "cmt-head");
   const title = el("span", "cmt-title");
-  title.textContent = create ? "New thread"
-    : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
-    : th!.status === "resolved" ? "Thread (resolved)" : "Thread";
+  title.textContent = commentPopTitle(!!create, th);
   const closeBtn = el("button", "cmt-x") as HTMLButtonElement;
   closeBtn.type = "button";
   closeBtn.textContent = "×";
   closeBtn.title = "Close (the thread stays on its highlight)";
-  closeBtn.addEventListener("click", closeCommentPop);
+  closeBtn.dataset.act = "cmtclose";
   head.append(title, closeBtn);
   pop.appendChild(head);
   const quote = el("div", "cmt-quote");
@@ -5224,31 +5321,11 @@ function renderCommentPopover(): void {
   pop.appendChild(quote);
   if (th) {
     const list = el("div", "cmt-msgs");
-    const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
-    commentPending.set(th.tid, pend);
-    for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
-    for (const p of pend) {
-      const n = commentMsgEl("you", p.text);
-      n.classList.add("pending");
-      list.appendChild(n);
-    }
-    if (th.status === "open" && (threadBusy(th.state) || pend.length)) {
-      const dots = el("div", "cmt-dots");
-      dots.append(el("span"), el("span"), el("span"));
-      list.appendChild(dots);
-    }
-    if (th.status === "open" && threadStuck(th.state)) {
-      const note = el("div", "cmt-note");
-      note.textContent = "This thread hit a prompt it can't answer from here. Break it out to continue.";
-      list.appendChild(note);
-    }
+    fillCommentMsgs(list, th);
     pop.appendChild(list);
   }
   if (create || th!.status !== "promoted") {
     const dk = create ? "new:" + create.uuid : th!.tid;
-    const send = el("button", "cmt-send") as HTMLButtonElement;
-    send.type = "button";
-    send.textContent = create ? "Start thread" : "Send";
     const box = document.createElement("textarea");
     box.className = "cmt-input";
     box.rows = 2;
@@ -5257,60 +5334,37 @@ function renderCommentPopover(): void {
     box.value = commentDrafts.get(dk) || "";
     box.addEventListener("input", () => commentDrafts.set(dk, box.value));
     box.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); send.click(); }
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); commentSendFromPop(pop); }
       else if (ev.key === "Escape") { ev.stopPropagation(); closeCommentPop(); }
-    });
-    send.addEventListener("click", () => {
-      const text = box.value.trim();
-      if (!text || !vscodeApi) return;
-      send.disabled = true;                     // acknowledged before any round-trip
-      send.textContent = "Sending…";
-      if (create) {
-        // the draft survives until commentCreated adopts the thread — a refused create keeps the words
-        vscodeApi.postMessage({ type: "commentCreate", id: sid, uuid: create.uuid, exact: create.exact, text });
-      } else {
-        vscodeApi.postMessage({ type: "commentReply", id: sid, tid: th!.tid, text });
-        const pl = commentPending.get(th!.tid) || [];
-        pl.push({ text, t: Date.now() / 1000 });
-        commentPending.set(th!.tid, pl);
-        commentDrafts.delete(dk);
-        renderCommentPopover();
-      }
     });
     pop.appendChild(box);
     const row = el("div", "cmt-actions");
+    const send = el("button", "cmt-send") as HTMLButtonElement;
+    send.type = "button";
+    send.textContent = create ? "Start thread" : "Send";
+    send.dataset.act = "cmtsend";
     row.appendChild(send);
     if (th) {
       const br = el("button", "cmt-act") as HTMLButtonElement;
       br.type = "button";
       br.textContent = "Break out";
       br.title = "Continue this thread as its own session; it keeps everything it knows";
-      br.addEventListener("click", () => showBreakoutPrompt(sid, th.tid));
+      br.dataset.act = "cmtbreak";
       row.appendChild(br);
       if (th.status === "open") {
         const rs = el("button", "cmt-act") as HTMLButtonElement;
         rs.type = "button";
         rs.textContent = "Resolve";
         rs.title = "Settle this thread: the highlight dims, and replying reopens it";
-        rs.addEventListener("click", () => {
-          rs.disabled = true;
-          rs.textContent = "Resolving…";
-          vscodeApi?.postMessage({ type: "commentResolve", id: sid, tid: th.tid });
-        });
+        rs.dataset.act = "cmtresolve";
         row.appendChild(rs);
       } else {
         const dl = el("button", "cmt-act cmt-del") as HTMLButtonElement;
         dl.type = "button";
         dl.textContent = "Delete";
         dl.title = "Remove this thread and its highlight";
-        const disarm = () => { dl.classList.remove("armed"); dl.textContent = "Delete"; };
-        dl.addEventListener("click", () => {
-          if (!dl.classList.contains("armed")) { dl.classList.add("armed"); dl.textContent = "Really delete?"; return; }
-          vscodeApi?.postMessage({ type: "commentDelete", id: sid, tid: th.tid });
-          closeCommentPop();
-        });
-        dl.addEventListener("pointerleave", disarm);
-        dl.addEventListener("blur", disarm);
+        dl.dataset.act = "cmtdelete";
+        dl.addEventListener("pointerleave", () => { dl.classList.remove("armed"); dl.textContent = "Delete"; });
         row.appendChild(dl);
       }
     }
@@ -5320,7 +5374,8 @@ function renderCommentPopover(): void {
     const open = el("button", "cmt-send") as HTMLButtonElement;
     open.type = "button";
     open.textContent = "Open the session";
-    open.addEventListener("click", () => { closeCommentPop(); setActive(th.tid); });
+    open.dataset.act = "cmtopensession";
+    open.dataset.tid = th.tid;
     row.appendChild(open);
     pop.appendChild(row);
   }
@@ -5331,7 +5386,7 @@ function renderCommentPopover(): void {
   pop.style.left = px + "px";
   pop.style.top = py + "px";
   const msgs = pop.querySelector(".cmt-msgs") as HTMLElement | null;
-  if (msgs) msgs.scrollTop = prevScroll != null ? Math.max(prevScroll, msgs.scrollHeight - msgs.clientHeight) : msgs.scrollHeight;
+  if (msgs) msgs.scrollTop = msgs.scrollHeight;
   if (create || hadFocus || !th || !th.msgs.length) (pop.querySelector(".cmt-input") as HTMLTextAreaElement | null)?.focus();
 }
 
@@ -5906,7 +5961,16 @@ function ensureView(id: string): View {
 // Bring this view's DOM up to date with its session's events: append new ones
 // and re-render a bounded trailing window (cheap), or rebuild fully on a shrink
 // (rewind). Does NOT touch scroll. No-op cost when nothing changed is ~O(TAIL).
+// The wrapper re-anchors comment highlights after EVERY sync (the user 2026-08-13): marks live in
+// the rebuilt DOM, and hanging the re-apply only on inbound messages missed the renders that run
+// off them (a tab switch, a prebuild) — idempotent and ~free for sessions with no threads.
 function syncView(id: string, atBottom?: boolean): View {
+  const v = syncViewInner(id, atBottom);
+  applyCommentMarks(id);
+  return v;
+}
+
+function syncViewInner(id: string, atBottom?: boolean): View {
   // atBottom (passed by appendActive): false ⇒ the user is scrolled UP reading. A compact append must then
   // NOT evict the window top — evicting shifts the content above the viewport, and since the compact path
   // FULL-REBUILDS (clears the DOM, resetting scrollTop), the caller can only restore the position if the
@@ -9047,21 +9111,49 @@ window.addEventListener("message", (e: MessageEvent) => {
     seedEditorQuote(activeId, m.text, typeof m.src === "string" ? m.src : undefined);
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
-  // comment threads (the user 2026-08-13): the per-session thread frame — store, re-anchor the
-  // highlights, and refresh the popover if it's showing one of these threads
+  // comment threads (the user 2026-08-13): the per-session thread frame — store, prune dead
+  // client-side state, re-anchor the highlights, adopt a parked create ack, refresh the popover
   else if (m.type === "comments" && m.id) {
-    commentThreads.set(String(m.id), (m.threads || []) as CommentThread[]);
-    applyCommentMarks(String(m.id));
-    if (openCommentKey && openCommentKey.sid === m.id) renderCommentPopover();
+    const sid = String(m.id);
+    const threads = (m.threads || []) as CommentThread[];
+    commentThreads.set(sid, threads);
+    const live = new Set(threads.filter((t) => t.status !== "promoted").map((t) => t.tid));
+    for (const k of Array.from(commentPending.keys())) if (!live.has(k)) commentPending.delete(k);
+    for (const k of Array.from(commentDrafts.keys())) if (!k.startsWith("new:") && !live.has(k)) commentDrafts.delete(k);
+    if (pendingAdoptTid && threads.some((t) => t.tid === pendingAdoptTid)) adoptCommentThread(sid, pendingAdoptTid);
+    applyCommentMarks(sid);
+    if (openCommentKey && openCommentKey.sid === sid) {
+      // reading IS seeing: a reply that lands while its popover is open must not dot the mark
+      const th = threads.find((t) => t.tid === openCommentKey!.tid);
+      if (th && th.unread) {
+        th.unread = false;
+        vscodeApi?.postMessage({ type: "commentSeen", id: sid, tid: th.tid });
+        applyCommentMarks(sid);
+      }
+      renderCommentPopover();
+    }
   }
-  // the create ack: adopt exactly the thread this popover made (never a guess), spend its draft
+  // the create ack names the new thread: adopt exactly it (never a guess). The kernel sends the
+  // frame first; if this ack somehow beat it, park the tid and the next frame adopts.
   else if (m.type === "commentCreated" && m.id && m.tid) {
     if (pendingCommentAnchor && pendingCommentAnchor.sid === m.id) {
-      commentDrafts.delete("new:" + pendingCommentAnchor.uuid);
-      pendingCommentAnchor = null;
-      openCommentKey = { sid: String(m.id), tid: String(m.tid) };
-      vscodeApi?.postMessage({ type: "commentSeen", id: String(m.id), tid: String(m.tid) });
-      renderCommentPopover();
+      const tid = String(m.tid);
+      if ((commentThreads.get(String(m.id)) || []).some((t) => t.tid === tid)) adoptCommentThread(String(m.id), tid);
+      else pendingAdoptTid = tid;
+    }
+  }
+  // a reply the kernel refused: drop its optimistic bubble (it must not read as 'still thinking'
+  // forever) and hand the words back for review-and-resend — the toast says why it failed
+  else if (m.type === "commentSendFailed" && m.tid) {
+    const pl = commentPending.get(String(m.tid));
+    if (pl && pl.length) {
+      const lost = pl.pop()!;
+      commentDrafts.set(String(m.tid), lost.text);
+      if (openCommentKey && openCommentKey.tid === m.tid) {
+        const box = document.getElementById("cmt-pop")?.querySelector(".cmt-input") as HTMLTextAreaElement | null;
+        if (box && !box.value.trim()) box.value = lost.text;
+        renderCommentPopover();
+      }
     }
   }
   else if (m.type === "closed") dismissSession(m.id);   // a session died on its own (or the kernel confirms our close)
@@ -9790,12 +9882,42 @@ setupSettings();
       if (grp) reflowQueuedGroup(grp);
     },
     // a comment highlight or its turn badge (the user 2026-08-13): open the thread's popover at the
-    // click. Delegated — marks and badges are re-created on every transcript rebuild.
+    // click. Delegated — marks and badges are re-created on every transcript rebuild — and so is
+    // every popover BUTTON below: the popover's conversation refreshes on comments frames, and a
+    // per-render listener would eat the mid-press click (the click-safety rule).
     cmtopen: (elx) => {
       const tid = elx.dataset.tid;
       if (!tid || !activeId) return;
       const r = elx.getBoundingClientRect();
       openCommentPopover(activeId, tid, Math.min(r.left, window.innerWidth - 380), r.bottom + 6);
+    },
+    cmtclose: () => closeCommentPop(),
+    cmtsend: (elx) => {
+      const pop = elx.closest(".cmt-pop") as HTMLElement | null;
+      if (pop) commentSendFromPop(pop);
+    },
+    cmtbreak: () => {
+      const cur = openCommentThread();
+      if (cur) showBreakoutPrompt(cur.sid, cur.th.tid);
+    },
+    cmtresolve: (elx) => {
+      const cur = openCommentThread();
+      if (!cur) return;
+      (elx as HTMLButtonElement).disabled = true;
+      elx.textContent = "Resolving…";
+      vscodeApi?.postMessage({ type: "commentResolve", id: cur.sid, tid: cur.th.tid });
+    },
+    cmtdelete: (elx) => {
+      const cur = openCommentThread();
+      if (!cur) return;
+      if (!elx.classList.contains("armed")) { elx.classList.add("armed"); elx.textContent = "Really delete?"; return; }
+      vscodeApi?.postMessage({ type: "commentDelete", id: cur.sid, tid: cur.th.tid });
+      closeCommentPop();
+    },
+    cmtopensession: (elx) => {
+      const tid = elx.dataset.tid;
+      closeCommentPop();
+      if (tid) setActive(tid);
     },
     // "copy to composer" on a never-delivered bubble: the echo is the only surviving copy of the text —
     // hand it back for review-and-resend (the same restore the queued ✕ uses). Delegated like qx: the

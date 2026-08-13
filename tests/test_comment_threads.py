@@ -275,6 +275,44 @@ class ThreadProjection(CommentBase):
     def test_no_store_no_frame(self):
         self.assertIsNone(km._comments_frame(PARENT))
 
+    def test_pre_fork_thread_reads_nothing_not_the_parent(self):
+        # Until the CLI init spends forkOf, the thread reg's lastSid points at the PARENT
+        # transcript — reading it would present the parent's post-anchor turns as the thread's own.
+        self._write(PARENT, self._parent_records())
+        (jd.SDKDIR / (THREAD + ".json")).write_text(json.dumps(
+            {"sid": THREAD, "name": "thread-x", "cwd": self.cdir, "lastSid": PARENT,
+             "alive": True, "threadOf": PARENT, "forkOf": PARENT, "forkAt": "a1"}))
+        self.assertEqual(km._thread_messages(THREAD, "a1"), [])
+
+    def test_a_compaction_summary_record_is_not_a_message(self):
+        recs = self._thread_records()
+        recs.append({"type": "user", "timestamp": iso(self.now - 90), "uuid": "cs1",
+                     "parentUuid": "ca2", "isCompactSummary": True,
+                     "message": {"role": "user", "content": "summary of the earlier exchange"}})
+        self._seed_thread(records=recs)
+        msgs = km._thread_messages(THREAD, "a1")
+        self.assertNotIn("summary of the earlier exchange", json.dumps(msgs))
+
+    def test_a_large_transcript_reads_from_the_tail_window(self):
+        # the copied history can be huge; the side conversation sits at the END, so the projection
+        # must come out of the tail window without a full reparse — and be IDENTICAL to it
+        filler = [aline(self.now - 550 + i, "filler %d " % i + "x" * 4000, "f%d" % i,
+                        parent=("u1" if i == 0 else "f%d" % (i - 1))) for i in range(120)]
+        t = self.now - 500
+        recs = ([uline(self.now - 600, "how should the retry loop back off?", "u1")] + filler +
+                [aline(t + 5, "Use exponential backoff.", "a1", parent="f119"),
+                 uline(t + 100, km._comment_first_message("exponential backoff", "Why jitter?"),
+                       "cu1", parent="a1"),
+                 aline(t + 110, "Jitter prevents thundering herds.", "ca1", parent="cu1")])
+        self._seed_thread(records=recs)
+        p = self.proj / (THREAD + ".jsonl")
+        self.assertGreater(p.stat().st_size, km._THREAD_TAIL_BYTES,
+                           "the fixture must actually overflow the tail window")
+        msgs = km._thread_messages(THREAD, "a1")
+        self.assertEqual([m["who"] for m in msgs], ["you", "agent"])
+        self.assertEqual(msgs[0]["text"], "Why jitter?")
+        self.assertIn("thundering herds", msgs[1]["text"])
+
 
 # ── the ops: create / reply / resolve / promote ───────────────────────────────────────────────────
 
@@ -407,6 +445,41 @@ class CommentOps(CommentBase):
         _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
         err = km._comment_promote(PARENT, tid, "bad name!")
         self.assertIn("letters, digits", err)
+
+    def test_resolve_refuses_a_promoted_thread_so_delete_can_never_kill_its_session(self):
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        km._comment_update(PARENT, tid, status="promoted", promotedName="sidework")
+        err = km._comment_resolve(PARENT, tid)
+        self.assertIn("sidework", err)
+        self.assertEqual(km._comment_thread(PARENT, tid)["status"], "promoted",
+                         "resolve must never overwrite promoted — that hands delete a session to kill")
+        km._comment_delete(PARENT, tid)                 # removing the highlight row is fine…
+        self.assertNotIn(("kill", tid), self.be.calls)  # …but the promoted session is never killed
+        self.assertIsNone(km._comment_thread(PARENT, tid))
+
+    def test_a_missing_cut_shows_nothing_never_the_copied_history(self):
+        self._write(THREAD, self._parent_records())
+        (jd.SDKDIR / (THREAD + ".json")).write_text(json.dumps(
+            {"sid": THREAD, "name": "thread-x", "cwd": self.cdir,
+             "lastSid": THREAD, "alive": True, "threadOf": PARENT}))
+        self.assertEqual(km._thread_messages(THREAD, "not-in-transcript"), [])
+
+    def test_ending_the_parent_sweeps_its_threads_clis(self):
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        km._comment_update(PARENT, tid, status="promoted", promotedName="kept")
+        _, tid2 = km._comment_create(PARENT, "a1", "exponential backoff", "And the cap?")
+        km._comment_kill_all(PARENT, self.be)
+        self.assertIn(("kill", tid2), self.be.calls, "open threads die with their only surface")
+        self.assertNotIn(("kill", tid), self.be.calls, "a promoted thread is a board session — untouched")
+
+    def test_a_failed_create_kills_the_half_born_reg(self):
+        self.be.send = lambda sid, text: (_ for _ in ()).throw(RuntimeError("boom"))
+        err, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        self.assertIn("boom", err)
+        self.assertIsNone(tid)
+        self.assertEqual(km._load_comments(PARENT).get("threads", []), [])
+        self.assertIn(("kill",), {c[:1] for c in self.be.calls},
+                      "the forked reg/CLI must not outlive the removed row")
 
     def test_drive_ops_are_registered(self):
         src = (Path(BIN) / "romp-kernel").resolve().read_text()

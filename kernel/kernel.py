@@ -4607,8 +4607,9 @@ def _comment_strip_frame(text):
 
 def _comment_msg_text(rec):
     """Visible text of a raw transcript user/assistant record — text blocks only (tool traffic and
-    thinking are the popover's 'working…' phase, not its conversation)."""
-    if rec.get("isMeta"):
+    thinking are the popover's 'working…' phase, not its conversation; a compaction's summary record
+    is bookkeeping, not something either side said)."""
+    if rec.get("isMeta") or rec.get("isCompactSummary"):
         return ""
     m = rec.get("message") or {}
     c = m.get("content")
@@ -4632,34 +4633,74 @@ def _thread_transcript_path(reg, tsid):
     return str(jd._proj_dir(reg.get("cwd") or os.path.expanduser("~")) / (fsid + ".jsonl"))
 
 
+_THREAD_TAIL_BYTES = 262144   # the tail window that usually holds the whole side conversation
+
+
 def _thread_messages(tsid, cut_uuid):
     """The side conversation: user/assistant text AFTER the fork cut in the thread's transcript,
     oldest first, [{who, text, t}]. The fork copies parent history VERBATIM (same uuids), so
     everything above `cut_uuid` on the active chain IS the thread's own exchange. mtime-cached —
-    a settled thread costs one stat per push. [] before the fork lands (the CLI is still copying;
-    the popover shows its working state, not an error — the transcript's absence is expected there)."""
+    a settled thread costs one stat per push. [] before the fork lands: while the reg still carries
+    forkOf (spent by the CLI init that pins the new fsid), lastSid points at the PARENT transcript,
+    and reading it here would present the parent's post-anchor conversation as the thread's own.
+    The exchange sits strictly AFTER the copied history, so a streaming thread re-reads only the
+    file TAIL per push (the pusher must not reparse a whole copied conversation every 0.5s); the
+    full parse is the fallback when the window misses the cut."""
     reg = _thread_reg(tsid)
+    if reg.get("forkOf"):
+        return []
     path = _thread_transcript_path(reg, tsid)
     try:
-        mt = os.stat(path).st_mtime
+        st = os.stat(path)
+        mt, size = st.st_mtime, st.st_size
     except OSError:
         return []
     hit = _thread_msgs_cache.get(tsid)
     if hit and hit[0] == path and hit[1] == mt and hit[2] == cut_uuid:
         return hit[3]
-    ad = em.FileAdapter([path], path)
-    rows, u, hops = [], ad.leaf_uuid, 0
+    by_uuid = parent_of = leaf = None
+    if cut_uuid and size > _THREAD_TAIL_BYTES:
+        try:
+            with open(path, "rb") as f:
+                f.seek(size - _THREAD_TAIL_BYTES)
+                lines = f.read().split(b"\n")[1:]    # drop the partial first line of the window
+        except OSError:
+            lines = []
+        tail = []
+        for ln in lines:
+            if not ln.strip():
+                continue
+            try:
+                tail.append(json.loads(ln))
+            except ValueError:
+                continue
+        if any(r.get("uuid") == cut_uuid for r in tail):
+            by_uuid = {r["uuid"]: r for r in tail if r.get("uuid")}
+            parent_of = {r["uuid"]: r.get("parentUuid") for r in tail if r.get("uuid")}
+            # the last uuid-bearing record IS the live leaf (the CLI appends the active branch —
+            # the same assumption sdk_backend.last_record_uuid rides for rewinds)
+            leaf = next((r["uuid"] for r in reversed(tail) if r.get("uuid")), None)
+    if by_uuid is None:
+        ad = em.FileAdapter([path], path)
+        by_uuid, parent_of, leaf = ad.by_uuid, ad.parent_of, ad.leaf_uuid
+    if cut_uuid and cut_uuid not in by_uuid:
+        return []       # the cut isn't in this transcript (corrupt row?) — an empty popover beats
+        #                 presenting the copied parent history as the thread's own conversation
+    rows, u, hops = [], leaf, 0
+    # the boot reconcile's continuation notice is romp's, not the user's — it must not render as a
+    # 'you' bubble in the popover (the module is loaded lazily; unavailable → nothing to filter)
+    boot_nudge = getattr(sys.modules.get("romp_sdk_backend"), "BOOT_RESUME_NUDGE", None)
     while u is not None and hops < 500000:
         if u == cut_uuid:
             break                                   # copied history starts here — the parent's, not the thread's
-        r = ad.by_uuid.get(u) or {}
+        r = by_uuid.get(u) or {}
         if r.get("type") in ("user", "assistant"):
             txt = _comment_msg_text(r)
-            if txt:
+            if txt and txt != boot_nudge:
                 rows.append({"who": "you" if r.get("type") == "user" else "agent",
                              "text": txt[:4000],
                              "t": int(em.parse_z(r.get("timestamp")) or 0)})
-        u = ad.parent_of.get(u); hops += 1
+        u = parent_of.get(u); hops += 1
     rows.reverse()
     if rows and rows[0]["who"] == "you":            # the opening message: show the comment, not its frame
         rows[0]["text"] = _comment_strip_frame(rows[0]["text"])
@@ -4740,6 +4781,10 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
             data = _load_comments(parent_sid)
             data["threads"] = [t for t in data.get("threads") or [] if t.get("tid") != tsid]
             _save_comments(parent_sid, data)
+        try:
+            be.kill(tsid)                          # and no orphaned reg/CLI behind the removed row
+        except Exception:
+            pass
         return "thread not created: %s" % e, None
     _push_soon()
     return None, tsid
@@ -4770,13 +4815,18 @@ def _comment_reply(parent_sid, tid, text):
 
 def _comment_resolve(parent_sid, tid):
     """Settle a thread: status→resolved and its CLI shut down (the reg stays — a later reply
-    resumes it with the conversation intact). The highlight dims; nothing is lost."""
+    resumes it with the conversation intact). The highlight dims; nothing is lost. A PROMOTED
+    thread is refused: its session is a board citizen now, and flipping the stored status would
+    hand the follow-on delete a session to kill (the UI hides Resolve there; the guard holds for
+    a stale client regardless)."""
     th = _comment_thread(parent_sid, tid)
     if not th:
         return "that thread is gone."
+    if (th.get("status") or "open") == "promoted":
+        return "this thread is now the session '%s'; end it like any session." % (th.get("promotedName") or "")
     _comment_update(parent_sid, tid, status="resolved")
     be = Sessions.backend_for(parent_sid)
-    if hasattr(be, "kill") and th.get("status") != "promoted":
+    if hasattr(be, "kill"):
         try:
             be.kill(th["sid"])
         except Exception:
@@ -4809,6 +4859,20 @@ def _comment_seen(parent_sid, tid):
     """The popover was opened — stamp the read watermark (view state, not a verdict)."""
     _comment_update(parent_sid, tid, lastSeenT=int(time.time()))
     return None
+
+
+def _comment_kill_all(parent_sid, be):
+    """The parent session was ENDED — shut down its open threads' CLIs too, or they outlive the tab
+    that is their only surface as unreachable running processes. Store rows stay untouched: a
+    revived parent finds its threads dormant and a reply resumes them, history intact."""
+    if not hasattr(be, "kill"):
+        return
+    for th in _load_comments(parent_sid).get("threads") or []:
+        if (th.get("status") or "open") != "promoted" and th.get("sid"):
+            try:
+                be.kill(th["sid"])
+            except Exception:
+                pass
 
 
 def _comment_promote(parent_sid, tid, new_name, now=None):
@@ -5707,15 +5771,21 @@ def _drive(msg, client):
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
         else:
-            client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": tid,
-                                       "uuid": str(msg["uuid"])}))
+            # the FRAME rides ahead of the ack: the ack's handler adopts the new thread from the
+            # client's thread map, so the thread must be in it first (reversed, the popover looked
+            # up a thread it had never heard of and closed itself)
             fr = _comments_frame(sid)
             if fr:
                 client["send"](json.dumps(fr))
+            client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": tid,
+                                       "uuid": str(msg["uuid"])}))
     elif t == "commentReply" and msg.get("tid") and msg.get("text"):
         err = _comment_reply(sid, str(msg["tid"]), str(msg["text"]))
         if err:
+            # the named failure ack lets the popover drop its optimistic bubble — the toast alone
+            # names no thread, and an unspent pending row reads as 'still thinking' forever
             client["send"](json.dumps({"type": "warn", "text": err}))
+            client["send"](json.dumps({"type": "commentSendFailed", "id": sid, "tid": str(msg["tid"])}))
     elif t == "commentResolve" and msg.get("tid"):
         err = _comment_resolve(sid, str(msg["tid"]))
         if err:
@@ -5735,6 +5805,7 @@ def _drive(msg, client):
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
         be.kill(sid); _record_death(sid, int(time.time()), "kill")   # the one SDK event with no designed reviver
+        _comment_kill_all(sid, be)   # its comment threads must not outlive it as unreachable running CLIs
         _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()
     elif t == "renameSession" and msg.get("name"):
         new = str(msg["name"]).strip()
@@ -18573,7 +18644,7 @@ def _push(targets, connect=False, tmux=None):
             # comments/ store exists — an ~free stat for everyone else). Each frame rides its OWN
             # per-sid dedup slot, never the chat delta baseline (the 2026-07-28 stranded-delta rule):
             # an unchanged frame costs nothing on the wire and the chatTail stream stays untouched.
-            for s in chat_list:
+            for s in (chat_list if chat_clients else []):
                 try:
                     fr = _comments_frame(s["sid"])
                 except Exception:
