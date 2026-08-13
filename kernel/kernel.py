@@ -1240,12 +1240,31 @@ def _alive_sessions(now, tmux):
     So: tmux reachable (sessions present, or a tmux binary exists) → trust the empty result and show
     only living sessions; no tmux at all → fall back so a headless box isn't blank."""
     alive = [s for s in _sessions(now) if s["sid"] in tmux]
+    # LIVE IS ALWAYS VISIBLE (2026-08-13, generalizing the SDK-only exception below): a genuinely
+    # LIVE sid missing from the 48h _sessions set — a session idle longer than the caption window,
+    # which used to silently VANISH from every surface while still running — resolves through
+    # discover's cached wide walk (the picker's own (window, forks) cache key: one filesystem walk,
+    # not one per session). Liveness owns visibility; age owns nothing but caption/walk cost.
+    have = {s["sid"] for s in alive}
+    stale_live = [sid for sid in tmux if sid not in have]
+    if stale_live:
+        wide = {f[0]: f for f in jd.discover(now, window=jd.DEATH_BACKFILL_WINDOW)}
+        for sid in stale_live:
+            ent = wide.get(sid)
+            if ent is not None:
+                fsid, path, anchor, name = ent
+                try:
+                    mtime = os.stat(path).st_mtime
+                except OSError:
+                    mtime = 0
+                alive.append({"sid": fsid, "name": name or fsid[:8], "anchor": anchor,
+                              "path": str(path), "mtime": mtime})
+                have.add(sid)
     # SDK sessions that are alive (in the merged `tmux` map) but have no transcript on disk yet — a
     # just-created or never-run SDK session — aren't in discover()/_sessions, so add them here, else
     # their tab never opens (the user 2026-06-22). Once they run and write a transcript, discover takes over.
     be = _sdk()
     if be:
-        have = {s["sid"] for s in alive}
         for sid in tmux:
             if sid not in have and be.owns(sid):
                 alive.append(_sdk_sess(sid, now))
@@ -5226,7 +5245,8 @@ def _drive(msg, client):
             client["send"](json.dumps({"type": "warn", "text": err}))
     elif t == "endSession":
         sys.stderr.write("kill: %s via endSession WS op\n" % sid)   # kill attribution (the user 2026-07-16)
-        be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()
+        be.kill(sid); _record_death(sid, int(time.time()), "kill")   # the one SDK event with no designed reviver
+        _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()
     elif t == "renameSession" and msg.get("name"):
         new = str(msg["name"]).strip()
         if not NAME_RE.match(new):
@@ -5528,6 +5548,27 @@ class TmuxBackend(sb.SessionBackend):
     def list_lines(self, fmt, t=2.5):
         r = self._run(["list-sessions", "-F", fmt], t)
         return r.stdout.splitlines() if (r and r.returncode == 0) else []
+
+    def alive_sids(self, t=3):
+        """The set of romp session ids the tmux SERVER answers for right now — the death writers'
+        corroboration primitive (2026-08-13). Identity-true: reads @romp-session-id, the key every
+        sid-keyed contract method resolves through — never a NAME (same-named generations coexist,
+        which is the whole reason kill-by-name is refused; a name probe would read a dead session as
+        alive whenever a different generation currently bears its name). None ONLY on a real probe
+        failure (exec error/timeout): a death writer must stand down then — never inherit
+        list_lines' error→[] collapse, which would read the whole board as dead. A NONZERO exit
+        whose stderr names a missing server IS the authoritative zero-sessions answer (verified:
+        `list-sessions` with no server exits 1 with 'error connecting … No such file or directory')
+        — the mass-death/reboot shape, and the boot backfill's normal world."""
+        r = self._run(["list-sessions", "-F", "#{@romp-session-id}"], t)
+        if r is None:
+            return None
+        if r.returncode != 0:
+            err = (r.stderr or "").lower()
+            if "no server running" in err or "error connecting" in err:
+                return set()
+            return None
+        return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
 
     def send_keys(self, name, *keys, t=3):
         self._fire(["send-keys", "-t", name, *keys], t)
@@ -8984,6 +9025,128 @@ def _interrupt(name, _async=True):
     threading.Thread(target=go, daemon=True).start() if _async else go()
 
 
+_prev_live_sids = [None]   # last cycle's live-map sids — the set-diff death TRIGGER; corroboration decides
+
+
+def _death_sweep_tick(now, tmux):
+    """Stamp deaths as they happen: a sid that LEFT the live map since the last cycle is a candidate,
+    and the liveness OWNER answers before anything is written (per-batch TmuxBackend.alive_sids —
+    identity-true; probe failure → loud no-op, never a stamp). SDK-owned sids are skipped here: their
+    death event is the kill gesture (reg alive:False partitions ownership — alive:True is
+    revivable/crash-looped and must NEVER be stamped, the boot-resume contract rides on that bit)."""
+    cur = set(tmux or {})
+    prev = _prev_live_sids[0]
+    _prev_live_sids[0] = cur
+    if prev is None:
+        return
+    departed = [sid for sid in prev - cur if not (jd.SDKDIR / (sid + ".json")).exists()]
+    scan = None
+    for sid in departed:
+        if not _death_stamp_due(sid):
+            continue
+        if scan is None:
+            scan = _TMUX.alive_sids() if _TMUX.available() else set()
+            if scan is None:
+                sys.stderr.write("death-sweep: liveness probe failed — no stamps this tick\n")
+                return
+        if sid in scan:
+            continue                                 # the owner says alive — our snapshot blinked, not the session
+        _record_death(sid, now, "gone")
+
+
+def _death_boot_pass(now=None):
+    """One boot walk over the names/ registry (every romp session ever, tmux included — reg-less tmux
+    sids live only here): stamp the deaths no kernel was up to see. Same gate as the tick writer, so
+    it also covers re-deaths-after-revival that happened while the kernel was down, and the whole
+    upgrade backfill. SDK-owned sids stamp only on reg alive:False; tmux sids only when the fresh
+    identity scan lacks them; a failed probe stands down loudly."""
+    now = int(now or time.time())
+    if not jd.NAMES.is_dir():
+        return
+    scan = _TMUX.alive_sids() if _TMUX.available() else set()   # headless: no server IS zero-alive
+    if scan is None:
+        sys.stderr.write("death-boot: liveness probe failed — tmux sids skipped this boot\n")
+    n = 0
+    for f in sorted(jd.NAMES.iterdir()):
+        sid = f.name
+        reg = jd.SDKDIR / (sid + ".json")
+        if reg.exists():
+            try:
+                if bool(json.loads(reg.read_text()).get("alive")):
+                    continue                         # revivable/crash-looped: the resume contract owns it
+            except Exception:
+                continue
+        else:
+            if scan is None or sid in scan:
+                continue                             # probe failed (stand down) or genuinely alive
+        if _record_death(sid, now, "boot"):
+            n += 1
+    if n:
+        sys.stderr.write("death-boot: recorded %d session death(s) from before this kernel\n" % n)
+
+
+def _last_states_row(sid):
+    """The newest row of states/<sid>.jsonl, any shape (state rows, awaiting overlays, the re-anchor's
+    supersededBy row) — the death writers' idempotence/veto read. Event-rate only (a kill gesture, a
+    set-diff departure, one boot pass); never on a per-push path."""
+    try:
+        rows = (jd.STATE / "states" / (sid + ".jsonl")).read_text().splitlines()
+        for ln in reversed(rows):
+            try:
+                r = json.loads(ln)
+                if isinstance(r, dict):
+                    return r
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def _death_stamp_due(sid):
+    """May a death be recorded for this sid RIGHT NOW? One shared predicate for all three writers
+    (2026-08-13). Not due when the newest states row is a SUPERSESSION (the re-anchor hook's
+    supersededBy row — the fsid was re-anchored away, which the episode machinery owns; at the pane a
+    /clear'd lane and a death look identical, so only the recorded event tells them apart). Otherwise
+    due iff no marker exists, or a states row POSTDATES the marker — idempotence keyed on the marker
+    being the NEWEST event, not on file presence, so die → revive → die is recordable every cycle
+    (the first design keyed on presence, which made every death after the first invisible)."""
+    last = _last_states_row(sid)
+    if last is not None and last.get("supersededBy") and "state" not in last:
+        return False
+    m = None
+    try:
+        m = json.loads((jd.STATE / "gone" / (sid + ".json")).read_text())
+    except Exception:
+        m = None
+    if not isinstance(m, dict):
+        return True
+    return int((last or {}).get("t") or 0) > int(m.get("t") or 0)
+
+
+def _record_death(sid, now, by):
+    """Record a session's death: the marker (STATE/gone/<sid>.json, atomically — a re-stamp drops any
+    prior endedAt, re-arming the finalize) plus ONE plain idle row via _record_idle, byte-identical to
+    a Stop-hook idle so the states vocabulary stays one-flavored and every downstream (the idle atom,
+    _session_closed, _turn_open, the closer sweep, rollup settle) finalizes with zero new judge code.
+    The marker's t matches the idle row's (now-1), so the writer's own row never reads as 'newer'
+    to _death_stamp_due — a repeat stamp with no intervening revival is a no-op by the time key."""
+    if not sid or not _death_stamp_due(sid):
+        return False
+    try:
+        gd = jd.STATE / "gone"
+        gd.mkdir(parents=True, exist_ok=True)
+        tmp = gd / (sid + ".json.tmp")
+        tmp.write_text(json.dumps({"t": int(now) - 1, "by": by}))
+        os.replace(tmp, gd / (sid + ".json"))
+    except Exception:
+        sys.stderr.write("record-death %s: %s\n" % (sid, traceback.format_exc()))
+        return False
+    _record_idle(sid, now)
+    sys.stderr.write("death: %s recorded (by %s)\n" % (sid, by))   # kill-attribution convention
+    return True
+
+
 def _record_idle(sid, now):
     """Append a state:"idle" transition to states/<sid>.jsonl so the session reads as DONE on the next build.
     The chat status chip is driven by the event-model open-turn signal (open turn + no idle atom): a normal
@@ -10098,11 +10261,11 @@ _scan_bg_tasks = em._scan_bg_tasks   # moved to event_model (2026-08-08) — see
 
 
 def _sdk_spawned_at(sid):
-    """When this SDK session's CURRENT CLI spawned (reg spawnedAt, stamped by SdkSession._run), or None
-    for tmux/never-spawned sessions. The bg-tasks ghost gate: a task launched before the live CLI died
-    with its old one — its <task-notification> can never arrive. Delegates to the judge's copy (its
-    settled gate applies the same ghost rule) so the two can never drift."""
-    return jd._sdk_spawned_at(sid)
+    """The session's current CLI-epoch start — the bg-tasks ghost gate, backend-agnostic since
+    2026-08-13 (reg spawnedAt OR the recorded death marker, whichever is newer). Delegates to the
+    judge's _cli_epoch (its settled gate applies the same ghost rule) so the two can never drift;
+    the name stays for the existing call sites."""
+    return jd._cli_epoch(sid)
 
 
 def _bg_scan_cached(path):
@@ -14331,8 +14494,20 @@ def _boundary_clear_notices(alive):
     mirrors each into the shell's notification bell exactly once (client seen-set), so a clear that
     dropped open cards is always visible after the fact instead of the cards silently leaving the
     board (the user 2026-07-27). Newest-only bounds the payload; the log read is an mtime memo, so
-    this is cheap per push."""
+    this is cheap per push.
+
+    Since 2026-08-13 the same channel carries a DEAD session's end: the death finalize appends an
+    'ended:' settle record when a session died with cards still open, and those sessions are by
+    definition NOT in `alive` — so a second sweep reads the death-finalized sids (the gone/ markers,
+    endedAt-stamped, non-superseded) and mirrors their newest 'ended:' record too. Cards end loudly
+    instead of vanishing. One payload-only guard: no bell when the record's snapshotted NAME is
+    currently borne by a LIVE session under a different sid — the lifecycle on disk is identical,
+    only the interrupt is suppressed, because "web ended" ringing while a live web sits in front of
+    the user misreads as being about the live one (name reuse, and every pre-upgrade re-anchored
+    /clear lane the boot backfill stamps)."""
     out = []
+    live_names = {s["name"] for s in alive}
+    live_sids = {s["sid"] for s in alive}
     for s in alive:
         try:
             settles = jd.episode_settles(s["sid"])
@@ -14342,6 +14517,32 @@ def _boundary_clear_notices(alive):
             continue
         r = max(settles.values(), key=lambda x: x.get("t") or 0)
         out.append({"sid": s["sid"], "name": s["name"], "t": r.get("t") or 0,
+                    "titles": [str(d.get("text") or "") for d in (r.get("settled") or [])]})
+    try:
+        gone = [p.name[:-5] for p in (jd.STATE / "gone").iterdir() if p.name.endswith(".json")]
+    except OSError:
+        gone = []
+    for sid in gone:
+        if sid in live_sids:
+            continue
+        m = jd._death_marker(sid)
+        if not isinstance(m, dict) or "endedAt" not in m or m.get("superseded") or m.get("noTranscript"):
+            continue
+        try:
+            settles = jd.episode_settles(sid)
+        except Exception:
+            continue
+        ended = [v for k, v in settles.items() if str(k).startswith("ended:")]
+        if not ended:
+            continue                                   # died with nothing open: records on disk, no interrupt
+        r = max(ended, key=lambda x: x.get("t") or 0)
+        try:
+            name = (jd.NAMES / sid).read_text().split("\t")[0].strip()
+        except Exception:
+            name = sid[:8]
+        if name in live_names:
+            continue                                   # the payload-only name-reuse guard (see docstring)
+        out.append({"sid": sid, "name": name, "t": r.get("t") or 0, "ended": True,
                     "titles": [str(d.get("text") or "") for d in (r.get("settled") or [])]})
     return out
 
@@ -18609,6 +18810,10 @@ def _pusher_cycle_jobs(now, tmux, any_client):
         _lift_spent_awaiting(now, tmux)   # so the nudge tick below never wakes a wait that already ended
     except Exception:
         sys.stderr.write("awaiting-lift: %s\n" % traceback.format_exc())
+    try:                                  # death is a recorded EVENT: a sid that left the live map is
+        _death_sweep_tick(now, tmux)      # corroborated with the liveness owner, then stamped (2026-08-13)
+    except Exception:
+        sys.stderr.write("death-sweep: %s\n" % traceback.format_exc())
     try:                                  # deferral records retire on their reasons' own events — BEFORE
         _deferral_sweep_tick(now)         # the walk, independent of the nudge toggle (the stall/swirl
     except Exception:                     # surfaces read these records regardless)
@@ -22249,6 +22454,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
                     be.kill(sid)
+                    _record_death(sid, int(time.time()), "kill")
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_all()
                 return self._send(200, json.dumps({"ok": True}), "application/json")
@@ -23420,6 +23626,7 @@ def main():
     signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
     _ensure_bundles()
     try:                                                      # the diary boot sweep (2026-07-07): migrate every
+        _death_boot_pass()                                    # deaths no kernel was up to see: stamp them
         _n = jd.migrate_all_stores()                          # goal store/archive BEFORE any judge pass runs —
         if _n:                                                # the hot paths carry no migration logic anymore
             sys.stderr.write("romp-kernel: diary sweep migrated %d store file(s)\n" % _n)
