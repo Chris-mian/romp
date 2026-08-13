@@ -21614,6 +21614,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Take the declared type at its word. Without this a browser may sniff a response whose
+        # bytes look like markup and run it as HTML on the dashboard's own origin, which is the
+        # same escalation the /remote/…/file relay's own type check closes from the other side.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # Framing gate (clickjacking): the authenticated dashboard must not be loadable in a
+        # cross-origin frame, or a hostile same-site loopback page (the same attacker the cookie
+        # Origin gate below defends against) could frame it and drive it invisibly. SAMEORIGIN keeps
+        # the dashboard's own same-origin sub-frames (/chat, /feed) working. NOTE: the VS Code
+        # webview loads the dashboard from a vscode-webview:// origin — if that surface is still
+        # needed it must be added to a frame-ancestors allowlist; confirm against every shipped
+        # client (webview / phone / tailnet) before relying on this.
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'self'")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         if cache:                                     # e.g. "no-cache" — keeps a tab from running a stale bundle
@@ -21678,11 +21691,21 @@ class Handler(BaseHTTPRequestHandler):
         once and ride the auto-set cookie; local CLIs/hooks read the file and send X-Romp-Token (a
         custom header forces a CORS preflight through this same gate, so a cross-site page can't
         forge it either). Token-less browser traffic still hits the Origin gate first (the
-        ClawJacked/WS hole) so a denial names the real reason."""
+        ClawJacked/WS hole) so a denial names the real reason.
+
+        The COOKIE is the one credential that does NOT bypass the Origin gate, because it is the one
+        the browser attaches for you: cookies are scoped by host and NOT by port (RFC 6265 §8.5), so
+        every `http://127.0.0.1:<any-port>` page is same-site with the dashboard and rides this
+        cookie — SameSite=Strict included. Without the Origin check below, any page served by
+        anything else on loopback (an agent-cloned repo's dev server) reached `/ws`, which streams
+        every session and accepts sendMessage. Presenting a token proves you are not a drive-by page;
+        carrying a cookie proves only that the browser had one. Nothing in the shipped UI needs the
+        cookie cross-origin: the dashboard's own socket is same-origin, federation relays through the
+        hub's own origin WITH ?token, and the VS Code webview origin is allowed by _origin_ok."""
         if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
             return True, TOKEN, ""                    # valid ?token → authorize (any origin) + set cookie
-        if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
-            return True, None, ""                     # valid token cookie → authorize (any origin)
+        if TOKEN and _ct_eq(self._cookie_token(), TOKEN) and self._origin_ok():
+            return True, None, ""                     # valid token cookie + same-site origin
         if TOKEN and _ct_eq(self.headers.get("X-Romp-Token") or "", TOKEN):
             return True, None, ""                     # header form — local CLI/hook/daemon clients
         if not self._origin_ok():
@@ -21707,6 +21730,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(size))   # the real length, no body (HEAD semantics)
+            self.send_header("X-Content-Type-Options", "nosniff")   # _send's guarantee, restated on the HEAD path
             self.send_header("Cache-Control", "no-cache")
             if getattr(self, "_cors_origin", None):         # the chat's fetch-HEAD probe rides CORS too
                 self.send_header("Access-Control-Allow-Origin", self._cors_origin)
@@ -23266,6 +23290,15 @@ class Handler(BaseHTTPRequestHandler):
         if not port:
             return self._send(404, b"" if head else ("no attached host %r" % host), "text/plain")
         q = parse_qs(query or "")
+        # Our own verdict on the type, before the remote gets a say: derive the Content-Type from the
+        # requested extension against _PREVIEW_MIME (the same table + 404 the local /file route uses)
+        # and DISCARD the remote's own Content-Type below. Mirroring it let a compromised remote answer
+        # text/html for a path the preview lightbox opens in a same-origin, unsandboxed iframe
+        # (ui/webview/preview.ts) — script on the dashboard's origin with the cookie attached. An
+        # extension the local route would 404 is 404'd here too, so the relay never widens what renders.
+        mime = _PREVIEW_MIME.get(os.path.splitext((q.get("path") or [""])[0])[1].lower())
+        if not mime:
+            return self._send(404, b"" if head else "not found", "text/plain")
         if rtok:
             q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
         conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=15)
@@ -23273,7 +23306,7 @@ class Handler(BaseHTTPRequestHandler):
             conn.request("HEAD" if head else "GET", "/file?" + urlencode(q, doseq=True))
             resp = conn.getresponse()
             body = b"" if head else resp.read(_PREVIEW_MAX_BYTES + 1)
-            status, ctype = resp.status, resp.getheader("Content-Type") or "application/octet-stream"
+            status, ctype = resp.status, mime          # OUR mime, never resp.getheader("Content-Type")
             clen = resp.getheader("Content-Length")
         except (OSError, http.client.HTTPException):
             return self._send(502, b"" if head else ("tunnel to %s is not answering" % host), "text/plain")
@@ -23290,6 +23323,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             if clen is not None:
                 self.send_header("Content-Length", clen)
+            self.send_header("X-Content-Type-Options", "nosniff")   # _send's guarantee, restated on the HEAD path
             self.send_header("Cache-Control", "no-cache")
             if getattr(self, "_cors_origin", None):
                 self.send_header("Access-Control-Allow-Origin", self._cors_origin)
