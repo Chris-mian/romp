@@ -229,6 +229,10 @@ def _block_to_dict(b):
 # UserMessages wrapped in these markers, and the LIVE atom must classify them exactly like the file
 # adapter classifies the matching transcript records.
 _COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")
+# …and the tag ANYWHERE inside a wrapper record (the event model's COMMAND_NAME_ANY_RE twin): a SKILL /
+# custom command writes <command-message> first, so the anchored form missed it and the live stream
+# swallowed the invocation as wrapper noise (2026-08-13 — the same shape the file adapter fixed 2026-07-22).
+_COMMAND_NAME_ANY_RE = re.compile(r"<command-name>([^<]*)</command-name>")
 _COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")
 _LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")
 _CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-command-(?:stdout|caveat))>")
@@ -298,7 +302,8 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
             return None
         text = " ".join(b.get("text", "") for b in content
                         if isinstance(b, dict) and b.get("type") == "text")
-        mcmd = _COMMAND_NAME_RE.match(text)
+        mcmd = _COMMAND_NAME_RE.match(text) or (_COMMAND_NAME_ANY_RE.search(text)
+                                                if _CMD_WRAP_RE.match(text) else None)
         if mcmd:                                     # the command INVOCATION → the command-flagged user atom
             name = mcmd.group(1).strip() or "/?"
             if not name.startswith("/"):
