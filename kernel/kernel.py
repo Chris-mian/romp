@@ -15630,7 +15630,7 @@ def _usage():
     # dollars belong on the rail next to the login's real %.
     if _auth_key_present():
         ksp = _spend_windows(keyed_only=True)
-        if any((ksp.get(k) or {}).get("turns") for k in ("fiveHour", "sevenDay", "month")):
+        if any((ksp.get(k) or {}).get("turns") for k in ("day", "week", "month")):
             out["spend"] = ksp
     return out
 
@@ -15711,7 +15711,13 @@ def _spend_windows(keyed_only=False):
         return _sum(v for k, v in hours.items() if k in keys)
 
     month = time.strftime("%Y-%m")
+    # day/week are the API-key cell's windows (the user 2026-08-13: pay-per-token has no reset windows,
+    # so "one day / one week / one month" is the honest read; the hour ledger holds 192h = 8 days, so
+    # both fit). fiveHour/sevenDay stay emitted for ONE release: a remote host on an older kernel still
+    # sums its cell from them (version skew), and the strip reads day||fiveHour meanwhile. month stays
+    # calendar month-to-date — it matches the bill.
     win = {"fiveHour": _rolling(5), "sevenDay": _rolling(7 * 24),
+           "day": _rolling(24), "week": _rolling(7 * 24),
            "month": _sum(v for k, v in days.items() if isinstance(k, str) and k.startswith(month))}
     for k, v in _spend_budgets().items():
         win[k]["budget"] = v
@@ -19828,12 +19834,14 @@ function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
 // machine, spend INSTEAD of bars); with per-session auth one host carries bars AND its key's spend at
 // once (the user 2026-08-08), so presence of the windows is the whole test. strip.ts carries the same
 // branch; the two copies must stay in step (rail-spend pins).
-function hasSpend(u){return !!(u&&u.spend&&u.spend.fiveHour);}
+function hasSpend(u){return !!(u&&u.spend&&(u.spend.day||u.spend.fiveHour));}
 function fmtTok(n){if(n>=1e9)return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
 if(n>=1e6)return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
 if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
 function fmtUsd(v){return '$'+String(Math.round(v));}   // whole dollars everywhere — no cents (the user 2026-08-09)
-var SPEND_WINS=[['fiveHour','5 hours'],['sevenDay','7 days'],['month','Month']];
+// pay-per-token has no reset windows (the user 2026-08-13): the key's story is 1 day / 1 week / 1 month.
+// fiveHour/sevenDay fallbacks remain readable from older remote kernels (version skew) via day||fiveHour.
+var SPEND_WINS=[['day','1 day'],['week','1 week'],['month','1 month']];
 // The per-host SPEND detail for the rich hover: plain NUMBERS per window (dollars, tokens, turns).
 // No bars anywhere for spend (the user 2026-08-08: the spend bar graphs told you nothing. The old
 // hover scaled each window's bar to the largest window, a shape with no meaning, and the budget-fill
@@ -19861,25 +19869,24 @@ det[w[0]]={name:w[2],pct:pct,col:col,tp:tp,unk:rolled,ago:(rolled?fmtAgo(seg.res
 // every reporter has ROLLED is unknown ('?'), exactly as a single account's was; a shared login on two
 // hosts reports the same number twice and the max collapses it for free.
 function aggBarsHTML(live){var html='';
-WINS.forEach(function(w){var best=null,anyRolled=false;
+WINS.forEach(function(w){var best=null;
 live.forEach(function(e){var d=e.det[w[0]];if(!d)return;
-if(d.unk){anyRolled=true;return;}
+if(d.unk)return;
 if(!best||d.pct>best.pct)best=d;});
-if(!best&&!anyRolled)return;
+if(!best)return;
 // Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks: the
 // used-% bar (colormap colour) ON TOP of the elapsed-% bar (slate) so you can compare pace at a glance (used
 // ahead of elapsed = burning too fast), then the used-% readout. All inline (label \u00b7 bars \u00b7 %).
-// An UNKNOWN window draws NO BARS (the user 2026-07-31, round 2): a faded last-known fill still
-// asserts a value we do not have; the length itself is the lie. Its slot holds a single '?' so the
-// rows stay aligned, and the last-known number lives in the hover, labelled as such.
-html+='<div class="ru-w'+(best?'':' ru-unk')+'" data-w="'+w[0]+'">'
+// An UNKNOWN window is not drawn AT ALL on the bar (the user 2026-08-13; supersedes the 2026-07-31 '?'
+// slot): the bar shows only what we know, and the last-known number keeps living in the hover,
+// labelled as such (winDet still computes unk/ago for exactly that).
+html+='<div class="ru-w" data-w="'+w[0]+'">'
 +'<div class=ru-name>'+w[2]+'</div>'
-+(best?('<div class=ru-bars>'
++'<div class=ru-bars>'
 +'<div class=ru-track><i class=ru-fill style="width:'+best.pct+'%;background:'+best.col+'"></i></div>'
 +'<div class=ru-track><i class=ru-fill style="width:'+(best.tp||0)+'%;background:#6b7a8c"></i></div>'
 +'</div>'
-+'<div class=ru-pct>'+best.pct+'%</div>')
-:'<div class=ru-bars><div class=ru-qmark>?</div></div>')
++'<div class=ru-pct>'+best.pct+'%</div>'
 +'</div>';});
 return html;}
 // The API cell (the user 2026-08-08): ONE compact entry for everything key-billed across the fleet \u2014
@@ -19890,15 +19897,19 @@ return html;}
 // constant 'API' \u2014 no fragment of any key, not even a last-4 tail, reaches a surface (2026-08-08,
 // evening: a tail is still key material, and the hover's HOST names already tell whose spend is
 // whose). The full per-window, per-host breakdown is the hover's job.
-function apiCellHTML(live){var sum={fiveHour:{usd:0,tok:0},month:{usd:0,tok:0}},any=false;
+function apiCellHTML(live){var sum={day:{usd:0,tok:0},month:{usd:0,tok:0}},any=false;
 live.forEach(function(e){var sp=e.det._spend;if(!sp)return;any=true;
-['fiveHour','month'].forEach(function(k){var s=sp[k];if(s){sum[k].usd+=s.usd;sum[k].tok+=s.tok||0;}});});
+// day||fiveHour: an older remote kernel ships no 'day' window yet (version skew) \u2014 its 5h burn is the
+// closest honest stand-in until it updates, and dropping it entirely would blank that host's spend
+var d=sp.day||sp.fiveHour,m=sp.month;
+if(d){sum.day.usd+=d.usd;sum.day.tok+=d.tok||0;}
+if(m){sum.month.usd+=m.usd;sum.month.tok+=m.tok||0;}});
 if(!any)return '';
 var seg=function(k,lbl){return '<div class=ru-name>'+lbl+'</div>'
 +'<div class=ru-pct>'+fmtUsd(sum[k].usd)+' \u00b7 '+fmtTok(sum[k].tok)+' tok</div>';};
 return '<div class="ru-w ru-api">'
 +'<div class=ru-name>API</div>'
-+seg('fiveHour','5 hours')+seg('month','Month')
++seg('day','1 day')+seg('month','1 month')
 +'</div>';}
 // The collapsed rail is the AGGREGATE story (the user 2026-08-08; supersedes the one-set-per-account
 // rendering of 2026-07-30): one set of window bars for the whole fleet plus one API cell, never a
@@ -21450,11 +21461,9 @@ def _landing():
             ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
             ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
             ".ru-fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;transition:width .3s ease}"
-            # UNKNOWN (the user 2026-07-31): a rolled window draws NO bars at all — a fill of any length
-            # asserts a value we do not have — only a '?' in the bars' slot. The last-known reading survives
-            # in the tooltip, labelled "last known" and faded, which is honest because it says what it is.
-            ".ru-qmark{width:54px;display:flex;align-items:center;justify-content:center;"
-            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a97a6}"
+            # UNKNOWN (the user 2026-08-13; supersedes the 2026-07-31 '?' slot): a rolled window is not
+            # drawn on the bar AT ALL — only what we know shows there. The last-known reading survives in
+            # the tooltip, labelled "last known" and faded, which is honest because it says what it is.
             ".ru-tip-row.ru-unk i{opacity:.3}.ru-tip-row.ru-unk .ru-tip-k,.ru-tip-row.ru-unk .ru-tip-v{color:#8a97a6}"
             ".ru-pct{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
