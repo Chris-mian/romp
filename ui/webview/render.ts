@@ -34,6 +34,7 @@ import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
+import { threadsByAnchor, threadBusy, threadStuck, findExact, sliceRanges, prunePending, type CommentThread } from "./comments";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -3747,6 +3748,13 @@ function showSelectionMenu(e: MouseEvent) {
     menu.appendChild(item);
   };
   mk("Reply", () => quoteSelectionIntoComposer(text));
+  // Comment (the user 2026-08-13): open a side thread anchored to this passage. Only when the
+  // selection sits in a real transcript turn (transcriptSelection's uuid) on a real session.
+  const q = transcriptSelection();
+  if (q?.uuid && activeId && !isProvisionalId(activeId) && sessions.get(activeId)) {
+    const sid = activeId, uuid = q.uuid, qtext = q.text;
+    mk("Comment", () => openCommentComposer(sid, uuid, qtext, e.clientX, e.clientY));
+  }
   mk("Copy", () => copyToClipboard(text));
   document.body.appendChild(menu);
   ctxMenuEl = menu;
@@ -5048,6 +5056,337 @@ function showForkPrompt(sid: string, uuid: string): void {
   input.focus(); input.setSelectionRange(0, input.value.length);
 }
 
+// ── COMMENT THREADS (the user 2026-08-13) ───────────────────────────────────────────────────────────
+// Highlight a passage → "Comment" on the selection menu → a side conversation opens right there, in a
+// pane-local popover anchored to the highlighted text. The kernel forks the session at the anchored
+// message (the thread's agent holds exactly the context that produced the passage) and keeps the fork
+// off the board; this side owns the anchoring: a <mark> over the exact text (re-found per render,
+// whitespace-tolerantly — comments.ts) plus a per-turn badge that survives even when the rendered text
+// drifts, so a thread is never unreachable. State lives in module maps keyed by sid/tid, so every
+// re-render (the transcript rebuilds constantly) reapplies it — the openFolds pattern.
+const commentThreads = new Map<string, CommentThread[]>();          // parent sid → last frame's threads
+const commentPending = new Map<string, { text: string; t: number }[]>(); // tid → optimistic sends
+const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
+let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
+let pendingCommentAnchor: { sid: string; uuid: string; exact: string } | null = null; // create mode
+let commentPopPos: { x: number; y: number } | null = null;
+
+function closeCommentPop(): void {
+  document.getElementById("cmt-pop")?.remove();
+  openCommentKey = null;
+  pendingCommentAnchor = null;
+}
+
+// close on any press outside the popover (drafts persist in commentDrafts; reopening restores them)
+document.addEventListener("mousedown", (ev) => {
+  const pop = document.getElementById("cmt-pop");
+  if (pop && !pop.contains(ev.target as Node)) closeCommentPop();
+}, true);
+
+/** Re-anchor every thread of `sid` onto its rendered turn: the exact-text <mark> plus the turn badge.
+ *  Idempotent and cheap (early-out when the session has no threads) — called after every payload that
+ *  can rebuild transcript DOM, and after each comments frame. */
+function applyCommentMarks(sid: string): void {
+  const v = views.get(sid);
+  if (!v) return;
+  const threads = commentThreads.get(sid) || [];
+  const have = new Set(threads.map((t) => t.tid));
+  for (const old of Array.from(v.el.querySelectorAll("mark.cmt-hl"))) {
+    if (!have.has((old as HTMLElement).dataset.tid || "")) unwrapCommentMark(old as HTMLElement);
+  }
+  for (const b of Array.from(v.el.querySelectorAll(".cmt-badge"))) {
+    const uuid = (b.closest(".turn") as HTMLElement | null)?.dataset.uuid || "";
+    if (!threads.some((t) => t.anchorUuid === uuid)) b.remove();
+  }
+  if (!threads.length) return;
+  for (const [uuid, list] of threadsByAnchor(threads)) {
+    const turn = v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
+    if (!turn) continue;                       // windowed out — the mark returns when the turn does
+    ensureCommentBadge(turn, list);
+    for (const th of list) ensureCommentMark(turn, th);
+  }
+}
+
+function unwrapCommentMark(markEl: HTMLElement): void {
+  const p = markEl.parentNode;
+  if (!p) return;
+  while (markEl.firstChild) p.insertBefore(markEl.firstChild, markEl);
+  markEl.remove();
+  p.normalize();
+}
+
+function ensureCommentBadge(turn: HTMLElement, list: CommentThread[]): void {
+  turn.classList.add("has-cmt");               // positions the badge (styles.css .turn.has-cmt)
+  let b = turn.querySelector(":scope > .cmt-badge") as HTMLButtonElement | null;
+  if (!b) {
+    b = el("button", "cmt-badge") as HTMLButtonElement;
+    b.type = "button";
+    b.dataset.act = "cmtopen";                 // delegated on document.body — click-safe across rebuilds
+    turn.appendChild(b);
+  }
+  b.textContent = String(list.length);
+  b.dataset.tid = (list.find((t) => t.unread && t.status === "open") || list[list.length - 1]).tid;
+  b.classList.toggle("unread", list.some((t) => t.unread && t.status === "open"));
+  b.classList.toggle("busy", list.some((t) => threadBusy(t.state) && t.status === "open"));
+  b.title = (list.length === 1 ? "1 thread" : list.length + " threads") + " on this message. Click to open";
+}
+
+function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
+  const sel = `mark.cmt-hl[data-tid="${cssEscape(th.tid)}"]`;
+  if (!turn.querySelector(sel)) {
+    const body = turn.querySelector(".md") as HTMLElement | null;
+    if (!body) return;                          // no prose body (a tool row) — the badge carries it
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    let n: Node | null;
+    while ((n = walker.nextNode())) nodes.push(n as Text);
+    const r = findExact(nodes.map((t) => t.data).join(""), th.exact);
+    if (!r) return;                             // rendered text drifted — the badge still reaches it
+    for (const sl of sliceRanges(nodes.map((t) => t.data.length), r.start, r.end)) {
+      const t = nodes[sl.idx];
+      const mid = sl.s > 0 ? t.splitText(sl.s) : t;
+      if (sl.e - sl.s < mid.data.length) mid.splitText(sl.e - sl.s);
+      const m = document.createElement("mark");
+      m.className = "cmt-hl";
+      m.dataset.tid = th.tid;
+      m.dataset.act = "cmtopen";
+      mid.parentNode?.insertBefore(m, mid);
+      m.appendChild(mid);
+    }
+  }
+  for (const seg of Array.from(turn.querySelectorAll(sel))) styleCommentMark(seg as HTMLElement, th);
+}
+
+function styleCommentMark(m: HTMLElement, th: CommentThread): void {
+  m.classList.toggle("resolved", th.status === "resolved");
+  m.classList.toggle("unread", !!th.unread && th.status === "open");
+  m.classList.toggle("busy", threadBusy(th.state) && th.status === "open");
+  m.title = th.status === "promoted" ? "thread, now the session '" + th.promotedName + "'"
+    : th.status === "resolved" ? "resolved thread: click to read or reopen"
+    : "thread: click to open";
+}
+
+function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number): void {
+  pendingCommentAnchor = { sid, uuid, exact };
+  openCommentKey = null;
+  commentPopPos = { x, y };
+  renderCommentPopover();
+}
+
+function openCommentPopover(sid: string, tid: string, x?: number, y?: number): void {
+  openCommentKey = { sid, tid };
+  pendingCommentAnchor = null;
+  if (x != null && y != null) commentPopPos = { x, y };
+  vscodeApi?.postMessage({ type: "commentSeen", id: sid, tid });
+  const th = (commentThreads.get(sid) || []).find((t) => t.tid === tid);
+  if (th) th.unread = false;                    // optimistic; the kernel's watermark reconciles
+  renderCommentPopover();
+  applyCommentMarks(sid);
+}
+
+function commentMsgEl(who: "you" | "agent", text: string): HTMLElement {
+  const n = el("div", "cmt-msg " + who);
+  if (who === "agent") n.innerHTML = md(text);
+  else n.textContent = text;
+  return n;
+}
+
+/** The popover — ONE pane-local card (no backdrop: the conversation stays readable beside it),
+ *  rebuilt from state so a comments frame landing mid-conversation just re-renders it in place. */
+function renderCommentPopover(): void {
+  const prev = document.getElementById("cmt-pop");
+  const prevScroll = (prev?.querySelector(".cmt-msgs") as HTMLElement | null)?.scrollTop ?? null;
+  const hadFocus = !!prev?.querySelector(".cmt-input:focus-within, .cmt-input:focus");
+  prev?.remove();
+  const create = pendingCommentAnchor;
+  const key = openCommentKey;
+  if (!create && !key) return;
+  const sid = create ? create.sid : key!.sid;
+  const th = key ? (commentThreads.get(sid) || []).find((t) => t.tid === key.tid) : null;
+  if (key && !th) { closeCommentPop(); return; }
+  const pop = el("div", "cmt-pop");
+  pop.id = "cmt-pop";
+  const head = el("div", "cmt-head");
+  const title = el("span", "cmt-title");
+  title.textContent = create ? "New thread"
+    : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
+    : th!.status === "resolved" ? "Thread (resolved)" : "Thread";
+  const closeBtn = el("button", "cmt-x") as HTMLButtonElement;
+  closeBtn.type = "button";
+  closeBtn.textContent = "×";
+  closeBtn.title = "Close (the thread stays on its highlight)";
+  closeBtn.addEventListener("click", closeCommentPop);
+  head.append(title, closeBtn);
+  pop.appendChild(head);
+  const quote = el("div", "cmt-quote");
+  quote.textContent = create ? create.exact : th!.exact;
+  quote.title = "the highlighted passage this thread is about";
+  pop.appendChild(quote);
+  if (th) {
+    const list = el("div", "cmt-msgs");
+    const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
+    commentPending.set(th.tid, pend);
+    for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
+    for (const p of pend) {
+      const n = commentMsgEl("you", p.text);
+      n.classList.add("pending");
+      list.appendChild(n);
+    }
+    if (th.status === "open" && (threadBusy(th.state) || pend.length)) {
+      const dots = el("div", "cmt-dots");
+      dots.append(el("span"), el("span"), el("span"));
+      list.appendChild(dots);
+    }
+    if (th.status === "open" && threadStuck(th.state)) {
+      const note = el("div", "cmt-note");
+      note.textContent = "This thread hit a prompt it can't answer from here. Break it out to continue.";
+      list.appendChild(note);
+    }
+    pop.appendChild(list);
+  }
+  if (create || th!.status !== "promoted") {
+    const dk = create ? "new:" + create.uuid : th!.tid;
+    const send = el("button", "cmt-send") as HTMLButtonElement;
+    send.type = "button";
+    send.textContent = create ? "Start thread" : "Send";
+    const box = document.createElement("textarea");
+    box.className = "cmt-input";
+    box.rows = 2;
+    box.placeholder = create ? "Comment on this passage…"
+      : th!.status === "resolved" ? "Reply to reopen…" : "Reply…";
+    box.value = commentDrafts.get(dk) || "";
+    box.addEventListener("input", () => commentDrafts.set(dk, box.value));
+    box.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); send.click(); }
+      else if (ev.key === "Escape") { ev.stopPropagation(); closeCommentPop(); }
+    });
+    send.addEventListener("click", () => {
+      const text = box.value.trim();
+      if (!text || !vscodeApi) return;
+      send.disabled = true;                     // acknowledged before any round-trip
+      send.textContent = "Sending…";
+      if (create) {
+        // the draft survives until commentCreated adopts the thread — a refused create keeps the words
+        vscodeApi.postMessage({ type: "commentCreate", id: sid, uuid: create.uuid, exact: create.exact, text });
+      } else {
+        vscodeApi.postMessage({ type: "commentReply", id: sid, tid: th!.tid, text });
+        const pl = commentPending.get(th!.tid) || [];
+        pl.push({ text, t: Date.now() / 1000 });
+        commentPending.set(th!.tid, pl);
+        commentDrafts.delete(dk);
+        renderCommentPopover();
+      }
+    });
+    pop.appendChild(box);
+    const row = el("div", "cmt-actions");
+    row.appendChild(send);
+    if (th) {
+      const br = el("button", "cmt-act") as HTMLButtonElement;
+      br.type = "button";
+      br.textContent = "Break out";
+      br.title = "Continue this thread as its own session; it keeps everything it knows";
+      br.addEventListener("click", () => showBreakoutPrompt(sid, th.tid));
+      row.appendChild(br);
+      if (th.status === "open") {
+        const rs = el("button", "cmt-act") as HTMLButtonElement;
+        rs.type = "button";
+        rs.textContent = "Resolve";
+        rs.title = "Settle this thread: the highlight dims, and replying reopens it";
+        rs.addEventListener("click", () => {
+          rs.disabled = true;
+          rs.textContent = "Resolving…";
+          vscodeApi?.postMessage({ type: "commentResolve", id: sid, tid: th.tid });
+        });
+        row.appendChild(rs);
+      } else {
+        const dl = el("button", "cmt-act cmt-del") as HTMLButtonElement;
+        dl.type = "button";
+        dl.textContent = "Delete";
+        dl.title = "Remove this thread and its highlight";
+        const disarm = () => { dl.classList.remove("armed"); dl.textContent = "Delete"; };
+        dl.addEventListener("click", () => {
+          if (!dl.classList.contains("armed")) { dl.classList.add("armed"); dl.textContent = "Really delete?"; return; }
+          vscodeApi?.postMessage({ type: "commentDelete", id: sid, tid: th.tid });
+          closeCommentPop();
+        });
+        dl.addEventListener("pointerleave", disarm);
+        dl.addEventListener("blur", disarm);
+        row.appendChild(dl);
+      }
+    }
+    pop.appendChild(row);
+  } else if (th) {
+    const row = el("div", "cmt-actions");
+    const open = el("button", "cmt-send") as HTMLButtonElement;
+    open.type = "button";
+    open.textContent = "Open the session";
+    open.addEventListener("click", () => { closeCommentPop(); setActive(th.tid); });
+    row.appendChild(open);
+    pop.appendChild(row);
+  }
+  document.body.appendChild(pop);
+  const r = pop.getBoundingClientRect();
+  const px = Math.max(8, Math.min(commentPopPos?.x ?? (window.innerWidth - r.width) / 2, window.innerWidth - r.width - 8));
+  const py = Math.max(8, Math.min(commentPopPos?.y ?? 120, window.innerHeight - r.height - 8));
+  pop.style.left = px + "px";
+  pop.style.top = py + "px";
+  const msgs = pop.querySelector(".cmt-msgs") as HTMLElement | null;
+  if (msgs) msgs.scrollTop = prevScroll != null ? Math.max(prevScroll, msgs.scrollHeight - msgs.clientHeight) : msgs.scrollHeight;
+  if (create || hadFocus || !th || !th.msgs.length) (pop.querySelector(".cmt-input") as HTMLTextAreaElement | null)?.focus();
+}
+
+// BREAK OUT (the user 2026-08-13: "a button that breaks it out into its own session") — the fork
+// modal's shape: a name box, Enter/Break out, provisional tab as the instant acknowledgement. The
+// kernel seeds the judge stores and registers the session (commentPromote); the popover's thread
+// flips to "promoted" on the next comments frame.
+function showBreakoutPrompt(sid: string, tid: string): void {
+  const sess = sessions.get(sid);
+  const base = (sess?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-");
+  document.getElementById("fork-prompt")?.remove();
+  const overlay = el("div", "picker-overlay confirm-overlay");
+  overlay.id = "fork-prompt";
+  const box = el("div", "picker-box confirm-box");
+  const h = el("div", "confirm-title");
+  h.textContent = "Break out the thread";
+  const d = el("div", "confirm-detail");
+  d.textContent = "The thread becomes its own session, keeping the conversation up to its highlight plus everything discussed since.";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "fork-name";
+  input.value = base + "-thread";
+  input.setAttribute("autocapitalize", "off");
+  input.setAttribute("autocomplete", "off");
+  input.setAttribute("autocorrect", "off");
+  input.setAttribute("spellcheck", "false");
+  const actions = el("div", "confirm-actions");
+  const cancel = el("button", "picker-action confirm-btn");
+  cancel.textContent = "Cancel";
+  const create = el("button", "picker-action confirm-btn");
+  create.textContent = "Break out";
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey, true); };
+  const go = () => {
+    const name = input.value.trim();
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) { input.classList.add("bad"); input.focus(); return; }
+    vscodeApi?.postMessage({ type: "commentPromote", id: sid, tid, name });
+    close();
+    closeCommentPop();
+    openProvisional({ name, backend: "sdk", dir: "", host: hostOf(sid) });
+  };
+  cancel.addEventListener("click", close);
+  create.addEventListener("click", go);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  input.addEventListener("input", () => input.classList.remove("bad"));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  box.append(h, d, input, actions);
+  actions.append(cancel, create);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", onKey, true);
+  input.focus();
+  input.setSelectionRange(0, input.value.length);
+}
+
 // THE MCP PANEL (the user 2026-08-05). `/mcp` in a romp session used to be a dead end: the CLI's own
 // panel is an interactive TUI an SDK-driven session cannot render, so it replied "use a terminal". The
 // SDK exposes the same facts and repairs as control requests (get_mcp_status / toggle_mcp_server /
@@ -6323,6 +6662,7 @@ function virtualizeToViewport(): void {
         const yNow = anchor.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
         content.scrollTop = yNow - beforeY;
       }
+      if (activeId) applyCommentMarks(activeId);   // the re-window rebuilt turns — re-anchor highlights
       scheduleRailSticky();
     } finally {
       hideLoadingPill();
@@ -8707,7 +9047,29 @@ window.addEventListener("message", (e: MessageEvent) => {
     seedEditorQuote(activeId, m.text, typeof m.src === "string" ? m.src : undefined);
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
+  // comment threads (the user 2026-08-13): the per-session thread frame — store, re-anchor the
+  // highlights, and refresh the popover if it's showing one of these threads
+  else if (m.type === "comments" && m.id) {
+    commentThreads.set(String(m.id), (m.threads || []) as CommentThread[]);
+    applyCommentMarks(String(m.id));
+    if (openCommentKey && openCommentKey.sid === m.id) renderCommentPopover();
+  }
+  // the create ack: adopt exactly the thread this popover made (never a guess), spend its draft
+  else if (m.type === "commentCreated" && m.id && m.tid) {
+    if (pendingCommentAnchor && pendingCommentAnchor.sid === m.id) {
+      commentDrafts.delete("new:" + pendingCommentAnchor.uuid);
+      pendingCommentAnchor = null;
+      openCommentKey = { sid: String(m.id), tid: String(m.tid) };
+      vscodeApi?.postMessage({ type: "commentSeen", id: String(m.id), tid: String(m.tid) });
+      renderCommentPopover();
+    }
+  }
   else if (m.type === "closed") dismissSession(m.id);   // a session died on its own (or the kernel confirms our close)
+  // any payload that rebuilt transcript DOM must get its highlights re-applied (marks live IN that DOM)
+  if (m && m.id && (m.type === "session" || m.type === "chatTail" || m.type === "chatHead" || m.type === "chatEpisode"))
+    applyCommentMarks(String(m.id));
+  // a refused create (warn) must hand the popover back — the draft is intact, the button un-sticks
+  if (m && m.type === "warn" && pendingCommentAnchor) renderCommentPopover();
 });
 
 // Tick the working timer (the chip color-pulse is pure CSS) and keep the model/ctx
@@ -9426,6 +9788,14 @@ setupSettings();
       const grp = bub?.closest(".turn-queued") as HTMLElement | null;
       bub?.remove();
       if (grp) reflowQueuedGroup(grp);
+    },
+    // a comment highlight or its turn badge (the user 2026-08-13): open the thread's popover at the
+    // click. Delegated — marks and badges are re-created on every transcript rebuild.
+    cmtopen: (elx) => {
+      const tid = elx.dataset.tid;
+      if (!tid || !activeId) return;
+      const r = elx.getBoundingClientRect();
+      openCommentPopover(activeId, tid, Math.min(r.left, window.innerWidth - 380), r.bottom + 6);
     },
     // "copy to composer" on a never-delivered bubble: the echo is the only surviving copy of the text —
     // hand it back for review-and-resend (the same restore the queued ✕ uses). Delegated like qx: the

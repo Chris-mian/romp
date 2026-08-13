@@ -4471,6 +4471,395 @@ def _seed_fork_stores(parent_sid, sid, path, cut_uuid):
     return None
 
 
+# ── comment threads (the user 2026-08-13) ─────────────────────────────────────────────
+# Highlight a passage in a session's chat, comment on it, and a side conversation opens right
+# there: a popover anchored to the highlighted text, powered by a FORK of the session cut at the
+# anchored message (fork_session + --resume-session-at, INCLUSIVE — the thread's agent holds
+# exactly the context that produced the passage). The fork is a comment THREAD (reg threadOf=
+# parent, no names/ entry): no tab, no lane, no cards, no judge pass — its whole user surface is
+# the parent chat's highlight + popover, and "Break out" promotes it into a full board session
+# (judge seeds first, names/ last: the fork() ordering contract). The thread REGISTRY lives in
+# comments/<parent sid>.json (anchor, thread sid, status); the CONVERSATION lives in the thread's
+# own transcript — the authoritative store — projected into the {type:"comments"} frame per push.
+
+_comments_lock = threading.Lock()          # store read-modify-writes from WS handler threads
+_thread_msgs_cache = {}                    # thread sid -> (path, mtime, cut_uuid, msgs)
+
+
+def _comments_path(sid):
+    return jd.STATE / "comments" / (sid + ".json")
+
+
+def _load_comments(sid):
+    try:
+        d = json.loads(_comments_path(sid).read_text())
+        return d if isinstance(d, dict) else {"threads": []}
+    except (OSError, ValueError):
+        return {"threads": []}
+
+
+def _save_comments(sid, data):
+    _atomic_write(_comments_path(sid), json.dumps(data))
+
+
+def _comment_thread(parent_sid, tid):
+    """The stored thread row, or None. Reads fresh — the store is tiny and mutation runs under
+    _comments_lock, so a stale row can only come from skipping this."""
+    for th in _load_comments(parent_sid).get("threads") or []:
+        if th.get("tid") == tid:
+            return th
+    return None
+
+
+def _comment_update(parent_sid, tid, **changes):
+    """Apply `changes` to one thread row under the lock. Returns the updated row or None."""
+    with _comments_lock:
+        data = _load_comments(parent_sid)
+        for th in data.get("threads") or []:
+            if th.get("tid") == tid:
+                th.update(changes)
+                _save_comments(parent_sid, data)
+                return th
+    return None
+
+
+def _comment_prose_record(r):
+    """Is this record a clean INCLUSIVE cut point — a user/assistant message that is prose, with no
+    tool traffic? A record carrying tool_use/tool_result must not end the fork's copied history: the
+    fork would open on a dangling tool call and the next turn would be malformed. (The rewind family
+    never faces this — its cut is always 'just before a typed user message', which sits after a
+    settled turn by construction.)"""
+    if not r or r.get("type") not in ("user", "assistant"):
+        return False
+    c = (r.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return bool(c)
+    has_text = has_call = False
+    for b in (c or []):
+        if isinstance(b, dict):
+            if b.get("type") == "text":
+                has_text = True
+            elif b.get("type") in ("tool_use", "tool_result"):
+                has_call = True
+    return has_text and not has_call
+
+
+def _comment_cut_target(path, sid, anchor_uuid):
+    """(cut_uuid, error) — where a comment thread's fork should cut: at the anchored message itself,
+    INCLUSIVE (_rewind_target's 'just before' would drop the very passage the user highlighted).
+    Same guards as the rewind family: the record must exist, sit on the ACTIVE chain, postdate the
+    last compaction; when the anchor record isn't itself a clean prose cut (a tool row, a tool
+    result), the nearest prose ANCESTOR carries it — the opening message quotes the highlighted
+    passage verbatim, so nothing the user pointed at is lost to the thread's agent."""
+    cands = [path]
+    anchor = os.path.join(os.path.dirname(path), sid + ".jsonl")
+    if os.path.basename(path) != sid + ".jsonl" and os.path.exists(anchor):
+        cands.append(anchor)
+    ad = em.FileAdapter(cands, path)
+    if anchor_uuid not in ad.by_uuid:
+        return None, "that message isn't in the transcript yet; try again in a moment"
+    is_boundary = lambda r: r is not None and r.get("type") == "system" and r.get("subtype") == "compact_boundary"
+    u, hops, on_active = ad.leaf_uuid, 0, False
+    while u is not None and hops < 500000:
+        if u == anchor_uuid:
+            on_active = True
+            break
+        if is_boundary(ad.by_uuid.get(u)):
+            return None, "that message predates the last context compaction; only newer passages can open a thread"
+        u = ad.parent_of.get(u); hops += 1
+    if not on_active:
+        return None, "that message is on a branch that was rewound away"
+    u, hops = anchor_uuid, 0
+    while u is not None and hops < 500000:
+        r = ad.by_uuid.get(u)
+        if r is None or is_boundary(r):
+            break
+        if _comment_prose_record(r):
+            return u, None
+        u = ad.parent_of.get(u); hops += 1
+    return None, "that message can't anchor a thread; try a passage from the conversation itself"
+
+
+_COMMENT_FRAME_HEAD = "About this part of the conversation:"
+
+
+def _comment_first_message(exact, comment):
+    """The thread's opening message — romp-authored FRAMING around the user's own words, read by an
+    agent that has the conversation up to the highlight and no idea it is being tracked, so it
+    speaks as the person it works for quoting the conversation back (test_injected_voice scans it;
+    it must never name romp machinery)."""
+    q = "\n".join("> " + ln for ln in str(exact or "").splitlines()).strip() or "> …"
+    return "%s\n\n%s\n\n%s" % (_COMMENT_FRAME_HEAD, q, str(comment or "").strip())
+
+
+def _comment_strip_frame(text):
+    """The opening message, shown as the user's COMMENT alone — the framing + quote it was wrapped
+    in for the thread's agent already sit in the popover header, so rendering them again would say
+    everything twice."""
+    if not text.startswith(_COMMENT_FRAME_HEAD):
+        return text
+    lines = text.splitlines()
+    i = 1
+    while i < len(lines) and (not lines[i].strip() or lines[i].lstrip().startswith(">")):
+        i += 1
+    return "\n".join(lines[i:]).strip() or text
+
+
+def _comment_msg_text(rec):
+    """Visible text of a raw transcript user/assistant record — text blocks only (tool traffic and
+    thinking are the popover's 'working…' phase, not its conversation)."""
+    if rec.get("isMeta"):
+        return ""
+    m = rec.get("message") or {}
+    c = m.get("content")
+    if isinstance(c, str):
+        return c.strip()
+    parts = [b.get("text") or "" for b in (c or []) if isinstance(b, dict) and b.get("type") == "text"]
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _thread_reg(tsid):
+    """The thread's SDK registry entry (authoritative for cwd/lastSid/threadOf), {} when unreadable."""
+    try:
+        d = json.loads((jd.STATE / "sdk" / (tsid + ".json")).read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _thread_transcript_path(reg, tsid):
+    fsid = reg.get("lastSid") or tsid
+    return str(jd._proj_dir(reg.get("cwd") or os.path.expanduser("~")) / (fsid + ".jsonl"))
+
+
+def _thread_messages(tsid, cut_uuid):
+    """The side conversation: user/assistant text AFTER the fork cut in the thread's transcript,
+    oldest first, [{who, text, t}]. The fork copies parent history VERBATIM (same uuids), so
+    everything above `cut_uuid` on the active chain IS the thread's own exchange. mtime-cached —
+    a settled thread costs one stat per push. [] before the fork lands (the CLI is still copying;
+    the popover shows its working state, not an error — the transcript's absence is expected there)."""
+    reg = _thread_reg(tsid)
+    path = _thread_transcript_path(reg, tsid)
+    try:
+        mt = os.stat(path).st_mtime
+    except OSError:
+        return []
+    hit = _thread_msgs_cache.get(tsid)
+    if hit and hit[0] == path and hit[1] == mt and hit[2] == cut_uuid:
+        return hit[3]
+    ad = em.FileAdapter([path], path)
+    rows, u, hops = [], ad.leaf_uuid, 0
+    while u is not None and hops < 500000:
+        if u == cut_uuid:
+            break                                   # copied history starts here — the parent's, not the thread's
+        r = ad.by_uuid.get(u) or {}
+        if r.get("type") in ("user", "assistant"):
+            txt = _comment_msg_text(r)
+            if txt:
+                rows.append({"who": "you" if r.get("type") == "user" else "agent",
+                             "text": txt[:4000],
+                             "t": int(em.parse_z(r.get("timestamp")) or 0)})
+        u = ad.parent_of.get(u); hops += 1
+    rows.reverse()
+    if rows and rows[0]["who"] == "you":            # the opening message: show the comment, not its frame
+        rows[0]["text"] = _comment_strip_frame(rows[0]["text"])
+    merged = []                                     # one assistant turn can span records — read as one reply
+    for r in rows:
+        if merged and merged[-1]["who"] == r["who"] == "agent":
+            merged[-1]["text"] = (merged[-1]["text"] + "\n\n" + r["text"])[:8000]
+            merged[-1]["t"] = r["t"] or merged[-1]["t"]
+        else:
+            merged.append(r)
+    merged = merged[-40:]
+    if len(_thread_msgs_cache) > 512:
+        _thread_msgs_cache.clear()
+    _thread_msgs_cache[tsid] = (path, mt, cut_uuid, merged)
+    return merged
+
+
+def _comments_frame(sid):
+    """The chat pane's {type:"comments"} frame for parent session `sid`, or None when it has never
+    had a thread. Built per push for sessions WITH a store (few) — _send_client's dedup keeps an
+    unchanged frame off the wire."""
+    p = _comments_path(sid)
+    if not p.exists():
+        return None
+    be = _sdk()
+    threads = []
+    for th in _load_comments(sid).get("threads") or []:
+        tsid = str(th.get("sid") or "")
+        status = th.get("status") or "open"
+        state = ""
+        if be and status == "open":
+            try:
+                state = be.session_state(tsid)
+            except Exception:
+                state = ""
+        msgs = [] if status == "promoted" else _thread_messages(tsid, str(th.get("cutUuid") or ""))
+        seen = int(th.get("lastSeenT") or 0)
+        unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
+        threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
+                        "exact": str(th.get("exact") or "")[:500], "status": status,
+                        "createdT": th.get("createdT") or 0, "state": state,
+                        "unread": unread, "promotedName": th.get("promotedName") or "",
+                        "msgs": msgs})
+    return {"type": "comments", "id": sid, "threads": threads}
+
+
+def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
+    """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
+    threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
+    opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
+    (None, the new thread's id) so the client can adopt exactly the thread it created."""
+    be = Sessions.backend_for(parent_sid)
+    if not (hasattr(be, "fork") and _sdk_ready()):
+        return "threads need the SDK backend; this session runs on tmux, so there is nothing to fork.", None
+    if not str(exact or "").strip() or not str(text or "").strip():
+        return "nothing to send: highlight a passage and write a comment.", None
+    now = now or time.time()
+    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    if not sess:
+        return "no transcript for this session yet, so nothing to comment on.", None
+    cut, err = _comment_cut_target(sess["path"], parent_sid, str(anchor_uuid))
+    if err:
+        return err, None
+    tsid = str(uuid.uuid4())
+    row = {"tid": tsid, "sid": tsid, "anchorUuid": str(anchor_uuid), "cutUuid": cut,
+           "exact": str(exact)[:2000], "status": "open",
+           "createdT": int(now), "lastSeenT": int(now)}
+    with _comments_lock:
+        data = _load_comments(parent_sid)
+        data.setdefault("threads", []).append(row)
+        _save_comments(parent_sid, data)
+    try:
+        be.fork("thread-" + tsid[:8], parent_sid, cut, sid=tsid, thread_of=parent_sid)
+        be.connect(tsid)
+        be.send(tsid, _comment_first_message(exact, text))
+    except Exception as e:
+        with _comments_lock:                       # loud + lossless: no half-born thread row
+            data = _load_comments(parent_sid)
+            data["threads"] = [t for t in data.get("threads") or [] if t.get("tid") != tsid]
+            _save_comments(parent_sid, data)
+        return "thread not created: %s" % e, None
+    _push_soon()
+    return None, tsid
+
+
+def _comment_reply(parent_sid, tid, text):
+    """Send the user's next message into an existing thread. A resolved thread reopens — replying IS
+    the reopen gesture (event-based; no separate arm). Returns an error string or None."""
+    th = _comment_thread(parent_sid, tid)
+    if not th:
+        return "that thread is gone."
+    if (th.get("status") or "open") == "promoted":
+        return "this thread is now the session '%s'; continue there." % (th.get("promotedName") or "")
+    be = Sessions.backend_for(parent_sid)
+    if not hasattr(be, "fork"):
+        return "threads need the SDK backend."
+    tsid = th["sid"]
+    if th.get("status") == "resolved":
+        reg = _thread_reg(tsid)
+        be.resume(reg.get("name") or ("thread-" + tsid[:8]), tsid)   # alive again; names/ untouched
+        _comment_update(parent_sid, tid, status="open")
+    if not be.send(tsid, str(text)):
+        return "couldn't reach this thread's session; it may have been removed."
+    _comment_update(parent_sid, tid, lastSeenT=int(time.time()))
+    _push_soon()
+    return None
+
+
+def _comment_resolve(parent_sid, tid):
+    """Settle a thread: status→resolved and its CLI shut down (the reg stays — a later reply
+    resumes it with the conversation intact). The highlight dims; nothing is lost."""
+    th = _comment_thread(parent_sid, tid)
+    if not th:
+        return "that thread is gone."
+    _comment_update(parent_sid, tid, status="resolved")
+    be = Sessions.backend_for(parent_sid)
+    if hasattr(be, "kill") and th.get("status") != "promoted":
+        try:
+            be.kill(th["sid"])
+        except Exception:
+            pass                                    # already dead is fine — resolved is a store fact
+    _push_soon()
+    return None
+
+
+def _comment_delete(parent_sid, tid):
+    """Remove a thread outright (the popover's delete on a resolved thread). The thread's transcript
+    stays on disk like any conversation history; only romp's row and CLI go."""
+    th = _comment_thread(parent_sid, tid)
+    if not th:
+        return "that thread is gone."
+    be = Sessions.backend_for(parent_sid)
+    if hasattr(be, "kill") and th.get("status") != "promoted":
+        try:
+            be.kill(th["sid"])
+        except Exception:
+            pass
+    with _comments_lock:
+        data = _load_comments(parent_sid)
+        data["threads"] = [t for t in data.get("threads") or [] if t.get("tid") != tid]
+        _save_comments(parent_sid, data)
+    _push_soon()
+    return None
+
+
+def _comment_seen(parent_sid, tid):
+    """The popover was opened — stamp the read watermark (view state, not a verdict)."""
+    _comment_update(parent_sid, tid, lastSeenT=int(time.time()))
+    return None
+
+
+def _comment_promote(parent_sid, tid, new_name, now=None):
+    """Break a thread out into a FULL board session. Ordering contract (same as _fork_session):
+    judge stores are seeded BEFORE promote_thread writes the names/ entry. The seeds run against
+    the PARENT transcript at the ORIGINAL cut (the history the two transcripts share, verbatim),
+    then one extra episode boundary at the thread's own leaf raises the floor past the popover
+    exchange — that conversation already happened in front of the user; the new session's fresh
+    work starts after it. Returns an error string or None."""
+    nm = (new_name or "").strip()
+    if not NAME_RE.match(nm):
+        return "session names use letters, digits, . _ - only."
+    th = _comment_thread(parent_sid, tid)
+    if not th:
+        return "that thread is gone."
+    if (th.get("status") or "open") == "promoted":
+        return "already its own session: %s" % (th.get("promotedName") or "")
+    be = Sessions.backend_for(parent_sid)
+    if not (hasattr(be, "promote_thread") and _sdk_ready()):
+        return "threads need the SDK backend."
+    now = now or time.time()
+    tsid = th["sid"]
+    reg = _thread_reg(tsid)
+    tpath = _thread_transcript_path(reg, tsid)
+    if not os.path.exists(tpath):
+        return "this thread hasn't written its conversation yet; try again in a moment."
+    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    parent_path = sess["path"] if sess else str(jd._proj_dir(reg.get("cwd") or "~") / (parent_sid + ".jsonl"))
+    err = _seed_fork_stores(parent_sid, tsid, parent_path, str(th.get("cutUuid") or ""))
+    if err:
+        return err
+    try:                                            # floor past the settled popover exchange
+        ad = em.FileAdapter([tpath], tpath)
+        leaf = ad.leaf_uuid
+        leaf_t = int(em.parse_z((ad.by_uuid.get(leaf) or {}).get("timestamp")) or now)
+        jd.append_episode(tsid, leaf, reg.get("lastSid") or tsid, leaf_t)
+    except Exception as e:
+        return "not promoted: sealing the thread's history failed: %s" % e
+    if th.get("status") == "resolved":
+        be.resume(nm, tsid)                          # a resolved thread promotes straight to a live session
+    bg, fg = _pick_identity_color()
+    if not be.promote_thread(tsid, nm, bg, fg):
+        return "couldn't promote this thread."
+    _comment_update(parent_sid, tid, status="promoted", promotedName=nm)
+    be.connect(tsid)
+    _reveal_chat({"type": "focus", "id": tsid})
+    _mark_views_dirty()
+    _push_session_now(tsid)
+    return None
+
+
 # --- optional SDK (non-tmux) session backend (docs/sdk-backend.md) --------------------
 # A second SessionBackend that drives Claude via the Agent SDK instead of a tmux TUI,
 # selectable per session. Built lazily so the tmux-only path never imports the SDK and the
@@ -5057,7 +5446,8 @@ def _drive(msg, client):
     t = msg.get("type")
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode", "setFast",
-              "setAuth", "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction", "forkSession")
+              "setAuth", "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction", "forkSession",
+              "commentCreate", "commentReply", "commentResolve", "commentDelete", "commentSeen", "commentPromote")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -5307,6 +5697,39 @@ def _drive(msg, client):
         # user message the fork cuts just BEFORE — absent means the whole conversation. LOUD on refusal;
         # on success the new tab arrives focused via _fork_session's own push.
         err = _fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+    elif t == "commentCreate" and msg.get("uuid") and msg.get("exact") and msg.get("text"):
+        # Anchor a comment thread on a highlighted passage (the user 2026-08-13). LOUD on refusal; on
+        # success a commentCreated ack names the new thread (the popover adopts exactly it — never a
+        # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
+        err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+        else:
+            client["send"](json.dumps({"type": "commentCreated", "id": sid, "tid": tid,
+                                       "uuid": str(msg["uuid"])}))
+            fr = _comments_frame(sid)
+            if fr:
+                client["send"](json.dumps(fr))
+    elif t == "commentReply" and msg.get("tid") and msg.get("text"):
+        err = _comment_reply(sid, str(msg["tid"]), str(msg["text"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+    elif t == "commentResolve" and msg.get("tid"):
+        err = _comment_resolve(sid, str(msg["tid"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+    elif t == "commentDelete" and msg.get("tid"):
+        err = _comment_delete(sid, str(msg["tid"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
+    elif t == "commentSeen" and msg.get("tid"):
+        _comment_seen(sid, str(msg["tid"]))
+    elif t == "commentPromote" and msg.get("tid") and msg.get("name"):
+        # Break the thread out into its own board session. LOUD on refusal; on success the new tab
+        # arrives focused via _comment_promote's own push (the forkSession acknowledgement shape).
+        err = _comment_promote(sid, str(msg["tid"]), str(msg["name"]))
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
     elif t == "endSession":
@@ -11316,7 +11739,7 @@ def _rewind_target(path, sid, user_uuid):
         cands.append(anchor)
     ad = em.FileAdapter(cands, path)
     if user_uuid not in ad.by_uuid:
-        return None, "that message isn't in the transcript yet — try again in a moment"
+        return None, "that message isn't in the transcript yet; try again in a moment"
     is_boundary = lambda r: r is not None and r.get("type") == "system" and r.get("subtype") == "compact_boundary"
     # leaf → root: the edited record must appear BEFORE any compact boundary on the active chain
     u, hops, on_active = ad.leaf_uuid, 0, False
@@ -18146,6 +18569,19 @@ def _push(targets, connect=False, tmux=None):
                     _built_chat.pop(sid, None)
                     _prev_chat_events.pop(sid, None)
                     _prev_chat_ledger.pop(sid, None)
+            # COMMENT THREADS: one {type:"comments"} frame per session that has ever had one (its
+            # comments/ store exists — an ~free stat for everyone else). Each frame rides its OWN
+            # per-sid dedup slot, never the chat delta baseline (the 2026-07-28 stranded-delta rule):
+            # an unchanged frame costs nothing on the wire and the chatTail stream stays untouched.
+            for s in chat_list:
+                try:
+                    fr = _comments_frame(s["sid"])
+                except Exception:
+                    sys.stderr.write("comments frame failed for %s: %s\n" % (s["sid"], traceback.format_exc()))
+                    continue
+                if fr:
+                    for c in chat_clients:
+                        _send_client(c, ("comments", s["sid"]), fr)
         fsig = _fleet_view_sig(now, tmux) if (want_feed or want_tl) else None
         feed_src = _cached_feed(now, tmux, fsig, connect) if want_feed else None
         feed = feed_src
