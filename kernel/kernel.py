@@ -124,6 +124,32 @@ def _suspended_after(t):
     return any(start > (t or 0) for (start, _e) in _downtime)
 
 
+def _open_turn_progress(turns):
+    """{"since", "toolUses"} for the session's OPEN turn — the live narration every working card wears
+    (the user 2026-08-13: "always some detail about why they're working" — a tool count that climbs
+    and a timer that runs make a silently-stuck session visible at a glance, because a frozen count
+    under a climbing timer LOOKS wrong). None when the last turn ended: the other spin states
+    (Analyzing…, Awaiting…, the stall chip, the Blocked floors) own every idle beat, so this covers
+    exactly the case that used to be mute — an ordinary working card with its turn open. Derived from
+    the same cached parse as the working dot; a tool use is an assistant record's tool_use block."""
+    if not turns:
+        return None
+    lt = turns[-1]
+    if lt.get("ended"):
+        return None
+    n = 0
+    for a in (lt.get("atoms") or []):
+        if a.get("type") != "assistant":
+            continue
+        try:
+            for blk in ((a.get("message") or {}).get("content") or []):
+                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                    n += 1
+        except Exception:
+            pass
+    return {"since": lt.get("t"), "toolUses": n}
+
+
 def _session_working(turns):
     """Whether a session is ACTIVELY WORKING — the single source of truth for the working signal (the yellow
     dot on every surface, the auto-nudge orphan check). Derived from the EVENT MODEL: its last turn is OPEN
@@ -14201,6 +14227,9 @@ def build_feed(now, tmux=None):
             who_working = False
         if who_working:
             working.append(name)
+        # the open turn's live narration (the user 2026-08-13) — computed once per session, ridden by
+        # every working card below; cache-warm like the dot (a cold start paints plain, then snaps in)
+        sess_progress = _open_turn_progress(ps["turns"]) if (ps and who_working) else None
         # The user's LAST action on this session was an INTERRUPT (no message from them since): its quiet
         # is user-chosen, not a stall — auto-nudge is suppressed (same predicate, _auto_nudge_tick) and
         # the working card wears an "interrupted" badge saying so (the user 2026-07-05). Cache-only,
@@ -14875,7 +14904,8 @@ def build_feed(now, tmux=None):
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
-                "judging": bool((sess_judging or _stall_inflight) and column == "working"),   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
+                "judging": bool((sess_judging or _stall_inflight) and column == "working"),
+                "working": (sess_progress if column == "working" else None),   # open-turn narration: tool count + since (the user 2026-08-13)   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
                 "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
                                              store.get("placements") or {}) or None)
                             if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section

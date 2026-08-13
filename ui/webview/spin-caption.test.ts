@@ -138,3 +138,35 @@ test("feed.ts routes the card's swirl through spinFor and keeps no inline copy o
   assert.match(FEED, /a\._awaitSpin\.classList\.toggle\("await-paused", awaitingBg\);/);
   assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
+
+// --- the working narration (the user 2026-08-13): the previously-mute ordinary working card ---------
+test("an ordinary working card with its turn open narrates: tool count + running time", () => {
+  const s = spinFor({ column: "working", working: { since: 1000, toolUses: 23 } },
+                    false, false, 1000 + 8 * 60);
+  assert.equal(s.caption, "Working — 23 tool uses · 8m");
+  const one = spinFor({ column: "working", working: { since: 1000, toolUses: 1 } },
+                      false, false, 1030);
+  assert.equal(one.caption, "Working — 1 tool use · 0m", "singular reads as English");
+  const long = spinFor({ column: "working", working: { since: 1000, toolUses: 400 } },
+                       false, false, 1000 + 95 * 60);
+  assert.equal(long.caption, "Working — 400 tool uses · 1h 35m", "hours split out past sixty minutes");
+});
+
+test("the narration is the FLOOR — every richer story still wins", () => {
+  const w = { since: 1000, toolUses: 5 };
+  assert.equal(spinFor({ column: "working", working: w, judging: true }, false, false, 2000).caption,
+               "Analyzing…", "the settle gap outranks narration");
+  assert.equal(spinFor({ column: "working", working: w, recheck: true }, false, false, 2000).caption,
+               "Analyzing…", "re-check outranks narration");
+  assert.equal(spinFor({ column: "working", working: w, awaiting: { why: null } }, false, false, 2000).caption,
+               "Awaiting background agents", "awaiting outranks narration");
+  assert.equal(spinFor({ column: "working", working: w }, true, false, 2000).caption,
+               "Distilling…", "a pending distill outranks narration");
+});
+
+test("no narration off the working column or without the payload", () => {
+  assert.equal(spinFor({ column: "needs_input", working: { since: 1, toolUses: 2 } }, false, false, 100).caption,
+               null);
+  assert.equal(spinFor({ column: "working" }, false, false, 100).caption, null,
+               "a cache-cold card paints plain until the payload snaps in");
+});
