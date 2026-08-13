@@ -6065,6 +6065,7 @@ class Sessions:
                                 "retryCount": int(st.get("retryCount") or 0),   # api_retry backoff attempts → the chat's "API retrying — attempt N…" element
                                 "retryInfo": st.get("retryInfo") or None,   # the attempt's detail (attempt/max, error, next-attempt epoch) → the retrying element's context lines (the user 2026-07-10)
                                 "connected": bool(st.get("connected")),   # SDK handshake up → the opening-chip override stands down (fresh sessions have no transcript yet)
+                                "spawning": bool(st.get("spawning")),   # spawn/handshake in flight NOW — the ONLY window the opening chip covers (a dormant created session must read ready, the user 2026-08-13)
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "fast": st.get("fast", ""),   # fast-mode state from the CLI's init ("on"/"off"/"cooldown"; "" = unknown → no badge)
                                 "fastReason": st.get("fastReason", ""),   # init's disabled_reason — non-empty hides the chat toggle
@@ -13434,22 +13435,25 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         # compaction stalls. After that, blocked is the strongest signal — the turn ended in an error, so it
         # beats the live tmux states (the session can't simultaneously be at a permission prompt mid-error).
         chip = _session_chip(sid, sess["path"], session, tm, now)   # THE shared derivation — identical to the timeline lane (the user 2026-07-03)
-        # A session whose transcript DOESN'T EXIST YET is OPENING, whatever the snapshot claims (the
+        # A session whose transcript DOESN'T EXIST YET reads OPENING while its spawn is IN FLIGHT (the
         # user 2026-08-05: a just-spawned tab said "Working" over a clock with no honest base). The
-        # deciding event — "the CLI is up" — is per-backend. SDK: the handshake (tm.connected) — a
-        # fresh SDK session writes NO transcript until its first turn, so keying its chip on the file
-        # left a fully-up, idle session wearing the opening dots until the user's first message,
-        # indefinitely (the user 2026-08-08, who read minutes of dots as creation still running).
-        # tmux: the CLI's statusline hook publishing its first @claude-state — the same wait, the
-        # matching event (2026-08-10; the transcript's first record only lands with the first MESSAGE,
-        # so keying on the file alone held a fully-up tmux session on the dots until the user typed).
-        # SDK snapshots always carry a non-empty state ("waiting" from birth), so the state leg is
-        # tmux-only by construction (backend == "tmux"). Never for an override render (a closed
-        # episode's path is historical).
-        cli_up = bool(tm.get("connected")) or \
-            (tm.get("backend") == "tmux" and bool((tm.get("state") or "").strip()))
+        # window is per-backend. SDK: the backend's live `spawning` report (session thread up, client
+        # not yet; the handshake closes it) — a fresh SDK session writes NO transcript until its first
+        # turn, so keying its chip on the file left a fully-up, idle session wearing the opening dots
+        # until the user's first message, indefinitely (the user 2026-08-08, who read minutes of dots
+        # as creation still running). tmux: no @claude-state published yet — the statusline hook's
+        # first publish is the matching CLI-up event (2026-08-10; tmux panes and their state vars
+        # outlive kernel restarts, so that leg needs no dormant case). The SDK leg keys on `spawning`,
+        # NOT on `connected` being falsy: a DORMANT created session — every fresh SDK session after a
+        # kernel restart, since idle CLIs die with the kernel and boot reconcile leaves them lazy —
+        # also reports no `connected`, and reading that as "still opening" kept the dots up for HOURS
+        # on a session one message from answering (the user 2026-08-13, whose created-but-unmessaged
+        # session "opened" all morning). A dormant row carries no spawning key, so it reads ready — a
+        # send wakes it. Never for an override render (a closed episode's path is historical).
+        spawn_inflight = bool(tm.get("spawning")) or \
+            (tm.get("backend") == "tmux" and not (tm.get("state") or "").strip())
         if chip in ("working", "ready") and not path_override and not os.path.exists(sess["path"]) \
-                and not cli_up:
+                and spawn_inflight:
             chip = "opening"
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API
