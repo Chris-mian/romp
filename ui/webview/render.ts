@@ -8876,6 +8876,14 @@ function setupComposer() {
       .sort((a, b) => b.best - a.best || a.c.name.localeCompare(b.c.name))
       .map((x) => x.c).slice(0, 60);
   };
+  // The expanded view lists a multi-group arg hint one bracketed group per line ("[--fix] [--comment]" →
+  // two lines) — but ONLY when the whole hint is bracketed groups; any free-form hint stays one line
+  // rather than being split by a guess.
+  const argLines = (hint: string): string[] => {
+    const groups = hint.match(/\[[^\]]*\]/g) || [];
+    const residue = hint.replace(/\[[^\]]*\]/g, "").trim();
+    return groups.length >= 2 && !residue ? groups : [hint.trim()];
+  };
   const closeSlash = () => { if (pop) { pop.remove(); pop = null; } if (slashPoll) { clearTimeout(slashPoll); slashPoll = undefined; } slashExpanded = false; };
   const positionSlash = () => {
     if (!pop) return;
@@ -8907,23 +8915,41 @@ function setupComposer() {
       pop.appendChild(e); positionSlash(); return;
     }
     items.forEach((c, i) => {
+      const expanded = i === sel && slashExpanded;
       const row = document.createElement("div");
-      row.className = "slash-row" + (i === sel ? " sel" : "") + (i === sel && slashExpanded ? " expanded" : "");
-      const nm = document.createElement("span"); nm.className = "slash-name"; nm.textContent = "/" + c.name;
-      if (c.argumentHint) { const a = document.createElement("span"); a.className = "slash-arg"; a.textContent = " " + c.argumentHint; nm.appendChild(a); }
-      const ds = document.createElement("span"); ds.className = "slash-desc"; ds.textContent = c.description || "";
-      row.append(nm, ds);
+      row.className = "slash-row" + (i === sel ? " sel" : "") + (expanded ? " expanded" : "");
+      if (expanded) {
+        // full text, stacked for reading: /name (+ the ← key hint), then each bracketed arg group on its
+        // own line, then the whole description (the user 2026-08-13, round 2: one wrapped soup was legal
+        // but not readable)
+        const head = document.createElement("div"); head.className = "slash-x-head";
+        const nm = document.createElement("span"); nm.className = "slash-name"; nm.textContent = "/" + c.name;
+        const k = document.createElement("span"); k.className = "slash-key-hint"; k.textContent = "← all commands";
+        head.append(nm, k);
+        row.appendChild(head);
+        if (c.argumentHint) {
+          const args = document.createElement("div"); args.className = "slash-x-args";
+          for (const g of argLines(c.argumentHint)) {
+            const a = document.createElement("div"); a.className = "slash-arg"; a.textContent = g; args.appendChild(a);
+          }
+          row.appendChild(args);
+        }
+        if (c.description) { const ds = document.createElement("div"); ds.className = "slash-desc"; ds.textContent = c.description; row.appendChild(ds); }
+      } else {
+        const nm = document.createElement("span"); nm.className = "slash-name"; nm.textContent = "/" + c.name;
+        if (c.argumentHint) { const a = document.createElement("span"); a.className = "slash-arg"; a.textContent = " " + c.argumentHint; nm.appendChild(a); }
+        const ds = document.createElement("span"); ds.className = "slash-desc"; ds.textContent = c.description || "";
+        row.append(nm, ds);
+        // the → key hint rides the SELECTED row itself — a popup-bottom footer sat below the fold of the
+        // scrolling list (the user 2026-08-13, round 2); the selected row is always scrolled into view
+        if (i === sel) { const k = document.createElement("span"); k.className = "slash-key-hint"; k.textContent = "→ expand"; row.appendChild(k); }
+      }
       row.addEventListener("mousedown", (ev) => { ev.preventDefault(); pickSlash(c); });   // mousedown keeps focus
       // hover-select is frozen while expanded: the tall row re-flows heights under the cursor, and a repaint
       // per crossed row would flap the expansion around; ↑/↓ still browse
       row.addEventListener("mousemove", () => { if (!slashExpanded && sel !== i) { sel = i; paintSlash(); } });
       pop!.appendChild(row);
     });
-    // a dim one-line footer teaches the keys (the user 2026-08-13: the expand must be discoverable in place)
-    const hint = document.createElement("div"); hint.className = "slash-hint";
-    hint.textContent = slashExpanded ? "← back · ⏎ fill" : "→ full description · ⏎ fill";
-    hint.addEventListener("mousedown", (ev) => ev.preventDefault());   // not a row: a click must not blur/close
-    pop.appendChild(hint);
     positionSlash();
     (pop.querySelector(".slash-row.sel") as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
   };

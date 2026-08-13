@@ -95,18 +95,37 @@ test("→ expands the selected row to its full wrapped text; ←/Esc return to t
   assert.match(RENDER, /if \(slashExpanded\) \{ e\.preventDefault\(\); slashExpanded = false; paintSlash\(\); return true; \}/);
   assert.match(RENDER, /slashExpanded = false; \};/);
   // the expanded row stacks name over description, both wrapping at the popup's width
-  assert.match(RENDER, /i === sel && slashExpanded \? " expanded" : ""/);
+  assert.match(RENDER, /const expanded = i === sel && slashExpanded;/);
+  assert.match(RENDER, /\(expanded \? " expanded" : ""\)/);
   assert.match(CSS, /\.slash-row\.expanded \{ display: block; \}/);
   assert.match(CSS, /\.slash-row\.expanded \.slash-name, \.slash-row\.expanded \.slash-desc \{ display: block;[\s\S]*?white-space: normal/);
   // hover-select is frozen while expanded (repaints re-flow heights under the cursor and would flap the mode)
   assert.match(RENDER, /if \(!slashExpanded && sel !== i\)/);
 });
 
-test("a footer hint teaches the keys, in place, and follows the state (the user 2026-08-13)", () => {
-  assert.match(RENDER, /hint\.className = "slash-hint"/);
-  assert.match(RENDER, /slashExpanded \? "← back · ⏎ fill" : "→ full description · ⏎ fill"/);
-  assert.match(RENDER, /hint\.addEventListener\("mousedown", \(ev\) => ev\.preventDefault\(\)\)/);   // a click on it must not blur/close
-  assert.match(CSS, /\.slash-hint \{ padding: 4px 9px 2px; font-size: 0\.82em; opacity: 0\.6;/);   // menu sub-line size/opacity
+test("the key hints ride the SELECTED row, never a below-the-fold footer (the user 2026-08-13, round 2)", () => {
+  // round 1 put the hint at the popup's bottom — with a long list it sat below the fold of the scrolling
+  // menu. The selected row is always scrolled into view, so the hint lives there, right-aligned and dim.
+  assert.doesNotMatch(RENDER, /slash-hint/);
+  assert.doesNotMatch(CSS, /\.slash-hint/);
+  assert.match(RENDER, /if \(i === sel\) \{ const k = document\.createElement\("span"\); k\.className = "slash-key-hint"; k\.textContent = "→ expand"; row\.appendChild\(k\); \}/);
+  assert.match(RENDER, /k\.textContent = "← all commands"/);
+  assert.match(CSS, /\.slash-key-hint \{ flex: 0 0 auto; margin-left: auto; font-size: 0\.82em; opacity: 0\.6;/);   // menu sub-line size/opacity
+  assert.match(CSS, /\.slash-row\.sel \.slash-key-hint \{ color: var\(--accent-fg\); \}/);   // legible on the accent row
+});
+
+test("the expanded view lists a multi-group arg hint one bracketed group per line (the user 2026-08-13, round 2)", () => {
+  // "[--fix] [--comment]" → two lines; a free-form hint (anything not wholly bracketed groups) stays ONE
+  // line rather than being split by a guess
+  assert.match(RENDER, /const argLines = \(hint: string\): string\[\] => \{/);
+  assert.match(RENDER, /const groups = hint\.match\(\/\\\[\[\^\\\]\]\*\\\]\/g\) \|\| \[\];/);
+  assert.match(RENDER, /return groups\.length >= 2 && !residue \? groups : \[hint\.trim\(\)\];/);
+  assert.match(RENDER, /args\.className = "slash-x-args"/);
+  assert.match(CSS, /\.slash-x-args \{ margin-top: 2px; padding-left: 12px; \}/);
+  assert.match(CSS, /\.slash-x-args \.slash-arg \{ display: block; white-space: normal;/);
+  // the expanded head keeps /name and the ← hint on one line
+  assert.match(RENDER, /head\.className = "slash-x-head"/);
+  assert.match(CSS, /\.slash-x-head \{ display: flex; align-items: baseline; gap: 9px; \}/);
 });
 
 test("the composer placeholder hints that / opens commands (the user 2026-06-30)", () => {
