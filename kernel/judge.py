@@ -3993,12 +3993,16 @@ def _bg_unresolved(path):
         return []
     hit = _BG_SCAN_CACHE.get(path)
     if hit and hit[0] == key:
-        return hit[1]
-    tasks = em._scan_bg_tasks(path)
-    if len(_BG_SCAN_CACHE) > 256:         # bounded by fleet size; a wholesale clear on overflow is fine
-        _BG_SCAN_CACHE.clear()
-    _BG_SCAN_CACHE[path] = (key, tasks)
-    return tasks
+        tasks = hit[1]
+    else:
+        tasks = em._scan_bg_tasks(path)
+        if len(_BG_SCAN_CACHE) > 256:     # bounded by fleet size; a wholesale clear on overflow is fine
+            _BG_SCAN_CACHE.clear()
+        _BG_SCAN_CACHE[path] = (key, tasks)
+    # expiry is applied OUTSIDE the cache with a fresh now: a monitor whose CLI died mid-watch has no
+    # terminal record, and an idle transcript never busts the mtime key — a cached verdict would say
+    # "running" forever (see em._bg_expired)
+    return [t for t in tasks if not em._bg_expired(t, time.time())]
 
 
 def _death_marker(sid):
