@@ -1672,7 +1672,11 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         .flatMap((im) => [im.path, im.src.startsWith("path:") ? im.src.slice(5) : ""])
         .filter((p): p is string => !!p);
       if (!romp && !injected && ev.md && renderSlashCmd(bubble, ev.md)) {
-        /* rendered as a command chip */
+        // a COMMAND is a user GESTURE, not a user message (the user 2026-08-13): it changes something
+        // rather than saying something, so it sheds the blue said-thing bubble and reads in the
+        // system-event family (the ✦ dividers) — a dim left-aligned row: ✦ mark, mono chip, args
+        turn.classList.add("turn-cmd");
+        bubble.classList.add("cmd-row");
       } else if (romp && ev.md) {
         // A romp-injected NUDGE (auto status-check, Nudge button, injected follow-up) is mechanical
         // bookkeeping — progressive disclosure (the user 2026-07-17): default is a ONE-LINE gist with a
