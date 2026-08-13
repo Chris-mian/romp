@@ -580,7 +580,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .slash-row.sel .slash-name, .slash-row.sel .slash-desc, .slash-row.sel .slash-arg { color: var(--accent-fg); }
 .slash-name { flex: 0 0 auto; font-weight: 650; color: var(--fg); white-space: nowrap; }
 .slash-arg { font-weight: 400; opacity: 0.7; font-style: italic; }
-.slash-desc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.slash-desc { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word;   /* wraps — the whole description
+  is readable, never ellipsized (the user 2026-08-12); the popup is pinned to the composer's width, so
+  wrapping grows the row, not the menu */
   color: var(--vscode-descriptionForeground, #9a9a9a); }
 .slash-empty, .slash-loading { padding: 8px 10px; color: var(--vscode-descriptionForeground, #9a9a9a);
   display: flex; align-items: center; gap: 8px; }
