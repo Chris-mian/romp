@@ -3159,7 +3159,41 @@ class SdkBackend:
             except Exception:
                 self._log("usage.json write failed: %s" % traceback.format_exc())   # never silent
                 return
+            self._record_usage_history(data)
         self._poke()
+
+    def _record_usage_history(self, data) -> None:
+        """Append the reading to usage-history.json — the hover graphs' time base (the user 2026-08-13:
+        the window bars kept only the CURRENT snapshot, so nothing could be graphed). Same bounded-hours
+        shape as spend.json so both series share one x-axis: per hour keep the MAX pct seen per window
+        (utilization only climbs within a window; a ROLL is a new resets_at, which takes the fresh
+        reading outright), pruned to 192 hours — 8 days covers the 7-day graph. Caller holds _rl_lock;
+        a write failure logs and never blocks the snapshot that fed it."""
+        p = self.state_dir / "usage-history.json"
+        try:
+            hist = json.loads(p.read_text())
+        except Exception:
+            hist = {}
+        hours = hist.get("hours") if isinstance(hist, dict) and isinstance(hist.get("hours"), dict) else {}
+        hour = time.strftime("%Y-%m-%dT%H")
+        ent = hours.get(hour) if isinstance(hours.get(hour), dict) else {}
+        ent["acct"] = data.get("acct") or ""
+        for k in ("five_hour", "seven_day", "fable"):
+            s = data.get(k)
+            if not (isinstance(s, dict) and isinstance(s.get("pct"), (int, float))):
+                continue
+            prev = ent.get(k) if isinstance(ent.get(k), dict) else None
+            if not prev or s.get("resets_at") != prev.get("ra") or int(s["pct"]) >= int(prev.get("pct") or 0):
+                ent[k] = {"pct": int(s["pct"]), "ra": s.get("resets_at")}
+        hours[hour] = ent
+        for k in sorted(hours)[:-192]:
+            hours.pop(k, None)
+        try:
+            tmp = self.state_dir / "usage-history.json.tmp"
+            tmp.write_text(json.dumps({"hours": hours}))
+            os.replace(tmp, p)
+        except Exception:
+            self._log("usage-history.json write failed: %s" % traceback.format_exc())
 
     def _record_rate_limit(self, info) -> None:
         """Persist the account-wide rate-limit /usage the CLI streams as a RateLimitEvent — the SDK's DESIGNED
@@ -3252,6 +3286,7 @@ class SdkBackend:
             except Exception:
                 self._log("usage.json write failed: %s" % traceback.format_exc())   # never silent (the user 2026-07-02)
                 return
+            self._record_usage_history(data)
         self._poke()   # nudge the producer so the rail re-reads usage.json promptly, not on the next backstop
 
     # ---- logging / wakeups ----

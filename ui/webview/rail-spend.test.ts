@@ -23,7 +23,9 @@ test("the kernel serves spend windows for BOTH payload shapes, keyed-only beside
   // the spend-only view arms on the legacy apiKey marker OR a login-less machine with recorded spend,
   // and keeps TOTAL sums (everything there bills the key; legacy files predate the split)
   assert.ok(KERNEL.includes('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):'));
-  assert.ok(KERNEL.includes('return {"apiKey": True, "spend": _spend_windows(),'));
+  assert.ok(KERNEL.includes('out = {"apiKey": True, "spend": _spend_windows(),'));
+  // …and the $/hour series rides beside the windows for the hover graph (the user 2026-08-13)
+  assert.ok(KERNEL.includes('out["spendSeries"] = ss'));
   // the bars payload attaches the KEYED split only — a login turn's computed cost there would be
   // dollars nobody is billed — and only when key turns actually exist (the user 2026-08-08)
   assert.ok(KERNEL.includes("def _spend_windows(keyed_only=False):"));
@@ -126,14 +128,21 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
     const code = line.split("//")[0];
     assert.ok(!/\btitle\s*=/.test(code) && !code.includes(".title="), `native title in usage JS: ${line.trim()}`);
   }
-  // a host section can carry BOTH its login's windows and its key's spend (per-session auth) — the
-  // spendOnly gate that hid a bars host's dollars is gone
-  assert.ok(usageJS.includes("if(!keys.length&&!sp)return '';"));
+  // host sections carry WINDOWS only now — spend is ONE fleet-level section (the user 2026-08-13:
+  // one shared key reads as one number; each host records only its own turns, so the sum IS the number)
+  assert.ok(usageJS.includes("if(!keys.length)return '';"));
   assert.ok(!usageJS.includes("spendOnly"), "spend renders for ANY host that has it");
-  assert.ok(usageJS.includes("if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});"));
+  assert.ok(usageJS.includes("function fleetSpendHTML(sets)"));
+  assert.ok(usageJS.includes("return h+fleetSpendHTML(sets)+'<div class=ru-tip-age>click to refresh</div>';"));
+  // …with the summed $/hour area graph and its peak beside it
+  assert.ok(usageJS.includes("sparkHTML(wk,'#9cd2ff',true,null)"));
+  assert.ok(usageJS.includes("'<span class=ru-tip-v>peak '+fmtUsd(mx)+'</span>"));
+  // and each window section carries its own utilization spark, y pinned to the honest 0-100
+  assert.ok(usageJS.includes("sparkHTML(d._winSeries[k],v.col,false,100)"));
   // numbers only: dollars · tokens · turns per window, under a plain 'API spend' heading
   assert.ok(usageJS.includes("function spendDet(u,det)"));
-  assert.ok(usageJS.includes("<span>API spend</span>"));
+  assert.ok(usageJS.includes("API spend'+(hosts>1?' \\u00b7 '+hosts+' machines':'')"),
+    "one fleet-level section — one shared key, one number (the user 2026-08-13)");
   assert.ok(usageJS.includes("fmtUsd(v.usd)+' \\u00b7 '+fmtTok(v.tok)+' tok \\u00b7 '+(v.turns||0)+' turns</span>"));
   // the tip anchors ABOVE the rail, centered on the CURSOR — never pinned to the container edge
   assert.ok(usageJS.includes("var x=(ev&&typeof ev.clientX==='number')?ev.clientX:(r.left+r.width/2);"));
