@@ -269,6 +269,16 @@ _WHY_JUDGING_LEGACY = "a judge pass is mid-flight"
 # INSPECTABLE: this drop used to leave NO record anywhere, which is how a card sat in Working for half an
 # hour with nothing to read (see the kernel's _nudge_fire_list).
 WHY_TURN_IN_FLIGHT = "a judge has ruled on a turn that hasn't finished yet"
+# The fire list's THIRD hold (2026-08-11): a goal whose diary ENDS on a judge's UNBLOCK, with an
+# EARLIER judge unblock already on record, is mid-OSCILLATION — the column has ping-ponged
+# blocked↔working at least once without settling, and the closer's next word is pending. Five false
+# status checks in one live weekend fired in that window: a blocked-on-the-user goal was repeatedly
+# flipped to 'working' by "new work filed" / "answered in passing" rulings while the user's decision was
+# still outstanding, and the nudge read each flip as a stall. A goal's FIRST unblock never holds — that
+# is the 2026-07-30 considered-verdict case, whose own incident was a wrongly-gagged nudge. Same
+# never-paint rule as the holds above; clears on the closer's next word (any newer judge row on the
+# goal) or the deferral backstop.
+WHY_UNBLOCK_UNSETTLED = "an unblock is awaiting the closer's next word on this goal"
 # The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
 # only ever sees OPEN tops, so related goals that finish before they get
 # grouped land as separate cards. The consolidator groups related ALL-COMPLETED sibling tops under a
@@ -8101,7 +8111,11 @@ def stall_llm(goal_text, work_text, holding):
 # so one frozen between retries showed nothing at all — six live records were dark up to 20 hours.
 # Now the kernel's deferral sweep retires each record on its reason's own event, and whatever stands
 # presents somewhere by definition.
-WHY_IN_FLIGHT = (WHY_JUDGING, _WHY_JUDGING_LEGACY, WHY_TURN_IN_FLIGHT)
+# The unblock-unsettled hold is in-flight for the same reason the turn hold is: the closer's next
+# pass is romp's own review mid-flight, not a state the user acts on. Its sweep case retires it on
+# the closer's next filed word (kernel _deferral_sweep_tick, ABOVE the class branch — the class
+# branch's no-judge-running event would retire it early).
+WHY_IN_FLIGHT = (WHY_JUDGING, _WHY_JUDGING_LEGACY, WHY_TURN_IN_FLIGHT, WHY_UNBLOCK_UNSETTLED)
 
 
 def stalled_facts(fsid):
