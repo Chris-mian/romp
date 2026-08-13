@@ -31,10 +31,28 @@ test("the click reads the card's CURRENT warns and opens the detail overlay (cli
 test("updateAskCard toggles the chip on it.warns and refreshes the data it reads", () => {
   assert.match(FEED, /a\._warnsData = it\.warns \|\| null;/);
   assert.match(FEED, /a\._warnChip\.style\.display = "";/);
-  assert.match(FEED, /a\._warnChip\.textContent = it\.warns\.length > 1 \? `warning ×\$\{it\.warns\.length\}` : "warning";/,
+  assert.match(FEED, /a\._warnChip\.textContent = it\.warns\.length > 1 \? `\$\{lbl\} ×\$\{it\.warns\.length\}` : lbl;/,
     "multiple live warns show a count");
   assert.match(FEED, /it\.warns\[it\.warns\.length - 1\]\.msg \+ " — click for what happened and why"/,
     "hover says the latest msg + that detail is a click away");
+});
+
+test("a given-up summarizer wears its NAME — 'distill failed' — and its modal offers Try again (the user 2026-08-13)", () => {
+  // the chip says what actually happened when the warns are all summarizer give-ups; other anomaly
+  // kinds keep the generic label (a mixed set is not purely a distill story)
+  assert.match(FEED, /const DISTILL_FAIL_RE = \/\^\(summary\|brief\|stall\)-failed\$\/;/);
+  assert.match(FEED, /const allDistill = it\.warns\.every\(\(w\) => DISTILL_FAIL_RE\.test\(w\.kind\)\);/);
+  assert.match(FEED, /const lbl = allDistill \? "distill failed" : "warning";/);
+  // the modal's Try again: ids threaded from the card's freshest payload, instant acknowledgement,
+  // then the redistill op — the re-armed line reads pending, so the card's Distilling… swirl takes over
+  assert.match(FEED, /ctx\?: \{ itemId: string; sid: string \}/);
+  assert.match(FEED, /wit \? \{ itemId: wit\.itemId, sid: wit\.sid \} : undefined/);
+  assert.match(FEED, /if \(ctx && warns\.some\(\(w\) => DISTILL_FAIL_RE\.test\(w\.kind\)\)\) \{/);
+  assert.match(FEED, /retry\.disabled = true; retry\.textContent = "retrying…";/);
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "redistill", itemId: ctx\.itemId, sid: ctx\.sid \}\);/);
+  // the kernel's refusal is loud; success is the swirl, silently
+  assert.match(FEED, /m\.type === "redistillResult" && typeof m\.itemId === "string"/);
+  assert.match(FEED, /couldn't retry the summary: /);
 });
 
 test("the overlay lists each warn's kind/age and full detail", () => {

@@ -553,7 +553,12 @@ function feedConfirm(message: string, confirmLabel: string, onConfirm: () => voi
 // one entry per judge-stamped anomaly, each telling in detail what happened and why it's unexpected,
 // so pipeline misbehavior is followable from the card instead of buried in judge-errors.jsonl.
 // Same lightweight overlay pattern as feedConfirm (its own state machine; Esc / backdrop / Close).
-function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg: string; detail: string }[]): void {
+// A warn kind stamped by a GIVEN-UP summarizer line (summary/brief/stall) — these get the "distill
+// failed" chip label and the modal's Try again (the user 2026-08-13); other anomaly kinds stay "warning".
+const DISTILL_FAIL_RE = /^(summary|brief|stall)-failed$/;
+
+function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg: string; detail: string }[],
+                       ctx?: { itemId: string; sid: string }): void {
   const back = el("div", "fconfirm-back fwarn-back");
   const box = el("div", "fconfirm-box fwarn-box");
   const head = el("div", "fwarn-head"); head.textContent = "Unexpected behavior";
@@ -568,6 +573,20 @@ function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg:
     box.append(entry);
   }
   const btns = el("div", "fconfirm-btns");
+  // "Try again" on a given-up summary line (the user 2026-08-13): the kernel journals the re-arm and the
+  // next triage pass re-runs the distiller — the card's own "Distilling…" swirl is the live cue after
+  // the modal closes; a kernel refusal comes back as a redistillResult toast (fail loudly).
+  if (ctx && warns.some((w) => DISTILL_FAIL_RE.test(w.kind))) {
+    const retry = el("button", "fconfirm-btn") as HTMLButtonElement;
+    retry.textContent = "Try again";
+    retry.onclick = (e) => {
+      e.stopPropagation();
+      retry.disabled = true; retry.textContent = "retrying…";   // acknowledged before any round-trip
+      vscodeApi?.postMessage({ type: "redistill", itemId: ctx.itemId, sid: ctx.sid });
+      window.setTimeout(close, 300);   // cosmetic beat so the pressed label registers; the op is already posted
+    };
+    btns.append(retry);
+  }
   const ok = el("button", "fconfirm-btn primary"); ok.textContent = "Close";
   btns.append(ok);
   box.append(btns);
@@ -786,7 +805,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   warnChip.onclick = (ev) => {
     ev.stopPropagation();
     const ws = (card as any)._warnsData as AskItem["warns"];
-    if (ws && ws.length) feedWarnModal((card as any)._title?.textContent || "", ws);
+    const wit = (card as any)._it as AskItem | undefined;   // freshest payload → the ids Try again posts with
+    if (ws && ws.length) feedWarnModal((card as any)._title?.textContent || "", ws,
+                                       wit ? { itemId: wit.itemId, sid: wit.sid } : undefined);
   };
   const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
@@ -1446,10 +1467,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     : "romp followed up once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
   // "warning" chip: a judge stamped an anomaly on this goal — show the latest msg on hover, detail on click.
   // Data rides the card element so the click handler (wired once in build) always reads the current push.
+  // When the warns are all GIVEN-UP summarizer lines, the chip SAYS so — "distill failed" (the user
+  // 2026-08-13, who read the generic label as a mystery) — and its modal carries the Try again.
   a._warnsData = it.warns || null;
   if (it.warns && it.warns.length) {
+    const allDistill = it.warns.every((w) => DISTILL_FAIL_RE.test(w.kind));
+    const lbl = allDistill ? "distill failed" : "warning";
     a._warnChip.style.display = "";
-    a._warnChip.textContent = it.warns.length > 1 ? `warning ×${it.warns.length}` : "warning";
+    a._warnChip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
     a._warnChip.title = it.warns[it.warns.length - 1].msg + " — click for what happened and why";
   } else {
     a._warnChip.style.display = "none";
@@ -3718,6 +3743,10 @@ window.addEventListener("message", (e: MessageEvent) => {
       renderModal();
       feedToast("couldn't mark that sub-goal done: " + (String(m.error || "") || "the kernel refused it"));
     }
+  } else if (m.type === "redistillResult" && typeof m.itemId === "string") {
+    // The kernel's verdict on the warn modal's Try again. Success is silent — the re-armed line reads
+    // pending, so the card's own "Distilling…" swirl takes over. A refusal says why, out loud.
+    if (!m.ok) feedToast("couldn't retry the summary: " + (String(m.error || "") || "the kernel refused it"));
   } else if (m.type === "revealCards") {
     // chat rail CLICK → scroll to the card(s) covering that turn and pulse them (the user 2026-07-23).
     // Distinct from hoverCards, which only outlines whatever is already on screen: this one MOVES the

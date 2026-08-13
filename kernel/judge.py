@@ -2014,6 +2014,22 @@ def _replay_overrides(fsid, store):
             if record_verdict(store, nd, src, "block", t, why=ev.get("why")):
                 nd["mt"] = max(int(nd.get("mt") or 0), t)
                 applied = True
+        elif op == "redistill":
+            # The warn modal's "Try again" (the user 2026-08-13): re-arm a GIVEN-UP summary line so the
+            # next triage pass re-runs the distiller — the same flip rearm_failed_summaries applies on
+            # the usage-limit recovery edge, journaled here so a concurrent pass's last-writer save
+            # can't silently erase the click. Idempotent by shape: only the "" give-up sentinel flips
+            # to None (owed); a line that has since succeeded (non-empty) or is already owed (None) is
+            # untouched, so replays past a success never clobber it. No supersede guard needed — this
+            # is a field flip, not a log verdict, and its no-op form IS the guard.
+            for k in ("summary", "blockSummary"):
+                if nd.get(k) == "":
+                    nd[k] = None
+                    applied = True
+            for k in ("distillFails", "briefFails"):
+                if nd.get(k):
+                    nd[k] = 0
+                    applied = True
     return applied
 
 
