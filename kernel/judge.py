@@ -5009,6 +5009,10 @@ def migrate_store(store):
     with _authority():                                # migration IS the cache layer for legacy stores
         for nd in nodes.values():
             changed = _migrate_node(nd) or changed
+    for dead in ("umbSig", "starvedSig"):              # retired 2026-08-13: the closer's one look-stamp
+        if dead in store:                              #   (closerLookT) replaced both signature gates
+            store.pop(dead, None)
+            changed = True
     return changed
 
 
@@ -6861,11 +6865,68 @@ def _turn_menu(turn, store):
     return out
 
 
-def _umb_sig(nodes, children, nid):
-    """The completion-set signature a subtree-done candidate is stamped with once the closer has looked:
-    the sorted ids of its (all-complete) children. The set changing — a new child filed, a child's state
-    flipped — is the EVENT that re-arms the ask; an unchanged set never re-badgers the closer."""
-    return ",".join(sorted(children.get(nid, [])))
+def _top_of(nodes, nid):
+    """The top-level ancestor of nid (cycle-safe)."""
+    top, seen = nid, set()
+    while nodes.get(top, {}).get("parentId") is not None and top not in seen:
+        seen.add(top)
+        top = nodes[top]["parentId"]
+    return top
+
+
+def _sealed_above(nodes, nid):
+    """A complete/cleared ancestor seals the subtree (the fold's job to display) — shared by every
+    closer-nomination channel (was three verbatim copies, collapsed 2026-08-13)."""
+    x, seen = nodes.get(nid, {}).get("parentId"), set()
+    while x and x not in seen:
+        seen.add(x)
+        nd = nodes.get(x)
+        if not nd:
+            return False
+        if nd.get("nodeComplete") or nd.get("cleared"):
+            return True
+        x = nd.get("parentId")
+    return False
+
+
+def _task_open_below(nodes, children, nid):
+    """An agentTask-OPEN self-or-descendant — the authoritative tier says work is owed (shared,
+    collapsed 2026-08-13)."""
+    if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
+        return True
+    return any(_task_open_below(nodes, children, c) for c in children.get(nid, []))
+
+
+def _newest_filed(nodes, children, nid):
+    """The newest diary row FILED (`at`, the arrival domain) anywhere in nid's TOP subtree. This is
+    the ONE re-arm event the retired umbSig/starvedSig signatures were approximating: 'the child set
+    changed' could not see a verdict landing on an existing child (the g7 orphan, 2026-08-12), and
+    the starved channel's evidence-domain mt>=mint scan starved post-outage filings whose evidence
+    times were old news but whose FILINGS were brand new. A filing is new information by definition;
+    everything downstream keys on it."""
+    top = _top_of(nodes, nid)
+    newest, stack = 0, [top]
+    while stack:
+        x = stack.pop()
+        nd = nodes.get(x)
+        if not nd:
+            continue
+        for e in (nd.get("log") or []):
+            newest = max(newest, int(e.get("at") or 0))
+        stack.extend(children.get(x, []))
+    return newest
+
+
+def _filed_since(nodes, children, nid, stamp):
+    """A diary row filed in nid's top subtree after `stamp` — the closer's re-ask gate."""
+    return _newest_filed(nodes, children, nid) > stamp
+
+
+def _look_stamp(nd):
+    """The closer's last-look watermark for this node: closerLookT once stamped, else the node's own
+    mint — so the FIRST post-upgrade pass re-nominates every already-orphaned candidate exactly once
+    (its child verdicts were filed after its mint by construction)."""
+    return int(nd.get("closerLookT") or nd.get("t") or 0)
 
 
 def _subtree_done_candidates(store):
@@ -6879,30 +6940,13 @@ def _subtree_done_candidates(store):
 
     Skips: nodes already ruled (complete/blocked/cleared), childless nodes, sealed subtrees (a complete/
     cleared ancestor — the fold's job), agentTask-open subtrees (the authoritative tier: the agent says
-    work is owed), and nodes whose completion-set signature is already stamped (`store["umbSig"]` — the
-    closer looked and left it open; only the set CHANGING re-arms, see _umb_sig)."""
+    work is owed), and nodes with NOTHING FILED in their top subtree since the closer's last look
+    (closerLookT — one watermark, shared with every nomination channel; a landed verdict re-arms it,
+    which the retired child-id-set signature never could: the g7 orphan, 2026-08-12)."""
     nodes = store["nodes"]
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
-    sigs = store.get("umbSig") or {}
-
-    def _sealed_above(nid):
-        x, seen = nodes.get(nid, {}).get("parentId"), set()
-        while x and x not in seen:
-            seen.add(x)
-            nd = nodes.get(x)
-            if not nd:
-                return False
-            if nd.get("nodeComplete") or nd.get("cleared"):
-                return True
-            x = nd.get("parentId")
-        return False
-
-    def _task_open(nid):
-        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
-            return True
-        return any(_task_open(c) for c in children.get(nid, []))
 
     out = []
     for nid, nd in nodes.items():
@@ -6914,76 +6958,34 @@ def _subtree_done_candidates(store):
         kids = children.get(nid, [])
         if not kids or not all(nodes[c].get("nodeComplete") or nodes[c].get("cleared") for c in kids):
             continue
-        if _sealed_above(nid) or _task_open(nid):
+        if _sealed_above(nodes, nid) or _task_open_below(nodes, children, nid):
             continue
-        if sigs.get(nid) == _umb_sig(nodes, children, nid):
-            continue                                   # the closer already looked at exactly this set
+        if not _filed_since(nodes, children, nid, _look_stamp(nd)):
+            continue                                   # the closer already looked at this world
         out.append(nd)
     out.sort(key=lambda nd: nd.get("t", 0))
     return out
 
 
-def _starved_sig(nodes, children, nid):
-    """The settled-elsewhere signature a no-work-filed candidate is stamped with once the closer has
-    looked: the sorted ids of the COMPLETED nodes in its top's subtree that resolved at/after the
-    candidate's own mint. The set GROWING — another piece of the same effort settling — is the EVENT
-    that re-arms the ask ("was the starved card covered by that work?" just became answerable again);
-    an unchanged set never re-badgers the closer. Empty while nothing has settled since the mint."""
-    top = nid
-    seen = set()
-    while nodes.get(top, {}).get("parentId") is not None and top not in seen:
-        seen.add(top)
-        top = nodes[top]["parentId"]
-    t0 = nodes.get(nid, {}).get("t", 0)
-    out, stack = [], [top]
-    while stack:
-        x = stack.pop()
-        nd = nodes.get(x)
-        if not nd:
-            continue
-        if x != nid and nd.get("nodeComplete") and nd.get("mt", nd.get("t", 0)) >= t0:
-            out.append(x)
-        stack.extend(children.get(x, []))
-    return ",".join(sorted(out))
-
-
 def _starved_candidates(store):
     """OPEN nodes that never received evidence after their mint — the trail holds at most the minting
-    segment and the diary is empty — nominated to the closer once OTHER work in their top's subtree has
-    settled. Without this they are UNREACHABLE by any verdict (the user 2026-07-17, quartz: two
-    born-done metric-trend cards, their approach superseded by the config-pin build, sat open forever): turn
-    menus only list placement-touched nodes, and subtree-done nomination needs all-children-done — a
-    childless open leaf, or a branch whose only child is open, qualifies for neither.
+    segment and the diary is empty — nominated to the closer once OTHER work in their top's subtree
+    filed something new. Without this they are UNREACHABLE by any verdict (the user 2026-07-17, quartz:
+    two born-done metric-trend cards, their approach superseded by the config-pin build, sat open
+    forever): turn menus only list placement-touched nodes, and subtree-done nomination needs
+    all-children-done — a childless open leaf, or a branch whose only child is open, qualifies for
+    neither.
 
-    The nomination EVENT is a sibling settling (_starved_sig non-empty): that is when "was this stale
-    card's outcome delivered elsewhere / its approach replaced?" becomes answerable from goal history.
-    A landed closer reply stamps the signature (store["starvedSig"]); only the settled set growing
-    re-arms the ask, so a card the closer consciously left open costs one look per settle-event, not
-    one per pass. Skips mirror _subtree_done_candidates: ruled nodes (done/blocked/cleared/settledDone),
-    umbrellas (pure containers), sealed subtrees, and agentTask-open subtrees (the authoritative tier:
-    the agent's own list says the work is still owed)."""
+    The nomination EVENT is a new FILING in the top subtree since the closer's last look (closerLookT,
+    the shared watermark): that is when "was this stale card's outcome delivered elsewhere / its
+    approach replaced?" becomes answerable anew from goal history. The retired settled-set signature
+    compared EVIDENCE times (mt >= mint), which starved post-outage filings — old evidence, brand-new
+    information (2026-08-12). Skips mirror _subtree_done_candidates: ruled nodes, umbrellas, sealed
+    subtrees, and agentTask-open subtrees."""
     nodes = store["nodes"]
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
-    sigs = store.get("starvedSig") or {}
-
-    def _sealed_above(nid):
-        x, seen = nodes.get(nid, {}).get("parentId"), set()
-        while x and x not in seen:
-            seen.add(x)
-            nd = nodes.get(x)
-            if not nd:
-                return False
-            if nd.get("nodeComplete") or nd.get("cleared"):
-                return True
-            x = nd.get("parentId")
-        return False
-
-    def _task_open(nid):
-        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
-            return True
-        return any(_task_open(c) for c in children.get(nid, []))
 
     out = []
     for nid, nd in nodes.items():
@@ -6996,14 +6998,47 @@ def _starved_candidates(store):
         kids = children.get(nid, [])
         if kids and all(nodes[c].get("nodeComplete") or nodes[c].get("cleared") for c in kids):
             continue                                   # all-children-done → the subtree-done channel owns it
-            #                                            (umbSig gates its re-asks; never double-nominate)
-        if _sealed_above(nid) or _task_open(nid):
+            #                                            (same watermark; never double-nominate)
+        if _sealed_above(nodes, nid) or _task_open_below(nodes, children, nid):
             continue
-        sig = _starved_sig(nodes, children, nid)
-        if not sig or sigs.get(nid) == sig:
-            continue                                   # nothing settled since the mint, or already looked
+        if not _filed_since(nodes, children, nid, _look_stamp(nd)):
+            continue                                   # nothing filed since the last look (or the mint)
         out.append(nd)
     out.sort(key=lambda nd: nd.get("t", 0))
+    return out
+
+
+def _lift_riders(store):
+    """OPEN nodes whose newest state-bearing diary row is an UNBLOCKER LIFT the closer has not looked
+    at — routed onto the closer's done menu (2026-08-13). The unblocker's lift evidence often asserts
+    the work SHIPPED (the g7 orphan: its lift's own why said merged and deployed), but the unblocker
+    may only file unblock — done is the closer's authority. Riding the menu hands the evidence to that
+    existing authority; the unblocker gains no verdict power, and the look-stamp below retires the
+    ride the same way it retires every other nomination (an unstamped rider would re-nominate every
+    pass forever — the exact one-shot defect this cluster deletes)."""
+    nodes = store["nodes"]
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    out = []
+    for nid, nd in nodes.items():
+        if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
+            continue
+        if nd.get("umbrella"):
+            continue
+        rows = [e for e in (nd.get("log") or []) if e.get("kind") in ("done", "block", "unblock", "reopen")]
+        if not rows:
+            continue
+        last = max(rows, key=lambda e: (int(e.get("ev_t") or 0), int(e.get("at") or 0)))
+        if last.get("kind") != "unblock" or last.get("src") != "unblocker":
+            continue
+        if int(last.get("at") or 0) <= _look_stamp(nd):
+            continue                                   # the closer already ruled on a menu holding this lift
+        if _sealed_above(nodes, nid) or _task_open_below(nodes, children, nid):
+            continue
+        nd_why = last.get("why") or ""
+        out.append((nd, nd_why))
+    out.sort(key=lambda pair: pair[0].get("t", 0))
     return out
 
 
@@ -7027,18 +7062,13 @@ def _status_report_candidates(store, turn):
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
 
-    def _task_open(nid):
-        if (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open":
-            return True
-        return any(_task_open(c) for c in children.get(nid, []))
-
     out = []
     for nid, nd in nodes.items():
         if nd.get("parentId") is not None:
             continue                                   # tops only: the cards the board actually shows
         if nd.get("nodeComplete") or nd.get("cleared") or nd.get("blocked") or nd.get("settledDone"):
             continue
-        if nd.get("umbrella") or _task_open(nid):
+        if nd.get("umbrella") or _task_open_below(nodes, children, nid):
             continue
         out.append(nd)
     out.sort(key=lambda nd: nd.get("t", 0))
@@ -7059,7 +7089,7 @@ def _menu_history_text(store, seg_by_id, menu, char_cap):
     return "\n\n".join(parts)
 
 
-def apply_close(store, menu, verdicts, t=None, touched=None):
+def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
     """Apply the closer's turn-end verdicts over the touched open tops: COMPLETE each in verdicts["done"]
     (recording doneWhy, clearing any soft block), BLOCK each in verdicts["block"] (recording blockWhy =
     the question owed to the user), and STAMP each in verdicts["awaiting"] (the ⏳ annotation: waiting on
@@ -7082,17 +7112,22 @@ def apply_close(store, menu, verdicts, t=None, touched=None):
     for i, nd in enumerate(menu, 1):
         if nd.get("nodeComplete"):
             continue
+        # a verdict's ev_t is the time of the EVIDENCE it rules on (2026-08-13): turn-menu nodes are
+        # ruled from this turn (t, as ever); a lift-rider is ruled from GOAL HISTORY — its newest
+        # state row — so t_overrides carries that anchor. Anchoring a history ruling to the turn made
+        # it pre-shadowed by the very lift that nominated it (the fold orders by evidence time).
+        ev = (t_overrides or {}).get(i, t)
         if i in done:
-            if not record_verdict(store, nd, "closer", "done", t, why=done[i] or None):
+            if not record_verdict(store, nd, "closer", "done", ev, why=done[i] or None):
                 continue                              # the user's follow-up/move postdates this turn's evidence
-            if t is not None:                         # (the event materialized the flags + doneWhy)
-                nd["mt"] = t
+            if ev is not None:                        # (the event materialized the flags + doneWhy)
+                nd["mt"] = ev
             newly.append(nd["id"])
         elif i in block:
-            if not record_verdict(store, nd, "closer", "block", t, why=block[i] or None):   # the user's follow-up postdates this turn's evidence —
+            if not record_verdict(store, nd, "closer", "block", ev, why=block[i] or None):   # the user's follow-up postdates this turn's evidence —
                 continue                               # their reply owns the verdict now, not this stale close
-            if t is not None:                         # (the event materialized the flags + blockWhy)
-                nd["mt"] = t
+            if ev is not None:                        # (the event materialized the flags + blockWhy)
+                nd["mt"] = ev
         elif i in awaiting:
             if nd.get("awaitingWhy") != (awaiting[i] or None):     # same why → keep the original stamp
                 record_verdict(store, nd, "closer", "awaiting", t, why=awaiting[i] or None)
@@ -7131,7 +7166,9 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     starved = [nd for nd in _starved_candidates(store) if nd["id"] not in seen_ids]
     seen_ids |= {nd["id"] for nd in starved}
     status = [nd for nd in _status_report_candidates(store, turn) if nd["id"] not in seen_ids]
-    menu = menu + cands + starved + status
+    seen_ids |= {nd["id"] for nd in status}
+    lifted = [(nd, why) for nd, why in _lift_riders(store) if nd["id"] not in seen_ids]
+    menu = menu + cands + starved + status + [nd for nd, _ in lifted]
     if not menu:
         return []
     hist = _menu_history_text(store, seg_by_id, menu, CLOSE_HISTORY_CHARS) if seg_by_id is not None else ""
@@ -7168,6 +7205,15 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                          ", ".join("#%d" % i for i in tflagged),
                          "are" if len(tflagged) > 1 else "is",
                          "each" if len(tflagged) > 1 else "it"))
+    lift_whys = {nd["id"]: why for nd, why in lifted}
+    lflagged = [(i, lift_whys[nd["id"]]) for i, nd in enumerate(menu, 1) if nd["id"] in lift_whys]
+    for i, why in lflagged:
+        # the unblocker's completion-asserting evidence, routed to the done authority (2026-08-13):
+        # the lift's own why rides the note so the closer judges from goal history, not this turn alone
+        menu_text += ("\n\nGoal #%d's wait was ruled over%s Judge it only from what its goal history "
+                      "plainly shows delivered — done only where the history shows its outcome landed; "
+                      "leaving it open is a fine answer if the history is not plain."
+                      % (i, (": %s." % why.rstrip(".")) if why else "."))
     raw = closer_llm(_unit_text(turn["atoms"]), menu_text, hist)
     out = _parse_close(raw, len(menu))
     if out is None:
@@ -7188,20 +7234,50 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
             #                                            changes the size signature and re-judges (event re-arm)
         return None                                    # under the cap → leave unswept, retry next pass
     store.get("closeFails", {}).pop(turn["id"], None)  # a clean reply clears the turn's strike count
-    if cands or starved:
-        # The reply LANDED → the closer has considered every candidate (a verdict or a considered
-        # omission). Stamp each one's signature so an unchanged set is never re-asked; a verdicted
-        # candidate's stamp is harmless (the ruled/sealed filters exclude it anyway).
-        kidmap = {}
-        for _nid, _nd in store["nodes"].items():
-            kidmap.setdefault(_nd.get("parentId"), []).append(_nid)
-        sigs = store.setdefault("umbSig", {})
-        for nd in cands:
-            sigs[nd["id"]] = _umb_sig(store["nodes"], kidmap, nd["id"])
-        ssigs = store.setdefault("starvedSig", {})
-        for nd in starved:                             # settled-elsewhere set as of THIS look (see _starved_sig)
-            ssigs[nd["id"]] = _starved_sig(store["nodes"], kidmap, nd["id"])
-    newly = apply_close(store, menu, out, t=turn.get("t"), touched=n_touched)
+    # STAND-DOWN (2026-08-13): a writer whose evidence predates the diary stands down — the standing
+    # corollary, applied at the closer's own write site. The backlog sweep anchors verdicts to a stale
+    # turn's ev_t; the fold (the authority) orders by evidence time, so newer diary rows shadow such a
+    # verdict SILENTLY while the turn seals forever (g44 lost two dones to interrupt/unblock rows this
+    # way, 2026-08-12). Simulate the exact row apply_close would append: a verdict that would not
+    # change the node's folded state is dropped and logged loudly (stale-close). Deliberately NO
+    # requeue: the newer evidence's own turn is audited by the same oldest-first sweep, and a requeue
+    # here can loop forever on a fold tie (both critics' finding).
+    # a lift-rider's ruling draws on GOAL HISTORY, so its verdict anchors to the lift's own ev_t —
+    # anchored to the (possibly older) audited turn it would be pre-shadowed by the very lift that
+    # nominated it, and the stand-down below would drop every lift-ridden ruling
+    t_overrides = {}
+    for i, nd in enumerate(menu, 1):
+        if nd["id"] in lift_whys:
+            evs = [int(e.get("ev_t") or 0) for e in (nd.get("log") or [])
+                   if e.get("kind") in ("done", "block", "unblock", "reopen")]
+            if evs:
+                t_overrides[i] = max(evs)
+    for kind in ("done", "block"):
+        for i in list(out.get(kind) or {}):
+            nd = menu[i - 1]
+            ev = t_overrides.get(i, turn.get("t"))
+            sim = dict(nd)
+            sim["log"] = list(nd.get("log") or []) + [{"ev_t": ev, "src": "closer",
+                                                       "kind": kind, "at": int(time.time())}]
+            if _fold_node_state(sim) == _fold_node_state(nd):
+                out[kind].pop(i, None)
+                _log_judge_error("closer", store.get("rompUuid"), "stale-close", goal=nd.get("id"),
+                                 note="a %s anchored to ev_t %s is shadowed by newer diary rows on "
+                                      "%s — the writer stands down; the newer evidence's own turn "
+                                      "carries the ruling" % (kind, ev, nd.get("id")))
+    newly = apply_close(store, menu, out, t=turn.get("t"), touched=n_touched, t_overrides=t_overrides)
+    # The reply LANDED → the closer considered every menu node (a verdict or a considered omission).
+    # ONE look-stamp replaces the retired umbSig/starvedSig signatures (2026-08-13): the newest row
+    # FILED in each node's top subtree as of this look, stamped BELOW apply_close so the reply's own
+    # filings are covered and a just-ruled candidate is not instantly re-nominated. Every partition is
+    # stamped — an unstamped lift-rider the closer HOLDS would re-nominate every pass forever, the
+    # exact one-shot defect this replaces.
+    kidmap = {}
+    for _nid, _nd in store["nodes"].items():
+        kidmap.setdefault(_nd.get("parentId"), []).append(_nid)
+    for nd in menu:
+        if nd["id"] in store["nodes"]:
+            nd["closerLookT"] = _newest_filed(store["nodes"], kidmap, nd["id"])
     segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
     if segs:                                           # anchor each resolved (done/blocked) top to the recap
         recap, resolved = segs[-1]["id"], set(out["done"]) | set(out["block"])
