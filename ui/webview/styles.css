@@ -578,11 +578,23 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .slash-row { display: flex; align-items: baseline; gap: 9px; padding: 5px 9px; border-radius: 5px; cursor: pointer; }
 .slash-row.sel { background: var(--accent); }
 .slash-row.sel .slash-name, .slash-row.sel .slash-desc, .slash-row.sel .slash-arg { color: var(--accent-fg); }
-.slash-name { flex: 0 0 auto; font-weight: 650; color: var(--fg); white-space: nowrap; }
+/* One line per command, ALWAYS: the name+arg-hint keeps at most ~2/3 of the row and the description gets
+   the rest — both ellipsize, and → on the selected row shows the full text instead (the user 2026-08-13:
+   letting the description wrap in place meant /code-review's long arg hint squeezed it to a one-letter-wide
+   column hundreds of lines tall). */
+.slash-name { flex: 0 1 auto; min-width: 0; max-width: 68%; overflow: hidden; text-overflow: ellipsis;
+  font-weight: 650; color: var(--fg); white-space: nowrap; }
 .slash-arg { font-weight: 400; opacity: 0.7; font-style: italic; }
-.slash-desc { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word;   /* wraps — the whole description
-  is readable, never ellipsized (the user 2026-08-12); the popup is pinned to the composer's width, so
-  wrapping grows the row, not the menu */
+.slash-desc { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* basis 0, not auto: with auto, the description's huge natural width out-weighs the name in shrink
+     arithmetic and truncates even a short arg hint; at 0 the name takes what it needs (to its cap) first */
+  color: var(--vscode-descriptionForeground, #9a9a9a); }
+/* the → expansion: name+args over the description, both wrapped in full at the popup's width */
+.slash-row.expanded { display: block; }
+.slash-row.expanded .slash-name, .slash-row.expanded .slash-desc { display: block; max-width: none;
+  overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: break-word; }
+.slash-row.expanded .slash-desc { margin-top: 2px; }
+.slash-hint { padding: 4px 9px 2px; font-size: 0.82em; opacity: 0.6;
   color: var(--vscode-descriptionForeground, #9a9a9a); }
 .slash-empty, .slash-loading { padding: 8px 10px; color: var(--vscode-descriptionForeground, #9a9a9a);
   display: flex; align-items: center; gap: 8px; }
