@@ -13,7 +13,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 test("the card carries the kernel's stalled field", () => {
-  assert.match(FEED, /stalled\?: \{ why: string; since: number; note\?: string \| null \} \| null;/,
+  assert.match(FEED, /stalled\?: \{ why: string; since: number; note\?: string \| null; blocked\?: boolean \} \| null;/,
     "the AskItem declares the kernel's stall record");
 });
 

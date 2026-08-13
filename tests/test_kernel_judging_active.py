@@ -68,8 +68,8 @@ class BuildFeedWiring(unittest.TestCase):
 
     def test_the_card_key_is_unchanged(self):
         # feed.ts + spin-caption.ts key on `judging` as before — the kernel broadened WHEN it is
-        # true, not the contract
-        self.assertIn('"judging": bool(sess_judging and column == "working")',
+        # true (active calls 2026-08-12; in-flight-class stall holds 2026-08-13), not the contract
+        self.assertIn('"judging": bool((sess_judging or _stall_inflight) and column == "working")',
                       inspect.getsource(km.build_feed))
 
 

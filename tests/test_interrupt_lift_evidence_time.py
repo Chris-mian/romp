@@ -189,9 +189,10 @@ class TheNudgeIsNotHeldByTheLift(unittest.TestCase):
         held = []
         keep = km._nudge_fire_list(fresh, [(GID, 0, True)], arm_t=CUT_T, seen_t=RESUME_T, held=held)
         self.assertEqual(keep, [])
-        self.assertEqual([f[0] for f in held], [GID])
-        self.assertFalse(jd.stall_why_stands(jd.WHY_TURN_IN_FLIGHT, SID),
-                         "and the hold's why is screened off the stall surface — hence a silent card")
+        self.assertEqual([f[0] for f, _ev in held], [GID])
+        self.assertIn(jd.WHY_TURN_IN_FLIGHT, jd.WHY_IN_FLIGHT,
+                      "the hold's why is in-flight class: it presents as the Analyzing… swirl "
+                      "(and the sweep pops it on the turn's own end) — no silent card since 2026-08-13")
 
 
 class EndToEndThroughTheTick(unittest.TestCase):

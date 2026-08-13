@@ -41,18 +41,16 @@ class StalledFacts(unittest.TestCase):
     def _write(self, deferred):
         (jd.STATE / "auto-nudge.json").write_text(json.dumps({"deferred": deferred}))
 
-    def test_a_settled_reason_is_reported(self):
-        self._write({GID: {"at": NOW, "why": "the agent's to-do sync is due", "seen": jd.STALL_SEEN}})
+    def test_a_standing_reason_is_reported(self):
+        # no seen gate (2026-08-13): the kernel's sweep pops records on their events, so existence IS
+        # the standing hold and one observation already presents
+        self._write({GID: {"at": NOW, "why": "the agent's to-do sync is due", "sid": FSID}})
         self.assertEqual(jd.stalled_facts(FSID),
                          {GID: {"why": "the agent's to-do sync is due", "since": NOW}})
 
-    def test_a_reason_seen_once_is_not_a_stall(self):
-        self._write({GID: {"at": NOW, "why": "a judge pass is mid-flight", "seen": 1}})
-        self.assertEqual(jd.stalled_facts(FSID), {}, "momentary churn must not light a card")
-
     def test_another_session_is_not_mine(self):
         other = "99999999-8888-7777-6666-555555555555:g1"
-        self._write({other: {"at": NOW, "why": "the agent's to-do sync is due", "seen": jd.STALL_SEEN}})
+        self._write({other: {"at": NOW, "why": "the agent's to-do sync is due"}})
         self.assertEqual(jd.stalled_facts(FSID), {}, "goals are keyed by session; only mine are mine")
 
     def test_a_legacy_bare_int_record_says_nothing(self):
@@ -65,19 +63,21 @@ class StalledFacts(unittest.TestCase):
         # review is mid-flight is a goal romp is WORKING — the Analyzing… swirl carries that story, and a
         # stalled chip there drew the eye to a state nobody needs to act on. So the staller never sees
         # these, even while active_runs genuinely shows the call in flight.
-        self._write({GID: {"at": NOW, "why": jd.WHY_JUDGING, "seen": jd.STALL_SEEN, "sid": FSID}})
+        self._write({GID: {"at": NOW, "why": jd.WHY_JUDGING, "sid": FSID}})
         saved = jd.active_runs
         try:
             jd.active_runs = lambda: [{"judge": "closer", "fsid": FSID, "sent": 1.0}]
             self.assertEqual(jd.stalled_facts(FSID), {},
-                             "romp reviewing is romp working — never a stall, however live the call")
+                             "in-flight class: presents as the Analyzing… swirl, so no stall note is "
+                             "owed — the WHY_IN_FLIGHT tuple is the one shared definition (2026-08-13)")
         finally:
             jd.active_runs = saved
 
-    def test_a_legacy_global_pass_record_never_stands(self):
-        # pre-2026-07-25 records carried the GLOBAL "a judge pass is mid-flight" — minted by the fleet-wide
-        # pass cadence, naming no session, unverifiable → dropped on read however settled the count looks.
-        self._write({GID: {"at": NOW, "why": "a judge pass is mid-flight", "seen": jd.STALL_SEEN}})
+    def test_a_legacy_global_pass_record_never_wears_the_chip(self):
+        # pre-2026-07-25 records carried the GLOBAL "a judge pass is mid-flight" — in-flight class, so
+        # the staller owes it nothing (the swirl covers it, and the kernel's sweep pops it the tick no
+        # call is in flight)
+        self._write({GID: {"at": NOW, "why": "a judge pass is mid-flight"}})
         self.assertEqual(jd.stalled_facts(FSID), {})
 
     def test_an_unreadable_store_is_not_fatal(self):

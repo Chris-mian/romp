@@ -249,22 +249,16 @@ GROUPER_ON = os.environ.get("ROMP_GROUPER", "1") != "0"
 # vs mt): it re-distills only when the goal (re-)completes. Toggleable: set ROMP_DISTILLER=0 to disable.
 DISTILLER_ON = os.environ.get("ROMP_DISTILLER", "1") != "0"
 STALLER_ON = os.environ.get("ROMP_STALLER", "1") != "0"   # the stall note (2026-07-23); same kill switch shape
-# Consecutive nudge-gate runs that must report the SAME deferral reason before a card counts as STALLED.
-# Defined here, not in the kernel, because the kernel WRITES the record and this module READS it back — one
-# definition or the two drift. 2 = "the reason survived the next gate run", which is the EVENT that separates
-# a genuine wedge from the momentary reasons (a judge pass in flight) every working goal reports in passing.
-STALL_SEEN = 2
-# The nudge gate's "the judge itself could still move this card" reason — same one-definition rule as
-# STALL_SEEN: the kernel mints it (_revivers_pending) and both stall readers (kernel _stalled_goals,
-# stalled_facts below) screen it out through stall_why_stands. Neither string EVER presents as a stall
-# (the user 2026-07-31): a goal held only because romp's own review is mid-flight is a goal romp is
-# WORKING, and the card already says so — the Analyzing… swirl (spin-caption.ts) covers exactly this
-# beat, its tip naming the nudge hold. The hold itself stays real in the gate (with its backstop); only
-# the yellow chip is retired, so "stalled" keeps meaning "nothing romp does is moving this". The LEGACY
-# string is the pre-2026-07-25 GLOBAL form, deferred on ANY judge activity anywhere — but the producer
-# opens a fleet-wide pass every ~3s, so that was cadence, not a reviver, and false "stalled" cards
-# minted fleet-wide. Screening both strings also ends the frozen-record problem the 2026-07-25
-# live-verify existed for: a record that freezes holding a judging claim now simply says nothing.
+# The nudge gate's "the judge itself could still move this card" reason — one definition here because
+# the kernel WRITES the record and this module READS it back. The in-flight CLASS (WHY_IN_FLIGHT
+# below) never paints the yellow stalled chip: a goal held only because romp's own review is mid-
+# flight is a goal romp is WORKING, and the card says so as the Analyzing… swirl instead (the user
+# 2026-07-31; routed per record since 2026-08-13). The per-walk seen counter and the screening
+# predicate that USED to hide these records entirely are retired (2026-08-13): retirement is owned by
+# the kernel's per-tick deferral sweep, which pops each record on its reason's own event — a record
+# that exists therefore genuinely stands, and everything standing PRESENTS (swirl or chip; a frozen
+# record can no longer hide holding a stale claim, because it no longer freezes). The LEGACY string is
+# the pre-2026-07-25 GLOBAL form, kept only so old records retire cleanly.
 WHY_JUDGING = "romp's own review of this session is mid-flight"
 _WHY_JUDGING_LEGACY = "a judge pass is mid-flight"
 # The fire list's own hold (2026-08-01), minted by the kernel under the same one-definition rule and
@@ -8100,18 +8094,14 @@ def stall_llm(goal_text, work_text, holding):
     return _judge_run(_triage_model(), STALL_BRIEF_SYS, user, judge="staller").strip()   # caller splits SOURCE, then caps
 
 
-def stall_why_stands(why, fsid):
-    """True when a recorded stall reason is one the card should PRESENT. The judging reasons never are
-    (the user 2026-07-31, superseding the 2026-07-25 live-verify), nor is the fire list's turn-in-flight
-    hold (2026-08-01, same argument — see WHY_TURN_IN_FLIGHT): a goal the gate holds because romp's
-    own review is mid-flight is a goal romp is actively working, and calling that "stalled" drew the
-    user's eye to a state nobody needs to act on — the Analyzing… swirl already tells that story, with
-    the nudge hold in its tip (spin-caption.ts). The hold itself is untouched; this predicate only
-    decides what the stall surfaces say. Other reasons pass through: their truth lives in stores this
-    predicate can't reach, and their own passes reconcile the records that carry them. `fsid` is the
-    record's session, kept for the next reason that needs live verification against it (the retired
-    judging branch checked active_runs here)."""
-    return why not in (WHY_JUDGING, _WHY_JUDGING_LEGACY, WHY_TURN_IN_FLIGHT)
+# The in-flight CLASS: holds that mean "romp is working this beat right now", presented as the
+# Analyzing… swirl on the card rather than the yellow stalled chip (build_feed routes per record;
+# stalled_facts below uses the same tuple to decide staller-note eligibility). This tuple replaces the
+# stall_why_stands screening predicate (2026-08-13): the screen HID these records from every surface,
+# so one frozen between retries showed nothing at all — six live records were dark up to 20 hours.
+# Now the kernel's deferral sweep retires each record on its reason's own event, and whatever stands
+# presents somewhere by definition.
+WHY_IN_FLIGHT = (WHY_JUDGING, _WHY_JUDGING_LEGACY, WHY_TURN_IN_FLIGHT)
 
 
 def stalled_facts(fsid):
@@ -8128,10 +8118,13 @@ def stalled_facts(fsid):
         if not isinstance(rec, dict) or not str(gid).startswith(fsid + ":"):
             continue                                   # a legacy bare-int record predates the why → nothing to say
         try:
-            why, at, seen = rec.get("why"), int(rec.get("at") or 0), int(rec.get("seen") or 1)
+            why, at = rec.get("why"), int(rec.get("at") or 0)
         except (TypeError, ValueError):
             continue
-        if why and at and seen >= STALL_SEEN and stall_why_stands(str(why), fsid):
+        # no seen gate (2026-08-13): the kernel's sweep pops a record the moment its reason's event
+        # happens, so existence IS the standing hold. In-flight-class holds present as the Analyzing…
+        # swirl, not the chip — so no stall note is owed for them either.
+        if why and at and str(why) not in WHY_IN_FLIGHT:
             out[str(gid)] = {"why": str(why), "since": at}
     return out
 
