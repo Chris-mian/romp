@@ -16407,23 +16407,77 @@ def _session_tokens(path, t0):
     return acc
 
 
+# judge-usage.jsonl is append-only, time-ordered, and never rotated (38.7 MB / 148k lines measured
+# 2026-08-13) — and BOTH the analytics modal and EVERY timeline build used to re-read and re-parse it
+# in full, on the GIL, so a slow /analytics also froze the pusher and the whole dashboard with it (the
+# user 2026-08-13, who watched the cost modal sit on "loading…"). One shared incremental reader now:
+# rows parse ONCE, appends parse from the last byte offset, and rows older than the widest consumer
+# window (30 days, plus a day of slack) are pruned so memory stays bounded. A shrunken file (rotation,
+# a fresh install) resets cleanly.
+_JUDGE_USAGE_RETAIN = 31 * 86400
+_JUDGE_USAGE_CACHE = {"path": None, "size": -1, "mtime": 0.0, "rows": []}
+
+
+def _judge_usage_rows():
+    """Every parsed judge-usage row from the last ~31 days, incrementally maintained. Fully defensive —
+    a missing or garbled log never breaks a build; a mid-append partial line is left for the next read.
+    Keyed on the PATH too (a test repointing jd.STATE must never inherit another dir's offset — the
+    overrides-sandbox lesson) and reset on a same-size mtime change (an in-place rewrite)."""
+    p = jd.STATE / "judge-usage.jsonl"
+    c = _JUDGE_USAGE_CACHE
+    try:
+        st = os.stat(p)
+        size = st.st_size
+    except OSError:
+        c["path"], c["size"], c["rows"] = str(p), -1, []
+        return c["rows"]
+    if str(p) != c["path"]:
+        c["path"], c["size"], c["rows"] = str(p), -1, []
+    if size == c["size"] and st.st_mtime == c["mtime"]:
+        return c["rows"]
+    if size <= c["size"] or c["size"] < 0:
+        c["size"], c["rows"] = 0, []                    # rotated/truncated/rewritten, or the first read
+    try:
+        with open(p, "rb") as fh:
+            fh.seek(c["size"])
+            chunk = fh.read()
+    except OSError:
+        return c["rows"]
+    cut = chunk.rfind(b"\n")
+    if cut < 0:
+        return c["rows"]                                # nothing complete beyond the offset yet
+    for ln in chunk[:cut].split(b"\n"):
+        if not ln.strip():
+            continue
+        try:
+            o = json.loads(ln.decode("utf-8", errors="replace"))
+        except Exception:
+            continue
+        if isinstance(o, dict):
+            c["rows"].append(o)
+    c["size"] += cut + 1
+    c["mtime"] = st.st_mtime
+    # retention keyed to the DATA's own newest row, never the wall clock (a replayed/synthetic log's
+    # history must not evaporate): rows arrive in time order, so prune the left edge only
+    newest = (c["rows"][-1].get("t") or 0) if c["rows"] else 0
+    floor = newest - _JUDGE_USAGE_RETAIN
+    if c["rows"] and (c["rows"][0].get("t") or 0) < floor:
+        i = 0
+        while i < len(c["rows"]) and (c["rows"][i].get("t") or 0) < floor:
+            i += 1
+        del c["rows"][:i]
+    return c["rows"]
+
+
 def _judge_usage(t0):
-    """Roll up the judge PIPELINE's token usage from judge-usage.jsonl (one line per judge call, written
-    by romp-judge) within [t0, now]: a grand total plus per-judge and per-tier {calls,in,out,cost,ms}.
-    Empty/zeros until the log exists. Fully defensive — a missing or garbled log never breaks the build."""
+    """Roll up the judge PIPELINE's token usage (one row per judge call, written by romp-judge) within
+    [t0, now]: a grand total plus per-judge and per-tier {calls,in,out,cost,ms}. Reads the shared
+    incremental row cache — never the file. Empty/zeros until the log exists."""
     def blank():
         return {"calls": 0, "in": 0, "out": 0, "cost": 0.0, "ms": 0}
     total, by_judge, by_tier = blank(), {}, {}
-    try:
-        lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
-    except OSError:
-        return {"total": total, "byJudge": by_judge, "byTier": by_tier}
-    for ln in lines:
-        try:
-            o = json.loads(ln)
-        except Exception:
-            continue
-        if not isinstance(o, dict) or (o.get("t") or 0) < t0:
+    for o in _judge_usage_rows():
+        if (o.get("t") or 0) < t0:
             continue
         for b in (total, by_judge.setdefault(o.get("judge") or "?", blank()),
                   by_tier.setdefault(o.get("tier") or "?", blank())):
@@ -16435,20 +16489,8 @@ def _judge_usage(t0):
     return {"total": total, "byJudge": by_judge, "byTier": by_tier}
 
 
-def _token_windows(paths, now):
-    """Token usage by the two windows Claude meters — 5h ("session") + 7d ("week") — each split into the
-    coding SESSIONS (summed transcript usage of `paths`) and the judge PIPELINE (_judge_usage), in/out kept
-    apart, cache_r carried for the tooltip. Both halves draw the same subscription quota, so the summed
-    in+out reflects what that window's /usage % is spending. Cheap: _session_tokens caches per-path rows,
-    so re-summing per window just re-iterates the cache."""
-    def split(t0):
-        s = {"in": 0, "out": 0, "cache_r": 0}
-        for p in paths:
-            d = _session_tokens(p, t0)
-            s["in"] += d["in"]; s["out"] += d["out"]; s["cache_r"] += d["cache_r"]
-        return {"sessions": s, "pipeline": _judge_usage(t0)}
-    return {"fiveHour": split(now - WIN_5H), "week": split(now - WIN_WEEK),
-            "windows": {"fiveHour": WIN_5H, "week": WIN_WEEK}}
+# (_token_windows, the footer's old fixed 5h/7d token split, was removed 2026-08-13 — it had no callers
+# left; the analytics modal's _token_analytics is the one arbitrary-window rollup.)
 
 
 # ── per-model $ prices for the cost-weighted analytics view ──────────────────────────────────────
@@ -16572,21 +16614,36 @@ def _session_cost(path, t0, prices):
     return c
 
 
+_ANALYTICS_MEMO = {}   # window -> {"t": epoch, "jkey": judge-usage cache size, "resp": the payload}
+
+
 def _token_analytics(now, window):
     """Token usage over the trailing `window` seconds for the analytics modal (the /analytics endpoint):
     the coding SESSIONS total (summed transcript usage of the discovered fleet) vs the judge PIPELINE
-    broken out per judge AND per tier (_judge_usage). One ARBITRARY window — the modal's period picker —
-    where the footer's _token_windows only does the two fixed Claude meters (5h/7d). Each side also carries
-    $ cost so the modal can toggle tokens↔cost without a refetch: judges = exact logged cost, sessions =
-    tokens × _model_prices. Cheap: _session_tokens caches per-path rows, so this re-sums the cache."""
+    broken out per judge AND per tier (_judge_usage). One ARBITRARY window — the modal's period picker.
+    Each side also carries $ cost so the modal can toggle tokens↔cost without a refetch: judges = exact
+    logged cost, sessions = tokens × _model_prices. Cheap: _session_tokens caches per-path rows and
+    _judge_usage reads the shared incremental row cache, so this re-sums memory."""
+    # a tiny TTL memo: the modal refetches on every period click and every reopen, and the recompute is
+    # honest-but-pointless within seconds of itself (the user 2026-08-13's fast-and-visible rule); a new
+    # judge row (cache size moved) invalidates early so the numbers never sit stale behind live judging
+    memo = _ANALYTICS_MEMO.get(window)
+    jkey = _JUDGE_USAGE_CACHE["size"]
+    if memo and memo["jkey"] == jkey and now - memo["t"] < 15:
+        return memo["resp"]
     t0 = now - window
     prices = _model_prices(now)
     s = {"in": 0, "out": 0, "cost": 0.0}
-    for fsid, path, anchor, name in jd.discover(now):
+    # discover at the MODAL's window, never the 48h default: the 7d/30d views used to sum judges over
+    # the full window but sessions over only the last 48h of activity — the "judges = N% of session
+    # cost" note was wrong there by construction (the user 2026-08-13's map)
+    for fsid, path, anchor, name in jd.discover(now, window=max(window, 48 * 3600)):
         d = _session_tokens(str(path), t0)
         s["in"] += d["in"]; s["out"] += d["out"]
         s["cost"] += _session_cost(str(path), t0, prices)
-    return {"window": window, "now": now, "sessions": s, "judges": _judge_usage(t0)}
+    resp = {"window": window, "now": now, "sessions": s, "judges": _judge_usage(t0)}
+    _ANALYTICS_MEMO[window] = {"t": now, "jkey": _JUDGE_USAGE_CACHE["size"], "resp": resp}
+    return resp
 
 
 # Usage/error logs carry one name per distinct prompt (the user 2026-07-08): gister, opener, placer,
@@ -16609,15 +16666,9 @@ def _attach_run_usage(judging, t0, alive_sids):
         mk["ms"] = mk["in"] = mk["out"] = 0
         mk["sent"] = mk["recv"] = None
     runs = {}                                            # (sid, judge) -> [{t,ms,in,out,sent,recv}] sorted by t
-    try:
-        lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
-    except OSError:
-        return
-    for ln in lines:
-        try:
-            o = json.loads(ln)
-        except Exception:
-            continue
+    # the shared incremental row cache (_judge_usage_rows) — this used to re-read + re-parse the whole
+    # append-only log on EVERY timeline build (0.46s at 38.7 MB, on the GIL, growing without bound)
+    for o in _judge_usage_rows():
         t, sid = o.get("t"), o.get("fsid")
         if not isinstance(t, (int, float)) or t < t0 or sid not in alive_sids:
             continue
