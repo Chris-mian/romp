@@ -4257,6 +4257,7 @@ def _spawn_session(name, cwd=None):
     TMUX* so the child launcher never thinks it is already inside a tmux client. `cwd` is the session's
     working directory (validated by _resolve_create_dir); None falls back to the kernel default."""
     cwd = cwd or _default_create_dir()
+    _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
     env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
     try:
         subprocess.run([str(BIN / "romp"), "new", "-t", "--detach", name], cwd=cwd, env=env, timeout=25,
@@ -4316,6 +4317,7 @@ def _create_sdk_session(nm, cwd, auth=""):
     the next full cycle, ~5-6s on a busy fleet, all of it spent staring at the provisional dots
     (measured live, the user 2026-08-10)."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
+    _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth)
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
     _reveal_chat({"type": "focus", "id": sid})
@@ -4683,6 +4685,8 @@ def _do_warm_commands(cwd):
         err = (str(e) or e.__class__.__name__)[:200]
     with _CMD_CACHE_LOCK:
         _CMD_CACHE[cwd] = {"commands": cmds, "ts": time.time(), "warming": False, "err": err}
+    if cmds and not err:
+        _save_cmd_cache()             # a good probe is worth keeping across restarts (the user 2026-08-13)
 
 
 def _commands_for_cwd(cwd):
@@ -4699,6 +4703,53 @@ def _commands_for_cwd(cwd):
                                "ts": (ent or {}).get("ts", 0.0), "warming": True, "err": ""}
             threading.Thread(target=_do_warm_commands, args=(cwd,), daemon=True).start()
         return (ent or {}).get("commands", []), True
+
+
+# The persisted half of the cache (the user 2026-08-13, whose first "/" on the devbox took seconds): the
+# probe boots a whole `claude` process, and the in-memory cache died with every kernel restart — which is
+# most days, several times, on a repo that deploys by restarting. One JSON file holds every cwd's last
+# good list, keyed to the CLI BINARY (path + mtime): a CLI update changes the command set; nothing else
+# romp can see does. Loaded once at import; a loaded entry keeps its original ts, so the existing
+# stale-while-rewarming semantics decide freshness — the first "/" after a restart serves the persisted
+# list instantly and the background probe refreshes it.
+_CMD_CACHE_FILE = jd.STATE / "commands-cache.json"
+
+
+def _claude_fingerprint():
+    try:
+        p = str(_claude_bin())
+        return "%s:%d" % (p, int(os.stat(p).st_mtime))
+    except Exception:
+        return ""
+
+
+def _save_cmd_cache():
+    try:
+        with _CMD_CACHE_LOCK:
+            cwds = {cwd: {"commands": ent["commands"], "ts": ent.get("ts", 0.0)}
+                    for cwd, ent in _CMD_CACHE.items()
+                    if ent.get("commands") and not ent.get("err")}
+        _atomic_write(_CMD_CACHE_FILE, json.dumps({"claude": _claude_fingerprint(), "cwds": cwds}))
+    except Exception as e:
+        sys.stderr.write("commands-cache save: %s\n" % e)   # a cache that can't persist still serves
+
+
+def _load_cmd_cache():
+    try:
+        d = json.loads(_CMD_CACHE_FILE.read_text())
+    except Exception:
+        return                                       # no file yet / unreadable → cold start, as before
+    if not isinstance(d, dict) or d.get("claude") != _claude_fingerprint():
+        return                                       # a different CLI binary → its command set is stale
+    with _CMD_CACHE_LOCK:
+        for cwd, ent in (d.get("cwds") or {}).items():
+            if isinstance(ent, dict) and isinstance(ent.get("commands"), list) and ent["commands"]:
+                _CMD_CACHE.setdefault(cwd, {"commands": ent["commands"],
+                                            "ts": float(ent.get("ts") or 0.0),
+                                            "warming": False, "err": ""})
+
+
+_load_cmd_cache()
 
 
 # The auto-retry / "Retry now" message romp injects into an API-error-blocked session (the apiRetry route).
@@ -5436,6 +5487,7 @@ def _revive_session(sid):
     name = _name_of(sid) or sid
     be = _sdk()
     ok, detail = False, ""
+    _commands_for_cwd(_cwd_of(sid))   # pre-warm the slash-command list — a revival predicts a composer (the user 2026-08-13)
     try:
         if be and be.owns(sid):
             ok = bool(be.resume(name, sid) and be.connect(sid))
