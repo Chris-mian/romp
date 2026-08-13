@@ -33,6 +33,7 @@ export interface SpinItem {
   recheck?: boolean;
   rejudging?: boolean;
   blocked?: unknown;
+  working?: { since?: number | null; toolUses?: number | null } | null;   // open-turn narration (kernel _open_turn_progress; the user 2026-08-13)
 }
 
 /** caption: the body line, or null for no spin. tip: the fuller hover explanation. awaitingBg: the
@@ -48,7 +49,14 @@ const NONE: Spin = { caption: null, tip: "", awaitingBg: false };
 /** dCompleted/dBlocked come from distillInputs(distillState, column) — the GENUINE resolution state, not
  *  the transient column. distillPending is passed in (rather than recomputed) so the two modules keep one
  *  owner for the "is the distiller still working" rule. */
-export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boolean): Spin {
+/** Compact duration for the working narration: minutes under an hour, then h+m. */
+function workingFor(secs: number): string {
+  const m = Math.max(0, Math.floor(secs / 60));
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+
+export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boolean, nowS?: number): Spin {
   const aw = it.awaiting;
   // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Waiting on task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
@@ -128,6 +136,21 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     return {
       caption: "Distilling…",
       tip: dCompleted ? "Writing the key takeaway…" : "Writing the decision brief…",
+      awaitingBg: false,
+    };
+  }
+  if (it.working && it.column === "working") {
+    // WORKING NARRATION (the user 2026-08-13) — the ordinary working card with its turn open used to
+    // be the ONE mute case ("no spin"). Now it says what is actually happening: the open turn's tool
+    // count and how long it has been running, both live — a frozen count under a climbing timer is
+    // how a silent regression becomes visible at a glance. Every richer story above (awaiting,
+    // provisional, re-check, re-judging, the settle gap, distilling) still wins; this is the floor.
+    const n = it.working.toolUses || 0;
+    const dur = nowS && it.working.since ? ` · ${workingFor(nowS - it.working.since)}` : "";
+    return {
+      caption: `Working — ${n} tool ${n === 1 ? "use" : "uses"}${dur}`,
+      tip: "The open turn's live progress: tool calls made so far, and how long this stretch has been "
+         + "running. If the count freezes while the timer climbs, something is worth a look.",
       awaitingBg: false,
     };
   }
