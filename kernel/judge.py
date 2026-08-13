@@ -146,7 +146,7 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          model actually wrote. Closer / grouper / consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 7                         # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 8                         # placements-identity schema version (plan P2, the user 2026-07-06).
 #                                          v2 (2026-07-09): a 07-07/07-08 change to segment-text derivation
 #                                          stepped the text hash without this bump — dormant segments' old-hash
 #                                          placements stopped matching, and every restart/touch replayed them as
@@ -187,6 +187,12 @@ PLACEMENTS_V = 7                         # placements-identity schema version (p
 #                                          every compacted transcript (one live session: 5825 → 5850 atoms,
 #                                          25 messages recovered). Exactly v3's shape — a bigger atom set,
 #                                          not a shifted hash — so it takes the same seal.
+#                                          v8 (2026-08-13): the twin-drop pre-pass now matches
+#                                          <command-message>-FIRST wrappers like the emit path always did
+#                                          (COMMAND_NAME_ANY_RE) — the phantom raw-twin human atom beside
+#                                          every skill/custom-command invocation drops out. v5's shape in
+#                                          reverse: a SMALLER atom set for transcripts carrying shape-B
+#                                          commands, same seal.
 PLAN_SESSIONS = None                     # per-pass session cap — REMOVED (the user 2026-06-30): the fairness
                                          # caps were a recurring source of confusing starvation bugs (a goal/
                                          # nudge stuck behind a full per-pass window), never clearly needed.

@@ -786,7 +786,14 @@ class FileAdapter:
         for u in kept:
             r = self.by_uuid.get(u) or {}
             if r.get("type") == "user" and r.get("promptId"):
-                m = COMMAND_NAME_RE.match(_text_of(_content(r.get("message"))) or "")
+                btext = _text_of(_content(r.get("message"))) or ""
+                # the SAME matcher the emit path uses (COMMAND_NAME_ANY_RE inside a wrapper record): the
+                # anchored-only form missed every <command-message>-FIRST invocation (skills / custom
+                # commands), so shape-B twins survived as phantom human segments beside the real command
+                # atom — same hash, different t (2026-08-13; the emit path got this fix on 2026-07-22 and
+                # this pre-pass silently didn't).
+                m = COMMAND_NAME_RE.match(btext) or (COMMAND_NAME_ANY_RE.search(btext)
+                                                     if CMD_WRAP_RE.match(btext) else None)
                 if m:
                     name = m.group(1).strip() or "/?"
                     cmd_prompt_names.setdefault(r["promptId"], set()).add(
