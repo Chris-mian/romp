@@ -2950,7 +2950,10 @@ def _lift_spent_awaiting(now, tmux):
                     jd.save_goals(sid, store)
                     _mark_views_dirty()
                 continue
-            running = {t.get("id") for t in every if t.get("status") == "running"}
+            # a monitor past its recorded lifetime ceiling counts as RETURNED even with no terminal
+            # record (its CLI died mid-watch; the notification can never arrive) — see em._bg_expired
+            running = {t.get("id") for t in every
+                       if t.get("status") == "running" and not em._bg_expired(t, now)}
             placed = _bg_placed_tops(sid, s["path"], [t.get("id") for t in every])
             def _top_of(x):
                 seen = set()
@@ -9605,7 +9608,9 @@ def _bg_live_norm(sid, path):
     sp = _sdk_spawned_at(sid)
     return [{"tid": tk.get("id"), "desc": str(tk.get("summary") or "").strip(), "t": int(tk.get("t") or 0),
              "type": str(tk.get("type") or "")}
-            for tk in _bg_scan_cached(path) if not (sp and tk.get("t") and tk["t"] < sp)]
+            for tk in _bg_scan_cached(path)
+            if not (sp and tk.get("t") and tk["t"] < sp)
+            and not em._bg_expired(tk, time.time())]   # a monitor past its lifetime ceiling is not a live wait
 
 
 def _bg_pending(sid, path, tasks):
