@@ -2334,3 +2334,93 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 .mcp-act:disabled { opacity: 0.55; cursor: default; }
 .mcp-err { flex: 1 1 100%; color: #E5534B; }
 .mcp-none { color: var(--dim); }
+
+/* ── comment threads (the user 2026-08-13) ─────────────────────────────────────────────────────────
+   A highlighted passage wears a <mark> in the romp accent (highlight chrome — var(--accent), never a
+   status color); its turn carries a small count badge so the thread stays reachable even when the
+   rendered text drifts and the exact-match mark can't land. The popover is a pane-local card on the
+   menu vocabulary (#252526, hairline border, 6px radius, the .ctx-menu shadow) — deliberately NOT a
+   dimmed modal: the conversation stays readable beside the thread. */
+mark.cmt-hl {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: inherit;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+}
+mark.cmt-hl:hover { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.06); border-bottom-color: rgba(255, 255, 255, 0.2); }
+mark.cmt-hl.unread { border-bottom-style: solid; }
+mark.cmt-hl.busy { border-bottom-style: solid; animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
+@keyframes cmt-busy-pulse { 50% { background: color-mix(in srgb, var(--accent) 32%, transparent); } }
+
+.turn.has-cmt { position: relative; }
+.cmt-badge {
+  position: absolute; top: 2px; right: 4px; z-index: 5;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border: 1px solid var(--box-border); border-radius: 8px;
+  background: var(--vscode-menu-background, #252526);
+  color: var(--accent); font-size: 10px; line-height: 14px;
+  cursor: pointer; opacity: 0.75;
+}
+.cmt-badge:hover { opacity: 1; }
+.cmt-badge.unread { border-color: var(--accent); opacity: 1; }
+.cmt-badge.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
+
+.cmt-pop {
+  position: fixed; z-index: 120; width: 360px; max-width: 94vw;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--vscode-menu-background, #252526);
+  color: var(--vscode-menu-foreground, var(--fg));
+  border: 1px solid var(--box-border); border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+}
+.cmt-head { display: flex; align-items: center; }
+.cmt-title { font-weight: 600; }
+.cmt-x {
+  margin-left: auto; padding: 0 4px; border: 0; background: none;
+  color: inherit; opacity: 0.6; font-size: 14px; cursor: pointer;
+}
+.cmt-x:hover { opacity: 1; }
+.cmt-quote {
+  padding: 4px 8px; border-left: 2px solid var(--accent); border-radius: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.92em; opacity: 0.75;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.cmt-msgs { max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.cmt-msg { padding: 5px 8px; border-radius: 6px; line-height: 1.35; overflow-wrap: anywhere; }
+.cmt-msg.you { background: color-mix(in srgb, var(--accent) 14%, transparent); align-self: flex-end; max-width: 92%; white-space: pre-wrap; }
+.cmt-msg.agent { background: rgba(255, 255, 255, 0.05); align-self: flex-start; max-width: 96%; }
+.cmt-msg.agent > *:first-child { margin-top: 0; }
+.cmt-msg.agent > *:last-child { margin-bottom: 0; }
+.cmt-msg.pending { opacity: 0.55; }
+.cmt-dots { display: flex; gap: 4px; padding: 2px 6px; }
+.cmt-dots span {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  animation: cmt-dot-pulse 1.2s ease-in-out infinite;
+}
+.cmt-dots span:nth-child(2) { animation-delay: 0.2s; }
+.cmt-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes cmt-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+.cmt-note { font-size: 0.92em; opacity: 0.7; padding: 2px 6px; }
+.cmt-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 34px;
+  padding: 5px 7px; border: 1px solid var(--box-border); border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05); color: inherit;
+  font: inherit;
+}
+.cmt-input:focus { outline: none; border-color: var(--accent); }
+.cmt-actions { display: flex; gap: 6px; align-items: center; }
+.cmt-send {
+  padding: 3px 10px; border: 0; border-radius: 4px; cursor: pointer;
+  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600;
+}
+.cmt-send:disabled { opacity: 0.55; cursor: default; }
+.cmt-act {
+  padding: 3px 8px; border: 1px solid var(--box-border); border-radius: 4px; cursor: pointer;
+  background: none; color: inherit; font: inherit; opacity: 0.85;
+}
+.cmt-act:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); }
+.cmt-act.cmt-del.armed { border-color: var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }

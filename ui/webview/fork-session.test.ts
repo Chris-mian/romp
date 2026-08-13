@@ -45,7 +45,7 @@ test("the palette forks the ACTIVE session from the tip, via the chat pane", () 
 });
 
 test("kernel: forkSession is a session op; seeding precedes discoverability; the fsid is pinned to the sid", () => {
-  assert.match(KERNEL, /"forkSession"\)/);   // in ID_OPS — routed by session id like every session op
+  assert.match(KERNEL, /"mcpAction", "forkSession",/);   // in ID_OPS — routed by session id like every session op
   assert.match(KERNEL, /elif t == "forkSession" and msg\.get\("name"\):/);
   assert.match(KERNEL, /def _fork_session\(parent_sid, cut_msg_uuid, new_name, now=None\):/);
   // the cut means the same thing the edit/delete rewind means: just before the clicked user message

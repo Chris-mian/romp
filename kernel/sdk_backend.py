@@ -3436,7 +3436,7 @@ class SdkBackend:
         return sid
 
     def fork(self, name: str, parent_sid: str, cut_uuid: str = "", bg: str = "", fg: str = "",
-             sid: str | None = None) -> str:
+             sid: str | None = None, thread_of: str = "") -> str:
         """Mint a NEW session that is a FORK of `parent_sid`'s conversation — up to `cut_uuid` when given
         (a transcript record uuid; empty = the whole conversation), the parent untouched either way (the
         user 2026-08-13). The new session gets its OWN sid, registry, name and identity colour — a fork
@@ -3445,7 +3445,18 @@ class SdkBackend:
         into resume + fork_session + session_id (+ resume-session-at) on first connect; the init's
         lastSid flip to this sid spends the flags. Model / effort / mode / auth inherit from the parent —
         it is that conversation, continued elsewhere. Resumable by construction: a fork whose CLI dies
-        before init still carries the flags and retries on the next connect."""
+        before init still carries the flags and retries on the next connect.
+
+        `thread_of` (the user 2026-08-13, who asked to comment on a highlighted passage and keep a side
+        conversation there): this fork is a COMMENT THREAD of parent session `thread_of` — a side
+        conversation the chat surfaces as an anchored highlight + popover, not as a session of its own.
+        The reg carries threadOf and the names/ entry is withheld, so it gets no tab, no lane, no feed
+        cards and no judge pass (names/ is the discoverability trigger; live_sessions skips threadOf
+        regs for the tab side) — its ENTIRE user surface is the parent chat's comment UI, which is why
+        this is not the hidden-running-session failure mode the 2026-08-11 rule removed: every thread is
+        visible and reachable right where it was made. Everything else is a normal session: the reg
+        keeps its CLI under the boot reconcile's orphan reap, a mid-turn kernel death resumes it, and
+        promote_thread() later turns it into a full board session."""
         parent = read_reg(self.state_dir, parent_sid) or {}
         cwd = parent.get("cwd") or os.path.expanduser("~")
         sid = sid or str(uuid.uuid4())      # the kernel pre-mints it so the judge seeds can precede us
@@ -3456,17 +3467,47 @@ class SdkBackend:
                "effort": parent.get("effort", DEFAULT_EFFORT),
                "lastSid": parent.get("lastSid") or parent_sid,
                "forkOf": parent_sid, "forkAt": cut_uuid or "", "alive": True}
+        if thread_of:
+            reg["threadOf"] = thread_of
         if parent.get("model") and parent["model"] != "default":
             reg["model"] = parent["model"]
         if parent.get("auth") in ("login", "key"):
             reg["auth"] = parent["auth"]
         write_reg(self.state_dir, sid, reg)
         # the names/ entry LAST — it is the discoverability trigger (discover() iterates names/), and
-        # everything above must exist before any judge pass can see the session
-        write_name(self.state_dir, sid, name, cwd, bg, fg)
+        # everything above must exist before any judge pass can see the session. A comment thread never
+        # writes it: promote_thread() does, after the kernel seeds the judge stores.
+        if not thread_of:
+            write_name(self.state_dir, sid, name, cwd, bg, fg)
         append_state(self.state_dir, sid, "waiting")
         self._poke()
         return sid
+
+    def thread_of(self, sid: str) -> str:
+        """The parent sid when `sid` is a comment thread, else ''."""
+        reg = read_reg(self.state_dir, sid) or {}
+        return str(reg.get("threadOf") or "")
+
+    def promote_thread(self, sid: str, name: str, bg: str = "", fg: str = "") -> bool:
+        """Break a comment thread out into a FULL board session (the user 2026-08-13: 'a button that
+        breaks it out into its own session'). The caller (kernel _comment_promote) must have seeded the
+        judge stores FIRST — the names/ write below is the discoverability trigger, same ordering
+        contract as fork(). Clears threadOf (the reg becomes an ordinary session's) and registers the
+        identity; the running CLI, transcript and queue carry over untouched."""
+        reg = read_reg(self.state_dir, sid)
+        if not reg or not reg.get("threadOf"):
+            return False
+        reg.pop("threadOf", None)
+        reg["name"] = name
+        write_reg(self.state_dir, sid, reg)
+        if not bg:
+            bg, fg = pick_identity_color(sid, self.state_dir)
+        write_name(self.state_dir, sid, name, reg.get("cwd", ""), bg, fg)
+        s = self.sessions.get(sid)
+        if s:
+            s.name = name
+        self._poke()
+        return True
 
     def resume(self, name: str, sid: str, cwd: str | None = None) -> bool:
         """Mark a dormant/dead SDK session alive again so _ensure/connect restarts it. PRESERVE the
@@ -3851,6 +3892,18 @@ class SdkBackend:
         self._poke()
         return True
 
+    def session_state(self, sid: str) -> str:
+        """Live state ('working'/'waiting'/…) for ONE sid, comment threads included — live_sessions
+        deliberately filters threadOf regs, so the comments frame reads its thread's pulse here."""
+        with self._lock:
+            s = self.sessions.get(sid)
+        if s and s.thread.is_alive():
+            try:
+                return str(s.snapshot().get("state") or "")
+            except Exception:
+                return ""
+        return ""
+
     def rename(self, sid: str, new_name: str) -> bool:
         reg = read_reg(self.state_dir, sid)
         if not reg:
@@ -4082,6 +4135,8 @@ class SdkBackend:
         for reg in list_regs(self.state_dir):
             if not reg.get("alive"):
                 continue
+            if reg.get("threadOf"):
+                continue   # a comment thread: its surface is the parent chat's comment UI, never a tab
             sid = reg["sid"]
             s = self.sessions.get(sid)
             if s and s.thread.is_alive():

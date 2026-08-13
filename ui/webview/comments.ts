@@ -1,0 +1,107 @@
+// Comment threads (the user 2026-08-13): highlight a passage in the chat, comment on it, and a side
+// conversation opens right there — an anchored highlight + popover, powered kernel-side by a fork of
+// the session cut at the anchored message. This module is the PURE half (node-testable, no DOM):
+// thread types, the whitespace-tolerant exact-text matcher that re-finds a highlight inside a
+// re-rendered turn, and the small derivations the popover renders from. All DOM wiring lives in
+// render.ts (source-pinned by comments.test.ts, the repo convention).
+
+export type CommentMsg = { who: "you" | "agent"; text: string; t: number };
+
+export type CommentThread = {
+  tid: string;
+  anchorUuid: string;
+  exact: string;
+  status: "open" | "resolved" | "promoted";
+  createdT: number;
+  state: string;              // the thread session's live state ("working"/"waiting"/…, "" when dormant)
+  unread: boolean;            // an agent reply newer than the read watermark
+  promotedName: string;       // the board session it became, when status === "promoted"
+  msgs: CommentMsg[];
+};
+
+export type CommentsFrame = { type: "comments"; id: string; threads: CommentThread[] };
+
+/** Threads grouped by the turn they anchor to — what the mark/badge pass walks per rendered view. */
+export function threadsByAnchor(threads: CommentThread[]): Map<string, CommentThread[]> {
+  const by = new Map<string, CommentThread[]>();
+  for (const th of threads) {
+    const list = by.get(th.anchorUuid);
+    if (list) list.push(th); else by.set(th.anchorUuid, [th]);
+  }
+  return by;
+}
+
+/** The thread session is mid-turn — the popover shows its thinking dots. */
+export function threadBusy(state: string): boolean {
+  return state === "working" || state === "retrying" || state === "compacting";
+}
+
+/** The thread session is stuck on an interactive prompt the popover can't answer — say so, and point
+ *  at Break out (a full session can). */
+export function threadStuck(state: string): boolean {
+  return state === "permission" || state === "picker";
+}
+
+// ── exact-text re-anchoring ────────────────────────────────────────────────────────────────────
+// A highlight is stored as the selected text (`exact`); every re-render must re-find it inside the
+// anchor turn's rendered text. Rendered whitespace is not byte-stable (markdown collapses runs,
+// wraps lines), so both sides are matched through a whitespace-NORMALIZED view with an index map
+// back into the raw string. First occurrence wins — same-turn duplicate phrases anchor to their
+// first appearance, a known and acceptable simplification.
+
+/** Collapse whitespace runs to single spaces; `map[i]` = raw index of normalized char i. */
+function normalize(raw: string): { norm: string; map: number[] } {
+  let norm = "";
+  const map: number[] = [];
+  let inWs = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (/\s/.test(c)) {
+      inWs = true;
+      continue;
+    }
+    if (inWs && norm.length) {
+      norm += " ";
+      map.push(i);              // the space stands for the run; anchor it at the run's end
+    }
+    inWs = false;
+    norm += c;
+    map.push(i);
+  }
+  return { norm, map };
+}
+
+/** Find `exact` inside `hay`, whitespace-tolerantly. Returns raw [start, end) in `hay`, or null. */
+export function findExact(hay: string, exact: string): { start: number; end: number } | null {
+  const target = normalize(exact).norm;
+  if (!target) return null;
+  const { norm, map } = normalize(hay);
+  const at = norm.indexOf(target);
+  if (at < 0) return null;
+  return { start: map[at], end: map[at + target.length - 1] + 1 };
+}
+
+/** Split a global [start, end) character range over consecutive text-node lengths into per-node
+ *  slices — what the DOM pass wraps in <mark> elements. */
+export function sliceRanges(nodeLens: number[], start: number, end: number):
+    { idx: number; s: number; e: number }[] {
+  const out: { idx: number; s: number; e: number }[] = [];
+  let off = 0;
+  for (let i = 0; i < nodeLens.length && off < end; i++) {
+    const len = nodeLens[i];
+    const s = Math.max(start, off);
+    const e = Math.min(end, off + len);
+    if (e > s) out.push({ idx: i, s: s - off, e: e - off });
+    off += len;
+  }
+  return out;
+}
+
+/** Optimistic pending sends, reconciled against the kernel's frame (the registerOptimistic pattern):
+ *  a pending row is spent the moment a server 'you' message with its text appears. Returns the
+ *  still-pending remainder to render after the server messages. */
+export function prunePending(pending: { text: string; t: number }[], msgs: CommentMsg[]):
+    { text: string; t: number }[] {
+  const seen = msgs.filter((m) => m.who === "you").map((m) => normalize(m.text).norm);
+  return pending.filter((p) => !seen.includes(normalize(p.text).norm));
+}
