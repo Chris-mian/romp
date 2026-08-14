@@ -440,6 +440,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* idle-but-awaiting background work → the same dot in the romp brand green, matching the chat chip's
    Awaiting color (--st-awaitbg-bg in styles.css; hex here because the feed page loads only this file) */
 .fwork-dot.await { background: #54B204; }
+/* state UNKNOWN (listed, but the live state could not be read) → an explicit gray ring, the same
+   "can't see it" gray the network strip's down-host dot uses (strip.ts). Hollow = not a running
+   state; the point is that no-information renders as itself instead of as an empty spot, which is
+   what lets a blank pip mean "alive and quiet". Hex here because this sheet loads standalone. */
+.fwork-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.9em; font-weight: 400;
   white-space: nowrap; }   /* same size as the card checklist lines it corresponds to, never bold (the user 2026-07-02) */
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's

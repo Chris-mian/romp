@@ -148,6 +148,10 @@ body { display: flex; flex-direction: column; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the straw chip (the user 2026-07-13) */
+/* state UNKNOWN: a hollow ring in the same "can't see it" gray the network strip paints a down host
+   (the `#8a8a8a` in strip.ts's status-dot colour pick) — no-information rendered as itself, so a
+   bare tab never has to carry that meaning. */
+.tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
 /* OPENING: the accent loader dot — a session still starting is a WAIT, so it pulses like the statusline's
    opening dots (the loading-state rule; the working dot above stays solid on purpose — that rule is about
    real work, this one is about a load in progress). */
