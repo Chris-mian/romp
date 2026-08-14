@@ -4769,6 +4769,14 @@ def _comments_frame(sid):
     for th in _load_comments(sid).get("threads") or []:
         tsid = str(th.get("sid") or "")
         status = th.get("status") or "open"
+        # A promoted thread whose session was later ENDED is done, full stop (the user 2026-08-13,
+        # who found the highlight still claiming "now its own session" after closing that session):
+        # drop it from the frame entirely rather than point at a session that no longer runs. The
+        # client already unwraps any mark/badge for a tid absent from this list (applyCommentMarks),
+        # so omitting it here is the whole fix — no client-side special case needed. The row stays in
+        # the store (reviving the session from the Fleet would legitimately bring the thread back).
+        if status == "promoted" and not _thread_reg(tsid).get("alive"):
+            continue
         state, err = "", ""
         if be and status == "open":
             try:

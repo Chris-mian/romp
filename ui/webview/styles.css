@@ -2341,18 +2341,20 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
    rendered text drifts and the exact-match mark can't land. The popover is a pane-local card on the
    menu vocabulary (#252526, hairline border, 6px radius, the .ctx-menu shadow) — deliberately NOT a
    dimmed modal: the conversation stays readable beside the thread. */
+/* A SOLID tint, not a dashed underline (the user 2026-08-13: "like a comment would be on Google
+   Docs") — the underline read as a link, not a highlight. Unread strengthens the same tint rather
+   than adding a second cue, so "there's something to read" stays legible at a glance. */
 mark.cmt-hl {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
   color: inherit;
-  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
   border-radius: 2px;
   cursor: pointer;
 }
-mark.cmt-hl:hover { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.06); border-bottom-color: rgba(255, 255, 255, 0.2); }
-mark.cmt-hl.unread { border-bottom-style: solid; }
-mark.cmt-hl.busy { border-bottom-style: solid; animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
-@keyframes cmt-busy-pulse { 50% { background: color-mix(in srgb, var(--accent) 32%, transparent); } }
+mark.cmt-hl:hover { background: color-mix(in srgb, var(--accent) 46%, transparent); }
+mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
+mark.cmt-hl.unread { background: color-mix(in srgb, var(--accent) 44%, transparent); }
+mark.cmt-hl.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
+@keyframes cmt-busy-pulse { 50% { background: color-mix(in srgb, var(--accent) 50%, transparent); } }
 
 .turn.has-cmt { position: relative; }
 .cmt-badge {

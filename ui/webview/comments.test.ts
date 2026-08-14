@@ -163,6 +163,10 @@ test("the projection never reads the parent transcript pre-fork", () => {
   assert.match(KERNEL, /if reg\.get\("forkOf"\):\s*\n\s*return \[\]/);
 });
 
+test("a promoted thread whose session ended drops off the frame entirely", () => {
+  assert.match(KERNEL, /if status == "promoted" and not _thread_reg\(tsid\)\.get\("alive"\):\s*\n\s*continue/);
+});
+
 test("promote latches the row before seeding; racing ops refuse through the CAS", () => {
   assert.match(KERNEL, /def _comment_update_if\(parent_sid, tid, expect, \*\*changes\):/);
   assert.match(KERNEL, /_comment_update_if\(parent_sid, tid, \("open", "resolved"\), status="promoting"\)/);
