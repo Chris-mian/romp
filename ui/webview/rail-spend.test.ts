@@ -134,9 +134,15 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   assert.ok(!usageJS.includes("spendOnly"), "spend renders for ANY host that has it");
   assert.ok(usageJS.includes("function fleetSpendHTML(sets)"));
   assert.ok(usageJS.includes("return h+fleetSpendHTML(sets)+'<div class=ru-tip-age>click to refresh</div>';"));
-  // …with the summed $/hour area graph and its peak beside it
+  // …with the summed $/hour area graph and its peak beside it — labelled PER-HOUR (the user
+  // 2026-08-13 read a bare 'peak $311' and had to ask whether that was one hour)
   assert.ok(usageJS.includes("sparkHTML(wk,'#9cd2ff',true,null)"));
-  assert.ok(usageJS.includes("'<span class=ru-tip-v>peak '+fmtUsd(mx)+'</span>"));
+  assert.ok(usageJS.includes("'<span class=ru-tip-v>peak '+fmtUsd(mx)+'/h</span>"));
+  // …and every machine in the sum BY NAME, largest first (the user 2026-08-13: the devbox — spend,
+  // no login — vanished from the hover when per-host spend rows collapsed into the fleet section)
+  assert.ok(usageJS.includes("per.push({host:e.host,usd:sp.week.usd})"));
+  assert.ok(usageJS.includes("by machine \\u00b7 1 week"));
+  assert.ok(usageJS.includes("per.sort(function(a,b){return b.usd-a.usd;})"));
   // and each window section carries its own utilization spark, y pinned to the honest 0-100
   assert.ok(usageJS.includes("sparkHTML(d._winSeries[k],v.col,false,100)"));
   // numbers only: dollars · tokens · turns per window, under a plain 'API spend' heading

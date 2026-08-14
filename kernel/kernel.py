@@ -20762,8 +20762,9 @@ return h;}
 // The ONE API-spend section for the whole hover (the user 2026-08-13): every host's windows summed —
 // one shared key is one number — plus the summed $/hour over the last 7 days as an area graph. A host
 // that ships no series (an older kernel) still joins the window sums; the graph adds only contributors.
-function fleetSpendHTML(sets){var sum={},series=null,hosts=0;
+function fleetSpendHTML(sets){var sum={},series=null,hosts=0,per=[];
 sets.forEach(function(e){var sp=e.det&&e.det._spend;if(!sp)return;hosts++;
+if(sp.week&&typeof sp.week.usd==='number')per.push({host:e.host,usd:sp.week.usd});
 SPEND_WINS.forEach(function(w){var v=sp[w[0]];if(!v)return;
 var t=(sum[w[0]]=sum[w[0]]||{label:w[1],usd:0,tok:0,turns:0});
 t.usd+=v.usd;t.tok+=v.tok;t.turns+=v.turns;});
@@ -20777,10 +20778,18 @@ var h='<div class="ru-tip-win ru-tip-fleetspend"><div class=ru-tip-name><span>AP
 +ks.map(function(k){var v=sum[k];
 return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
 +'<span class=ru-tip-v>'+fmtUsd(v.usd)+' \u00b7 '+fmtTok(v.tok)+' tok \u00b7 '+(v.turns||0)+' turns</span></div>';}).join('');
+// every machine in the sum, BY NAME (the user 2026-08-13: a host with no login \u2014 the devbox \u2014 vanished
+// from the hover entirely when the per-host spend rows collapsed into this one section; '3 machines'
+// with two names visible reads as a bug). One line, largest first, week numbers like the graph.
+if(per.length>1){per.sort(function(a,b){return b.usd-a.usd;});
+h+='<div class=ru-tip-row><span class=ru-tip-k>by machine \u00b7 1 week</span><span class=ru-tip-v>'
++per.map(function(p){return esc(p.host)+' '+fmtUsd(p.usd);}).join(' \u00b7 ')+'</span></div>';}
 if(series){var wk=series.usd.slice(-168),mx=0;for(var i=0;i<wk.length;i++)if(wk[i]>mx)mx=wk[i];
+// 'peak $X/h': the costliest single HOUR of the week (the user 2026-08-13 asked whether the bare
+// number was per-hour \u2014 say so)
 if(mx>0)h+='<div class=ru-tip-row><span class=ru-tip-k>$/h \u00b7 7d</span>'
 +sparkHTML(wk,'#9cd2ff',true,null)
-+'<span class=ru-tip-v>peak '+fmtUsd(mx)+'</span></div>';}
++'<span class=ru-tip-v>peak '+fmtUsd(mx)+'/h</span></div>';}
 return h+'</div>';}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
