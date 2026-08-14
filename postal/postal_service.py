@@ -1567,6 +1567,15 @@ def remote_holds():
             out.append(dict(hd, atHost=hd.get("via") or h))
     return out
 
+_TRUST_RANK = {"isolated": 0, "directed": 1, "trusted": 2}
+
+
+def least_trust(a, b):
+    """The more restrictive of two tiers. Used to cap a FORWARDED message at its forwarder's tier:
+    trust must never be assembled from a claim the claimant wrote about itself."""
+    return a if _TRUST_RANK.get(a, 1) <= _TRUST_RANK.get(b, 1) else b
+
+
 def my_tier_of(host):
     """The trust tier THIS bus applies to `host`'s direct mail — what _relay_in resolves for a
     token-proven direct relay (an exchange partner has, by definition, shown our serve token): an
@@ -1989,9 +1998,10 @@ def _relay_in(host, m, token_proven=False):
     kernel is gated by the same token — a holder can inject into any session directly). So holding the
     dialer's OWN mail protects nothing and only strands the user's outgoing mail on a machine they
     attached (the user 2026-07-26, whose delegation to a fresh box sat quarantined on it). The proof
-    covers only the direct dialer: mail it FORWARDED (origin-stamped) is still judged by the origin's
-    tier, and an EXPLICIT tier the user set for the dialer (directed/isolated) still wins — the
-    exemption replaces only the unknown-origin default. The dialer side (peer_exchange_apply) proves
+    covers only the direct dialer: mail it FORWARDED (origin-stamped) is judged by the origin's tier
+    CAPPED at the forwarder's own (least_trust — a relay can never hand its cargo more trust than it
+    holds itself), and an EXPLICIT tier the user set for the dialer (directed/isolated) still wins —
+    the exemption replaces only the unknown-origin default. The dialer side (peer_exchange_apply) proves
     nothing: whatever answers the tunnel port never showed our token, so tiers gate it as before."""
     mid = m.get("mid") or ""
     if not mid:
@@ -2008,6 +2018,18 @@ def _relay_in(host, m, token_proven=False):
         trust = (prow or {}).get("trust") or "directed"
         if prow is None and token_proven and not m.get("origin"):
             trust = "trusted"                        # token-proven direct dialer, no explicit tier → deliver (see docstring)
+        if m.get("origin") and origin != host:
+            # A FORWARDED message can never outrank the host that forwarded it. m["origin"] is
+            # written BY the forwarder, so keying trust on the origin alone let any peer we dial
+            # stamp the name of a host tiered `trusted` and have its mail auto-injected into a
+            # session — precisely the attacker `directed` exists to hold for approval, and the
+            # names to guess are handed out by our own presence gossip. Cap at the forwarder's
+            # own tier so a directed relay stays directed however it labels its cargo.
+            hrow = PEERS.get(host)
+            htrust = (hrow or {}).get("trust") or "directed"
+            if hrow is None and token_proven:
+                htrust = "trusted"                   # token possession is already full control here (see docstring)
+            trust = least_trust(trust, htrust)
         if trust == "trusted":
             deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
                     kind=m.get("kind") or "", from_host=origin,
