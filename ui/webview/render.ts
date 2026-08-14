@@ -199,7 +199,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingTasks?: string[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authBoth?: boolean; authAcct?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the statusline shows it beside the Awaiting chip (the user 2026-08-13)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingTasks?: string[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authBoth?: boolean; authAcct?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it when no tracked tasks claim the box (renderAwaitWhy; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -6971,7 +6971,7 @@ function renderBgTasks() {
   const box = s && s.bgTasks;
   const tasks = (box && box.tasks) || [];
   const count = box ? box.count : 0;
-  if (!count || !tasks.length) { host.style.display = "none"; return; }
+  if (!count || !tasks.length) { renderAwaitWhy(host, s || null); return; }
   host.style.display = "";
   const sid = activeId as string;
   const open = bgFoldOpen.has(sid);
@@ -7017,6 +7017,42 @@ function renderBgTasks() {
     list.appendChild(row);
   }
   host.appendChild(list);
+}
+
+// The Awaiting session's WHY, in the same box when NO tracked tasks claim it (the user 2026-08-13:
+// the reason spent a few hours beside the statusline chip — PR #350 — and crowded the composer area;
+// this box between transcript and composer is where dispatched work has always surfaced). Same fold
+// treatment as the task header: one straw-dotted line, click → the full why, each awaited item when
+// there are several, and a plain-words note on what the state means. No Stop here — an untracked wait
+// (a peer's PR, a build) has no process to kill; tracked run_in_background tasks take the list path
+// above, which carries one Stop per running row.
+function renderAwaitWhy(host: HTMLElement, s: Session | null) {
+  const why = (s && s.status.state === "awaitingBg" && (s.status.awaitingWhy || "").trim()) || "";
+  if (!why || !activeId) { host.style.display = "none"; return; }
+  host.style.display = "";
+  const sid = activeId;
+  const open = bgFoldOpen.has(sid);
+  const head = el("div", "bg-fold-head bg-await" + (open ? " open" : ""));
+  head.dataset.act = "bg-fold"; head.dataset.id = sid;
+  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);
+  head.appendChild(el("span", "bg-dot"));
+  const lab = el("span", "bg-fold-label");
+  // the kernel's why leads with the verb ("waiting on a background task: …") — strip it so the
+  // labeled header doesn't stutter; the expanded body keeps the full sentence
+  lab.textContent = "Awaiting · " + why.replace(/^(waiting on|awaiting)\s+/i, "");
+  head.appendChild(lab);
+  host.appendChild(head);
+  if (!open) return;
+  const det = el("div", "bg-detail bg-await-detail");
+  const w = el("div", "bg-await-why"); w.textContent = why; det.appendChild(w);
+  const items = s!.status.awaitingTasks || [];
+  if (items.length > 1) {   // a single description is already the why — list only a real plurality
+    for (const t of items) { const r = el("div", "bg-await-task"); r.textContent = "· " + t; det.appendChild(r); }
+  }
+  const note = el("div", "bg-await-note");
+  note.textContent = "The session is idle until this finishes; it picks back up on its own when the result lands.";
+  det.appendChild(note);
+  host.appendChild(det);
 }
 
 // ---- live "awaiting your input" widgets (structured: radio / checkbox / submit / text) ----
@@ -7885,18 +7921,9 @@ function updateStatusline() {
     timer.id = "work-timer";
     timer.textContent = elapsedMs(s.status.sinceEpoch);
     sl.appendChild(timer);
-    // WHAT it's awaiting, right here in the statusline (the user 2026-08-13: the chip alone said
-    // "Awaiting" and the reason showed nowhere in the chat pane). The kernel's why leads with the
-    // verb ("waiting on a background task: …") and the chip already says Awaiting — strip the verb
-    // so the line doesn't stutter; the hover carries the full why plus every live task description.
-    const why = (s.status.awaitingWhy || "").trim();
-    if (why) {
-      const det = el("span", "sl-await-why");
-      det.textContent = why.replace(/^(waiting on|awaiting)\s+/i, "");
-      const tasks = s.status.awaitingTasks || [];
-      det.title = why + (tasks.length > 1 ? "\n" + tasks.map((t) => "· " + t).join("\n") : "");
-      sl.appendChild(det);
-    }
+    // The WHY renders in the #bg-tasks box between transcript and composer (renderAwaitWhy), not
+    // here — a reason line beside the chip crowded the composer area (the user 2026-08-13, on the
+    // same day's PR #350 that first surfaced it here).
   } else if (s.status.state === "compacting") {
     const c = el("span", "compacting-line");
     c.textContent = "⟳ Compacting context…";

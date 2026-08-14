@@ -59,18 +59,25 @@ test("the kernel split happens in the ONE shared derivation (_session_chip), not
   assert.match(KERNEL, /"awaitingBg" if awaiting_why else "ready"\)/);
 });
 
-test("the statusline says WHAT the session is awaiting, beside the chip (the user 2026-08-13)", () => {
+test("the awaiting WHY lives in the background box, not the statusline (the user 2026-08-13, twice)", () => {
   // the kernel ships the why + the live awaited task descriptions in the chat status payload…
   assert.match(KERNEL, /"awaitingWhy": awaiting_why or None,/);
   assert.match(KERNEL, /"awaitingTasks": \(_awaiting_task_descs\(sid, sess\["path"\]\) if awaiting_why else \[\]\),/);
-  // …and the awaitingBg statusline branch renders it: verb stripped (the chip already says Awaiting),
-  // full why + every task description on hover
+  // …the statusline branch stays chip + clock ONLY — the reason line PR #350 put beside the chip
+  // crowded the composer area, and the user moved it the same day
   const branch = RENDER.split('state === "awaitingBg") {')[1].split("} else if")[0];
-  assert.match(branch, /el\("span", "sl-await-why"\)/);
-  assert.match(branch, /why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\)/);
-  assert.match(branch, /det\.title = why \+ \(tasks\.length > 1/);
-  // one ellipsized line that shrinks instead of pushing the right-side cluster off
-  assert.match(STYLES, /\.sl-await-why \{[\s\S]*?min-width: 0;[\s\S]*?text-overflow: ellipsis/);
+  assert.doesNotMatch(branch, /sl-await-why/);
+  assert.doesNotMatch(STYLES, /sl-await-why/);
+  // …and the #bg-tasks box renders it when no tracked tasks claim the box: the same fold treatment
+  // (straw dot, verb-stripped header), expanding to the full why, the awaited items when there are
+  // several, and a plain-words note on what the state means. No Stop — nothing untracked is killable.
+  assert.match(RENDER, /\{ renderAwaitWhy\(host, s \|\| null\); return; \}/);
+  assert.match(RENDER, /"bg-fold-head bg-await"/);
+  assert.match(RENDER, /"Awaiting · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\)/);
+  assert.match(RENDER, /if \(items\.length > 1\)/);
+  assert.match(RENDER, /bg-await-note/);
+  assert.doesNotMatch(RENDER.split("function renderAwaitWhy")[1].split("\n}")[0], /bg-stop/);
+  assert.match(STYLES, /\.bg-fold-head\.bg-await \{ --bgt: var\(--st-awaitbg-bg\); \}/);
 });
 
 test("the timeline lane's awaitingBg why reads the SAME working signal as its badge (same input, 2026-07-03 rule)", () => {
