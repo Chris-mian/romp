@@ -275,6 +275,25 @@ class ThreadProjection(CommentBase):
     def test_no_store_no_frame(self):
         self.assertIsNone(km._comments_frame(PARENT))
 
+    def test_a_promoted_thread_whose_session_ended_drops_off_the_frame(self):
+        # the user 2026-08-13: broke a thread out, closed the resulting session, and the highlight
+        # kept claiming "now its own session" — a dead promotion is done, not a stale pointer
+        self._write(THREAD, self._thread_records())
+        (jd.SDKDIR / (THREAD + ".json")).write_text(json.dumps(
+            {"sid": THREAD, "name": "sidework", "cwd": self.cdir, "lastSid": THREAD, "alive": True}))
+        km._save_comments(PARENT, {"threads": [
+            {"tid": THREAD, "sid": THREAD, "anchorUuid": "a1", "cutUuid": "a1",
+             "exact": "exponential backoff", "status": "promoted", "promotedName": "sidework",
+             "createdT": self.now - 400, "lastSeenT": self.now}]})
+        fr = km._comments_frame(PARENT)
+        self.assertEqual(len(fr["threads"]), 1, "still alive — the mark and chip stay")
+        (jd.SDKDIR / (THREAD + ".json")).write_text(json.dumps(
+            {"sid": THREAD, "name": "sidework", "cwd": self.cdir, "lastSid": THREAD, "alive": False}))
+        fr = km._comments_frame(PARENT)
+        self.assertEqual(fr["threads"], [], "ended — no highlight, no badge, nothing on the message")
+        # the row survives in the store: reviving the session from the Fleet should bring it back
+        self.assertEqual(len(km._load_comments(PARENT)["threads"]), 1)
+
     def test_pre_fork_thread_reads_nothing_not_the_parent(self):
         # Until the CLI init spends forkOf, the thread reg's lastSid points at the PARENT
         # transcript — reading it would present the parent's post-anchor turns as the thread's own.
