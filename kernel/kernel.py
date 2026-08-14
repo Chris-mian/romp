@@ -12312,11 +12312,53 @@ def _model_pending_now(sid, tm):
         _model_switch_pending.pop(sid, None)
         return False
     return True
-# Dead-lane dismissals (the user 2026-07-02): a DEAD session lingers in the timeline as a faded/struck lane
-# while it's still in the activity window; its Clear button adds the sid here to drop it. DELIBERATELY in
-# memory only (never persisted) — a kernel restart forgets it, so `romp refresh` brings a mistakenly-cleared
-# lane back. Only filters a lane while it's dead; a revived sid reappears (see build_timeline).
-_dismissed_lanes = set()      # sids the user cleared from the timeline (dead lanes only, forgotten on restart)
+# Dead-lane dismissals (the user 2026-07-02; DURABLE since 2026-08-14): a DEAD session lingers in the
+# timeline as a faded/struck lane while it's still in the activity window; its Clear button adds the sid
+# here to drop it. Originally held in memory only, so a restart could recover a mistaken clear — but in
+# practice every kernel restart and reconnect resurrected EVERY cleared lane, and the user had to clear
+# them all again (the user 2026-08-14: cleared state must be remembered). So the set is persisted now
+# (timeline-dismissed.json, hydrated at boot, rewritten on change), and the recovery story moved fully to
+# the revive rule, which stays: a dismissal only filters the lane while it's DEAD — a sid that comes back
+# live reappears AND sheds its record (build_timeline calls _undismiss_lanes on the revive: that's the
+# new-information event; the cleared run is no longer the lane's story), so a session started again is
+# never invisibly filtered by an old clear.
+
+
+def _dismissed_lanes_file():
+    return jd.STATE / "timeline-dismissed.json"
+
+
+def _load_dismissed_lanes():
+    try:
+        v = json.loads(_dismissed_lanes_file().read_text())
+        return set(str(x) for x in v) if isinstance(v, list) else set()
+    except (OSError, ValueError):
+        return set()                                  # absent/corrupt file = no dismissals, never a crash
+
+
+def _save_dismissed_lanes():
+    try:
+        _dismissed_lanes_file().parent.mkdir(parents=True, exist_ok=True)
+        _dismissed_lanes_file().write_text(json.dumps(sorted(_dismissed_lanes)))
+    except OSError as e:
+        sys.stderr.write("romp-kernel: could not persist timeline dismissals: %s\n" % e)
+
+
+_dismissed_lanes = _load_dismissed_lanes()   # sids the user cleared from the timeline (dead lanes only)
+
+
+def _dismiss_lane(sid):
+    """Record a Clear-pill dismissal durably — it survives kernel restarts and reconnects."""
+    _dismissed_lanes.add(str(sid))
+    _save_dismissed_lanes()
+
+
+def _undismiss_lanes(sids):
+    """Shed dismissal records whose sids came back LIVE — the revive is the un-dismiss event."""
+    hit = _dismissed_lanes.intersection(str(s) for s in sids)
+    if hit:
+        _dismissed_lanes.difference_update(hit)
+        _save_dismissed_lanes()
 
 
 def _mark_compacting(sid):
@@ -17651,7 +17693,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     if tmux is None:
         tmux = _tmux_sessions()
     alive = _timeline_sessions(now, tmux, live_only=live_only)   # living + window-dead (≤12h) lanes; per-session `live` below marks the dead ones (struck). live_only → live sessions only (cold-start first paint)
-    if _dismissed_lanes:   # drop lanes the user cleared — but ONLY while still dead; a revived sid reappears (in-memory, forgotten on restart)
+    if _dismissed_lanes:   # drop lanes the user cleared — but ONLY while still dead; a revived sid reappears and sheds its record (durable set, survives restarts)
+        _undismiss_lanes(s["sid"] for s in alive if tmux.get(s["sid"]) is not None)
         alive = [s for s in alive if not (s["sid"] in _dismissed_lanes and tmux.get(s["sid"]) is None)]
     id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns, semantic = [], {}, []   # `semantic`: artifact-derived marks (for gloss text); the band's marks are RUN spans, below
@@ -24191,10 +24234,11 @@ class Handler(BaseHTTPRequestHandler):
             _undo_clear()
             _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
-            # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). IN-MEMORY only — a kernel
-            # restart forgets it, so a mistakenly-cleared lane comes back on `romp refresh`. Only dead lanes
-            # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
-            _dismissed_lanes.add(str(msg["id"]))
+            # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). DURABLE since 2026-08-14
+            # (the user: cleared lanes must survive restarts and reconnects) — _dismiss_lane persists it.
+            # Only dead lanes carry the Clear button; build_timeline drops the sid only while it's dead,
+            # so a revived one returns (and sheds its record — the revive is the un-dismiss event).
+            _dismiss_lane(str(msg["id"]))
             _mark_views_dirty()
         elif msg and msg.get("type") == "locateDiag":
             # Every chat landing attempt (render.ts posts one per anchor jump, hit or miss) → an
