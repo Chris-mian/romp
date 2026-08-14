@@ -4374,6 +4374,36 @@ def _pick_identity_color(now=None):
     return bgs[i], fgs[i]
 
 
+def _apply_new_session_prefs(sid, body):
+    """POST /new's optional per-spawn "model"/"effort" (the user 2026-08-14): applied through the SAME
+    park-aware setters as the dashboard's setModel/setEffort ops, and echoed back so the caller can be
+    loud when a kernel ignores them. Values pass through VERBATIM — full model ids as the picker sends
+    them (claude-fable-5), never a short alias: the CLI alias table stops at opus/sonnet/haiku and
+    quietly resolved "fable" to Opus 5 (observed live 2026-08-14). Runs on the idempotent existing:true
+    open too, so a nightly re-brief re-asserts them on the standing session — ultracode is per-session
+    by design (never a write_sdk_default seed), and a headless script has no WS, so this is the
+    sanctioned door."""
+    out = {}
+    m = str((body or {}).get("model") or "").strip()
+    e = str((body or {}).get("effort") or "").strip()
+    if not (m or e):
+        return out
+    try:
+        be = Sessions.backend_for(str(sid))
+    except Exception:
+        be = None
+    if be is None:
+        return out
+    if m:
+        _set_model_or_park(be, str(sid), m)
+        out["model"] = m
+    if e:
+        _set_effort_or_park(be, str(sid), e)
+        out["effort"] = e
+    _push_soon()
+    return out
+
+
 def _create_sdk_session(nm, cwd, auth=""):
     """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14, who asked why it took so long
     to open a new SDK session). spawn() is file writes and connect() is threaded (~0.4s to a booting
@@ -23588,7 +23618,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/new":
                 # Headless session creation (`romp new`, 2026-07-25): the WS createSession op as a
                 # one-shot POST, so a terminal can start a session — SDK by default, the recommended
-                # backend — without a browser. Body: {"name": ..., "dir": ..., "backend": "sdk"|"tmux"}.
+                # backend — without a browser. Body: {"name": ..., "dir": ..., "backend": "sdk"|"tmux"},
+                # plus optional "model"/"effort" (full ids/levels, applied park-aware and echoed back;
+                # also applied on the existing:true open, so a re-brief re-asserts them — see
+                # _apply_new_session_prefs).
                 # Same validation and the same no-silent-fallback rule as the WS op: when the SDK
                 # backend is unavailable, say so (ok:false + reason), never hand back a mystery tmux
                 # session. An already-live name is a success (idempotent open), not an error.
@@ -23608,7 +23641,8 @@ class Handler(BaseHTTPRequestHandler):
                                       "application/json")
                 live = _live_names(_tmux_sessions())
                 if nm in live:
-                    return self._send(200, json.dumps({"ok": True, "id": live[nm], "existing": True}),
+                    extra = _apply_new_session_prefs(live[nm], b)
+                    return self._send(200, json.dumps({"ok": True, "id": live[nm], "existing": True, **extra}),
                                       "application/json")
                 if (b.get("backend") or "sdk") == "sdk":
                     if not _sdk_ready():          # see _sdk_ready — a built backend is not a working one
@@ -23616,7 +23650,8 @@ class Handler(BaseHTTPRequestHandler):
                                           "application/json")
                     a = (b or {}).get("auth")
                     sid = _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""))
-                    return self._send(200, json.dumps({"ok": True, "id": sid, "dir": cwd}),
+                    extra = _apply_new_session_prefs(sid, b)
+                    return self._send(200, json.dumps({"ok": True, "id": sid, "dir": cwd, **extra}),
                                       "application/json")
                 threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
                 return self._send(200, json.dumps({"ok": True, "pending": True, "dir": cwd}),
