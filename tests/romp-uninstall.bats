@@ -138,8 +138,11 @@ EOF
     run "$CLONE/bin/romp-uninstall" --yes
     [ "$status" -eq 0 ]
 
-    ! grep -qF "$CLONE/bin" "$HOME/.bashrc"
-    ! grep -q '^# romp$' "$HOME/.bashrc"
+    # `run` + status, NOT a bare `! grep`: `!` is exempt from set -e, so mid-test it asserts nothing.
+    run grep -qF "$CLONE/bin" "$HOME/.bashrc"
+    [ "$status" -ne 0 ]
+    run grep -q '^# romp$' "$HOME/.bashrc"
+    [ "$status" -ne 0 ]
     grep -q 'EDITOR=vim' "$HOME/.bashrc"          # the user's own lines are untouched
     grep -q "alias ll=" "$HOME/.bashrc"
 }
