@@ -22733,10 +22733,11 @@ class Handler(BaseHTTPRequestHandler):
         # Framing gate (clickjacking): the authenticated dashboard must not be loadable in a
         # cross-origin frame, or a hostile same-site loopback page (the same attacker the cookie
         # Origin gate below defends against) could frame it and drive it invisibly. SAMEORIGIN keeps
-        # the dashboard's own same-origin sub-frames (/chat, /feed) working. NOTE: the VS Code
-        # webview loads the dashboard from a vscode-webview:// origin — if that surface is still
-        # needed it must be added to a frame-ancestors allowlist; confirm against every shipped
-        # client (webview / phone / tailnet) before relying on this.
+        # the dashboard's own same-origin sub-frames (/chat, /feed) working, and 'self' is tight
+        # enough to need no allowlist: the VS Code panes are extension-authored webviews that load
+        # their bundle via asWebviewUri and reach the kernel only over connect-src (fetch + WS) —
+        # they never frame this origin as a document, and neither header applies to fetch/XHR/WS.
+        # Phone and tailnet frame the kernel's own origin, which 'self' permits.
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Content-Security-Policy", "frame-ancestors 'self'")
         for k, v in (headers or {}).items():
