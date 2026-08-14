@@ -145,6 +145,9 @@ type ChatEvent = (
   // expand (loadEpisode → chatEpisode, cached per boundary), so the cleared history stays one click away
   // instead of vanishing. `uuid` is "clear:<episode head>" — stable across pushes (the fold key).
   | { kind: "clear"; clearedAt?: number; episodes?: number; ts?: string; uuid?: string; dropped?: string[] }
+  // the BRANCH divider (the user 2026-08-13): this session forked off another at `cut` — everything
+  // above the divider is history shared with the parent. Clicking jumps to the parent at that spot.
+  | { kind: "branch"; fromSid?: string; fromName?: string; cut?: string; ts?: string; uuid?: string }
   // LIVE /clear in progress (kernel-driven, event-based off the SDK backend's clearing bracket): an
   // animated "Clearing conversation…" element between the /clear delivery and the fresh transcript
   // landing — a stretch that otherwise has NO observable state and used to render as a dead gap, then
@@ -210,7 +213,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; notify?: boolean; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -1908,6 +1911,23 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "compacting") return renderCompacting();
   if (ev.kind === "clearing") return renderClearing();
   if (ev.kind === "clear") return renderClear(ev);
+  if (ev.kind === "branch") {
+    // the branch divider: everything above is history shared with the parent session; the label
+    // deep-links to the parent AT the branch point (data-uuid there is the cut record itself)
+    const turn = el("div", "turn turn-branchmark");
+    const line = el("div", "branch-divider");
+    const label = el("button", "branch-label") as HTMLButtonElement;
+    label.type = "button";
+    label.dataset.act = "branchjump";
+    if (ev.fromSid) label.dataset.sid = ev.fromSid;
+    if (ev.cut) label.dataset.cut = ev.cut;
+    label.textContent = "Branched from " + (ev.fromName || "another session")
+      + " · the conversation above is shared";
+    label.title = "Open " + (ev.fromName || "the parent session") + " at the branch point";
+    line.appendChild(label);
+    turn.appendChild(line);
+    return turn;
+  }
   if (ev.kind === "reconnecting") return renderReconnecting(ev);
   if (ev.kind === "retrying") return renderRetrying(ev);
   if (ev.kind === "retried") return renderRetried(ev);
@@ -5090,6 +5110,7 @@ document.addEventListener("mousedown", (ev) => {
 function applyCommentMarks(sid: string): void {
   const v = views.get(sid);
   if (!v) return;
+  applyBranchChips(sid, v);   // same driver, same hooks: branch chips re-anchor with the marks
   const threads = commentThreads.get(sid) || [];
   const have = new Set(threads.map((t) => t.tid));
   for (const old of Array.from(v.el.querySelectorAll("mark.cmt-hl"))) {
@@ -5105,6 +5126,35 @@ function applyCommentMarks(sid: string): void {
     if (!turn) continue;                       // windowed out — the mark returns when the turn does
     ensureCommentBadge(turn, list);
     for (const th of list) ensureCommentMark(turn, th);
+  }
+}
+
+/** The parent side of a branch (the user 2026-08-13): a small "↳ <name>" chip on the turn a fork
+ *  departed from, deep-linking into the branched session at its divider. Idempotent, applied on the
+ *  same hooks as the comment marks (the DOM it lives in rebuilds constantly). */
+function applyBranchChips(sid: string, v: View): void {
+  const kids = (sessions.get(sid)?.branches || []) as { sid: string; name: string; cut: string }[];
+  for (const box of Array.from(v.el.querySelectorAll(".branch-chips"))) {
+    for (const c of Array.from(box.children)) {
+      if (!kids.some((k) => k.sid === (c as HTMLElement).dataset.sid)) c.remove();
+    }
+    if (!box.children.length) box.remove();
+  }
+  for (const k of kids) {
+    if (!k.cut) continue;
+    const turn = v.el.querySelector(`.turn[data-uuid="${cssEscape(k.cut)}"]`) as HTMLElement | null;
+    if (!turn || turn.querySelector(`.branch-chip[data-sid="${cssEscape(k.sid)}"]`)) continue;
+    turn.classList.add("has-cmt");             // the comment badge's positioning contract
+    let box = turn.querySelector(":scope > .branch-chips") as HTMLElement | null;
+    if (!box) { box = el("div", "branch-chips"); turn.appendChild(box); }
+    const chip = el("button", "branch-chip") as HTMLButtonElement;
+    chip.type = "button";
+    chip.dataset.act = "branchjump";
+    chip.dataset.sid = k.sid;
+    chip.dataset.cut = "branch:" + k.cut;      // the child's divider carries this uuid — land on it
+    chip.textContent = "↳ " + (k.name || "fork");
+    chip.title = "A session branched from this message: " + (k.name || k.sid) + ". Click to open it there.";
+    box.appendChild(chip);
   }
 }
 
@@ -10001,6 +10051,14 @@ setupSettings();
       const tid = elx.dataset.tid;
       closeCommentPop();
       if (tid) setActive(tid);
+    },
+    // a branch divider (child side) or branch chip (parent side): jump to the other end of the
+    // branch, landing on the branch-point turn via the deep-link anchor machinery
+    branchjump: (elx) => {
+      const sid = elx.dataset.sid;
+      if (!sid) return;
+      if (!sessions.get(sid)) { warnToast("That session isn't on this dashboard right now."); return; }
+      setActive(sid, elx.dataset.cut || undefined);
     },
     // "copy to composer" on a never-delivered bubble: the echo is the only surviving copy of the text —
     // hand it back for review-and-resend (the same restore the queued ✕ uses). Delegated like qx: the

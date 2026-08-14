@@ -14140,7 +14140,29 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                               "ts": iso(boundary["t"]) if boundary.get("t") else None,
                               "clearedAt": boundary.get("t"), "episodes": len(_epi_rows),
                               "dropped": [d.get("text") or "" for d in (_settle.get("settled") or [])] or None})
+    # BRANCH LINEAGE (the user 2026-08-13: branching must SHOW). A session born as a fork carries a
+    # durable forkedFrom in its reg (the one-shot forkOf launch flags say nothing after the init
+    # spends them): a branch DIVIDER event lands right after the branch-point record — everything
+    # above it is history shared with the parent — and the top-level `branch` field survives
+    # windowing. The other direction, `branches`, lists the forks that left FROM this session's own
+    # turns, so the parent shows a chip where each branch departed. Both sides deep-link across.
+    branch = None
+    _ff = (_thread_reg(sid) or {}).get("forkedFrom")   # _thread_reg is the generic sdk-reg reader
+    if isinstance(_ff, dict) and _ff.get("sid"):
+        branch = {"fromSid": str(_ff["sid"]),
+                  "fromName": _name_of(str(_ff["sid"])) or _ff.get("name") or "",
+                  "cut": str(_ff.get("cut") or ""), "t": _ff.get("t") or 0}
+        if branch["cut"]:
+            _at = next((i for i, e in enumerate(events) if e.get("uuid") == branch["cut"]), None)
+            if _at is not None:
+                events.insert(_at + 1, {"kind": "branch", "uuid": "branch:" + branch["cut"],
+                                        "fromSid": branch["fromSid"], "fromName": branch["fromName"],
+                                        "cut": branch["cut"],
+                                        "ts": iso(branch["t"]) if branch.get("t") else None})
+    _be_fk = _sdk()
+    _kids = (_be_fk.fork_children().get(sid) if _be_fk and hasattr(_be_fk, "fork_children") else None) or None
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
+            "branch": branch, "branches": _kids,
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
             # branch + tab tooltip must show for EVERY session, but the system event lives at events[0] and the

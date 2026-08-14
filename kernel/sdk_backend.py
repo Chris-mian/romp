@@ -2730,6 +2730,7 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
+        self._fork_children_memo = None           # (sdk/ dir mtime_ns, {parent sid: [child lineage]}) — fork_children()
         self.work_key = work_api_key()            # the manager env's API key, claimed out of os.environ
         #   ("" = none): per-session auth injects it via _options; its presence is the "key" half of
         #   the availability the kernel publishes to the picker/gear (the user 2026-08-08)
@@ -3503,6 +3504,15 @@ class SdkBackend:
                "effort": parent.get("effort", DEFAULT_EFFORT),
                "lastSid": parent.get("lastSid") or parent_sid,
                "forkOf": parent_sid, "forkAt": cut_uuid or "", "alive": True}
+        # Durable LINEAGE (the user 2026-08-13: branching must SHOW in the UI): forkOf/forkAt above
+        # are one-shot launch flags, spent the moment the init lands, so the branch point is recorded
+        # separately and forever. A tip fork (no cut) stamps the parent's CURRENT leaf — that is
+        # where the two histories diverge. The chat renders this as the child's branch divider and
+        # the parent's branch chip (build_session `branch`/`branches`).
+        lineage_cut = cut_uuid or last_record_uuid(
+            transcript_path(cwd, parent.get("lastSid") or parent_sid))
+        reg["forkedFrom"] = {"sid": parent_sid, "name": parent.get("name", ""),
+                             "cut": lineage_cut, "t": int(time.time())}
         if thread_of:
             reg["threadOf"] = thread_of
         if parent.get("model") and parent["model"] != "default":
@@ -3927,6 +3937,33 @@ class SdkBackend:
             s.shutdown()
         self._poke()
         return True
+
+    def fork_children(self) -> dict:
+        """{parent sid: [{sid, name, cut, t}, …]} for every session carrying a durable forkedFrom —
+        the parent chat's branch chips. Comment threads are skipped (their anchor is the comment
+        highlight; a PROMOTED thread has threadOf cleared, so it joins here). Memoized on the sdk/
+        dir's mtime: every reg write publishes via os.replace into that dir, bumping it, so the
+        steady state costs one stat instead of a full registry sweep per session build."""
+        d = Path(self.state_dir) / "sdk"
+        try:
+            mt = d.stat().st_mtime_ns
+        except OSError:
+            return {}
+        memo = self._fork_children_memo
+        if memo and memo[0] == mt:
+            return memo[1]
+        out: dict = {}
+        for reg in list_regs(self.state_dir):
+            ff = reg.get("forkedFrom")
+            if not isinstance(ff, dict) or not ff.get("sid") or reg.get("threadOf"):
+                continue
+            out.setdefault(str(ff["sid"]), []).append(
+                {"sid": reg["sid"], "name": reg.get("name", ""),
+                 "cut": ff.get("cut") or "", "t": ff.get("t") or 0})
+        for kids in out.values():
+            kids.sort(key=lambda k: k["t"])
+        self._fork_children_memo = (mt, out)
+        return out
 
     def session_state(self, sid: str) -> str:
         """Live state ('working'/'waiting'/…) for ONE sid, comment threads included — live_sessions
