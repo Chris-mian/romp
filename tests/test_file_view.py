@@ -111,9 +111,14 @@ class ServeText(_Route):
         self.assertEqual(status, 200)
         self.assertTrue(mime.startswith("text/plain"), mime)
 
-    def test_a_type_we_do_not_serve_still_404s_so_the_client_keeps_its_plain_link(self):
+    def test_a_type_we_do_not_view_415s_naming_the_path_so_the_client_can_offer_the_download(self):
+        # was a 404, indistinguishable from "no such file" — but the truths differ and the client acts
+        # on the difference: 404 means give up, 415 means offer ?download=1 (the user 2026-08-09)
         fp = self.write("archive.zip", b"PK\x03\x04stuff")
-        self.assertEqual(self.get(fp)[0], 404)
+        status, body = self.get(fp)[:2]
+        self.assertEqual(status, 415)
+        self.assertIn("not viewable in the browser", body)
+        self.assertIn(km._tilde(fp), body, "every /file error names the resolved path")
 
     def test_a_missing_file_404s_naming_the_path_it_tried(self):
         # a bare "not found" told the user nothing about WHAT was tried — a relative link resolves

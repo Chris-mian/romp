@@ -57,8 +57,9 @@ test("the viewer is a singleton that fills the pane and always tells the shell w
 test("it waits with the romp loader and fails with the kernel's own words, never a blank pane", () => {
   assert.match(VIEW, /romp-swirl-glyph\.svg/, "loading-state rule: the swirl goes up first");
   assert.match(VIEW, /fileview-dot/);
-  // a 404/413/415 body IS the explanation (the 413 names the size and the cap) — show it, don't swallow it
-  assert.match(VIEW, /if \(!r\.ok\) return r\.text\(\)\.then\(\(t\) => \{ throw new Error\(t \|\| \("HTTP " \+ r\.status\)\); \}\);/);
+  // a 404/413/415 body IS the explanation (the 413 names the size and the cap) — show it, don't swallow
+  // it. The status rides along since 2026-08-09, so the catch can decide whether to offer the download.
+  assert.match(VIEW, /if \(!r\.ok\) return r\.text\(\)\.then\(\(t\) => \{\s*\n\s*throw Object\.assign\(new Error\(t \|\| \("HTTP " \+ r\.status\)\), \{ status: r\.status \}\);\s*\n\s*\}\);/);
   assert.match(VIEW, /const why = el\("div", "fileview-err"\);/);
   // a reply that lands after the user closed the viewer paints nothing
   assert.match(VIEW, /if \(!document\.getElementById\("romp-fileview"\)\) return;/);
@@ -218,6 +219,55 @@ test("the Wrap toggle persists, hides with rendered prose, and its numbers still
   // wrap governs the pre view only — rendered prose always wraps — so the button leaves with it
   assert.match(VIEW, /wrapBtn\.hidden = rendered;/);
   assert.match(VIEW, /wrapBtn\.classList\.toggle\("on", fmt\.wrap\);/, "pressed state flips synchronously");
+});
+
+// ── download (the user 2026-08-09): any linked file can be SAVED, including everything the pane cannot
+// show — the kernel's ?download=1 serves anything on disk (the rationale lives with _file_download in
+// kernel.py: the view allowlists are a rendering choice, not a security boundary). ──
+
+test("the title bar offers Download next to Copy path, at the same-origin download URL", () => {
+  // the URL is fileUrl + the download switch: same origin, cookie-authed, and federation-aware for
+  // free — fileUrl already routes a remote session's file through the /remote/<host>/file relay
+  assert.match(VIEW, /const dlUrl = fileUrl\(path, sid\) \+ "&download=1";/);
+  assert.match(VIEW, /dl\.textContent = "Download";/);
+  // next to Copy path: appended into the same acts bar, wearing the same button class
+  assert.match(VIEW, /acts\.appendChild\(dl\);\n\n  const copy = el\("button", "fileview-btn"\)/);
+  assert.match(VIEW, /const dl = el\("button", "fileview-btn"\) as HTMLButtonElement;/, "no new styling, no new font size");
+});
+
+test("startDownload hands the URL to the browser's downloader and never wipes the pane", () => {
+  // an <a download> click: the BROWSER owns the request (its progress UI, its save location), and the
+  // kernel's attachment disposition means the page never navigates — the viewer stays put
+  assert.match(VIEW, /const a = document\.createElement\("a"\);\s*\n\s*a\.href = url;\s*\n\s*a\.download = "";/);
+  assert.match(VIEW, /document\.body\.appendChild\(a\);\s*\n\s*a\.click\(\);\s*\n\s*a\.remove\(\);/);
+  assert.doesNotMatch(VIEW, /location\.href\s*=/, "no navigation — a wiped pane is the failure mode this avoids");
+  // …and the click acknowledges itself (ui/CLAUDE.md): the download UI can take a beat over a tunnel
+  assert.match(VIEW, /btn\.textContent = "Downloading…";/);
+});
+
+// executed: which fetch failures still deserve a Download offer? Exactly the ones that mean the file
+// EXISTS — 413 (too large to render) and 415 (on disk but not viewable: a .zip, a binary named like
+// text). A 404 is genuinely missing, and offering to download it would be a lie.
+test("offersDownload: 413 and 415 offer, 404 and everything else do not", () => {
+  const offersDownload = (status: number | undefined): boolean => status === 413 || status === 415;
+  assert.equal(offersDownload(413), true, "too big to render ≠ too big to save");
+  assert.equal(offersDownload(415), true, "exists-but-unviewable is the case the button exists for");
+  assert.equal(offersDownload(404), false, "genuinely missing → nothing to offer");
+  assert.equal(offersDownload(403), false);
+  assert.equal(offersDownload(undefined), false, "a network failure carries no status and no offer");
+  // replica ↔ source
+  assert.match(VIEW, /return status === 413 \|\| status === 415;/);
+});
+
+test("a refusal renders the kernel's words PLUS the way out — gated on offersDownload", () => {
+  // the status rides the thrown error so the catch can tell "there but unshowable" from "not there"
+  assert.match(VIEW, /throw Object\.assign\(new Error\(t \|\| \("HTTP " \+ r\.status\)\), \{ status: r\.status \}\);/);
+  // the offer appends to the SAME error pane that shows the kernel's message — an offer, not a dead end
+  assert.match(VIEW, /if \(offersDownload\(\(err as \{ status\?: number \}\)\.status\)\) \{/);
+  assert.match(VIEW, /const offer = el\("button", "fileview-btn fileview-err-dl"\) as HTMLButtonElement;/);
+  assert.match(VIEW, /why\.appendChild\(offer\);/);
+  assert.match(VIEW, /offer\.addEventListener\("click", \(\) => startDownload\(dlUrl, offer\)\);/);
+  assert.match(FEED_CSS, /\.fileview-err-dl \{ display: block; margin-top: 10px; \}/);
 });
 
 // executed: the gutter is a SIBLING of the code, so selecting the code copies it without line numbers

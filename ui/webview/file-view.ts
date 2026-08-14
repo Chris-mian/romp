@@ -163,6 +163,16 @@ export function openFileView(path: string, sid?: string | null): void {
   wrapBtn.addEventListener("click", () => { fmt.wrap = !fmt.wrap; saveFmt(fmt); renderBody(); });
   acts.appendChild(wrapBtn);
 
+  // ── download (the user 2026-08-09) ── Any linked file can be SAVED, including everything the pane
+  // cannot show: the kernel's ?download=1 serves anything on disk (the rationale lives with
+  // _file_download in kernel.py). Same-origin and cookie-authed like the view fetch, and
+  // federation-aware for free — fileUrl already routes a remote session's file through the relay.
+  const dlUrl = fileUrl(path, sid) + "&download=1";
+  const dl = el("button", "fileview-btn") as HTMLButtonElement;
+  dl.type = "button"; dl.textContent = "Download"; dl.title = "Save this file to your device";
+  dl.addEventListener("click", () => startDownload(dlUrl, dl));
+  acts.appendChild(dl);
+
   const copy = el("button", "fileview-btn") as HTMLButtonElement;
   copy.type = "button"; copy.textContent = "Copy path"; copy.title = path;
   copy.addEventListener("click", () => {
@@ -218,8 +228,11 @@ export function openFileView(path: string, sid?: string | null): void {
   fetch(fileUrl(path, sid), { cache: "no-store" }).then((r) => {
     // Every failure says WHY, in the pane, rather than leaving a blank one: the kernel distinguishes
     // "not a type I serve" from "too big" from "not text after all", and that is exactly what the
-    // person who clicked needs to know (a 413 names the size and the cap).
-    if (!r.ok) return r.text().then((t) => { throw new Error(t || ("HTTP " + r.status)); });
+    // person who clicked needs to know (a 413 names the size and the cap). The status rides along so
+    // the catch below can tell "the file is there but I can't show it" from "there is no file".
+    if (!r.ok) return r.text().then((t) => {
+      throw Object.assign(new Error(t || ("HTTP " + r.status)), { status: r.status });
+    });
     return r.text();
   }).then((t) => {
     if (!document.getElementById("romp-fileview")) return;    // closed while it was in flight
@@ -237,8 +250,42 @@ export function openFileView(path: string, sid?: string | null): void {
       hint.textContent = path;
       why.appendChild(hint);
     }
+    // A refusal-to-RENDER is not a dead end (ui/CLAUDE.md): when the file exists, the kernel's own
+    // words are followed by the way out — the download the view could not be. A 404 stays offerless,
+    // because offering to download a file that is not there would be a lie.
+    if (offersDownload((err as { status?: number }).status)) {
+      const offer = el("button", "fileview-btn fileview-err-dl") as HTMLButtonElement;
+      offer.type = "button"; offer.textContent = "Download";
+      offer.title = "Save this file to your device";
+      offer.addEventListener("click", () => startDownload(dlUrl, offer));
+      why.appendChild(offer);
+    }
     body.replaceChildren(why);
   });
+}
+
+// Which fetch failures still deserve a Download offer? Exactly the ones that mean the file EXISTS:
+// 413 (too large to render) and 415 (on disk but not viewable — a .zip, a binary named like text).
+// A 404 is genuinely missing, and gets nothing.
+function offersDownload(status: number | undefined): boolean {
+  return status === 413 || status === 415;
+}
+
+// Kick the browser's downloader at `url` without touching the pane: a clicked <a download> starts a
+// same-origin, cookie-authed request the BROWSER owns (its progress UI, its save location), and since
+// the kernel answers with Content-Disposition: attachment the page never navigates — the viewer, the
+// feed behind it, and the scroll position all stay put. The button acknowledges the click itself
+// (ui/CLAUDE.md), because the browser's download UI can take a beat to appear over a slow tunnel.
+function startDownload(url: string, btn: HTMLButtonElement): void {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";               // a hint; the kernel's attachment disposition is what actually decides
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  const was = btn.textContent;
+  btn.textContent = "Downloading…";
+  setTimeout(() => { btn.textContent = was; }, 1500);
 }
 
 function escapeHtml(s: string): string {

@@ -1066,6 +1066,9 @@ body.fileview-open { overflow: hidden; }
 .fileview-err { padding: 18px 14px; font-size: 0.86em; color: #e0a030; }
 .fileview-err-hint { margin-top: 6px; color: var(--dim); font-size: 0.92em;
   font-family: var(--mono, ui-monospace, monospace); word-break: break-all; }
+/* the way out of a refusal: when the file exists but cannot render (413/415), the kernel's words are
+   followed by the Download the view could not be — same button treatment as the title bar's */
+.fileview-err-dl { display: block; margin-top: 10px; }
 /* the romp loader, per the loading-state rule: swirl + wordmark + three pulsing accent dots */
 .fileview-load { display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 30px 0; color: var(--dim); font-size: 0.86em; }

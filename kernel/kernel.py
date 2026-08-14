@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote, urlencode
+from urllib.parse import urlparse, parse_qs, quote, unquote, urlencode
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -18818,6 +18818,29 @@ _TEXT_MAX_BYTES = 2 * 1024 * 1024                # 2 MB of source is already pas
 #   power-of-two so the 413 _human_bytes renders it as the "2.0 MB" the constant means, not "1.9 MB"
 
 
+# ---- …and the DOWNLOAD half of the route (the user 2026-08-09): `/file?download=1` serves ANY file
+#      that exists, no extension allowlist, no NUL sniff, no size cap. The view allowlists above are a
+#      RENDERING choice — what the browser can usefully paint — not a security boundary: the user's call
+#      (2026-08-09) is that anything on disk is downloadable, since the OS layer still guards against
+#      running whatever lands, and the dashboard's owner can already read any file by asking an agent
+#      for it. Served as application/octet-stream with an attachment disposition, so the browser SAVES
+#      it and never interprets it, and STREAMED in fixed chunks — _send slurps whole bodies, and a
+#      multi-GB download through it would OOM the kernel that self-hosts the very sessions using it.
+_DOWNLOAD_CHUNK = 256 * 1024                     # fixed stream chunk: bounded memory whatever the file size
+
+
+def _attachment_disposition(name):
+    """Content-Disposition for the download path. The basename lands inside a quoted-string, so anything
+    that could terminate or extend the HEADER is replaced: CR/LF (header injection), the quote and the
+    backslash (quoted-string escapes), other control bytes. A name the ASCII form had to mangle also
+    rides the RFC 6266/5987 `filename*` form, so a browser that speaks it saves the real name."""
+    safe = "".join(c if " " <= c < "\x7f" and c not in '"\\' else "_" for c in name) or "download"
+    disp = 'attachment; filename="%s"' % safe
+    if safe != name:
+        disp += "; filename*=UTF-8''" + quote(name, safe="")
+    return disp
+
+
 def _is_text_path(fp):
     """Is `fp` a path /file may serve as TEXT? Extension allowlist plus the extensionless names that are
     text by convention. Name-based only; the BYTES are sniffed separately, so a mislabelled binary still
@@ -23427,14 +23450,22 @@ class Handler(BaseHTTPRequestHandler):
         nowhere near the kernel's machine — its own, much smaller cap, and a NUL sniff so a binary that
         slipped past the name allowlist 415s instead of arriving as mojibake."""
         fp = _resolve_open_path((q.get("path") or [""])[0], (q.get("sid") or [None])[0])
+        if (q.get("download") or [""])[0] == "1":
+            return self._file_download(fp, head=head)
         mime = _PREVIEW_MIME.get(os.path.splitext(fp)[1].lower())
         text = not mime and _is_text_path(fp)
         if text:
             mime = "text/plain; charset=utf-8"
         # Every error body NAMES the resolved path (home-collapsed) — a bare "not found" told the user
         # nothing about WHAT was tried when a relative link resolved somewhere unexpected (2026-08-09).
-        if not mime or not os.path.isabs(fp) or not os.path.isfile(fp):
+        if not os.path.isabs(fp) or not os.path.isfile(fp):
             return self._send(404, b"" if head else "not found: %s" % _tilde(fp), "text/plain")
+        if not mime:
+            # Exists, but on neither VIEW allowlist (a .zip, a .so). Its own status, distinct from 404,
+            # because the truths differ and the client acts on the difference: "not found" means give
+            # up, "not viewable" means offer the download the route above serves (the user 2026-08-09).
+            return self._send(415, b"" if head else
+                              "not viewable in the browser: %s" % _tilde(fp), "text/plain")
         size = os.path.getsize(fp)
         cap = _TEXT_MAX_BYTES if text else _PREVIEW_MAX_BYTES
         if size > cap:
@@ -23461,6 +23492,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(415, "not a text file: %s" % _tilde(fp), "text/plain")
             return self._send(200, body, mime, cache="no-cache")
         return self._send(200, raw, mime, cache="no-cache")
+
+    def _file_download(self, fp, head=False):
+        """GET/HEAD /file?download=1 — the SAVE half of the route (the user 2026-08-09): any file that
+        exists at the resolved path, streamed to the browser as an attachment. No extension allowlist,
+        no NUL sniff, no size cap — the view gates are a rendering choice, not a security boundary (see
+        _DOWNLOAD_CHUNK's comment for the user's rationale). application/octet-stream + attachment +
+        nosniff means the browser saves the bytes and never interprets them on this origin.
+
+        The body is STREAMED in fixed chunks, never slurped: _send reads whole bodies into memory, and
+        a multi-GB artifact through it would OOM the kernel — which self-hosts the sessions asking."""
+        if not os.path.isabs(fp) or not os.path.isfile(fp):
+            return self._send(404, b"" if head else "not found: %s" % _tilde(fp), "text/plain")
+        size = os.path.getsize(fp)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", _attachment_disposition(os.path.basename(fp)))
+        self.send_header("Content-Length", str(size))      # the real length — the browser shows progress
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-cache")
+        if getattr(self, "_cors_origin", None):
+            self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+            self.send_header("Vary", "Origin")
+        self.end_headers()
+        if head:
+            return
+        # Exactly Content-Length bytes, chunk by chunk. A file truncated mid-stream can no longer honor
+        # the promised length, so the connection closes instead of leaving the browser waiting on bytes
+        # that will never come — a visibly failed download, not a hang (fail loudly).
+        remaining = size
+        with open(fp, "rb") as f:
+            while remaining > 0:
+                chunk = f.read(min(_DOWNLOAD_CHUNK, remaining))
+                if not chunk:
+                    self.close_connection = True
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def do_OPTIONS(self):
         """CORS preflight. The strip's tunnel actions POST JSON (Content-Type:
@@ -25056,19 +25124,31 @@ class Handler(BaseHTTPRequestHandler):
         is rewritten into the forwarded query (so the browser only ever needs its local credential,
         and the per-host trust boundary is unchanged — THAT kernel still runs its own allowlist,
         size cap and path resolution), and this kernel reads nothing but the reply it mirrors.
-        Deliberately /file only — a preview relay, not a general proxy."""
+        Deliberately /file only — a preview relay, not a general proxy.
+
+        The Content-Type is derived HERE, from the requested extension against _PREVIEW_MIME —
+        the same table and the same 404 the local /file route applies — and the remote's own
+        Content-Type header is discarded. Mirroring it let a compromised remote kernel answer
+        `text/html` for a path the preview lightbox opens in a SAME-ORIGIN, unsandboxed iframe
+        (ui/webview/preview.ts), i.e. script on the dashboard's origin with the token cookie
+        attached. An attached host is trusted to serve its own files, not to choose how this
+        browser interprets them."""
         with _remotes_lock:
             r = _remotes.get(host)
             port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
         if not port:
             return self._send(404, b"" if head else ("no attached host %r" % host), "text/plain")
         q = parse_qs(query or "")
-        # Our own verdict on the type, before the remote gets a say: derive the Content-Type from the
-        # requested extension against _PREVIEW_MIME (the same table + 404 the local /file route uses)
-        # and DISCARD the remote's own Content-Type below. Mirroring it let a compromised remote answer
-        # text/html for a path the preview lightbox opens in a same-origin, unsandboxed iframe
-        # (ui/webview/preview.ts) — script on the dashboard's origin with the cookie attached. An
-        # extension the local route would 404 is 404'd here too, so the relay never widens what renders.
+        if (q.get("download") or [""])[0] == "1":
+            # The download half rides the same relay (the user 2026-08-09: anything on disk is
+            # downloadable — see _file_download). No local extension gate: the gate below exists so the
+            # relay can never widen what a preview may RENDER, and a download renders nothing — the
+            # headers this side writes (octet-stream + attachment + nosniff, derived HERE, never from
+            # the remote's reply) are what guarantee that. The remote still resolves the path and
+            # decides existence; this side streams its answer through without buffering it.
+            return self._relay_download(host, port, rtok, q, head=head)
+        # Our own verdict on the type, before the remote gets a say. An extension the local route
+        # would 404 is 404'd here too, so the relay can never widen what a preview may render.
         rp = (q.get("path") or [""])[0]
         mime = _PREVIEW_MIME.get(os.path.splitext(rp)[1].lower())
         if not mime and _is_text_path(rp):
@@ -25112,6 +25192,72 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         return self._send(status, body, ctype, cache="no-cache")
+
+    def _relay_download(self, host, port, rtok, q, head=False):
+        """GET/HEAD /remote/<host>/file?download=1 — the download half of the relay. Forwards the one
+        request (download=1 intact, the remote's own token rewritten in, same trust boundary as
+        _remote_file) and STREAMS the reply back chunk by chunk — a download has no size cap, so
+        buffering it here would OOM this kernel exactly the way _file_download's streaming exists to
+        avoid. Every attachment header is derived HERE from the requested basename, never mirrored
+        from the remote's reply — the lying-remote reasoning of _remote_file's Content-Type check —
+        which also means Content-Disposition survives the relay by construction."""
+        if rtok:
+            q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=15)
+        try:
+            # Phase 1 — dial and read the verdict. Nothing has been written to the browser yet, so a
+            # failure here can still answer with a clean 502.
+            try:
+                conn.request("HEAD" if head else "GET", "/file?" + urlencode(q, doseq=True))
+                resp = conn.getresponse()
+                if resp.status != 200:
+                    # the remote's error verdict (its 404 names the path IT resolved) — small, safe to slurp
+                    body = b"" if head else resp.read(_TEXT_MAX_BYTES)
+                    return self._send(resp.status, body, "text/plain", cache="no-cache")
+                clen = resp.getheader("Content-Length")
+            except (OSError, http.client.HTTPException):
+                return self._send(502, b"" if head else ("tunnel to %s is not answering" % host), "text/plain")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition",
+                             _attachment_disposition(os.path.basename((q.get("path") or [""])[0])))
+            if clen is not None:
+                self.send_header("Content-Length", clen)   # the remote's real length, passed through
+            else:
+                self.close_connection = True                # no length → the close marks the body's end
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-cache")
+            if getattr(self, "_cors_origin", None):
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            if head:
+                return
+            # Phase 2 — the body. Headers are out, so a second status line is no longer possible: a
+            # tunnel that dies mid-stream just closes this connection short of Content-Length, which
+            # the browser reports as a failed download — visible, not a hang (fail loudly).
+            copied = 0
+            try:
+                while True:
+                    chunk = resp.read(_DOWNLOAD_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    copied += len(chunk)
+            except (OSError, http.client.HTTPException):
+                self.close_connection = True
+            if clen is not None and copied < int(clen):
+                # A remote that truncates CLEANLY — its own _file_download sends short and closes
+                # when the file shrank mid-stream — ends the read with b'' and NO exception, so the
+                # except above never sees it. The Content-Length already forwarded is now a broken
+                # promise on a keep-alive connection: close, the same visibly-failed download as
+                # the exception path, instead of a browser waiting on bytes that never come.
+                self.close_connection = True
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def _push_one(self, client):
         _push([client], connect=True)             # full state to a fresh client (its per-client dedup is empty);
