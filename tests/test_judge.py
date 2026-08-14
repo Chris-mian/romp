@@ -3547,7 +3547,7 @@ class SweepTurn(unittest.TestCase):
         seg_by_id = {seg0["id"]: seg0, seg1["id"]: seg1}
         captured = {}
 
-        def spy(tt, mt, gh=""):
+        def spy(tt, mt, gh="", lw=""):
             captured["gh"] = gh
             return '{"done": [{"goal": 1, "why": "done"}]}'
         jd.closer_llm = spy
@@ -3560,7 +3560,7 @@ class SweepTurn(unittest.TestCase):
         store["placements"][self.seg["id"]] = g1["id"]
         captured = {}
 
-        def spy(tt, mt, gh=""):
+        def spy(tt, mt, gh="", lw=""):
             captured["gh"] = gh
             return '{"done": [{"goal": 1, "why": "done"}]}'
         jd.closer_llm = spy
@@ -3593,7 +3593,7 @@ class StatusReportMenu(unittest.TestCase):
     def _spy(self, reply):
         captured = {}
 
-        def spy(tt, mt, gh=""):
+        def spy(tt, mt, gh="", lw=""):
             captured["mt"] = mt
             return reply
         jd.closer_llm = spy
@@ -3857,7 +3857,7 @@ class ModelTiers(unittest.TestCase):
         self.assertEqual(jd.TRIAGE_MODEL, "sonnet", "triage tier defaults to the sonnet alias (→ latest Sonnet)")
         self.assertNotEqual(jd.INDEX_MODEL, jd.TRIAGE_MODEL)
         calls, saved = [], jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (calls.append((model, sysp, tier)) or "")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage", mark=None: (calls.append((model, sysp, tier)) or "")
         try:
             jd.caption_llm("x"); jd.archive_llm("x"); jd.plan_llm("x", "y")
             jd.courier_llm("x", "y"); jd.closer_llm("x", "y")
@@ -3873,7 +3873,7 @@ class ModelTiers(unittest.TestCase):
     def test_plan_llm_model_and_effort_override(self):
         """plan_llm takes model + effort overrides (for the classification A/B); default is the triage model."""
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (seen.update(model=model, effort=effort) or "")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage", mark=None: (seen.update(model=model, effort=effort) or "")
         try:
             jd.plan_llm("seg", "menu")
             self.assertEqual((seen["model"], seen["effort"]), ("sonnet", None), "default: triage alias, no explicit effort")
@@ -4416,8 +4416,10 @@ class DeltaScopedDistill(unittest.TestCase):
         from unittest import mock
         with mock.patch.object(jd, "_judge_run", return_value="x") as m:
             jd.distill_llm("g", "w", "dw", prior_summary="old take")
-            user = m.call_args.args[2]
-        self.assertIn("<prior-summary>\nold take\n</prior-summary>", user)
+            user, mk = m.call_args.args[2], m.call_args.kwargs["mark"]
+        # content sections carry the call's own mark now (the trust boundary), so the section is
+        # asserted as the judge really sees it
+        self.assertIn(jd._sec("prior-summary", "old take", mk), user)
         self.assertIn("never a recap", user)
         with mock.patch.object(jd, "_judge_run", return_value="x") as m:
             jd.distill_llm("g", "w", "dw")
@@ -5650,15 +5652,16 @@ class Distiller(unittest.TestCase):
         # a LIST of (sub-goal, why) pairs → a numbered <owed> block, one line per pair, so the prompt can map
         # each to its own takeaway paragraph. A plain string (single block) is passed through unchanged.
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (seen.update(user=user) or "a brief")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage", mark=None: (
+            seen.update(user=user) or "a brief")
         try:
             jd.brief_llm("the goal", "the work",
                          [("record the screencast", "you record it"),
                           ("consolidate Internals", "merge or leave")])
-            self.assertIn("<owed>\n1. record the screencast: you record it\n"
-                          "2. consolidate Internals: merge or leave\n</owed>", seen["user"])
+            self.assertIn("\n1. record the screencast: you record it\n"
+                          "2. consolidate Internals: merge or leave\n</owed ", seen["user"])
             jd.brief_llm("g", "w", "just one thing")
-            self.assertIn("<owed>\njust one thing\n</owed>", seen["user"], "a lone string renders as before")
+            self.assertIn("\njust one thing\n</owed ", seen["user"], "a lone string renders as before")
         finally:
             jd._judge_run = saved
 
@@ -5770,7 +5773,7 @@ class GistLlm(unittest.TestCase):
     def test_uses_index_model_and_gist_sys_and_cleans_the_phrase(self):
         seen = {}
 
-        def fake(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
+        def fake(model, sys_prompt, user, effort=None, judge=None, tier="triage", mark=None):
             seen.update(model=model, sys=sys_prompt, user=user, judge=judge, tier=tier)
             return "  a dark-mode toggle for settings.  "       # stray padding + trailing dot
         jd._judge_run = fake
@@ -5795,7 +5798,8 @@ class BlockBriefJudgeLabel(unittest.TestCase):
 
     def test_brief_llm_logs_as_the_briefer(self):
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (seen.update(judge=judge) or "a brief")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage", mark=None: (
+            seen.update(judge=judge) or "a brief")
         try:
             jd.brief_llm("the goal", "the work", "owed a decision")
         finally:
