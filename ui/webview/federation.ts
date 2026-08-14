@@ -54,6 +54,14 @@ const ARRAY_ID = ["order", "names", "working", "awaiting", "stateUnknown"]; // a
 const OBJ_SID = ["asks", "items", "ledgers", "sessions"]; //  an array of objects keyed by `.sid`
 const OBJ_ID = ["tabs"]; //                       an array of objects keyed by `.id`
 
+// Gear settings the KERNEL acts on, which each kernel stores its own copy of: they describe how romp
+// behaves towards the sessions it is running, so a machine that never hears the change goes on behaving
+// the old way. Broadcast in routeOutbound rather than routed. Deliberately NOT here: setDefaultDir (a
+// path on one machine, meaningless on another) and setColormap/setPalette (the viewer's display prefs,
+// which the local kernel persists for this browser).
+const KERNEL_SETTING = new Set(["setAutoNudge", "setJudgeModel", "setIndexModel",
+                                "setJudgeEffort", "setIndexEffort"]);
+
 /** Return a COPY of an inbound message with every session-id field prefixed by `host`. The local host
  *  ("") is the identity transform, so local messages are untouched. Unknown fields pass through. */
 export function prefixInbound(host: string, msg: any): any {
@@ -184,8 +192,8 @@ export interface Route {
  *  `knownHosts` (the manager passes its attached set) enables two extra routings that need to know which
  *  hosts exist: NAME-addressed messages (the timeline's compact/sendCommand target a session by display
  *  name, which inbound prefixing made `host:name`) route to a KNOWN host only — a local name that happens
- *  to contain ":" must never misroute — and a hover CLEAR (`timelineHover {off}` carries no sid) fans out
- *  to every kernel so a remote highlight can't stick. */
+ *  to contain ":" must never misroute — and messages with no sid that mean the same thing on every kernel
+ *  (a hover CLEAR, the gear's kernel-side settings) fan out to all of them. */
 export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route[] {
   if (!msg || typeof msg !== "object") return [{ host: LOCAL, msg }];
 
@@ -210,6 +218,14 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
 
   // a hover CLEAR has no session id — broadcast so every kernel drops its highlight.
   if (msg.type === "timelineHover" && msg.off) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
+
+  // The gear's kernel-side settings mean the same thing on every attached machine, and carry no session
+  // id to route by — so the fall-through at the bottom sent them to the LOCAL kernel alone. Every other
+  // kernel silently kept its old setting while the gear, which fills from the local /version, showed the
+  // change as applied everywhere: Auto Nudge switched off in the dashboard, still nudging the sessions
+  // running on the other machine (the user 2026-08-14, whose two kernels had been disagreeing for days
+  // with nothing on screen to say so). Broadcast, like the hover clear above.
+  if (KERNEL_SETTING.has(msg.type)) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
 
   // openFolder ALWAYS stays LOCAL, `id` UNSTRIPPED (the user 2026-07-03): unlike every other id-bearing
   // message, this one means "open a window on the machine the BROWSER is running on" — routing it to a

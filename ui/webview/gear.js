@@ -38,6 +38,11 @@ var SHORTCUT_ROWS =
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
   '<div class=rs-key id=rs-keys-vsc hidden><span class=rs-key-desc>Shortcuts are VS Code keybindings here — search "rompChat" in Keyboard Shortcuts.</span></div>';
 
+// Auto Nudge's hover description lives in a var because fillAutoNudge() appends to it when the attached
+// machines disagree — the row then has to say WHICH ones, and this is the one level down from the label.
+var AUTONUDGE_SUB = "When a session goes idle but its goal still shows working (not blocked, not awaiting "
+  + "you), automatically nudge it once for a status update. Applies to every connected machine's kernel.";
+
 // The modal markup — ported verbatim from the kernel's _gear_html; the model/
 // effort selects start empty and are filled from /models (see fill()).
 var GEAR_HTML =
@@ -53,8 +58,8 @@ var GEAR_HTML =
   "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:3px 8px'>Browse…</button>" +
   '</div></span></div>' +
   "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
-  '<span><b>Auto Nudge</b>' +
-  '<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>' +
+  '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
+  '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
   '</span></label>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates</b>" +
   '<span class=rs-sub>romp checks its repo for a new tagged release at start-up and every 6 hours (ordinary commits never trigger it; updating lands exactly on the release). Check and ask (the default) offers it as a banner with an Update button; Install automatically fetches, installs and restarts by itself; Off never checks. Kernel-side setting.</span>' +
@@ -156,7 +161,8 @@ function initGear(post) {
     cg = document.getElementById('rs-collapsegaps'), ao = document.getElementById('rs-activeonly'),
     jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
-    ie = document.getElementById('rs-indexeffort'), upm = document.getElementById('rs-updates');
+    ie = document.getElementById('rs-indexeffort'), upm = document.getElementById('rs-updates'),
+    ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
   function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, tabCtx: 'over50', collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, tabCtx: 'over50', collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
@@ -183,7 +189,13 @@ function initGear(post) {
   if (ao) ao.addEventListener('change', function () { var s = load(); s.activeOnly = ao.checked; save(s); });
   // Auto Nudge / judge tiers are SERVER-SIDE (the kernel runs them): post the
   // change; the controls re-initialize from /version on every open (fill()).
-  if (an) an.addEventListener('change', function () { post({ type: 'setAutoNudge', enabled: an.checked }); });
+  // Each attached kernel keeps its own copy, so the post goes to all of them
+  // (federation.ts KERNEL_SETTING) — which is also what resolves a split box:
+  // the click picks one answer and every machine takes it.
+  if (an) an.addEventListener('change', function () {
+    clearAutoNudgeSplit();
+    post({ type: 'setAutoNudge', enabled: an.checked });
+  });
   if (upm) upm.addEventListener('change', function () { post({ type: 'setUpdateMode', mode: upm.value }); });
   if (jm) jm.addEventListener('change', function () { post({ type: 'setJudgeModel', model: jm.value }); });
   if (im) im.addEventListener('change', function () { post({ type: 'setIndexModel', model: im.value }); });
@@ -255,8 +267,41 @@ function initGear(post) {
   }
   function lv() { var t = document.querySelector('script[src*="feed.js"]');
     var m = t && t.getAttribute('src').match(/[?&]v=(\d+)/); return m ? +m[1] : 0; }
+  function clearAutoNudgeSplit() {
+    if (an) an.indeterminate = false;
+    if (ans) { ans.hidden = true; ans.textContent = ''; }
+    if (asub) asub.textContent = AUTONUDGE_SUB;
+  }
+  // Auto Nudge is one switch for every connected machine, but each kernel keeps its own copy — and
+  // /version answers for THIS one alone. So the box takes the local kernel's setting, then checks the
+  // others: a connected host that disagrees puts the box in the mixed state (a tri-state checkbox plus
+  // the word beside the label — glanceable) and is NAMED in the hover line, one level down. Before this
+  // the box quietly spoke for machines it could not see, and the other kernel went on nudging for days
+  // behind an unchecked box (the user 2026-08-14). Clicking a mixed box picks one answer for everyone,
+  // since the post goes to every kernel.
+  //
+  // A host that never reported a setting — an older kernel, a row that has not polled — is left OUT
+  // rather than read as off: guessing would invent a disagreement and invite a click that changes a
+  // machine nobody asked about. Same for a host that is not `up`, whose row is a memory (see
+  // _remote_public's stale note). A /tunnels that fails leaves the local answer standing.
+  function fillAutoNudge(mine) {
+    if (!an) return;
+    an.checked = !!mine;
+    clearAutoNudgeSplit();
+    fetch(ku('/tunnels'), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+      var split = ((d && d.tunnels) || []).filter(function (t) {
+        return t && t.status === 'up' && typeof t.autoNudge === 'boolean' && t.autoNudge !== !!mine;
+      }).map(function (t) { return t.host; });
+      if (!split.length) return;
+      an.indeterminate = true;
+      if (ans) { ans.textContent = 'mixed'; ans.hidden = false; }
+      if (asub) asub.textContent = AUTONUDGE_SUB
+        + (mine ? ' Right now these have it off: ' : ' Right now these still have it on: ')
+        + split.join(', ') + '. Clicking sets them all the same way.';
+    }).catch(function () {});
+  }
   function fill() { fillChoices().then(function () { return fetch(ku('/version'), { cache: 'no-store' }); }).then(function (r) { return r.json(); }).then(function (v) {
-    if (an) an.checked = !!v.autoNudge;
+    fillAutoNudge(v.autoNudge);
     if (upm && typeof v.updateMode === 'string') upm.value = v.updateMode;   // the kernel's persisted mode is authoritative
     if (jm && typeof v.judgeModel === 'string') jm.value = v.judgeModel;   // the judge's ACTUAL current model/effort per tier is authoritative
     if (im && typeof v.indexModel === 'string') im.value = v.indexModel;

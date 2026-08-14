@@ -420,6 +420,33 @@ test("routeOutbound: a hover CLEAR broadcasts to every kernel (no sid to route b
   assert.deepEqual(on, [{ host: "TESTHOST", msg: { type: "timelineHover", sid: U, segIds: [] } }]);
 });
 
+test("routeOutbound: the gear's kernel-side settings reach EVERY attached kernel", () => {
+  // The user 2026-08-14: Auto Nudge switched off in the dashboard, and the sessions on the other machine
+  // went on being nudged for days. setAutoNudge carries no session id, so it fell through to LOCAL and
+  // the remote kernel never heard it — while the gear, which fills the box from the LOCAL /version,
+  // showed the change as applied everywhere. Silent in both directions.
+  for (const msg of [{ type: "setAutoNudge", enabled: false },
+                     { type: "setJudgeModel", model: "haiku" },
+                     { type: "setIndexModel", model: "haiku" },
+                     { type: "setJudgeEffort", effort: "high" },
+                     { type: "setIndexEffort", effort: "" }]) {
+    const routes = routeOutbound(msg, new Set(["TESTHOST", "gpu1"]));
+    assert.deepEqual(routes.map((r) => r.host).sort(), ["", "TESTHOST", "gpu1"].sort(), msg.type);
+    for (const r of routes) assert.deepEqual(r.msg, msg, "the kernels are host-blind: same message to each");
+  }
+  // with nothing attached it is the single-kernel path, byte for byte
+  assert.deepEqual(routeOutbound({ type: "setAutoNudge", enabled: true }),
+                   [{ host: "", msg: { type: "setAutoNudge", enabled: true } }]);
+  // an explicit host still wins — the popover can ask ONE machine (that branch runs first)
+  assert.deepEqual(routeOutbound({ type: "setAutoNudge", enabled: true, host: "gpu1" }, new Set(["gpu1"])),
+                   [{ host: "gpu1", msg: { type: "setAutoNudge", enabled: true } }]);
+  // NOT broadcast: a default directory is a path on one machine, and the colormap/palette are this
+  // viewer's display prefs — both stay with the kernel serving the page.
+  for (const msg of [{ type: "setDefaultDir", value: "~/code" }, { type: "setColormap", name: "aurora" },
+                     { type: "setPalette", name: "default" }])
+    assert.deepEqual(routeOutbound(msg, new Set(["gpu1"])), [{ host: "", msg }], msg.type);
+});
+
 test("routeOutbound: openFolder ALWAYS stays local, with a remote id's host prefix left INTACT", () => {
   // the user 2026-07-03: unlike every other id-bearing message, opening a folder means "open a window on
   // the machine the BROWSER runs on" — routing it to the remote kernel would open it on that headless
