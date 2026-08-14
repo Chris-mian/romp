@@ -1138,6 +1138,70 @@ def work_api_key() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Fast-mode permission for key-billed sessions — ask the account that PAYS.
+# ---------------------------------------------------------------------------
+
+FAST_ORG_PATH = "/api/claude_code_penguin_mode"   # the CLI's own fast-mode availability endpoint
+
+_FAST_ORG_VERDICTS: dict[str, bool] = {}   # key -> the server's last definitive answer
+
+
+def _fetch_key_fast_org(key: str) -> bool | None:
+    """The fast-mode availability answer for the API key's OWN account, from the same endpoint the
+    CLI asks — True/False on a definitive server answer, None on any failure (network, bad status,
+    unexpected shape). Split out so tests replace it; the policy lives in key_fast_org_env."""
+    import urllib.request
+    base = (os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com").rstrip("/")
+    req = urllib.request.Request(base + FAST_ORG_PATH, headers={"x-api-key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    v = d.get("enabled") if isinstance(d, dict) else None
+    return v if isinstance(v, bool) else None
+
+
+def key_fast_org_env(key: str, log) -> dict[str, str]:
+    """Env additions that make the CLI's fast-mode PERMISSION follow the session's BILLING (the user
+    2026-08-14, who found fast mode refused on a key-billed session the key's account allows). The
+    CLI's availability probe asks the saved claude.ai login whenever one exists, even on a session
+    whose inference bills the injected key (verified against claude 2.1.228 on 2026-08-14: the probe
+    prefers the stored OAuth token over the key, so a machine whose login has extra usage off refuses
+    the fast mode the paying account permits). So at every key-billed connect the kernel asks the
+    paying account itself — the same endpoint, credentialed with the key — and translates the answer
+    into the CLI's own switches:
+      * enabled  -> CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1 — the CLI skips its wrong-account probe.
+      * disabled -> CLAUDE_CODE_DISABLE_FAST_MODE=1 — the wrong-account probe could just as well say
+        YES to a fast mode the paying org turned OFF; permission follows billing in both directions.
+      * unknown  -> last definitive answer if one exists (logged), else {} — no answer is no licence
+        to skip, so the CLI's own behavior stands and the failure is logged where the Log panel
+        shows it. Retry is event-keyed on the next connect; there is no timer.
+    Asked per connect (connects are rare and already network-bound; a fast toggle reconnects, so the
+    check is fresh exactly when it matters), capped at 3s so a black-holed network cannot hang a
+    connect. Never injected for login sessions: there the CLI's probe already asks the account that
+    pays."""
+    verdict = _fetch_key_fast_org(key)
+    if verdict is None:
+        if key in _FAST_ORG_VERDICTS:
+            verdict = _FAST_ORG_VERDICTS[key]
+            log("fast-mode org check (key account): unreachable — standing on the last answer "
+                "(%s)" % ("enabled" if verdict else "disabled"))
+        else:
+            log("fast-mode org check (key account): unreachable and no prior answer — the CLI's "
+                "own check stands (it may consult the claude.ai login, not the paying account)",
+                problem=True)
+            return {}
+    else:
+        if _FAST_ORG_VERDICTS.get(key) != verdict:
+            log("fast-mode org check (key account): %s" % ("enabled" if verdict else "disabled"))
+        _FAST_ORG_VERDICTS[key] = verdict
+    if verdict:
+        return {"CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK": "1"}
+    return {"CLAUDE_CODE_DISABLE_FAST_MODE": "1"}
+
+
+# ---------------------------------------------------------------------------
 # The live session (one quarantined asyncio thread).
 # ---------------------------------------------------------------------------
 
@@ -3432,7 +3496,8 @@ class SdkBackend:
         # inject or stay silent; never blank (an empty var reads as "API-key mode, no key" to the CLI).
         launch_keyed = sess.effective_auth() == "key"
         if launch_keyed:
-            kw["env"] = dict(kw["env"], ANTHROPIC_API_KEY=self.work_key)
+            kw["env"] = dict(kw["env"], ANTHROPIC_API_KEY=self.work_key,
+                             **key_fast_org_env(self.work_key, self._log))
         elif sess.auth == "key":
             # picked "key", but this manager's env carries none — falling to login silently would bill
             # the wrong account with nothing to see; say so where the Log panel shows it.
