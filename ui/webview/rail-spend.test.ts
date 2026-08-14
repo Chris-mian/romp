@@ -252,3 +252,18 @@ test("the $/h chart is a real chart, and refresh is automatic with no stale hint
   assert.ok(usageJS.includes("if(tip.style.display==='block'&&!tip.classList.contains('ru-modal'))"),
     "an open tip follows data landings");
 });
+
+test("the mobile usage modal is height-capped with a scroll pane, and taps on it don't fall through", () => {
+  // The user 2026-08-14: the $/h chart + multi-host rows outgrew a phone screen, and the centered
+  // translate(-50%,-50%) pushed the TOP off-screen with nothing to scroll. The modal variant caps its
+  // height to the DYNAMIC viewport (dvh overrides vh where supported — mobile browser chrome collapses)
+  // and scrolls; pointer-events comes back on (the base #ru-tip is a hover tooltip, pointer-events:none),
+  // which is what makes scrolling possible AND stops a tap on the panel closing it through the backdrop.
+  const modal = KERNEL.split("#ru-tip.ru-modal{")[1].split("}")[0];
+  assert.ok(modal.includes("max-height:84vh"), "a vh cap for browsers without dvh");
+  assert.ok(modal.includes("max-height:84dvh"), "the dvh override tracks mobile chrome");
+  assert.ok(modal.indexOf("max-height:84vh") < modal.indexOf("max-height:84dvh"),
+    "the dvh declaration must come second to win where supported");
+  assert.ok(modal.includes("overflow-y:auto"), "the scroll pane");
+  assert.ok(modal.includes("pointer-events:auto"), "scrollable — and panel taps no longer dismiss");
+});

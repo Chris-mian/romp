@@ -22603,8 +22603,15 @@ def _landing():
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)
             # over an "elapsed" bar (slate) with the % + reset countdown, and nothing else (no prose).
             # .ru-modal = the mobile Usage button's centered-panel placement (same element + content as the
-            # hover tooltip; only the positioning differs)
+            # hover tooltip; only the positioning differs). Height-capped WITH a scroll pane (the user
+            # 2026-08-14: the $/h chart + multi-host rows outgrew a phone screen and the centered transform
+            # pushed the TOP off-screen with no way to reach it). dvh overrides vh where supported so the
+            # mobile browser's collapsing chrome can't eat the cap; pointer-events comes back on (the base
+            # #ru-tip is a hover tooltip, pointer-events:none) so the pane can actually scroll — which also
+            # stops a tap on the panel itself falling through to the dismiss backdrop; only backdrop taps
+            # (and Escape) close it now, the modal contract everywhere else on the dashboard.
             "#ru-tip.ru-modal{left:50%!important;top:44%!important;transform:translate(-50%,-50%);max-width:92vw;"
+            "max-height:84vh;max-height:84dvh;overflow-y:auto;pointer-events:auto;"
             "box-shadow:0 12px 36px #000000aa}"
             # the dismiss backdrop for the mobile Usage modal: below the tip (z 300), above the panes; a tap
             # anywhere over it closes the modal (see _LANDING_USAGE_JS). Faint dim so it reads as tap-to-close.
