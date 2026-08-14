@@ -20579,7 +20579,7 @@ var SPEND_WINS=[['day','1 day'],['week','1 week'],['month','1 month']];
 function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
 (det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0};});
-if(u.spendSeries&&u.spendSeries.usd)det._spendSeries=u.spendSeries;   // $/hour, for the hover graph (the user 2026-08-13)
+if(u.spendSeries&&u.spendSeries.usd)det._spendSeries=u.spendSeries;}   // $/hour, for the hover graph (the user 2026-08-13)
 // One payload's WINDOW detail for the hover (used/elapsed/reset per window). Detail only, no markup:
 // the rail no longer draws each account's own bars (they aggregate, below), but the tip still tells
 // each host's story from this.
