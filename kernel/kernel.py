@@ -11312,6 +11312,22 @@ _CLI_SEND_RE = re.compile(   # capture the optional --kind that rides between se
     # alias — and old transcripts (whose Bash rows this matcher re-reads forever) only have the latter.
     r"\bromp\s+(?:--)?mail\s+send\s+(?:--kind\s+(delegate|coordinate|question)\s+)?([A-Za-z0-9._-]+)\s+([\s\S]+)$")
 
+# The MAIL READERS — the only tools whose OUTPUT can carry the postal formatter's romp-msg-id
+# markers (format_inbox / format_push, the postal service's documented consumer contract). Every
+# OTHER tool output is text the agent merely READ: a file, a fetched page, a grep hit, its own echo
+# of mail it already received. Scanning those let any such text swap a Bash/Read/WebFetch row out of
+# the chat for a postal card, so the scan is scoped to the readers plus user text (which is how the
+# kernel actually delivers mail: the Stop-hook drain's block reason and the pane/socket push both
+# land as user records). check_sent is NOT here: format_receipts prints no marker, and the rows it
+# lists are mail this session SENT — a to_id that is never ours, so scanning it could only ever
+# produce false unresolved reports.
+_INBOX_TOOL_RE = re.compile(r"(?:^|__)check_inbox$")   # the MCP tool, bare or mcp__<server>__ prefixed
+_CLI_MAIL_READ_RE = re.compile(
+    # `romp mail inbox|recv|peek`, the permanent `romp --mail` alias, `romp-postal-service` direct,
+    # and the drain the Stop hook runs — all print format_inbox. ANCHORED at a command position so a
+    # command that merely MENTIONS the subcommand (grep "romp mail inbox" …) is not a mail read.
+    r"(?:\A|[;&|\n])\s*romp(?:-postal-service|\s+(?:--)?mail)\s+(?:inbox|recv|peek|drain)\b")
+
 _POSTAL_KINDS = ("delegate", "coordinate", "question")
 
 
@@ -11412,10 +11428,44 @@ def _cli_send_card(ev):
             "ts": ev.get("ts"), "uuid": ev.get("uuid")}
 
 
-def _hydrate_postal(events, index):
+def _bash_command(ev):
+    """The `command` string of a Bash tool event. build_session stores a tool input as JSON
+    ({"command": …, "description": …}); anything that isn't that shape (a raw command string, a
+    4000-char truncation) is returned as-is for the caller's own matcher to judge."""
+    raw = ev.get("input") or ""
+    try:
+        args = json.loads(raw)
+    except Exception:
+        return raw
+    return args["command"] if isinstance(args, dict) and isinstance(args.get("command"), str) else raw
+
+
+def _reads_mail(ev):
+    """Is this tool event a MAIL READER — one whose output legitimately carries romp-msg-id markers?
+    check_inbox, or a Bash mail-read subcommand. Everything else is text the agent merely read."""
+    if ev.get("kind") != "tool":
+        return False
+    if _INBOX_TOOL_RE.search(ev.get("name") or ""):
+        return True
+    return ev.get("name") == "Bash" and bool(_CLI_MAIL_READ_RE.search(_bash_command(ev)))
+
+
+def _postal_addressed_to(rec, sid):
+    """Was this logged message addressed to THIS session? The postal log's to_id is the recipient's
+    romp session id — the same id build_session is rendering (deliver() keys the maildir by it, and
+    the timeline connectors match it against live sids). Without this, an id lifted from ANY text
+    rendered another session's message body, wearing that session's name and colour, in a chat that
+    was never a recipient. Unknown sid (a direct caller that passes none) or a pre-schema row with no
+    to_id → pass through: the check is a scope guard, not a reason to lose real mail."""
+    to = rec.get("toId") or ""
+    return not to or not sid or to == sid
+
+
+def _hydrate_postal(events, index, sid=None):
     """Replace postal traffic with clean cards: a send_message tool (or `romp mail send` Bash) → an
-    OUTGOING card; a user/tool event carrying romp-msg-id marker(s) → INCOMING card(s) with the clean
-    body from the log. Anything not fully resolved passes through unchanged. Mirrors hydratePostal."""
+    OUTGOING card; a user event (or a MAIL READER's output — see _reads_mail) carrying romp-msg-id
+    marker(s) addressed to `sid` → INCOMING card(s) with the clean body from the log. Anything not
+    fully resolved passes through unchanged."""
     out = []
     # {id: Haiku caption} → show the ≤9-word caption, not the verbose body. Computed LAZILY (the user
     # 2026-07-03: "startup is slow"): _msg_summaries() re-scans the WHOLE fleet's captioned transcripts,
@@ -11451,12 +11501,14 @@ def _hydrate_postal(events, index):
             card = _cli_send_card(ev)
             if card:
                 out.append(enrich_out(card, ev)); continue
-        text = ev.get("md") if ev.get("kind") == "user" else (ev.get("output") if ev.get("kind") == "tool" else "")
+        text = ev.get("md") if ev.get("kind") == "user" else (ev.get("output") if _reads_mail(ev) else "")
         ids = em.POSTAL_RE.findall(text or "")
         if ids:
             cards = []
             for mid in ids:
                 rec = index.get(mid)
+                if rec and not _postal_addressed_to(rec, sid):
+                    rec = None                           # someone else's mail → the unresolved path below
                 if rec:
                     frm = rec["from"]
                     if not frm or frm in ("?", "unknown"):
@@ -13716,7 +13768,7 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                                "md": a.get("content") or ""})
     _flush_recoveries(tail_cap_t)                       # a recovery on the still-open tail turn (t past the last atom) → bottom of the flow
     #                                                     (tail_cap_t: an episode render stops at its /clear — later notes belong to the next episode)
-    events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
+    events = _hydrate_postal(events, _postal_index(), sid)   # swap postal traffic for clean in/out cards (no boilerplate)
     _stamp_interrupt_causes(events)                     # a restart/crash resume notice names the seam's cause
     for ev in events:
         # tlId = the timeline atom a chat hover lights: a message/prompt → the DOT (segment promptId),
