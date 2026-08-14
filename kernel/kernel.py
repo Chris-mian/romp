@@ -11886,8 +11886,11 @@ def _parse(path, sid, now):
         return hit[1]
     # A FORKED leaf (SDK /clear: discover hands the lastSid file under the stable romp sid) parses with
     # the session's anchor transcript among the candidates — a resume-style fork's cross-file chain keeps
-    # its history via the FileAdapter walk; a /clear fork (parentUuid null) still starts fresh. Mirrors
-    # jd.parsed_session. Cache stays keyed on the LEAF alone: the anchor file is dead once forked.
+    # its history via the FileAdapter walk (a RECORDED fresh-headed resume fork stitches through the
+    # states/ resumeFork lineage inside parse_session, 2026-08-14); a /clear fork (parentUuid null, no
+    # lineage) still starts fresh. Mirrors jd.parsed_session. Cache stays keyed on the LEAF alone plus
+    # the states file (folded above), which moves when a lineage row lands: the anchor file is dead
+    # once forked.
     cands = [path]
     anchor = os.path.join(os.path.dirname(path), sid + ".jsonl")
     if os.path.basename(path) != sid + ".jsonl" and os.path.exists(anchor):
@@ -14397,6 +14400,13 @@ def _episode_boundary_check(sid, path, now):
     if not head or not head["root"]:
         return                       # no head yet, or a resume-style leaf (chains into a prior file):
     #                                  either way the recorded episode is still the current one
+    if any(l.get("to") == Path(path).stem for l in jd.resume_lineage(sid)):
+        return                       # a RECORDED resume fork: the CLI resumed a machine-cut turn onto a
+    #                                  fresh-headed file, byte-identical to a /clear on disk. The
+    #                                  conversation CONTINUES (the parser stitches the chain from the
+    #                                  same states/ rows), so this head is no boundary — treating it as
+    #                                  one settled the session's open cards mid-turn and the cut turn's
+    #                                  work never carded (the lost PR-watch finding, the user 2026-08-14).
     if any(r.get("head") == head["uuid"] for r in jd.episode_rows(sid)):
         return                       # this head is already recorded — the current episode, or a
     #                                  HISTORICAL one re-sighted through a stale path (a peer writer
