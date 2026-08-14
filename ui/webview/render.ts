@@ -623,10 +623,25 @@ function countLines(s: string): number {
   return s.endsWith("\n") ? n - 1 : n;
 }
 
-function preEl(text: string): HTMLElement {
+// A .fold-pre's inner scroll position must survive the same rebuilds openFolds survives (the user
+// 2026-08-14: reading a scrolled CLAUDE.md doc in the System context card, the box snapped to its
+// top on every kernel push — the rebuilt node is a fresh element at scrollTop 0, and pushes land
+// every 0.5–3s). Saved per stable key as the user scrolls; reapplied a frame after the rebuilt node
+// lands, because a node that hasn't laid out yet clamps any scrollTop write back to 0. Keyless
+// callers (notices, reminder bodies) stay transient, exactly like keyless folds.
+const foldScroll = new Map<string, number>();
+function keepScroll(box: HTMLElement, key?: string): HTMLElement {
+  if (!key) return box;
+  box.addEventListener("scroll", () => { foldScroll.set(key, box.scrollTop); }, { passive: true });
+  const saved = foldScroll.get(key);
+  if (saved) requestAnimationFrame(() => { box.scrollTop = saved; });
+  return box;
+}
+
+function preEl(text: string, scrollKey?: string): HTMLElement {
   const pre = el("pre", "io-pre fold-pre");
   pre.textContent = text;
-  return pre;
+  return keepScroll(pre, scrollKey);
 }
 
 // Links in the chat (markdown [x](url) and GFM-autolinked bare URLs alike, all rendered as <a href>
@@ -2026,7 +2041,7 @@ function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
     }
     body.appendChild(grid);
   }
-  for (const doc of ev.claudemd || []) {
+  (ev.claudemd || []).forEach((doc, i) => {
     const sec = el("div", "sys-doc");
     const dh = el("div", "sys-doc-head");
     const scope = el("span", "sys-doc-scope " + (doc.scope === "global" ? "global" : "project"));
@@ -2034,9 +2049,11 @@ function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
     const pth = el("span", "sys-doc-path"); pth.textContent = doc.path;
     dh.appendChild(scope); dh.appendChild(pth);
     sec.appendChild(dh);
-    sec.appendChild(preEl(doc.text));   // raw text in a bordered, scrollable sub-box (.fold-pre)
+    // raw text in a bordered, scrollable sub-box (.fold-pre) — scroll position keyed per doc so a
+    // reader's place survives the per-push rebuild of this turn (keepScroll)
+    sec.appendChild(preEl(doc.text, key ? key + ":doc" + i : undefined));
     body.appendChild(sec);
-  }
+  });
   const note = el("div", "sys-note");
   note.textContent = "Claude Code’s base harness prompt isn’t recorded in the transcript, so it isn’t shown here — this is the CLAUDE.md instructions and session config that were in effect.";
   body.appendChild(note);
@@ -2949,7 +2966,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     }
     inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
   } else if (ev.name === "Read") {
-    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output), fkey);
+    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output, fkey && fkey + ":out"), fkey);
   } else if (ev.name === "Skill") {
     // A Skill invocation (the user 2026-07-08): the head names the skill, and the skill's INSTRUCTIONS
     // (ev.skillMd, kernel-joined) are the fold body — DEFAULT COLLAPSED like every tool body. They used
@@ -2963,7 +2980,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       inlineFold(head, turn, `skill · ${countLines(ev.skillMd)} lines`, box, fkey);
     } else if (ev.output) {
       // an older record with no joined content — keep the result reachable as before
-      inlineFold(head, turn, `${countLines(ev.output)} line${countLines(ev.output) === 1 ? "" : "s"}`, preEl(ev.output), fkey);
+      inlineFold(head, turn, `${countLines(ev.output)} line${countLines(ev.output) === 1 ? "" : "s"}`, preEl(ev.output, fkey && fkey + ":out"), fkey);
     }
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
