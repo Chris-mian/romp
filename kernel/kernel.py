@@ -21705,7 +21705,15 @@ _STALE_CSS = (
     "#rstale .rs-reload{background:#54B204;color:#0c1a00;font-weight:600;border-color:#3f8a00}"
     "#rstale .rs-reload:hover{background:#62c80a}"
     "#rstale .rs-dismiss{background:none;color:#9aa0a6;border-color:#4a4d51}"
-    "#rstale .rs-dismiss:hover{color:#e6e6e6}")
+    "#rstale .rs-dismiss:hover{color:#e6e6e6}"
+    # Narrow screens (the user 2026-08-13): the one-row layout squeezed the message into a cramped,
+    # tall left column beside two nowrap buttons. The message takes the FULL row and the buttons drop
+    # to their own row beneath, splitting its width for finger-sized targets. Desktop keeps one line.
+    # width is explicit here: a fixed box with left:50% shrink-to-fits against the half-viewport,
+    # which is what cramped the old one-row layout — and off-centers this one
+    "@media (max-width:640px){#rstale{flex-wrap:wrap;gap:10px 12px;width:92vw;box-sizing:border-box}"
+    "#rstale .rs-msg{flex:1 1 100%}"
+    "#rstale button{flex:1 1 auto}}")
 _STALE_HTML = (
     "<div id=rstale role=alert><span class=rs-msg>A newer romp build is available.</span>"
     "<button class=rs-reload id=rstale-reload>Reload</button>"
