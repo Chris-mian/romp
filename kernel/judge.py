@@ -13,7 +13,7 @@ CLI:
   romp-judge --once               # one caption pass over the live fleet (writes captions/)
   romp-judge --test <transcript>  # caption one transcript's recent units, print them (no write)
 """
-import contextlib, json, os, re, shutil, sys, time, subprocess, threading
+import contextlib, json, os, re, shutil, stat, sys, time, subprocess, threading
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,7 +62,39 @@ SDKDIR   = STATE / "sdk"                 # the SDK backend's per-session registr
 # dir (~4,600/day, 51k files) mixed with anything else ever run from /tmp — unprunable without
 # touching data romp doesn't own. A romp-owned scratch cwd isolates them so prune_judge_scratch can
 # sweep the whole project dir by age, safely.
-JUDGE_SCRATCH = "/tmp/romp-judge"
+# It lives under the 0700 state root, NOT in /tmp. /tmp is world-writable and "/tmp/romp-judge" is a
+# name anyone can guess, so on a multi-account machine another local user could create the path first
+# — as a directory with permissions of their choosing, or as a SYMLINK — and `exist_ok=True` accepted
+# whatever they left. That handed them two things: the working directory of a `claude -p` subprocess
+# (a directory you control is a directory you can plant a .claude/ in — _judge_cmd's --safe-mode is
+# what closes that today), and a steer on prune_judge_scratch below, which realpaths this path at
+# every kernel boot and unlinks the day-old *.jsonl in the project dir it derives to. Pointed at a
+# directory you actually work in, romp's own housekeeping deletes your Claude Code transcripts.
+# Same reason the root itself is 0700 above; _ensure_judge_scratch keeps the scratch dir that way on
+# every call.
+JUDGE_SCRATCH = str(STATE / "judge-scratch")
+
+
+def _ensure_judge_scratch(path=None):
+    """Create the judge scratch cwd 0700, and REFUSE one that isn't ours. Returns the path.
+
+    Raises OSError when the directory can't be made private, and the caller must then skip the judge
+    call rather than run it from somewhere else: a cwd another account owns is a cwd they can plant a
+    .claude/ in, and a quiet fallback would hide exactly the breakage we need to see (CLAUDE.md,
+    authoritative sources — fail loudly, don't degrade silently)."""
+    d = path or JUDGE_SCRATCH
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)                            # lstat, not stat: a symlink planted in our place would
+    if not stat.S_ISDIR(st.st_mode):            # otherwise pass every check below on behalf of its target
+        raise OSError("judge scratch %s is not a directory" % d)
+    if st.st_uid != os.geteuid():
+        raise OSError("judge scratch %s belongs to uid %d, not to us (uid %d)"
+                      % (d, st.st_uid, os.geteuid()))
+    if st.st_mode & 0o077:                      # ours, but loose — a scratch from before the move, a stray umask.
+        os.chmod(d, 0o700)                      # We own it, so tightening is a repair, not a guess.
+        if os.lstat(d).st_mode & 0o077:
+            raise OSError("judge scratch %s stays group/world-accessible" % d)
+    return d
 
 
 def _rebind_state(path):
@@ -72,7 +104,9 @@ def _rebind_state(path):
     judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
     instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
     global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE, SDKDIR, EPIDIR, GONEDIR, JUDGE_AUTH
+    global JUDGE_SCRATCH
     STATE = path
+    JUDGE_SCRATCH = str(STATE / "judge-scratch")   # state-rooted now, so it rebinds with the rest
     NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
     GONEDIR, JUDGE_AUTH = STATE / "gone", STATE / "judge-auth.json"
     GOALARCHDIR = STATE / "goals-archive"
@@ -456,7 +490,9 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
              message this pass because its call came back empty — usage-limited/API error — and will
              retry it until the 48h horizon; surfaced only in debug), "cite-miss", "rate-limited",
              "unmigrated-node", "task-store" (the live task store exists but can't be read —
-             plan-sync skipped for the pass rather than silently folding the transcript)
+             plan-sync skipped for the pass rather than silently folding the transcript),
+             "scratch" (the judge scratch cwd can't be made private — call skipped, never rerouted
+             to a world-writable directory; see _ensure_judge_scratch)
       note   the evidence — reply tail, error message, exception name, or the give-up scope + re-arm
              event. Callers must pass it; an empty note means the caller has nothing at all to show.
       goal   the node id (or list of node ids) the judge was ruling on, when one exists — the feed's
@@ -708,6 +744,7 @@ def _judge_env(tier, auth="login"):
 
 
 _RATE_GATE_LOGGED = {}                   # bucket -> resets_at already announced (one line per window)
+_SCRATCH_FAIL_LOGGED = {}                # last judge-scratch refusal announced (one line per distinct reason)
 
 
 # ───────────────────────── distiller notes (the user's standing style memory) ─────────────────────────
@@ -792,7 +829,23 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     rid = _active_begin(judge or tier, fsid, sent)    # live bar starts NOW (deregistered in finally below)
     try:
         try:
-            os.makedirs(JUDGE_SCRATCH, exist_ok=True)   # tmpfiles-cleaned /tmp: recreate per call
+            _ensure_judge_scratch()                     # 0700 and ours; recreate per call (a purge/rm mid-run)
+        except OSError as e:
+            # No scratch we can keep private → no judge call at all. A cwd another account owns is a
+            # cwd they can plant a .claude/ in, so running from it anyway would be trading the whole
+            # point of the check for one caption — the error is the useful outcome here. One row per
+            # distinct reason: it would otherwise storm the error log.
+            if _SCRATCH_FAIL_LOGGED.get("why") != str(e):
+                _SCRATCH_FAIL_LOGGED["why"] = str(e)
+                sys.stderr.write("romp-judge: %s — judge calls skipped until it is fixed\n" % e)
+                _log_judge_error(judge or tier, fsid, "scratch", note=str(e)[:200])
+            # SKIPPED, not failed. A broken scratch is not the model's verdict, so ride the same paused
+            # flag the rate gate and retry-pause set. Without it the distiller/briefer/staller count each
+            # "" toward their give-up caps and blank the card's summary to the "" sentinel after three
+            # passes — irreversible content loss from a permissions problem.
+            _judge_ctx.paused = True
+            return ""
+        try:
             p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
                                capture_output=True, text=True, cwd=JUDGE_SCRATCH, env=env,
                                timeout=CALL_ALARM_S + 5)
