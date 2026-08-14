@@ -49,6 +49,21 @@ test("the gear posts kernel ops through ONE shared channel (never re-acquires th
     assert.ok(GEAR.includes(`'${op}'`), `gear must post ${op}`);
 });
 
+test("the Auto Nudge box speaks for every attached machine, and says so when they disagree", () => {
+  // /version answers for the kernel serving this page only, so the box used to show one machine's
+  // setting as everyone's — the user 2026-08-14 unchecked it and the other machine kept nudging with
+  // nothing on screen to say so. The reconcile reads each attached row's own setting off /tunnels.
+  assert.ok(GEAR.includes("fetch(ku('/tunnels')"), "the box must check the OTHER kernels, not just /version");
+  assert.ok(GEAR.includes("an.indeterminate = true"), "hosts that disagree put the box in the mixed state");
+  assert.ok(GEAR.includes("rs-autonudge-split"), "…said in words too — a tri-state box alone reads past");
+  assert.ok(GEAR_CSS.includes(".rs-mixed"), "…and that marker needs its styling, or it inherits nothing");
+  assert.ok(/t\.status === 'up'/.test(GEAR) && /typeof t\.autoNudge === 'boolean'/.test(GEAR),
+    "only a CONNECTED host that actually reported a setting counts — never guess for a silent one");
+  // The description is the one level down: it names the machines, so it cannot be a frozen literal.
+  assert.ok(/asub\.textContent = AUTONUDGE_SUB\s*\n?\s*\+/.test(GEAR) && GEAR.includes("split.join("),
+    "the hover line must name who differs");
+});
+
 test("the gear owns its browseResult (the reply lands in the FEED document, not the chat's)", () => {
   assert.ok(GEAR.includes("'browseResult'") && GEAR.includes("'gear'"));
 });

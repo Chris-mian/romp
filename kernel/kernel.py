@@ -7912,6 +7912,12 @@ def _remote_public(r):
             "kernelVer": ver, "localVer": (_kernel_ver() or ""),
             "outOfDate": ood, "behindBy": drift["behind"], "aheadBy": drift["ahead"],
             "kernelDate": drift["date"],
+            # That machine's OWN Auto Nudge setting, from the same /version poll as the sha (so `stale`
+            # dates it like everything else here). The gear presents one switch for every attached
+            # machine and reads the box from the LOCAL kernel, which cannot see a machine that disagrees
+            # — this is what lets it say so. null when the remote never reported one (an older kernel,
+            # or a row that has not polled yet): unknown, which the gear leaves out rather than guesses.
+            "autoNudge": r.get("auto_nudge") if isinstance(r.get("auto_nudge"), bool) else None,
             # fastForward: a push here would only ADD commits (the remote's is an ancestor of ours) — the
             # exact condition the automatic update fires on, so the row can say why it will or won't.
             # autoPush: that host's live phase (pushing / waiting / failed) → the popover's progress line and
@@ -8340,12 +8346,18 @@ def _remote_forward(r, path, body):
 
 
 def _poll_remote_version(r):
-    """GET the remote kernel's /version THROUGH the -L tunnel and return {"sha", "ver"} — the git short-sha
-    and the release tag the remote is running — or None on any failure. Same transport as _poll_remote_sids
-    — /version is auth-exempt on the remote, but we pass the token anyway. Lets the local kernel tell when a
-    remote is running OLDER code than this one (the user 2026-07-04: keep remotes up to date + prompt to
-    update), and name that build in terms both machines share (the user 2026-07-30). `ver` is "" against an
-    older kernel that predates the tag — the row falls back to the sha alone rather than inventing one."""
+    """GET the remote kernel's /version THROUGH the -L tunnel and return {"sha", "ver", "autoNudge"} — the
+    git short-sha and the release tag the remote is running, plus its Auto Nudge setting — or None on any
+    failure. Same transport as _poll_remote_sids — /version is auth-exempt on the remote, but we pass the
+    token anyway. Lets the local kernel tell when a remote is running OLDER code than this one (the user
+    2026-07-04: keep remotes up to date + prompt to update), and name that build in terms both machines
+    share (the user 2026-07-30). `ver` is "" against an older kernel that predates the tag — the row falls
+    back to the sha alone rather than inventing one.
+
+    `autoNudge` is that machine's own copy of a setting the gear presents as one switch for everything you
+    are running, so the dashboard can say when the machines disagree instead of showing one kernel's answer
+    for all of them (the user 2026-08-14). None — never False — when the remote didn't say, so an older
+    kernel that has no such field reads as unknown rather than as off."""
     import urllib.parse
     try:
         c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=4)
@@ -8358,7 +8370,9 @@ def _poll_remote_version(r):
             return None
         j = json.loads(data.decode("utf-8")) or {}
         sha = j.get("kernel_sha") or None
-        return {"sha": sha, "ver": str(j.get("kernel_ver") or "")} if sha else None
+        an = j.get("autoNudge")
+        return {"sha": sha, "ver": str(j.get("kernel_ver") or ""),
+                "autoNudge": an if isinstance(an, bool) else None} if sha else None
     except Exception:
         return None
 
@@ -9420,6 +9434,7 @@ def _tunnel_supervisor():
                     if rsha is not None:
                         r["kernel_sha"] = rsha
                         r["kernel_ver"] = (rver or {}).get("ver") or ""
+                        r["auto_nudge"] = (rver or {}).get("autoNudge")   # None = that kernel didn't say
                     if ruse is not None:
                         # {} = the host ANSWERED with nothing to show → clear; None = no answer (blip/
                         # rate-gate) → keep the last reading (see _poll_remote_usage)
