@@ -1026,3 +1026,86 @@ PY
     grep -q '"backend": "sdk"' "$TEST_DIR/req.log"
     [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
 }
+
+@test "new --model/--effort: ride /new VERBATIM (full ids, no alias munging) and report what was applied" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    touch "$MOCK_LOG"
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf 'tok-test' > "$XDG_STATE_HOME/romp/serve-token"
+    # fake kernel echoes model/effort back, the applied-ack contract of the real /new
+    python3 - "$TEST_DIR/port" "$TEST_DIR/req.log" <<'PY' &
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+portfile, log = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        with open(log, "w") as f:
+            json.dump({"path": self.path, "body": body}, f)
+        out = json.dumps({"ok": True, "id": "11111111-2222-3333-4444-555555555555",
+                          "model": body.get("model"), "effort": body.get("effort")}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_address[1]))
+srv.handle_request()
+PY
+    local srv=$!
+    until [ -s "$TEST_DIR/port" ]; do sleep 0.05; done
+    ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")" run run_romp new --model claude-fable-5 --effort ultracode opt
+    kill "$srv" 2>/dev/null || true
+    [ "$status" -eq 0 ]
+    grep -q '"model": "claude-fable-5"' "$TEST_DIR/req.log"
+    grep -q '"effort": "ultracode"' "$TEST_DIR/req.log"
+    [[ "$output" == *"applied model claude-fable-5, effort ultracode"* ]]
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
+}
+
+@test "new --model/--effort: a kernel that does NOT ack them warns loudly (no silent divergence)" {
+    command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+    touch "$MOCK_LOG"
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf 'tok-test' > "$XDG_STATE_HOME/romp/serve-token"
+    # fake OLDER kernel: acks ok but ignores the keys — the CLI must say so, not pretend
+    python3 - "$TEST_DIR/port" "$TEST_DIR/req.log" <<'PY' &
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+portfile, log = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        out = json.dumps({"ok": True, "id": "11111111-2222-3333-4444-555555555555"}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_address[1]))
+srv.handle_request()
+PY
+    local srv=$!
+    until [ -s "$TEST_DIR/port" ]; do sleep 0.05; done
+    ROMP_KERNEL_PORT="$(cat "$TEST_DIR/port")" run run_romp new --model claude-fable-5 opt
+    kill "$srv" 2>/dev/null || true
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"did not acknowledge --model/--effort"* ]]
+}
+
+@test "new --model with -t refuses loudly (SDK-only flags), and starts nothing" {
+    touch "$MOCK_LOG"
+    run run_romp new -t --model claude-fable-5 x
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--model/--effort need the default (SDK) session"* ]]
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
+}
+
+@test "new: help names --model and --effort (the nightly optimizer's presence guard greps help)" {
+    run run_romp -h
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--model <id>"* ]]
+    [[ "$output" == *"--effort <level>"* ]]
+}
