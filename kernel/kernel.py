@@ -15694,13 +15694,14 @@ def _series_index(hour_key, h0):
         return None
 
 
-def _spend_series(keyed_only=False):
+def _spend_series(keyed_only=False, now=None):
     """The hover graph's money-rate series (the user 2026-08-13): $/hour over the last 192 hours, a
     DENSE array plus a base hour (h0, epoch-hours), so cross-host summing is an index-wise add after
     aligning on h0 — correct without dedup, because each host records only its own turns even on a
     shared key. Zero IS the honest value for an hour with no turns (money, unlike pct, has a true
     zero). None when nothing is recorded at all. Same keyed_only split as _spend_windows, for the same
-    reason."""
+    reason. `now` anchors h0 — injectable so a caller with a frozen evidence clock (tests) can't
+    straddle an hour boundary between writing a bucket and reading its index (the 23:00 UTC CI run)."""
     try:
         d = json.loads((jd.STATE / "spend.json").read_text())
     except Exception:
@@ -15708,7 +15709,7 @@ def _spend_series(keyed_only=False):
     hours = d.get("hours") if isinstance(d.get("hours"), dict) else {}
     if not hours:
         return None
-    h0 = int(time.time() // 3600) - (_SERIES_HOURS - 1)
+    h0 = int((time.time() if now is None else now) // 3600) - (_SERIES_HOURS - 1)
     usd = [0.0] * _SERIES_HOURS
     for k, e in hours.items():
         i = _series_index(k, h0)
@@ -15720,11 +15721,12 @@ def _spend_series(keyed_only=False):
     return {"h0": h0, "usd": usd}
 
 
-def _usage_history_series():
+def _usage_history_series(now=None):
     """winSeries for the hover graphs: per window, 192 hourly pct-or-null points from
     usage-history.json — null is an hour with no reading (the unknown-≠-0 rule, drawn as a gap).
     Readings stamped by a DIFFERENT login than the current one are skipped, mirroring the bars'
-    own logout rule. None until the ledger exists."""
+    own logout rule. None until the ledger exists. `now` anchors h0, injectable for the same
+    hour-boundary determinism as _spend_series."""
     try:
         d = json.loads((jd.STATE / "usage-history.json").read_text())
     except Exception:
@@ -15733,7 +15735,7 @@ def _usage_history_series():
     if not hours:
         return None
     cur = _claude_account()
-    h0 = int(time.time() // 3600) - (_SERIES_HOURS - 1)
+    h0 = int((time.time() if now is None else now) // 3600) - (_SERIES_HOURS - 1)
     ser = {"h0": h0, "fiveHour": [None] * _SERIES_HOURS, "sevenDay": [None] * _SERIES_HOURS,
            "fable": [None] * _SERIES_HOURS}
     any_pt = False

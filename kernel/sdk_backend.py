@@ -3162,20 +3162,21 @@ class SdkBackend:
             self._record_usage_history(data)
         self._poke()
 
-    def _record_usage_history(self, data) -> None:
+    def _record_usage_history(self, data, now=None) -> None:
         """Append the reading to usage-history.json — the hover graphs' time base (the user 2026-08-13:
         the window bars kept only the CURRENT snapshot, so nothing could be graphed). Same bounded-hours
         shape as spend.json so both series share one x-axis: per hour keep the MAX pct seen per window
         (utilization only climbs within a window; a ROLL is a new resets_at, which takes the fresh
         reading outright), pruned to 192 hours — 8 days covers the 7-day graph. Caller holds _rl_lock;
-        a write failure logs and never blocks the snapshot that fed it."""
+        a write failure logs and never blocks the snapshot that fed it. `now` stamps the hour bucket,
+        injectable so a frozen-clock caller (tests) never straddles an hour boundary mid-assertion."""
         p = self.state_dir / "usage-history.json"
         try:
             hist = json.loads(p.read_text())
         except Exception:
             hist = {}
         hours = hist.get("hours") if isinstance(hist, dict) and isinstance(hist.get("hours"), dict) else {}
-        hour = time.strftime("%Y-%m-%dT%H")
+        hour = time.strftime("%Y-%m-%dT%H", time.localtime(time.time() if now is None else now))
         ent = hours.get(hour) if isinstance(hours.get(hour), dict) else {}
         ent["acct"] = data.get("acct") or ""
         for k in ("five_hour", "seven_day", "fable"):
