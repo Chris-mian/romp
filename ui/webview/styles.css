@@ -35,6 +35,10 @@
      (selected toggles, in-progress loading dots, the Fleet pill, focus) — NOT for STATUS colors, which keep
      their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it. */
   --accent: #9cd2ff; --accent-fg: #0c1a2e;
+  /* Comment-highlight yellow (the user 2026-08-13): the marked passage reads like a highlighter
+     stroke, DISTINCT from both the accent blue (selection/chrome) and the working-status yellow
+     chip. Text-highlight use only — comment chrome (badge, buttons, chips) stays var(--accent). */
+  --cmt-hl: #ffd54a;
   /* fast mode ON — the CLI's own fastMode orange, a STATUS color (means "this session runs fast
      mode"), so the badge reads the same here as in the Claude Code TUI. Not the accent. */
   --fast: #ff6a00;
@@ -2345,20 +2349,29 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
    rendered text drifts and the exact-match mark can't land. The popover is a pane-local card on the
    menu vocabulary (#252526, hairline border, 6px radius, the .ctx-menu shadow) — deliberately NOT a
    dimmed modal: the conversation stays readable beside the thread. */
-/* A SOLID tint, not a dashed underline (the user 2026-08-13: "like a comment would be on Google
-   Docs") — the underline read as a link, not a highlight. Unread strengthens the same tint rather
-   than adding a second cue, so "there's something to read" stays legible at a glance. */
+/* A SOLID highlighter-YELLOW stroke (the user 2026-08-13: like a comment on a Google Doc, and
+   never the same color as plain text selection). One unbroken block: the wrap pass covers every
+   interior node by construction; the radius sits only on the run's outer ends (hl-first/hl-last)
+   so segment boundaries never draw seams; and a fully-covered inline-code span is tinted at the
+   ELEMENT (cmt-hl-host) — a mark inside it can't paint the code's padded background, which left an
+   untinted sliver around every code word. Tint ladder, each state distinct: base 30% < unread 45%
+   < hover 58% (hovering an unread mark still answers). */
 mark.cmt-hl {
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--cmt-hl) 30%, transparent);
   color: inherit;
-  border-radius: 2px;
+  border-radius: 0;
   cursor: pointer;
 }
-mark.cmt-hl:hover { background: color-mix(in srgb, var(--accent) 46%, transparent); }
+mark.cmt-hl.unread { background: color-mix(in srgb, var(--cmt-hl) 45%, transparent); }
+mark.cmt-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
 mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
-mark.cmt-hl.unread { background: color-mix(in srgb, var(--accent) 44%, transparent); }
 mark.cmt-hl.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
-@keyframes cmt-busy-pulse { 50% { background: color-mix(in srgb, var(--accent) 50%, transparent); } }
+mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
+mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
+@keyframes cmt-busy-pulse { 50% { background: color-mix(in srgb, var(--cmt-hl) 50%, transparent); } }
+.md :not(pre) > code.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
+.md :not(pre) > code.cmt-hl-host > mark.cmt-hl { background: transparent; }
+.md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
 
 .turn.has-cmt { position: relative; }
 .cmt-badge {
@@ -2392,7 +2405,7 @@ mark.cmt-hl.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
 }
 .cmt-x:hover { opacity: 1; }
 .cmt-quote {
-  padding: 4px 8px; border-left: 2px solid var(--accent); border-radius: 2px;
+  padding: 4px 8px; border-left: 2px solid var(--cmt-hl); border-radius: 2px;
   background: rgba(255, 255, 255, 0.04);
   font-size: 0.92em; opacity: 0.75;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
