@@ -186,6 +186,15 @@ stretch after your follow-up, so the takeaway is the update, never a recap.
 May cite a `SOURCE: mN` line, parsed into the summary's deep link; a cite
 that misses logs and chips the card instead of failing.
 
+**Distiller notes.** Every judge that writes prose you read — distiller,
+briefer, staller, captioner, gister, archiver — also carries your standing
+style notes, when you keep any: `~/.config/romp/distiller-notes.md` is read
+at call time (no restart needed) and appended to the prompt, notes winning
+over prompt defaults on conflict. Plain language, e.g. "never cite PR or
+commit numbers; say what the change does". Delete the file and the next
+call runs bare. The placement judges and the courier never see it: those
+emit verdicts and agent-directed copy, not prose for you.
+
 **briefer.** When a top card blocks (and live for the focused picker or
 permission goal): a decision brief that leads with exactly what you must
 decide or provide, then options and tradeoffs. Same `SOURCE:` contract as
