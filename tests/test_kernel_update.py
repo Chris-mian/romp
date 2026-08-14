@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from importlib.machinery import SourceFileLoader
@@ -33,6 +34,10 @@ _PREV_STATE_DIR = os.environ.get("ROMP_STATE_DIR")
 os.environ["ROMP_STATE_DIR"] = _STATE_TD.name
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
+# A dead manager port: any update/converge path a test exercises unstubbed dials nothing real.
+# (2026-08-14: the converge route, hit by this suite while genuine main-drift existed, posted an
+# IMMEDIATE restart-all to the LIVE manager — every suite run bounced every kernel on the box.)
+os.environ["ROMP_MANAGER_PORT"] = "1"
 SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 km = SourceFileLoader("romp_kernel_update", os.path.join(BIN, "romp-kernel")).load_module()
@@ -226,8 +231,13 @@ class UpdateCheck(Fresh):
 
 
 class CheckLoop(Fresh):
-    def test_one_pass_per_cadence_and_a_crash_never_kills_the_thread(self):
-        passes = []
+    def test_two_cadences_one_loop_and_a_crash_never_kills_the_thread(self):
+        # The loop carries TWO watchers since the mesh-aware notice (the user 2026-08-14): the cheap
+        # origin/main drift probe every round (minutes — a merge should be noticed promptly), the
+        # release-tag check on its old six-hour stride. Either watcher dying must not kill the loop,
+        # nor one watcher's crash starve the other.
+        releases = []
+        drifts = []
         naps = []
 
         def nap(s):
@@ -235,17 +245,24 @@ class CheckLoop(Fresh):
             if len(naps) == 2:
                 raise SystemExit                       # unhook the forever-loop after two rounds
 
-        def one_pass():
-            passes.append(1)
-            if len(passes) == 1:
-                raise RuntimeError("boom")             # the first pass dies — the loop must survive it
-        with mock.patch.object(km, "_update_check", side_effect=one_pass), \
+        def release_pass():
+            releases.append(1)
+            raise RuntimeError("boom")                 # a dying release check must not kill the loop…
+
+        def drift_pass():
+            drifts.append(1)
+            if len(drifts) == 1:
+                raise RuntimeError("boom")             # …nor a dying drift probe the NEXT drift probe
+        with mock.patch.object(km, "_update_check", side_effect=release_pass), \
+             mock.patch.object(km, "_main_drift_check", side_effect=drift_pass), \
              mock.patch.object(km.time, "sleep", side_effect=nap), \
              self.assertRaises(SystemExit):
             km._update_check_loop()
-        self.assertEqual(len(passes), 2, "the pass after a crashed pass still ran")
-        self.assertEqual(naps, [km._UPDATE_CHECK_EVERY_S] * 2)
+        self.assertEqual(len(releases), 1, "the six-hour stride: one release check across two fast rounds")
+        self.assertEqual(len(drifts), 2, "the drift probe runs every round, surviving its own crash")
+        self.assertEqual(naps, [km._MAIN_CHECK_EVERY_S] * 2)
         self.assertEqual(km._UPDATE_CHECK_EVERY_S, 6 * 3600)
+        self.assertEqual(km._MAIN_CHECK_EVERY_S, 300)
 
 
 class RunUpdate(Fresh):
@@ -370,16 +387,36 @@ class Routes(Fresh):
         self.assertTrue((jd.STATE / "update-report.json").exists(), "not consumed — the next boot files it")
         self.assertEqual(self.notices(), [])
 
-    def test_post_update_requires_a_known_release_and_the_token(self):
+    def test_post_update_requires_something_known_and_the_token(self):
         code, _ = self._post("/update", token=False)
         self.assertEqual(code, 403)
+        km._MAIN_DRIFT[0] = km._MAIN_DRIFT[1] = ""     # module state: a prior drift pass must not leak in
         code, body = self._post("/update")
-        self.assertEqual(code, 409, "no newer release known → nothing to install: " + body)
+        self.assertEqual(code, 409, "nothing known → nothing to act on: " + body)
         km._UPDATE_AVAIL[0] = "v0.7.0"
         ran = []
         with mock.patch.object(km, "_run_update", side_effect=lambda tag: ran.append(tag) or True):
             code, body = self._post("/update")
         self.assertEqual((code, ran), (200, ["v0.7.0"]))
+
+    def test_post_update_converges_main_drift_when_no_release_is_pending(self):
+        # the drift click is a REAL restart, so the converge is stubbed: a live manager must never hear
+        # a test (2026-08-14: this exact route, exercised unstubbed while real drift existed, restart-
+        # stormed the machine running the suite — each run bounced every kernel on the box)
+        km._UPDATE_AVAIL[0] = ""
+        km._MAIN_DRIFT[0], km._MAIN_DRIFT[1] = "aaaa1111", ""
+        ran = []
+        with mock.patch.object(km, "_run_main_update",
+                               side_effect=lambda kind, immediate=False: ran.append((kind, immediate))):
+            code, body = self._post("/update")
+            self.assertEqual(code, 200)
+            self.assertIn("converging", body)
+            for _ in range(200):                       # the route hands off to a daemon thread
+                if ran:
+                    break
+                time.sleep(0.01)
+        self.assertEqual(ran, [("pull", True)], "the banner click is the user's own deliberate cut")
+        km._MAIN_DRIFT[0] = ""
 
 
 class Wiring(unittest.TestCase):

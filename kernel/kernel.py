@@ -1970,15 +1970,133 @@ def _update_check():
 # of one ls-remote.
 _UPDATE_CHECK_EVERY_S = 6 * 3600
 
+# ── the mesh/origin-aware update notice (the user 2026-08-14) ────────────────────────────────────
+# The release banner above only ever watched TAGS, so the day the deploy driver died, three ordinary
+# merges sat undeployed for an hour while every machine read "in sync" — all equally stale, nothing
+# anywhere with a signal. The user's design: every attached machine converges on the newest commit,
+# the dashboard being viewed shows ONE notice when anything is ahead, and the click converges the
+# mesh — no cron jobs. Two comparisons cover what releases can't see (the pure verdict is
+# _main_drift_verdict, unit-tested): origin/main ahead of the CHECKOUT (pull + restart), and the
+# checkout ahead of the RUNNING kernel (restart alone — the hand-advanced case). Remotes need no
+# third comparison here: every change lands through origin in this repo's PR-only flow, and once the
+# local checkout advances, the tunnel supervisor's existing autoPush/fastForward machinery spreads it
+# to the machines behind. The update-mode setting governs this watcher exactly like the release one:
+# off = silent, ask = the one-click notice, auto = converge unattended (the pull refuses a dirty
+# tree LOUDLY — peers' uncommitted work is never discarded — and the restart rides the manager's
+# quiet window, whose chain is silent-death-proof since the same day's fix).
+_MAIN_CHECK_EVERY_S = 300              # one ls-remote — cheap enough to notice a merge within minutes
+_MAIN_DRIFT = ["", ""]                 # [origin sha a notice fired for, checkout sha one fired for]
+
+
+def _origin_main_sha():
+    """origin/main's commit (short), '' when unreachable — offline is a normal state, never a crash."""
+    try:
+        out = subprocess.run(["git", "ls-remote", "origin", "refs/heads/main"],
+                             cwd=str(ROOT), capture_output=True, text=True, timeout=15)
+        return (out.stdout.split() or [""])[0][:8]
+    except Exception:
+        return ""
+
+
+def _checkout_sha():
+    """The shared checkout's HEAD (short), '' on any failure."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short=8", "HEAD"],
+                             cwd=str(ROOT), capture_output=True, text=True, timeout=10)
+        return out.stdout.strip()[:8]
+    except Exception:
+        return ""
+
+
+def _main_drift_verdict(origin, checkout, running):
+    """(kind, target) — the pure decision. kind: "pull" (origin ahead of the checkout: fetch + advance
+    + restart), "restart" (the checkout is ahead of the running kernel: restart alone), or "" (in sync
+    or unknowable). A sha that could not be read ('' anywhere) is unknown → no verdict: guessing would
+    invent a notice. Comparison is by INEQUALITY, not ancestry — the checkout only ever moves by
+    fast-forwarding to origin/main here, so a differing sha IS new information, and a wrongly-diverged
+    checkout surfaces in the pull step's own fast-forward refusal rather than being guessed at."""
+    if origin and checkout and origin != checkout:
+        return ("pull", origin)
+    if checkout and running and checkout != running:
+        return ("restart", checkout)
+    return ("", "")
+
+
+def _main_drift_check():
+    """One origin/checkout/running comparison pass; fires the SAME banner as the release check (the
+    shell's offer() renders the main-drift wording off kind:"main"). Re-fires only when the target sha
+    CHANGES — new information, never a re-nag of the sha already offered or dismissed."""
+    if _update_mode() == "off":
+        return
+    kind, target = _main_drift_verdict(_origin_main_sha(), _checkout_sha(), _kernel_sha())
+    if not kind:
+        _MAIN_DRIFT[0] = _MAIN_DRIFT[1] = ""          # in sync: a future drift is new information again
+        return
+    slot = 0 if kind == "pull" else 1
+    if _MAIN_DRIFT[slot] == target:
+        return                                        # already offered/acted on this exact sha
+    _MAIN_DRIFT[slot] = target
+    if _update_mode() == "auto":
+        _run_main_update(kind)
+    else:
+        _send_to_app("shell", {"type": "updateAvail", "kind": "main", "drift": kind,
+                               "cur": _kernel_sha() or "", "tag": target})
+
+
+def _run_main_update(kind, immediate=False):
+    """Converge on newest main: advance the checkout (fast-forward only; a DIRTY shared tree refuses
+    LOUDLY — peer sessions' uncommitted work is never discarded) and bounce every kernel through the
+    manager. `kind` "restart" skips the pull (the checkout is already ahead). Unattended (auto mode)
+    the bounce rides the quiet window; a banner CLICK is the user's own deliberate cut → immediate."""
+    if kind == "pull":
+        try:
+            dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(ROOT),
+                                   capture_output=True, text=True, timeout=10).stdout.strip()
+            if dirty:
+                _sync_notice("main moved at origin, but the romp checkout has uncommitted work — "
+                             "not touching it. Commit or stash it, then Update again.", ok=False)
+                _MAIN_DRIFT[0] = ""                   # let the notice re-fire once the tree is clean
+                return
+            subprocess.run(["git", "fetch", "origin", "main"], cwd=str(ROOT),
+                           capture_output=True, text=True, timeout=60)
+            r = subprocess.run(["git", "checkout", "--detach", "origin/main"], cwd=str(ROOT),
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                _sync_notice("main moved at origin, but advancing the checkout failed: %s"
+                             % (r.stderr or r.stdout or "").strip()[-200:], ok=False)
+                _MAIN_DRIFT[0] = ""
+                return
+        except Exception as e:
+            _sync_notice("main moved at origin, but the pull step failed: %s" % e, ok=False)
+            _MAIN_DRIFT[0] = ""
+            return
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://127.0.0.1:%d/restart-all%s"
+                                     % (int(os.environ.get("ROMP_MANAGER_PORT") or 7432),
+                                        "" if immediate else "?when=quiet"), method="POST")
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        _sync_notice("romp is updated on disk but the restart request failed (%s) — "
+                     "restart it yourself: romp refresh" % e, ok=False)
+
 
 def _update_check_loop():
-    """The daemon thread: one pass at boot, then one per cadence, forever."""
+    """The daemon thread: one pass at boot, then one per cadence, forever. The cheap main-drift probe
+    runs every pass; the release-tag check keeps its six-hour stride."""
+    last_release = 0.0
     while True:
         try:
-            _update_check()
+            if time.time() - last_release >= _UPDATE_CHECK_EVERY_S:
+                last_release = time.time()
+                _update_check()
         except Exception:
             sys.stderr.write("update check pass: %s\n" % traceback.format_exc())
-        time.sleep(_UPDATE_CHECK_EVERY_S)
+        try:
+            _main_drift_check()
+        except Exception:
+            sys.stderr.write("main drift pass: %s\n" % traceback.format_exc())
+        time.sleep(_MAIN_CHECK_EVERY_S)
 
 
 def _auto_update_remotes_on():
@@ -21918,7 +22036,7 @@ try{(m.n?navigator.setAppBadge(m.n):navigator.clearAppBadge())['catch'](function
 // the master bell toggled somewhere (this tab included) — repaint ours from the kernel's word
 else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotifyAllPaint(!!m.on);
 // the boot check found a newer romp release — raise the update banner on every open dashboard
-else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'');};
+else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'',m.drift||'');};
 ws.onclose=function(){setTimeout(shellWS,2000);};}catch(e){}}
 shellWS();
 var last='chat';try{var s=localStorage.getItem(KT);if(s&&F[s])last=s;}catch(e){}show(last);
@@ -22135,8 +22253,13 @@ _UPD_JS = (
     "function show(m){msg.textContent=m;box.classList.add('show');}"
     # Not-now is PER RELEASE (the periodic re-check re-finds versions for weeks): the dismissed tag
     # stays quiet, a strictly newer one is new information and re-offers.
-    "function offer(cur,tag){if(waiting||tag===dismissedTag)return;curTag=tag;go.hidden=false;go.disabled=false;dm.hidden=false;"
-    "show('romp '+tag+' is available'+(cur?' \\u2014 you are on '+cur:'')+'.');}"
+    # drift (the user 2026-08-14): the same banner also carries new MAIN commits — origin ahead of the
+    # checkout ('pull') or the checkout ahead of the running kernel ('restart'). One click converges
+    # every attached machine; per-sha dismissal works exactly like per-release.
+    "function offer(cur,tag,drift){if(waiting||tag===dismissedTag)return;curTag=tag;go.hidden=false;go.disabled=false;dm.hidden=false;"
+    "if(drift==='pull')show('new romp commits are on main ('+tag+') \\u2014 Update pulls them and restarts every kernel.');"
+    "else if(drift==='restart')show('romp '+tag+' is ready on disk \\u2014 Update restarts every kernel onto it.');"
+    "else show('romp '+tag+' is available'+(cur?' \\u2014 you are on '+cur:'')+'.');}"
     "window.__rompUpdateOffer=offer;"   # the shell WS relays the kernel's boot-check push here
     "function poll(){fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     "if(!waiting)return;"
@@ -23563,15 +23686,23 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     return self._send(200, json.dumps({"rows": []}), "application/json")
             if u.path == "/update":
-                # the banner's Update button (the user 2026-08-09). Only a release the boot check
-                # actually found is ever installed — the route takes no version from the client.
+                # the banner's Update button (the user 2026-08-09). Only what the kernel's own checks
+                # found is ever acted on — the route takes no version from the client. A pending
+                # RELEASE outranks main drift (rarer and strictly bigger); the drift click converges
+                # the mesh immediately: the user's own deliberate cut (the user 2026-08-14).
                 tag = _UPDATE_AVAIL[0]
-                if not tag:
-                    return self._send(409, "no newer release known to this kernel", "text/plain")
-                if _UPDATE_STATE[0] != "running":
-                    _audit_restart_request("self-update", tag=tag, addr=str(self.client_address[0]))
-                    _run_update(tag)
-                return self._send(200, json.dumps({"ok": True, "state": _UPDATE_STATE[0]}), "application/json")
+                if tag:
+                    if _UPDATE_STATE[0] != "running":
+                        _audit_restart_request("self-update", tag=tag, addr=str(self.client_address[0]))
+                        _run_update(tag)
+                    return self._send(200, json.dumps({"ok": True, "state": _UPDATE_STATE[0]}), "application/json")
+                kind = "pull" if _MAIN_DRIFT[0] else ("restart" if _MAIN_DRIFT[1] else "")
+                if kind:
+                    _audit_restart_request("main-converge", tag=_MAIN_DRIFT[0] or _MAIN_DRIFT[1],
+                                           addr=str(self.client_address[0]))
+                    threading.Thread(target=_run_main_update, args=(kind, True), daemon=True).start()
+                    return self._send(200, json.dumps({"ok": True, "state": "converging"}), "application/json")
+                return self._send(409, "no newer release or main commit known to this kernel", "text/plain")
             if u.path == "/notify-all":
                 # the master bell's toggle (the user 2026-08-09). Kernel-authoritative: the click
                 # posts here first, and only a 200 flips the bell — the device push subscription is
