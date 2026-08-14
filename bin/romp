@@ -4,6 +4,7 @@
 # Usage (see `romp help`):
 #   romp                     # open the dashboard in your browser
 #   romp new api             # start a session named "api" (SDK; lives in the kernel)
+#   romp new -m "fix X" api  # ...and deliver the first prompt in the same command
 #   romp new -t api          # ...as a terminal (tmux) session, attached
 #   romp resume              # resume a past conversation (full-screen picker)
 #   romp send api "text"     # scripts/agents: message a session (also: interrupt, end)
@@ -631,6 +632,7 @@ EOF
     _romp_cmd "romp new <name>"            -            "Start a session (SDK; lives in the kernel, watch it on the dashboard)"
     _romp_cmd "romp new -t <name>"         -            "Start it as a terminal (tmux) session and attach (--detach: don't attach)"
     _romp_cmd "romp new -d <dir> <name>"   -            "Working directory for the new session (default: the current folder)"
+    _romp_cmd "romp new -m <text> <name>"  -            "Start it AND deliver <text> as its first prompt (one command, idea to working)"
     _romp_cmd "romp resume [<id>]"         -            "Resume a past conversation (full-screen picker; or an exact UUID)"
     _romp_cmd "romp status"                romp-manager "Show manager + kernel status"
     _romp_cmd "romp refresh"               romp-manager "Restart the postal bus + all romp kernels (picks up new code — run after an update)"
@@ -1041,6 +1043,7 @@ resume_id=""
 detach=false
 dir_arg=""
 use_tmux=false
+msg_arg=""
 
 case "${1:-}" in
     new)
@@ -1051,18 +1054,32 @@ case "${1:-}" in
                 --detach)  detach=true; shift ;;
                 -d)        shift
                            if [[ $# -eq 0 || "$1" == -* ]]; then
-                               echo "usage: romp new [-t] [-d <dir>] <name>" >&2; exit 2
+                               echo "usage: romp new [-t] [-d <dir>] [-m <text>] <name>" >&2; exit 2
                            fi
                            dir_arg="$1"; shift ;;
+                -m|--message) shift
+                           # spawn WITH the first prompt — one command from idea to a working
+                           # session (the user 2026-08-14: `romp new` then `romp send` was the
+                           # last two-step on the idea-to-working path). Empty text is a usage
+                           # error, not a silent no-op.
+                           if [[ $# -eq 0 || -z "$1" ]]; then
+                               echo "usage: romp new [-t] [-d <dir>] [-m <text>] <name>" >&2; exit 2
+                           fi
+                           msg_arg="$1"; shift ;;
                 -*)        echo "romp new: unknown option: $1" >&2; exit 2 ;;
                 *)         if [[ -n "$session_arg" ]]; then
-                               echo "usage: romp new [-t] [-d <dir>] <name>" >&2; exit 2
+                               echo "usage: romp new [-t] [-d <dir>] [-m <text>] <name>" >&2; exit 2
                            fi
                            session_arg="$1"; shift ;;
             esac
         done
         if [[ -z "$session_arg" ]]; then
-            echo "usage: romp new [-t] [-d <dir>] <name>" >&2; exit 2
+            echo "usage: romp new [-t] [-d <dir>] [-m <text>] <name>" >&2; exit 2
+        fi
+        if [[ -n "$msg_arg" ]] && $use_tmux; then
+            # the tmux variant attaches a terminal you type into yourself; delivering a first
+            # prompt is the SDK path's job. Refuse loudly rather than dropping the text.
+            echo "romp new: -m needs the default (SDK) session — with -t you type into the terminal yourself" >&2; exit 2
         fi
         ;;
     resume|--resume)
@@ -1152,6 +1169,23 @@ if [[ -n "$session_arg" ]] && ! $use_tmux && ! $resume; then
         else
             echo "romp new: started \"$session_arg\" (SDK session, working in $_dir)"
             echo "romp new: watch it on the dashboard: romp"
+        fi
+        # -m: deliver the first prompt through the same kernel route `romp send` uses, so one
+        # command goes from idea to a working session. Per-leg reporting, never silent: the
+        # session EXISTS by now (the /new above acked), so a failed send names the exact
+        # retry command instead of pretending the spawn failed.
+        if [[ -n "$msg_arg" ]]; then
+            _mpayload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' "$session_arg" "$msg_arg")"
+            _mresp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/send" \
+                          -H "X-Romp-Token: $_tok" \
+                          -H 'Content-Type: application/json' -d "$_mpayload")" \
+                || { echo "romp new: session is up but the message did NOT land (kernel send failed). Retry: romp send $session_arg '<text>'" >&2; exit 1; }
+            if [[ "$_mresp" == *'"ok": true'* || "$_mresp" == *'"ok":true'* ]]; then
+                echo "romp new: first prompt delivered"
+            else
+                echo "romp new: session is up but the kernel refused the message: $_mresp. Retry: romp send $session_arg '<text>'" >&2
+                exit 1
+            fi
         fi
         exit 0
     fi
