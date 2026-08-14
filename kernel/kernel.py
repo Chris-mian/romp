@@ -8340,7 +8340,11 @@ def _poll_remote_usage(r):
             return r.get("usage")
         u = json.loads(data.decode("utf-8"))
         r["_usage_at"] = now
-        return u if isinstance(u, dict) and u else None
+        # an ANSWERED empty payload is a real "nothing to show" — return the sentinel so the caller
+        # CLEARS the row instead of freezing the last reading forever (the user 2026-08-13: a host that
+        # stopped reporting kept stale bars for the kernel's whole lifetime); a network blip below still
+        # keeps the last good reading
+        return u if isinstance(u, dict) and u else {}
     except Exception:
         return r.get("usage")   # keep the last good reading rather than blanking the bars on one blip
 
@@ -9369,7 +9373,12 @@ def _tunnel_supervisor():
                         r["kernel_sha"] = rsha
                         r["kernel_ver"] = (rver or {}).get("ver") or ""
                     if ruse is not None:
-                        r["usage"] = ruse
+                        # {} = the host ANSWERED with nothing to show → clear; None = no answer (blip/
+                        # rate-gate) → keep the last reading (see _poll_remote_usage)
+                        if ruse:
+                            r["usage"] = ruse
+                        else:
+                            r.pop("usage", None)
                     auto_check = (st == "up")
                     peer_up = (st == "up")
                     peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
@@ -16109,7 +16118,11 @@ def _usage():
     try:
         o = json.loads((jd.STATE / "usage.json").read_text())
     except Exception:
-        return None
+        # A pure API-key host NEVER writes usage.json (both snapshot writers skip keyed sessions), so
+        # bailing here starved the no-login spend arm below of exactly the machine it was written for —
+        # the devbox answered /usage with {} and its spend vanished from the fleet sum (the user
+        # 2026-08-13). An empty snapshot falls through instead; every read below tolerates absence.
+        o = {}
 
     stops = cm.stops_for(_colormap())                 # the GLOBAL colormap (the user 2026-06-26) colors the used bar
     def seg(s):
@@ -16153,9 +16166,13 @@ def _usage():
             # keyed split: on a no-login machine every turn bills the key, and legacy files predate
             # the split. The rail's label is the constant 'API' — no fragment of the key travels
             # (the user 2026-08-08; hosts are told apart by name in the hover, not by key).
-            return {"apiKey": True, "spend": _spend_windows(),
-                    "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
-                    "acct": _claude_account()}
+            out = {"apiKey": True, "spend": _spend_windows(),
+                   "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
+                   "acct": _claude_account()}
+            ss = _spend_series()          # TOTAL, like the windows above: everything here bills the key
+            if ss:
+                out["spendSeries"] = ss   # the hover's money-rate graph (the user 2026-08-13)
+            return out
         return None
     # LIMIT REACHED (the user 2026-07-01): a window at 100% whose reset is still in the future = the account is
     # rate-limited on it now. Drives the top banner + the auto retry-pause. A window past its resetsAt has rolled
@@ -16186,6 +16203,15 @@ def _usage():
         ksp = _spend_windows(keyed_only=True)
         if any((ksp.get(k) or {}).get("turns") for k in ("day", "week", "month")):
             out["spend"] = ksp
+            ss = _spend_series(keyed_only=True)   # the keyed split, like the windows it graphs
+            if ss:
+                out["spendSeries"] = ss
+    # the window-utilization series for the hover graphs (the user 2026-08-13) — present once the
+    # usage-history ledger has readings for the CURRENT login; an older kernel simply omits it and the
+    # client draws that host's bars with no spark (the same graceful-degrade contract as day||fiveHour)
+    ws = _usage_history_series()
+    if ws:
+        out["winSeries"] = ws
     return out
 
 
@@ -16209,6 +16235,77 @@ def _judge_failures():
         val = None
     _jf_cache["fp"], _jf_cache["val"] = fp, val
     return val
+
+
+_SERIES_HOURS = 192          # 8 days of hourly points — covers the 7-day hover graphs with a day of slack
+
+
+def _series_index(hour_key, h0):
+    """spend.json/usage-history.json hour keys ("%Y-%m-%dT%H", localtime) → dense-array index, or None."""
+    try:
+        return int(time.mktime(time.strptime(hour_key, "%Y-%m-%dT%H")) // 3600) - h0
+    except Exception:
+        return None
+
+
+def _spend_series(keyed_only=False, now=None):
+    """The hover graph's money-rate series (the user 2026-08-13): $/hour over the last 192 hours, a
+    DENSE array plus a base hour (h0, epoch-hours), so cross-host summing is an index-wise add after
+    aligning on h0 — correct without dedup, because each host records only its own turns even on a
+    shared key. Zero IS the honest value for an hour with no turns (money, unlike pct, has a true
+    zero). None when nothing is recorded at all. Same keyed_only split as _spend_windows, for the same
+    reason. `now` anchors h0 — injectable so a caller with a frozen evidence clock (tests) can't
+    straddle an hour boundary between writing a bucket and reading its index (the 23:00 UTC CI run)."""
+    try:
+        d = json.loads((jd.STATE / "spend.json").read_text())
+    except Exception:
+        return None
+    hours = d.get("hours") if isinstance(d.get("hours"), dict) else {}
+    if not hours:
+        return None
+    h0 = int((time.time() if now is None else now) // 3600) - (_SERIES_HOURS - 1)
+    usd = [0.0] * _SERIES_HOURS
+    for k, e in hours.items():
+        i = _series_index(k, h0)
+        if i is None or not (0 <= i < _SERIES_HOURS) or not isinstance(e, dict):
+            continue
+        if keyed_only:
+            e = e.get("key") if isinstance(e.get("key"), dict) else {}
+        usd[i] = round(float((e or {}).get("usd") or 0), 4)
+    return {"h0": h0, "usd": usd}
+
+
+def _usage_history_series(now=None):
+    """winSeries for the hover graphs: per window, 192 hourly pct-or-null points from
+    usage-history.json — null is an hour with no reading (the unknown-≠-0 rule, drawn as a gap).
+    Readings stamped by a DIFFERENT login than the current one are skipped, mirroring the bars'
+    own logout rule. None until the ledger exists. `now` anchors h0, injectable for the same
+    hour-boundary determinism as _spend_series."""
+    try:
+        d = json.loads((jd.STATE / "usage-history.json").read_text())
+    except Exception:
+        return None
+    hours = d.get("hours") if isinstance(d.get("hours"), dict) else {}
+    if not hours:
+        return None
+    cur = _claude_account()
+    h0 = int((time.time() if now is None else now) // 3600) - (_SERIES_HOURS - 1)
+    ser = {"h0": h0, "fiveHour": [None] * _SERIES_HOURS, "sevenDay": [None] * _SERIES_HOURS,
+           "fable": [None] * _SERIES_HOURS}
+    any_pt = False
+    for k, e in hours.items():
+        i = _series_index(k, h0)
+        if i is None or not (0 <= i < _SERIES_HOURS) or not isinstance(e, dict):
+            continue
+        stamped = e.get("acct") or ""
+        if stamped and cur and stamped != cur:
+            continue
+        for raw, out_k in (("five_hour", "fiveHour"), ("seven_day", "sevenDay"), ("fable", "fable")):
+            s = e.get(raw)
+            if isinstance(s, dict) and isinstance(s.get("pct"), (int, float)):
+                ser[out_k][i] = int(s["pct"])
+                any_pt = True
+    return ser if any_pt else None
 
 
 def _spend_budgets():
@@ -20476,12 +20573,14 @@ var SPEND_WINS=[['day','1 day'],['week','1 week'],['month','1 month']];
 // tracks die with it): the numbers are the information, so the numbers are the rendering.
 function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
-(det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0};});}
+(det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0};});
+if(u.spendSeries&&u.spendSeries.usd)det._spendSeries=u.spendSeries;   // $/hour, for the hover graph (the user 2026-08-13)
 // One payload's WINDOW detail for the hover (used/elapsed/reset per window). Detail only, no markup:
 // the rail no longer draws each account's own bars (they aggregate, below), but the tip still tells
 // each host's story from this.
 function winDet(u,det){var nowS=Math.floor(Date.now()/1000);
 if(u.acctLabel)det._acct=u.acctLabel;   // WHICH login the windows belong to (the user 2026-08-09) — hover-only
+if(u.winSeries)det._winSeries=u.winSeries;   // hourly pct history per window, for the hover sparks (2026-08-13)
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 // A ROLLED window (its reset passed since the last report) is UNKNOWN, not 0 (the user 2026-07-31: a
 // remote whose kernel had no live session to ask sat on a days-old snapshot, and the rail drew a
@@ -20576,6 +20675,29 @@ function render(u){notices(u);
 var rest=ROWS.filter(function(r){return r.host;});
 renderRows([{host:'',acct:(u&&u.acct)||'',usage:u}].concat(rest),SELF);}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
+// A SPARKLINE for the hover graphs (the user 2026-08-13): one inline SVG per series, hourly points
+// oldest→newest, gaps where a point is null (an hour with no reading — the unknown-≠-0 rule; a run of
+// one draws a dot so a lone reading is not invisible). vmax pins the scale (100 for pct series, so
+// every window graph shares one honest y-axis); null auto-scales (money). fill=true adds the area
+// wash for the $/hour graph. The panel is pointer-events:none, so the graph must speak alone — no
+// <title> tooltips would ever fire.
+function sparkHTML(arr,color,fill,vmax){if(!arr||!arr.length)return '';
+var W=120,H=28,n=arr.length,mx=vmax;
+if(mx==null){mx=0;for(var i=0;i<n;i++)if(arr[i]!=null&&arr[i]>mx)mx=arr[i];}
+if(mx<=0)return '';
+var segs=[],cur=[];
+for(var i=0;i<n;i++){var v=arr[i];
+if(v==null){if(cur.length){segs.push(cur);cur=[];}continue;}
+cur.push([(n>1?i/(n-1):0.5)*W,H-2-Math.max(0,Math.min(1,v/mx))*(H-4)]);}
+if(cur.length)segs.push(cur);
+if(!segs.length)return '';
+var body=segs.map(function(s){
+if(s.length===1)return '<circle cx="'+s[0][0].toFixed(1)+'" cy="'+s[0][1].toFixed(1)+'" r="1.5" fill="'+color+'"/>';
+var pts=s.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ');
+var out='<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5"/>';
+if(fill)out+='<polygon points="'+s[0][0].toFixed(1)+','+(H-2)+' '+pts+' '+s[s.length-1][0].toFixed(1)+','+(H-2)+'" fill="'+color+'" opacity="0.18" stroke="none"/>';
+return out;}).join('');
+return '<svg class=ru-tip-spark viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+body+'</svg>';}
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
 function barRows(d){return (d.unk
 ? '<div class="ru-tip-row ru-unk"><span class=ru-tip-k>last known</span>'
@@ -20594,29 +20716,45 @@ function barRows(d){return (d.unk
 // who found the tip overly verbose): the host name alone heads a section, the spend rows label
 // themselves, and config hints live in the docs, not a hover.
 function setHTML(e,many){var d=e.det,keys=['fiveHour','sevenDay','fable'].filter(function(k){return d[k];});
-var sp=d._spend||null;
-if(!keys.length&&!sp)return '';
+if(!keys.length)return '';
 var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
 // the account the window bars belong to, named the way the tab hover names it (the user 2026-08-09);
 // only beside actual window sections — a key-only host's spend already says whose dollars they are
 if(d._acct&&keys.length)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';
 h+=keys.map(function(k){var v=d[k];
+// the window's own history under its bars (the user 2026-08-13): hourly utilization over the last
+// 8 days, y pinned to 0-100 so every window graph shares one honest scale; gaps = no reading
+var spark=(d._winSeries&&d._winSeries[k])?sparkHTML(d._winSeries[k],v.col,false,100):'';
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+'</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
-:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
-// The API-KEY SPEND rows (the user 2026-08-08): dollars, tokens and turns per window, NUMBERS ONLY.
-// The old token-volume graph scaled each window's bar to the largest window, a shape that told the
-// reader nothing; it is gone, and this section now renders for ANY host with key spend, beside that
-// host's own bars when it has both (per-session auth).
-if(sp){var ks=['fiveHour','sevenDay','month'].filter(function(k){return sp[k];});
-if(ks.length){
-h+='<div class=ru-tip-win><div class=ru-tip-name><span>API spend</span></div>'
-+ks.map(function(k){var v=sp[k];
-return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
-+'<span class=ru-tip-v>'+fmtUsd(v.usd)+' \u00b7 '+fmtTok(v.tok)+' tok \u00b7 '+(v.turns||0)+' turns</span></div>';}).join('')
-+'</div>';}}
+:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+spark+'</div>';}).join('');
+// (the per-host API-spend rows moved to the ONE fleet-level section in tipHTML — the user 2026-08-13:
+// one shared key reads as one number; each host records only its own turns, so the sum IS the number)
 h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
 return h;}
+// The ONE API-spend section for the whole hover (the user 2026-08-13): every host's windows summed —
+// one shared key is one number — plus the summed $/hour over the last 7 days as an area graph. A host
+// that ships no series (an older kernel) still joins the window sums; the graph adds only contributors.
+function fleetSpendHTML(sets){var sum={},series=null,hosts=0;
+sets.forEach(function(e){var sp=e.det&&e.det._spend;if(!sp)return;hosts++;
+SPEND_WINS.forEach(function(w){var v=sp[w[0]];if(!v)return;
+var t=(sum[w[0]]=sum[w[0]]||{label:w[1],usd:0,tok:0,turns:0});
+t.usd+=v.usd;t.tok+=v.tok;t.turns+=v.turns;});
+var ss=e.det._spendSeries;
+if(ss&&ss.usd){if(!series){series={h0:ss.h0,usd:ss.usd.slice()};}
+else{var off=ss.h0-series.h0;   // align on the base hour — hosts' polls may straddle an hour edge
+for(var i=0;i<ss.usd.length;i++){var j=i+off;if(j>=0&&j<series.usd.length)series.usd[j]+=ss.usd[i];}}}});
+var ks=SPEND_WINS.map(function(w){return w[0];}).filter(function(k){return sum[k];});
+if(!ks.length)return '';
+var h='<div class="ru-tip-win ru-tip-fleetspend"><div class=ru-tip-name><span>API spend'+(hosts>1?' \u00b7 '+hosts+' machines':'')+'</span></div>'
++ks.map(function(k){var v=sum[k];
+return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
++'<span class=ru-tip-v>'+fmtUsd(v.usd)+' \u00b7 '+fmtTok(v.tok)+' tok \u00b7 '+(v.turns||0)+' turns</span></div>';}).join('');
+if(series){var wk=series.usd.slice(-168),mx=0;for(var i=0;i<wk.length;i++)if(wk[i]>mx)mx=wk[i];
+if(mx>0)h+='<div class=ru-tip-row><span class=ru-tip-k>$/h \u00b7 7d</span>'
++sparkHTML(wk,'#9cd2ff',true,null)
++'<span class=ru-tip-v>peak '+fmtUsd(mx)+'</span></div>';}
+return h+'</div>';}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
 var blocks=sets.map(function(e){return setHTML(e,many);}).filter(function(b){return b;});
@@ -20626,7 +20764,7 @@ if(!blocks.length)return '';
 // flex-wrap folds the columns back into a stack when width runs out — the mobile Usage modal
 // reuses this exact HTML, so narrow screens degrade on their own, no second layout.
 var h=many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0];
-return h+'<div class=ru-tip-age>click to refresh</div>';}
+return h+fleetSpendHTML(sets)+'<div class=ru-tip-age>click to refresh</div>';}
 // The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
 // container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
 function showTip(ev){var h=tipHTML();
@@ -22118,6 +22256,7 @@ def _landing():
             ".ru-tip-row{display:flex;align-items:center;gap:6px;margin-top:3px}"
             ".ru-tip-k{opacity:.55;min-width:46px}"
             ".ru-tip-track{width:64px;height:6px;border-radius:3px;background:rgba(255,255,255,0.10);overflow:hidden;display:inline-block}"
+            ".ru-tip-spark{display:block;width:120px;height:28px;margin-top:3px;opacity:.9}"
             ".ru-tip-track i{display:block;height:100%;border-radius:3px;transition:width .3s ease}"
             # margin-left:auto right-aligns every value to one edge, so the bar rows and the numbers-only
             # spend rows (no track span, the user 2026-08-08) read as one table.
