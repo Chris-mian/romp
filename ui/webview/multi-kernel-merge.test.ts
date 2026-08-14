@@ -430,7 +430,9 @@ test("routeOutbound: the gear's kernel-side settings reach EVERY attached kernel
                      { type: "setIndexModel", model: "haiku" },
                      { type: "setJudgeEffort", effort: "high" },
                      { type: "setIndexEffort", effort: "" },
-                     { type: "setUpdateMode", mode: "auto" }]) {
+                     { type: "setUpdateMode", mode: "auto" },
+                     { type: "setDistillModel", model: "haiku" },
+                     { type: "setDistillEffort", effort: "triage" }]) {
     const routes = routeOutbound(msg, new Set(["TESTHOST", "gpu1"]));
     assert.deepEqual(routes.map((r) => r.host).sort(), ["", "TESTHOST", "gpu1"].sort(), msg.type);
     for (const r of routes) assert.deepEqual(r.msg, msg, "the kernels are host-blind: same message to each");
