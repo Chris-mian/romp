@@ -2427,3 +2427,35 @@ mark.cmt-hl.busy { border-bottom-style: solid; animation: cmt-busy-pulse 1.2s ea
 .cmt-act:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); }
 .cmt-act.cmt-del.armed { border-color: var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
 .cmt-note.cmt-err { color: var(--st-blocked-bg, #c94f4f); opacity: 0.9; }
+
+/* ── branch lineage (the user 2026-08-13: branching must show) ────────────────────────────────────
+   The child's divider marks where its history splits from the parent's — an accent hairline with a
+   clickable label that jumps to the parent at the branch point. The parent wears a small chip on
+   the departed-from turn, jumping the other way. Accent = highlight chrome, per the accent rule. */
+.turn-branchmark { padding: 2px 0; }
+.branch-divider {
+  display: flex; align-items: center; gap: 8px;
+}
+.branch-divider::before, .branch-divider::after {
+  content: ""; flex: 1; height: 1px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.branch-label {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 10px; padding: 1px 10px; cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: inherit; font: inherit; font-size: 0.82em; opacity: 0.85;
+}
+.branch-label:hover { opacity: 1; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.branch-chips {
+  position: absolute; top: 2px; right: 24px; z-index: 5;
+  display: flex; gap: 4px;
+}
+.cmt-badge ~ .branch-chips, .turn:has(> .cmt-badge) .branch-chips { right: 28px; }
+.branch-chip {
+  height: 16px; padding: 0 6px; border: 1px solid var(--box-border); border-radius: 8px;
+  background: var(--vscode-menu-background, #252526);
+  color: var(--accent); font-size: 10px; line-height: 14px;
+  cursor: pointer; opacity: 0.75; white-space: nowrap;
+}
+.branch-chip:hover { opacity: 1; border-color: var(--accent); }
