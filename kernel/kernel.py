@@ -20765,7 +20765,14 @@ shareFreshest(live);
 LAST=live.map(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
 winDet(r.usage,det);spendDet(r.usage,det);
 return {host:r.host||selfHost||'this machine',det:det};});
-el.innerHTML=aggBarsHTML(LAST)+apiCellHTML(LAST);}
+el.innerHTML=aggBarsHTML(LAST)+apiCellHTML(LAST);
+// a HOVER tip already open re-renders in place when fresh data lands (the 60s pull, the timeline's
+// live forward) — the user 2026-08-14, replacing the footer's click-me hint with the refresh itself.
+// Re-anchor the top edge after the swap: new content can change the tip's height, and it hangs ABOVE
+// the rail. The mobile modal keeps its own pull-then-open path (openIt).
+if(tip.style.display==='block'&&!tip.classList.contains('ru-modal')){var th=tipHTML();
+if(th){tip.innerHTML=th;var rr=el.getBoundingClientRect();
+tip.style.top=Math.max(6,rr.top-tip.offsetHeight-8)+'px';}}}
 // The single-payload path the timeline still posts (and the mobile panel's own fetch): treat it as this
 // machine's row, leaving any other account's bars alone.
 function render(u){notices(u);
@@ -20788,13 +20795,49 @@ if(v==null){if(cur.length){segs.push(cur);cur=[];}continue;}
 cur.push([(n>1?i/(n-1):0.5)*W,H-2-Math.max(0,Math.min(1,v/mx))*(H-4)]);}
 if(cur.length)segs.push(cur);
 if(!segs.length)return '';
+// vector-effect keeps every stroke at true screen width: the box is stretched to its container
+// (preserveAspectRatio none), which fattened each stroke by the horizontal stretch factor (the user
+// 2026-08-14, whose full-width graph drew "way too thick"). A lone reading is a zero-length
+// round-capped stroke — a true screen-size dot at any stretch, where a circle's radius distorted too.
 var body=segs.map(function(s){
-if(s.length===1)return '<circle cx="'+s[0][0].toFixed(1)+'" cy="'+s[0][1].toFixed(1)+'" r="1.5" fill="'+color+'"/>';
+if(s.length===1)return dotAt(s[0],color);
 var pts=s.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ');
-var out='<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5"/>';
+var out='<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>';
 if(fill)out+='<polygon points="'+s[0][0].toFixed(1)+','+(H-2)+' '+pts+' '+s[s.length-1][0].toFixed(1)+','+(H-2)+'" fill="'+color+'" opacity="0.18" stroke="none"/>';
 return out;}).join('');
 return '<svg class=ru-tip-spark viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+body+'</svg>';}
+function dotAt(p,color){return '<polyline points="'+p[0].toFixed(1)+','+p[1].toFixed(1)+' '+(p[0]+0.1).toFixed(1)+','+p[1].toFixed(1)+'" fill="none" stroke="'+color+'" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"/>';}
+// The fleet $/h graph, grown into a real chart (the user 2026-08-14): taller, a left y-axis scaled to
+// the ceiling of the nearest $50 ($50 rules, doubled to $100/$200/… until at most four fit), and
+// midnight ticks with weekday initials for an x-axis. h0 = the epoch-hour of arr[0], which places the
+// midnights in LOCAL time. Same segment/gap/dot contract as sparkHTML.
+function moneyGraph(arr,color,h0){if(!arr||!arr.length)return '';
+var W=168,H=64,n=arr.length,mx=0;
+for(var i=0;i<n;i++)if(arr[i]!=null&&arr[i]>mx)mx=arr[i];
+if(mx<=0)return '';
+var top=50*Math.ceil(mx/50),step=50;
+while(top/step>4)step*=2;
+var X=function(i){return (n>1?i/(n-1):0.5)*W;},Y=function(v){return H-1-Math.max(0,Math.min(1,v/top))*(H-2);};
+var grid='',ylab='',xlab='';
+for(var g=step;g<=top;g+=step){var gy=Y(g);
+grid+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+W+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+ylab+='<span class=ru-tip-gy style="top:'+(gy/H*56).toFixed(0)+'px">$'+g+'</span>';}
+for(var i=0;i<n;i++){var d=new Date((h0+i)*3600000);
+if(d.getHours()===0){var gx=X(i);
+grid+='<line x1="'+gx.toFixed(1)+'" y1="0" x2="'+gx.toFixed(1)+'" y2="'+H+'" stroke="rgba(255,255,255,0.06)" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+xlab+='<span style="left:'+(gx/W*100).toFixed(1)+'%">'+['S','M','T','W','T','F','S'][d.getDay()]+'</span>';}}
+var segs=[],cur=[];
+for(var i=0;i<n;i++){var v=arr[i];
+if(v==null){if(cur.length){segs.push(cur);cur=[];}continue;}
+cur.push([X(i),Y(v)]);}
+if(cur.length)segs.push(cur);
+var body=segs.map(function(s){
+if(s.length===1)return dotAt(s[0],color);
+var pts=s.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ');
+return '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'
++'<polygon points="'+s[0][0].toFixed(1)+','+(H-1)+' '+pts+' '+s[s.length-1][0].toFixed(1)+','+(H-1)+'" fill="'+color+'" opacity="0.18" stroke="none"/>';}).join('');
+return '<div class=ru-tip-graph><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+grid+body+'</svg>'
++ylab+'<div class=ru-tip-gx>'+xlab+'</div></div>';}
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
 function barRows(d){return (d.unk
 ? '<div class="ru-tip-row ru-unk"><span class=ru-tip-k>last known</span>'
@@ -20854,14 +20897,15 @@ return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
 if(per.length>1){per.sort(function(a,b){return b.usd-a.usd;});
 h+='<div class=ru-tip-row><span class=ru-tip-k>by machine \u00b7 1 week</span><span class=ru-tip-v>'
 +per.map(function(p){return esc(p.host)+' '+fmtUsd(p.usd);}).join(' \u00b7 ')+'</span></div>';}
-if(series){var wk=series.usd.slice(-168),mx=0;for(var i=0;i<wk.length;i++)if(wk[i]>mx)mx=wk[i];
+if(series){var st=Math.max(0,series.usd.length-168),wk=series.usd.slice(st),mx=0;for(var i=0;i<wk.length;i++)if(wk[i]>mx)mx=wk[i];
 // 'peak $X/h': the costliest single HOUR of the week (the user 2026-08-13 asked whether the bare
 // number was per-hour \u2014 say so). The peak rides the label row's VALUE slot and the graph gets its
 // own line below, spanning the tip \u2014 squeezed between label and peak it rendered 120px wide with
 // empty space either side (the user 2026-08-14, who wanted the graph the full width of the box).
+// st keeps the slice aligned with h0 so the x-axis midnights land on real local midnights.
 if(mx>0)h+='<div class=ru-tip-row><span class=ru-tip-k>$/h \u00b7 7d</span>'
 +'<span class=ru-tip-v>peak '+fmtUsd(mx)+'/h</span></div>'
-+sparkHTML(wk,'#9cd2ff',true,null);}
++moneyGraph(wk,'#9cd2ff',series.h0+st);}
 return h+'</div>';}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
@@ -20872,7 +20916,10 @@ if(!blocks.length)return '';
 // flex-wrap folds the columns back into a stack when width runs out — the mobile Usage modal
 // reuses this exact HTML, so narrow screens degrade on their own, no second layout.
 var h=many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0];
-return h+fleetSpendHTML(sets)+'<div class=ru-tip-age>click to refresh</div>';}
+// no footer hint: refresh is AUTOMATIC (the 60s pull below + the timeline's live forward), and a
+// click-me line misread on a hover surface (the user 2026-08-14) — the click stays as a manual
+// kick, it just doesn't advertise. An OPEN tip follows every data landing via renderRows.
+return h+fleetSpendHTML(sets);}
 // The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
 // container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
 function showTip(ev){var h=tipHTML();
@@ -22382,6 +22429,16 @@ def _landing():
             # 2026-08-14, who took snape's isolated green dots for rendering dirt).
             ".ru-tip-spark{display:block;width:100%;height:28px;margin-top:3px;opacity:.9;"
             "background:rgba(255,255,255,0.04);border-radius:3px}"
+            # the fleet $/h chart (the user 2026-08-14): taller than the window sparks, framed by the
+            # same backing plate, with overlay y-labels (px offsets against the fixed 56px plot) and a
+            # weekday row beneath. Labels sit just under their gridline; 8px so four rules stay quiet.
+            ".ru-tip-graph{position:relative;margin-top:4px}"
+            ".ru-tip-graph svg{display:block;width:100%;height:56px;background:rgba(255,255,255,0.04);"
+            "border-radius:3px}"
+            ".ru-tip-gy{position:absolute;left:3px;font-size:8px;opacity:.5;line-height:1;"
+            "pointer-events:none;transform:translateY(1px)}"
+            ".ru-tip-gx{position:relative;height:9px;margin-top:1px;font-size:8px;opacity:.5}"
+            ".ru-tip-gx span{position:absolute;transform:translateX(-50%);line-height:1}"
             ".ru-tip-track i{display:block;height:100%;border-radius:3px;transition:width .3s ease}"
             # margin-left:auto right-aligns every value to one edge, so the bar rows and the numbers-only
             # spend rows (no track span, the user 2026-08-08) read as one table.
