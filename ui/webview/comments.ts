@@ -82,6 +82,29 @@ export function findExact(hay: string, exact: string): { start: number; end: num
   return { start: map[at], end: map[at + target.length - 1] + 1 };
 }
 
+/** findExact with a LONGEST-PREFIX fallback (the user 2026-08-13, who wanted the comment visible
+ *  in context every time): a selection that spanned several messages anchors to its FIRST turn,
+ *  whose rendered text holds only the selection's head — the full exact-match fails and the thread
+ *  fell back to the tiny badge alone. Binary-search the longest word-prefix that still matches, so
+ *  the portion that lives in the anchored turn highlights. A too-short remnant (under 3 words and
+ *  under 12 characters) stays null — highlighting a stray "The" would mark the wrong thing. */
+export function findAnchorRange(hay: string, exact: string):
+    { start: number; end: number; partial: boolean } | null {
+  const full = findExact(hay, exact);
+  if (full) return { ...full, partial: false };
+  const words = exact.trim().split(/\s+/);
+  let lo = 1, hi = words.length - 1, best: { start: number; end: number; k: number } | null = null;
+  while (lo <= hi) {
+    const k = (lo + hi) >> 1;
+    const r = findExact(hay, words.slice(0, k).join(" "));
+    if (r) { best = { ...r, k }; lo = k + 1; } else hi = k - 1;
+  }
+  if (!best) return null;
+  const matched = words.slice(0, best.k).join(" ");
+  if (best.k < 3 && matched.length < 12) return null;
+  return { start: best.start, end: best.end, partial: true };
+}
+
 /** Split a global [start, end) character range over consecutive text-node lengths into per-node
  *  slices — what the DOM pass wraps in <mark> elements. */
 export function sliceRanges(nodeLens: number[], start: number, end: number):

@@ -34,7 +34,7 @@ import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
-import { threadsByAnchor, threadBusy, threadStuck, findExact, sliceRanges, prunePending, type CommentThread } from "./comments";
+import { threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -5141,7 +5141,9 @@ function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
     const nodes: Text[] = [];
     let n: Node | null;
     while ((n = walker.nextNode())) nodes.push(n as Text);
-    const r = findExact(nodes.map((t) => t.data).join(""), th.exact);
+    // full match, or the longest prefix that lives in THIS turn (a cross-message selection anchors
+    // to its first turn) — so the comment is visible in context, not just on the tiny badge
+    const r = findAnchorRange(nodes.map((t) => t.data).join(""), th.exact);
     if (!r) return;                             // rendered text drifted — the badge still reaches it
     for (const sl of sliceRanges(nodes.map((t) => t.data.length), r.start, r.end)) {
       const t = nodes[sl.idx];
@@ -5321,6 +5323,34 @@ function renderCommentPopover(): void {
   closeBtn.title = "Close (the thread stays on its highlight)";
   closeBtn.dataset.act = "cmtclose";
   head.append(title, closeBtn);
+  // DRAG by the header (the user 2026-08-13, who found the popover's spot inconvenient): pointer
+  // capture, viewport-clamped, and the position writes through to commentPopPos so a later full
+  // rebuild (a status flip) reopens where the user parked it. The header survives in-place
+  // refreshes, so a drag is never cut by a comments frame; a full rebuild mid-drag just ends it.
+  head.title = "Drag to move";
+  head.addEventListener("pointerdown", (ev: PointerEvent) => {
+    if ((ev.target as HTMLElement).closest(".cmt-x")) return;
+    ev.preventDefault();
+    const dx = ev.clientX - pop.offsetLeft, dy = ev.clientY - pop.offsetTop;
+    head.setPointerCapture(ev.pointerId);
+    head.classList.add("dragging");
+    const move = (mv: PointerEvent) => {
+      const x = Math.max(4, Math.min(mv.clientX - dx, window.innerWidth - pop.offsetWidth - 4));
+      const y = Math.max(4, Math.min(mv.clientY - dy, window.innerHeight - 40));
+      pop.style.left = x + "px";
+      pop.style.top = y + "px";
+      commentPopPos = { x, y };
+    };
+    const up = () => {
+      head.classList.remove("dragging");
+      head.removeEventListener("pointermove", move);
+      head.removeEventListener("pointerup", up);
+      head.removeEventListener("pointercancel", up);
+    };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", up);
+    head.addEventListener("pointercancel", up);
+  });
   pop.appendChild(head);
   const quote = el("div", "cmt-quote");
   quote.textContent = create ? create.exact : th!.exact;
@@ -8490,6 +8520,10 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   noteMru(id);
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
+  // a comment popover belongs to its parent session's view — leaving that session closes it (the
+  // user 2026-08-13: it lingered over the next tab's chat); the highlight reopens it any time
+  if (openCommentKey && openCommentKey.sid !== id) closeCommentPop();
+  if (pendingCommentAnchor && pendingCommentAnchor.sid !== id) closeCommentPop();
   pendingAnchorT = anchorT ?? null;
   pendingAnchorKind = anchorKind ?? null;
   // Remember where we were in the tab we're leaving, so we can restore it.
