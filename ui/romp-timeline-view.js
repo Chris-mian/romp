@@ -2357,8 +2357,9 @@ class TimelinePanel {
   }
 
   // Clear a DEAD lane's leftover row from the timeline (the Clear pill on a struck-through lane). The kernel
-  // holds the dismissal IN MEMORY only, so it does NOT survive a `romp refresh` (the user 2026-07-02) —
-  // a mistakenly-cleared lane comes back on restart. Web-shell only (no Obsidian/Node path: nothing to persist).
+  // PERSISTS the dismissal since 2026-08-14 (timeline-dismissed.json) — it survives romp refresh and
+  // reconnects (the user 2026-08-14: cleared state must be remembered); only a sid coming back LIVE
+  // resurfaces the lane, shedding its record. Web-shell only (no Obsidian/Node path: nothing to post to).
   _dismissLane(id) {
     try {
       if (typeof window !== 'undefined' && typeof window.__rompTimelineDismiss === 'function') {
@@ -2903,7 +2904,7 @@ class TimelinePanel {
         chit.style.cursor = 'pointer'; chit.setAttribute('aria-label', 'clear this ended session from the timeline');
         chit.addEventListener('mouseenter', (e) => {
           box.setAttribute('fill', CL_RED); box.setAttribute('stroke', CL_RED); box.setAttribute('stroke-opacity', '1'); ctx.setAttribute('fill', '#ffffff');
-          this.showTip("Clear this ended session from the timeline<div style='opacity:.65;margin-top:2px'>a kernel restart (romp refresh) brings it back</div>", e);
+          this.showTip("Clear this ended session from the timeline<div style='opacity:.65;margin-top:2px'>stays cleared across restarts; starting the session again brings it back</div>", e);
         });
         chit.addEventListener('mousemove', (e) => this.moveTip(e));
         chit.addEventListener('mouseleave', () => {
@@ -2913,7 +2914,8 @@ class TimelinePanel {
           e.stopPropagation(); this.hideTip();
           // optimistic: drop it from the current frame so it vanishes at once, and hold it in _dismissed so
           // a stale or federation-merged push can't put it back before the kernel confirms (_reconcileDismissed).
-          // A restart — forgetting it kernel-side — still brings it back, as designed.
+          // The kernel persists the dismissal (2026-08-14), so restarts and reconnects keep it cleared;
+          // only the session coming back live resurfaces the lane.
           this._dismissed.add(s.id);
           if (this.data && this.data.sessions) this.data.sessions = this.data.sessions.filter((x) => x.id !== s.id);
           this._dismissLane(s.id); this.draw();
