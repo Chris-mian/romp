@@ -7193,6 +7193,8 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     DONE-ANCHOR (the user 2026-06-17): a top resolved at turn-end deep-links to the turn's FINAL segment
     (the rich recap), not an intermediate tool-narration step — so we append that segment to each resolved
     node's trail (the read side anchors a done/blocked card to trail[-1]). The latest close wins.
+    Turn-menu nodes ONLY (the user 2026-08-14): the riders below are ruled from goal history, so the
+    recap holds none of their work — appending it re-aimed their cards' deep-links at the ruling turn.
 
     STEPS-FINISHED CANDIDATES (the user 2026-07-15): nodes whose every child is complete but which carry
     no verdict of their own ride ALONG with the touched menu — bottom-up completion is a nomination to
@@ -7326,9 +7328,18 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
         if nd["id"] in store["nodes"]:
             nd["closerLookT"] = _newest_filed(store["nodes"], kidmap, nd["id"])
     segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
-    if segs:                                           # anchor each resolved (done/blocked) top to the recap
+    if segs:                                           # anchor each resolved (done/blocked) TURN goal to the recap
+        # …but ONLY the turn's own menu (i <= n_touched). The riders behind it — steps-finished,
+        # starved, status-report, lifts — are ruled from GOAL HISTORY: this turn's tail holds none of
+        # their work, and stamping it on their trails re-pointed every read-side anchor (the work
+        # anchor trail[-1], the completed card's summary pin) at the RULING turn's unrelated prose.
+        # A card's summary click landed on shepherding chatter minutes after the real answer that way
+        # (the user 2026-08-14). A rider's organic trail already ends where its work truly happened —
+        # the same evidence-not-ruling principle the verdicts' ev_t anchoring follows.
         recap, resolved = segs[-1]["id"], set(out["done"]) | set(out["block"])
         for i, nd in enumerate(menu, 1):
+            if i > n_touched:                          # menu lists turn goals first, riders after
+                break
             if i in resolved and recap not in nd.setdefault("trail", []):
                 nd["trail"].append(recap)
     if samples is not None and newly:
