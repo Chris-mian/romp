@@ -86,6 +86,10 @@ def test_landing_shows_build_staleness_banner():
     assert "rstale-reload" in html and "rstale-dismiss" in html
     assert "__LOADEDVER__" not in html, "load-time version must be interpolated, not a placeholder"
     assert "/version" in html and "location.reload()" in html
+    # narrow screens: the message spans the full row and the buttons wrap beneath it (the user
+    # 2026-08-13 — the one-row layout read as a cramped, tall left column on a phone)
+    assert "@media (max-width:640px){#rstale{flex-wrap:wrap" in html
+    assert "#rstale .rs-msg{flex:1 1 100%}" in html
 
 
 def test_gear_panel_drops_inline_stale_hint():
