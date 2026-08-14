@@ -675,15 +675,39 @@ document.addEventListener("click", (e) => {
   }
 }, true);
 
-// A clickable file name that opens the real file in the editor (shared
-// open/navigate surface — see extension.ts openFile handler).
+// Where a clicked file path should actually open, which depends entirely on which host you are in.
+//
+//   • VS Code → the host extension's openFile handler, i.e. the editor two inches away. Unbeatable.
+//   • Web dashboard → the FEED PANE's viewer, via the shell (file-view.ts). This is the case that used
+//     to be broken (the user 2026-08-08): the browser sent `openFile` to the kernel, which ran an
+//     opener on the KERNEL's machine. Reading the dashboard from another device, that opens the file on
+//     a screen you are not looking at — and on a kernel with no desktop it did nothing at all, silently,
+//     because the opener was macOS-only. The bytes have to come to the browser; nothing else can work.
+//
+// The chat lives in an iframe and the feed is a different document, so the shell relays it. Standalone
+// (no parent frame, e.g. /chat opened directly) there is nobody to relay to, so it falls back to asking
+// the kernel — which is still right when the kernel IS this machine.
+function openPath(path: string, sid?: string | null): void {
+  if (!vscodeApi) return;
+  const web = location.protocol === "http:" || location.protocol === "https:";
+  if (web && window.parent !== window) {
+    try {
+      window.parent.postMessage({ romp: "viewFile", path, sid: sid || activeId || null }, "*");
+      return;
+    } catch { /* no shell — fall through to the kernel-side opener */ }
+  }
+  vscodeApi.postMessage(sid ? { type: "openFile", path, id: sid } : { type: "openFile", path });
+}
+
+// A clickable file name that opens the real file — in the editor (VS Code) or the feed pane's viewer
+// (web). Shared open/navigate surface; see extension.ts's openFile handler and file-view.ts.
 function fileLink(path: string): HTMLElement {
   const a = el("span", "tool-file");
   a.textContent = shortPath(path);
   a.title = "Open " + path;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+    openPath(path);
   });
   return a;
 }
@@ -899,7 +923,7 @@ function imgPathLink(path: string): HTMLElement {
   a.title = "Open " + path;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+    openPath(path);
   });
   return a;
 }
@@ -930,22 +954,19 @@ function fileUriToPath(uri: string): string {
   try { p = decodeURIComponent(p); } catch { /* malformed %-escape — use verbatim */ }
   return p;
 }
-// A clickable, VERBATIM file link that opens in the host's default app — the SAME open-the-file path the
-// caption/image links use ({type:"openFile"} → the kernel runs `open <path>`, so e.g. a PDF opens in the
-// viewer). `raw` is shown as written; `open` is what the host opens. A bare file:// can't be followed by the
-// browser from the http dashboard (blocked scheme) and a VS Code editor won't render a PDF, so it's routed to
-// the host opener instead of navigated. `relative` bare paths carry the active session id so the KERNEL
-// resolves them against THAT session's cwd — a relative `design/foo.md` is relative to the repo the agent
-// runs in, not the kernel's cwd (the user 2026-07-06).
+// A clickable, VERBATIM file link — the SAME open-the-file path the caption/image links use (openPath:
+// the editor in VS Code, the feed pane's viewer on the web). `raw` is shown as written; `open` is what
+// gets opened. A bare file:// can't be followed by the browser from the http dashboard (blocked scheme)
+// and a VS Code editor won't render a PDF, so it's routed rather than navigated. `relative` bare paths
+// carry the active session id so whoever resolves them uses THAT session's cwd — a relative
+// `design/foo.md` is relative to the repo the agent runs in, not the kernel's cwd (the user 2026-07-06).
 function openPathLink(raw: string, open: string, relative = false): HTMLElement {
   const a = el("span", "file-uri-link");
   a.textContent = raw;                       // shown exactly as written, selectable/copyable in place
   a.title = "Open " + open;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (vscodeApi) vscodeApi.postMessage(relative
-      ? { type: "openFile", path: open, id: activeId }   // kernel resolves against this session's cwd
-      : { type: "openFile", path: open });
+    openPath(open, relative ? activeId : null);
   });
   return a;
 }
@@ -8347,7 +8368,7 @@ function renderComposerFiles(id: string | null): void {
     } else {
       box.appendChild(composerFileDoc(p));
     }
-    box.addEventListener("click", () => { vscodeApi?.postMessage({ type: "openFile", path: p, id: id || undefined }); });
+    box.addEventListener("click", () => { openPath(p, id || null); });
     const x = el("button", "composer-file-x");
     x.setAttribute("aria-label", "Remove attachment");
     x.textContent = "\u2715";

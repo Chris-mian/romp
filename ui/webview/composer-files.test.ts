@@ -56,8 +56,9 @@ test("an image thumbnail renders per surface; other files wear an ext + name chi
   // non-image: extension badge + basename, both TEXT (no glyphs)
   assert.match(RENDER, /ext\.textContent = \(dot > 0 \? p\.slice\(dot \+ 1\) : "file"\)\.slice\(0, 5\)\.toUpperCase\(\);/);
   assert.match(RENDER, /nm\.textContent = p\.split\("\/"\)\.pop\(\) \|\| p;/);
-  // click opens the file; the ✕ removes exactly that attachment
-  assert.match(fn, /vscodeApi\?\.postMessage\(\{ type: "openFile", path: p, id: id \|\| undefined \}\);/);
+  // click opens the file — routed by openPath (VS Code editor / the feed pane's viewer on the web);
+  // the ✕ removes exactly that attachment
+  assert.match(fn, /openPath\(p, id \|\| null\);/);
   assert.match(fn, /if \(id\) removeComposerFile\(id, i\);/);
   // the same file dropped twice attaches once
   assert.match(RENDER, /if \(!list\.includes\(path\)\) list\.push\(path\);/);

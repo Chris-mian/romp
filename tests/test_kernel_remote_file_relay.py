@@ -40,15 +40,26 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 REMOTE_TOKEN = "remote-token-DO-NOT-USE"
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+PY_BYTES = b"print('hello from the remote box')\n"
 
 
 class _FakeRemoteFileHandler(BaseHTTPRequestHandler):
     """The attached host's kernel behind the ssh -L port, /file route only: serves PNG_BYTES for
-    path=/tmp/plot.png (recording the request line), 404s anything else."""
+    path=/tmp/plot.png and PY_BYTES for path=/tmp/app.py (recording the request lines), 404s
+    anything else."""
     requests = []               # class-level: the recorded request lines
+    ctype = "image/png"         # what this remote CLAIMS the bytes are (a hostile one lies)
 
     def _serve(self, head):
         _FakeRemoteFileHandler.requests.append(self.path)
+        if "app.py" in self.path:
+            self.send_response(200)
+            self.send_header("Content-Type", _FakeRemoteFileHandler.ctype)
+            self.send_header("Content-Length", str(len(PY_BYTES)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(PY_BYTES)
+            return
         if "plot.png" not in self.path:
             self.send_response(404)
             self.send_header("Content-Type", "text/plain")
@@ -56,7 +67,7 @@ class _FakeRemoteFileHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send_response(200)
-        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Type", _FakeRemoteFileHandler.ctype)
         self.send_header("Content-Length", str(len(PNG_BYTES)))
         self.end_headers()
         if not head:
@@ -80,6 +91,7 @@ class RemoteFileRelay(unittest.TestCase):
         self.fake = ThreadingHTTPServer(("127.0.0.1", 0), _FakeRemoteFileHandler)
         threading.Thread(target=self.fake.serve_forever, daemon=True).start()
         _FakeRemoteFileHandler.requests = []
+        _FakeRemoteFileHandler.ctype = "image/png"
         self._saved_remotes = dict(km._remotes)
 
     def tearDown(self):
@@ -138,6 +150,19 @@ class RemoteFileRelay(unittest.TestCase):
         self._register("gpu1", self.fake.server_address[1])
         status, _, _ = self._get("/remote/gpu1/file?path=%2Ftmp%2Fgone.png")
         self.assertEqual(status, 404)
+
+    def test_text_relays_with_a_locally_derived_type_the_remote_cannot_override(self):
+        """The text half of /file relays too — this gate predated it, so a remote session's
+        .py/.md 404'd here while the LOCAL route served the same file (the viewer just failed
+        on every federated text file). The defense is unchanged and now covers text: the type
+        is OURS — a lying remote's text/html arrives as inert text/plain + nosniff."""
+        self._register("gpu1", self.fake.server_address[1])
+        _FakeRemoteFileHandler.ctype = "text/html"
+        status, body, headers = self._get("/remote/gpu1/file?path=%2Ftmp%2Fapp.py")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, PY_BYTES)
+        self.assertEqual(headers.get("Content-Type"), "text/plain; charset=utf-8")
+        self.assertNotIn("html", (headers.get("Content-Type") or "").lower())
 
     def test_unknown_host_404s(self):
         status, _, _ = self._get("/remote/nosuch/file?path=%2Ftmp%2Fplot.png")

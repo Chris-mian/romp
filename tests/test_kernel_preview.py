@@ -50,6 +50,11 @@ class FilePreviewEndpoint(unittest.TestCase):
         cls.txt = os.path.join(cls.tmp.name, "notes.txt")
         with open(cls.txt, "w") as f:
             f.write("not renderable")
+        # …and something served NEITHER as media nor as text, which is what "off the allowlist" means
+        # now that source/text is ON it (2026-08-08 — see tests/test_file_view.py)
+        cls.bin = os.path.join(cls.tmp.name, "archive.zip")
+        with open(cls.bin, "wb") as f:
+            f.write(b"PK\x03\x04not renderable, not text")
 
     @classmethod
     def tearDownClass(cls):
@@ -75,10 +80,18 @@ class FilePreviewEndpoint(unittest.TestCase):
         code, _, _ = self._req("/file?path=" + urllib.parse.quote(os.path.join(self.tmp.name, "gone.png")))
         self.assertEqual(code, 404)
 
-    def test_non_renderable_extension_404s(self):
-        # the allowlist is RENDERABLE media only — a .txt (or anything else) never leaves the machine
-        code, _, _ = self._req("/file?path=" + urllib.parse.quote(self.txt))
+    def test_an_extension_on_neither_allowlist_404s(self):
+        # the allowlist is renderable media PLUS source/text; a .zip is neither and never leaves the box
+        code, _, _ = self._req("/file?path=" + urllib.parse.quote(self.bin))
         self.assertEqual(code, 404)
+
+    def test_text_is_served_so_a_remote_dashboard_can_actually_show_it(self):
+        # widened 2026-08-08: a file link is only followable if the bytes reach the browser, since the
+        # kernel-side opener draws on the kernel's screen — the wrong machine when you are remote
+        code, hdrs, body = self._req("/file?path=" + urllib.parse.quote(self.txt))
+        self.assertEqual(code, 200)
+        self.assertTrue(hdrs.get("Content-Type", "").startswith("text/plain"), hdrs.get("Content-Type"))
+        self.assertEqual(body, b"not renderable")
 
     def test_relative_path_without_sid_404s(self):
         # unresolvable relative path (no session cwd) must not fall back to the kernel's own cwd
@@ -100,7 +113,7 @@ class FilePreviewEndpoint(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(hdrs.get("Content-Length"), str(len(PNG)))
         self.assertEqual(body, b"")
-        code, _, _ = self._req("/file?path=" + urllib.parse.quote(self.txt), method="HEAD")
+        code, _, _ = self._req("/file?path=" + urllib.parse.quote(self.bin), method="HEAD")
         self.assertEqual(code, 404)
 
 

@@ -18790,6 +18790,64 @@ _img_cache = {}                                  # "path:mtime:size" → dataURL
 _PREVIEW_MIME = dict(_IMG_MIME, **{".pdf": "application/pdf"})
 _PREVIEW_MAX_BYTES = 50_000_000                  # a plot/report, not a dataset — bigger 413s (fail loudly)
 
+# ---- …and the SOURCE/TEXT half of the same route (the user 2026-08-08). Clicking a file link used to
+#      post openFile, which runs an opener on the KERNEL's machine — useless when you are reading the
+#      dashboard over the internet from another device, and on a non-macOS kernel it did nothing at all
+#      (see _open_file). The dashboard can only show you a file if the bytes reach YOUR browser, and
+#      /file already does that for images and PDFs; this widens it to the text the links actually point
+#      at. Served as text/plain, never text/html — the viewer highlights source itself rather than
+#      rendering it, and _send's nosniff means even an .html here is inert.
+#
+#      The cap is its own, and far smaller than the media one (the user asked for one): a 50 MB log
+#      dragged down an ssh tunnel to a phone helps nobody, and a viewer that then has to paint it is
+#      worse than the 413 explaining why it stopped.
+_TEXT_EXT = set((
+    "txt md markdown rst adoc org text log err out diff patch csv tsv"
+    " py pyi rb rs go java kt kts swift c h cc cpp hpp cs m mm scala clj lua pl php r jl dart"
+    " js jsx mjs cjs ts tsx json jsonc json5 yaml yml toml ini cfg conf properties"
+    " html htm xml svg css scss sass less vue svelte astro"
+    " sh bash zsh fish ps1 bat cmd nix tf hcl proto graphql gql sql prisma"
+    " lock mod sum gradle cmake mk make bazel bzl gemspec podspec bats"
+).split())
+# Extensionless files that are text by convention — an agent links these as often as it links a .py.
+_TEXT_NAMES = {"makefile", "dockerfile", "jenkinsfile", "procfile", "rakefile", "gemfile", "brewfile",
+               "vagrantfile", "caddyfile", "justfile", "license", "licence", "notice", "authors",
+               "changelog", "readme", "todo", "codeowners", ".gitignore", ".gitattributes",
+               ".dockerignore", ".editorconfig", ".env", ".bashrc", ".zshrc", ".profile"}
+_TEXT_MAX_BYTES = 2 * 1024 * 1024                # 2 MB of source is already past what anyone reads — a
+#   power-of-two so the 413 _human_bytes renders it as the "2.0 MB" the constant means, not "1.9 MB"
+
+
+def _is_text_path(fp):
+    """Is `fp` a path /file may serve as TEXT? Extension allowlist plus the extensionless names that are
+    text by convention. Name-based only; the BYTES are sniffed separately, so a mislabelled binary still
+    never comes back as garbage."""
+    base = os.path.basename(fp).lower()
+    ext = os.path.splitext(base)[1].lstrip(".")
+    return (ext in _TEXT_EXT) or (base in _TEXT_NAMES)
+
+
+def _human_bytes(n):
+    """Byte count → a short human size, for the 413 that has to explain itself."""
+    for unit, step in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= step:
+            return "%.1f %s" % (n / float(step), unit)
+    return "%d bytes" % n
+
+
+def _decode_text(raw):
+    """File bytes → text for the viewer, or None if this is not really text. A NUL byte is the sniff:
+    every real source file lacks one and every binary that slipped past the name allowlist (a `.out`
+    executable, a `.lock` that is actually a database) has one within the first block. UTF-8 first,
+    then latin-1, which cannot fail — a stray byte in an otherwise fine log shows as one odd glyph
+    rather than costing the user the whole file."""
+    if b"\0" in raw[:8192]:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
 
 def _img_data_url(p0):
     """A `path:<abs>` image → a data: URL the webview can <img src>. ~ expanded; absolute + known image
@@ -19001,13 +19059,33 @@ def _path_links(md, sid, uuid, memo):
     return dict(links) if (links or misses) else None
 
 
+def _opener_cmd():
+    """The command that hands a path to this machine's desktop, or None if it has none. Sibling of
+    _dialog_cmd, and broken the same way until 2026-08-08: it was bare macOS `open`, so off macOS the
+    OSError was swallowed and a click-to-open did nothing at all, silently."""
+    if sys.platform == "darwin":
+        return "open"
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None                              # headless — nothing to hand a file to
+    return "xdg-open" if shutil.which("xdg-open") else None
+
+
 def _open_file(p, sid=None):
-    """Open a path in the user's default app/editor (macOS `open`); best-effort, never raises."""
+    """Open a path in the user's default app/editor on the KERNEL's machine. True if handed off, False
+    if this machine has no desktop to hand it to — callers surface that rather than swallowing it.
+
+    Note what this is NOT: it opens on the machine the kernel runs on, which is the wrong screen
+    entirely when the dashboard is being read remotely. That case is served by /file + the viewer, not
+    by this (the user 2026-08-08)."""
+    exe = _opener_cmd()
+    if not exe:
+        return False
     try:
-        subprocess.Popen(["open", _resolve_open_path(p, sid)], stdin=subprocess.DEVNULL,
+        subprocess.Popen([exe, _resolve_open_path(p, sid)], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
     except OSError:
-        pass
+        return False
 
 
 # ── native file/folder dialogs ─────────────────────────────────────────────────────────────────────
@@ -21324,7 +21402,18 @@ _LANDING_SETTINGS_JS = """
 (function(){window.addEventListener('message',function(e){var m=e.data;if(!m)return;
 if(m.romp==='settings')document.body.classList.toggle('settings-open',!!m.on);
 // the /chat iframe's new-session picker asks the shell to lift it full-window (see body.picker-open CSS)
-if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);});
+if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);
+// A file link clicked in the CHAT shows the file in the FEED pane, which is a different document — so
+// the shell relays it (the user 2026-08-08, reading the dashboard from another machine, where the old
+// openFile would have opened the file on the kernel's screen). If the feed pane is toggled off we turn
+// it on for the duration and remember to put it back, so the viewer never costs the user their layout.
+if(m.romp==='viewFile'){var vf=document.getElementById('f-feed');
+  if(!document.body.classList.contains('po-feed')){window.__rompFeedWasOff=true;
+    try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',true);}catch(e){}}
+  try{window.__rompMobileTab&&window.__rompMobileTab('feed');}catch(e){}   // phone: one pane at a time
+  try{vf&&vf.contentWindow&&vf.contentWindow.postMessage({romp:'viewFile',path:m.path,sid:m.sid},'*');}catch(e){}}
+if(m.romp==='viewFileClosed'&&window.__rompFeedWasOff){window.__rompFeedWasOff=false;
+  try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',false);}catch(e){}}});
 // One id per dashboard (per browser tab/window), minted here so every pane in it reports the same one.
 // sessionStorage, deliberately: it survives a reload (the panes keep their identity) and a second window
 // gets its own, which is what makes "the dashboard that asked" a thing the kernel can address.
@@ -22023,6 +22112,7 @@ var B=bar.querySelectorAll('button'),KT='romp-mobile-tab';
 function show(p){if(!F[p])return;document.body.setAttribute('data-tab',p);for(var k in F)F[k].classList.toggle('m-on',k===p);
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}}
+window.__rompMobileTab=show;   // the file-viewer bridge brings the feed tab forward on a phone
 // A REVEAL un-hides a desktop-toggled-off pane before the mobile tab switch (the user 2026-08-13: a feed
 // click that jumps into a CLOSED chat used to land invisibly — the hidden iframe's WS stays live, so the
 // scroll ran under display:none and nothing appeared to happen). Same __rompPaneToggle(…, true) the Log
@@ -23331,14 +23421,27 @@ class Handler(BaseHTTPRequestHandler):
         cwd — _resolve_open_path); RENDERABLE media only (_PREVIEW_MIME), anything else 404s and the
         client keeps its plain link. Oversize 413s rather than silently truncating. HEAD is the
         existence probe for a chip that can't self-verify like an <img> (a PDF): headers only, so a
-        since-deleted file costs no download and never shows a dead chip."""
+        since-deleted file costs no download and never shows a dead chip.
+
+        Also serves SOURCE/TEXT (the user 2026-08-08) so the viewer can show a file to a browser that is
+        nowhere near the kernel's machine — its own, much smaller cap, and a NUL sniff so a binary that
+        slipped past the name allowlist 415s instead of arriving as mojibake."""
         fp = _resolve_open_path((q.get("path") or [""])[0], (q.get("sid") or [None])[0])
         mime = _PREVIEW_MIME.get(os.path.splitext(fp)[1].lower())
+        text = not mime and _is_text_path(fp)
+        if text:
+            mime = "text/plain; charset=utf-8"
+        # Every error body NAMES the resolved path (home-collapsed) — a bare "not found" told the user
+        # nothing about WHAT was tried when a relative link resolved somewhere unexpected (2026-08-09).
         if not mime or not os.path.isabs(fp) or not os.path.isfile(fp):
-            return self._send(404, b"" if head else "not found", "text/plain")
+            return self._send(404, b"" if head else "not found: %s" % _tilde(fp), "text/plain")
         size = os.path.getsize(fp)
-        if size > _PREVIEW_MAX_BYTES:
-            return self._send(413, b"" if head else "too large to preview", "text/plain")
+        cap = _TEXT_MAX_BYTES if text else _PREVIEW_MAX_BYTES
+        if size > cap:
+            return self._send(413, b"" if head else
+                              "too large to show: %s (%s, limit %s)"
+                              % (_tilde(fp), _human_bytes(size), _human_bytes(cap)),
+                              "text/plain")
         if head:
             self.send_response(200)
             self.send_header("Content-Type", mime)
@@ -23351,7 +23454,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         with open(fp, "rb") as f:
-            return self._send(200, f.read(), mime, cache="no-cache")
+            raw = f.read()
+        if text:
+            body = _decode_text(raw)
+            if body is None:                     # named like text, isn't — say so rather than serve garbage
+                return self._send(415, "not a text file: %s" % _tilde(fp), "text/plain")
+            return self._send(200, body, mime, cache="no-cache")
+        return self._send(200, raw, mime, cache="no-cache")
 
     def do_OPTIONS(self):
         """CORS preflight. The strip's tunnel actions POST JSON (Content-Type:
@@ -24725,7 +24834,13 @@ class Handler(BaseHTTPRequestHandler):
                 # chip up from the moment the file was picked, and only this reply can retire it
                 _reply(client, {"type": "dropSaveFailed", "name": str(msg["name"])})
         elif msg and msg.get("type") == "openFile" and msg.get("path"):
-            _open_file(str(msg["path"]), sid=msg.get("id"))       # caption / linkified path click → open it (relative → resolved vs the session cwd)
+            # caption / linkified path click → open it on the kernel's machine (relative → resolved vs
+            # the session cwd). The web dashboard sends this only where it IS the right answer; a remote
+            # viewer gets the in-page viewer instead. If we still cannot, say so (the user 2026-08-08).
+            if not _open_file(str(msg["path"]), sid=msg.get("id")):
+                client["send"](json.dumps({"type": "warn", "text":
+                    "Could not open %s: %s has no desktop session to open it on."
+                    % (os.path.basename(str(msg["path"])) or str(msg["path"]), _self_host())}))
         elif msg and msg.get("type") == "pickFile":
             if not _native_dialogs():                             # same silent-nothing as Browse… — say it instead
                 client["send"](json.dumps({"type": "warn", "text": _no_dialog_why("file")}))
@@ -24954,7 +25069,15 @@ class Handler(BaseHTTPRequestHandler):
         # text/html for a path the preview lightbox opens in a same-origin, unsandboxed iframe
         # (ui/webview/preview.ts) — script on the dashboard's origin with the cookie attached. An
         # extension the local route would 404 is 404'd here too, so the relay never widens what renders.
-        mime = _PREVIEW_MIME.get(os.path.splitext((q.get("path") or [""])[0])[1].lower())
+        rp = (q.get("path") or [""])[0]
+        mime = _PREVIEW_MIME.get(os.path.splitext(rp)[1].lower())
+        if not mime and _is_text_path(rp):
+            # The text half of /file (the user 2026-08-08) relays too — this gate predated it, so a
+            # remote session's .py/.md 404'd here while the LOCAL route served the same file (found
+            # 2026-08-14, planning the file browser). Same defense, wider list: the type is OURS —
+            # text/plain never executes, nosniff rides every reply — and the remote's own text cap
+            # and NUL sniff still rule at its end; its non-200 verdicts pass through below.
+            mime = "text/plain; charset=utf-8"
         if not mime:
             return self._send(404, b"" if head else "not found", "text/plain")
         if rtok:
