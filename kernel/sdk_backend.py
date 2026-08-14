@@ -4046,8 +4046,7 @@ class SdkBackend:
         reg = read_reg(self.state_dir, sid)
         if not reg:
             return False
-        reg["name"] = new_name
-        write_reg(self.state_dir, sid, reg)
+        self._update_reg(sid, name=new_name)   # locked RMW — see set_effort's race note
         # keep the shared names/ identity file in sync (preserve colours)
         try:
             parts = (Path(self.state_dir) / "names" / sid).read_text().rstrip("\n").split("\t")
@@ -4064,10 +4063,8 @@ class SdkBackend:
         """Change the session's model. Persisted in the registry (so a reconnect keeps it) and applied
         LIVE on a connected session via the SDK control channel — NOT a /model slash injection, which the
         SDK input stream does not interpret. 'default' resets to the CLI default (set_model(None))."""
-        reg = read_reg(self.state_dir, sid)
-        if not reg:
+        if not read_reg(self.state_dir, sid):
             return False
-        reg["model"] = value
         write_sdk_default(self.state_dir, model=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
@@ -4080,8 +4077,7 @@ class SdkBackend:
             # refresh resolves an idle session, and _on_session_gone resolves a thread that exits mid-switch).
             already = _model_reflects_alias(s.model, value)
             s._model_pending = "" if already else value
-            reg["modelPending"] = bool(s._model_pending)
-            write_reg(self.state_dir, sid, reg)
+            self._update_reg(sid, model=value, modelPending=bool(s._model_pending))   # locked RMW — see set_effort
             s.set_model_live(None if value in ("", "default") else value)
             # Synthesize the INVOCATION atom the CLI never streams (it streams only the stdout
             # confirmation): the chat gets the same "/model sonnet" command chip the tmux path reads from
@@ -4100,9 +4096,7 @@ class SdkBackend:
             # DORMANT (no live thread): no turn is coming to report a real name, so resolve to the chosen
             # alias's best-effort label immediately — never leave the badge on a stale liveModel or trapped
             # on dots. The value applies for real on the next connect (chosen_model → _options).
-            reg["liveModel"] = _alias_label(value)
-            reg["modelPending"] = False
-            write_reg(self.state_dir, sid, reg)
+            self._update_reg(sid, model=value, liveModel=_alias_label(value), modelPending=False)
         return True
 
     def set_fast(self, sid: str, value: str) -> bool:
@@ -4125,13 +4119,11 @@ class SdkBackend:
           if idle, at the end of the current turn if busy (request_reconnect, the /effort machinery)."""
         if value not in ("on", "off"):
             return False
-        reg = read_reg(self.state_dir, sid)
-        if not reg:
+        if not read_reg(self.state_dir, sid):
             return False
-        reg["fast"] = (value == "on")
-        reg["liveFast"] = value   # mirror the optimistic flip where the badge reads it while dormant /
-        #                           across a restart; _adopt_fast_state re-asserts at the next connect
-        write_reg(self.state_dir, sid, reg)
+        # liveFast mirrors the optimistic flip where the badge reads it while dormant / across a
+        # restart; _adopt_fast_state re-asserts at the next connect. Locked RMW — see set_effort.
+        self._update_reg(sid, fast=(value == "on"), liveFast=value)
         s = self.sessions.get(sid)
         if not s or not s.thread.is_alive():
             return True                        # dormant: the persisted ask applies at the next connect
@@ -4153,11 +4145,9 @@ class SdkBackend:
     def set_mode(self, sid: str, mode: str) -> bool:
         """Change the permission mode. Persisted in the registry and applied LIVE via the SDK control
         channel (set_permission_mode) — not merely stored for the next reconnect."""
-        reg = read_reg(self.state_dir, sid)
-        if not reg:
+        if not read_reg(self.state_dir, sid):
             return False
-        reg["mode"] = mode
-        write_reg(self.state_dir, sid, reg)
+        self._update_reg(sid, mode=mode)   # locked RMW — see set_effort's race note
         write_sdk_default(self.state_dir, mode=mode)   # remember as the seed for the NEXT new session, like model/effort (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
@@ -4192,14 +4182,23 @@ class SdkBackend:
         if the session is idle, at the end of the current turn if it's busy. The label updates at once."""
         if value not in EFFORT_LEVELS:
             return False
-        reg = read_reg(self.state_dir, sid)
-        if not reg:
+        if not read_reg(self.state_dir, sid):
             return False
-        reg["effort"] = value
-        reg["effortPending"] = True   # the reconnect that applies it hasn't completed yet → dots + "Reloading session…"
-        write_reg(self.state_dir, sid, reg)
-        if value != "ultracode":   # ultracode is per-session by design (the CLI: "this session only") — never a seed
-            write_sdk_default(self.state_dir, effort=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
+        # LOCKED read-modify-write (_update_reg), never the bare read→mutate→write this used to do: the
+        # loop threads run their own locked RMWs on the same reg (queue/echo mirrors, liveCtx), and an
+        # interleaving could silently drop the effort field — the pick LOOKED applied (in-memory label
+        # right), then reverted at the next respawn when __init__ re-read the reg (the user 2026-08-14,
+        # whose ultracode sessions seemed to downgrade at random). Whole setter family fixed alike.
+        # effortPending: the applying reconnect hasn't completed yet → dots + "Reloading session…"
+        self._update_reg(sid, effort=value, effortPending=True)
+        # Remember EVERY pick as the new-session seed, ultracode included (the user 2026-08-14, who
+        # picks ultracode and expects new sessions to follow; the old never-remember guard kept the
+        # seed at their one historical max pick, so every new session opened at max — reading as a
+        # downgrade). The CLI itself cannot persist ultracode as a default (its settings enum stops at
+        # xhigh; /effort says "this session only") — but romp's seed is romp's own store, and spawn
+        # hands each NEW session its own per-session launch shape (--effort xhigh + the ultracode
+        # settings key), so the CLI's session-scoping is preserved, one session at a time.
+        write_sdk_default(self.state_dir, effort=value)
         s = self.sessions.get(sid)
         if s:
             s.effort = value        # picker label reflects it now; the reconnect makes it real
@@ -4230,12 +4229,10 @@ class SdkBackend:
             return False
         if value == "key" and not self.work_key:
             return False   # nothing to inject — the UI never offers this; refuse rather than half-apply
-        reg = read_reg(self.state_dir, sid)
-        if not reg:
+        if not read_reg(self.state_dir, sid):
             return False
-        reg["auth"] = value
-        reg["authPending"] = True   # the applying reconnect hasn't completed → badge dots
-        write_reg(self.state_dir, sid, reg)
+        # authPending: the applying reconnect hasn't completed → badge dots. Locked RMW — see set_effort.
+        self._update_reg(sid, auth=value, authPending=True)
         write_sdk_default(self.state_dir, auth=value)   # the seed for the NEXT new session, like model/effort
         s = self.sessions.get(sid)
         if s:
