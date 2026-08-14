@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { threadsByAnchor, threadBusy, threadStuck, findExact, sliceRanges, prunePending,
+import { threadsByAnchor, threadBusy, threadStuck, findExact, findAnchorRange, sliceRanges, prunePending,
          type CommentThread } from "./comments";
 
 const th = (over: Partial<CommentThread>): CommentThread => ({
@@ -35,6 +35,26 @@ test("findExact returns null when the text drifted away", () => {
 
 test("findExact never matches an empty selection", () => {
   assert.equal(findExact("anything", "   "), null);
+});
+
+// ── findAnchorRange: longest-prefix fallback for cross-message selections ──────────────────────
+
+test("findAnchorRange returns the full match, not partial, when the text is present", () => {
+  const r = findAnchorRange("Use exponential backoff with jitter.", "exponential backoff");
+  assert.ok(r && !r.partial);
+});
+
+test("findAnchorRange falls back to the longest prefix that lives in this turn", () => {
+  // the selection continued into the NEXT message; only its head is in the anchor turn
+  const hay = "Cap the delay at two minutes for every retry loop.";
+  const r = findAnchorRange(hay, "delay at two minutes for every retry loop. And the jitter stays at ten percent.");
+  assert.ok(r);
+  assert.ok(r!.partial);
+  assert.equal(hay.slice(r!.start, r!.end), "delay at two minutes for every retry loop.");
+});
+
+test("findAnchorRange refuses a trivial remnant rather than mark the wrong words", () => {
+  assert.equal(findAnchorRange("The cap is fine.", "The completely different selection body"), null);
 });
 
 // ── sliceRanges: one global range over many text nodes ─────────────────────────────────────────
@@ -183,6 +203,18 @@ test("a thread fork withholds the names/ entry; promote seeds first, then regist
   assert.match(BACKEND, /def promote_thread\(/);
   assert.match(BACKEND, /reg\.get\("threadOf"\):\s*\n\s*continue/, "live_sessions skips threads — no tab");
   assert.match(KERNEL, /err = _seed_fork_stores\(parent_sid, tsid, parent_path, str\(th\.get\("cutUuid"\) or ""\)\)/);
+});
+
+test("the popover drags by its header and closes when you leave the session", () => {
+  assert.match(UI, /head\.addEventListener\("pointerdown"/);
+  assert.match(UI, /head\.setPointerCapture\(ev\.pointerId\)/);
+  assert.match(UI, /commentPopPos = \{ x, y \};/);
+  assert.match(UI, /if \(openCommentKey && openCommentKey\.sid !== id\) closeCommentPop\(\);/);
+  assert.match(CSS, /\.cmt-head \{[^}]*cursor: grab/s);
+});
+
+test("marks use the prefix-tolerant anchor matcher", () => {
+  assert.match(UI, /findAnchorRange\(nodes\.map\(\(t\) => t\.data\)\.join\(""\), th\.exact\)/);
 });
 
 test("highlight chrome wears the romp accent, popover wears the menu card", () => {

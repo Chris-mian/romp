@@ -2376,7 +2376,9 @@ mark.cmt-hl.busy { border-bottom-style: solid; animation: cmt-busy-pulse 1.2s ea
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   font-size: 12px;
 }
-.cmt-head { display: flex; align-items: center; }
+.cmt-head { display: flex; align-items: center; cursor: grab; user-select: none; }
+.cmt-head.dragging { cursor: grabbing; }
+.cmt-head .cmt-x { cursor: pointer; }
 .cmt-title { font-weight: 600; }
 .cmt-x {
   margin-left: auto; padding: 0 4px; border: 0; background: none;
