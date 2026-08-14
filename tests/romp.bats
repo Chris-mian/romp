@@ -110,6 +110,21 @@ STUB
     chmod +x "$MOCK_DIR/claude"
 }
 
+# Helper — a fake `curl` for the kernel-API paths (`romp new` SDK spawn + `-m` send).
+# Logs every call to MOCK_LOG and answers {"ok": true}; MOCK_CURL_FAIL_SEND=1 makes
+# the /send leg fail the way curl -f does, so per-leg error reporting is testable.
+_stub_curl() {
+    cat > "$MOCK_DIR/curl" << 'MOCK'
+#!/usr/bin/env bash
+echo "curl $*" >> "$MOCK_LOG"
+url=""
+for a in "$@"; do [[ "$a" == http* ]] && url="$a"; done
+if [[ -n "${MOCK_CURL_FAIL_SEND:-}" && "$url" == */send ]]; then exit 22; fi
+echo '{"ok": true}'
+MOCK
+    chmod +x "$MOCK_DIR/curl"
+}
+
 # ─── Launch tests ────────────────────────────────────────────────────
 
 @test "bare romp is the dashboard front door: no kernel, loud error, never a session" {
@@ -120,6 +135,52 @@ STUB
     [ "$status" -eq 1 ]
     [[ "$output" == *"no serve token"* ]]
     [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
+}
+
+@test "new -m: missing or empty text is a usage error, never a silent no-op" {
+    run run_romp new -m
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"[-m <text>]"* ]]
+    run run_romp new -m "" ideabox
+    [ "$status" -eq 2 ]
+}
+
+@test "new -m with -t is refused loudly (the first prompt is the SDK path's job)" {
+    touch "$MOCK_LOG"
+    run run_romp new -t -m "do the thing" ideabox
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"-m needs the default (SDK) session"* ]]
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
+}
+
+@test "new -m: one command spawns AND delivers the first prompt (POST /new, then /send)" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp new -m "look into the flaky test" ideabox
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"first prompt delivered"* ]]
+    grep -q '/new' "$MOCK_LOG"
+    grep -q '/send' "$MOCK_LOG"
+    # /new lands before /send, and the send payload carries the name + the text
+    [ "$(grep -n '/new' "$MOCK_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '/send' "$MOCK_LOG" | head -1 | cut -d: -f1)" ]
+    grep '/send' "$MOCK_LOG" | grep 'ideabox' | grep -q 'look into the flaky test'
+}
+
+@test "new -m: a failed send is loud and names the retry (the session IS up)" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    export MOCK_CURL_FAIL_SEND=1
+    run run_romp new -m "look into the flaky test" ideabox
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did NOT land"* ]]
+    [[ "$output" == *"romp send ideabox"* ]]
+}
+
+@test "help lists new -m" {
+    run run_romp help
+    [[ "$output" == *"romp new -m <text> <name>"* ]]
 }
 
 @test "new -t: terminal session named by the argument, claude exec'd with --name + --session-id" {
