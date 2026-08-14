@@ -4186,13 +4186,24 @@ class SdkBackend:
         self._wake_push()
         return True
 
+    # bypassPermissions is the one mode that must not become the remembered default. Every other pick
+    # here is a preference worth inheriting; this one removes the approval gate, and spawn() seeds a new
+    # session from the remembered mode with NOTHING in the create UI that shows it — so one click on one
+    # tab would quietly hand every session you started afterwards an unprompted agent. It stays where you
+    # set it: this session, until you change it (the user 2026-08-15, on the picker adding the entry).
+    # The carve-out is HERE and not in spawn() on purpose: romp declines to remember bypass off a click,
+    # but a mode written into sdk-defaults.json by hand is still honoured, so the escape hatch is open to
+    # anyone who genuinely wants every new session unprompted — they just have to say so deliberately.
+    STICKY_MODE_EXCLUDES = {"bypassPermissions"}
+
     def set_mode(self, sid: str, mode: str) -> bool:
         """Change the permission mode. Persisted in the registry and applied LIVE via the SDK control
         channel (set_permission_mode) — not merely stored for the next reconnect."""
         if not read_reg(self.state_dir, sid):
             return False
         self._update_reg(sid, mode=mode)   # locked RMW — see set_effort's race note
-        write_sdk_default(self.state_dir, mode=mode)   # remember as the seed for the NEXT new session, like model/effort (the user 2026-06-27)
+        if mode not in self.STICKY_MODE_EXCLUDES:
+            write_sdk_default(self.state_dir, mode=mode)   # remember as the seed for the NEXT new session, like model/effort (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.mode = mode

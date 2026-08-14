@@ -832,6 +832,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   color: var(--fg); position: relative; white-space: nowrap;
 }
 .meta-item:hover { background: rgba(255, 255, 255, 0.09); }
+/* second line for a choice whose consequence its label doesn't carry (Bypass permissions). Same
+   0.82em / 0.6 opacity as .ctx-item-sub — one sub-line size across every romp menu. */
+.meta-item-sub { font-size: 0.82em; opacity: 0.6; }
 .meta-item.current::after {
   content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   background: var(--check-bg); color: #fff; border-radius: 50%;
