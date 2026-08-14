@@ -576,8 +576,14 @@ def _load_token():
     v = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
     try:
         jd.STATE.mkdir(parents=True, exist_ok=True)
-        f.write_text(v)
-        os.chmod(f, 0o600)
+        # 0600 from birth, not written-then-chmod'd: between those two calls the file carried the
+        # token at the umask's mercy, and the whole same-user gate is this file's mode.
+        fd = os.open(str(f), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, v.encode())
+        finally:
+            os.close(fd)
+        os.chmod(f, 0o600)                       # a PRE-EXISTING file keeps its old mode through O_CREAT
     except OSError:
         pass
     return v
