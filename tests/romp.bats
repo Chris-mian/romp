@@ -149,9 +149,12 @@ STUB
     _stub_claude "2.1.220"
     run run_romp new -t myproject
     [ "$status" -eq 0 ]
-    ! grep -q -- '--settings' "$MOCK_LOG"
-    ! grep -q -- '@romp-inbound-accept' "$MOCK_LOG"
     [[ "$output" == *"claude update"* ]]     # the informative floor line, not a failure
+    # (checked BEFORE the greps below: `run` clobbers $output, so the output assertion must come first)
+    run grep -q -- '--settings' "$MOCK_LOG"
+    [ "$status" -ne 0 ]
+    run grep -q -- '@romp-inbound-accept' "$MOCK_LOG"
+    [ "$status" -ne 0 ]
 }
 
 @test "launch hands the exec line to respawn-pane, never typed via send-keys (dropped-char bug)" {
@@ -238,7 +241,9 @@ STUB
     line="$(grep -F 'respawn-pane' "$MOCK_LOG" | grep -F 'exec claude')"
     [ -n "$line" ]
     # no shell metacharacters survive in the exec line
-    ! grep -qE '[$();]' <<<"$line"
+    # `run` + status, NOT a bare `! grep`: `!` is exempt from set -e, so mid-test it asserts nothing.
+    run grep -qE '[$();]' <<<"$line"
+    [ "$status" -ne 0 ]
     # exactly the two quotes that wrap --name "<name>", no injected extras. The
     # fixed --settings tail romp itself appends carries its own JSON quotes — a
     # trusted constant, not name-derived — so strip it before counting.
@@ -345,7 +350,8 @@ STUB
 
     run run_romp resume abc123-uuid
     [ "$status" -eq 0 ]
-    ! grep -qE 'tmux attach-session -t myproject$' "$MOCK_LOG"
+    run grep -qE 'tmux attach-session -t myproject$' "$MOCK_LOG"
+    [ "$status" -ne 0 ]
     grep -q 'tmux new-session -d -s myproject-2' "$MOCK_LOG"
     grep -q 'tmux respawn-pane -k -t myproject-2 exec claude --resume abc123-uuid --name "myproject-2"' "$MOCK_LOG"
 }
@@ -357,8 +363,10 @@ STUB
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
     grep -qE 'tmux respawn-pane -k -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36}' "$MOCK_LOG"
-    ! grep -q 'tmux attach-session' "$MOCK_LOG"
+    # $output is asserted BEFORE the `run grep` below overwrites it with grep's (empty) output.
     [[ "$output" == *"attach with: tmux attach -t myproject"* ]]
+    run grep -q 'tmux attach-session' "$MOCK_LOG"
+    [ "$status" -ne 0 ]
 }
 
 @test "detach: --resume + id + detach (the skill conversion path) still works as an alias" {
@@ -366,8 +374,10 @@ STUB
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
     grep -q 'tmux respawn-pane -k -t myproject exec claude --resume sess-xyz --name "myproject"' "$MOCK_LOG"
-    ! grep -q 'tmux attach-session' "$MOCK_LOG"
+    # $output asserted before the `run grep` overwrites it.
     [[ "$output" == *"(detached)"* ]]
+    run grep -q 'tmux attach-session' "$MOCK_LOG"
+    [ "$status" -ne 0 ]
 }
 
 # ─── Misc ────────────────────────────────────────────────────────────
@@ -405,7 +415,8 @@ STUB
 
     run run_romp new -t myproject
     [ "$status" -eq 0 ]
-    ! grep -q 'tmux new-session' "$MOCK_LOG"
+    run grep -q 'tmux new-session' "$MOCK_LOG"
+    [ "$status" -ne 0 ]
     grep -q 'tmux attach-session -t myproject' "$MOCK_LOG"
 }
 
@@ -522,7 +533,8 @@ MOCK
     run run_romp up              # `romp up` is PURELY start-the-manager
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: up' "$MOCK_LOG"
-    ! grep -q 'romp-postal-service called' "$MOCK_LOG"   # up does not touch the bus
+    run grep -q 'romp-postal-service called' "$MOCK_LOG"   # up does not touch the bus
+    [ "$status" -ne 0 ]
 
     : > "$MOCK_LOG"
     run run_romp refresh         # restart EVERYTHING: the bus AND all kernels
@@ -858,10 +870,11 @@ _resume_rows_fn() {   # writes the extracted function to $1
     run run_romp new -t box
     [ "$status" -eq 0 ]
     grep -qF "tmux new-session -d -s box -c $expect" "$MOCK_LOG"
-    # the session must NOT be rooted at $HOME
-    ! grep -qF "tmux new-session -d -s box -c $home_real" "$MOCK_LOG"
-    # and the redirect is announced to the user
+    # the redirect is announced to the user — asserted BEFORE the `run grep` overwrites $output
     [[ "$output" == *"not launching in \$HOME"* ]]
+    # the session must NOT be rooted at $HOME
+    run grep -qF "tmux new-session -d -s box -c $home_real" "$MOCK_LOG"
+    [ "$status" -ne 0 ]
 }
 
 @test "ROMPHOME: a name-less resume from \$HOME is named after ROMPHOME, not \$HOME" {
