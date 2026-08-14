@@ -11,9 +11,10 @@ export type CommentThread = {
   tid: string;
   anchorUuid: string;
   exact: string;
-  status: "open" | "resolved" | "promoted";
+  status: "open" | "resolved" | "promoting" | "promoted";
   createdT: number;
   state: string;              // the thread session's live state ("working"/"waiting"/…, "" when dormant)
+  error?: string;             // the thread CLI's launch error, when it could not start
   unread: boolean;            // an agent reply newer than the read watermark
   promotedName: string;       // the board session it became, when status === "promoted"
   msgs: CommentMsg[];
@@ -98,10 +99,24 @@ export function sliceRanges(nodeLens: number[], start: number, end: number):
 }
 
 /** Optimistic pending sends, reconciled against the kernel's frame (the registerOptimistic pattern):
- *  a pending row is spent the moment a server 'you' message with its text appears. Returns the
+ *  each landed 'you' message spends AT MOST ONE pending row with its text — a count-based match, so
+ *  sending the same words twice keeps the second bubble until its own message lands. Returns the
  *  still-pending remainder to render after the server messages. */
 export function prunePending(pending: { text: string; t: number }[], msgs: CommentMsg[]):
     { text: string; t: number }[] {
-  const seen = msgs.filter((m) => m.who === "you").map((m) => normalize(m.text).norm);
-  return pending.filter((p) => !seen.includes(normalize(p.text).norm));
+  const counts = new Map<string, number>();
+  for (const m of msgs) {
+    if (m.who !== "you") continue;
+    const k = normalize(m.text).norm;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  return pending.filter((p) => {
+    const k = normalize(p.text).norm;
+    const c = counts.get(k) || 0;
+    if (c > 0) {
+      counts.set(k, c - 1);
+      return false;
+    }
+    return true;
+  });
 }
