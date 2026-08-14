@@ -586,6 +586,21 @@ def append_effort_applied(state_dir: Path, sid: str, effort: str, t: int | None 
         f.write(json.dumps(rec) + "\n")
 
 
+def append_cmd_gesture(state_dir: Path, sid: str, text: str, t: int | None = None) -> None:
+    """Record a command GESTURE — a /model-/effort-/auth-style pick — at the moment it was ASKED FOR. The
+    synthesized live chip that acknowledges the pick is in-memory only and prune_live's stale_cmd retires it
+    on the next human turn, so the user's own gesture vanished from their side of the history (the user
+    2026-08-14: the right side should keep what you did; the applied note keeps that it happened). The kernel
+    interleaves a durable `cmdGesture` chat event from this marker, deduped against the still-live chip by
+    (t, text). Its own key ("cmdGesture") so the state/awaiting/recovery readers, which filter by their own
+    keys, skip it. `text` is the full display form, e.g. "/effort high"."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()) if t is None else int(t), "cmdGesture": str(text)}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def append_machine_cut(state_dir: Path, sid: str, cause: str, t: float | None = None) -> None:
     """Record that ROMP cut this session's turn and is continuing it — written at the instant a resume
     notice is QUEUED (boot reconcile → "restart"; _heal_cut_session → "crash"), which is the event the
@@ -4095,6 +4110,9 @@ class SdkBackend:
                 "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
                 "t": t, "author": "human", "command": "/model", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            # The DURABLE twin of the live chip (the user 2026-08-14): same t and text, so build_session
+            # can dedup while the chip is live and take over seamlessly once stale_cmd retires it.
+            append_cmd_gesture(self.state_dir, sid, disp, t=t)
             self._wake_push()
         else:
             # DORMANT (no live thread): no turn is coming to report a real name, so resolve to the chosen
@@ -4217,6 +4235,7 @@ class SdkBackend:
                 "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
                 "t": t, "author": "human", "command": "/effort", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            append_cmd_gesture(self.state_dir, sid, disp, t=t)   # durable twin — see set_model
             self._wake_push()
         return True
 
@@ -4252,6 +4271,7 @@ class SdkBackend:
                 "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
                 "t": t, "author": "human", "command": "/auth", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            append_cmd_gesture(self.state_dir, sid, disp, t=t)   # durable twin — see set_model
             self._wake_push()
         return True
 

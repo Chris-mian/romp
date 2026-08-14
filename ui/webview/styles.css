@@ -1179,8 +1179,11 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .user-bubble.cmd-row { max-width: none; background: none; border: none; border-radius: 0;
   padding: 2px 0; color: var(--dim); }
 .user-bubble.cmd-row::before { content: "✦"; margin-right: 8px; color: var(--dim); }
-.user-bubble.cmd-row .slash-cmd-chip { background: var(--code-bg); color: var(--fg);
-  border-color: var(--box-border); }
+/* The chip's ink is the OUTGOING-BUBBLE blue on the chat's own ground (the user 2026-08-14: the --code-bg
+   terracotta tint read as a stray red here) — the same #2b6cef as .user-bubble, so the gesture still reads
+   as "yours" without the said-thing bubble. */
+.user-bubble.cmd-row .slash-cmd-chip { background: var(--bg); color: #2b6cef;
+  border-color: #2b6cef; }
 .user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
 /* ---------- romp-injected message (a feed nudge / follow-up) ----------
    A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
