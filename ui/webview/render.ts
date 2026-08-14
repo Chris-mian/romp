@@ -5182,6 +5182,7 @@ function applyBranchChips(sid: string, v: View): void {
 function unwrapCommentMark(markEl: HTMLElement): void {
   const p = markEl.parentNode;
   if (!p) return;
+  if (p instanceof Element) p.classList.remove("cmt-hl-host");   // an inline-code span it tinted
   while (markEl.firstChild) p.insertBefore(markEl.firstChild, markEl);
   markEl.remove();
   p.normalize();
@@ -5228,7 +5229,23 @@ function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
       m.appendChild(mid);
     }
   }
-  for (const seg of Array.from(turn.querySelectorAll(sel))) styleCommentMark(seg as HTMLElement, th);
+  // One unbroken stroke. The wrap pass is hole-free by construction (sliceRanges covers every text
+  // node of the contiguous match range, interior whitespace included — verified against a DOM port,
+  // 2026-08-13), so the word-island look had two OTHER causes: per-segment corner rounding (the
+  // radius now sits only on the run's outer ends) and inline-code PADDING — a mark inside a <code>
+  // span cannot paint the element's own padded background, leaving an untinted sliver around every
+  // code word. When a segment covers a code span's whole text, tint the span itself (cmt-hl-host).
+  const segs = Array.from(turn.querySelectorAll(sel)) as HTMLElement[];
+  for (let i = 0; i < segs.length; i++) {
+    styleCommentMark(segs[i], th);
+    segs[i].classList.toggle("hl-first", i === 0);
+    segs[i].classList.toggle("hl-last", i === segs.length - 1);
+    const host = segs[i].parentElement;
+    if (host && host.tagName === "CODE" && host.parentElement?.tagName !== "PRE"
+        && host.childNodes.length === 1) {
+      host.classList.toggle("cmt-hl-host", th.status !== "resolved");   // resolved dims like the marks
+    }
+  }
 }
 
 function styleCommentMark(m: HTMLElement, th: CommentThread): void {

@@ -221,8 +221,30 @@ test("marks use the prefix-tolerant anchor matcher", () => {
   assert.match(UI, /findAnchorRange\(nodes\.map\(\(t\) => t\.data\)\.join\(""\), th\.exact\)/);
 });
 
-test("highlight chrome wears the romp accent, popover wears the menu card", () => {
-  assert.match(CSS, /mark\.cmt-hl \{[^}]*var\(--accent\)/s);
+test("the highlight is highlighter-YELLOW — never the selection blue — and one unbroken block", () => {
+  assert.match(CSS, /--cmt-hl: #ffd54a;/);
+  assert.match(CSS, /mark\.cmt-hl \{[^}]*var\(--cmt-hl\)/s);
+  assert.doesNotMatch(CSS.match(/mark\.cmt-hl \{[^}]*\}/s)![0], /var\(--accent\)/);
+  // the radius sits only on the run's outer ends — per-segment rounding drew word-boundary seams
+  assert.match(UI, /classList\.toggle\("hl-first", i === 0\)/);
+  assert.match(CSS, /mark\.cmt-hl\.hl-first \{ border-top-left-radius: 2px/);
+  // a fully-covered inline-code span tints at the ELEMENT: a mark inside it can't paint the code's
+  // padded background, which left an untinted sliver around every code word (the word-island look)
+  assert.match(UI, /host\.classList\.toggle\("cmt-hl-host", th\.status !== "resolved"\)/);
+  assert.match(UI, /p\.classList\.remove\("cmt-hl-host"\)/);
+  assert.match(CSS, /code\.cmt-hl-host \{ background: color-mix\(in srgb, var\(--cmt-hl\) 30%, var\(--code-bg\)\)/);
+  assert.match(CSS, /code\.cmt-hl-host > mark\.cmt-hl \{ background: transparent/);
+});
+
+test("the tint ladder keeps every state distinct: base < unread < hover", () => {
+  const base = CSS.match(/mark\.cmt-hl \{[^}]*var\(--cmt-hl\) (\d+)%/s)![1];
+  const unread = CSS.match(/mark\.cmt-hl\.unread \{[^}]*var\(--cmt-hl\) (\d+)%/s)![1];
+  const hover = CSS.match(/mark\.cmt-hl:hover \{[^}]*var\(--cmt-hl\) (\d+)%/s)![1];
+  assert.ok(Number(base) < Number(unread), "unread must read stronger than read");
+  assert.ok(Number(unread) < Number(hover), "hovering an unread mark must still answer");
+});
+
+test("comment chrome (badge, popover card) stays on the menu vocabulary", () => {
   assert.match(CSS, /\.cmt-pop \{[^}]*#252526[^}]*\}/s);
   assert.match(CSS, /\.cmt-pop \{[^}]*border-radius: 6px/s);
 });
