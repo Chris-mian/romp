@@ -24621,14 +24621,18 @@ class Handler(BaseHTTPRequestHandler):
 
 def _ensure_bundles():
     """Build the shared webview bundles (the human's tuned UI) if missing/stale — keeps the
-    kernel a single command and auto-rebuilds after TS/CSS edits (mirrors bin/romp-serve). Watches
-    .css as well as .ts: a CSS-only change must still trigger a rebuild on restart (the user 2026-06-16
+    kernel a single command and auto-rebuilds after TS/CSS/JS edits (mirrors bin/romp-serve).
+    Watches .css as well as .ts: a CSS-only change must still trigger a rebuild on restart (the user 2026-06-16
     hit a shipped style that didn't go live because only *.ts was checked). Watches ui/webview TOO,
     not just vscode-extension/src: esbuild.js builds the webview entrypoints from ../ui/webview
     (render.ts, styles.css, feed.ts, …), so an edit there never marked the bundle stale — a
     render.ts-only fix could sit unshipped through every kernel restart, with the ?v= cache token
     frozen so browsers kept the old bundle as well (found 2026-08-09 hunting the optimistic-echo
-    bug: the docstring promised a rebuild the check couldn't see).
+    bug: the docstring promised a rebuild the check couldn't see). Watches .js as well:
+    gear.js is a plain-JS module feed.ts/render.ts require() into the chat bundle — not an
+    esbuild entry point, just a bundled source — so a gear.js-only edit never marked dist
+    stale. Safe to widen over both roots: neither holds build outputs (DIST is elsewhere),
+    so *.js cannot match a bundle and self-trigger rebuilds.
 
     A failed build gets ONE retry after `npm install`: the common failure is dep drift — a merged
     commit imports a package this machine's node_modules predates (2026-08-10: the katex import
@@ -24643,7 +24647,7 @@ def _ensure_bundles():
     srcs = [cv / "src", ROOT / "ui" / "webview"]
     stale = not render.exists() or any(
         f.stat().st_mtime > render.stat().st_mtime
-        for src in srcs for f in [*src.rglob("*.ts"), *src.rglob("*.css")])
+        for src in srcs for f in [*src.rglob("*.ts"), *src.rglob("*.css"), *src.rglob("*.js")])
     if stale:
         sys.stderr.write("romp-kernel: building UI bundles…\n")
         # --production (minified, no sourcemaps), matching vscode-extension/install.sh. Both
