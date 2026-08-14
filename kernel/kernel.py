@@ -4428,7 +4428,12 @@ def _seed_fork_stores(parent_sid, sid, path, cut_uuid):
         if not root:
             return "no transcript records yet — nothing to fork."
         cut = cut_uuid or ad.leaf_uuid
-        cut_rec = ad.by_uuid.get(cut) or {}
+        cut_rec = ad.by_uuid.get(cut)
+        if cut_rec is None:
+            # a named cut that is no longer in the transcript (a /clear re-minted it, a rewind
+            # dropped it) must FAIL, not silently stamp wall-clock time: a `now` floor outranks the
+            # judges on the in-flight segment forever (the diary evidence-time rule)
+            return "the message this branches from isn't in the conversation anymore."
         cut_t = int(em.parse_z(cut_rec.get("timestamp")) or time.time())
         root_rec = ad.by_uuid.get(root) or {}
         root_t = int(em.parse_z(root_rec.get("timestamp")) or cut_t)
@@ -4521,6 +4526,34 @@ def _comment_update(parent_sid, tid, **changes):
                 _save_comments(parent_sid, data)
                 return th
     return None
+
+
+def _comment_update_if(parent_sid, tid, expect, **changes):
+    """Compare-and-set under the lock: apply `changes` only while the row's status is in `expect`.
+    Returns (prior_status, row) — row None on refusal or a missing thread ('' prior). Every op that
+    kills or mutates based on a thread's status decides THROUGH this, never on a pre-lock read: a
+    resolve racing a promote otherwise reads 'open', wins the write, and hands the follow-on delete
+    a freshly promoted BOARD session to kill."""
+    with _comments_lock:
+        data = _load_comments(parent_sid)
+        for th in data.get("threads") or []:
+            if th.get("tid") == tid:
+                prior = th.get("status") or "open"
+                if prior not in expect:
+                    return prior, None
+                th.update(changes)
+                _save_comments(parent_sid, data)
+                return prior, th
+    return "", None
+
+
+def _comment_status_refusal(prior):
+    """The warn text for a CAS refusal, by the status that won."""
+    if prior == "promoted":
+        return "this thread is now its own session; end it like any session."
+    if prior == "promoting":
+        return "this thread is becoming its own session; give it a moment."
+    return "that thread is gone."
 
 
 def _comment_prose_record(r):
@@ -4687,8 +4720,9 @@ def _thread_messages(tsid, cut_uuid):
         return []       # the cut isn't in this transcript (corrupt row?) — an empty popover beats
         #                 presenting the copied parent history as the thread's own conversation
     rows, u, hops = [], leaf, 0
-    # the boot reconcile's continuation notice is romp's, not the user's — it must not render as a
-    # 'you' bubble in the popover (the module is loaded lazily; unavailable → nothing to filter)
+    # romp's own injections are not the user's words: anything wearing the `<!-- romp-` marker
+    # (nudges, notices) plus the boot reconcile's continuation text (marker-less by design) must
+    # not render as a 'you' bubble in the popover
     boot_nudge = getattr(sys.modules.get("romp_sdk_backend"), "BOOT_RESUME_NUDGE", None)
     while u is not None and hops < 500000:
         if u == cut_uuid:
@@ -4696,7 +4730,7 @@ def _thread_messages(tsid, cut_uuid):
         r = by_uuid.get(u) or {}
         if r.get("type") in ("user", "assistant"):
             txt = _comment_msg_text(r)
-            if txt and txt != boot_nudge:
+            if txt and txt != boot_nudge and not (r.get("type") == "user" and "<!-- romp-" in txt):
                 rows.append({"who": "you" if r.get("type") == "user" else "agent",
                              "text": txt[:4000],
                              "t": int(em.parse_z(r.get("timestamp")) or 0)})
@@ -4730,18 +4764,24 @@ def _comments_frame(sid):
     for th in _load_comments(sid).get("threads") or []:
         tsid = str(th.get("sid") or "")
         status = th.get("status") or "open"
-        state = ""
+        state, err = "", ""
         if be and status == "open":
             try:
                 state = be.session_state(tsid)
             except Exception:
                 state = ""
+            try:
+                le = be.launch_error(tsid) if hasattr(be, "launch_error") else None
+                err = str((le or {}).get("text") or "")[:300]   # a thread whose CLI can't start must
+                #                                                 say so, not pulse dots forever
+            except Exception:
+                err = ""
         msgs = [] if status == "promoted" else _thread_messages(tsid, str(th.get("cutUuid") or ""))
         seen = int(th.get("lastSeenT") or 0)
         unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
                         "exact": str(th.get("exact") or "")[:500], "status": status,
-                        "createdT": th.get("createdT") or 0, "state": state,
+                        "createdT": th.get("createdT") or 0, "state": state, "error": err,
                         "unread": unread, "promotedName": th.get("promotedName") or "",
                         "msgs": msgs})
     return {"type": "comments", "id": sid, "threads": threads}
@@ -4793,38 +4833,34 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
 def _comment_reply(parent_sid, tid, text):
     """Send the user's next message into an existing thread. A resolved thread reopens — replying IS
     the reopen gesture (event-based; no separate arm). Returns an error string or None."""
-    th = _comment_thread(parent_sid, tid)
-    if not th:
-        return "that thread is gone."
-    if (th.get("status") or "open") == "promoted":
-        return "this thread is now the session '%s'; continue there." % (th.get("promotedName") or "")
     be = Sessions.backend_for(parent_sid)
     if not hasattr(be, "fork"):
         return "threads need the SDK backend."
+    prior, th = _comment_update_if(parent_sid, tid, ("open", "resolved"),
+                                   status="open", lastSeenT=int(time.time()))
+    if th is None:
+        if prior == "promoted":
+            row = _comment_thread(parent_sid, tid) or {}
+            return "this thread is now the session '%s'; continue there." % (row.get("promotedName") or "")
+        return _comment_status_refusal(prior)
     tsid = th["sid"]
-    if th.get("status") == "resolved":
+    if prior == "resolved":
         reg = _thread_reg(tsid)
         be.resume(reg.get("name") or ("thread-" + tsid[:8]), tsid)   # alive again; names/ untouched
-        _comment_update(parent_sid, tid, status="open")
     if not be.send(tsid, str(text)):
         return "couldn't reach this thread's session; it may have been removed."
-    _comment_update(parent_sid, tid, lastSeenT=int(time.time()))
     _push_soon()
     return None
 
 
 def _comment_resolve(parent_sid, tid):
     """Settle a thread: status→resolved and its CLI shut down (the reg stays — a later reply
-    resumes it with the conversation intact). The highlight dims; nothing is lost. A PROMOTED
-    thread is refused: its session is a board citizen now, and flipping the stored status would
-    hand the follow-on delete a session to kill (the UI hides Resolve there; the guard holds for
-    a stale client regardless)."""
-    th = _comment_thread(parent_sid, tid)
-    if not th:
-        return "that thread is gone."
-    if (th.get("status") or "open") == "promoted":
-        return "this thread is now the session '%s'; end it like any session." % (th.get("promotedName") or "")
-    _comment_update(parent_sid, tid, status="resolved")
+    resumes it with the conversation intact). The highlight dims; nothing is lost. PROMOTED and
+    PROMOTING threads are refused THROUGH the CAS, never a pre-lock read: the session is (becoming)
+    a board citizen, and a racing status write would hand the follow-on delete a session to kill."""
+    prior, th = _comment_update_if(parent_sid, tid, ("open", "resolved"), status="resolved")
+    if th is None:
+        return _comment_status_refusal(prior)
     be = Sessions.backend_for(parent_sid)
     if hasattr(be, "kill"):
         try:
@@ -4837,20 +4873,26 @@ def _comment_resolve(parent_sid, tid):
 
 def _comment_delete(parent_sid, tid):
     """Remove a thread outright (the popover's delete on a resolved thread). The thread's transcript
-    stays on disk like any conversation history; only romp's row and CLI go."""
-    th = _comment_thread(parent_sid, tid)
-    if not th:
-        return "that thread is gone."
+    stays on disk like any conversation history; only romp's row and CLI go. The status is read and
+    the row removed under ONE lock hold, so the kill decision can never race a promote; a promoted
+    row deletes its highlight but never touches the board session it became."""
+    with _comments_lock:
+        data = _load_comments(parent_sid)
+        rows = data.get("threads") or []
+        th = next((t for t in rows if t.get("tid") == tid), None)
+        if not th:
+            return "that thread is gone."
+        status = th.get("status") or "open"
+        if status == "promoting":
+            return _comment_status_refusal(status)
+        data["threads"] = [t for t in rows if t.get("tid") != tid]
+        _save_comments(parent_sid, data)
     be = Sessions.backend_for(parent_sid)
-    if hasattr(be, "kill") and th.get("status") != "promoted":
+    if hasattr(be, "kill") and status != "promoted":
         try:
             be.kill(th["sid"])
         except Exception:
             pass
-    with _comments_lock:
-        data = _load_comments(parent_sid)
-        data["threads"] = [t for t in data.get("threads") or [] if t.get("tid") != tid]
-        _save_comments(parent_sid, data)
     _push_soon()
     return None
 
@@ -4885,42 +4927,53 @@ def _comment_promote(parent_sid, tid, new_name, now=None):
     nm = (new_name or "").strip()
     if not NAME_RE.match(nm):
         return "session names use letters, digits, . _ - only."
-    th = _comment_thread(parent_sid, tid)
-    if not th:
-        return "that thread is gone."
-    if (th.get("status") or "open") == "promoted":
-        return "already its own session: %s" % (th.get("promotedName") or "")
     be = Sessions.backend_for(parent_sid)
     if not (hasattr(be, "promote_thread") and _sdk_ready()):
         return "threads need the SDK backend."
+    # LATCH first (status='promoting', a CAS under the lock): the seeding below takes real time on a
+    # big parent transcript, and a resolve/delete landing inside that window used to read 'open',
+    # win its status write, and kill the just-promoted board session. With the latch they refuse.
+    prior, th = _comment_update_if(parent_sid, tid, ("open", "resolved"), status="promoting")
+    if th is None:
+        if prior == "promoted":
+            row = _comment_thread(parent_sid, tid) or {}
+            return "already its own session: %s" % (row.get("promotedName") or "")
+        return _comment_status_refusal(prior)
+    def _revert(msg):
+        _comment_update(parent_sid, tid, status=prior)   # the latch never sticks on a failed promote
+        return msg
     now = now or time.time()
     tsid = th["sid"]
     reg = _thread_reg(tsid)
     tpath = _thread_transcript_path(reg, tsid)
     if not os.path.exists(tpath):
-        return "this thread hasn't written its conversation yet; try again in a moment."
+        return _revert("this thread hasn't written its conversation yet; try again in a moment.")
     sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
     parent_path = sess["path"] if sess else str(jd._proj_dir(reg.get("cwd") or "~") / (parent_sid + ".jsonl"))
     err = _seed_fork_stores(parent_sid, tsid, parent_path, str(th.get("cutUuid") or ""))
     if err:
-        return err
+        return _revert(err)
     try:                                            # floor past the settled popover exchange
         ad = em.FileAdapter([tpath], tpath)
         leaf = ad.leaf_uuid
         leaf_t = int(em.parse_z((ad.by_uuid.get(leaf) or {}).get("timestamp")) or now)
         jd.append_episode(tsid, leaf, reg.get("lastSid") or tsid, leaf_t)
     except Exception as e:
-        return "not promoted: sealing the thread's history failed: %s" % e
-    if th.get("status") == "resolved":
+        return _revert("not promoted: sealing the thread's history failed: %s" % e)
+    if prior == "resolved":
         be.resume(nm, tsid)                          # a resolved thread promotes straight to a live session
     bg, fg = _pick_identity_color()
     if not be.promote_thread(tsid, nm, bg, fg):
-        return "couldn't promote this thread."
+        return _revert("couldn't promote this thread.")
     _comment_update(parent_sid, tid, status="promoted", promotedName=nm)
-    be.connect(tsid)
+    started = be.connect(tsid)
     _reveal_chat({"type": "focus", "id": tsid})
     _mark_views_dirty()
     _push_session_now(tsid)
+    if not started:
+        # promoted (the store/name writes stand), but the CLI didn't come up — say so instead of
+        # presenting a dead tab as a healthy one (fail loudly)
+        return "the thread is now the session '%s', but its process didn't start — revive it from its tab." % nm
     return None
 
 
@@ -23158,6 +23211,7 @@ class Handler(BaseHTTPRequestHandler):
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
                     be.kill(sid)
                     _record_death(sid, int(time.time()), "kill")
+                    _comment_kill_all(sid, be)   # its comment threads must not outlive it (the WS endSession twin)
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_all()
                 return self._send(200, json.dumps({"ok": True}), "application/json")

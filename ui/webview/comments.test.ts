@@ -74,6 +74,12 @@ test("prunePending spends a pending row when its message lands", () => {
   assert.deepEqual(prunePending(pending, msgs), [{ text: "and the cap?", t: 2 }]);
 });
 
+test("prunePending spends one pending per landed message — a repeated reply keeps its bubble", () => {
+  const pending = [{ text: "why?", t: 1 }, { text: "why?", t: 2 }];
+  const msgs = [{ who: "you" as const, text: "why?", t: 5 }];
+  assert.deepEqual(prunePending(pending, msgs), [{ text: "why?", t: 2 }]);
+});
+
 // ── source pins: the wiring (render.ts, kernel.py, sdk_backend.py, styles.css) ─────────────────
 
 const UI = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
@@ -135,6 +141,26 @@ test("ending the parent sweeps its threads' CLIs — no unreachable running sess
 
 test("the projection never reads the parent transcript pre-fork", () => {
   assert.match(KERNEL, /if reg\.get\("forkOf"\):\s*\n\s*return \[\]/);
+});
+
+test("promote latches the row before seeding; racing ops refuse through the CAS", () => {
+  assert.match(KERNEL, /def _comment_update_if\(parent_sid, tid, expect, \*\*changes\):/);
+  assert.match(KERNEL, /_comment_update_if\(parent_sid, tid, \("open", "resolved"\), status="promoting"\)/);
+  assert.match(KERNEL, /def _revert\(msg\):/);
+});
+
+test("the /kill route sweeps comment threads like the WS endSession op", () => {
+  assert.match(KERNEL, /_comment_kill_all\(sid, be\)\s+# its comment threads must not outlive it \(the WS endSession twin\)/);
+});
+
+test("a thread that couldn't start says so instead of pulsing dots forever", () => {
+  assert.match(KERNEL, /be\.launch_error\(tsid\) if hasattr\(be, "launch_error"\) else None/);
+  assert.match(UI, /cmt-note cmt-err/);
+  assert.match(UI, /!th\.error && \(threadBusy\(th\.state\) \|\| pend\.length\)/);
+});
+
+test("Delete is offered only on resolved threads, never mid-promote", () => {
+  assert.match(UI, /\} else if \(th\.status === "resolved"\) \{\s+\/\/ never for 'promoting'/);
 });
 
 test("break out posts commentPromote and acks with a provisional tab", () => {

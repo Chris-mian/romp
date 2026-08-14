@@ -2424,3 +2424,4 @@ mark.cmt-hl.busy { border-bottom-style: solid; animation: cmt-busy-pulse 1.2s ea
 }
 .cmt-act:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); }
 .cmt-act.cmt-del.armed { border-color: var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
+.cmt-note.cmt-err { color: var(--st-blocked-bg, #c94f4f); opacity: 0.9; }

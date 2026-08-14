@@ -284,6 +284,27 @@ class ThreadProjection(CommentBase):
              "alive": True, "threadOf": PARENT, "forkOf": PARENT, "forkAt": "a1"}))
         self.assertEqual(km._thread_messages(THREAD, "a1"), [])
 
+    def test_an_injected_marker_message_is_not_the_users(self):
+        recs = self._thread_records()
+        recs.append({"type": "user", "timestamp": iso(self.now - 80), "uuid": "inj1",
+                     "parentUuid": "ca2", "promptSource": "typed",
+                     "message": {"role": "user",
+                                 "content": "<!-- romp-injected -->Where does this stand?"}})
+        self._seed_thread(records=recs)
+        msgs = km._thread_messages(THREAD, "a1")
+        self.assertNotIn("Where does this stand", json.dumps(msgs))
+
+    def test_frame_surfaces_a_thread_launch_error(self):
+        self._seed_thread()
+        class _Stub:
+            def session_state(self, sid):
+                return ""
+            def launch_error(self, sid):
+                return {"text": "its process couldn't start (a synthetic reason)", "at": 0, "limit": False}
+        km._sdk = lambda: _Stub()
+        fr = km._comments_frame(PARENT)
+        self.assertIn("couldn't start", fr["threads"][0]["error"])
+
     def test_a_compaction_summary_record_is_not_a_message(self):
         recs = self._thread_records()
         recs.append({"type": "user", "timestamp": iso(self.now - 90), "uuid": "cs1",
@@ -446,11 +467,47 @@ class CommentOps(CommentBase):
         err = km._comment_promote(PARENT, tid, "bad name!")
         self.assertIn("letters, digits", err)
 
+    def test_the_promoting_latch_refuses_resolve_delete_and_reply(self):
+        # promote seeds for seconds on a big transcript; ops landing in that window must refuse
+        # THROUGH the CAS, or a racing resolve kills the just-promoted board session
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        km._comment_update(PARENT, tid, status="promoting")
+        calls_before = list(self.be.calls)
+        for op in (km._comment_resolve, km._comment_delete):
+            err = op(PARENT, tid)
+            self.assertIn("becoming its own session", err)
+        err = km._comment_reply(PARENT, tid, "hello?")
+        self.assertIn("becoming its own session", err)
+        self.assertEqual(km._comment_thread(PARENT, tid)["status"], "promoting")
+        self.assertEqual(self.be.calls, calls_before, "no kill, no send — the latch holds")
+
+    def test_a_failed_promote_reverts_the_latch(self):
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        t = self.now - 200
+        self._write(tid, [uline(t, "opener", "cu1"), aline(t + 10, "reply", "ca1", parent="cu1")])
+        (jd.SDKDIR / (tid + ".json")).write_text(json.dumps(
+            {"sid": tid, "name": "thread-x", "cwd": self.cdir,
+             "lastSid": tid, "alive": True, "threadOf": PARENT}))
+        saved = km._seed_fork_stores
+        km._seed_fork_stores = lambda *a, **k: "seeding failed on purpose"
+        try:
+            err = km._comment_promote(PARENT, tid, "sidework")
+        finally:
+            km._seed_fork_stores = saved
+        self.assertIn("seeding failed", err)
+        self.assertEqual(km._comment_thread(PARENT, tid)["status"], "open",
+                         "the latch must never stick on a failed promote")
+
+    def test_seed_fork_stores_refuses_a_vanished_cut(self):
+        p = self.proj / (PARENT + ".jsonl")
+        err = km._seed_fork_stores(PARENT, THREAD, str(p), "gone-uuid")
+        self.assertIn("isn't in the conversation anymore", err)
+
     def test_resolve_refuses_a_promoted_thread_so_delete_can_never_kill_its_session(self):
         _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
         km._comment_update(PARENT, tid, status="promoted", promotedName="sidework")
         err = km._comment_resolve(PARENT, tid)
-        self.assertIn("sidework", err)
+        self.assertIn("its own session", err)
         self.assertEqual(km._comment_thread(PARENT, tid)["status"], "promoted",
                          "resolve must never overwrite promoted — that hands delete a session to kill")
         km._comment_delete(PARENT, tid)                 # removing the highlight row is fine…

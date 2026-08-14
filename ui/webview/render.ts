@@ -5229,7 +5229,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     n.classList.add("pending");
     list.appendChild(n);
   }
-  if (th.status === "open" && (threadBusy(th.state) || pend.length)) {
+  if (th.status === "open" && !th.error && (threadBusy(th.state) || pend.length)) {
     const dots = el("div", "cmt-dots");
     dots.append(el("span"), el("span"), el("span"));
     list.appendChild(dots);
@@ -5239,12 +5239,19 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     note.textContent = "This thread hit a prompt it can't answer from here. Break it out to continue.";
     list.appendChild(note);
   }
+  if (th.status === "open" && th.error) {
+    // the CLI behind this thread could not start — dots pulsing forever would be a lie
+    const note = el("div", "cmt-note cmt-err");
+    note.textContent = th.error;
+    list.appendChild(note);
+  }
   list.scrollTop = atTail ? list.scrollHeight : prevScroll;
 }
 
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
   return create ? "New thread"
     : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
+    : th!.status === "promoting" ? "Breaking out…"
     : th!.status === "resolved" ? "Thread (resolved)" : "Thread";
 }
 
@@ -5358,7 +5365,7 @@ function renderCommentPopover(): void {
         rs.title = "Settle this thread: the highlight dims, and replying reopens it";
         rs.dataset.act = "cmtresolve";
         row.appendChild(rs);
-      } else {
+      } else if (th.status === "resolved") {   // never for 'promoting' — the kernel would refuse anyway
         const dl = el("button", "cmt-act cmt-del") as HTMLButtonElement;
         dl.type = "button";
         dl.textContent = "Delete";
@@ -9146,8 +9153,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
   }
   // the create ack names the new thread: adopt exactly it (never a guess). The kernel sends the
-  // frame first; if this ack somehow beat it, park the tid and the next frame adopts.
+  // frame first; if this ack somehow beat it, park the tid and the next frame adopts. The draft is
+  // spent UNCONDITIONALLY off the echoed anchor uuid — a popover closed before the ack otherwise
+  // leaves its sent words to resurface in the next composer on the same passage.
   else if (m.type === "commentCreated" && m.id && m.tid) {
+    if (m.uuid) commentDrafts.delete("new:" + String(m.uuid));
     if (pendingCommentAnchor && pendingCommentAnchor.sid === m.id) {
       const tid = String(m.tid);
       if ((commentThreads.get(String(m.id)) || []).some((t) => t.tid === tid)) adoptCommentThread(String(m.id), tid);
