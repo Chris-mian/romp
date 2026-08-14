@@ -513,7 +513,8 @@ class FileAdapter:
     ancestors and drop out for free; `/clear` leaves no parent link so the walk
     stops there and pre-clear history drops out naturally."""
 
-    def __init__(self, candidate_files, leaf_path, leaf_override=None):
+    def __init__(self, candidate_files, leaf_path, leaf_override=None, resume_links=None):
+        self.resume_links = dict(resume_links or {})   # {to_fsid: from_fsid} — recorded resume forks (states/ rows)
         self.by_uuid = {}        # uuid -> record
         self.fsid_of = {}        # uuid -> transcript file stem (provenance / click-to-open)
         self.seq_of = {}         # uuid -> global read order (tie-break for equal timestamps)
@@ -560,6 +561,32 @@ class FileAdapter:
         if leaf_override and leaf_override in self.by_uuid:
             self.leaf_uuid = leaf_override
         self._repair_compaction_stitches()
+        self._stitch_resume_forks()
+
+    def _stitch_resume_forks(self):
+        """Some CLI resumes of a machine-cut turn FORK the transcript with a FRESH head (parentUuid
+        null, no cross-file back-link) instead of continuing the chain. On disk that fork is
+        byte-indistinguishable from a /clear, so kept_uuids dropped the ENTIRE pre-cut conversation
+        and the judges never saw the cut turn's work again — an hourly watch's finding lost its card
+        to two mid-turn restarts (the user 2026-08-14). The kernel records the fork the moment the
+        resumed CLI's init reports the new fsid (states/ resumeFork rows -> resume_links), so the
+        lineage is an exact recorded event, never a guess: re-point the fork head's parent at the
+        resumed file's last uuid-bearing record, restoring ONE chain the walk can cross (the
+        compaction-stitch precedent above). Only a genuinely fresh head is stitched — an intact
+        back-link is never overridden — and a /clear records no lineage, so its history keeps
+        dropping by design."""
+        if not self.resume_links:
+            return
+        first_of, last_of = {}, {}
+        for u in self.by_uuid:               # insertion order = file read order
+            fs = self.fsid_of.get(u)
+            if fs not in first_of:
+                first_of[fs] = u
+            last_of[fs] = u
+        for to, frm in self.resume_links.items():
+            head, tail = first_of.get(to), last_of.get(frm)
+            if head and tail and head != tail and self.parent_of.get(head) is None:
+                self.parent_of[head] = tail
 
     def _repair_compaction_stitches(self):
         """Claude Code sometimes writes a compact_boundary whose logicalParentUuid points
@@ -1308,6 +1335,20 @@ def _load_states(states):
     return list(states) if isinstance(states, list) else list(_read_jsonl(states))
 
 
+def resume_fork_links(srows):
+    """{to_fsid: from_fsid} from states/ resumeFork rows — the kernel's exact record that a resume of
+    a machine-cut turn FORKED the transcript (fresh head) instead of continuing the chain. See
+    FileAdapter._stitch_resume_forks for why the parse needs it; the kernel's episode-boundary check
+    reads the same rows (jd.resume_lineage) to keep the fork from being processed as a /clear. Last
+    row wins per fork head; malformed rows are skipped (a missing lineage simply keeps the old drop)."""
+    links = {}
+    for r in srows or []:
+        rf = r.get("resumeFork")
+        if isinstance(rf, dict) and rf.get("from") and rf.get("to"):
+            links[str(rf["to"])] = str(rf["from"])
+    return links
+
+
 def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None,
                   candidate_files=None, states=None, postal_log=None, now=None, sdk_human=False,
                   leaf_override=None):
@@ -1335,10 +1376,28 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     if candidate_files is None:
         candidate_files = [str(leaf_path)]
     postal_index = _load_postal_index(postal_log)
-    adapter = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override)
+    _srows = _load_states(states)
+    links = resume_fork_links(_srows)
+    if links:
+        # The lineage closure joins the candidate set: a fork chain across several restarts needs
+        # every resumed-from file present for the stitched walk to cross (the caller's anchor covers
+        # only one hop). Resolved HERE so both parses (the judge's and the kernel's) inherit it from
+        # the one states plumbing they already share. From-files are frozen after their fork (the CLI
+        # writes only the new file), so the callers' cache keys — candidate files + the states file,
+        # whose mtime moves when a lineage row lands — stay honest without knowing about these.
+        have = {Path(f).stem for f in candidate_files}
+        stem, hops = leaf_path.stem, 0
+        candidate_files = list(candidate_files)
+        while stem in links and hops < 16:
+            stem = links[stem]
+            hops += 1
+            fp = leaf_path.with_name(stem + ".jsonl")
+            if stem not in have and fp.exists():
+                candidate_files.append(str(fp))
+                have.add(stem)
+    adapter = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override, resume_links=links)
     adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
-    _srows = _load_states(states)
     landed = adapter.landed_text_uuids()         # replies the disk kept on ANY branch — never a loss
     orphans = synthesize_orphans(_srows, atoms, landed_text_uuids=landed)
     #                                            # salvaged replies FIRST: they are real atoms the turn

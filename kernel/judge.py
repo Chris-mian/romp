@@ -146,7 +146,7 @@ JUDGE_FAIL_CAP = 3                       # the same rule for every other retryin
 #                                          model actually wrote. Closer / grouper / consolidator / courier; the
 #                                          planner (PLAN_PARSE_RETRIES) and distiller/briefer (DISTILL_FAIL_CAP)
 #                                          already had their own.
-PLACEMENTS_V = 8                         # placements-identity schema version (plan P2, the user 2026-07-06).
+PLACEMENTS_V = 9                         # placements-identity schema version (plan P2, the user 2026-07-06).
 #                                          v2 (2026-07-09): a 07-07/07-08 change to segment-text derivation
 #                                          stepped the text hash without this bump — dormant segments' old-hash
 #                                          placements stopped matching, and every restart/touch replayed them as
@@ -193,6 +193,13 @@ PLACEMENTS_V = 8                         # placements-identity schema version (p
 #                                          every skill/custom-command invocation drops out. v5's shape in
 #                                          reverse: a SMALLER atom set for transcripts carrying shape-B
 #                                          commands, same seal.
+#                                          v9 (2026-08-14): the resume-fork stitch (em._stitch_resume_forks)
+#                                          restores the pre-cut conversation of every machine-cut turn whose
+#                                          resume forked a fresh-headed transcript — previously dropped as a
+#                                          /clear, so a cut turn's work never carded (the lost PR-watch
+#                                          finding). v3's shape: a GROWN atom set for every forked session
+#                                          (865 such files in one live corpus), so the seal is what keeps
+#                                          months of restored history from replaying as fresh cards.
 PLAN_SESSIONS = None                     # per-pass session cap — REMOVED (the user 2026-06-30): the fairness
                                          # caps were a recurring source of confusing starvation bugs (a goal/
                                          # nudge stuck behind a full per-pass window), never clearly needed.
@@ -3632,6 +3639,28 @@ def episode_last(sid):
     """The last recorded episode row of `sid` ({"head","fsid","t"}) or None."""
     rows = episode_rows(sid)
     return rows[-1] if rows else None
+
+
+def resume_lineage(sid):
+    """states/ resumeFork rows for this session ([{"from","to","t"}, ...]) — the kernel's exact record
+    that a resume of a machine-cut turn FORKED the transcript (fresh head) rather than continuing the
+    chain. The episode-boundary check reads this to keep such a fork from being processed as a /clear
+    (which settled the session's open cards mid-turn, 2026-08-14); the parser consumes the same rows
+    through parse_session's states plumbing (em.resume_fork_links / FileAdapter._stitch_resume_forks)."""
+    out = []
+    try:
+        lines = (STATESDIR / (sid + ".jsonl")).read_text().splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        rf = r.get("resumeFork")
+        if isinstance(rf, dict) and rf.get("from") and rf.get("to"):
+            out.append({"from": str(rf["from"]), "to": str(rf["to"]), "t": r.get("t")})
+    return out
 
 
 def append_episode(sid, head, fsid, t):

@@ -615,6 +615,25 @@ def append_machine_cut(state_dir: Path, sid: str, cause: str, t: float | None = 
         f.write(json.dumps(rec) + "\n")
 
 
+def append_resume_fork(state_dir: Path, sid: str, from_fsid: str, to_fsid: str, t: float | None = None) -> None:
+    """Record that a RESUME landed on a fresh-headed transcript fork: the CLI's init reported a NEW
+    fsid for a conversation we asked it to continue (--resume), with no /clear in flight and no
+    born-as-a-fork copy pending. On disk that fork is byte-indistinguishable from a /clear
+    (parentUuid-null head, no cross-file back-link), so without this row the parser dropped the entire
+    pre-cut conversation and the episode check settled its open cards — a machine-cut watch turn's
+    finding vanished to two mid-turn restarts (the user 2026-08-14). Written at the init flip, the one
+    event that knows the old->new binding (the registry can't serve: lastSid is overwritten per fork).
+    Consumers: em.resume_fork_links/_stitch_resume_forks (the parse) and jd.resume_lineage (the
+    kernel's episode-boundary stand-down). Its own "resumeFork" key, like machineCut, so the
+    state/awaiting readers skip it."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": time.time() if t is None else float(t),
+           "resumeFork": {"from": str(from_fsid), "to": str(to_fsid)}}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def append_awaiting(state_dir: Path, sid: str, awaiting: bool, why: str = "") -> None:
     """Append an "awaiting" OVERLAY record to states/<sid>.jsonl (interleaved with the state
     records; the kernel reader scans for the latest line carrying an "awaiting" key). "Awaiting" =
@@ -2148,11 +2167,18 @@ class SdkSession:
             self.backend._note_auth_source(self, d.get("apiKeySource"))
             fsid = d.get("session_id")
             if fsid and fsid != self.resume_sid:
+                old = self.resume_sid
                 self.resume_sid = fsid
                 self.backend._update_reg(self.sid, lastSid=fsid)
                 # A lastSid flip IS a fork landing — for a /clear, the fresh conversation now exists, so the
                 # clearing bracket ends here (event-based; the ResultMessage below is only the backstop).
+                clearing = self._clearing
                 self._clearing = False
+                # A RESUME landing on a NEW fsid = a fresh-headed fork: record the old->new lineage
+                # (see append_resume_fork for the full story — the parser stitches the chain from it,
+                # the user 2026-08-14). A /clear's flip and a born-as-a-fork copy record nothing.
+                if old and not clearing and not self._fork_of:
+                    append_resume_fork(self.backend.state_dir, self.sid, old, fsid)
             if self._fork_of and fsid == self.sid:
                 # The BORN-AS-A-FORK session's copy landed (the CLI now owns a transcript pinned to this
                 # sid). Spend the fork flags: a later reconnect must resume the fork's OWN conversation
