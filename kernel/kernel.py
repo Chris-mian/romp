@@ -20587,9 +20587,12 @@ function hasBars(u){return !!(u&&(u.fiveHour||u.sevenDay||u.fable));}
 // once (the user 2026-08-08), so presence of the windows is the whole test. strip.ts carries the same
 // branch; the two copies must stay in step (rail-spend pins).
 function hasSpend(u){return !!(u&&u.spend&&(u.spend.day||u.spend.fiveHour));}
-function fmtTok(n){if(n>=1e9)return (n/1e9).toFixed(1).replace(/\.0$/,'')+'B';
-if(n>=1e6)return (n/1e6).toFixed(1).replace(/\.0$/,'')+'M';
-if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'k';return String(n);}
+// 3 significant figures at every magnitude (the user 2026-08-13: a bare '1B tok' hides a third of a
+// billion tokens) — 1.32B / 13.2B / 132B, trailing zeros kept so the precision reads as meant.
+function fmtSig3(v){return v.toFixed(v>=100?0:v>=10?1:2);}
+function fmtTok(n){if(n>=1e9)return fmtSig3(n/1e9)+'B';
+if(n>=1e6)return fmtSig3(n/1e6)+'M';
+if(n>=1e3)return fmtSig3(n/1e3)+'k';return String(n);}
 function fmtUsd(v){return '$'+String(Math.round(v));}   // whole dollars everywhere — no cents (the user 2026-08-09)
 // pay-per-token has no reset windows (the user 2026-08-13): the key's story is 1 day / 1 week / 1 month.
 // fiveHour/sevenDay fallbacks remain readable from older remote kernels (version skew) via day||fiveHour.
