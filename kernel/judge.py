@@ -710,6 +710,41 @@ def _judge_env(tier, auth="login"):
 _RATE_GATE_LOGGED = {}                   # bucket -> resets_at already announced (one line per window)
 
 
+# ───────────────────────── distiller notes (the user's standing style memory) ─────────────────────────
+# The prose judges write copy the USER reads (takeaways, decision briefs, stall notes, captions, resume
+# rows). This file is their standing style memory: plain-language notes on how that copy should read
+# (the user 2026-08-14, whose first note bans PR/commit numbers in favor of what the change does).
+# Read at CALL time like the other ~/.config/romp knobs, so an edit applies from the very next call, no
+# restart; $ROMP_DISTILLER_NOTES overrides the path (the test seam). Absent/empty/unreadable → "" and no
+# section: no notes is a normal state, not a degraded source — the file itself IS the authoritative
+# source. Capped so a runaway file cannot bloat every prompt. The PLACEMENT judges (planner, opener,
+# placer, grouper, closer, unblocker) are deliberately excluded — they emit verdicts, not user-facing
+# prose — and so is the courier, whose copy is read by AGENTS in the user's voice: style notes about
+# what the user wants to READ must never leak into what an agent is asked to DO.
+_USER_NOTES_JUDGES = frozenset({"distiller", "briefer", "staller", "captioner", "gister", "archiver"})
+_USER_NOTES_CAP = 4000
+
+
+def _user_notes():
+    try:
+        p = Path(os.environ.get("ROMP_DISTILLER_NOTES") or os.path.expanduser("~/.config/romp/distiller-notes.md"))
+        return p.read_text(errors="replace").strip()[:_USER_NOTES_CAP]
+    except OSError:
+        return ""
+
+
+def _with_user_notes(sys_prompt, judge):
+    """sys_prompt, plus the user's standing notes when this judge writes prose the user reads."""
+    if judge not in _USER_NOTES_JUDGES:
+        return sys_prompt
+    notes = _user_notes()
+    if not notes:
+        return sys_prompt
+    return (sys_prompt + "\n\nThe user keeps standing notes on how the prose you write for them should "
+            "read. They are style preferences, not material: never quote, mention, or answer them. Where "
+            "a note conflicts with the rules above, the note wins:\n<user-notes>\n" + notes + "\n</user-notes>")
+
+
 def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     """Run ONE judge model call. ..."""
     _judge_ctx.paused = False                         # a SKIPPED-because-paused call is not a failure: the
@@ -742,6 +777,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     except Exception:
         pass
     fsid = getattr(_judge_ctx, "fsid", None)
+    sys_prompt = _with_user_notes(sys_prompt, judge)  # the user's standing style notes ride every prose call
     auth = _judge_auth(fsid)                          # this call bills what the judged session bills
     env = _judge_env(tier, auth)
     # Per-tier effort from the gear (STATE/judge-effort | index-effort) when the caller didn't pass one — "" or
