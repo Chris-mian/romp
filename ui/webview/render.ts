@@ -187,6 +187,13 @@ type ChatEvent = (
   // and the synthesized /effort chip prunes on the next message — so this rail-anchored note marks WHEN the
   // new effort took effect, and stays. Kernel-interleaved by time, like `retried`. SDK-only.
   | { kind: "effortApplied"; effort: string; ts?: string; uuid?: string }
+  // Durable command GESTURE (the user 2026-08-14): a /model-/effort-/auth-style pick used to survive only as
+  // the synthesized live chip, which stale_cmd prunes on the next human turn — the user's own gesture then
+  // vanished from their side of the history while the applied note stayed. The kernel writes a
+  // {"t","cmdGesture"} marker at the request moment and interleaves this once the live chip retires, so the
+  // right side keeps "what you did" and the left rail keeps "it took effect". cmd is the full "/effort high"
+  // text. SDK-only, like effortApplied.
+  | { kind: "cmdGesture"; cmd: string; ts?: string; uuid?: string }
   // The model's safeguards flagged the prompt and the CLI retried the turn on a fallback model (the
   // transcript's system/model_refusal_fallback record). The reply that follows came from a DIFFERENT
   // model — conversation state that must be apparent in the chat, never silent (the user 2026-08-03).
@@ -1949,6 +1956,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "retryGaveUp") return renderRetryGaveUp(ev);
   if (ev.kind === "apiErrorNote") return renderApiErrorNote(ev);
   if (ev.kind === "effortApplied") return renderEffortApplied(ev);
+  if (ev.kind === "cmdGesture") return renderCmdGesture(ev);
   if (ev.kind === "modelFallback") return renderModelFallback(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
@@ -2528,6 +2536,20 @@ function renderEffortApplied(ev: Extract<ChatEvent, { kind: "effortApplied" }>):
   line.appendChild(txt);
   line.title = "reasoning effort is a connect-time setting; the session reconnected to apply it, and this marks when the new level took effect";
   turn.appendChild(line);
+  return turn;
+}
+
+// The durable COMMAND-GESTURE row (the user 2026-08-14): wears the SAME dress as a live command turn —
+// turn-user's flex-end puts it on the user's side, ✦ + the mono chip via the shared renderSlashCmd — so the
+// moment prune_live retires the synthesized chip and this interleaved event takes over is invisible. No
+// edit/delete/fork affordances on purpose: the uuid is synthetic ("cmdg:<t>"), not a rewindable transcript
+// atom, and a gesture is not a message to edit.
+function renderCmdGesture(ev: Extract<ChatEvent, { kind: "cmdGesture" }>): HTMLElement {
+  const turn = el("div", "turn turn-user turn-cmd");
+  turn.appendChild(dot("user"));
+  const bubble = el("div", "user-bubble md cmd-row");
+  if (!renderSlashCmd(bubble, ev.cmd)) bubble.textContent = ev.cmd;
+  turn.appendChild(bubble);
   return turn;
 }
 

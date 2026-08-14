@@ -10862,6 +10862,33 @@ def _effort_changes(sid):
     return out
 
 
+def _cmd_gestures(sid):
+    """Durable command-gesture markers from states/<sid>.jsonl — {"t":…,"cmdGesture":"/effort high"} lines the
+    SDK backend writes the moment a /model-/effort-/auth-style pick is made (append_cmd_gesture). Returns
+    [{"t":epoch,"cmd":str}, …] oldest first, so build_session can interleave a persistent right-side gesture
+    chip once prune_live retires the synthesized live one (the user 2026-08-14: the user's side of the history
+    keeps what they did; the applied note keeps that it happened). SDK-only — tmux commands are real
+    transcript turns already."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    out = []
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"cmdGesture"' not in line:             # cheap prefilter — most lines are plain state records
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                v = o.get("cmdGesture")
+                if isinstance(v, str) and v and o.get("t"):
+                    out.append({"t": int(o["t"]), "cmd": v})
+    except OSError:
+        return []
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
 # ── background-task box (the user 2026-06-26) ───────────────────────────────────────────────────────
 # Surface run_in_background tasks in the chat: a launch (a tool_use with run_in_background:true) paired with
 # its <task-notification> result. The harness folds those notifications into "system reminders" inline; this
@@ -13471,6 +13498,16 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
     recoveries = _retry_recoveries(sid); _ri = 0
     gaveups = _retry_gaveups(sid); _gi = 0            # the storm that DIDN'T recover → "gave up after N retries"
     efforts = _effort_changes(sid); _ei = 0
+    # Persistent command-gesture chips (the user 2026-08-14): the synthesized /model-/effort-/auth chip lives
+    # only in the backend's _live tail and stale_cmd prunes it on the next human turn — the durable marker
+    # takes over here. DEDUP'd by (t, text) against a still-live chip so the same gesture never doubles;
+    # flushed BEFORE the efforts loop so a same-second "/effort X" gesture sits above its "effort set to X".
+    gestures = _cmd_gestures(sid); _cgi = 0
+    _live_cmd_keys = set()
+    for _t in session["turns"]:
+        for _a in _t["atoms"]:
+            if _a.get("command") and _a.get("_echo_text"):
+                _live_cmd_keys.add((int(_a.get("t") or 0), _a["_echo_text"]))
     # Orphan replies (the user 2026-07-21): assistant text that streamed live but the transcript never kept
     # (an API-errored try). Interleave it back at its timestamp, DEDUP'd against what the disk DID keep — a
     # retry that re-replied must not double. Match exact, and either-way prefix (a partial stream vs its full
@@ -13490,7 +13527,7 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
     # rollback was consumed (the user 2026-08-03).
     _landed_uuids = set(parsed.get("landedTextUuids") or ())
     def _flush_recoveries(upto):
-        nonlocal _ri, _ei, _oi, _gi
+        nonlocal _ri, _ei, _oi, _gi, _cgi
         while _oi < len(orphans) and (upto is None or orphans[_oi]["t"] <= upto):
             _o = orphans[_oi]; _oi += 1
             if _o["uuid"] and _o["uuid"] in _landed_uuids:
@@ -13509,6 +13546,12 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             events.append({"kind": "retryGaveUp", "retries": _g["retries"],   # above the error text it settled with
                            "errorKind": _g["errorKind"], "ts": iso(_g["t"]),
                            "uuid": "gaveup:%d" % _g["t"]})
+        while _cgi < len(gestures) and (upto is None or gestures[_cgi]["t"] <= upto):
+            _cg = gestures[_cgi]; _cgi += 1
+            if (_cg["t"], _cg["cmd"]) in _live_cmd_keys:
+                continue                                   # the synthesized live chip still shows this gesture
+            events.append({"kind": "cmdGesture", "cmd": _cg["cmd"], "ts": iso(_cg["t"]),
+                           "uuid": "cmdg:%d" % _cg["t"]})
         while _ei < len(efforts) and (upto is None or efforts[_ei]["t"] <= upto):
             _e = efforts[_ei]; _ei += 1
             events.append({"kind": "effortApplied", "effort": _e["effort"], "ts": iso(_e["t"]),
