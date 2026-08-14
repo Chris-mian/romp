@@ -3,6 +3,7 @@
 through kernel restarts and reconnects). The set persists to timeline-dismissed.json, hydrates at boot,
 and a revived sid sheds its record (the un-dismiss event). Synthetic only — placeholder UUIDs, temp state.
 """
+import inspect
 import json
 import os
 import tempfile
@@ -27,11 +28,6 @@ SID = "11111111-2222-3333-4444-555555555555"
 SID2 = "66666666-7777-8888-9999-000000000000"
 
 
-def _reload_kernel(name):
-    """A fresh module instance over the SAME state dir — the restart, as the test sees it."""
-    return SourceFileLoader(name, os.path.join(BIN, "romp-kernel")).load_module()
-
-
 class DurableDismissals(unittest.TestCase):
     def setUp(self):
         km._dismissed_lanes.clear()
@@ -47,10 +43,16 @@ class DurableDismissals(unittest.TestCase):
         self.assertEqual(on_disk, [SID])
 
     def test_a_restart_remembers_the_cleared_lanes(self):
+        # Boot hydration is `_dismissed_lanes = _load_dismissed_lanes()` at module level; a restart is a
+        # fresh call of that loader over the same state dir, which is what this asserts. Deliberately NOT
+        # a full module re-execution: under pytest the whole suite shares one process, and the loader's
+        # name-reuse gives RELOAD semantics — the re-executed kernel re-resolves the judge state root
+        # from the LIVE env (moved by the conftest floor since this file's module body ran), so it reads
+        # a different dir than the one this test wrote. That was a real CI-only failure (2026-08-14).
         km._dismiss_lane(SID)
         km._dismiss_lane(SID2)
-        km2 = _reload_kernel("romp_kernel_restarted")
-        self.assertEqual(km2._dismissed_lanes, {SID, SID2})
+        self.assertEqual(km._load_dismissed_lanes(), {SID, SID2})
+        self.assertIn("_dismissed_lanes = _load_dismissed_lanes()", inspect.getsource(km))
 
     def test_a_revived_sid_sheds_its_record(self):
         km._dismiss_lane(SID)
