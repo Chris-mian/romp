@@ -529,6 +529,16 @@ def _version_info():
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
             "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),  # current per-tier judge efforts ("" = default/none)
+            "distillModel": jd._state_str("distill-model", "triage"),   # RAW ("triage" = follow the triage pick) — the gear shows the choice, not the resolution
+            "distillEffort": jd._state_str("distill-effort", "triage"),
+            # One dict with every kernel-side setting, lifted by a PEER kernel's /version poll onto its
+            # /tunnels row so its gear can mark controls where machines disagree (the user 2026-08-14).
+            # The top-level fields above stay: this tab's own gear and older kernels read those.
+            "settings": {"autoNudge": _auto_nudge_on(), "updateMode": _update_mode(),
+                         "judgeModel": jd._triage_model(), "judgeEffort": jd._triage_effort(),
+                         "indexModel": jd._index_model(), "indexEffort": jd._index_effort(),
+                         "distillModel": jd._state_str("distill-model", "triage"),
+                         "distillEffort": jd._state_str("distill-effort", "triage")},
             "defaultDir": _tilde(_default_create_dir()),   # the resolved default new-session dir → the gear "Default directory" field
             "nativeDialogs": _native_dialogs()}   # whether Browse… can draw a dialog HERE → the gear drops the button when it can't
 
@@ -7948,6 +7958,12 @@ def _remote_public(r):
             # — this is what lets it say so. null when the remote never reported one (an older kernel,
             # or a row that has not polled yet): unknown, which the gear leaves out rather than guesses.
             "autoNudge": r.get("auto_nudge") if isinstance(r.get("auto_nudge"), bool) else None,
+            # That machine's whole kernel-side settings dict, same /version poll (the user 2026-08-14:
+            # every kernel-side setting syncs, and the gear marks any control where a connected machine
+            # disagrees instead of showing the local answer as everyone's). null when the remote never
+            # reported one (an older kernel): unknown, left out of the mixed calc — never read as a
+            # disagreement to click away, exactly the autoNudge rule generalized.
+            "settings": r.get("settings") if isinstance(r.get("settings"), dict) else None,
             # fastForward: a push here would only ADD commits (the remote's is an ancestor of ours) — the
             # exact condition the automatic update fires on, so the row can say why it will or won't.
             # autoPush: that host's live phase (pushing / waiting / failed) → the popover's progress line and
@@ -8401,8 +8417,10 @@ def _poll_remote_version(r):
         j = json.loads(data.decode("utf-8")) or {}
         sha = j.get("kernel_sha") or None
         an = j.get("autoNudge")
+        st = j.get("settings")
         return {"sha": sha, "ver": str(j.get("kernel_ver") or ""),
-                "autoNudge": an if isinstance(an, bool) else None} if sha else None
+                "autoNudge": an if isinstance(an, bool) else None,
+                "settings": st if isinstance(st, dict) else None} if sha else None
     except Exception:
         return None
 
@@ -9465,6 +9483,7 @@ def _tunnel_supervisor():
                         r["kernel_sha"] = rsha
                         r["kernel_ver"] = (rver or {}).get("ver") or ""
                         r["auto_nudge"] = (rver or {}).get("autoNudge")   # None = that kernel didn't say
+                        r["settings"] = (rver or {}).get("settings")      # its whole kernel-side dict (None = older kernel)
                     if ruse is not None:
                         # {} = the host ANSWERED with nothing to show → clear; None = no answer (blip/
                         # rate-gate) → keep the last reading (see _poll_remote_usage)
@@ -18552,6 +18571,13 @@ def _set_judge_model(v):  _set_judge_state("judge-model", v, _MODEL_VALUES)
 def _set_index_model(v):  _set_judge_state("index-model", v, _MODEL_VALUES)
 def _set_judge_effort(v): _set_judge_state("judge-effort", v, _EFFORT_VALUES, allow_empty=True)
 def _set_index_effort(v): _set_judge_state("index-effort", v, _EFFORT_VALUES, allow_empty=True)
+# The distilling pair accepts extra sentinels (resolved by jd._distill_model/_distill_effort at call
+# time): "triage" (the default) means FOLLOW the triage pick live — exactly what the distiller/briefer/
+# staller did before the split (the user 2026-08-14) — and effort's "none" pins no-flag. "none" exists
+# because "" cannot: _state_str folds an empty file into the default, so an allow_empty pin here would
+# read back as "follow" (caught by test_distill_tier before it shipped).
+def _set_distill_model(v):  _set_judge_state("distill-model", v, _MODEL_VALUES | {"triage"})
+def _set_distill_effort(v): _set_judge_state("distill-effort", v, _EFFORT_VALUES | {"triage", "none"})
 
 
 # The four judge-tier settings PROPAGATE: a pick made here follows to every linked kernel (the user
@@ -18565,18 +18591,23 @@ def _set_index_effort(v): _set_judge_state("index-effort", v, _EFFORT_VALUES, al
 # made from (or forwarded via) the machine that owns its tunnel.
 
 _JUDGE_SETTING_FIELDS = (("judgeModel", _set_judge_model), ("indexModel", _set_index_model),
-                         ("judgeEffort", _set_judge_effort), ("indexEffort", _set_index_effort))
+                         ("judgeEffort", _set_judge_effort), ("indexEffort", _set_index_effort),
+                         ("distillModel", _set_distill_model), ("distillEffort", _set_distill_effort))
 
 
 def _apply_judge_settings(body):
-    """Apply any of the four judge-tier fields in `body` through the validated setters (garbage
-    never reaches the state files or `claude --model`), and answer with the CURRENT four values —
-    the ack shows what actually landed, since an invalid value is deliberately ignored."""
+    """Apply any of the judge-tier fields in `body` through the validated setters (garbage
+    never reaches the state files or `claude --model`), and answer with the CURRENT values —
+    the ack shows what actually landed, since an invalid value is deliberately ignored. The
+    distill pair answers RAW ("triage" = following the triage pick), matching /version: the
+    gear shows the user's choice, not its resolution."""
     for key, setter in _JUDGE_SETTING_FIELDS:
         if isinstance(body, dict) and key in body:
             setter(str(body.get(key) or ""))
     return {"ok": True, "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),
-            "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort()}
+            "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),
+            "distillModel": jd._state_str("distill-model", "triage"),
+            "distillEffort": jd._state_str("distill-effort", "triage")}
 
 
 def _propagate_judge_settings(body):
@@ -24597,6 +24628,14 @@ class Handler(BaseHTTPRequestHandler):
             _set_index_effort(str(msg.get("effort") or ""))   # gear "Indexing effort"
             threading.Thread(target=_propagate_judge_settings,
                              args=({"indexEffort": str(msg.get("effort") or "")},), daemon=True).start()
+        elif msg and msg.get("type") == "setDistillModel" and msg.get("model"):
+            _set_distill_model(str(msg["model"]))   # gear "Distilling model" ("triage" = follow the triage pick)
+            threading.Thread(target=_propagate_judge_settings,
+                             args=({"distillModel": str(msg["model"])},), daemon=True).start()
+        elif msg and msg.get("type") == "setDistillEffort" and msg.get("effort"):
+            _set_distill_effort(str(msg["effort"]))   # gear "Distilling effort" ("triage" = follow; "none" = pinned no-flag)
+            threading.Thread(target=_propagate_judge_settings,
+                             args=({"distillEffort": str(msg["effort"])},), daemon=True).start()
 
     def _ws(self):
         key = self.headers.get("Sec-WebSocket-Key")

@@ -5650,7 +5650,7 @@ class Distiller(unittest.TestCase):
         # a LIST of (sub-goal, why) pairs → a numbered <owed> block, one line per pair, so the prompt can map
         # each to its own takeaway paragraph. A plain string (single block) is passed through unchanged.
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(user=user) or "a brief")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (seen.update(user=user) or "a brief")
         try:
             jd.brief_llm("the goal", "the work",
                          [("record the screencast", "you record it"),
@@ -5795,7 +5795,7 @@ class BlockBriefJudgeLabel(unittest.TestCase):
 
     def test_brief_llm_logs_as_the_briefer(self):
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(judge=judge) or "a brief")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (seen.update(judge=judge) or "a brief")
         try:
             jd.brief_llm("the goal", "the work", "owed a decision")
         finally:

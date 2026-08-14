@@ -160,6 +160,27 @@ def _triage_model():  return _state_str("judge-model", TRIAGE_MODEL)   # gear "T
 def _index_model():   return _state_str("index-model", INDEX_MODEL)    # gear "Indexing model" → STATE/index-model
 def _triage_effort(): return _state_str("judge-effort", "")   # "" → pass NO --effort (the long-standing default)
 def _index_effort():  return _state_str("index-effort", "")
+
+
+# The DISTILLING tier (the user 2026-08-14): the card-prose writers — distiller, briefer, staller — get
+# their own gear pair, split out of triage so the copy the user actually reads can run a richer model
+# than the placement judges without dragging every planner call along. The stored sentinel "triage"
+# (the default) means FOLLOW the triage setting live — exactly what these judges did before the split,
+# so nothing changes until the user pins a value. "" for effort still means "no --effort flag", which is
+# why "follow" needed a sentinel rather than the empty string.
+def _distill_model():
+    v = _state_str("distill-model", "triage")
+    return _triage_model() if v == "triage" else v
+
+
+def _distill_effort():
+    # Three states, and "" can only be ONE of them: _state_str's `v or default` folds an empty file into
+    # the default, so the no-flag pin gets its own stored sentinel "none" (caught by test_distill_tier
+    # before it shipped: a pinned-empty file read back as "follow triage" and rode the triage effort).
+    v = _state_str("distill-effort", "triage")
+    if v == "triage":
+        return _triage_effort()
+    return "" if v == "none" else v
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
 COURIER_RETRY_HORIZON = WINDOW           # a usage-limited courier call comes back empty and retries every pass, but a
 #                                          peer message still unsummarized past this many seconds (matches discover()'s
@@ -817,10 +838,12 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     sys_prompt = _with_user_notes(sys_prompt, judge)  # the user's standing style notes ride every prose call
     auth = _judge_auth(fsid)                          # this call bills what the judged session bills
     env = _judge_env(tier, auth)
-    # Per-tier effort from the gear (STATE/judge-effort | index-effort) when the caller didn't pass one — "" or
-    # None means NO --effort flag, the long-standing default. An explicit caller effort (the plan A/B) still wins.
+    # Per-tier effort from the gear (STATE/judge-effort | index-effort | distill-effort) when the caller
+    # didn't pass one — "" or None means NO --effort flag, the long-standing default. An explicit caller
+    # effort (the plan A/B) still wins.
     if effort is None:
-        effort = (_index_effort() if tier == "index" else _triage_effort()) or None
+        effort = ((_index_effort() if tier == "index" else
+                   _distill_effort() if tier == "distill" else _triage_effort()) or None)
     # Stash this call for the debug view: if the CALLER later rejects the reply, _log_judge_error attaches
     # this input+reply pair to the failure row (debug mode only), so a rejection is inspectable from the
     # card modal. Per-thread and overwritten per call: only the failing call's pair can ever be attached.
@@ -8214,7 +8237,7 @@ def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None)
                  "**update**: what the follow-up stretch delivered or answered, never a recap of "
                  "<prior-summary>. Rebuild the background from <prior-summary> and <goal> so a fresh "
                  "reader is still oriented.</note>" % prior_summary)
-    return _judge_run(_triage_model(), DISTILL_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
+    return _judge_run(_distill_model(), DISTILL_SYS, user, judge="distiller", tier="distill").strip()   # caller splits SOURCE, then caps
 
 
 # PROCEDURAL block reasons — romp's OWN bookkeeping, authored by the kernel, not a question the user was
@@ -8334,7 +8357,7 @@ def brief_llm(goal_text, work_text, owed):
         owed_block = "\n".join("%d. %s: %s" % (i + 1, (t or "this sub-goal").strip(), (w or "").strip())
                                for i, (t, w) in enumerate(owed))
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, owed_block)
-    return _judge_run(_triage_model(), BLOCK_BRIEF_SYS, user, judge="briefer").strip()   # caller splits SOURCE, then caps
+    return _judge_run(_distill_model(), BLOCK_BRIEF_SYS, user, judge="briefer", tier="distill").strip()   # caller splits SOURCE, then caps
 
 
 # The STALL note (the user 2026-07-23). A goal that is neither done nor blocked-on-you but that romp has
@@ -8387,7 +8410,7 @@ def stall_llm(goal_text, work_text, holding):
     verbatim: the model translates it, it never re-derives it."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<holding>\n%s\n</holding>" % (
         goal_text, work_text, holding)
-    return _judge_run(_triage_model(), STALL_BRIEF_SYS, user, judge="staller").strip()   # caller splits SOURCE, then caps
+    return _judge_run(_distill_model(), STALL_BRIEF_SYS, user, judge="staller", tier="distill").strip()   # caller splits SOURCE, then caps
 
 
 # The in-flight CLASS: holds that mean "romp is working this beat right now", presented as the
