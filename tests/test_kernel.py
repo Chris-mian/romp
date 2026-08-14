@@ -747,7 +747,7 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(calls[0], 0, "no incoming postal card → the whole-fleet scan is skipped")
             self.assertEqual(out, plain, "non-postal events pass through unchanged")
             # an incoming postal marker → the scan runs ONCE and its caption lands on the card
-            inc = [{"kind": "user", "md": "romp-msg-id: m9", "ts": T0, "uuid": "u2"}]
+            inc = [{"kind": "user", "md": "<!-- romp-msg-id: m9 -->", "ts": T0, "uuid": "u2"}]
             idx = {"m9": {"from": "peer", "fromId": None, "body": "the full body", "id": "m9",
                           "t": T0, "park": None}}
             cards = km._hydrate_postal(inc, idx)
@@ -763,7 +763,7 @@ class ViewBuilder(unittest.TestCase):
         saved = km._msg_summaries
         km._msg_summaries = lambda: {}
         try:
-            inc = [{"kind": "user", "md": "romp-msg-id: m10", "ts": T0, "uuid": "u3"}]
+            inc = [{"kind": "user", "md": "<!-- romp-msg-id: m10 -->", "ts": T0, "uuid": "u3"}]
             fid = "abcdef00-1234-0000-0000-000000000000"
             idx = {"m10": {"from": "unknown", "fromId": fid, "fromHost": "TESTHOST2",
                            "body": "the sensors are live", "id": "m10", "t": T0, "park": None}}

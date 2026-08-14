@@ -45,8 +45,26 @@ END_STOPS = ("end_turn", "stop_sequence")
 # postal signal — never the generic "Stop hook feedback:" prefix (any blocking Stop
 # hook produces that). The sender rompUuid is resolved from timeline/messages.jsonl
 # by joining this id (the on-disk marker carries the id but not the sender).
-POSTAL_RE = re.compile(r"romp-msg-id:\s*(\S+)")
-POSTAL_KIND_RE = re.compile(r"romp-msg-kind:\s*(delegate|coordinate|question)")
+# COMMENT FORM ONLY — the same rule ROMP_INJECT_RE/ROMP_AUTO_RE were given on 2026-07-08, and the
+# rule docs/event-model.md already documents ("Postal is detected by the `<!-- romp-msg-id: <id> -->`
+# marker"). Both emitters have only ever written the literal comment (postal_service format_inbox /
+# format_push, where the file calls that marker a stable CONSUMER CONTRACT), but a bare word-match
+# also fired on text that merely MENTIONS the marker: an agent quoting the mail it just received, a
+# hook or tool output echoing one (a grep of a transcript, a fetched page), a human prompt about the
+# marker itself. The failure is not cosmetic — with no matching id in the log author_of still
+# returned {"peer": None}, and that is a dict, so the segment reads peer-rather-than-human and both
+# the planner and the courier drop it: the user's ask silently gets no card.
+POSTAL_RE = re.compile(r"<!--\s*romp-msg-id:\s*(\S+?)\s*-->")
+POSTAL_KIND_RE = re.compile(r"<!--\s*romp-msg-kind:\s*(delegate|coordinate|question)\s*-->")
+# Both markers, IN ORDER, so a sender / message id / declared kind always describe the SAME message.
+# A drain writes id-then-kind per message and concatenates every pending message into one injected
+# text (postal_service format_inbox/format_push), so a two-message delivery carries two of each —
+# and three separate scans of that text picked three different answers: the author from the last
+# marker, the id and the kind from the first. That filed one peer's identity against another peer's
+# message, planting the delegation-tracking node on the wrong board. postal_pairs() below is the one
+# parser author_of and both judge scans now share.
+_POSTAL_ANY_RE = re.compile(r"<!--\s*romp-msg-(id|kind):\s*(\S+?)\s*-->")
+_POSTAL_KINDS = ("delegate", "coordinate", "question")
 # romp's marker on a message IT injected straight into a pane (a feed NUDGE / auto-nudge / Retry — NOT a
 # peer message, and NOT a follow-up YOU typed). It means "render this as a romp-injected system message"
 # (the gray bubble), distinct from a human prompt or a peer's postal message. ONLY romp-injected authors
@@ -439,16 +457,32 @@ def _norm_message(message):
     return out
 
 
+def postal_pairs(text):
+    """[(mid, kind), ...] in delivery order; kind is "" when the sender declared none (CLI mail).
+    Position is the only thing that pairs them — the markers carry no cross-reference."""
+    pairs = []
+    for typ, val in _POSTAL_ANY_RE.findall(text or ""):
+        if typ == "id":
+            pairs.append([val, ""])
+        elif pairs and not pairs[-1][1] and val in _POSTAL_KINDS:
+            pairs[-1][1] = val                   # binds to the id it follows, never a later one
+    return [(a, b) for a, b in pairs]
+
+
 # ───────────────────────── authorship (the one real addition over the stream) ─────────────────────────
 # A user atom's author is the ONE field the stream lacks: it cannot tell a peer romp
 # message from a human prompt (both are `user` messages). Everything else the old
 # typed/queued/absorbed/decision/postal enum encoded is derived from position
 # (opener vs mid-turn) and content, not stored here.
 def author_of(blocks, prompt_source, postal_index, sdk_human=False):
-    """human | romp | sdk | system | {"peer": <rompUuid|None>} | None.
+    """human | romp | sdk | system | {"peer": <rompUuid|None>, "mid": <id>, "kind": <kind|"">} | None.
 
     Order matters: the postal marker wins over promptSource (a delivered message can
     arrive with any promptSource). A tool_result-only user atom has no author.
+
+    A peer author carries the marker it resolved, not just the sender: one delivery can hold
+    several messages, so every later reader (the judge's _seg_peer / _seg_peer_kind) must be
+    told WHICH one this author came from rather than re-scanning and picking a different one.
 
     sdk_human: this session is SDK-backed, so its HUMAN input arrives over the programmatic
     stream-json channel as promptSource "sdk" (the human typed it in the composer). romp's own
@@ -463,14 +497,19 @@ def author_of(blocks, prompt_source, postal_index, sdk_human=False):
             return "teammate"                     # → its own collapsed chat card; a non-opener (like 'system'), so
             #   high-frequency coordination pings never pin a junk goal. Checked before the postal marker: the
             #   OUTER native wrapper wins even if a forwarded body happened to carry a romp-msg-id.
-        mids = POSTAL_RE.findall(text)
-        if mids:
-            peer = None
-            for mid in mids:
-                peer = postal_index.get(mid)
-                if peer:
+        pairs = postal_pairs(text)
+        if pairs:
+            # LAST first: the delivery appends its markers AFTER the body, so when a body itself
+            # carries one — a peer forwarding mail it received, an agent quoting its own — the real
+            # sender's marker is the trailing one. Taking the first let the quoted id name the author.
+            peer, mid, kind = None, pairs[-1][0], pairs[-1][1]
+            for m, k in reversed(pairs):
+                if postal_index.get(m):
+                    peer, mid, kind = postal_index[m], m, k
                     break
-            return {"peer": peer}
+            # The chosen marker travels WITH the author, so the judge reads the same one rather than
+            # re-scanning and landing on a different message.
+            return {"peer": peer, "mid": mid, "kind": kind}
         if ROMP_INJECT_RE.search(text):           # romp pasted this into the pane (a feed nudge) → system, not human
             return "romp"
     if prompt_source == "sdk":
