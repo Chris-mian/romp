@@ -192,6 +192,32 @@ def _safe_id(s):
         return False
     return bool(_SAFE_ID_RE.match(s))
 
+# Every character str.splitlines() treats as a line break — \n \r \v \f \x1c \x1d \x1e
+# \x85 U+2028 U+2029 — plus the rest of the C0/C1 control range and NUL with them. Nothing
+# printable is in here: spaces, punctuation, accents, CJK and emoji all live outside it.
+_HDR_BREAK_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+def _hdr_val(v):
+    """One value, made safe to write into a maildir header line (see deliver).
+
+    The header block is FRAMED by newlines and read back by splitting on them: read_box
+    ends the block at the first blank line and lets a later key overwrite an earlier one.
+    So a line break inside any VALUE forges or overwrites every other header — including
+    the From: line the recipient is shown — and a blank line promotes the rest of that
+    value into the body. Five of the six values deliver() writes reach it over the bus:
+    the sender's claimed name and id from /send, and the kind, origin host and relay mid
+    a peer supplies on an inbound relay.
+
+    A break is REPLACED (U+FFFD), never dropped: nothing goes missing silently, the value
+    keeps its length and position, and the substitution is visible — a recipient looking
+    at a tampered From: sees that it was tampered with rather than a plausible-looking
+    name. Ordinary content is untouched, so a name with spaces or accents round-trips
+    unchanged.
+
+    This makes the values SAFE TO FRAME, not TRUSTWORTHY: from_id is still an
+    unauthenticated claim the sender asserts about itself, exactly as before."""
+    return _HDR_BREAK_RE.sub("\ufffd", "" if v is None else str(v))
+
 def _mailbox(sid):
     if not _safe_id(sid):
         raise ValueError("unsafe session id")
@@ -256,15 +282,31 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
     mb = _mailbox(to_id)
     name = _unique()
     tmp = mb / "tmp" / name
-    hdr = "From: %s\nFrom-Id: %s\nDate: %s\n" % (from_name, from_id, _iso_now())
+    # THE header write point — every value that lands in a header line goes through _hdr_val
+    # first, because a line break in any ONE of them rewrites all the others (see _hdr_val).
+    # Doing it here and not at the callers covers all four of them at once: /send, an inbound
+    # peer relay, a quarantine approval, and a deferred push putting mail back. Date is this
+    # module's own strftime output, so it is written as-is, and the BODY is deliberately left
+    # alone: it comes after the blank line and is never parsed as headers.
+    raw = {"from": from_name, "from_id": from_id, "kind": kind,
+           "from_host": from_host, "relay_mid": relay_mid, "relay_via": relay_via}
+    h = {k: _hdr_val(v) for k, v in raw.items()}
+    broke = sorted(k for k, v in raw.items() if h[k] != str(v or ""))
+    if broke:
+        # Say so — a header value with a line break in it is either a bug or an attempt — but
+        # still deliver: the recipient needs the BODY, and dropping the mail over a malformed
+        # attribution would lose more than it protects. Field names only, no attacker text.
+        _log("deliver to %s: line breaks neutralized in header value(s) %s"
+             % (to_id, ", ".join(broke)))
+    hdr = "From: %s\nFrom-Id: %s\nDate: %s\n" % (h["from"], h["from_id"], _iso_now())
     if park:
         hdr += "X-Park: 1\n"
-    if kind:
-        hdr += "X-Kind: %s\n" % kind                # sender-declared delegate|coordinate|question (2026-07-08)
-    if from_host:
-        hdr += "X-From-Host: %s\n" % from_host
-    if relay_mid and relay_via:
-        hdr += "X-Peer-Mid: %s\nX-Peer-Via: %s\n" % (relay_mid, relay_via)
+    if h["kind"]:
+        hdr += "X-Kind: %s\n" % h["kind"]           # sender-declared delegate|coordinate|question (2026-07-08)
+    if h["from_host"]:
+        hdr += "X-From-Host: %s\n" % h["from_host"]
+    if h["relay_mid"] and h["relay_via"]:
+        hdr += "X-Peer-Mid: %s\nX-Peer-Via: %s\n" % (h["relay_mid"], h["relay_via"])
     tmp.write_text(hdr + "\n" + body + "\n")
     tmp.rename(mb / "new" / name)   # atomic within the same filesystem
     _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
