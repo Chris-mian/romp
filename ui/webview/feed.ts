@@ -494,8 +494,21 @@ const collapsedThreads = new Set<string>();
 // names of sessions idle-but-AWAITING background work (the user 2026-07-13): the same dot in straw —
 // matching the chat chip's Awaiting color — so a held session reads differently from a working one.
 let awaitingSet = new Set<string>();
-type DotState = "" | "work" | "await";
-const dotFor = (name: string): DotState => workingSet.has(name) ? "work" : awaitingSet.has(name) ? "await" : "";
+// Sessions the kernel LISTS but whose live state it could not read. These draw a gray ring, which
+// is what lets a BLANK pip mean "alive and quiet" and nothing else — before it, an unreadable state
+// and an idle one were the same nothing, so a rendering hole was indistinguishable from health.
+let unknownSet = new Set<string>();
+type DotState = "" | "work" | "await" | "unknown";
+const dotFor = (name: string): DotState =>
+  workingSet.has(name) ? "work" : awaitingSet.has(name) ? "await"
+  : unknownSet.has(name) ? "unknown" : "";
+// The pip explains itself on hover (the user 2026-07-22: learn the states from tooltips, not the
+// CLI). It encodes TURN state — is anything running? — not attention; attention lives in the card.
+const DOT_TIP: Record<Exclude<DotState, "">, string> = {
+  work: "working — a turn is running right now",
+  await: "awaiting — idle, but background work it dispatched is still running",
+  unknown: "state unknown — romp couldn't read this session's live state",
+};
 // Ensure a `.fwork-dot` sits immediately before `nameEl` iff `state` is non-empty (idempotent on
 // re-render; an existing dot RETINTS in place when the state flips). The name's text/color are untouched.
 function setWorkDot(nameEl: HTMLElement | null, state: DotState | boolean) {
@@ -503,10 +516,14 @@ function setWorkDot(nameEl: HTMLElement | null, state: DotState | boolean) {
   const st: DotState = state === true ? "work" : state === false ? "" : state;
   const prev = nameEl.previousElementSibling;
   const has = !!prev && prev.classList.contains("fwork-dot");
+  const paint = (d: Element) => {          // one kind class at a time; "work" is the bare base class
+    for (const k of ["await", "unknown"]) d.classList.toggle(k, st === k);
+    (d as HTMLElement).title = st ? DOT_TIP[st] : "";
+  };
   if (st && !has) {
-    const d = el("span", "fwork-dot"); d.classList.toggle("await", st === "await");
+    const d = el("span", "fwork-dot"); paint(d);
     nameEl.parentElement?.insertBefore(d, nameEl);
-  } else if (st && has) prev!.classList.toggle("await", st === "await");
+  } else if (st && has) paint(prev!);
   else if (!st && has) prev!.remove();
 }
 
@@ -3730,6 +3747,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       if (c > 0 && !a.name.includes(":")) sessionColors.set(a.sid.slice(0, c) + ":" + a.name, a.color.bg);
     }
     awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // straw awaiting dots (the user 2026-07-13)
+    unknownSet = new Set(Array.isArray(m.stateUnknown) ? m.stateUnknown : []);   // listed-but-unreadable → gray ring, never a blank
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
     if (Array.isArray(m.sessions)) {

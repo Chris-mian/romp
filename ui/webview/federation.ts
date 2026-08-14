@@ -50,7 +50,7 @@ function dashboardWid(): string {
 // The shapes a kernel→browser message can carry a session id in. Kept generic (by field name, not by
 // message type) so a new message type that reuses these field names is covered automatically:
 const SCALAR_ID = ["id", "sid"]; //               a single session id
-const ARRAY_ID = ["order", "names", "working", "awaiting"]; // an array of session ids
+const ARRAY_ID = ["order", "names", "working", "awaiting", "stateUnknown"]; // an array of session ids
 const OBJ_SID = ["asks", "items", "ledgers", "sessions"]; //  an array of objects keyed by `.sid`
 const OBJ_ID = ["tabs"]; //                       an array of objects keyed by `.id`
 
@@ -278,7 +278,7 @@ export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostS
 export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[],
                                view: readonly string[] = []): any {
   const local = perHost[LOCAL] || {};
-  const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], order: [], sessions: [] };
+  const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], stateUnknown: [], order: [], sessions: [] };
   // `ledgers` drives the FLEET pane (it rides the same feed message). Only include it once at least one host
   // has actually BUILT its ledgers — else the fleet's loader-gate (needs an array) would drop onto an empty
   // pane. Kept undefined until then so the loader holds, exactly like the single-kernel path.
@@ -294,6 +294,9 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
     if (Array.isArray(f.asks)) merged.asks.push(...f.asks);
     if (Array.isArray(f.working)) merged.working.push(...f.working);
     if (Array.isArray(f.awaiting)) merged.awaiting.push(...f.awaiting);   // straw awaiting dots ride like working
+    // the unreadable-state list rides the same way; a host too old to send it contributes to
+    // NEITHER list, so its sessions stay blank (= "quiet") rather than reading falsely as unknown
+    if (Array.isArray(f.stateUnknown)) merged.stateUnknown.push(...f.stateUnknown);
     if (Array.isArray(f.order)) merged.order.push(...f.order);   // grouped-mode session rank: local first, ids pre-prefixed
     if (Array.isArray(f.sessions)) merged.sessions.push(...f.sessions);   // the tab-strip session list (footer filter menu), sid+name pre-prefixed
     if (Array.isArray(f.ledgers)) { anyLedgers = true; ledgers.push(...f.ledgers); }

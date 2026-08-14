@@ -15215,6 +15215,27 @@ def _boundary_clear_notices(alive):
     return out
 
 
+def _state_unknown_names(alive, tmux, working, awaiting):
+    """Sessions the feed LISTS but whose live state it could not read — no row in the merged live
+    map (e.g. the headless file-derived fallback). The client draws these a gray ring, so a blank
+    pip goes back to meaning exactly one thing: alive and quiet.
+
+    Without this list the two cases are the same nothing, which is how a rendering hole hid: a
+    session whose state was unreadable looked identical to one that was simply idle. Working and
+    awaiting sessions are excluded by construction — their state was read. Mirrors build_feed's own
+    filters, so a hideFromFeed session is in no list, matching its absence from the cards."""
+    out = []
+    for s in alive:
+        if _session_flag(s["sid"], "hideFromFeed"):
+            continue
+        nm = s["name"]
+        if nm in working or nm in awaiting:
+            continue                                  # state read: it is working or awaiting
+        if tmux.get(s["sid"]) is None:
+            out.append(nm)
+    return out
+
+
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -16016,6 +16037,9 @@ def build_feed(now, tmux=None):
         _a["notify"] = True if _notify_card_effective(_ncards, _a["itemId"], str(_a.get("sid") or "")) else None
     return {"type": "feed", "asks": asks, "now": now,
             "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
+            # listed-but-unreadable names → an explicit gray ring, so a BLANK pip means "alive and
+            # quiet" and nothing else (see _state_unknown_names)
+            "stateUnknown": _state_unknown_names(alive, tmux, working, awaiting),
             # session name -> live judge-classified SERVICE descs (a dev server the session keeps around;
             # _bg_split) → the grouped-mode session header's neutral chip, never a waiting state (2026-07-24)
             "bgServices": bg_services,

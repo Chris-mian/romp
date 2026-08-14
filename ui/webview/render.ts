@@ -3654,6 +3654,10 @@ function renderTabs() {
     // red tab highlight instead (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
     else if (st === "awaitingBg") tab.appendChild(el("span", "tab-dot await"));
+    // MISSING state — the kernel listed this session but could not read what it is doing. An
+    // explicit gray ring, so a bare tab can only mean a state with its own tab treatment (dashed
+    // blocked ring, compacting bar, struck-through closed) or a healthy idle one, never a hole.
+    else if (!st) tab.appendChild(el("span", "tab-dot unknown"));
     // OPENING (a provisional tab, or the kernel's own opening chip): the accent loader dot — the session
     // is starting, and a tab with no cue at all read as dead (the user 2026-08-10). Same pulse as the
     // statusline's opening dots; never the solid working yellow, which claims work that isn't happening.
