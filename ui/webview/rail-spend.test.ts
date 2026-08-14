@@ -205,3 +205,15 @@ test("every tip string carries data — the narration is gone and stays gone", (
   assert.ok(!code.includes("click the bars"), "the short hint replaced it");
   assert.ok(code.includes("window reset '+esc(v.ago)+'; no reading since"), "the rolled note keeps only its facts");
 });
+
+test("token counts carry 3 significant figures, and both fmtTok twins share the formula (the user 2026-08-13)", () => {
+  const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
+  // one adaptive-decimals helper in each copy — 1.32B / 13.2B / 132B, trailing zeros kept
+  assert.ok(usageJS.includes("function fmtSig3(v){return v.toFixed(v>=100?0:v>=10?1:2);}"));
+  assert.ok(usageJS.includes("if(n>=1e9)return fmtSig3(n/1e9)+'B';"));
+  assert.match(STRIP, /return v\.toFixed\(v >= 100 \? 0 : v >= 10 \? 1 : 2\);/);
+  assert.match(STRIP, /if \(n >= 1e9\) return fmtSig3\(n \/ 1e9\) \+ "B";/);
+  // the old 1-decimal + strip-trailing-zero form is gone from both
+  assert.ok(!usageJS.includes("toFixed(1).replace"));
+  assert.ok(!STRIP.includes('toFixed(1).replace'));
+});
