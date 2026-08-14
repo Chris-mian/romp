@@ -62,7 +62,7 @@ var GEAR_HTML =
   '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
   '</span></label>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates <span class=rs-mixed hidden></span></b>" +
-  '<span class=rs-sub>romp checks its repo for a new tagged release at start-up and every 6 hours (ordinary commits never trigger it; updating lands exactly on the release). Check and ask (the default) offers it as a banner with an Update button; Install automatically fetches, installs and restarts by itself; Off never checks. Kernel-side setting.</span>' +
+  '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself, restarting at the next quiet moment; Off never checks. Kernel-side setting.</span>' +
   "<select id=rs-updates style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;" +
   "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>" +
   '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
