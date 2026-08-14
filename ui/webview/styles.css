@@ -2227,33 +2227,28 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   padding: 4px 14px; border-radius: 6px; background: var(--vscode-input-background, #3c3c3c);
   color: var(--vscode-foreground, #ccc); border: 1px solid var(--vscode-widget-border, #303031); }
 
-/* ── path previews in the chat (the user 2026-07-08): a mentioned image/PDF renders as a click-to-expand
-   thumbnail strip under the message (render.ts linkifyFileUris → preview.ts previewThumb). .path-thumb /
-   the lightbox are SHARED with the feed and defined in BOTH sheets — each page loads only its own css
-   (the .romp-acted precedent). ── */
+/* ── path previews in the chat (the user 2026-07-08): a mentioned image/PDF renders under the message
+   (render.ts linkifyFileUris → preview.ts previewFull). Chat-only since the feed's artifact strips
+   were removed (2026-08-14). ── */
 .path-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-.path-thumb { display: inline-flex; align-items: center; gap: 6px; cursor: zoom-in; border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }
-.path-thumb:hover { border-color: var(--accent); }
-.path-thumb-img { display: block; max-width: 220px; max-height: 140px; object-fit: contain; }
 
 /* the preview's LOADING cue (the user 2026-07-31): the mini romp swirl holds a mentioned image's spot
    until its load event lands (preview.ts withLoadCue) — a remote file rides the ssh tunnel, and the
    picture used to pop in with nothing saying it was on the way. First load of a URL only, so re-renders
-   never re-flash it. Both sheets carry it (each page loads only its own — the .romp-acted precedent). */
+   never re-flash it. */
 .path-load-spin { display: block; width: 20px; height: 20px; margin: 8px 10px;
   animation: path-load-spin 2.4s linear infinite; }   /* the calm mini-swirl spin, same as the awaiting glyphs */
 @keyframes path-load-spin { to { transform: rotate(-360deg); } }
 .path-img-loading { display: none; }   /* the <img> takes the spot the instant it has pixels */
 @media (prefers-reduced-motion: reduce) { .path-load-spin { animation: none; } }
-.path-thumb.pdf { padding: 5px 9px; cursor: pointer; }
+/* the PDF card's label + filename (preview.ts previewFull's pdf branch) */
 .path-thumb-tag { font-size: 0.74em; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); flex: 0 0 auto; }
 .path-thumb-name { font-size: 0.74em; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 200px; }
 
 /* FULL-SIZE inline render (the user 2026-07-20): a mentioned image shows AS the image, at the same
    scale as a user-message picture (.user-img's 320px cap — one size per information type); a PDF gets
-   its native inline viewer. preview.ts previewFull; the feed's artifact strips keep the thumbnails. */
+   its native inline viewer (preview.ts previewFull). */
 .path-full { display: block; }
 .path-full-img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; cursor: zoom-in;
   border: 1px solid rgba(255, 255, 255, 0.14); object-fit: contain; background: rgba(0, 0, 0, 0.25); }

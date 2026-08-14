@@ -17,7 +17,6 @@ import { badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
-import { previewThumb, previewKind } from "./preview";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState } from "./feed-view-state";
 
 // (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
@@ -86,7 +85,6 @@ interface AskItem {
               mid?: string; frm?: string; to?: string; origin?: string; body?: string; gist?: string };   // quarantine (held peer mail) adds these; gist = the bus's 90-char collapse for the compact card line
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
-  artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   briefParts?: { id?: string; since: number }[] | null;   // MULTI-item brief: one {id, since} per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null/absent = single ask, the card header's age is the stamp (the user 2026-07-24)
   summaryParts?: { id?: string; since: number }[] | null;   // the DONE twin: per-paragraph done-event stamps for a takeaway the distiller split by <completed-items> (the user 2026-07-24)
@@ -980,11 +978,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const taskGlyph = el("span", "fask-awaiting-swirl"); taskGlyph.setAttribute("aria-hidden", "true");
   const taskLbl = el("span", "fask-taskbtn-lbl");
   taskBtn.append(taskGlyph, taskLbl);
-  // "N artifacts" (the user 2026-07-08): when the distiller listed PRODUCED files (and the kernel verified
-  // they exist), a small nav line at the BOTTOM of the summary body — click opens the modal, where the
-  // artifacts render as previews. Filled in applySections; shows only with the summary section.
-  const artline = el("div", "fask-artline nav"); artline.style.display = "none";
-  secs.append(bgBody, distill, stallBody, artline);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
+  secs.append(bgBody, distill, stallBody);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
   // now that the toggles exist, populate row3: Background · Summary · Sub-goals · Waiting-on-task — GROUPED
   // left, wrapping together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
   row3.append(bgBtn, takeBtn, stallBtn, subBtn, taskBtn, actions);
@@ -1129,7 +1123,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._qApprove = qApprove; a._qDeny = qDeny; a._qBody = qbody;
   a._delegations = delegations;
   a._checklist = checklist;
-  a._distill = distill; a._artline = artline;
+  a._distill = distill;
   a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn; a._subBtn = subBtn;
   a._stallBtn = stallBtn; a._stallBody = stallBody;
   a._taskBtn = taskBtn; a._taskLbl = taskLbl;
@@ -1287,18 +1281,6 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   a._stallBody.style.display = choice === "stall" ? "" : "none";
   if (choice === "stall") a._stallBody.textContent = stallText(stall);
   a._stallBtn.onclick = pick("stall");
-  // "N artifacts" under the summary (the user 2026-07-08): the kernel already existence-filtered the
-  // distiller's list, so a count here is always openable. Click → the modal, where they render as previews.
-  const artline = a._artline as HTMLElement;
-  const arts = it.artifacts || [];
-  if (choice === "summary" && arts.length) {
-    artline.textContent = arts.length === 1 ? "1 artifact" : arts.length + " artifacts";
-    artline.title = "files this work produced — click to preview\n" + arts.join("\n");
-    artline.style.display = "";
-    artline.onclick = (ev: Event) => { ev.stopPropagation(); fullscreenAskId = it.itemId; renderModal(); };
-  } else {
-    artline.style.display = "none";
-  }
   // Sub-goals toggle — visible only when the goal HAS sub-goals; pressed when the tree is showing
   const subBtn = a._subBtn as HTMLElement;
   subBtn.style.display = hasSubs ? "" : "none";
@@ -2232,52 +2214,8 @@ function renderTreeBody(host: HTMLElement, it: AskItem, skipRoot = false) {
   host.appendChild(box);
 }
 
-// The modal's ARTIFACTS strip (the user 2026-07-08): the files this work produced (distiller ARTIFACTS
-// line, kernel existence-filtered), rendered below the tree as click-to-expand previews — an image
-// thumb / PDF chip opening the lightbox on the web dashboard, a plain open-the-file chip in the VS Code
-// webview (its sandbox can't load the kernel's /file URL). Sig-guarded on the path list so a kernel
-// repush doesn't re-fetch every thumb; renderTreeBody wipes the host when the TREE changes, so the
-// strip is (re)appended after it on every modal render.
-function applyModalArtifacts(host: HTMLElement, it: AskItem): void {
-  const arts = it.artifacts || [];
-  let strip = host.querySelector(":scope > .fmodal-arts") as HTMLElement | null;
-  if (!arts.length) { strip?.remove(); return; }
-  const sig = arts.join("\n");
-  if (strip && (strip as any)._sig === sig) return;
-  strip?.remove();
-  strip = el("div", "fmodal-arts");
-  (strip as any)._sig = sig;
-  const head = el("div", "fmodal-arts-head");
-  head.textContent = arts.length === 1 ? "Artifact" : "Artifacts";
-  strip.appendChild(head);
-  const row = el("div", "fmodal-arts-row");
-  for (const p of arts) {
-    const cell = el("div", "fmodal-art");
-    const name = p.slice(p.lastIndexOf("/") + 1) || p;
-    const th = previewThumb(p, it.sid);   // null off the web dashboard (or an unpreviewable type) → chip
-    if (th) {
-      cell.appendChild(th);
-      if (previewKind(p) === "img") {     // a PDF chip already carries its filename; only pixels need a caption
-        const cap = el("div", "fmodal-art-name");
-        cap.textContent = name;
-        cap.title = p;
-        cell.appendChild(cap);
-      }
-    } else {
-      const chip = el("button", "fmodal-art-chip");
-      chip.textContent = name;
-      chip.title = "open " + p;
-      chip.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openFile", path: p, id: it.sid }); };
-      cell.appendChild(chip);
-    }
-    row.appendChild(cell);
-  }
-  strip.appendChild(row);
-  host.appendChild(strip);
-}
-
 // Debug-mode judge warnings (the user 2026-07-09): every judge failure touching this card, appended
-// below the tree/artifacts. The kernel only emits warnRows while `romp debug on`, so the section
+// below the tree. The kernel only emits warnRows while `romp debug on`, so the section
 // simply never exists in normal mode. One line per failure (time · judge · kind — evidence); a row
 // captured in debug mode expands (native <details>) to the failing call's full input + reply, so a
 // rejection is inspectable the moment it happens, without reproducing it.
@@ -2868,7 +2806,6 @@ function renderModal() {
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
-    applyModalArtifacts(body, it);     // produced-file previews below the tree (the user 2026-07-08)
     applyModalWarnings(body, it);      // debug mode: this card's judge failures, input+reply expandable (the user 2026-07-09)
   }
   // The bottom bar always shows (every modal has an age + Clear); the Follow-up button inside it hides

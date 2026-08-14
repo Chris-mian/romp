@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""The /file preview endpoint + _feed_artifacts (the user 2026-07-08): chat path-thumbnails and feed
-artifact strips load real bytes from `GET /file?path=…`, existence- and extension-gated, and the feed
-only ever ships artifact paths that exist RIGHT NOW (_feed_artifacts filters the distiller's list at
-build time — a hallucinated or deleted path never reaches a card).
+"""The /file preview endpoint (the user 2026-07-08): chat path-thumbnails
+load real bytes from `GET /file?path=…`, existence- and extension-gated.
 
 Drives the REAL Handler over HTTP (the test_kernel_ws_auth.py pattern). Synthetic only — temp files,
 no session state touched.
@@ -104,36 +102,6 @@ class FilePreviewEndpoint(unittest.TestCase):
         self.assertEqual(body, b"")
         code, _, _ = self._req("/file?path=" + urllib.parse.quote(self.txt), method="HEAD")
         self.assertEqual(code, 404)
-
-
-class FeedArtifactsFilter(unittest.TestCase):
-    """_feed_artifacts: the authoritative existence filter between the distiller's transcription and
-    the card — only real, absolute-resolvable files ship; order kept; duplicates and junk dropped."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.a = os.path.join(self.tmp.name, "a.png")
-        self.b = os.path.join(self.tmp.name, "b.pdf")
-        for p in (self.a, self.b):
-            with open(p, "wb") as f:
-                f.write(b"x")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_keeps_existing_drops_missing_and_junk(self):
-        gone = os.path.join(self.tmp.name, "gone.png")
-        out = km._feed_artifacts([self.a, gone, self.b, self.a, "", None, 7], sid=None)
-        self.assertEqual(out, [self.a, self.b])   # order kept, dup/missing/non-str dropped
-
-    def test_none_when_nothing_survives(self):
-        self.assertIsNone(km._feed_artifacts([os.path.join(self.tmp.name, "gone.png")], sid=None))
-        self.assertIsNone(km._feed_artifacts(None, sid=None))
-        self.assertIsNone(km._feed_artifacts([], sid=None))
-
-    def test_relative_without_a_session_cwd_is_dropped_not_guessed(self):
-        # no sid → _resolve_open_path leaves it relative → not absolute → dropped (never the kernel's cwd)
-        self.assertIsNone(km._feed_artifacts(["a.png"], sid=None))
 
 
 if __name__ == "__main__":
