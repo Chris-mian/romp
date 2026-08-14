@@ -189,7 +189,7 @@ test("a multi-host breakdown lays hosts SIDE BY SIDE, one column each", () => {
   // a single host keeps its plain un-columned layout — the wrapper exists only when there is a fleet
   assert.ok(usageJS.includes("var h=many?"));
   assert.ok(KERNEL.includes(".ru-tip-cols{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}"));
-  assert.ok(KERNEL.includes(".ru-tip-col{flex:0 1 auto;min-width:150px}"));
+  assert.ok(KERNEL.includes(".ru-tip-col{flex:0 1 auto;min-width:200px}"));   // 200px floor since the sparks span the column (the user 2026-08-14)
 });
 
 test("every tip string carries data — the narration is gone and stays gone", () => {
@@ -216,4 +216,19 @@ test("token counts carry 3 significant figures, and both fmtTok twins share the 
   // the old 1-decimal + strip-trailing-zero form is gone from both
   assert.ok(!usageJS.includes("toFixed(1).replace"));
   assert.ok(!STRIP.includes('toFixed(1).replace'));
+});
+
+test("the $/h graph spans the tip, peak in the value slot, every spark on a backing plate (the user 2026-08-14)", () => {
+  // The graph sat 120px wide between its label and the peak with empty space either side; the peak
+  // now rides the label row's right-aligned value slot and the graph gets its own full-width line.
+  assert.match(KERNEL, /peak '\+fmtUsd\(mx\)\+'\/h<\/span><\/div>'\s*\n\+sparkHTML\(wk,'#9cd2ff',true,null\);/,
+    "the graph follows the closed label+peak row, full-width");
+  assert.ok(KERNEL.includes(".ru-tip-spark{display:block;width:100%;height:28px"),
+    "sparks stretch to their container, not a fixed strip");
+  // The faint plate frames the plot area: a sparse series (a remote host with a reading or two,
+  // drawn as lone dots by design — unknown ≠ 0) reads as points on an empty graph, not stray specks.
+  assert.ok(KERNEL.includes('"background:rgba(255,255,255,0.04);border-radius:3px}"'),
+    "the backing plate makes sparse dots legible as data");
+  assert.ok(KERNEL.includes(".ru-tip-col{flex:0 1 auto;min-width:200px}"),
+    "host columns widened for the full-width sparks");
 });

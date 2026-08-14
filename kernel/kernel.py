@@ -20856,10 +20856,12 @@ h+='<div class=ru-tip-row><span class=ru-tip-k>by machine \u00b7 1 week</span><s
 +per.map(function(p){return esc(p.host)+' '+fmtUsd(p.usd);}).join(' \u00b7 ')+'</span></div>';}
 if(series){var wk=series.usd.slice(-168),mx=0;for(var i=0;i<wk.length;i++)if(wk[i]>mx)mx=wk[i];
 // 'peak $X/h': the costliest single HOUR of the week (the user 2026-08-13 asked whether the bare
-// number was per-hour \u2014 say so)
+// number was per-hour \u2014 say so). The peak rides the label row's VALUE slot and the graph gets its
+// own line below, spanning the tip \u2014 squeezed between label and peak it rendered 120px wide with
+// empty space either side (the user 2026-08-14, who wanted the graph the full width of the box).
 if(mx>0)h+='<div class=ru-tip-row><span class=ru-tip-k>$/h \u00b7 7d</span>'
-+sparkHTML(wk,'#9cd2ff',true,null)
-+'<span class=ru-tip-v>peak '+fmtUsd(mx)+'/h</span></div>';}
++'<span class=ru-tip-v>peak '+fmtUsd(mx)+'/h</span></div>'
++sparkHTML(wk,'#9cd2ff',true,null);}
 return h+'</div>';}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
@@ -22364,13 +22366,22 @@ def _landing():
             # Multi-host breakdown: one COLUMN per host, side by side (the user 2026-08-08 — not one
             # tall stack). flex-wrap lets the mobile modal (92vw cap) fold back to a stack on its own.
             ".ru-tip-cols{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}"
-            ".ru-tip-col{flex:0 1 auto;min-width:150px}"
+            # 200px floor (was 150): the window-history sparks now span the column, and at 150px they
+            # were cramped postage stamps; there is room to spare (the user 2026-08-14)
+            ".ru-tip-col{flex:0 1 auto;min-width:200px}"
             ".ru-tip-name{font-weight:700;color:#e8eef5;display:flex;justify-content:space-between;gap:14px;margin-bottom:3px}"
             ".ru-tip-reset{font-weight:400;opacity:.6;font-size:10px}"
             ".ru-tip-row{display:flex;align-items:center;gap:6px;margin-top:3px}"
             ".ru-tip-k{opacity:.55;min-width:46px}"
             ".ru-tip-track{width:64px;height:6px;border-radius:3px;background:rgba(255,255,255,0.10);overflow:hidden;display:inline-block}"
-            ".ru-tip-spark{display:block;width:120px;height:28px;margin-top:3px;opacity:.9}"
+            # full width of wherever it sits (a host column's window history, or the fleet-spend $/h
+            # graph spanning the whole tip) — the fixed 120px strip wasted the box (the user 2026-08-14).
+            # The faint backing plate frames the PLOT AREA, so a sparse series — a remote host whose
+            # hourly history has only a reading or two, drawn as lone dots by design (unknown ≠ 0) —
+            # reads as points on an empty graph, not stray specks between the sections (the user
+            # 2026-08-14, who took snape's isolated green dots for rendering dirt).
+            ".ru-tip-spark{display:block;width:100%;height:28px;margin-top:3px;opacity:.9;"
+            "background:rgba(255,255,255,0.04);border-radius:3px}"
             ".ru-tip-track i{display:block;height:100%;border-radius:3px;transition:width .3s ease}"
             # margin-left:auto right-aligns every value to one edge, so the bar rows and the numbers-only
             # spend rows (no track span, the user 2026-08-08) read as one table.
